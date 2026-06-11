@@ -1,0 +1,9 @@
+{
+  "name": "@maxencerb/evs-contracts",
+  "private": true,
+  "scripts": {
+    "build": "forge build",
+    "test": "forge test",
+    "codegen": "bun scripts/codegen.ts"
+  }
+}

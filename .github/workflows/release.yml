@@ -1,0 +1,95 @@
+name: Release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write # npm trusted publishing (OIDC)
+
+concurrency:
+  group: release-${{ github.event.release.tag_name }}
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    name: Publish @maxencerb/evs to npm
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # Node 24 bundles npm >= 11.13 (OIDC floor is 11.5.1); registry-url writes .npmrc whose
+      # NODE_AUTH_TOKEN placeholder is defused at the publish step so OIDC wins.
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          registry-url: 'https://registry.npmjs.org'
+          package-manager-cache: false
+
+      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
+        run: |
+          npm install -g npm@latest
+          npm --version
+
+      - name: Derive version from release tag
+        id: version
+        env:
+          TAG: ${{ github.event.release.tag_name }} # env indirection: no script injection
+        run: |
+          SEMVER_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
+          if [[ ! "$TAG" =~ $SEMVER_RE ]]; then
+            echo "::error::Release tag '$TAG' must look like v1.2.3 or v1.2.3-beta.1"
+            exit 1
+          fi
+          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+
+      # Install BEFORE the version bump (bun's frozen-lockfile hashes workspace manifests),
+      # and bun pm pack requires a completed install.
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+
+      - name: Full test gate
+        run: |
+          (cd packages/contracts && forge build && bun run codegen)
+          bun run build
+          bun run check
+          bun run test
+          bun run test:integration
+
+      - name: Inject version
+        working-directory: packages/evs
+        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+
+      - name: Rebuild with release version
+        working-directory: packages/evs
+        run: bun run build
+
+      - name: 'Pack (bun rewrites workspace:/catalog: protocols)'
+        id: pack
+        working-directory: packages/evs
+        run: echo "tarball=$(bun pm pack --quiet)" >> "$GITHUB_OUTPUT"
+
+      - name: Publish to npm via OIDC
+        working-directory: packages/evs
+        env:
+          NODE_AUTH_TOKEN: '' # defuse setup-node's placeholder so OIDC wins
+          # While the repo is PRIVATE, provenance must stay off (publishConfig.provenance=false
+          # in package.json). When the repo goes public: flip publishConfig.provenance to true
+          # and append --provenance below.
+        run: |
+          TAG_FLAG=latest
+          if [ "${{ github.event.release.prerelease }}" = "true" ]; then TAG_FLAG=next; fi
+          npm publish "${{ steps.pack.outputs.tarball }}" \
+            --access public \
+            --tag "$TAG_FLAG"

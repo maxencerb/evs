@@ -1,0 +1,10 @@
+# foundry.toml
+[profile.default]
+src = "src"
+out = "out"
+libs = ["lib"]
+solc_version = "0.8.30"
+auto_detect_solc = false
+evm_version = "prague"
+optimizer = false # reference semantics, not gas golf — keep codegen predictable
+via_ir = false

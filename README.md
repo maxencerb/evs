@@ -1,15 +1,11 @@
 # evs
 
-To install dependencies:
+Typed EVM read scripts in plain TypeScript: a callback builder compiled to runtime
+bytecode, executed via `eth_call` (deployless or state-override), with full viem inference.
 
-```bash
-bun install
-```
+Work in progress. Start with the documentation:
 
-To run:
+- Binding design docs: [docs/design](docs/design) (module-interfaces, architecture, api, testing, repo-layout)
+- Research notes: [docs/research](docs/research)
 
-```bash
-bun run index.ts
-```
-
-This project was created using `bun init` in bun v1.3.14. [Bun](https://bun.com) is a fast all-in-one JavaScript runtime.
+Monorepo layout: `packages/evs` (the `@maxencerb/evs` library), `packages/contracts` (foundry), `examples/`.

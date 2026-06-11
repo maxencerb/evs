@@ -1,0 +1,9 @@
+{
+  "name": "@maxencerb/evs-example-pool-meta",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@maxencerb/evs": "workspace:*",
+    "viem": "catalog:"
+  }
+}

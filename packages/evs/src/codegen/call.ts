@@ -1,0 +1,697 @@
+/**
+ * M7 `codegen/call.ts` — the STATICCALL site emitter (architecture §7, exactly).
+ *
+ * Contract: docs/design/module-interfaces.md §M7 (frozen) with one recorded deviation: the
+ * law's `CallSitePlan` carries no location for the call *target* (and optional gas cap) even
+ * though `emitStaticCall` cannot emit `STATICCALL` without them — `targetRef` (required) and
+ * `gasRef` (optional) are added here, mirroring `argRefs`' `SlotRef | { literal: ConstData }`
+ * shape.
+ *
+ * Shapes (architecture §7 / §15.2):
+ * - CalldataTemplate: compile-time const segments (selector + every literal arg, merged),
+ *   `word` segments (runtime word slots MSTOREd at their head offsets), `dyn` segments
+ *   (runtime memrefs: head offset word + tail copied via `emitMemCopy` with explicit
+ *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
+ *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
+ *   scratch `MLOAD(0x40)` and is NOT bumped.
+ * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` — retSize 0 always; returndata is fetched
+ *   via the two sanctioned RETURNDATACOPY shapes only (`w.returndatacopyAll`).
+ * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
+ *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).
+ * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata to a
+ *   fresh allocation and bump the free pointer.
+ * - word outputs normalize-don't-revert; dynamic outputs validate in place (2^64 guards,
+ *   overflow-free bounds) aliasing the snapshot; array elements normalize eagerly.
+ * - try mode: `plan.dfailLabel` IS the zero block, emitted inline here as a *checked* label
+ *   (it rejoins the program): every failure path cleans its stack to height 0 and jumps to
+ *   it; it zeroes `successOut`/word outs and points memref outs at the `0x60` zero slot, then
+ *   falls through to the join.
+ */
+
+import { layoutOf, type TypeLayout } from '../abi/layout.js';
+import type { AsmWriter, LabelId } from '../asm/assembler.js';
+import type { EvmVersion } from '../asm/ops.js';
+import { EvsInternalError } from '../core/errors.js';
+import { isDynamicType, type Hex } from '../core/types.js';
+import type { ConstData, SiteId, Stmt } from '../ir/nodes.js';
+import {
+  emitMemCopy,
+  emitNormalizeElemsLoop,
+  emitNormalizeWord,
+  wordNeedsNormalize,
+  type SharedTails,
+  type SlotRef,
+} from './abi.js';
+
+// ---------------------------------------------------------------------------
+// frozen contract types (module-interfaces §M7 + recorded targetRef/gasRef deviation)
+// ---------------------------------------------------------------------------
+
+export interface CallSitePlan {
+  stmt: Extract<Stmt, { k: 'call' }>;
+  /** Where the callee address lives (slot or folded literal). DEVIATION: see module header. */
+  targetRef: SlotRef | { literal: ConstData };
+  /** Optional gas cap operand (slot or folded literal); absent → forward all via GAS. */
+  gasRef?: SlotRef | { literal: ConstData };
+  argRefs: readonly (SlotRef | { literal: ConstData })[];
+  outRefs: readonly SlotRef[];
+  successRef: SlotRef | null;
+  dfailLabel: LabelId; // per-site stub target (strict) or zero-block (try)
+  siteId: SiteId;
+}
+
+// ---------------------------------------------------------------------------
+// helpers
+// ---------------------------------------------------------------------------
+
+const MAX_U64 = 0xffffffffffffffffn;
+const FREE_PTR = 0x40;
+const TAIL_CURSOR = 0x00; // scratch — calldata-template tail cursor (transient)
+const ZERO_SLOT = 0x60;
+
+/** Const segments at or under this size are PUSH-chunked; larger ones go to a data segment. */
+const CONST_SEGMENT_INLINE_MAX = 96;
+
+function internal(message: string): EvsInternalError {
+  return new EvsInternalError('INTERNAL', `codegen/call: ${message}`);
+}
+
+function isLiteralRef(ref: SlotRef | { literal: ConstData }): ref is { literal: ConstData } {
+  return 'literal' in ref;
+}
+
+function hexToBytes(hex: Hex, what: string): Uint8Array {
+  const body = hex.slice(2);
+  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
+    throw internal(`${what}: malformed hex ${hex}`);
+  }
+  const out = new Uint8Array(body.length / 2);
+  for (let i = 0; i < out.length; i++) {
+    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
+  }
+  return out;
+}
+
+function literalWordValue(data: ConstData, what: string): bigint {
+  if (data.kind !== 'word') throw internal(`${what}: expected a word literal, got '${data.kind}'`);
+  const bytes = hexToBytes(data.hex, what);
+  if (bytes.length !== 32) throw internal(`${what}: word literal must be 32 bytes`);
+  let v = 0n;
+  for (const b of bytes) v = (v << 8n) | BigInt(b);
+  return v;
+}
+
+function literalDataBytes(data: ConstData, what: string): Uint8Array {
+  if (data.kind !== 'data') throw internal(`${what}: expected a data literal, got '${data.kind}'`);
+  const bytes = hexToBytes(data.hex, what);
+  if (bytes.length < 32 || bytes.length % 32 !== 0) {
+    throw internal(`${what}: data literal must be a padded [len][payload…] image`);
+  }
+  return bytes;
+}
+
+function u256Bytes(v: bigint): Uint8Array {
+  const out = new Uint8Array(32);
+  let x = v;
+  for (let i = 31; i >= 0; i--) {
+    out[i] = Number(x & 0xffn);
+    x >>= 8n;
+  }
+  return out;
+}
+
+/**
+ * Pushes the 32-byte chunk's word value with the smallest encoding: minimal-width PUSH for
+ * the significant prefix, plus a SHL when the chunk has trailing zero bytes (this reproduces
+ * the `PUSH4 <sel> PUSH1 0xE0 SHL` selector idiom for free).
+ */
+function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string): void {
+  let v = 0n;
+  for (const b of chunk) v = (v << 8n) | BigInt(b);
+  const meta = note === undefined ? {} : { note };
+  if (v === 0n) {
+    w.push(0, meta);
+    return;
+  }
+  let tz = 0;
+  while (tz < 31 && chunk[31 - tz] === 0) tz += 1;
+  if (tz === 0) {
+    w.push(v, meta);
+    return;
+  }
+  w.push(v >> BigInt(8 * tz), meta);
+  w.push(8 * tz);
+  w.op('SHL');
+}
+
+// ---------------------------------------------------------------------------
+// CalldataTemplate — compile-time const folding (architecture §7.1)
+// ---------------------------------------------------------------------------
+
+interface ConstRun {
+  offset: number;
+  bytes: Uint8Array;
+}
+
+type DynPart = { headOffset: number } & (
+  | { kind: 'literal'; bytes: Uint8Array }
+  | { kind: 'slot'; slot: number; isArray: boolean }
+);
+
+interface CalldataTemplate {
+  /** `'static'` — every byte position is compile-time known (no runtime dynamic args). */
+  regime: 'static' | 'dynamic';
+  /** Merged const byte runs at compile-time-known offsets (selector, literal heads/tails). */
+  constRuns: readonly ConstRun[];
+  /** Runtime word args: canonical slot word → head offset. */
+  runtimeWords: readonly { offset: number; slot: number }[];
+  /** Dynamic args in arg order (regime 'dynamic' only — runtime tail cursor). */
+  dynParts: readonly DynPart[];
+  /** Total calldata size in the 'static' regime; head-region size (4 + 32·n) otherwise. */
+  staticSize: number;
+}
+
+function buildTemplate(plan: CallSitePlan): CalldataTemplate {
+  const { fnAbi } = plan.stmt;
+  const inputs = fnAbi.inputs;
+  if (inputs.length !== plan.argRefs.length) {
+    throw internal(
+      `call to ${fnAbi.name}: ${inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
+    );
+  }
+  const selector = hexToBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
+  if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
+
+  const layouts: TypeLayout[] = inputs.map((p) => layoutOf(p.type));
+  const headEnd = 4 + 32 * inputs.length;
+  const hasRuntimeDyn = layouts.some((l, i) => {
+    const ref = plan.argRefs[i];
+    return ref !== undefined && l.kind !== 'word' && !isLiteralRef(ref);
+  });
+
+  const runtimeWords: { offset: number; slot: number }[] = [];
+  const dynParts: DynPart[] = [];
+
+  // first pass — total size in the static regime
+  let staticSize = headEnd;
+  if (!hasRuntimeDyn) {
+    layouts.forEach((l, i) => {
+      const ref = plan.argRefs[i];
+      if (ref === undefined || l.kind === 'word' || !isLiteralRef(ref)) return;
+      staticSize += literalDataBytes(ref.literal, `arg #${i} of ${fnAbi.name}`).length;
+    });
+  }
+
+  const image = new Uint8Array(hasRuntimeDyn ? headEnd : staticSize);
+  const known = new Uint8Array(image.length); // 1 = const byte
+  const place = (offset: number, bytes: Uint8Array): void => {
+    image.set(bytes, offset);
+    known.fill(1, offset, offset + bytes.length);
+  };
+  place(0, selector);
+
+  let tailPos = headEnd;
+  layouts.forEach((l, i) => {
+    const ref = plan.argRefs[i];
+    if (ref === undefined) throw internal(`missing arg ref #${i}`);
+    const headOffset = 4 + 32 * i;
+    const what = `arg #${i} of ${fnAbi.name}`;
+    if (l.kind === 'word') {
+      if (isLiteralRef(ref)) {
+        const bytes = hexToBytes(ref.literal.hex, what);
+        if (ref.literal.kind !== 'word' || bytes.length !== 32) {
+          throw internal(`${what}: word arg requires a 32-byte word literal`);
+        }
+        place(headOffset, bytes);
+      } else {
+        runtimeWords.push({ offset: headOffset, slot: ref.slot });
+      }
+      return;
+    }
+    // dynamic arg
+    if (isLiteralRef(ref)) {
+      const bytes = literalDataBytes(ref.literal, what);
+      if (hasRuntimeDyn) {
+        dynParts.push({ headOffset, kind: 'literal', bytes });
+      } else {
+        place(headOffset, u256Bytes(BigInt(tailPos - 4)));
+        place(tailPos, bytes);
+        tailPos += bytes.length;
+      }
+    } else {
+      dynParts.push({ headOffset, kind: 'slot', slot: ref.slot, isArray: l.kind === 'array' });
+    }
+  });
+
+  // merge const runs
+  const constRuns: ConstRun[] = [];
+  let runStart = -1;
+  for (let i = 0; i <= image.length; i++) {
+    const isConst = i < image.length && known[i] === 1;
+    if (isConst && runStart === -1) runStart = i;
+    if (!isConst && runStart !== -1) {
+      constRuns.push({ offset: runStart, bytes: image.slice(runStart, i) });
+      runStart = -1;
+    }
+  }
+
+  return {
+    regime: hasRuntimeDyn ? 'dynamic' : 'static',
+    constRuns,
+    runtimeWords,
+    dynParts,
+    staticSize,
+  };
+}
+
+// ---------------------------------------------------------------------------
+// calldata build emission
+// ---------------------------------------------------------------------------
+
+/** Const run at a compile-time-known buffer offset: PUSH-chunked MSTOREs or CODECOPY. */
+function emitConstRun(w: AsmWriter, run: ConstRun, dataSeg: (bytes: Uint8Array) => LabelId): void {
+  if (run.bytes.length > CONST_SEGMENT_INLINE_MAX) {
+    const label = dataSeg(run.bytes);
+    w.push(run.bytes.length, { note: `const segment ${run.bytes.length}B` });
+    w.pushLabel(label); // [src, size]
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [buf, src, size]
+    if (run.offset !== 0) {
+      w.push(run.offset);
+      w.op('ADD');
+    }
+    w.op('CODECOPY'); // []
+    return;
+  }
+  for (let k = 0; k < run.bytes.length; k += 32) {
+    const chunk = new Uint8Array(32);
+    chunk.set(run.bytes.slice(k, k + 32));
+    emitPushWordChunk(w, chunk, k === 0 ? 'const calldata' : undefined); // [val]
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [buf, val]
+    const offset = run.offset + k;
+    if (offset !== 0) {
+      w.push(offset);
+      w.op('ADD');
+    }
+    w.op('MSTORE'); // []
+  }
+}
+
+/** Const bytes at the runtime tail cursor (regime 'dynamic' literal-dyn tails). */
+function emitConstBytesAtCursor(
+  w: AsmWriter,
+  bytes: Uint8Array,
+  dataSeg: (bytes: Uint8Array) => LabelId,
+): void {
+  if (bytes.length > CONST_SEGMENT_INLINE_MAX) {
+    const label = dataSeg(bytes);
+    w.push(bytes.length, { note: `const tail ${bytes.length}B` });
+    w.pushLabel(label); // [src, size]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [dst, src, size]
+    w.op('CODECOPY'); // []
+    return;
+  }
+  for (let k = 0; k < bytes.length; k += 32) {
+    const chunk = new Uint8Array(32);
+    chunk.set(bytes.slice(k, k + 32));
+    emitPushWordChunk(w, chunk); // [val]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tail, val]
+    if (k !== 0) {
+      w.push(k);
+      w.op('ADD');
+    }
+    w.op('MSTORE'); // []
+  }
+}
+
+/** Builds the calldata template into transient scratch at `MLOAD(0x40)`. Net stack 0. */
+function emitCalldataBuild(
+  w: AsmWriter,
+  template: CalldataTemplate,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  dataSeg: (bytes: Uint8Array) => LabelId,
+): void {
+  // const runs first (their padded chunk writes only spill into regions written later)
+  for (const run of template.constRuns) emitConstRun(w, run, dataSeg);
+
+  // runtime word heads — slots hold canonical words, which IS the ABI encoding
+  for (const { offset, slot } of template.runtimeWords) {
+    w.push(slot);
+    w.op('MLOAD'); // [v]
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [buf, v]
+    if (offset !== 0) {
+      w.push(offset);
+      w.op('ADD');
+    }
+    w.op('MSTORE'); // []
+  }
+
+  if (template.regime === 'static') return;
+
+  // -- runtime tail cursor phase (scratch 0x00 holds the absolute next-tail address) ------
+  w.push(template.staticSize); // head-region size = 4 + 32·n
+  w.push(FREE_PTR);
+  w.op('MLOAD');
+  w.op('ADD'); // [tail0]
+  w.push(TAIL_CURSOR);
+  w.op('MSTORE'); // []
+
+  for (const part of template.dynParts) {
+    // head: MSTORE(buf + headOffset, tail − buf − 4)
+    w.push(4);
+    w.push(FREE_PTR);
+    w.op('MLOAD');
+    w.op('ADD'); // [buf+4]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tail, buf+4]
+    w.op('SUB'); // [rel]
+    w.push(FREE_PTR);
+    w.op('MLOAD');
+    w.push(part.headOffset);
+    w.op('ADD'); // [headAddr, rel]
+    w.op('MSTORE'); // []
+
+    if (part.kind === 'literal') {
+      emitConstBytesAtCursor(w, part.bytes, dataSeg);
+      w.push(part.bytes.length);
+      w.push(TAIL_CURSOR);
+      w.op('MLOAD');
+      w.op('ADD'); // [tail']
+      w.push(TAIL_CURSOR);
+      w.op('MSTORE'); // []
+      continue;
+    }
+
+    const { slot, isArray } = part;
+    /** Reload the memref's payload byte count onto the stack. */
+    const pushNBytes = (): void => {
+      w.push(slot);
+      w.op('MLOAD');
+      w.op('MLOAD'); // [len]
+      if (isArray) {
+        w.push(5);
+        w.op('SHL'); // [32·len]
+      }
+    };
+
+    // length word: MSTORE(tail, len)
+    w.push(slot);
+    w.op('MLOAD');
+    w.op('MLOAD'); // [len]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tail, len]
+    w.op('MSTORE'); // []
+
+    // payload copy at exactly [dst, src, len] (memcpy convention)
+    pushNBytes(); // [n]
+    w.push(slot);
+    w.op('MLOAD');
+    w.push(32);
+    w.op('ADD'); // [src, n]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD');
+    w.push(32);
+    w.op('ADD'); // [dst, src, n]
+    emitMemCopy(w, tails, opts); // []
+
+    if (!isArray) {
+      // explicit zero-pad of the trailing partial word (after the copy — the pre-cancun
+      // word loop over-copies whole words)
+      w.push(0); // [0]
+      pushNBytes(); // [n, 0]
+      w.push(TAIL_CURSOR);
+      w.op('MLOAD');
+      w.op('ADD'); // [tail+n, 0]
+      w.push(32);
+      w.op('ADD'); // [tail+32+n, 0]
+      w.op('MSTORE'); // []
+    }
+
+    // tail += 32 + ceil32(n) (arrays are word-exact already)
+    pushNBytes(); // [n]
+    if (!isArray) {
+      w.push(31);
+      w.op('ADD');
+      w.push(31);
+      w.op('NOT');
+      w.op('AND'); // [ceil32(n)]
+    }
+    w.push(32);
+    w.op('ADD'); // [inc]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD');
+    w.op('ADD'); // [tail']
+    w.push(TAIL_CURSOR);
+    w.op('MSTORE'); // []
+  }
+}
+
+// ---------------------------------------------------------------------------
+// emitStaticCall — architecture §7 / §15.2
+// ---------------------------------------------------------------------------
+
+export function emitStaticCall(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  dataSeg: (bytes: Uint8Array) => LabelId, // request a data segment, get its dataLabel
+): void {
+  const { stmt, siteId } = plan;
+  const { fnAbi } = stmt;
+  const outputs = fnAbi.outputs;
+  const tryMode = stmt.mode === 'try';
+
+  if (outputs.length !== plan.outRefs.length) {
+    throw internal(
+      `call to ${fnAbi.name} (site ${siteId}): ${outputs.length} ABI output(s) but ${plan.outRefs.length} out ref(s)`,
+    );
+  }
+  outputs.forEach((out, j) => {
+    const ref = plan.outRefs[j];
+    if (ref !== undefined && ref.type !== out.type) {
+      throw internal(
+        `call to ${fnAbi.name} (site ${siteId}): output #${j} is ${out.type} but its slot is typed ${ref.type}`,
+      );
+    }
+  });
+  if (tryMode && plan.successRef === null) {
+    throw internal(`try call to ${fnAbi.name} (site ${siteId}): successRef is required`);
+  }
+  if (!tryMode && plan.successRef !== null) {
+    throw internal(`strict call to ${fnAbi.name} (site ${siteId}): successRef must be null`);
+  }
+
+  /**
+   * try-mode failure router. Stack on entry: `[bad, …live]`; on exit (continue path):
+   * `[…live]`. Strict mode jumps straight to the `'any'` dfail stub; try mode inverts the
+   * branch, cleans the stack to height 0, and jumps to the (checked, height-0) zero block.
+   */
+  const emitDecodeFail = (liveDepth: number): void => {
+    if (!tryMode) {
+      w.pushLabel(plan.dfailLabel);
+      w.op('JUMPI');
+      return;
+    }
+    const cont = w.newLabel(`call_${siteId}_cont`);
+    w.op('ISZERO');
+    w.pushLabel(cont);
+    w.op('JUMPI'); // […live]
+    for (let k = 0; k < liveDepth; k++) w.op('POP');
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP');
+    w.label(cont, liveDepth);
+  };
+
+  // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
+  const template = buildTemplate(plan);
+  emitCalldataBuild(w, template, tails, opts, dataSeg);
+
+  // -- 2. staticcall(gas, addr, buf, argsSize, 0, 0) --------------------------------------
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [buf]
+  w.push(0); // [retSize, buf]
+  w.push(0); // [retOff, retSize, buf]
+  if (template.regime === 'static') {
+    w.push(template.staticSize); // [argsSize, …]
+  } else {
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tailEnd, retOff, retSize, buf]
+    w.op('DUP4'); // [buf, tailEnd, …]
+    w.op('SWAP1'); // [tailEnd, buf, …]
+    w.op('SUB'); // [argsSize, retOff, retSize, buf]
+  }
+  w.op('DUP4'); // [argsOff = buf, argsSize, retOff, retSize, buf]
+  if (isLiteralRef(plan.targetRef)) {
+    w.push(literalWordValue(plan.targetRef.literal, `target of ${fnAbi.name}`), {
+      note: 'target',
+    });
+  } else {
+    w.push(plan.targetRef.slot);
+    w.op('MLOAD', { note: 'target' });
+  }
+  if (plan.gasRef === undefined) {
+    w.op('GAS');
+  } else if (isLiteralRef(plan.gasRef)) {
+    w.push(literalWordValue(plan.gasRef.literal, `gas of ${fnAbi.name}`), { note: 'gas cap' });
+  } else {
+    w.push(plan.gasRef.slot);
+    w.op('MLOAD', { note: 'gas cap' });
+  }
+  w.op('STATICCALL', {
+    loc: stmt.loc,
+    note: `${stmt.mode} call ${fnAbi.name} (site ${siteId})`,
+  }); // [success, buf]
+
+  const ok = w.newLabel(`call_ok_${siteId}`);
+  w.pushLabel(ok);
+  w.op('JUMPI'); // [buf]
+  if (tryMode) {
+    w.op('POP');
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP'); // → zero block
+  } else {
+    // bubble the callee revert verbatim (RETURNDATACOPY shape 1)
+    w.returndatacopyAll('zero'); // [buf]
+    w.op('RETURNDATASIZE');
+    w.push(0);
+    w.op('REVERT', { note: 'bubble callee revert' }); // revert(0, rds)
+  }
+  w.label(ok, 1); // [buf]
+
+  // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate) ---------------
+  if (outputs.length > 0) {
+    // staticMinSize guard: rds ≥ 32·nOutputs
+    w.op('RETURNDATASIZE');
+    w.push(32 * outputs.length, { note: `staticMinSize ${32 * outputs.length}` });
+    w.op('GT'); // [minSize > rds, buf]
+    emitDecodeFail(1); // [buf]
+
+    // snapshot ENTIRE returndata at buf (shape 2); freePtr = buf + ceil32(rds)
+    w.returndatacopyAll({ dupDepth: 1 }); // [buf]
+    w.op('RETURNDATASIZE');
+    w.push(31);
+    w.op('ADD');
+    w.push(31);
+    w.op('NOT');
+    w.op('AND'); // [ceil32(rds), buf]
+    w.op('DUP2');
+    w.op('ADD'); // [buf + ceil32(rds), buf]
+    w.push(FREE_PTR);
+    w.op('MSTORE'); // [buf]
+
+    outputs.forEach((out, j) => {
+      const ref = plan.outRefs[j];
+      if (ref === undefined) throw internal(`missing out ref #${j}`);
+      const layout = layoutOf(out.type);
+      const headOffset = 32 * j;
+      if (layout.kind === 'word') {
+        w.op('DUP1');
+        if (headOffset !== 0) {
+          w.push(headOffset);
+          w.op('ADD');
+        }
+        w.op('MLOAD'); // [raw, buf]
+        emitNormalizeWord(w, layout.abi); // normalize-don't-revert
+        w.push(ref.slot);
+        w.op('MSTORE', { note: `out #${j} ${out.type}` }); // [buf]
+        return;
+      }
+
+      const isArray = layout.kind === 'array';
+      // off := snapshot[32·j]; off ≤ 2^64−1; off + 32 ≤ rds
+      w.op('DUP1');
+      if (headOffset !== 0) {
+        w.push(headOffset);
+        w.op('ADD');
+      }
+      w.op('MLOAD'); // [off, buf]
+      w.push(MAX_U64);
+      w.op('DUP2');
+      w.op('GT'); // [off > max, off, buf]
+      emitDecodeFail(2); // [off, buf]
+      w.op('DUP1');
+      w.push(32);
+      w.op('ADD'); // [off+32, off, buf]
+      w.op('RETURNDATASIZE');
+      w.op('LT'); // [rds < off+32, off, buf]
+      emitDecodeFail(2); // [off, buf]
+
+      // ptr := buf + off; len checks: len ≤ 2^64−1, off + 32 + nbytes ≤ rds
+      w.op('DUP2');
+      w.op('ADD'); // [ptr, buf]
+      w.op('DUP1');
+      w.op('MLOAD'); // [len, ptr, buf]
+      w.push(MAX_U64);
+      w.op('DUP2');
+      w.op('GT'); // [len > max, len, ptr, buf]
+      emitDecodeFail(3); // [len, ptr, buf]
+      if (isArray) {
+        w.push(5);
+        w.op('SHL'); // [nbytes = 32·len, ptr, buf]
+      }
+      w.op('DUP2');
+      w.push(32);
+      w.op('ADD');
+      w.op('ADD'); // [end = ptr + 32 + nbytes, ptr, buf]
+      w.op('RETURNDATASIZE');
+      w.op('DUP4');
+      w.op('ADD'); // [buf+rds, end, ptr, buf]
+      w.op('LT'); // [buf+rds < end, ptr, buf]
+      emitDecodeFail(2); // [ptr, buf]
+
+      if (layout.kind === 'array' && wordNeedsNormalize(layout.elem.abi)) {
+        // eager element normalization over the aliased snapshot
+        w.op('DUP1');
+        w.op('MLOAD');
+        w.push(5);
+        w.op('SHL'); // [nbytes, ptr, buf]
+        w.op('DUP2');
+        w.op('ADD');
+        w.push(32);
+        w.op('ADD'); // [end, ptr, buf]
+        w.op('DUP2');
+        w.push(32);
+        w.op('ADD'); // [cur, end, ptr, buf]
+        emitNormalizeElemsLoop(w, layout.elem.abi, 2);
+        w.op('POP');
+        w.op('POP'); // [ptr, buf]
+      }
+
+      w.push(ref.slot);
+      w.op('MSTORE', { note: `out #${j} ${out.type} (memref aliases snapshot)` }); // [buf]
+    });
+  }
+  w.op('POP'); // []
+
+  // -- 4. try mode: success flag, zero block (checked — rejoins), join --------------------
+  if (tryMode) {
+    if (plan.successRef !== null) {
+      w.push(1);
+      w.push(plan.successRef.slot);
+      w.op('MSTORE', { note: `success = 1 (site ${siteId})` });
+    }
+    const join = w.newLabel(`call_join_${siteId}`);
+    w.pushLabel(join);
+    w.op('JUMP');
+
+    w.label(plan.dfailLabel, 0, `zero_${siteId}`);
+    if (plan.successRef !== null) {
+      w.push(0);
+      w.push(plan.successRef.slot);
+      w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
+    }
+    for (const ref of plan.outRefs) {
+      // word outs = 0; memref outs = 0x60 (the zero slot ⇒ empty value)
+      w.push(isDynamicType(ref.type) ? ZERO_SLOT : 0);
+      w.push(ref.slot);
+      w.op('MSTORE');
+    }
+    w.label(join, 0); // fallthrough from the zero block rejoins here
+  }
+}

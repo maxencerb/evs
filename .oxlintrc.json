@@ -1,0 +1,37 @@
+{
+  "$schema": "./node_modules/oxlint/configuration_schema.json",
+  "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
+  "categories": { "correctness": "error", "suspicious": "warn", "perf": "warn" },
+  "options": {
+    "typeAware": true,
+    "reportUnusedDisableDirectives": "warn"
+  },
+  "env": { "shared-node-browser": true, "es2026": true },
+  "rules": {
+    "typescript/no-floating-promises": "error",
+    "typescript/no-misused-promises": "error",
+    "typescript/await-thenable": "error",
+    "typescript/strict-boolean-expressions": "error",
+    "import/no-cycle": "error",
+    "no-console": "warn"
+  },
+  "ignorePatterns": [
+    "**/dist/**",
+    "**/coverage/**",
+    "**/contracts/out/**",
+    "**/contracts/cache/**",
+    "**/contracts/lib/**",
+    "**/test/generated/**"
+  ],
+  "overrides": [
+    {
+      "files": ["**/*.test.ts", "**/*.test-d.ts", "**/test/**"],
+      "plugins": ["vitest"],
+      "rules": {
+        "vitest/no-focused-tests": "error",
+        "typescript/no-explicit-any": "off",
+        "no-console": "off"
+      }
+    }
+  ]
+}

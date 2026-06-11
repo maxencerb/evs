@@ -1,0 +1,63 @@
+{
+  "name": "@maxencerb/evs",
+  "version": "0.0.0",
+  "description": "Typed EVM read scripts in plain TypeScript: a callback builder compiled to runtime bytecode, executed via eth_call (deployless or state-override) with full viem inference",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxencerb/evs.git",
+    "directory": "packages/evs"
+  },
+  "files": [
+    "dist",
+    "src",
+    "!src/**/*.test.ts",
+    "!src/**/*.test-d.ts",
+    "!dist/**/*.test.*"
+  ],
+  "type": "module",
+  "sideEffects": false,
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    },
+    "./package.json": "./package.json"
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": false
+  },
+  "scripts": {
+    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --project unit --project types",
+    "test:integration": "vitest run --project integration",
+    "prepublishOnly": "bun run build"
+  },
+  "dependencies": {
+    "abitype": "catalog:"
+  },
+  "devDependencies": {
+    "@ethereumjs/evm": "catalog:testing",
+    "prool": "catalog:testing",
+    "typescript": "catalog:",
+    "viem": "catalog:",
+    "vitest": "catalog:testing"
+  },
+  "peerDependencies": {
+    "typescript": ">=5.5",
+    "viem": ">=2.14.1"
+  },
+  "peerDependenciesMeta": {
+    "typescript": {
+      "optional": true
+    }
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "//publishConfig": "provenance MUST stay false while the repo is private — npm cannot generate provenance for private repos and the publish would fail/skip it confusingly. FLIP provenance to true (and keep --access public) the moment the repo goes public."
+}

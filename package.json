@@ -1,12 +1,46 @@
 {
-  "name": "evs",
-  "module": "index.ts",
-  "type": "module",
+  "name": "evs-monorepo",
   "private": true,
-  "devDependencies": {
-    "@types/bun": "latest"
+  "workspaces": {
+    "packages": [
+      "packages/*",
+      "examples/*"
+    ],
+    "catalog": {
+      "typescript": "^5.9.0",
+      "viem": "2.52.2",
+      "abitype": "^1.2.4"
+    },
+    "catalogs": {
+      "testing": {
+        "vitest": "^3.2.4",
+        "prool": "^0.2.4",
+        "@ethereumjs/evm": "^10.1.2"
+      }
+    }
   },
-  "peerDependencies": {
-    "typescript": "^5"
+  "scripts": {
+    "build": "bun run --filter '@maxencerb/evs' build",
+    "typecheck": "bun run --filter '*' typecheck",
+    "test": "vitest run --project unit --project types",
+    "test:integration": "vitest run --project integration",
+    "test:all": "vitest run",
+    "lint": "oxlint",
+    "lint:fix": "oxlint --fix --fix-suggestions",
+    "lint:ci": "oxlint --deny-warnings --format github",
+    "fmt": "oxfmt",
+    "fmt:check": "oxfmt --check",
+    "check": "bun run fmt:check && bun run lint:ci && bun run typecheck"
+  },
+  "devDependencies": {
+    "@arethetypeswrong/cli": "^0.18.0",
+    "@types/node": "^24.0.0",
+    "oxfmt": "0.54.0",
+    "oxlint": "^1.69.0",
+    "oxlint-tsgolint": "^0.23.0",
+    "prool": "catalog:testing",
+    "publint": "^0.3.0",
+    "typescript": "catalog:",
+    "vitest": "catalog:testing"
   }
 }

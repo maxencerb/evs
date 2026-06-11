@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  check-and-test:
+    name: Lint, typecheck, unit & type tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          submodules: recursive # contracts/lib/forge-std
+
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      # vitest executes on Node (bun is the package manager / script runner)
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1 # pinned: anvil/forge determinism
+
+      - run: bun install --frozen-lockfile
+
+      - name: Build contracts (reference + mocks)
+        working-directory: packages/contracts
+        run: forge build && bun run codegen
+
+      # build first: type-aware lint resolves workspace imports through .d.ts
+      - name: Build library
+        run: bun run build
+
+      - run: bun run fmt:check
+      - run: bun run lint:ci
+      - run: bun run typecheck
+
+      - name: Unit + type tests
+        run: bun run test
+
+      - name: Integration tests (anvil via prool)
+        run: bun run test:integration
+
+      - name: Package health (publint + attw)
+        working-directory: packages/evs
+        run: |
+          bunx publint
+          bunx @arethetypeswrong/cli --pack .
+
+  fork-tests:
+    name: Mainnet-fork suite (scheduled / manual)
+    if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+        with: { submodules: recursive }
+      - uses: oven-sh/setup-bun@v2
+        with: { bun-version: latest }
+      - uses: actions/setup-node@v6
+        with: { node-version: 24 }
+      - uses: foundry-rs/foundry-toolchain@v1
+        with: { version: v1.7.1 }
+      - run: bun install --frozen-lockfile
+      - run: bun run build
+      - name: Fork integration
+        env:
+          ANVIL_FORK_URL: ${{ secrets.ANVIL_FORK_URL }}
+        run: bun run test:integration
