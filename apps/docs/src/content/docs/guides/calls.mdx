@@ -1,0 +1,191 @@
+---
+title: Calling contracts
+description: Read other contracts with s.call and s.tryCall — viem-style typing, verbatim revert bubbling, and zero-filled defaults on failure.
+---
+
+`s.call` reads another contract from inside your script. The parameter object is deliberately
+shaped like viem's `readContract` — same keys, same ABI-driven inference — except that
+`address` and every argument can also be an `Expr` produced earlier in the script. That is the
+whole point: outputs of one call feed the next call on-chain, in a single `eth_call`.
+
+## s.call
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const uniswapV3PoolAbi = [
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+] as const;
+
+const tokenInfo = evscript(
+  { name: 'tokenInfo', args: [arg('pool', t.address), arg('user', t.address)] },
+  (s) => {
+    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    //    ^? Expr<'address'> — feeds the next two calls on-chain
+    const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const balance = s.call({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.user],
+    });
+    return s.return({ token0, symbol, balance });
+  },
+);
+```
+
+`functionName` autocompletes from the ABI, filtered to `pure` and `view` functions —
+`nonpayable`/`payable` names are type errors at the `functionName` level. Each entry of `args`
+independently accepts either the plain JS literal viem would take (`bigint`, `number`,
+`0x` strings, ...) or an `Expr` of that exact parameter type, so literals and runtime values mix
+freely in one call. See [values and types](/guides/values-and-types/) for the coercion rules.
+
+### Parameters
+
+| Key            | Type                                  | Notes                                                              |
+| -------------- | ------------------------------------- | ------------------------------------------------------------------ |
+| `address`      | `IntoExpr<'address'>`                 | A `0x` literal or an `Expr<'address'>` from an earlier statement   |
+| `abi`          | `Abi`                                 | Inline or `as const`, exactly as with viem                         |
+| `functionName` | name union                            | Restricted to `pure`/`view` functions of `abi`                     |
+| `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
+| `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the sub-call; by default all available gas is forwarded |
+
+Every sub-call executes as a `STATICCALL`, so the callee runs in a read-only frame: even a
+function mislabeled as `view` in its ABI cannot mutate state — an attempted write makes that
+call fail. The script as a whole can never write state or deploy anything.
+
+## Return shapes
+
+`s.call` mirrors viem's output unwrapping:
+
+| ABI outputs | Recorded result                              |
+| ----------- | -------------------------------------------- |
+| none        | `void`                                       |
+| exactly one | `Expr` of that type (unwrapped)              |
+| several     | readonly tuple of `Expr`s, in ABI order      |
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const uniswapV3PoolAbi = [
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+
+const poolPrice = evscript({ name: 'poolPrice', args: [arg('pool', t.address)] }, (s) => {
+  const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+  //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'uint16'>, ...]
+  return s.return({ sqrtPriceX96: slot0[0], tick: slot0[1], unlocked: slot0[6] });
+});
+```
+
+A few typing behaviors carried over from viem, all enforced at recording time rather than as
+hard type errors where viem is also permissive:
+
+- **Graceful widening** — an ABI without `as const` degrades to `functionName: string`,
+  `args: readonly unknown[]`, and `Expr<EvsType>` outputs instead of erroring.
+- **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
+  the overload you want.
+- **Types outside v0** (`tuple`, fixed `T[N]`, nested arrays) in an argument or output throw
+  `EvsTypeError` at recording, naming the parameter.
+
+## Revert behavior: verbatim bubbling
+
+When a callee reverts under `s.call`, the **entire script reverts with the callee's revert
+data, byte-exact** — `Error(string)`, `Panic(uint256)`, and custom errors alike. Your viem call
+site sees exactly the error it would have seen calling the contract directly.
+
+Two failure modes are distinguished:
+
+- **The callee reverted** — its revert data bubbles verbatim out of the script.
+- **The call succeeded but the returndata does not decode** against the ABI (too short,
+  out-of-bounds offsets, a non-contract address returning nothing) — the script reverts with
+  the `EvsDecodeError(site)` custom error. This error is part of the script's own ABI, so viem
+  names it, and `explainRevert` maps the site id back to the source line of the offending
+  `s.call`. See [errors and debugging](/guides/errors-and-debugging/).
+
+Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-lenient): a
+`uint8` output with garbage in its upper bytes comes back masked to its declared width.
+
+## s.tryCall
+
+`s.tryCall` takes the exact same parameter object and never reverts the script on callee
+failure. It records `{ success, value }`:
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
+  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  // d.success: Expr<'bool'>   d.value: Expr<'uint8'> — 0 when the call failed
+  return s.return({ decimals: s.select(d.success, d.value, 18) });
+});
+```
+
+- `success` is `Expr<'bool'>` — false when the call failed **or** when the returndata is
+  structurally malformed. Both cases fold into the same flag.
+- `value` has the same shape `s.call` would produce (single output unwrapped, several as a
+  tuple). On failure every output is a safe default: zero for numeric and word types, `false`
+  for `bool`, the zero address, empty `string`/`bytes`, empty arrays. `value` is always safe
+  to use — guard with `success` (or [`s.select`](/guides/control-flow/)) when zero is a valid
+  real-world reading.
+
+:::note
+This is deliberately stronger than Solidity's `try`/`catch`: malformed returndata from a
+"successful" call does not revert either — it just makes `success` false and zeroes `value`.
+:::
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const cappedSymbol = evscript({ name: 'cappedSymbol', args: [arg('token', t.address)] }, (s) => {
+  const r = s.tryCall({
+    address: s.args.token,
+    abi: erc20Abi,
+    functionName: 'symbol',
+    gas: 200_000n, // cap; without it the sub-call forwards all available gas
+  });
+  return s.return({ ok: r.success, symbol: r.value }); // symbol is '' when the call failed
+});
+```
+
+The `gas` cap pairs naturally with `s.tryCall`: it bounds how much a misbehaving callee can
+burn before the script moves on.
+
+## When to use which
+
+Use `s.call` when the call is expected to succeed and a failure should abort the whole read —
+the verbatim bubble means nothing is lost in translation. Use `s.tryCall` when:
+
+- the data is optional (`decimals()` on nonstandard tokens, with a default via `s.select`);
+- you are probing addresses that may not implement the function — or may not be contracts at
+  all. A `STATICCALL` to an address without code "succeeds" with empty returndata, which
+  `s.call` reverts as `EvsDecodeError` but `s.tryCall` reports as `success = false`;
+- one bad element must not kill a batch loop — see
+  [batch token balances](/examples/token-balances/).
+
+For more composed examples, see the [Uniswap V3 flagship](/examples/pool-metadata/) and
+[patterns](/examples/patterns/). The frozen signatures live in the
+[ScriptBuilder reference](/reference/builder/).

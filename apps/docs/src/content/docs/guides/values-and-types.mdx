@@ -1,0 +1,141 @@
+---
+title: Values and types
+description: The evs type vocabulary, the t namespace, branded Expr handles, literal coercion rules, and the staging-misuse guard rails.
+---
+
+Every runtime value in a script has an evs type — a Solidity-style type string like `'uint256'`, `'address'`, or `'uint256[]'`. This page covers the type vocabulary, the `Expr` handles that represent runtime values, which plain JS literals you can pass where, and what happens when you accidentally treat a handle like a real value.
+
+## The type vocabulary
+
+| Kind          | Types                                                                                  | Runtime representation                            |
+| ------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Word types    | `uint8`…`uint256` and `int8`…`int256` (multiples of 8), `address`, `bool`, `bytes1`…`bytes32` | one canonical EVM word                            |
+| Dynamic types | `string`, `bytes`                                                                       | memref — a pointer to `[length][payload]`         |
+| Array types   | `T[]` where `T` is any word type                                                        | memref — a pointer to `[length][one word per element]` |
+
+The exported type aliases mirror this taxonomy: `EvsType` is the whole set, `WordType`, `DynType`, and `ArrayType` are the three kinds, and two cross-cutting unions matter for operations — `NumericType` (`uintN` and `intN`) and `BitsType` (`uintN` and `bytesN`). The full alias table is in the [types reference](/reference/types/).
+
+Not in v0: tuples, fixed-size arrays `T[N]`, nested arrays, and arrays of dynamic element types (such as `string[]`). Using one anywhere — an `arg()` declaration, a sub-call parameter — throws a recording-time `EvsTypeError` with code `UNSUPPORTED_V0`.
+
+## The `t` namespace
+
+`t` is autocomplete sugar: every property is its own name as a literal string (`t.uint256` is exactly `'uint256'`), and `t.array(elem)` builds an array type string while validating that the element is a word type. Raw type strings are accepted everywhere `t.*` is:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const ex = evscript(
+  {
+    name: 'ex',
+    args: [
+      arg('owner', t.address),
+      arg('amounts', t.array(t.uint256)), // 'uint256[]'
+      arg('note', 'string'), // raw type strings work everywhere t.* does
+    ],
+  },
+  (s) => s.return({ n: s.args.amounts.length() }),
+);
+```
+
+## `Expr`: branded handles for runtime values
+
+An `Expr<t>` is a phantom-typed handle to a value that will exist at run time. It is **not** the value: you cannot read a number out of it, and you cannot construct one yourself. Handles are produced by `s.args`, `s.lit`, `s.call`, `s.env`, cell reads, and every operation — and consumed by other operations, sub-call parameters, and `s.return`.
+
+The brand is nominal (a `unique symbol`), so nothing structurally fakes an `Expr`, and each handle carries a runtime-readable `.type` tag. Word-typed handles stand for single words; dynamic and array handles are **memrefs** — references to a memory buffer, with reference semantics where mutation is possible (see `MutArray` in [control flow](/guides/control-flow/)).
+
+Dynamic and array handles expose two accessors:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const inspect = evscript({ name: 'inspect', args: [arg('xs', t.array(t.uint128))] }, (s) => {
+  const xs = s.args.xs; // Expr<'uint128[]'>
+  const n = xs.length(); // Expr<'uint256'>
+  const first = xs.at(0n); // Expr<'uint128'> — bounds-checked, Panic(0x32) if out of range
+  return s.return({ n, first });
+});
+```
+
+The arithmetic, comparison, bitwise, and conversion methods on `Expr` are covered in [arithmetic](/guides/arithmetic/); the exhaustive method tables are in the [types reference](/reference/types/).
+
+## Literal coercion: `IntoExpr`
+
+Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plain JS literal of the matching shape (`LitOf<t>`). Literals are validated **at recording time**, with the call site's location attached to any `EvsTypeError`:
+
+| evs type          | Accepted JS literal               | Validation rule                                                        |
+| ----------------- | --------------------------------- | ---------------------------------------------------------------------- |
+| `uintN` / `intN`  | `bigint` or `number`              | numbers must be safe integers; range-checked against N; negative bigints two's-complemented for `intN` |
+| `bool`            | `boolean`                         | —                                                                      |
+| `address`         | `0x` string                       | exactly 20 bytes; checksum not enforced (viem-permissive)              |
+| `bytesN`          | `0x` string                       | exactly N bytes                                                        |
+| `bytes`           | `0x` string                       | any even-length hex                                                    |
+| `string`          | `string`                          | UTF-8 encoded                                                          |
+| `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
+
+Word literals canonicalize at recording. Dynamic literals and literal arrays become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them.
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const coerce = evscript({ name: 'coerce', args: [arg('x', t.uint256)] }, (s) => {
+  const a = s.args.x.add(1n); // bigint → uint256 literal
+  const b = s.args.x.add(250); // number → uint256 (safe integer, range-checked)
+  const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n]); // array literal → data segment
+  const dai = s.lit(t.address, '0x6B175474E89094C44Da98b954EedeAC495271d0F');
+  const greeting = s.lit(t.string, 'hello');
+  return s.return({ sum: a.add(b), n: fees.length(), dai, greeting });
+});
+```
+
+Two rules round this out:
+
+- **`s.lit(type, value)`** is the explicit constructor for when inference has no expected type to coerce against — a standalone constant, or the first operand of a free function.
+- **Free functions need at least one `Expr` operand.** `s.add(1n, 2n)` has no type to infer the operation from, so it throws `EvsTypeError` at recording with the fix in the message: type one operand with `s.lit`.
+
+Out-of-range literals are recording-time errors, not runtime reverts: `s.lit(t.uint8, 300)` throws `EvsTypeError` immediately.
+
+## Staging misuse: treating a handle like a value
+
+Because handles are plain objects at run time of *your* program, JS will happily let you pass them places they make no sense. evs traps the common cases: every handle installs throwing `valueOf`, `toString`, `toJSON`, and `Symbol.toPrimitive`, so arithmetic, template strings, loose equality, and `JSON.stringify` all throw `EvsStagingError` at the offending line — citing both the misuse site and where the handle was recorded.
+
+The following does not compile (and the parts TS cannot reject throw at recording time):
+
+```ts nocheck
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const bad = evscript({ name: 'bad', args: [arg('x', t.uint256)] }, (s) => {
+  const doubled = s.args.x * 2; // TS error — and EvsStagingError if it ever ran
+  const text = `x is ${s.args.x}`; // TS allows this — EvsStagingError at recording
+  return s.return({ x: s.args.x });
+});
+```
+
+`console.log(handle)` is fine — printing is debugging, not misuse, so handles render a non-throwing description instead.
+
+### The one untrappable case: truthiness
+
+`if (x)` never calls a coercion hook, so it cannot throw. This script compiles and records without any error — and it is wrong:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const wrong = evscript({ name: 'wrong', args: [arg('flag', t.bool)] }, (s) => {
+  let fee = 30n;
+  if (s.args.flag) {
+    // ALWAYS taken at recording time: an Expr handle is an object, and objects are truthy
+    fee = 5n;
+  }
+  return s.return({ fee: s.lit(t.uint256, fee) });
+});
+```
+
+The recorded script always returns `5n`, regardless of `flag`.
+
+:::caution
+Use `s.if` / `s.select` for anything that depends on a runtime value ([control flow](/guides/control-flow/)). To make this class of bug a build failure, enable the `typescript/strict-boolean-expressions` lint rule (available in oxlint with type-aware linting, and in typescript-eslint) — it rejects non-boolean conditions like `if (someExpr)`.
+:::
+
+## Next
+
+- [Arithmetic](/guides/arithmetic/) — the checked operation surface on `Expr`.
+- [Types reference](/reference/types/) — every alias, method, and coercion rule in table form.

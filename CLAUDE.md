@@ -37,6 +37,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `packages/evs/test/generated/` (gitignored). `forge-std` is a git submodule at
   `lib/forge-std` (never an npm dependency).
 - `examples/` — runnable example scripts (private workspaces).
+- `apps/docs` — Astro Starlight docs site → `evs.maxencerb.com`. Built/deployed by
+  **Cloudflare Workers Builds**, NOT ci.yml (settings in `apps/docs/README.md`). Every
+  ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:
+  `bun run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
+  opts out. oxlint ignores `apps/docs/**`; oxfmt ignores its `src/content/**` (MDX).
 - Dependency versions are pinned via **catalogs** in the root `package.json`. `viem` is
   exact-pinned (type tests depend on viem patch behavior) and `oxfmt` is exact-pinned —
   bump deliberately, then re-run `bun install` before any pack/publish.
@@ -59,5 +64,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   v1.7.1) → publint + attw.
 - `.github/workflows/release.yml` — GitHub release tag (`vX.Y.Z`) → npm **OIDC trusted
   publishing** (filename must stay `release.yml`). The committed version stays `0.0.0`; the
-  tag is the source of truth. `publishConfig.provenance` MUST stay `false` while the repo is
-  private; flip to true when it goes public.
+  tag is the source of truth. The repo is public and provenance is ON
+  (`publishConfig.provenance: true` + `--provenance`); if the repo ever goes private again,
+  flip both off or publishes fail.
+- Docs site CI/deploy is owned by Cloudflare Workers Builds (see Layout), not GitHub Actions.

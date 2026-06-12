@@ -1,0 +1,468 @@
+---
+title: ScriptBuilder
+description: "Method-by-method reference for the ScriptBuilder surface: values, cells, operators, control flow, calls, functions, and return."
+---
+
+`ScriptBuilder` is the `s` handed to your `evscript` callback — you never construct one. Every
+member records statements into the script's IR at recording time and validates eagerly: type
+mismatches, out-of-range literals, scope violations, and staging misuse all throw an `EvsError`
+subclass at the offending line (see [diagnostics](/reference/diagnostics/)). After `s.return`
+the recorder seals; any later builder call throws `EvsScopeError` (`RECORDING_CLOSED`).
+
+Member signatures below are interface excerpts, not runnable modules. `Expr`, `IntoExpr`,
+`LitOf`, and the type vocabulary are documented in [the types reference](/reference/types/).
+
+## s.args
+
+```ts nocheck
+readonly args: { readonly [a in args[number] as a['name']]: Expr<a['type']> };
+```
+
+A record derived from the script's args tuple: one property per declared argument, typed
+`Expr` of the declared type. Property access records nothing — the argument values are decoded
+and validated once at script entry.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const sum = evscript(
+  { name: 'sum', args: [arg('a', t.uint256), arg('b', t.uint256)] },
+  (s) => s.return({ total: s.args.a.add(s.args.b) }),
+);
+```
+
+## s.lit
+
+```ts nocheck
+lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
+```
+
+The explicit literal constructor, for when coercion via `IntoExpr` cannot infer the type you
+want. Literals are validated at recording time against [the coercion rules](/reference/types/).
+Word literals canonicalize into the bytecode as constants; dynamic literals (`string`, `bytes`,
+literal arrays) become bytecode data segments materialized by `CODECOPY` on first use.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const consts = evscript({ name: 'consts', args: [] }, (s) => {
+  const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
+  const label = s.lit(t.string, 'hello'); // data segment
+  const max = s.lit(t.uint128, 2n ** 128n - 1n); // canonical word
+  return s.return({ first: fees.at(0n), labelLen: label.length(), max });
+});
+```
+
+## s.let
+
+```ts nocheck
+let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
+let<t extends EvsType>(init: Expr<t>): Cell<t>;
+```
+
+Declares a mutable cell — the only mutable binding in a script, and the way values escape
+`s.if` branches and loop bodies. The one-argument overload requires an `Expr` (the cell type is
+inferred); to seed a cell with a literal, use the two-argument overload. A `Cell` is **not** an
+`Expr`: reads are always an explicit `.get()`, so "snapshot vs current value" is visible at
+every use.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const clamp = evscript({ name: 'clamp', args: [arg('x', t.uint256)] }, (s) => {
+  const acc = s.let(t.uint256, 0n); // typed literal init
+  const copy = s.let(s.args.x); // type inferred: Cell<'uint256'>
+  s.if(
+    s.args.x.gt(100n),
+    () => acc.set(100n),
+    () => acc.set(s.args.x),
+  );
+  return s.return({ clamped: acc.get(), original: copy.get() });
+});
+```
+
+:::caution
+For dynamic types (`string`, `bytes`, `T[]`) the cell holds a memref pointer and `set` is
+pointer assignment — reference semantics, not a copy.
+:::
+
+## s.newArray
+
+```ts nocheck
+newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+```
+
+Allocates a zero-filled mutable array of word-type elements with a runtime (or literal) length.
+This is the building block for "loop over inputs, collect outputs" — the multicall replacement
+pattern (see [token balances](/examples/token-balances/)).
+
+- Runtime lengths of `2^32` or more revert with Panic `0x41` (allocation too large).
+- A *literal* length of `2^32` or more throws at recording time (`CERTAIN_PANIC`).
+- Allocating inside a loop allocates fresh memory every iteration — `compile` warns with
+  `LOOP_ALLOCATION`.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const squares = evscript({ name: 'squares', args: [arg('n', t.uint256)] }, (s) => {
+  const out = s.newArray(t.uint256, s.args.n); // zero-filled uint256[n]
+  s.for({ type: t.uint256, from: 0n, until: s.args.n }, (i) => {
+    out.set(i, i.mul(i));
+  });
+  return s.return({ squares: out.expr() });
+});
+```
+
+## s.env
+
+```ts nocheck
+env(kind: 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'):
+  Expr<'address'> /* for 'address' | 'caller' */ | Expr<'uint256'> /* for the rest */;
+```
+
+Reads execution-environment values. `'address'` and `'caller'` produce `Expr<'address'>`; the
+other kinds produce `Expr<'uint256'>`. An unknown kind throws `EvsTypeError`.
+
+```ts
+import { evscript } from '@maxencerb/evs';
+
+const ctx = evscript({ name: 'ctx', args: [] }, (s) =>
+  s.return({
+    me: s.env('caller'), // frame-dependent
+    here: s.env('address'), // frame-dependent
+    ts: s.env('timestamp'),
+    block: s.env('blocknumber'),
+    chain: s.env('chainid'),
+  }),
+);
+```
+
+:::caution
+`s.env('caller')` and `s.env('address')` are **frame-dependent**: their values depend on the
+execution mode chosen at `toViem()` time. In the default deployless mode neither is
+controllable; caller-relative reads require state-override mode plus the `account` parameter.
+`compile` emits the `ENV_FRAME_DEPENDENT` diagnostic for these two kinds.
+`timestamp`/`blocknumber`/`chainid` are block context and identical across modes. Full story:
+[execution modes](/guides/execution/).
+:::
+
+## s.add / s.sub / s.mul / s.div / s.mod
+
+```ts nocheck
+add<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // likewise sub/mul/div/mod
+```
+
+Free-function mirrors of the checked arithmetic `Expr` methods, for literal-left operands
+(`s.sub(10_000n, x)` — a method cannot put the literal on the left). Same semantics: overflow
+or underflow reverts Panic `0x11`; division or modulo by zero reverts Panic `0x12`; signed
+`minN / -1` reverts Panic `0x11`. See [arithmetic](/guides/arithmetic/).
+
+At least one operand must be an `Expr` — an all-literal call throws `EvsTypeError` ("type a
+literal with `s.lit`"). When one operand is a literal-valued `Expr`, the operation folds at
+recording, and a fold that would certainly panic throws `CERTAIN_PANIC` instead of compiling a
+guaranteed revert.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const remaining = evscript({ name: 'remaining', args: [arg('used', t.uint256)] }, (s) =>
+  s.return({ left: s.sub(10_000n, s.args.used) }),
+);
+```
+
+## s.lt / s.gt / s.lte / s.gte / s.eq / s.neq
+
+```ts nocheck
+lt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewise gt/lte/gte
+eq<t extends WordType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewise neq
+```
+
+Comparison mirrors. Ordering comparisons are numeric-only; signed vs unsigned EVM opcodes
+(`LT`/`GT` vs `SLT`/`SGT`) are chosen from the static type. `eq`/`neq` accept any **word** type
+(`address`, `bool`, `bytesN` included) but not `string`/`bytes`/arrays — there is no deep
+equality in v0. Operand types must match exactly; the error message suggests `toUint`/`toInt`
+when they do not.
+
+## s.and / s.or / s.not
+
+```ts nocheck
+and(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>; // likewise or
+not(a: IntoExpr<'bool'>): Expr<'bool'>;
+```
+
+Boolean logic on `Expr<'bool'>` values. **Eager, not short-circuiting** — both operands are
+already-computed values by the time `and`/`or` records. For conditional execution use
+[`s.if`](/guides/control-flow/).
+
+## s.bitAnd / s.bitOr / s.bitXor / s.bitNot / s.shl / s.shr
+
+```ts nocheck
+bitAnd<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // likewise bitOr/bitXor
+bitNot<t extends BitsType>(a: Expr<t>): Expr<t>;
+shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // likewise shr
+```
+
+Bitwise mirrors over `BitsType` (`uintN` or `bytesN`). Results are re-canonicalized to the
+operand's width; shifts never panic — bits shifted out are dropped. Details and the
+per-type lane semantics: [arithmetic](/guides/arithmetic/).
+
+## s.if
+
+```ts nocheck
+if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
+```
+
+Runtime branch combinator. `cond` is a plain value, evaluated once before the branch. The
+`then`/`otherwise` callbacks run immediately at recording time to capture each branch's
+statements; on-chain, only the taken branch executes. Values recorded inside a branch are
+scoped to it — use a [cell](#slet) to get a value out.
+
+:::caution
+Native JS `if (someExpr)` does not branch on EVM values — `Expr` handles are always truthy and
+JS cannot trap the check. See [control flow](/guides/control-flow/).
+:::
+
+## s.while
+
+```ts nocheck
+while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
+```
+
+Runtime loop. The condition is a **thunk**: the ops it records land in the loop header and
+re-execute every iteration. Values recorded in the header are visible in the body; nothing
+recorded inside the loop (header or body) is visible after it — carry state in cells.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const log2 = evscript({ name: 'log2', args: [arg('x', t.uint256)] }, (s) => {
+  const v = s.let(t.uint256, s.args.x);
+  const bits = s.let(t.uint256, 0n);
+  s.while(
+    () => v.get().gt(1n), // recorded once, executes every iteration
+    () => {
+      v.set(v.get().div(2n));
+      bits.set(bits.get().add(1n));
+    },
+  );
+  return s.return({ bits: bits.get() });
+});
+```
+
+## s.for
+
+```ts nocheck
+for<const t extends NumericType>(
+  range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
+  body: (i: Expr<t>, loop: LoopCtl) => void,
+): void;
+```
+
+Counted-loop sugar over `s.while` plus an internal cell, generic over any numeric word type.
+Iterates while `i < until`; `step` defaults to `1`. `until` and `step` are snapshot **once**,
+before the loop. The step increment uses checked arithmetic — if the counter would overflow its
+type before reaching `until`, the script panics `0x11`. `loop.continue()` executes the step
+first, then jumps to the header.
+
+See the [s.newArray](#snewarray) example above for the canonical collect-into-array loop.
+
+## s.select
+
+```ts nocheck
+select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+```
+
+Value-level conditional: returns `a` when `cond` is true, else `b`. **Both sides are eager** —
+they are already-computed values, so this never skips work (use `s.if` plus a cell for
+conditional execution). Branch types must match exactly, and at least one branch must be an
+`Expr`. The classic use is a default for a failed [`s.tryCall`](#strycall).
+
+## s.call
+
+```ts nocheck
+call<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'pure' | 'view'>>(p: {
+  readonly address: IntoExpr<'address'>;
+  readonly abi: abi;
+  readonly functionName: name; // autocomplete union over view/pure functions
+  readonly args?: SubcallInputs; // per parameter: ABI primitive literal OR Expr of that type
+  readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
+}): CallOutputs; // outputs [] → void; [one] → Expr<one>; [many] → readonly tuple of Exprs
+```
+
+A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallInputs` and
+`CallOutputs` stand in for package-internal helper types). The `address` can itself be an
+`Expr` — values flow between calls on-chain, which is the whole point. Key semantics
+(exhaustive treatment in [calls](/guides/calls/)):
+
+- Only `view`/`pure` functions are offered; nonpayable/payable names are TypeScript errors.
+- Callee reverts bubble **verbatim** (Error/Panic/custom alike).
+- Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the
+  site back to your source line.
+- Dirty high bits in word outputs are normalized, not reverted.
+- A non-`as const` ABI degrades gracefully: `functionName: string`, untyped args, outputs as
+  `readonly Expr[]` — never a hard type error.
+- Overloaded function names and ABI parameter types outside v0 throw `EvsTypeError` at
+  recording.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenInfo = evscript(
+  { name: 'tokenInfo', args: [arg('token', t.address), arg('owner', t.address)] },
+  (s) => {
+    const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+    // symbol: Expr<'string'>
+    const bal = s.call({
+      address: s.args.token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.owner], // literals and Exprs mix freely
+      gas: 100_000n, // optional per-call gas cap
+    });
+    return s.return({ symbol, bal });
+  },
+);
+```
+
+## s.tryCall
+
+```ts nocheck
+tryCall<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'pure' | 'view'>>(
+  p: SubcallParams, // identical to s.call
+): { readonly success: Expr<'bool'>; readonly value: CallOutputs };
+```
+
+Like `s.call`, but failure becomes data instead of a revert. `success` is `false` when the call
+fails **or** when the returndata is structurally malformed; `value` is then zeros, empty
+strings, or empty arrays — always safe to use. (This is stricter than Solidity's `try/catch`,
+which would surface malformed returndata differently.)
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
+  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ decimals: s.select(d.success, d.value, 18) }); // default on failure
+});
+```
+
+## s.fn
+
+```ts nocheck
+fn<const params extends readonly ArgSpec[], const r extends Expr | readonly Expr[] | void>(
+  name: string,
+  params: params,
+  body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
+): (...args: { [i in keyof params]: IntoExpr<params[i]['type']> }) => FreshHandles<r>;
+```
+
+Defines a reusable typed subroutine and returns a callable handle (`FreshHandles` stands in for
+a package-internal helper: `Expr` results come back as fresh `Expr`s, tuples as fresh tuples,
+`void` as `void`). Rules ([full guide](/guides/functions/)):
+
+- The body runs **once, at definition**, in an isolated scope: params only, **no capture** of
+  outer `Expr`s, cells, or `s.args` (`EvsScopeError` at recording).
+- Each call of the returned handle records one statement and returns fresh handles — two calls
+  never alias.
+- Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled
+  fns are dropped. Recursion is unconstructible.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const pairBalances = evscript(
+  { name: 'pairBalances', args: [arg('a', t.address), arg('b', t.address), arg('who', t.address)] },
+  (s) => {
+    const balOf = s.fn(
+      'balOf',
+      [arg('token', t.address), arg('owner', t.address)] as const,
+      (token, owner) =>
+        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+    );
+    return s.return({
+      balA: balOf(s.args.a, s.args.who),
+      balB: balOf(s.args.b, s.args.who),
+    });
+  },
+);
+```
+
+## s.return
+
+```ts nocheck
+return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>;
+```
+
+Declares the script's outputs and seals the recorder. Must be called exactly once,
+unconditionally, at the top level of the callback (not inside `s.if`/`s.while`/`s.for` bodies,
+not inside an `s.fn` body), and its result must be what the callback returns.
+
+- Record keys become the named components of the single tuple output; viem consumers receive an
+  **object**. Keys must be identifiers; empty keys are rejected (`ABI_SHAPE`) because an
+  unnamed component silently degrades viem's result to a positional array.
+- Every value must be an `Expr` — type literals with `s.lit` first.
+- After sealing, any builder call throws `EvsScopeError` (`RECORDING_CLOSED`).
+
+## Cell
+
+```ts
+import type { EvsType, Expr, IntoExpr } from '@maxencerb/evs';
+
+interface Cell<t extends EvsType> {
+  readonly type: t;
+  get(): Expr<t>; // fresh snapshot at this program point
+  set(value: IntoExpr<t>): void;
+}
+```
+
+Returned by [`s.let`](#slet). `get()` records a read — the resulting `Expr` is a snapshot of
+the cell *at that program point*, not a live reference. A cell is only usable while its
+defining scope is on the recording stack; touching it elsewhere throws `EvsScopeError`.
+
+## MutArray
+
+```ts
+import type { Expr, IntoExpr, WordType } from '@maxencerb/evs';
+
+interface MutArray<e extends WordType> {
+  readonly elemType: e;
+  readonly length: Expr<'uint256'>;
+  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
+  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
+  expr(): Expr<`${e}[]`>; // handle to the SAME buffer (reference semantics)
+}
+```
+
+Returned by [`s.newArray`](#snewarray). All indexed access is bounds-checked (Panic `0x32`).
+`expr()` returns a plain `Expr` array handle aliasing the same buffer — later `set()` calls are
+visible through it. `length` is recorded once, at construction.
+
+## LoopCtl
+
+```ts
+interface LoopCtl {
+  break(): void; // jump past the owning loop
+  continue(): void; // jump to the owning loop's header (s.for: runs the step first)
+}
+```
+
+Passed to `s.while`/`s.for` bodies. Scoped: calling either method outside the recording of its
+owning loop's body throws `EvsScopeError`.
+
+## ScriptReturn
+
+```ts
+import type { Expr } from '@maxencerb/evs';
+
+declare const returnBrand: unique symbol;
+interface ScriptReturn<ret extends Record<string, Expr>> {
+  readonly [returnBrand]: ret;
+}
+```
+
+The opaque branded token produced by [`s.return`](#sreturn) and required as the callback's
+return value. It exists purely so the type system can thread the return record's literal type
+into `EvsScript` — you never construct or inspect one.

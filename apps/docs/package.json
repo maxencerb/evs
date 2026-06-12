@@ -1,0 +1,26 @@
+{
+  "name": "@maxencerb/evs-docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "astro build",
+    "check:snippets": "bun scripts/check-snippets.ts",
+    "deploy": "astro build && wrangler deploy",
+    "dev": "astro dev",
+    "preview": "astro preview",
+    "typecheck": "astro check"
+  },
+  "dependencies": {
+    "@astrojs/starlight": "catalog:docs",
+    "astro": "catalog:docs",
+    "starlight-links-validator": "catalog:docs",
+    "starlight-theme-rapide": "catalog:docs"
+  },
+  "devDependencies": {
+    "@astrojs/check": "catalog:docs",
+    "@maxencerb/evs": "workspace:*",
+    "typescript": "catalog:",
+    "viem": "catalog:",
+    "wrangler": "catalog:docs"
+  }
+}

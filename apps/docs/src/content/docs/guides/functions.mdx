@@ -1,0 +1,103 @@
+---
+title: User functions
+description: Declare reusable typed subroutines with s.fn — isolated bodies, fresh handles per call, bytecode emitted once no matter how often you call them.
+---
+
+`s.fn(name, params, body)` declares a typed subroutine inside a script. The body records once,
+at the point of definition; each call afterwards records a single statement and compiles to a
+jump into one shared copy of the code.
+
+## Declaring and calling
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const clamp = evscript(
+  { name: 'clamp', args: [arg('x', t.uint256), arg('lo', t.uint256), arg('hi', t.uint256)] },
+  (s) => {
+    const minMax = s.fn('minMax', [arg('a', t.uint256), arg('b', t.uint256)], (a, b) => {
+      const aFirst = a.lt(b);
+      return [s.select(aFirst, a, b), s.select(aFirst, b, a)] as const;
+    });
+    const [low, high] = minMax(s.args.lo, s.args.hi); // fresh Exprs per call
+    const clamped = s.select(s.args.x.lt(low), low, s.select(s.args.x.gt(high), high, s.args.x));
+    return s.return({ clamped });
+  },
+);
+```
+
+- **Parameters** are declared with the same `arg(name, type)` specs as script arguments, and
+  may be any `EvsType` — dynamic types (`string`, `bytes`, arrays) pass as memref pointer
+  words. The body receives them as positionally typed `Expr`s.
+- **Returns** can be a single `Expr`, a readonly tuple of `Expr`s (use `as const`, as above),
+  or `void`.
+- **Call sites** accept literals anywhere a parameter type allows them — `minMax(s.args.lo, 100n)`
+  works, with the usual [literal coercion rules](/guides/values-and-types/).
+
+Each call returns **fresh** handles: two calls never alias, even with identical arguments —
+`minMax(a, b)` twice records two executions and yields two independent result tuples.
+
+## Fn bodies are isolated — no capture
+
+The body runs once, at definition, in its own scope. It can use the builder freely (`s.call`,
+`s.if`, cells declared inside, nested loops), but it cannot touch `Expr`s or `Cell`s recorded
+in the enclosing script:
+
+```ts nocheck
+const bad = s.fn('bad', [arg('token', t.address)], (token) =>
+  // s.args.owner belongs to the enclosing script, not to the fn body:
+  s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [s.args.owner] }),
+);
+// EvsScopeError (SCOPE_VIOLATION): s.fn("bad") bodies cannot capture values from
+// the enclosing script — pass them in as fn params instead
+```
+
+This typechecks but throws `EvsScopeError` at recording, citing both the captured value's
+location and the fn definition. The fix is always the same: add a parameter. Recursion is
+unconstructible by design — the callable handle does not exist yet inside its own body.
+
+## When s.fn pays off
+
+A plain JS helper function that calls builder methods is **inlining**: it records its
+statements again at every call site, duplicating bytecode per use (and unlike `s.fn`, it may
+freely capture outer handles — for one or two uses that is often the simpler tool). `s.fn`
+instead compiles to a single `JUMPDEST` subroutine emitted **once** regardless of call count,
+at the cost of a small per-call jump-and-return overhead.
+
+Reach for `s.fn` when a multi-statement block (typically containing calls) runs at many sites
+or inside a loop over runtime data — the size saving compounds against the EIP-170 bytecode
+cap (see [EVM targets](/guides/evm-targets/)). Defined-but-uncalled fns are dropped from the
+output entirely.
+
+## Full example: a balance subroutine over a loop
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const portfolio = evscript(
+  { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
+  (s) => {
+    // everything the body needs comes in as params — fn bodies cannot capture
+    const balOf = s.fn(
+      'balOf',
+      [arg('token', t.address), arg('who', t.address)],
+      (token, who) =>
+        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+    );
+    const n = s.args.tokens.length();
+    const out = s.newArray(t.uint256, n);
+    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+      out.set(i, balOf(s.args.tokens.at(i), s.args.owner)); // one fncall stmt per use
+    });
+    return s.return({ balances: out.expr() });
+  },
+);
+```
+
+The loop machinery (`s.for`, `s.newArray`, cells) is covered in
+[control flow](/guides/control-flow/); the sub-call typing in [calls](/guides/calls/). A
+revert-tolerant variant of this exact shape — `s.tryCall` so one bad token cannot kill the
+batch — is the [batch token balances example](/examples/token-balances/), and more `s.fn`
+patterns live in [patterns](/examples/patterns/). Frozen signatures: the
+[ScriptBuilder reference](/reference/builder/).

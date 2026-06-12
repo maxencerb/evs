@@ -1,0 +1,180 @@
+---
+title: How it works
+description: The evs compile pipeline stage by stage — IR recording, validation, codegen, assembly, mandatory bytecode verifiers — and the Solidity-compatible memory model.
+---
+
+`compile()` turns the statement tree your builder callback recorded into a single-function EVM
+contract that runs under `eth_call`. The pipeline is deliberately short and unclever: no
+optimizer, no hidden passes, and a set of machine-checked invariants that run on **every**
+compile. Each stage produces an artifact you can inspect.
+
+```txt
+your callback       s.call / a.add(b) / s.if / s.while / s.fn / s.return
+      |  recording: TS types + eager runtime validation + source locations
+      v
+ScriptIr            structured statement tree over a flat value table — plain JSON, frozen
+      |  validateIr (always re-checked, even for IR you just recorded)
+      v
+AsmNode[]           codegen: frame layout -> dispatcher -> statement templates ->
+      |             call/ABI emitters -> shared revert tails -> data segments
+      |  peephole hook (default: identity) -> assemble: PUSH2 fixups -> layout -> patch
+      |  verify: JUMPDEST scan + stack-height simulation + shape lints, then EIP-170
+      v
+CompiledEvsScript   runtimeBytecode, initBytecode, literal-typed abi, sourceMap, ir,
+                    toViem(), disassemble(), explainRevert()
+```
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
+  s.return({ x: s.args.x }),
+);
+
+const compiled = compile(echo);
+
+const ir = compiled.ir; // stage 1: the recorded statement tree (also `echo.ir`)
+const bytecode = compiled.runtimeBytecode; // the verified runtime bytecode
+const listing = compiled.disassemble().format(); // annotated mnemonic listing, pc -> source line
+const map = compiled.sourceMap; // pc -> location segments + revert-site table
+```
+
+## Stage 1: recording produces `ScriptIr`
+
+Your callback runs exactly once, at recording time. Every builder call appends a statement to
+the script's IR: a structured statement tree (`if`/`while` nest, everything else is flat) over
+a table of typed values. The IR is plain JSON-safe data — words are 0x-hex strings, the format
+is versioned (`irVersion: 1`) — and it is frozen the moment recording ends. It is exposed as
+`script.ir` and again as `compiled.ir`, which makes it snapshot-testable and attachable to bug
+reports. See [Writing scripts](/guides/writing-scripts/) for the recording model itself.
+
+Every statement carries a source location (captured from the recording stack) and a site id,
+which is how `explainRevert` and the source map trace a revert or a program counter back to
+your TypeScript line.
+
+## Stage 2: `validateIr`
+
+`compile()` always re-validates the IR before lowering it — operand types per operation,
+definition-before-use under the scope rules, cell types, call-graph acyclicity, a single
+trailing return. The builder already enforced all of this at recording time; validating again
+means IR loaded with `deserializeIr` (see [Testing scripts](/guides/testing-scripts/)) is
+exactly as trustworthy as IR you just recorded.
+
+## Stage 3: codegen lowers IR to an assembly stream
+
+Lowering assigns the frame layout (one 32-byte memory slot per argument, cell, value, and
+function parameter/result — see the memory model below), then emits, as one node stream:
+
+- the **dispatcher**: free-pointer prologue, a single 4-byte selector compare (a script is a
+  one-function contract), and the calldata-size guard;
+- the **argument decoder**: each script arg is read from calldata, bounds-checked (dynamic
+  args get full offset/length validation), normalized to its canonical word form, and stored
+  to its frame slot;
+- one **statement template** per IR statement — load operands from slots, compute, store the
+  result back;
+- the **call and ABI emitters** for `s.call`/`s.tryCall` and the return-tuple encoder;
+- the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
+  `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback;
+- **data segments** for large constants, referenced only by `CODECOPY`.
+
+Compile-time diagnostics (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`) are emitted
+during this stage through the `onDiagnostic` callback — `compile()` never logs. See
+[Errors & diagnostics](/reference/diagnostics/).
+
+## Stage 4: assembly
+
+The assembler turns the node stream into bytes: opcodes, minimal-width `PUSH` immediates, and
+label pushes. Label pushes are always emitted as `PUSH2` plus a fixup that is patched in after
+layout — the EIP-170 size cap keeps every offset within 16 bits, so `PUSH2` always suffices and
+no narrowing pass exists to get wrong. Data segments are placed after the last code byte behind
+a single `INVALID` (`0xFE`) guard byte, so execution can never fall through into data.
+
+A `peephole` hook in `CompileOptions` runs between codegen and assembly. Its default is the
+identity function: **v0 performs no optimization**.
+
+## Stage 5: mandatory verifiers
+
+After assembly, three verification passes run on the final bytecode. They are always on — not
+a debug mode — and a failure throws `EvsInternalError` ("this is a bug in evs, please
+report"), never silently ships bad bytecode.
+
+1. **JUMPDEST scan.** The bytecode is scanned exactly the way consensus clients do (skipping
+   `PUSH` immediates), and the verifier asserts that every patched jump target lands on a real
+   `JUMPDEST`, every label was defined, no fixup is left unpatched, and no jump targets the
+   data segment.
+2. **Stack-height simulation.** The verifier walks every path and checks the heights the
+   codegen contract promises: the operand stack is empty at every statement boundary, every
+   statement template is net-zero on the stack, simulated depth never exceeds 16 inside a
+   template (the `DUP`/`SWAP` reach), and every label join sees one consistent height. Revert
+   tails are tracked as terminating regions that must end in `REVERT`, `INVALID`, or `RETURN`.
+3. **Shape lints.** Every `RETURNDATACOPY` must be one of the two intrinsically safe shapes
+   (`offset 0`, `size RETURNDATASIZE` — which can never read out of bounds, so the
+   all-gas-consuming halt is unreachable by construction); no opcode newer than the selected
+   `evmVersion` may appear (catches a stray `MCOPY` in a `paris` build — see
+   [EVM targets](/guides/evm-targets/)); and the state-mutating opcode family (`SSTORE`,
+   `TSTORE`, `LOG*`, `CREATE*`, `CALL`, `DELEGATECALL`, `CALLCODE`, `SELFDESTRUCT`) must never
+   appear — scripts are STATICCALL-clean by construction.
+
+## Stage 6: the EIP-170 size check
+
+Runtime bytecode is capped at 24,576 bytes (EIP-170). Exceeding it throws `EvsCompileError`
+with a per-region size breakdown (body, functions, shared tails, data segments) so you can see
+what to trim. The artifact that comes out the other side — `runtimeBytecode`, the deployless
+`initBytecode` wrapper, the literal-typed ABI, the source map, and the debugging methods — is
+documented in [The compiled artifact](/reference/artifact/).
+
+## The memory model
+
+Scripts use Solidity's memory layout verbatim:
+
+| Range            | Use                                                                                     |
+| ---------------- | --------------------------------------------------------------------------------------- |
+| `0x00`–`0x3f`    | scratch — revert-payload assembly and intra-template temporaries only                   |
+| `0x40`–`0x5f`    | free-memory pointer                                                                     |
+| `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`tryCall` failure values point here) |
+| `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result           |
+| `frameEnd`…      | bump allocations: returndata snapshots, dynamic values, mutable arrays, the return tuple |
+
+The very first instructions of every script store `frameEnd` into the free pointer at `0x40`.
+From there:
+
+- **Every value has a fixed slot.** A statement template loads its operands from their slots
+  (or pushes a folded constant), computes, and stores the result to the output's slot. There
+  is no slot reuse and no stack scheduling — which is exactly what makes the empty-stack
+  invariant checkable and the disassembly legible.
+- **Every slot holds a canonical word**: `uintN` zero-extended, `intN` sign-extended, `bool`
+  is 0 or 1, `bytesN` left-aligned, `address` 160-bit zero-extended. The invariant is
+  established at the three trust boundaries (literal coercion at recording, calldata decode,
+  returndata decode) and preserved by every operation.
+- **Dynamic values are memrefs.** A slot for a `string`, `bytes`, or array value holds a
+  pointer to a `[length][payload]` buffer — strings and bytes as raw zero-padded bytes, arrays
+  as one canonical word per element.
+- **Allocation only bumps.** New buffers advance the free pointer and are never freed, so
+  allocations inside a loop grow memory monotonically — `compile()` warns with a
+  `LOOP_ALLOCATION` diagnostic when a call with outputs, `s.newArray`, or a dynamic literal
+  sits inside a loop.
+- **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
+  transiently without bumping, so the return encoder zero-pads dynamic tails explicitly and
+  `s.newArray` zero-fills its buffer.
+
+## What v0 deliberately does not do
+
+evs v0 optimizes for *auditable correctness* over gas:
+
+- **No optimizer.** The peephole hook ships as the identity. The uniform slot-based lowering
+  produces back-to-back `MSTORE`/`MLOAD` pairs that an optimizer would fold — a cost in gas,
+  never in correctness, and `eth_call` gas budgets are enormous (the worked sum-loop example
+  in the design docs costs roughly 1.4M gas for 10,000 iterations, far inside any node's cap).
+- **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
+  100; evs does not dedupe repeated calls.
+- **No fixed-size arrays (`uint256[3]`) or nested tuples** in script args, returns, or call
+  ABIs — rejected with a recording-time error.
+- **Read-only by construction.** No state writes, no logs, no deployment — enforced by the
+  shape lints above.
+
+:::note
+Every bytecode listing in the evs design documents is real compiler output, regenerated and
+machine-checked in CI — no example shows an optimization the compiler does not perform. The
+broader verification story (differential testing against an independent interpreter, viem's
+codecs, and real solc) is covered in [Why trust the bytecode?](/concepts/trust-and-testing/).
+:::

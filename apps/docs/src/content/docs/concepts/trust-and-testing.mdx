@@ -1,0 +1,126 @@
+---
+title: Why trust the bytecode?
+description: Three differential-testing axes pin evs codegen against an independent interpreter, viem's codecs, and real solc output — enforced by CI on every change.
+---
+
+evs is a compiler. A compiler bug does not throw — it silently returns wrong data from a call
+that *looks* successful. So evs is built and tested with compiler discipline: machine-checked
+invariants on every compile, and a differential test suite that never trusts the codegen to
+grade its own homework. Three independent reference implementations — an IR interpreter,
+viem's ABI codecs, and real solc — must agree with the compiled bytecode, byte for byte.
+
+## Axis 1: an independent interpreter as the oracle
+
+The package exports [`interpret()`](/guides/testing-scripts/), a reference interpreter that
+executes a script's IR directly in TypeScript — over bigints and byte arrays, with no
+assembler and no EVM involved. It implements the same normative specification the codegen
+implements (the checked-arithmetic tables, the call decode bounds, the ABI shapes), so a
+codegen bug and an interpreter bug would have to make the *same* mistake to slip through.
+
+The differential suite runs a corpus of scripts covering every operation family, control flow,
+calls against mocks, `tryCall`, and dynamic returns through both sides: `interpret()` on one,
+and the compiled `runtimeBytecode` executed on an in-process EVM (`@ethereumjs/evm`) on the
+other. Both sides see identical callee behavior — the mock chain and the EVM fixtures are
+generated from the same table — and must agree **byte for byte** on:
+
+- returndata, and
+- revert payloads: `Panic(code)` bytes, `EvsDecodeError(site)` ids, callee reverts bubbled
+  verbatim, and `tryCall` zeroing.
+
+A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
+actually CREATEd and called from a wrapper address, and `interpret()` with matching
+environment overrides must agree byte-exactly — so the frame-dependence of
+`s.env('caller')`/`s.env('address')` (see [Executing scripts](/guides/execution/)) is inside
+the oracle's coverage, not a blind spot. Any divergence on any axis is a release blocker; the
+design document's normative tables adjudicate which side is wrong.
+
+## Axis 2: ABI encoding and decoding vs viem
+
+Everything evs encodes or decodes is differentially checked against viem's codecs:
+
+- **Return encoding**: for a fuzzed matrix of return shapes (every word-width class,
+  `string`/`bytes`, arrays, mixed orders), the script's `RETURN` bytes must equal
+  `encodeAbiParameters` over the result tuple.
+- **Argument decoding**: scripts that echo their arguments back must round-trip
+  `encodeFunctionData` exactly, including dynamic arguments.
+- **Sub-call calldata**: a mock callee returns its calldata verbatim, and the bytes the script
+  built on-chain are compared against `encodeFunctionData` for literal, runtime, and mixed
+  arguments.
+
+## Axis 3: checked arithmetic vs real solc
+
+Solidity 0.8 checked arithmetic has genuinely sharp edges — sub-word multiplication can wrap
+past 2^256 back into range, and `int256(-2**255) / -1` silently wraps at the EVM level. evs
+does not test its `Panic` semantics against its own understanding of solc; it tests against
+**solc itself**. `EvsReference.sol` (compiled with solc 0.8.30 exactly, optimizer off) defines
+one external pure function per operation and width class:
+
+```solidity
+function mulU192(uint192 a, uint192 b) external pure returns (uint192) {
+    return a * b;
+}
+```
+
+The integration suite drives the deployed reference contract and the equivalent evs script
+with the same seeded boundary corpus — `0`, `1`, `max-1`, `max`, `min`, `-1`, the uint192
+wrap-back case `2**191 * (2**65 + 1)`, `int256: -2**255 / -1`, `intN: minN / -1` — on anvil,
+and asserts identical success values and **byte-identical** `Panic(code)` revert payloads.
+The reference contracts also carry their own forge test suite, which runs in CI.
+
+## Verified on every compile, not just in CI
+
+Independently of the test suite, [three mandatory verifier passes](/concepts/how-it-works/)
+run inside every `compile()` call: a consensus-identical JUMPDEST scan, a full stack-height
+simulation (empty stack at every statement boundary, depth at most 16 inside templates), and
+shape lints that make the dangerous constructs unrepresentable — only the two intrinsically
+safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, no state-mutating
+opcode ever. A verifier failure throws `EvsInternalError` instead of shipping the bytecode.
+
+## Adversarial returndata
+
+Decode soundness is tested against attacker-shaped callees, not just well-behaved ones:
+hand-assembled fixtures (and a `Malformed.sol` mirror on anvil) return huge head offsets, huge
+lengths, off-by-one truncations, dirty high bits, and empty returndata. The suite asserts the
+script reverts with `EvsDecodeError(site)` — attributable to the exact `s.call` line — and
+**never** hits an exceptional halt that would consume all gas (gas usage is sanity-checked).
+A real solc `Reverter` contract covers the bubbling path end to end: `Error(string)`, `Panic`,
+custom errors, and empty reverts must all surface through the script unchanged.
+
+## The honesty rule
+
+Every bytecode listing in the design documentation is generated compiler output. A doc-sync
+test recompiles the documented example scripts through the public API and fails CI if any
+listing drifts from what the compiler actually emits today. No documented example shows an
+optimization the compiler does not perform.
+
+## What CI gates on every pull request
+
+The pipeline, in order (from the repo's `ci.yml`):
+
+| Step                                            | What it proves                                                                  |
+| ----------------------------------------------- | ------------------------------------------------------------------------------- |
+| `bun install --frozen-lockfile`                 | exact pinned dependency tree (viem is exact-pinned — its types move in patches)  |
+| `forge build && forge test && bun run codegen`  | the solc 0.8.30 reference and mock contracts compile and pass their own tests    |
+| `bun run build`                                 | the library builds with `tsc` (declarations included)                           |
+| `bun run fmt:check`, `bun run lint:ci`, `bun run typecheck` | formatting, type-aware lint, strict typecheck across the workspace  |
+| `bun run test`                                  | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
+| `bun run test:integration`                      | the anvil suite (foundry pinned at v1.7.1 for determinism)                       |
+| `publint` + `@arethetypeswrong/cli --pack`      | the published package shape resolves correctly (ESM-only profile)                |
+
+The integration tier executes compiled scripts through every supported path on a real node:
+`setCode` plus a plain `readContract`, the state-override mode, and the deployless `code`
+path — including a permanent regression test for anvil's historical deployless bug and a
+canary asserting that passing *runtime* bytecode where init code belongs still fails loudly.
+A scheduled job additionally runs a fork-mode suite against real mainnet state at a pinned
+block.
+
+## Test tiers
+
+| Tier        | What runs                                          | EVM                          |
+| ----------- | -------------------------------------------------- | ---------------------------- |
+| unit        | per-module tests + the differential oracle suites  | `@ethereumjs/evm` in-process |
+| types       | type-level assertions (`expectTypeOf`) on the ABI and builder inference | none — `tsc` semantics |
+| integration | end-to-end execution, checked-math-vs-solc, bubbling, flagship scenario | anvil (one instance per worker) |
+
+The same oracle that gates releases is exported for your own tests — see
+[Testing scripts](/guides/testing-scripts/).

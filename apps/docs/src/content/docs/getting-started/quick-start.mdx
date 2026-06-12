@@ -1,0 +1,111 @@
+---
+title: Quick start
+description: Write a typed read script, compile it to bytecode, and execute it with viem in a single deployless eth_call — typed end to end.
+---
+
+import { Steps } from '@astrojs/starlight/components';
+
+You will build a script that fetches an ERC-20 token's symbol, decimals, and total supply —
+three reads, one `eth_call`, one fully typed result. You need
+[`@maxencerb/evs` and `viem` installed](/getting-started/installation/) and an RPC URL.
+
+<Steps>
+
+1. **Define the script.** `evscript` takes a header — `{ name, args }`, with each argument
+   declared via `arg(name, type)` from the `t` namespace — and a builder callback. The
+   callback receives the builder `s`, reads script arguments from `s.args`, records calls
+   with `s.call`, and must return `s.return({ ... })` with the values you want back:
+
+   ```ts
+   import { arg, evscript, t } from '@maxencerb/evs';
+   import { erc20Abi } from 'viem';
+
+   export const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+     const { token } = s.args;
+     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+     return s.return({ symbol, decimals, totalSupply });
+   });
+   ```
+
+   `s.call` is typed like viem's `readContract`: pass any `as const` ABI, get back typed
+   handles (`symbol` is `Expr<'string'>`, `decimals` is `Expr<'uint8'>`). The callback runs
+   exactly once, at recording time — it records what the script will do on-chain. Details in
+   [writing scripts](/guides/writing-scripts/).
+
+2. **Compile it.** `compile` validates the recorded script, generates EVM bytecode, and
+   returns a frozen artifact (the `tokenMeta.compile()` method is sugar for the same call):
+
+   ```ts
+   import { arg, compile, evscript, t } from '@maxencerb/evs';
+   import { erc20Abi } from 'viem';
+
+   const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+     const { token } = s.args;
+     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+     return s.return({ symbol, decimals, totalSupply });
+   });
+
+   export const compiled = compile(tokenMeta);
+   // compiled.runtimeBytecode — the script body (EIP-170: at most 24,576 bytes, enforced)
+   // compiled.initBytecode   — the runtime wrapped in a 10-byte init shim for deployless mode
+   // compiled.abi            — literal-typed ABI: one view function named 'tokenMeta'
+   ```
+
+3. **Execute it with viem.** Spread `toViem()` into `readContract`: it contributes
+   `{ abi, code }`, you add the `functionName` (the script's name) and the typed positional
+   `args`:
+
+   ```ts
+   import { arg, compile, evscript, t } from '@maxencerb/evs';
+   import { createPublicClient, erc20Abi, http } from 'viem';
+
+   const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+     const { token } = s.args;
+     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+     return s.return({ symbol, decimals, totalSupply });
+   });
+
+   const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+   const usdc = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+
+   export const out = await client.readContract({
+     ...compile(tokenMeta).toViem(), // { abi, code } — deployless eth_call
+     functionName: 'tokenMeta',
+     args: [usdc], // typed: readonly [token: `0x${string}`]
+   });
+   // out: { symbol: string; decimals: number; totalSupply: bigint }
+   ```
+
+</Steps>
+
+## The typed result
+
+`out` is `{ symbol: string; decimals: number; totalSupply: bigint }` — viem decodes the
+script's single named-tuple output into an object keyed by your `s.return` keys, with each
+component mapped by its ABI type (`uint8` to `number`, `uint256` to `bigint`). The whole
+chain — argument tuple, function name, result shape — is inferred from the script itself; no
+`as const`, no generated types.
+
+## What just happened
+
+Nothing was deployed and no transaction was sent. `toViem()` hands viem the script's
+`initBytecode` under the `code` parameter; viem issues a single plain two-parameter
+`eth_call` (no `to`) in which the script is instantiated counterfactually, runs — decoding
+your arguments from calldata, performing the three reads with values flowing between them
+on-chain — and returns one ABI-encoded result. Everything inside the call is discarded by
+the node afterwards. A state-override mode with a deterministic script address also exists;
+see [execution](/guides/execution/).
+
+## Where next
+
+- [Why evs?](/getting-started/why-evs/) — the dependent-read problem and the comparison with multicall3
+- [Writing scripts](/guides/writing-scripts/) — the script header, `s.args`, and the recording-time vs run-time model
+- [Calls](/guides/calls/) — the full `s.call` / `s.tryCall` option surface and failure handling
+- [Execution](/guides/execution/) — deployless vs state override, block pinning, `s.env` caveats
+- [Pool metadata example](/examples/pool-metadata/) — the flagship: pool config plus token metadata in one call

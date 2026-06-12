@@ -1,0 +1,249 @@
+---
+title: Control flow & cells
+description: Branch and loop over runtime EVM values with s.if, s.while, s.for, cells, and mutable arrays — native JS control flow cannot.
+---
+
+The builder callback runs **once, at recording time** — before any bytecode exists, before any
+RPC is touched. Chain values are branded `Expr` handles with no runtime value yet, so native JS
+control flow cannot branch on them. This page covers the combinators that can, and the `Cell`
+and `MutArray` primitives that carry state across them.
+
+## JS branches run at recording time
+
+```ts nocheck
+const positive = balance.gt(0n); // Expr<'bool'> — a recording-time handle, not a boolean
+
+if (positive) {
+  // ALWAYS taken: `positive` is an object, and objects are truthy in JS.
+  // The branch body is recorded into the script unconditionally.
+}
+```
+
+This compiles fine — that is exactly what makes it dangerous. Most staging misuses (`x + 1`,
+`` `${x}` ``, `JSON.stringify(x)`) throw `EvsStagingError` at the offending line, but JS
+provides no trap for `if (x)` truthiness.
+
+:::caution
+`if (someExpr)` is the one misuse evs cannot catch at runtime. Enable the
+`typescript/strict-boolean-expressions` lint rule to close the gap, and reach for `s.if` /
+`s.while` / `s.for` / `s.select` whenever the condition involves an EVM value. Plain JS
+`if`/`for` is still fine — and useful — over build-time values; see
+[writing scripts](/guides/writing-scripts/) for the full two-timeline model and
+[values and types](/guides/values-and-types/) for the other staging-misuse errors.
+:::
+
+## s.if
+
+`s.if(cond, then, otherwise?)` evaluates `cond` once, before the branch. Both callbacks run at
+recording time — they record both branches into the script — and exactly one recorded branch
+executes on-chain. Branches produce values through cells:
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const holderRatio = evscript(
+  { name: 'holderRatio', args: [arg('token', t.address), arg('a', t.address), arg('b', t.address)] },
+  (s) => {
+    const balA = s.call({
+      address: s.args.token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.a],
+    });
+    const balB = s.call({
+      address: s.args.token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.b],
+    });
+    const ratioBps = s.let(t.uint256, 0n);
+    s.if(
+      balB.gt(0n),
+      () => ratioBps.set(balA.mul(10_000n).div(balB)), // checked: Panic 0x11 on overflow
+      () => ratioBps.set(0n),
+    );
+    return s.return({ ratioBps: ratioBps.get() });
+  },
+);
+```
+
+The arithmetic inside the branch is checked like everything else — see
+[arithmetic](/guides/arithmetic/).
+
+:::caution
+`s.return` must run exactly once, unconditionally — calling it inside an `s.if` branch or a
+loop body is a recording-time error, and after it runs the recorder is sealed
+(`RECORDING_CLOSED` on any later builder call). Compute conditional results into cells, then
+return once at the end.
+:::
+
+## s.select
+
+`s.select(cond, a, b)` picks one of two already-computed values and returns an `Expr` directly
+— no cell needed. Both `a` and `b` are evaluated **eagerly**, before the selection; it is a
+value pick, not conditional execution. If one side must not execute (an expensive call, math
+that could panic), use `s.if` with a cell instead.
+
+## Cells: s.let
+
+A `const` binding holds an immutable `Expr` — a snapshot of one computed value. To mutate
+across statements, branches, and loop iterations, allocate a `Cell`:
+
+| Member        | Meaning                                                       |
+| ------------- | ------------------------------------------------------------- |
+| `cell.type`   | The declared `EvsType`                                        |
+| `cell.get()`  | A fresh `Expr` snapshot of the cell at this program point     |
+| `cell.set(v)` | Store an `Expr` or literal of the cell's type                 |
+
+`s.let` has two forms: `s.let(t.uint256, 0n)` (explicit type, literal or `Expr` initializer)
+and `s.let(someExpr)` (type inferred from the initializer).
+
+A `Cell` is deliberately **not** an `Expr` — passing one where an `Expr` is expected is a
+recording-time `EvsTypeError` telling you to call `.get()`. Every read is an explicit
+snapshot, so "value at this point" versus "current value" is visible at each use site:
+a snapshot taken before a `.set` does not change afterwards. For dynamic types (`string`,
+`bytes`, arrays) the cell holds a memref pointer and `.set` is pointer assignment — reference,
+not copy, semantics.
+
+Cells are also the **only** way values escape a block. An `Expr` recorded inside an `s.if`
+branch or a loop body is invalid once that block finishes recording:
+
+```ts nocheck
+let leaked: Expr<'uint256'> | undefined;
+s.if(cond, () => {
+  leaked = s.call({ address: pool, abi: erc20Abi, functionName: 'totalSupply' });
+});
+leaked!.add(1n);
+// EvsScopeError (SCOPE_VIOLATION): this value was recorded in a block that has
+// finished recording — values escape blocks only through cells (s.let)
+```
+
+Declare a cell outside the block, `.set` it inside, `.get()` after.
+
+## s.while
+
+`s.while(cond, body)` takes the condition as a **thunk**: `() => IntoExpr<'bool'>`. Everything
+the thunk records lands in the loop header and re-executes on every iteration — which is what
+lets `i.get()` observe the updated counter each time around. Values recorded in the header are
+visible in the body; nothing recorded inside the loop is visible after it (use cells).
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const uniswapV3FactoryAbi = [
+  {
+    type: 'function',
+    name: 'getPool',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenA', type: 'address' },
+      { name: 'tokenB', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+    ],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+] as const;
+
+const UNISWAP_V3_FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+const firstPool = evscript(
+  { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
+  (s) => {
+    const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
+    const found = s.let(t.address, ZERO);
+    const feeOut = s.let(t.uint24, 0n);
+    const i = s.let(t.uint256, 0n);
+    s.while(
+      () => i.get().lt(fees.length()), // header: re-evaluated every iteration
+      (loop) => {
+        const fee = fees.at(i.get());
+        const pool = s.call({
+          address: UNISWAP_V3_FACTORY,
+          abi: uniswapV3FactoryAbi,
+          functionName: 'getPool',
+          args: [s.args.a, s.args.b, fee],
+        });
+        s.if(pool.neq(ZERO), () => {
+          found.set(pool);
+          feeOut.set(fee);
+          loop.break(); // jump past the loop; the cells keep their values
+        });
+        i.set(i.get().add(1n));
+      },
+    );
+    return s.return({ pool: found.get(), fee: feeOut.get() });
+  },
+);
+```
+
+This is the probe pattern: try fee tiers in order, stop at the first deployed pool, and carry
+the answer out through cells.
+
+## s.for
+
+`s.for({ type, from, until, step? }, body)` is sugar over `s.while` plus an internal counter
+cell, generic over any numeric word type. It iterates while `i < until`; `step` defaults to 1;
+the counter arithmetic is checked like all evs arithmetic.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [arg('xs', t.array(t.uint256))] }, (s) => {
+  const total = s.let(t.uint256, 0n);
+  s.for({ type: t.uint256, from: 0n, until: s.args.xs.length() }, (i) => {
+    total.set(total.get().add(s.args.xs.at(i))); // add is checked: Panic 0x11 on overflow
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+:::note
+`until` and `step` are snapshot **once**, before the loop starts — mutating what they were
+computed from mid-loop does not change the iteration bounds. The loop variable `i` is a fresh
+read-only `Expr` each iteration.
+:::
+
+## break and continue
+
+Loop bodies receive a `LoopCtl` handle with two methods:
+
+- `loop.break()` — jump past the owning loop.
+- `loop.continue()` — jump to the owning loop's header; in `s.for`, to the step, so the
+  counter still advances.
+
+`LoopCtl` is scoped to its own loop's body recording. Using it outside — including using an
+outer loop's handle inside an inner loop in place of the inner loop's own — throws
+`EvsScopeError` at recording, naming the owning loop.
+
+## Mutable arrays: s.newArray
+
+`s.newArray(elem, length)` allocates a zero-filled runtime array of word-typed elements — the
+building block for "loop over inputs, collect outputs":
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const squares = evscript({ name: 'squares', args: [arg('n', t.uint256)] }, (s) => {
+  const out = s.newArray(t.uint256, s.args.n); // zero-filled uint256[n]
+  s.for({ type: t.uint256, from: 0n, until: s.args.n }, (i) => {
+    out.set(i, i.mul(i)); // bounds-checked → Panic 0x32 if out of range
+  });
+  return s.return({ squares: out.expr() });
+});
+```
+
+| Member          | Meaning                                                          |
+| --------------- | ---------------------------------------------------------------- |
+| `arr.elemType`  | The element `WordType`                                           |
+| `arr.length`    | `Expr<'uint256'>`                                                |
+| `arr.get(i)`    | Element read, bounds-checked (Panic `0x32`)                      |
+| `arr.set(i, v)` | Element write, bounds-checked (Panic `0x32`)                     |
+| `arr.expr()`    | An `Expr` array handle over the **same** buffer (returnable)     |
+
+`arr.expr()` has reference semantics: later `set` calls are visible through it. A runtime
+length of `2**32` or more is Panic `0x41`; a literal length that large is rejected at
+recording. See [batch token balances](/examples/token-balances/) for the full multicall
+replacement built on this, and the [ScriptBuilder reference](/reference/builder/) for frozen
+signatures.

@@ -1,0 +1,221 @@
+---
+title: Pool metadata in one call
+description: One eth_call returns a Uniswap V3 pool's token0, token1, and fee plus each token's symbol and decimals — dependent reads multicall cannot batch.
+---
+
+This is the flagship evs script: given a Uniswap V3 pool address, fetch the pool's
+configuration (`token0`, `token1`, `fee`, current tick) **and** each token's `symbol` and
+`decimals` — eight dependent reads, one `eth_call`, one fully typed result object.
+
+## The script
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const uniswapV3PoolAbi = [
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'token1',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'fee',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint24' }],
+  },
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+
+export const poolMeta = evscript(
+  { name: 'poolMeta', args: [arg('pool', t.address)] },
+  (s) => {
+    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    //    ^? Expr<'address'> — a runtime value, usable as the address of the NEXT call
+    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const fee = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    //    ^? readonly tuple of Exprs — one per slot0 output
+
+    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+    const decimals0 = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const decimals1 = s.call({ address: token1, abi: erc20Abi, functionName: 'decimals' });
+
+    return s.return({
+      token0,
+      token1,
+      fee,
+      tick: slot0[1],
+      symbol0,
+      symbol1,
+      decimals0,
+      decimals1,
+    });
+  },
+);
+```
+
+`s.call` types like viem's `readContract`: the inline `as const` pool ABI and viem's
+`erc20Abi` drive autocomplete for `functionName` and the output types. `token0` comes back as
+`Expr<'address'>` — a handle to a value that exists only at run time — and goes straight into
+the `address` field of the `symbol` and `decimals` calls. Multi-output functions like `slot0`
+return a readonly tuple of `Expr`s, so `slot0[1]` is the tick. See
+[calls](/guides/calls/) for the full `s.call` surface and
+[values and types](/guides/values-and-types/) for how `Expr` handles work.
+
+## The dependency chain multicall cannot express
+
+Trace the data flow: `symbol0` is a call **to** `token0`, and `token0` is the **output** of a
+call to the pool. Multicall3 encodes its whole batch client-side — every target address and
+every calldata blob must be known before the request is sent — so it can only batch
+*independent* reads. Here the targets of calls five through eight are unknown until calls one
+and two return, which forces a multicall user into two sequential round trips: one batch for
+the pool reads, then a second batch for the token reads built from the first batch's results.
+evs records the dependency as a script and executes the whole chain inside a single
+`eth_call`, so the result arrives in one round trip regardless of how deep the chain goes.
+See [why evs](/getting-started/why-evs/) for the general argument.
+
+## Execution
+
+Compile the script and spread `toViem()` into a plain viem `readContract`. The default mode is
+deployless: viem sends a two-parameter `eth_call` with the script's init bytecode as `code`,
+so it works on every standard RPC provider and nothing is ever deployed.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+
+// --- the script from the previous section, unchanged ---
+
+const uniswapV3PoolAbi = [
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'token1',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+  {
+    type: 'function',
+    name: 'fee',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint24' }],
+  },
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+
+const poolMeta = evscript({ name: 'poolMeta', args: [arg('pool', t.address)] }, (s) => {
+  const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+  const fee = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+  const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+  const decimals0 = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const decimals1 = s.call({ address: token1, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ token0, token1, fee, tick: slot0[1], symbol0, symbol1, decimals0, decimals1 });
+});
+
+// --- compile once, call like any contract ---
+
+const client = createPublicClient({ transport: http('https://ethereum-rpc.publicnode.com') });
+
+const compiled = poolMeta.compile();
+
+export const out = await client.readContract({
+  ...compiled.toViem(), // { abi, code } — deployless eth_call
+  functionName: 'poolMeta',
+  args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // USDC/WETH 0.05% pool (mainnet)
+});
+// out.symbol0 → 'USDC' (string), out.decimals1 → 18 (number), out.token0 → 0x… (address)
+```
+
+No `as const`, no codegen step: the script value *is* its own literal-typed ABI, so `args` is
+typed ``readonly [pool: `0x${string}`]`` and `out` is fully inferred. For the state-override
+mode, block pinning, and the `s.env` caveats, see [execution](/guides/execution/).
+
+## The result
+
+The script's return keys become the named components of a single tuple output, which viem
+decodes as an object:
+
+```txt
+{
+  token0: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+  token1: '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2',
+  fee: 500,
+  tick: 197180,
+  symbol0: 'USDC',
+  symbol1: 'WETH',
+  decimals0: 6,
+  decimals1: 18
+}
+```
+
+(Values illustrative — `tick` moves with the market.) The TypeScript type matches:
+addresses as `0x${string}`, `fee`/`tick`/`decimals*` as `number` (they fit in 48 bits),
+symbols as `string`.
+
+:::tip
+Some legacy tokens are not clean ERC-20s (for example, a `symbol()` that returns `bytes32`
+instead of `string`). A strict `s.call` reverts with `EvsDecodeError` when returndata does not
+decode; swap in `s.tryCall` and a default to tolerate them — see
+[tryCall with a default](/examples/patterns/) and [calls](/guides/calls/).
+:::
+
+## Run it from the repo
+
+A runnable version of this example —
+[examples/pool-meta](https://github.com/maxencerb/evs/tree/main/examples/pool-meta) — spawns a
+throwaway local anvil, deploys mock pool and token contracts, executes the compiled script
+deploylessly, and prints the typed result plus the script's runtime bytecode size. For
+batching the same read over many inputs, continue with
+[token balances](/examples/token-balances/).

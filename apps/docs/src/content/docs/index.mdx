@@ -1,0 +1,55 @@
+---
+title: evs
+description: Typed EVM read scripts in plain TypeScript — batch dozens of on-chain reads into a single eth_call, with full viem inference and no deployed contracts.
+template: splash
+hero:
+  tagline: Write typed EVM read scripts in plain TypeScript. Compile them to bytecode. Run dozens of on-chain reads in a single eth_call — no contracts to deploy, full viem inference end to end.
+  actions:
+    - text: Quick start
+      link: /getting-started/quick-start/
+      icon: right-arrow
+    - text: Why evs?
+      link: /getting-started/why-evs/
+      variant: minimal
+    - text: GitHub
+      link: https://github.com/maxencerb/evs
+      icon: github
+      variant: minimal
+---
+
+import { Card, CardGrid } from '@astrojs/starlight/components';
+
+```ts
+import { evscript, arg, t, compile } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+  const { token } = s.args;
+  const symbol = s.call({ abi: erc20Abi, address: token, functionName: 'symbol' });
+  const decimals = s.call({ abi: erc20Abi, address: token, functionName: 'decimals' });
+  return s.return({ symbol, decimals });
+});
+
+const script = compile(tokenMeta);
+// → runtime bytecode + a literal-typed ABI viem can infer from
+```
+
+<CardGrid stagger>
+  <Card title="One round trip" icon="rocket">
+    Sequential, dependent reads — pool → tokens → metadata — collapse into a single
+    `eth_call`. No multicall contracts, no waterfall of requests.
+  </Card>
+  <Card title="Typed end to end" icon="approve-check">
+    Calls are typed like viem's `readContract`. The compiled artifact carries an `as const`
+    ABI, so `readContract` infers your script's argument and return types exactly.
+  </Card>
+  <Card title="Nothing to deploy" icon="setting">
+    Scripts execute deploylessly via the `eth_call` `code` parameter or a state override.
+    The chain never sees a deployment; any standard RPC node works.
+  </Card>
+  <Card title="Solidity-grade semantics" icon="seti:solidity">
+    Checked arithmetic with solc 0.8 panic codes, verbatim revert bubbling, and a
+    differential test suite that pins the bytecode against a reference interpreter,
+    viem's codecs, and real solc output.
+  </Card>
+</CardGrid>

@@ -15,6 +15,10 @@
     "**/contracts/out/**",
     "**/contracts/cache/**",
     "**/contracts/lib/**",
-    "**/test/generated/**"
+    "**/test/generated/**",
+    "apps/docs/src/content/**",
+    "**/.astro/**",
+    "**/.wrangler/**",
+    "**/.snippets/**"
   ]
 }

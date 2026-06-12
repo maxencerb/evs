@@ -1,0 +1,182 @@
+---
+title: Executing scripts
+description: Run compiled scripts through viem — deployless eth_call by default, state-override mode for a controllable msg.sender, block pinning, and s.env caveats.
+---
+
+A compiled script is bytecode that runs inside a single `eth_call` — nothing is ever deployed.
+The artifact's `toViem()` method packages everything `readContract` needs, in one of two
+execution modes:
+
+- **Deployless** (the default): viem sends the script's *init* bytecode as the `eth_call`
+  `code` parameter. Plain two-parameter `eth_call`, works on every provider.
+- **State override**: viem places the script's *runtime* bytecode at a chosen address via the
+  third `eth_call` parameter, then calls that address.
+
+Both shapes spread directly into `readContract`, and the artifact's literal-typed ABI gives you
+full inference on `args` and the result either way.
+
+## Deployless mode (default)
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+
+const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ symbol, decimals });
+});
+
+const compiled = compile(tokenMeta);
+
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+
+const result = await client.readContract({
+  ...compiled.toViem(), // { abi, code: initBytecode }
+  functionName: 'tokenMeta',
+  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+});
+// result: { symbol: string; decimals: number }
+```
+
+`toViem()` with no arguments (or `toViem({ mode: 'deployless' })`) returns `{ abi, code }`,
+where `code` is the artifact's `initBytecode`. viem omits `to` from the `eth_call`, so the node
+treats the data as a contract-creation frame: viem's wrapper deploys your script inside the
+simulated call (via `CREATE2`), calls it, and returns the result. No state-override support is
+required from the provider, which makes this the maximally portable mode.
+
+:::note[Why `code` must be init bytecode — the 10-byte wrapper]
+viem's `code` parameter expects **creation** bytecode. Passing runtime bytecode fails
+*silently* — which is why the artifact names its fields `runtimeBytecode` and `initBytecode`
+and never exposes a field named `code`; only `toViem()` produces one, always from
+`initBytecode`. The init bytecode is the runtime prefixed with the locked 10-byte wrapper
+`61RRRR80600A5F395FF3` (`RRRR` = runtime length, big-endian):
+
+```txt
+61 RRRR   PUSH2 len      ; runtime length
+80        DUP1
+60 0A     PUSH1 0x0A     ; the wrapper is 10 bytes; runtime starts right after
+5F        PUSH0          ; paris target: 3D (RETURNDATASIZE — zero in an init frame)
+39        CODECOPY       ; mem[0..len) = code[10..10+len)
+5F        PUSH0          ; paris target: 3D
+F3        RETURN         ; return the runtime as the deployed code
+```
+
+It copies everything after itself into memory and returns it as the deployed code, so your
+runtime executes unchanged. On the `paris` target the two `PUSH0` bytes become
+`RETURNDATASIZE` — see [EVM targets](/guides/evm-targets/).
+:::
+
+## State-override mode
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+
+const myBalance = evscript({ name: 'myBalance', args: [arg('token', t.address)] }, (s) => {
+  const balance = s.call({
+    address: s.args.token,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [s.env('caller')], // msg.sender — controllable only in this mode
+  });
+  return s.return({ balance });
+});
+
+const compiled = compile(myBalance);
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+
+const result = await client.readContract({
+  ...compiled.toViem({ mode: 'stateOverride' }), // { abi, address, stateOverride }
+  functionName: 'myBalance',
+  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+  account: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', // msg.sender seen by the script
+  blockNumber: 22_000_000n, // pinned read — it is just eth_call
+});
+// result: { balance: bigint }
+```
+
+`toViem({ mode: 'stateOverride', address? })` returns `{ abi, address, stateOverride }`: the
+script's `runtimeBytecode` is injected at `address` through the third `eth_call` parameter, and
+the call targets that address like a normal contract read. The default address is the exported
+`DEFAULT_SCRIPT_ADDRESS` (`0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` — the last 20 bytes of
+`keccak256("evs.script")`, with no code, storage, or balance on any major chain). Pass
+`address` to relocate the script per call.
+
+This mode requires a provider that supports the state-override `eth_call` extension, and it
+unlocks two things deployless mode cannot do: a stable, controllable `address(this)`, and a
+controllable `msg.sender` via the `account` call parameter.
+
+:::caution
+Overriding `code` does **not** clear the account's existing balance, nonce, or storage. If you
+pass a custom `address`, pick one with no state on the target chain — injecting the script at a
+live contract's address leaves that contract's storage visible to the script.
+:::
+
+## Choosing a mode
+
+|                   | Deployless (default)                                            | State override                                              |
+| ----------------- | --------------------------------------------------------------- | ----------------------------------------------------------- |
+| RPC requirement   | plain two-parameter `eth_call` — every provider                  | provider must support the third `eth_call` parameter        |
+| `address(this)`   | counterfactual CREATE2 address, different per compiled script    | `DEFAULT_SCRIPT_ADDRESS`, or the `address` you pass         |
+| `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted)      |
+| Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
+| Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state |
+
+## Block pinning
+
+Both modes are ordinary `eth_call`s, so viem's block selectors pass straight through: give
+`readContract` a `blockNumber` or a `blockTag` and the whole script — including every sub-call
+it makes — executes against that block's state. Historical reads work in either mode; there is
+no script-side configuration involved.
+
+## `s.env` and frame dependence
+
+`s.env(kind)` reads the execution environment. Three of the five values are block context and
+identical in both modes; two depend on the call frame `toViem()` produces:
+
+| `s.env(...)`    | Result            | Deployless                                                                 | State override                                       |
+| --------------- | ----------------- | -------------------------------------------------------------------------- | ---------------------------------------------------- |
+| `'caller'`      | `Expr<'address'>` | viem's wrapper contract (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) — never your `account` | the `account` call parameter (zero address if omitted) |
+| `'address'`     | `Expr<'address'>` | a per-script counterfactual CREATE2 address                                 | the override address                                  |
+| `'timestamp'`   | `Expr<'uint256'>` | block timestamp — identical in both modes                                   | identical                                             |
+| `'blocknumber'` | `Expr<'uint256'>` | block number — identical                                                    | identical                                             |
+| `'chainid'`     | `Expr<'uint256'>` | chain id — identical                                                        | identical                                             |
+
+The deployless values exist because of how the mode works: viem's wrapper contract performs the
+`CREATE2` and then calls your script, so the script sees the wrapper as `msg.sender` and its own
+counterfactual deployment address as `address(this)`. Neither is controllable, and there is no
+deployless workaround. **Caller-relative reads — `balanceOf(s.env('caller'))` and friends —
+require `toViem({ mode: 'stateOverride' })` plus the `account` call parameter.**
+
+Because compile time cannot know which mode you will pick, `compile()` flags every
+`s.env('caller')` / `s.env('address')` with an `ENV_FRAME_DEPENDENT` warning through the
+`onDiagnostic` channel (never logged):
+
+```ts
+import { arg, compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const myBalance = evscript({ name: 'myBalance', args: [arg('token', t.address)] }, (s) => {
+  const balance = s.call({
+    address: s.args.token,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [s.env('caller')],
+  });
+  return s.return({ balance });
+});
+
+const diagnostics: EvsDiagnostic[] = [];
+compile(myBalance, { onDiagnostic: (d) => diagnostics.push(d) });
+
+// diagnostics[0].code → 'ENV_FRAME_DEPENDENT'
+// diagnostics[0].message → "s.env('caller') is execution-frame-dependent: in the default
+//   deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the
+//   eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' })
+//   plus the `account` call parameter"
+```
+
+See [errors and debugging](/guides/errors-and-debugging/) for the rest of the diagnostics
+channel, and [testing scripts](/guides/testing-scripts/) for modeling either frame off-chain
+with `interpret()`.

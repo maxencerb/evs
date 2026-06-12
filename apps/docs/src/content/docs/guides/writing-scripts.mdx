@@ -1,0 +1,152 @@
+---
+title: Writing scripts
+description: Structure of an evs script — the evscript entry point, the builder callback, reading args, returning values, and the two-timeline model.
+---
+
+An evs script is an ordinary TypeScript value. You build one with `evscript`, giving it a header — `{ name, args }` — and a builder callback that records what the script does. Compiling it produces EVM runtime bytecode plus a literal-typed ABI; executing it is a single `eth_call`.
+
+## Anatomy of a script
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenMeta = evscript(
+  // 1. header: the script name + an ordered tuple of argument declarations
+  { name: 'tokenMeta', args: [arg('token', t.address), arg('owner', t.address)] },
+  // 2. builder callback: records statements through `s`
+  (s) => {
+    const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+    const balance = s.call({
+      address: s.args.token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.owner],
+    });
+    // 3. the callback must return s.return(...) — it defines the script's named outputs
+    return s.return({ symbol, decimals, balance });
+  },
+);
+
+const compiled = tokenMeta.compile(); // bytecode + literal-typed ABI, ready for viem
+```
+
+Three parts matter:
+
+- The **header** `{ name, args }` declares the script's ABI surface. `name` becomes the function name you pass to viem's `readContract`; `args` is an ordered tuple of `arg(name, type)` declarations.
+- The **builder callback** receives `s` (a `ScriptBuilder`) and records statements by calling its methods. It runs exactly once, on your machine — never on-chain.
+- The callback **must return `s.return(...)`**; the record you pass defines the script's outputs.
+
+`evscript` returns an `EvsScript` value with four members: `name`, `ir` (frozen, JSON-serializable), `abi` (the literal-typed ABI — it exists before you compile), and `compile(options?)`, which is sugar for the standalone `compile(script, options?)`. Exact signatures are in the [evscript reference](/reference/evscript/).
+
+`evscript` uses `const` type parameters, so you never write `as const` on the header or the return record — inference is literal by default.
+
+## The header
+
+- `name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
+- `args` is a readonly tuple built with `arg(name, type)`. Declaration order is binding: it is the type-level order, the runtime encode order, and the ABI `inputs` order all at once. Call sites stay positional, viem style — `args: [token, owner]`, typed as a named readonly tuple.
+- Valid argument types in v0: any word type, `string`, `bytes`, or `T[]` of a word type. Tuples, fixed-size `T[N]` arrays, and nested arrays throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
+- Header validation is immediate: invalid identifiers, duplicate argument names, and unknown type strings all throw `EvsTypeError` before anything records.
+
+## Reading arguments: `s.args`
+
+`s.args` is a record keyed by argument name; each property is an `Expr` of the declared type. With the header above, `s.args.token` is `Expr<'address'>` and `s.args.owner` is `Expr<'address'>`. Destructuring works: `const { token, owner } = s.args;`.
+
+These are not values — they are typed handles standing in for the values that calldata will carry at run time. [Values and types](/guides/values-and-types/) explains what you can and cannot do with a handle.
+
+## Returning values: `s.return`
+
+- Call it **exactly once, unconditionally**, and return its result from the callback. Calling it inside `s.if`/`s.while`, twice, or not at all is a recording-time error (`EvsScopeError`/`EvsTypeError`).
+- The record's keys become the named components of the script's single tuple output. viem consumers receive a plain object with the same keys — `{ symbol: 'DAI', decimals: 18, balance: 123n }`-shaped, fully typed.
+- Every value in the record must be an `Expr`. Read a cell with `.get()`, convert a `MutArray` with `.expr()` (see [control flow](/guides/control-flow/)).
+- `s.return` seals the recorder: any builder call after it throws `EvsScopeError` (`RECORDING_CLOSED`).
+
+:::tip
+Need a conditional result? Declare a cell with `s.let`, assign it inside `s.if` branches, and return `cell.get()` once at the end. See [control flow](/guides/control-flow/).
+:::
+
+## Two timelines: recording time vs run time
+
+This is the one mental model the whole library hangs on. The builder callback runs once, at **recording time**, in your JS process. Each builder call appends a statement to the script's IR and hands back a typed placeholder (`Expr`) — `s.call` performs no call, `x.add(1n)` adds nothing. The compiled bytecode then replays the recorded statements at **run time**, inside `eth_call` on the node.
+
+```txt
+recording time (your machine)              run time (the node, inside eth_call)
+─────────────────────────────              ────────────────────────────────────
+evscript(header, callback)
+  └─ callback runs ONCE, records IR  ──►   compiled bytecode executes
+       s.call({...})  → Expr handle          STATICCALL token.symbol() → real bytes
+       x.add(1n)      → Expr handle          checked ADD → real word
+       s.return({...})                       ABI-encode outputs → returndata
+```
+
+| Runs at recording time (TS)                              | Runs on-chain (compiled)                     |
+| -------------------------------------------------------- | -------------------------------------------- |
+| the builder callback, exactly once                       | the recorded statements, in recorded order   |
+| JS `if`/`for` over host values (unrolled, specialized)   | `s.if`/`s.while`/`s.for` over runtime values |
+| literal validation and folding, ABI resolution, selectors | checked arithmetic, sub-calls, decoding      |
+| `s.fn` body (once, at definition)                        | the subroutine, once per recorded call       |
+| loop-condition thunks, recorded once into the header     | the header, once per iteration               |
+
+The practical consequence: plain JS control flow is a **metaprogramming** tool. A JS loop over a host array runs at recording time and unrolls — the compiled script contains one copy of the body per iteration, and no loop:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const TOKENS = [
+  '0x6B175474E89094C44Da98b954EedeAC495271d0F', // DAI
+  '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
+] as const;
+
+const watchlist = evscript({ name: 'watchlist', args: [arg('owner', t.address)] }, (s) => {
+  const out = s.newArray(t.uint256, TOKENS.length);
+  let i = 0n;
+  // host loop over a host array: runs at recording time and unrolls —
+  // the compiled script contains one balanceOf call per token, no loop
+  for (const token of TOKENS) {
+    const bal = s.call({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.owner],
+    });
+    out.set(i, bal);
+    i += 1n;
+  }
+  return s.return({ balances: out.expr() });
+});
+```
+
+When the data is only known at run time — a runtime `address[]` argument, a value returned by a call — you need the combinators instead: `s.if`, `s.while`, `s.for`, `s.select`. See [control flow](/guides/control-flow/) and the [token balances example](/examples/token-balances/).
+
+:::caution
+Native JS `if`/`for`/`&&` cannot branch on EVM values. An `Expr` is an object, and objects are always truthy — `if (someExpr)` records the branch unconditionally and JS cannot trap it. See the [staging misuse rules](/guides/values-and-types/) for what is trapped and what is not.
+:::
+
+## Source locations: the `locations` option
+
+`evscript` takes an optional third argument, `{ locations?: boolean }` (default `true`). When enabled, every recorded statement captures the file, line, and column of the builder call that produced it. That is what makes the diagnostics good:
+
+- recording-time errors point at the offending line in your script;
+- the compiled `sourceMap`, `explainRevert`, and `disassemble().format()` map bytecode program counters back to your source lines.
+
+Pass `{ locations: false }` to skip capture — statements then carry no locations, and diagnostics lose their `file:line` attribution:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const lean = evscript(
+  { name: 'lean', args: [arg('x', t.uint256)] },
+  (s) => s.return({ doubled: s.args.x.mul(2n) }),
+  { locations: false }, // recorded statements carry no source locations
+);
+```
+
+`compile()` has its own `locations` option with the same default; see [errors and debugging](/guides/errors-and-debugging/) for the full diagnostics story.
+
+## Next
+
+- [Values and types](/guides/values-and-types/) — what an `Expr` is and which literals coerce.
+- [Calls](/guides/calls/) — `s.call` and `s.tryCall` in depth.
+- [Execution](/guides/execution/) — running the compiled script with viem.

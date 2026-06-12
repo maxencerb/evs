@@ -1,0 +1,391 @@
+---
+title: Compiled artifact
+description: CompiledEvsScript reference — bytecode, ScriptAbi, toViem modes, source map, disassemble, explainRevert, EVS_ERROR_ABI, and IR serialization.
+---
+
+`compile(script)` returns a frozen `CompiledEvsScript` — everything you need to execute,
+inspect, and debug a script. This page documents every property and method. For how to run the
+artifact against a chain, see [execution](/guides/execution/); for the debugging workflow, see
+[errors and debugging](/guides/errors-and-debugging/).
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+
+const erc20 = [
+  {
+    type: 'function',
+    name: 'totalSupply',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+const script = evscript({ name: 'totalSupplyOf', args: [arg('token', t.address)] }, (s) => {
+  const supply = s.call({ address: s.args.token, abi: erc20, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+
+const compiled = compile(script);
+
+const client = createPublicClient({ transport: http('https://eth.example.com') });
+const result = await client.readContract({
+  ...compiled.toViem(),
+  functionName: 'totalSupplyOf',
+  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+});
+// result is typed { supply: bigint } — inferred from the literal-typed abi
+const supply: bigint = result.supply;
+```
+
+## Surface
+
+| Member | Type | Description |
+| --- | --- | --- |
+| `abi` | `ScriptAbi<name, args, ret>` | Literal-typed ABI value: `[function, EvsInvalidCalldata, EvsDecodeError]` |
+| `runtimeBytecode` | `Hex` | Deployed-form bytecode; at most 24,576 bytes (EIP-170), enforced |
+| `initBytecode` | `Hex` | The 10-byte init wrapper followed by the runtime — creation bytecode |
+| `sourceMap` | `SourceMap` | PC-to-source segments, revert sites, labels |
+| `ir` | `ScriptIr` | The frozen recorded IR (same object as `script.ir`) |
+| `options` | `Readonly<Required<CompileOptions>>` | The resolved options the artifact was built with |
+| `toViem(o?)` | overloaded | Execution shapes to spread into viem's `readContract` |
+| `disassemble()` | `Disassembly` | Annotated instruction listing over `runtimeBytecode` |
+| `explainRevert(data)` | `RevertExplanation` | Decodes a revert payload against this script's source map |
+
+The artifact object is `Object.freeze`d. `script.compile(options)` is sugar for
+`compile(script, options)` — see [evscript](/reference/evscript/) for `compile`, `CompileOptions`,
+and their defaults.
+
+## `abi` — the `ScriptAbi`
+
+The ABI is a value with a literal type: one `view` function named after the script, followed by
+the two evs error entries. The function has exactly one output — a tuple named `result` whose
+components are the keys of your `s.return({ ... })` record. Because every component is named,
+viem infers an object, not a positional array.
+
+For the `totalSupplyOf` script above, `compiled.abi` is:
+
+```ts
+const abi = [
+  {
+    type: 'function',
+    name: 'totalSupplyOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'token', type: 'address' }],
+    outputs: [
+      {
+        name: 'result',
+        type: 'tuple',
+        components: [{ name: 'supply', type: 'uint256' }],
+      },
+    ],
+  },
+  { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
+  { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
+] as const;
+```
+
+The runtime ABI array is the encode/decode source of truth: input order is the `args` tuple
+order, and component order is the insertion order of the `s.return` record. The same ABI exists
+pre-compile as `script.abi`, so a codegen failure can never corrupt the typed surface. The
+`ScriptAbi` type is exported; see [types](/reference/types/).
+
+:::note
+At the type level the component order of multi-key returns can differ from the runtime order
+(it is derived via a union-to-tuple mapping). This is safe by construction: viem infers an
+object from the fully-named tuple, and objects are order-insensitive.
+:::
+
+## `runtimeBytecode` and `initBytecode`
+
+- `runtimeBytecode` is the deployed form — what actually executes. Compilation fails with
+  `EvsCompileError` (code `COMPILE_LIMIT`) if it exceeds the EIP-170 limit of 24,576 bytes; the
+  message includes a per-region size breakdown (dispatcher, body, fns, tails, data segments).
+- `initBytecode` is `wrapper ++ runtimeBytecode`, where the wrapper is a locked 10-byte init
+  stub that CODECOPYs everything after itself and returns it as the deployed code:
+
+```txt
+61 RRRR   PUSH2 <runtime length>
+80        DUP1
+60 0A     PUSH1 0x0A
+5F        PUSH0          (paris target: 3D RETURNDATASIZE)
+39        CODECOPY
+5F        PUSH0          (paris target: 3D)
+F3        RETURN
+```
+
+The init form exists because viem's deployless `code` call parameter expects **creation**
+bytecode — passing runtime bytecode fails silently. The artifact deliberately has no field named
+`code` or `bytecode`; the only place a `code` key appears is in the `toViem()` results, where it
+is always the correct form for that mode.
+
+## `toViem()` — execution shapes
+
+Three overloads, two modes. Both results spread directly into viem's `readContract`:
+
+| Call | Returns |
+| --- | --- |
+| `toViem()` | `{ abi, code: initBytecode }` — deployless (default) |
+| `toViem({ mode: 'deployless' })` | same as the no-argument form |
+| `toViem({ mode: 'stateOverride', address? })` | `{ abi, address, stateOverride: [{ address, code: runtimeBytecode }] }` |
+
+```ts
+import { compile, DEFAULT_SCRIPT_ADDRESS, evscript } from '@maxencerb/evs';
+
+const script = evscript({ name: 'blockNow', args: [] }, (s) => {
+  return s.return({ ts: s.env('timestamp'), height: s.env('blocknumber') });
+});
+const compiled = compile(script);
+
+// deployless: plain two-parameter eth_call, maximum RPC compatibility
+const deployless = compiled.toViem();
+const sameInit: boolean = deployless.code === compiled.initBytecode; // true — creation bytecode
+
+// state override: runtime bytecode installed at a deterministic address
+const overridden = compiled.toViem({ mode: 'stateOverride' });
+const atDefault: boolean = overridden.address === DEFAULT_SCRIPT_ADDRESS; // true
+const installsRuntime: boolean = overridden.stateOverride[0].code === compiled.runtimeBytecode; // true
+```
+
+State-override mode accepts an optional `address` (viem's `Address` type) to place the script
+somewhere else; it requires a provider that supports the third `eth_call` parameter. The two
+modes run the script in different execution frames, which matters for `s.env('caller')` and
+`s.env('address')` — see [execution](/guides/execution/) for the full comparison, block pinning,
+and the `ENV_FRAME_DEPENDENT` warning.
+
+### `DEFAULT_SCRIPT_ADDRESS`
+
+```txt
+0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530
+```
+
+Exported as a constant (type `Address`). It is the last 20 bytes of `keccak256("evs.script")` —
+an address with no code, storage, or balance on any major chain, so overriding it is safe.
+
+## `EVS_ERROR_ABI`
+
+The two evs-owned error entries, exported as a standalone `as const` ABI and appended verbatim
+to every script's `abi` (entries 1 and 2):
+
+```ts
+import { EVS_ERROR_ABI } from '@maxencerb/evs';
+
+EVS_ERROR_ABI[0]; // { type: 'error', name: 'EvsInvalidCalldata', inputs: [] }
+EVS_ERROR_ABI[1]; // { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] }
+```
+
+| Error | Selector | Raised when |
+| --- | --- | --- |
+| `EvsInvalidCalldata()` | `0xf43fed56` | The calldata does not match the script's function (wrong selector, truncated calldata, malformed dynamic arguments) |
+| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | A strict `s.call` got returndata that fails to decode; `site` identifies the recorded call site |
+
+Because both entries are in every script's ABI, viem decodes these reverts into named errors out
+of the box. All other reverts (callee `Error(string)`, custom errors, panics) bubble through the
+script byte-exactly — see [calls](/guides/calls/).
+
+## `disassemble()` — `Disassembly`
+
+```ts
+import { compile, evscript, t } from '@maxencerb/evs';
+
+const script = evscript({ name: 'one', args: [] }, (s) => {
+  return s.return({ v: s.lit(t.uint256, 1n) });
+});
+const dis = compile(script).disassemble();
+
+const annotated: string = dis.format(); // listing with file:line:column comments
+const bare: string = dis.format({ locs: false }); // same listing without source locations
+for (const line of dis.lines) {
+  line.pc; // byte offset
+  line.mnemonic; // opcode name
+  line.raw; // exact bytes of this instruction
+}
+```
+
+`Disassembly` is `{ lines, format(opts?) }`. Each element of `lines` has:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pc` | `number` | Byte offset of the instruction |
+| `raw` | `Hex` | Exact bytes — concatenating every `raw` reproduces the input byte-for-byte |
+| `mnemonic` | `string` | Opcode name; non-opcode bytes (data segments) appear as `UNKNOWN_0x<byte>` |
+| `pushValue?` | `Hex` | Immediate of a `PUSH1`–`PUSH32` |
+| `targetLabel?` | `string` | Label whose pc matches a small push immediate |
+| `label?` | `string` | Label defined at this pc |
+| `loc?` | `SourceLoc \| null` | Source location from the source map |
+| `note?` | `string` | Codegen annotation (for example `free-ptr init`) |
+
+The first lines of the `totalSupplyOf` artifact from the top of this page
+(`format({ locs: false })`, real compiler output):
+
+```txt
+0x0000  60c0        PUSH1 0xc0  ; frameEnd
+0x0002  6040        PUSH1 0x40
+0x0004  52          MSTORE  ; free-ptr init
+0x0005  6004        PUSH1 0x04
+0x0007  36          CALLDATASIZE
+0x0008  10          LT
+0x0009  6100e8      PUSH2 0x00e8 → @badcd
+0x000c  57          JUMPI
+0x000d  5f          PUSH0
+0x000e  35          CALLDATALOAD
+0x000f  60e0        PUSH1 0xe0
+0x0011  1c          SHR
+0x0012  63cf9530d0  PUSH4 0xcf9530d0  ; selector totalSupplyOf(address)
+0x0017  14          EQ
+0x0018  610020      PUSH2 0x0020 → @main
+0x001b  57          JUMPI
+```
+
+:::tip
+The free function `disassemble(bytecode, sourceMap?)` is also exported and works on arbitrary
+bytecode — pass any hex string or `Uint8Array`, with or without a source map.
+:::
+
+A push whose value happens to coincide with some label's pc gets a speculative `→ @label`
+annotation; only `PUSH2` immediates feeding a `JUMP`/`JUMPI` are actual jump targets.
+
+## `sourceMap` and `lookupPc`
+
+```ts
+import { compile, evscript, lookupPc, t } from '@maxencerb/evs';
+
+const script = evscript({ name: 'one', args: [] }, (s) => {
+  return s.return({ v: s.lit(t.uint256, 1n) });
+});
+const compiled = compile(script);
+
+const hit = lookupPc(compiled.sourceMap, 0);
+if (hit !== undefined) {
+  hit.loc; // SourceLoc | null
+  hit.note; // optional codegen annotation
+}
+
+for (const site of compiled.sourceMap.sites) {
+  site.kind; // 'panic' | 'decode' | 'call' | 'stmt'
+  site.detail; // human-readable, e.g. 'checked add — Panic 0x11'
+}
+```
+
+`SourceMap` fields:
+
+| Field | Shape | Notes |
+| --- | --- | --- |
+| `version` | `1` | Format version |
+| `segments` | `readonly { pc, len, loc, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte |
+| `sites` | `readonly { id, kind, loc, detail }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number |
+| `labels` | `readonly { pc, name }[]` | Label name per jump-destination pc |
+
+`lookupPc(map, pc)` binary-searches the segments and returns
+`{ loc: SourceLoc | null; note?: string }`, or `undefined` when no segment covers the pc. The
+`sites` table powers `explainRevert` and the `EvsDecodeError(site)` round trip. Source locations
+are only recorded when the `locations` option is enabled (the default).
+
+## `explainRevert(data)` — `RevertExplanation`
+
+Decodes a raw revert payload (the hex data from a failed `eth_call`) against this script's IR
+and source map:
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+
+const script = evscript({ name: 'addOne', args: [arg('x', t.uint256)] }, (s) => {
+  return s.return({ y: s.add(s.args.x, 1n) });
+});
+const compiled = compile(script);
+
+const explanation = compiled.explainRevert(
+  '0x4e487b710000000000000000000000000000000000000000000000000000000000000011',
+);
+explanation.kind; // 'panic'
+explanation.panicCode; // 17n (0x11 — arithmetic overflow or underflow)
+explanation.message; // quoted below
+```
+
+Output (the location points at the `s.add` call in your source file):
+
+```txt
+Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script: checked add — Panic 0x11 at add-one.ts:4:26
+```
+
+The result shape (site ids are plain numbers):
+
+```ts
+import type { SourceLoc } from '@maxencerb/evs';
+
+interface RevertExplanation {
+  kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
+  message: string;
+  panicCode?: bigint; // kind 'panic' only
+  site?: { id: number; loc: SourceLoc | null; detail: string }; // kind 'evs-decode' only
+  candidateSites?: readonly { id: number; loc: SourceLoc | null; detail: string }[]; // 'panic' only
+  raw: `0x${string}`;
+}
+```
+
+| `kind` | Payload | Extras |
+| --- | --- | --- |
+| `'panic'` | `Panic(uint256)` (selector `0x4e487b71`, 36 bytes) | `panicCode`, plus `candidateSites` — every recorded site of that panic kind in this script |
+| `'evs-decode'` | `EvsDecodeError(uint256)` (36 bytes) | `site` when the id resolves to a returndata-decode site in this artifact's source map |
+| `'evs-invalid-calldata'` | `EvsInvalidCalldata()` (exactly 4 bytes) | Message names the expected function signature |
+| `'error-string'` | `Error(string)` | Bubbled verbatim from a callee; message quotes the reason |
+| `'custom'` | Any other selector (or a payload shorter than 4 bytes) | Decode it against the callee's ABI |
+| `'empty'` | Zero-length returndata | A bare `revert()`/`require(false)` bubbled, or the frame failed without a reason |
+
+:::caution
+For scripts that perform sub-calls, attribution to a script site is a strong hint, never proof:
+the evs selectors are public constants, and a callee revert bubbles byte-exactly, so an
+adversarial callee can forge them. `explainRevert` appends an explicit hedge to its message in
+that case. Scripts without sub-calls cannot bubble anything, so there the attribution is
+authoritative.
+:::
+
+The panic-code meaning table (including codes evs itself never emits but callees can bubble) is
+in [diagnostics](/reference/diagnostics/).
+
+## `ir`, `serializeIr`, `deserializeIr`
+
+`compiled.ir` is the frozen, JSON-serializable `ScriptIr` produced at recording — the same
+object as `script.ir`. Two free functions round-trip it:
+
+```ts
+import { compile, deserializeIr, evscript, serializeIr, t } from '@maxencerb/evs';
+
+const script = evscript({ name: 'one', args: [] }, (s) => {
+  return s.return({ v: s.lit(t.uint256, 1n) });
+});
+
+const json = serializeIr(script.ir); // stable JSON: sorted keys, optional fields omitted
+const ir = deserializeIr(json); // structural shape + version check; deep-frozen result
+
+ir.irVersion; // 1
+serializeIr(ir) === json; // true — the round trip is byte-stable
+compile(script).ir === script.ir; // true — the artifact carries the same IR object
+```
+
+Stability notes:
+
+- The format is versioned: `irVersion: 1`. `deserializeIr` rejects any other version, and v0
+  emits only version 1.
+- `serializeIr` emits object keys sorted and omits `undefined`-valued optional properties, so
+  two structurally equal IRs serialize to the same string.
+- `deserializeIr` performs the structural check only and throws `EvsTypeError` naming the
+  offending JSON path; `compile` and `interpret` re-validate the IR semantically on entry, so
+  externally sourced IR fails loudly rather than miscompiling.
+
+## Testing without a node
+
+The IR is directly executable by the exported reference interpreter:
+`interpret(ir, args, chain, opts?)` runs a script against a `MockChain` (a single
+`staticcall({ to, data })` hook) and returns an `InterpResult` whose returndata and revert
+payloads are bit-for-bit what the compiled bytecode produces. `InterpEnvOverrides` (the
+`opts.env` extension) models frame-dependent `s.env` values per call. See
+[testing scripts](/guides/testing-scripts/) for the full workflow.
+
+## `options`
+
+`compiled.options` is the frozen, fully resolved `Readonly<Required<CompileOptions>>` the
+artifact was built with — defaults applied: `evmVersion: 'cancun'`, `locations: true`, identity
+`peephole`, no-op `onDiagnostic`. See [evscript](/reference/evscript/) for the option-by-option
+reference and [EVM targets](/guides/evm-targets/) for choosing `evmVersion`.

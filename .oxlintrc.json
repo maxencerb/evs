@@ -28,7 +28,8 @@
     "**/contracts/out/**",
     "**/contracts/cache/**",
     "**/contracts/lib/**",
-    "**/test/generated/**"
+    "**/test/generated/**",
+    "apps/docs/**"
   ],
   "overrides": [
     {

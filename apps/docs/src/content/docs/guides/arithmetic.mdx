@@ -1,0 +1,154 @@
+---
+title: Arithmetic and comparisons
+description: Checked arithmetic, comparison, boolean, bitwise, and conversion operations on Expr values, with solc 0.8 panic semantics.
+---
+
+All arithmetic in evs is **checked**, matching solc 0.8 semantics exactly: overflow reverts with `Panic(0x11)`, division by zero with `Panic(0x12)`. Operations are methods on `Expr`, with the operand domain enforced by the type system.
+
+## The operation surface
+
+| Group              | `Expr` methods                                  | Operands                                       | Result          |
+| ------------------ | ----------------------------------------------- | ---------------------------------------------- | --------------- |
+| Checked arithmetic | `add` `sub` `mul` `div` `mod`                   | numeric (`uintN` / `intN`), same type          | same type       |
+| Ordering           | `lt` `gt` `lte` `gte`                           | numeric, same type                             | `Expr<'bool'>`  |
+| Equality           | `eq` `neq`                                      | any word type, same type                       | `Expr<'bool'>`  |
+| Boolean            | `and` `or` `not`                                | `bool`                                         | `Expr<'bool'>`  |
+| Bitwise            | `bitAnd` `bitOr` `bitXor` `bitNot`              | `uintN` / `bytesN`, same type                  | same type       |
+| Shifts             | `shl` `shr`                                     | value `uintN` / `bytesN`; shift amount `uint256` | same as value |
+| Conversions        | `toUint` `toInt` `asAddress` `asUint256` `asBytes32` | see [Conversions](#conversions)          | target type     |
+
+Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`).
+
+Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and-types/): `x.add(1n)`, `tick.lt(0n)`, `flag.and(true)`.
+
+`eq`/`neq` are restricted to word types — memref (`string`/`bytes`/`T[]`) equality is not defined in v0. Boolean `and`/`or` are **eager**, not short-circuiting: both sides are already-computed values by the time you combine them. For conditional execution, use `s.if` ([control flow](/guides/control-flow/)).
+
+## Checked semantics
+
+| Condition                                                       | Revert        |
+| --------------------------------------------------------------- | ------------- |
+| `add` / `sub` / `mul` result out of range for the operand type  | `Panic(0x11)` |
+| `div` / `mod` by zero                                           | `Panic(0x12)` |
+| signed division of the type's minimum value by −1               | `Panic(0x11)` |
+| checked narrowing out of range (`toUint` / `toInt` / `asAddress`) | `Panic(0x11)` |
+
+Checks run at the operand type's width, not at 256 bits: a `uint64` addition overflows at 2^64. The signed-division edge case is handled explicitly — the EVM's `SDIV` silently wraps `−2^255 / −1`, but evs (like solc) reverts with `Panic(0x11)`.
+
+Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate source lines for that panic. See [errors and debugging](/guides/errors-and-debugging/).
+
+Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` (the typed surface admits only these; an arithmetic `SAR` lowering exists at the IR level for signed operands but is not exposed on the builder in v0). Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
+
+## Signedness selects the comparison
+
+`lt`/`gt`/`lte`/`gte` compile to the EVM's unsigned `LT`/`GT` for `uintN` and to signed `SLT`/`SGT` for `intN`, chosen from the **static type** of the operands (`lte`/`gte` are `ISZERO` of the opposite strict comparison). You never pick an opcode; declaring the right type is enough:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const tickSide = evscript({ name: 'tickSide', args: [arg('tick', t.int24)] }, (s) => {
+  const isNegative = s.args.tick.lt(0n); // int24 → SLT: −100 < 0 is true
+  // literal-left subtraction via the free function; checked, so negating the
+  // int24 minimum value would revert with Panic(0x11)
+  const magnitude = s.select(isNegative, s.sub(0n, s.args.tick), s.args.tick);
+  return s.return({ isNegative, magnitude });
+});
+```
+
+The same selection logic keeps signed values canonical everywhere: `intN` words are sign-extended, and every operation preserves that invariant.
+
+## One type per operation
+
+Both operands must have the **same** evs type. The TS surface enforces it (the right-hand side of `a.add(b)` must be `IntoExpr` of `a`'s type), and the recorder double-checks at recording time — mixing two `Expr`s of different types throws `EvsTypeError` naming both types. There are no implicit widenings.
+
+This does not compile:
+
+```ts nocheck
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const mix = evscript(
+  { name: 'mix', args: [arg('a', t.uint128), arg('b', t.uint256)] },
+  // TS error: Expr<'uint256'> is not assignable to IntoExpr<'uint128'>
+  (s) => s.return({ sum: s.args.a.add(s.args.b) }),
+);
+```
+
+Convert explicitly instead:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const mix = evscript(
+  { name: 'mix', args: [arg('a', t.uint128), arg('b', t.uint256)] },
+  (s) => s.return({ sum: s.args.a.toUint(t.uint256).add(s.args.b) }),
+);
+```
+
+## Conversions
+
+- **`toUint(target)` / `toInt(target)`** — numeric to numeric. Widening is free; narrowing is range-checked and reverts with `Panic(0x11)` when the value does not fit. Cross-signedness conversions are range-checked the same way: `uint256` to `int256` panics for values of 2^255 and above.
+- **`asAddress()`** — on `Expr<'uint256'>` or `Expr<'bytes32'>`; checked that the high 96 bits are zero (`Panic(0x11)` otherwise).
+- **`asUint256()` / `asBytes32()`** — free reinterpretation between `bytes32` and `uint256` (both occupy the full word; no check, no cost).
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const casts = evscript(
+  { name: 'casts', args: [arg('x', t.uint256), arg('w', t.bytes32)] },
+  (s) => {
+    const small = s.args.x.toUint(t.uint64); // checked narrowing: Panic(0x11) if x ≥ 2^64
+    const wide = small.toUint(t.uint256); // widening: free
+    const signed = s.args.x.toInt(t.int256); // checked: Panic(0x11) if x ≥ 2^255
+    const addr = s.args.w.asAddress(); // checked: high 96 bits must be zero
+    const word = s.args.w.asUint256(); // free reinterpret
+    return s.return({ small, wide, signed, addr, word });
+  },
+);
+```
+
+## Literal folding at recording time
+
+Pure operations whose operands are all statically known fold at recording — no bytecode is emitted for them:
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+
+const fees = evscript({ name: 'fees', args: [arg('amount', t.uint256)] }, (s) => {
+  // all operands statically known → folds at recording into the constant 60
+  const feeBps = s.lit(t.uint256, 30n).mul(2n);
+  const fee = s.args.amount.mul(feeBps).div(10_000n);
+  return s.return({ fee });
+});
+```
+
+If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a literal division by zero, an out-of-range `toUint` of a known value — recording throws `EvsTypeError` (code `CERTAIN_PANIC`) at that line rather than compiling a guaranteed revert. If a guaranteed runtime panic is what you actually want, route one operand through a cell so its value is no longer statically known: `s.let(t.uint256, x).get()`.
+
+## Worked example: share of supply in basis points
+
+```ts
+import { evscript, arg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const shareOfSupply = evscript(
+  { name: 'shareOfSupply', args: [arg('token', t.address), arg('owner', t.address)] },
+  (s) => {
+    const bal = s.call({
+      address: s.args.token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.owner],
+    });
+    const supply = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'totalSupply' });
+    // bal * 10_000 / supply — mul reverts with Panic(0x11) on overflow,
+    // div with Panic(0x12) if totalSupply() returns zero
+    const bps = bal.mul(10_000n).div(supply);
+    const isWhale = bps.gte(100n); // ≥ 1% of supply (uint256 → unsigned comparison)
+    return s.return({ bps, isWhale });
+  },
+);
+```
+
+## Next
+
+- [Control flow](/guides/control-flow/) — branching and looping on runtime values, `s.select`.
+- [Types reference](/reference/types/) — the full `Expr` method tables.
+- [Errors and debugging](/guides/errors-and-debugging/) — the complete panic table and `explainRevert`.

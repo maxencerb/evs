@@ -1,0 +1,220 @@
+---
+title: evscript and compile
+description: "Exact signatures for evscript, EvsScript, arg, ArgSpec, compile, and CompileOptions, including every compile default."
+---
+
+This page is the signature-level reference for the script entry point and the compiler entry
+point. For the narrative introduction, see [writing scripts](/guides/writing-scripts/); for the
+compiled artifact returned by `compile`, see [the artifact reference](/reference/artifact/).
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+```
+
+## evscript()
+
+```ts
+import type { ArgSpec, EvsScript, Expr, ScriptBuilder, ScriptReturn } from '@maxencerb/evs';
+
+declare function evscript<
+  const name extends string,
+  const args extends readonly ArgSpec[],
+  ret extends Record<string, Expr>,
+>(
+  def: { name: name; args: args },
+  body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+  opts?: { locations?: boolean }, // default true: capture source locations
+): EvsScript<name, args, ret>;
+```
+
+`evscript` records a script: it runs `body` exactly once, at recording time, against a
+[`ScriptBuilder`](/reference/builder/) and captures every builder call into a frozen IR. The
+callback must return the value produced by `s.return(...)` — returning anything else (or not
+calling `s.return` at all) throws `EvsTypeError`.
+
+The `const` type parameters mean inline `args` tuples need no `as const`; the literal arg names
+and types flow into `s.args` and into the generated ABI.
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const double = evscript(
+  { name: 'double', args: [arg('x', t.uint256)] },
+  (s) => s.return({ doubled: s.args.x.mul(2n) }),
+);
+
+const compiled = double.compile(); // sugar for compile(double)
+```
+
+Recording-time validation (each violation throws `EvsTypeError` with the call-site location):
+
+- `def.name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
+- `def.args` must be an array of `ArgSpec`s; names must be valid identifiers with no duplicates.
+- Every arg type must be a v0 `EvsType` — tuples, fixed-size arrays `T[N]`, and nested arrays
+  throw with code `UNSUPPORTED_V0`.
+- `body` must be a function.
+
+Everything the builder itself can throw during recording is catalogued in
+[diagnostics](/reference/diagnostics/).
+
+### The locations option
+
+`opts.locations` (default `true`) controls source-location capture during recording. When
+enabled, every recorded statement stores a `SourceLoc` parsed from a stack trace, which powers
+error messages, `sourceMap`, `explainRevert`, and diagnostics. Pass `{ locations: false }` to
+skip the per-statement stack capture (faster recording; locations in errors and the source map
+become `null`):
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const fast = evscript(
+  { name: 'fast', args: [arg('x', t.uint256)] },
+  (s) => s.return({ x: s.args.x }),
+  { locations: false },
+);
+```
+
+`compile` has its own independent `locations` option (below) for the emitted source map.
+
+## EvsScript
+
+The value returned by `evscript`. It is frozen; `ir` is deep-frozen.
+
+```ts
+import type { ArgSpec, CompiledEvsScript, CompileOptions, Expr, ScriptAbi, ScriptIr } from '@maxencerb/evs';
+
+interface EvsScript<
+  name extends string = string,
+  args extends readonly ArgSpec[] = readonly ArgSpec[],
+  ret extends Record<string, Expr> = Record<string, Expr>,
+> {
+  readonly name: name;
+  readonly ir: ScriptIr; // frozen, JSON-serializable
+  readonly abi: ScriptAbi<name, args, ret>; // literal-typed value, exists pre-compile
+  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>; // sugar for compile()
+}
+```
+
+- `name` — the literal script name; becomes the ABI function name.
+- `ir` — the recorded program. Serialize it with `serializeIr` or run it with the `interpret`
+  oracle without compiling; see [testing scripts](/guides/testing-scripts/).
+- `abi` — the literal-typed `ScriptAbi` (one `view` function plus the two evs error entries).
+  It exists before you compile, so viem type inference works without any artifact. See
+  [the artifact reference](/reference/artifact/) for its shape.
+- `compile(options?)` — identical to the free-standing `compile(script, options)`.
+
+## arg() and ArgSpec
+
+```ts
+import type { ArgType } from '@maxencerb/evs';
+
+interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
+  readonly name: name;
+  readonly type: type;
+}
+
+declare function arg<const name extends string, const type extends ArgType>(
+  name: name,
+  type: type,
+): ArgSpec<name, type>;
+```
+
+`arg` declares one script argument. It validates at the call site and returns a frozen object:
+
+- `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
+- `type` must be a v0 type: any word type, `string`, `bytes`, or `T[]` of a word type
+  (`ArgType` is an alias of `EvsType`). Tuples and `T[N]` throw `EvsTypeError` with code
+  `UNSUPPORTED_V0`.
+
+```ts
+import { arg, t } from '@maxencerb/evs';
+
+const pool = arg('pool', t.address); // ArgSpec<'pool', 'address'>
+const fees = arg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
+const amount = arg('amount', 'uint128'); // raw type strings work everywhere t.* does
+```
+
+Declaration order is load-bearing: the args tuple order is the type-level order, the runtime
+encode order, and the ABI `inputs` order — call sites stay viem-native positional
+(`args: [pool, fee]`). The full type vocabulary lives in [the types reference](/reference/types/).
+
+## compile()
+
+```ts
+import type { ArgSpec, CompiledEvsScript, CompileOptions, EvsScript, Expr, ScriptIr } from '@maxencerb/evs';
+
+declare function compile<
+  s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
+>(
+  script: s,
+  options?: CompileOptions,
+): s extends EvsScript<
+  infer n extends string,
+  infer a extends readonly ArgSpec[],
+  infer r extends Record<string, Expr>
+>
+  ? CompiledEvsScript<n, a, r>
+  : never;
+```
+
+`compile` turns a recorded script into a [`CompiledEvsScript`](/reference/artifact/). The
+pipeline: validate the IR, lower to assembler nodes, run the `peephole` hook, assemble with the
+mandatory verifiers, enforce the EIP-170 size cap, and merge site information into the source
+map. Stage-by-stage detail is in [how it works](/concepts/how-it-works/).
+
+The constraint is structural (`{ name, ir, abi }`) rather than `s extends EvsScript` — a
+deliberate, recorded deviation so that every concrete script is assignable; the result type is
+exactly `CompiledEvsScript` with the script's literal type parameters preserved.
+
+Failure modes:
+
+- `EvsCompileError` with code `EVM_VERSION` for an unknown `evmVersion` string.
+- `EvsCompileError` with code `COMPILE_LIMIT` when the runtime bytecode exceeds the EIP-170
+  limit of 24,576 bytes; the message includes a per-region size breakdown (dispatcher, body,
+  fns, tails, data segments).
+- `EvsTypeError` when the value passed is not a script object.
+
+```ts
+import { compile, evscript } from '@maxencerb/evs';
+import type { EvsDiagnostic } from '@maxencerb/evs';
+
+const whoami = evscript({ name: 'whoami', args: [] }, (s) => s.return({ me: s.env('caller') }));
+
+const warnings: EvsDiagnostic[] = [];
+const compiled = compile(whoami, {
+  evmVersion: 'paris', // pre-Shanghai target
+  onDiagnostic: (d) => warnings.push(d), // ENV_FRAME_DEPENDENT lands here
+});
+```
+
+## CompileOptions
+
+```ts
+import type { AsmNode, EvmVersion, EvsDiagnostic } from '@maxencerb/evs';
+
+interface CompileOptions {
+  evmVersion?: EvmVersion; // 'paris' | 'shanghai' | 'cancun'
+  peephole?: (nodes: readonly AsmNode[]) => AsmNode[];
+  onDiagnostic?: (d: EvsDiagnostic) => void;
+  locations?: boolean;
+}
+```
+
+| Option         | Default      | Effect                                                                                                                                                                       |
+| -------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `evmVersion`   | `'cancun'`   | Target opcode set (`'paris'`, `'shanghai'`, or `'cancun'`). Anything else throws `EvsCompileError` (`EVM_VERSION`). See [EVM targets](/guides/evm-targets/).                  |
+| `peephole`     | identity     | Optimizer seam: transforms the assembler node stream before layout. No optimizer ships in v0. The mandatory verifiers run on the hook's output.                               |
+| `onDiagnostic` | no-op        | Receives every compile-time warning (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`). evs never logs; without a callback, diagnostics are silently dropped.          |
+| `locations`    | `true`       | Whether source locations are carried into the emitted source map.                                                                                                             |
+
+The compiled artifact exposes the fully resolved options as
+`options: Readonly<Required<CompileOptions>>` — defaults filled in. Diagnostic codes and their
+meaning are documented in [diagnostics](/reference/diagnostics/).
+
+:::note
+`onDiagnostic` is the only channel for warnings. If you compile a script that reads
+`s.env('caller')` or `s.env('address')` without a callback, you will not see the
+`ENV_FRAME_DEPENDENT` warning — wire it up in development. Why it matters:
+[execution modes](/guides/execution/).
+:::

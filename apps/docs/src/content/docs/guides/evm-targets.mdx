@@ -1,0 +1,89 @@
+---
+title: EVM targets
+description: Pick a compile target — paris, shanghai, or cancun — to match the chain's active fork, and stay under the EIP-170 runtime size cap.
+---
+
+Different chains run different EVM forks. A script compiled with opcodes the target chain has
+not activated fails at run time — an unsupported opcode aborts the whole `eth_call` — so
+`compile()` takes an `evmVersion` and selects instructions accordingly.
+
+## `evmVersion`
+
+`CompileOptions.evmVersion` accepts `'paris'`, `'shanghai'`, or `'cancun'`. The default is
+`'cancun'`. The union is exported as the type `EvmVersion`:
+
+```ts
+import { arg, compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
+  s.return({ x: s.args.x }),
+);
+
+const target: EvmVersion = 'paris';
+const compiled = compile(echo, { evmVersion: target });
+
+// compiled.options.evmVersion → 'paris'
+// compiled.initBytecode begins with the paris wrapper: 0x61RRRR80600a3d393df3
+```
+
+Any other string throws `EvsCompileError` with code `'EVM_VERSION'` before any work happens.
+The chosen target is recorded on the artifact under `options.evmVersion`.
+
+## What changes per target
+
+The same script compiles to behaviorally identical bytecode on all three targets; only the
+instruction selection differs:
+
+| Construct      | `cancun` (default)     | `shanghai`                       | `paris`                                                |
+| -------------- | ---------------------- | -------------------------------- | ------------------------------------------------------ |
+| zero constants | `PUSH0`                | `PUSH0`                          | `PUSH1 0x00`                                           |
+| memory copies  | `MCOPY`                | `@memcpy` word-loop subroutine   | `@memcpy` word-loop subroutine                         |
+| init wrapper   | `61RRRR80600A5F395FF3` | `61RRRR80600A5F395FF3`           | `61RRRR80600A3D393DF3` (`3D` = RETURNDATASIZE-as-zero) |
+
+- `PUSH0` is EIP-3855, activated in Shanghai. On `paris` every zero push widens to
+  `PUSH1 0x00`, and the deployless init wrapper swaps its two `PUSH0` bytes for
+  `RETURNDATASIZE`, which is guaranteed zero at the start of an init frame.
+- `MCOPY` is EIP-5656, activated in Cancun. On older targets memory copies go through a shared
+  `@memcpy` word-loop subroutine, emitted once and only if the script actually copies memory.
+
+The assembler's verifier enforces the gate as a backstop: no opcode newer than the chosen
+target can survive into the bytecode (a stray `MCOPY` in a `paris` build is an internal error,
+not a silently broken artifact).
+
+Because instruction selection differs, bytecode size differs slightly per target — compile one
+artifact per chain family rather than reusing bytes across targets.
+
+## Picking a target
+
+| Target      | Use for                                                                                       |
+| ----------- | ---------------------------------------------------------------------------------------------- |
+| `cancun`    | Ethereum mainnet and L2s/sidechains on current forks — the default, smallest output             |
+| `shanghai`  | chains that have PUSH0 (EIP-3855) but not MCOPY (EIP-5656)                                      |
+| `paris`     | chains that have not activated Shanghai — no PUSH0; this is the compiler's oldest supported fork |
+
+When in doubt about an older chain or L2, step down: everything `paris` emits has been
+available since the Merge, so it is the safe floor. If a script that works on mainnet fails on
+another chain with an invalid-opcode-style error, suspect `PUSH0`/`MCOPY` and recompile with an
+older target.
+
+## The EIP-170 size cap
+
+Runtime bytecode is capped at **24,576 bytes** (EIP-170 — the limit on deployed code, which
+both execution modes are subject to). `compile()` enforces it: exceeding the cap throws
+`EvsCompileError` with code `'COMPILE_LIMIT'`, and the message breaks the size down by region —
+dispatcher, body, fns, tails, data segments — ending with the advice to "split the script or
+move large literals off-chain".
+
+Practical levers when you hit it:
+
+- **Data segments** hold your dynamic literals (`s.lit` strings, bytes, literal arrays) — large
+  ones are often better passed as script *args* at call time, which costs calldata instead of
+  bytecode.
+- **Body** size scales with recorded statements; remember that JS loops unroll at recording
+  time, while `s.for`/`s.while` emit one body — see [control flow](/guides/control-flow/).
+- Repeated logic can be factored into an `s.fn` subroutine, which is emitted once regardless of
+  call count — see [functions](/guides/functions/).
+
+The deployless `initBytecode` is exactly the 10-byte wrapper plus the runtime, so it adds
+nothing meaningful to the budget — the runtime cap is the one that binds. How the regions fit
+together is covered in [how it works](/concepts/how-it-works/).

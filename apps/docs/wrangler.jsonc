@@ -1,0 +1,19 @@
+// Cloudflare Workers static-assets deployment for the evs docs site.
+// Deploy: `bun run deploy` (= astro build && wrangler deploy).
+// The custom-domain route requires the maxencerb.com zone on the Cloudflare account;
+// wrangler creates the DNS record + certificate for evs.maxencerb.com automatically.
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "evs-docs",
+  "compatibility_date": "2026-06-12",
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "404-page",
+  },
+  "routes": [
+    {
+      "pattern": "evs.maxencerb.com",
+      "custom_domain": true,
+    },
+  ],
+}

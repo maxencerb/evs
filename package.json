@@ -4,7 +4,8 @@
   "workspaces": {
     "packages": [
       "packages/*",
-      "examples/*"
+      "examples/*",
+      "apps/*"
     ],
     "catalog": {
       "typescript": "^5.9.0",
@@ -16,6 +17,14 @@
         "vitest": "^3.2.4",
         "prool": "^0.2.4",
         "@ethereumjs/evm": "^10.1.2"
+      },
+      "docs": {
+        "astro": "^6.4.6",
+        "@astrojs/starlight": "^0.40.0",
+        "@astrojs/check": "^0.9.9",
+        "starlight-theme-rapide": "^0.5.2",
+        "starlight-links-validator": "^0.24.0",
+        "wrangler": "^4.100.0"
       }
     }
   },

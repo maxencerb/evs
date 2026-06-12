@@ -1,0 +1,163 @@
+---
+title: Errors and diagnostics
+description: The EvsError hierarchy, every EvsErrorCode, the EvsDiagnostic warning channel, and the runtime panic table.
+---
+
+evs fails on three distinct timelines, with a different mechanism on each:
+
+| Timeline | Mechanism | Where to look |
+| --- | --- | --- |
+| Recording time | A subclass of `EvsError` is thrown while your builder callback runs | This page |
+| Compile time | `compile()` throws — `EvsCompileError` for whole-program limits, `EvsInternalError` for verifier failures — and reports warnings via `onDiagnostic` | This page |
+| Run time | The script reverts on-chain — panics, the evs error ABI, or bubbled callee reverts | [Compiled artifact](/reference/artifact/), [errors and debugging](/guides/errors-and-debugging/) |
+
+The policy is to validate at recording wherever the information already exists there — which is
+almost everywhere — so most mistakes surface as an exception at the exact `file:line:column` of
+the offending call, before any bytecode exists. Compile time is reserved for whole-program facts
+(code size, option gating).
+
+## The `EvsError` hierarchy
+
+Every evs failure is an instance of `EvsError` (which extends `Error`). What it carries:
+
+```ts
+import type { EvsError } from '@maxencerb/evs';
+
+declare const error: EvsError;
+error.code; // EvsErrorCode — stable, machine-checkable
+error.message; // user-vocabulary text with actionable guidance
+error.loc; // SourceLoc | null — where the offending call was recorded
+error.relatedLocs; // readonly { label: string; loc: SourceLoc | null }[] — secondary sites
+error.name; // the concrete class name, e.g. 'EvsTypeError'
+```
+
+`relatedLocs` carries secondary locations when two sites are involved — for example
+`RECORDING_CLOSED` includes a `'script defined at'` entry. `loc` is `null` when location capture
+is disabled (`evscript(def, body, { locations: false })`) or the stack trace is unparseable.
+Diagnostics are **not** attached to errors; they travel on a separate warning channel (below).
+
+Five subclasses partition the failures:
+
+| Class | Codes it uses | Thrown when |
+| --- | --- | --- |
+| `EvsStagingError` | `STAGING_MISUSE` | A staged `Expr` handle is used as a host value — the `valueOf`, `Symbol.toPrimitive`, `toString`, and `toJSON` traps all throw. See [values and types](/guides/values-and-types/) |
+| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE` | Type and literal validation at recording; also malformed host inputs to `compile`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
+| `EvsScopeError` | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` | A handle or cell is used outside the scope it belongs to |
+| `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION` | Whole-program limits and option gating at compile time |
+| `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report` |
+
+```ts
+import { evscript, EvsTypeError, t } from '@maxencerb/evs';
+
+try {
+  evscript({ name: 'bad', args: [] }, (s) => {
+    return s.return({ y: s.sub(s.lit(t.uint256, 1n), 2n) });
+  });
+} catch (e) {
+  if (e instanceof EvsTypeError) {
+    e.code; // 'CERTAIN_PANIC' — 1 − 2 underflows uint256, so it would always revert
+    e.loc; // the SourceLoc of the s.sub call
+  }
+}
+```
+
+## `EvsErrorCode` — the complete union
+
+| Code | Class | Meaning | Timeline |
+| --- | --- | --- | --- |
+| `STAGING_MISUSE` | `EvsStagingError` | A handle was coerced to a host value: `x + 1`, a template literal, `JSON.stringify(x)` | Recording |
+| `TYPE_MISMATCH` | `EvsTypeError` | An operand or argument has the wrong type for the operation; also structurally invalid host inputs to the public API entry points | Recording / API entry |
+| `LITERAL_RANGE` | `EvsTypeError` | A literal fails validation for its type: numeric value out of range or not a safe integer, hex of the wrong length or odd length | Recording |
+| `CERTAIN_PANIC` | `EvsTypeError` | An all-literal operation provably panics at run time, so recording refuses it: literal overflow/underflow, a literal cast that does not fit, division by a literal zero, a literal `s.newArray` length of 2^32 or more | Recording |
+| `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself | Recording |
+| `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
+| `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
+| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: tuples, fixed-size arrays `T[N]`, nested/non-word arrays, overloaded callee functions | Recording |
+| `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid or duplicate identifiers in the script name, args, or return keys; a malformed ABI fragment passed to `s.call` | Recording |
+| `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget | Compile / interpret |
+| `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |
+| `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script | Any |
+
+## Diagnostics — the compile-time warning channel
+
+Warnings never throw and are never logged. They are delivered exclusively through the
+`onDiagnostic` compile option; the default sink discards them, and the artifact is unaffected
+either way.
+
+```ts
+import { compile, evscript, type EvsDiagnostic } from '@maxencerb/evs';
+
+const script = evscript({ name: 'whoami', args: [] }, (s) => {
+  return s.return({ me: s.env('caller') });
+});
+
+const warnings: EvsDiagnostic[] = [];
+compile(script, { onDiagnostic: (d) => warnings.push(d) });
+
+for (const w of warnings) {
+  w.code; // 'ENV_FRAME_DEPENDENT' here — recorded at the s.env('caller') call
+  w.loc; // SourceLoc | null of that call
+}
+```
+
+The shapes:
+
+```ts
+import type { EvsDiagnostic, SourceLoc } from '@maxencerb/evs';
+
+declare const diagnostic: EvsDiagnostic;
+diagnostic.severity; // 'warning' — every diagnostic is a warning; hard failures throw instead
+diagnostic.code; // 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT'
+diagnostic.message; // human-readable explanation with concrete guidance
+diagnostic.loc; // SourceLoc | null
+
+declare const loc: SourceLoc;
+loc.file; // string
+loc.line; // number
+loc.column; // number
+```
+
+| Code | Triggers when | Why it matters |
+| --- | --- | --- |
+| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, an `s.call`/`s.tryCall` with outputs (each call snapshots returndata), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
+| `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
+| `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')` | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/) |
+
+The `ENV_FRAME_DEPENDENT` warning for the example above reads:
+
+```txt
+s.env('caller') is execution-frame-dependent: in the default deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' }) plus the `account` call parameter
+```
+
+:::note
+There is no per-site suppression mechanism. Diagnostics are opt-in: if you do not pass
+`onDiagnostic`, you never see them; to ignore a category, filter on `code` inside your
+callback. `s.env('timestamp')`, `s.env('blocknumber')`, and `s.env('chainid')` are block
+context — identical across both modes — and do not warn.
+:::
+
+## Runtime panics
+
+Checked operations revert with the standard Solidity `Panic(uint256)` encoding, byte-exact with
+solc: the 4-byte selector `0x4e487b71` followed by one 32-byte code word — 36 bytes total. evs
+emits exactly four panic codes:
+
+| Code | Meaning (solc semantics) | Emitted by |
+| --- | --- | --- |
+| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`div`/`mod` (including `int256` min divided by −1); checked narrowing conversions (`toUint`, `toInt`, `asAddress`) |
+| `0x12` | Division or modulo by zero | `div`/`mod` with a runtime zero divisor |
+| `0x32` | Array index out of bounds | `Expr.at(i)` on arrays; `MutArray` `get`/`set` |
+| `0x41` | Allocation too large | `s.newArray` with a runtime length of 2^32 or more |
+
+Callee reverts bubble through the script byte-exactly, so any other solc panic code can still
+appear in a script's revert payload — bubbled verbatim from a contract you called.
+`explainRevert` decodes the full solc table (`0x00` generic compiler panic, `0x01` failed
+`assert`, `0x21` invalid enum conversion, `0x22` corrupted storage byte array, `0x31` pop on an
+empty array, `0x51` call to a zero-initialized internal function) and, for the four codes above,
+lists every candidate site in your script with its recorded source location.
+
+Beyond panics, a script can revert with the two evs-owned errors — `EvsInvalidCalldata()` and
+`EvsDecodeError(uint256 site)` — or with a callee's payload bubbled verbatim. The exact ABI
+entries and selectors are documented in [the artifact reference](/reference/artifact/); the
+end-to-end debugging workflow, including `explainRevert` and `disassemble`, is in
+[errors and debugging](/guides/errors-and-debugging/).

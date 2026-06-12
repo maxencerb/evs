@@ -1,0 +1,250 @@
+---
+title: Errors and debugging
+description: Every way an evs script can fail — recording, compile, and run time — and the toolkit for decoding reverts with explainRevert, disassemble, and the source map.
+---
+
+An evs script can fail on three distinct timelines, and each one fails differently:
+
+| Timeline                          | What you get                                                                | Typical causes                                                                                  |
+| --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
+| Recording — the builder callback  | `EvsTypeError` / `EvsStagingError` / `EvsScopeError`, thrown at the offending line | out-of-range literals, type mismatches, using an `Expr` as a plain JS value, captures in `s.fn` |
+| Compile — `compile()`             | `EvsCompileError` thrown; `EvsDiagnostic` warnings via `onDiagnostic`        | EIP-170 size overflow, unknown `evmVersion`; warnings like `LOOP_ALLOCATION`                     |
+| Run time — the `eth_call`         | revert payloads: `Panic(uint256)`, the evs error ABI, bubbled callee reverts | overflow, out-of-bounds indexing, malformed returndata, a callee reverting                       |
+
+Every TS-side error extends `EvsError`, which carries a machine-readable `code`
+(`EvsErrorCode`), a `loc` (`{ file, line, column }` of the offending call, or `null`), and
+`relatedLocs` when two source locations are involved. The full code list lives in the
+[diagnostics reference](/reference/diagnostics/).
+
+## Recording-time errors
+
+The builder callback runs exactly once, and evs validates everything it can the moment a
+builder method is called — so the stack trace points at *your* line:
+
+```ts
+import { arg, evscript, EvsTypeError, t } from '@maxencerb/evs';
+
+try {
+  evscript({ name: 'overflowing', args: [arg('x', t.uint8)] }, (s) => {
+    const y = s.args.x.add(300n); // 300 does not fit uint8 — throws here, at recording
+    return s.return({ y });
+  });
+} catch (e) {
+  if (e instanceof EvsTypeError) {
+    const code = e.code; // 'LITERAL_RANGE'
+    const where = e.loc; // { file, line, column } of the offending .add(300n)
+  }
+}
+```
+
+Three classes can surface at recording:
+
+| Class             | Thrown for                                                                                                   |
+| ----------------- | ------------------------------------------------------------------------------------------------------------ |
+| `EvsTypeError`    | type mismatches, literal range violations, overloaded ABI names, non-v0 types, folds that would certainly panic |
+| `EvsStagingError` | using a handle as a plain JS value — `valueOf`, `toString`, template strings, `JSON.stringify`                |
+| `EvsScopeError`   | foreign handles, captures inside `s.fn`, `LoopCtl` outside its loop, builder calls after `s.return`           |
+
+Staging misuse deserves a callout because TypeScript catches most of it too. This does not
+compile, and each line would throw `EvsStagingError` at recording if it did:
+
+```ts nocheck
+const sum = s.args.x + 1n; // Expr<'uint256'> is not a bigint — use s.args.x.add(1n)
+const label = `balance: ${bal}`; // template-string coercion on a handle throws
+```
+
+See [values and types](/guides/values-and-types/) for the full staging model.
+
+## Compile-time errors and diagnostics
+
+`compile()` is reserved for whole-program facts. It throws `EvsCompileError` for hard failures —
+`COMPILE_LIMIT` when the runtime exceeds the EIP-170 cap (with a per-region size breakdown; see
+[EVM targets](/guides/evm-targets/)) and `EVM_VERSION` for an unknown target. Internal verifier
+failures throw `EvsInternalError`, whose message always contains "bug in evs, please report".
+
+Non-fatal findings are **warnings**, delivered only through the `onDiagnostic` callback —
+`compile()` never logs:
+
+```ts
+import { arg, compile, evscript, EvsCompileError, t, type EvsDiagnostic } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
+  s.return({ x: s.args.x }),
+);
+
+const warnings: EvsDiagnostic[] = [];
+try {
+  compile(echo, { onDiagnostic: (d) => warnings.push(d) });
+} catch (e) {
+  if (e instanceof EvsCompileError) {
+    const code = e.code; // 'COMPILE_LIMIT' (EIP-170) or 'EVM_VERSION' (unknown target)
+  }
+}
+```
+
+Each `EvsDiagnostic` is `{ severity: 'warning', code, message, loc }` with three possible
+codes: `LOOP_ALLOCATION` (memory allocated on every loop iteration — evs never resets the free
+pointer), `LARGE_FRAME`, and `ENV_FRAME_DEPENDENT` (`s.env('caller')`/`s.env('address')` —
+covered in [executing scripts](/guides/execution/)).
+
+## Runtime reverts
+
+At run time a script reverts with one of three payload families.
+
+### Panics — `Panic(uint256)`
+
+evs uses Solidity 0.8's `Panic(uint256)` convention. Your script's own code emits exactly four
+codes; everything else can still reach you because callee reverts bubble verbatim:
+
+| Code   | Meaning                                      | Emitted by your script?                                  |
+| ------ | -------------------------------------------- | -------------------------------------------------------- |
+| `0x00` | generic compiler panic                       | bubbled from a callee only                                |
+| `0x01` | assertion failure (`assert`)                 | bubbled from a callee only                                |
+| `0x11` | arithmetic overflow or underflow             | yes — checked `add`/`sub`/`mul`, narrowing conversions    |
+| `0x12` | division or modulo by zero                   | yes — `div`/`mod`                                         |
+| `0x21` | invalid enum conversion                      | bubbled from a callee only                                |
+| `0x22` | corrupted storage byte array                 | bubbled from a callee only                                |
+| `0x31` | pop on an empty array                        | bubbled from a callee only                                |
+| `0x32` | array index out of bounds                    | yes — `.at()`, `MutArray` get/set                         |
+| `0x41` | allocation too large (out of memory)         | yes — `s.newArray` with a runtime length ≥ 2^32           |
+| `0x51` | call to a zero-initialized internal function | bubbled from a callee only                                |
+
+See [arithmetic](/guides/arithmetic/) for exactly which operations check what.
+
+### The evs error ABI
+
+Two custom errors are evs's own. They are exported as `EVS_ERROR_ABI` and — more usefully —
+already included in every compiled script's `abi`, so viem names them when decoding a revert:
+
+| Error                        | Reverted when                                                                                      |
+| ---------------------------- | --------------------------------------------------------------------------------------------------- |
+| `EvsInvalidCalldata()`       | the calldata does not match the script function: wrong selector, truncated calldata, malformed dynamic arguments |
+| `EvsDecodeError(uint256 site)` | a strict `s.call` received structurally malformed returndata; `site` indexes the artifact's source map           |
+
+### Bubbled callee reverts
+
+When a contract called via `s.call` reverts, the script reverts with the callee's payload
+**byte-for-byte** — `Error(string)`, `Panic(uint256)`, and custom errors alike. Nothing is
+wrapped or rewritten, so you can decode the payload against the callee's ABI as if you had
+called it directly. If you want a failed sub-call to produce zeros instead of reverting, use
+`s.tryCall` — see [calling contracts](/guides/calls/).
+
+## `explainRevert` — from a viem error to your source line
+
+The artifact's `explainRevert(data)` classifies any revert payload and, where possible, maps it
+back to the script line that produced it. The full flow — catch the viem error, extract the raw
+payload, explain it:
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  erc20Abi,
+  http,
+} from 'viem';
+
+const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
+  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+
+const compiled = compile(tokenMeta);
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'tokenMeta',
+    args: ['0x000000000000000000000000000000000000dEaD'], // no symbol() here
+  });
+} catch (e) {
+  if (e instanceof BaseError) {
+    const reverted = e.walk((err) => err instanceof ContractFunctionRevertedError);
+    if (reverted instanceof ContractFunctionRevertedError && reverted.raw !== undefined) {
+      const explanation = compiled.explainRevert(reverted.raw);
+      // explanation.kind    → 'evs-decode'
+      // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 1)
+      //                        — recorded at token-meta.ts:5:20"
+      // explanation.site    → { id, loc, detail } for the s.call that failed
+    }
+  }
+}
+```
+
+The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` and
+`candidateSites` for panics and `site` for decode errors. The kinds:
+
+| `kind`                   | Payload                          | Source attribution                                                                  |
+| ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
+| `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
+| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.call` whose returndata failed to decode, with its recorded loc  |
+| `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
+| `'error-string'`         | `Error(string)`                  | none — bubbled verbatim from a callee                                                 |
+| `'custom'`               | any other selector               | none — decode it against the callee's ABI                                             |
+| `'empty'`                | zero-length returndata           | none — a bare `revert()`/`require(false)` bubbled, or the frame failed without reason |
+
+:::caution[Attribution is a hint when the script makes sub-calls]
+Panics share one revert tail, so panic attribution is a list of *candidates*, not proof. And
+since callee reverts bubble byte-exactly, an adversarial callee can revert with the evs
+selectors verbatim — for scripts that perform sub-calls, `explainRevert` appends a hedge noting
+that the payload may have originated off-script. Scripts without sub-calls cannot bubble
+anything, so their attributions are authoritative.
+:::
+
+## `disassemble()` — read the bytecode
+
+`disassemble()` returns the annotated instruction listing of the runtime bytecode; `format()`
+renders it with labels, jump targets, notes, and source locations:
+
+```ts
+import { arg, compile, evscript, lookupPc, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
+  s.return({ x: s.args.x }),
+);
+const compiled = compile(echo);
+
+const listing = compiled.disassemble().format();
+// pc, raw bytes, mnemonic, jump targets, notes — see below
+
+const hit = lookupPc(compiled.sourceMap, 0x29);
+// hit → { loc: { file, line, column } | null, note?: string } | undefined
+```
+
+The first lines of the real listing for this `echo(uint256)` script (cancun target):
+
+```txt
+0x0000  60a0        PUSH1 0xa0  ; frameEnd
+0x0002  6040        PUSH1 0x40
+0x0004  52          MSTORE  ; free-ptr init
+0x0005  6004        PUSH1 0x04
+0x0007  36          CALLDATASIZE
+0x0008  10          LT
+0x0009  610088      PUSH2 0x0088 → @badcd
+0x000c  57          JUMPI
+0x000d  5f          PUSH0
+0x000e  35          CALLDATALOAD
+0x000f  60e0        PUSH1 0xe0
+0x0011  1c          SHR
+0x0012  636279e43c  PUSH4 0x6279e43c  ; selector echo(uint256)
+0x0017  14          EQ
+0x0018  610020      PUSH2 0x0020 → @main
+```
+
+`disassemble` also works on foreign bytecode — it is a free export taking raw bytes or hex —
+and `format({ locs: false })` drops the source-location comments.
+
+## `sourceMap` and `lookupPc`
+
+The artifact's `sourceMap` is the data behind both tools: `segments` map every pc range to the
+source location that produced it, `sites` give each panic/decode/call site an id, a kind, and a
+human-readable detail (this is what `explainRevert` resolves `EvsDecodeError(site)` against),
+and `labels` name the pcs of internal jump targets. `lookupPc(map, pc)` binary-searches the
+segments — handy for decorating an execution trace from a node or a fork tool with script
+source lines.
+
+For debugging script *logic* without a node at all, run the IR oracle instead — see
+[testing scripts](/guides/testing-scripts/). Full artifact shapes are in the
+[artifact reference](/reference/artifact/).

@@ -4,7 +4,7 @@ Status: FINAL. Sources: stack-testing.md, npm-oidc-release.md, oxc-tooling.md.
 
 ## 1. Monorepo tree
 
-```
+````
 evs/
   package.json                  # private root: workspaces + catalogs + tool scripts
   bun.lock
@@ -38,7 +38,12 @@ evs/
   examples/
     pool-meta/                  # the api.md examples as runnable scripts (private workspace)
       package.json  index.ts
-```
+  apps/
+    docs/                       # Astro Starlight docs site → evs.maxencerb.com (§13)
+      package.json  astro.config.mjs  wrangler.jsonc  tsconfig.json
+      src/content/docs/         # MDX pages (oxfmt-ignored; snippet gate enforced)
+      scripts/check-snippets.ts # extracts ```ts fences, tsc --noEmit against the real package
+````
 
 ## 2. Root `package.json`
 
@@ -47,7 +52,7 @@ evs/
   "name": "evs-monorepo",
   "private": true,
   "workspaces": {
-    "packages": ["packages/*", "examples/*"],
+    "packages": ["packages/*", "examples/*", "apps/*"],
     "catalog": {
       "typescript": "^5.9.0",
       "viem": "2.52.2",
@@ -58,6 +63,14 @@ evs/
         "vitest": "^3.2.4",
         "prool": "^0.2.4",
         "@ethereumjs/evm": "^10.1.2"
+      },
+      "docs": {
+        "astro": "^6.4.6",
+        "@astrojs/starlight": "^0.40.0",
+        "@astrojs/check": "^0.9.9",
+        "starlight-theme-rapide": "^0.5.2",
+        "starlight-links-validator": "^0.24.0",
+        "wrangler": "^4.100.0"
       }
     }
   },
@@ -142,10 +155,10 @@ packing (bun.lock substitution bug, stack-testing §1).
     "prool": "catalog:testing",
     "@ethereumjs/evm": "catalog:testing"
   },
-  "//publishConfig": "provenance MUST stay false while the repo is private — npm cannot generate provenance for private repos and the publish would fail/skip it confusingly. FLIP provenance to true (and keep --access public) the moment the repo goes public.",
+  "//publishConfig": "provenance is ON (repo public since 2026-06-12). It MUST be flipped back to false if the repo ever goes private — npm cannot generate provenance for private repos.",
   "publishConfig": {
     "access": "public",
-    "provenance": false
+    "provenance": true
   }
 }
 ```
@@ -261,6 +274,7 @@ prior-art §5 / stack-testing §4).
     "**/contracts/cache/**",
     "**/contracts/lib/**",
     "**/test/generated/**",
+    "apps/docs/**", // astro-managed tsconfig (.astro/types.d.ts exists only post-sync); `astro check` covers it
   ],
   "overrides": [
     {
@@ -302,6 +316,10 @@ builds before linting.
     "**/contracts/cache/**",
     "**/contracts/lib/**",
     "**/test/generated/**",
+    "apps/docs/src/content/**", // Starlight MDX — oxfmt md formatting is non-idempotent
+    "**/.astro/**",
+    "**/.wrangler/**",
+    "**/.snippets/**",
   ],
 }
 ```
@@ -575,3 +593,27 @@ packages/evs/test/generated/
   "editor.codeActionsOnSave": { "source.fixAll.oxc": "explicit" },
 }
 ```
+
+## 13. `apps/docs` — documentation site (added 2026-06-12)
+
+Astro Starlight site (Rapide theme + `starlight-links-validator`), bun workspace
+`@maxencerb/evs-docs`, deployed to **Cloudflare Workers static assets** at
+`https://evs.maxencerb.com` (`wrangler.jsonc`: `assets.directory ./dist`, custom-domain
+route).
+
+- **CI/deploy is Cloudflare's, not GitHub Actions'**: Workers Builds (Cloudflare GitHub app)
+  builds every push, posts a PR check, deploys `main` to production and uploads preview
+  versions for branches. `ci.yml` does NOT build the docs. Dashboard settings live in
+  `apps/docs/README.md`. The Cloudflare build command runs the full gate:
+  `bun install --frozen-lockfile && bun run build && cd apps/docs && bun run check:snippets && bun run build`.
+- **Snippet gate** (`apps/docs/scripts/check-snippets.ts`): every ` ```ts ` fence in
+  `src/content/docs/` must typecheck standalone (strict, `moduleResolution: bundler`) with
+  only `@maxencerb/evs` + `viem` importable; ` ```ts nocheck ` opts out. Requires the library
+  built first (resolves through `dist/` types). `astro build` additionally validates every
+  internal link (build fails on dead links).
+- **Tooling boundaries**: oxlint ignores `apps/docs/**` (astro-managed tsconfig; `astro
+check` is the workspace's `typecheck` script and runs in root `bun run typecheck`); oxfmt
+  ignores `apps/docs/src/content/**` (MDX) but formats the config/scripts files. Docs deps
+  are pinned via the `docs` catalog (§2).
+- **Not part of the release pipeline**: the npm package and the docs site version
+  independently; `release.yml` is unchanged.

@@ -1,0 +1,229 @@
+---
+title: Patterns
+description: Compact evs recipes — tryCall defaults, while loops with break, s.fn subroutines, conditional checked math, and state-override debugging.
+---
+
+Five small recipes you will reach for constantly. Every snippet is a complete module — copy
+it as-is.
+
+## tryCall with a default
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+export const tokenDecimals = evscript(
+  { name: 'tokenDecimals', args: [arg('token', t.address)] },
+  (s) => {
+    const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+    return s.return({ decimals: s.select(d.success, d.value, 18) });
+  },
+);
+```
+
+`s.tryCall` never reverts your script: `success` is false when the call fails **or** when the
+returndata does not decode, and `value` is then zeroed, so it is always safe to use.
+`s.select` picks between the real value and the default — both sides are already-computed
+values, so this is one expression, no branch needed. Full semantics in
+[calls](/guides/calls/).
+
+## First match: while + cells + break
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const uniswapV3FactoryAbi = [
+  {
+    type: 'function',
+    name: 'getPool',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'tokenA', type: 'address' },
+      { name: 'tokenB', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+    ],
+    outputs: [{ name: 'pool', type: 'address' }],
+  },
+] as const;
+
+const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Uniswap V3 factory (mainnet)
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+export const firstPool = evscript(
+  { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
+  (s) => {
+    const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
+    const found = s.let(t.address, ZERO);
+    const feeOut = s.let(t.uint24, 0n);
+    const i = s.let(t.uint256, 0n);
+    s.while(
+      () => i.get().lt(fees.length()),
+      (loop) => {
+        const fee = fees.at(i.get());
+        const pool = s.call({
+          address: FACTORY,
+          abi: uniswapV3FactoryAbi,
+          functionName: 'getPool',
+          args: [s.args.a, s.args.b, fee],
+        });
+        s.if(pool.neq(ZERO), () => {
+          found.set(pool);
+          feeOut.set(fee);
+          loop.break();
+        });
+        i.set(i.get().add(1n));
+      },
+    );
+    return s.return({ pool: found.get(), fee: feeOut.get() });
+  },
+);
+```
+
+Probes the four fee tiers in order and stops at the first deployed pool. The literal fee array
+becomes a data segment in the bytecode; the `s.while` condition is a thunk whose recorded ops
+re-execute every iteration; and cells (`s.let`) are how values escape a loop body —
+nothing recorded inside the loop is visible after it. `loop.break()` jumps past the loop the
+moment a pool is found. Details in [control flow](/guides/control-flow/).
+
+## Reusable subroutines with s.fn
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+export const portfolio = evscript(
+  { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
+  (s) => {
+    const balOf = s.fn(
+      'balOf',
+      [arg('token', t.address), arg('who', t.address)] as const,
+      (token, who) =>
+        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+    );
+    const n = s.args.tokens.length();
+    const out = s.newArray(t.uint256, n);
+    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+      out.set(i, balOf(s.args.tokens.at(i), s.args.owner)); // fresh Expr per call
+    });
+    return s.return({ balances: out.expr() });
+  },
+);
+```
+
+`s.fn` defines a typed subroutine: the body records **once** at definition, and the compiled
+code is emitted once no matter how many call sites exist. The body runs in an isolated scope —
+it cannot capture outer `Expr`s or cells (that throws `EvsScopeError` at recording), which is
+why `owner` is passed as the `who` parameter instead of read from `s.args` inside the body.
+See [functions](/guides/functions/).
+
+## Conditional checked math with s.if
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'debtOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'collateralOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'user', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+export const healthCheck = evscript(
+  { name: 'healthCheck', args: [arg('vault', t.address), arg('user', t.address)] },
+  (s) => {
+    const debt = s.call({
+      address: s.args.vault,
+      abi: vaultAbi,
+      functionName: 'debtOf',
+      args: [s.args.user],
+    });
+    const coll = s.call({
+      address: s.args.vault,
+      abi: vaultAbi,
+      functionName: 'collateralOf',
+      args: [s.args.user],
+    });
+    const ratioBps = s.let(t.uint256, 0n);
+    s.if(
+      debt.gt(0n),
+      () => ratioBps.set(coll.mul(10_000n).div(debt)), // mul checked: Panic 0x11 on overflow
+      () => ratioBps.set(s.lit(t.uint256, 2n ** 255n)), // "infinite" sentinel
+    );
+    const healthy = ratioBps.get().gte(15_000n);
+    return s.return({ debt, coll, ratioBps: ratioBps.get(), healthy });
+  },
+);
+```
+
+`s.if` evaluates its condition once, then runs exactly one branch on-chain — here it guards
+the division so a zero debt never reaches `.div(debt)` (which would Panic `0x12`). The
+multiplication stays checked Solidity-style: overflow reverts with Panic `0x11` instead of
+wrapping. The cell carries whichever branch's result into the return. See
+[arithmetic](/guides/arithmetic/) for the full checked-math surface.
+
+## State override, block pinning, and explainRevert
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  erc20Abi,
+  http,
+} from 'viem';
+
+const supply = evscript({ name: 'supply', args: [arg('token', t.address)] }, (s) => {
+  const totalSupply = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'totalSupply' });
+  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ totalSupply, decimals });
+});
+
+const client = createPublicClient({ transport: http('https://ethereum-rpc.publicnode.com') });
+const compiled = supply.compile();
+
+try {
+  const out = await client.readContract({
+    ...compiled.toViem({ mode: 'stateOverride' }), // { abi, address, stateOverride }
+    functionName: 'supply',
+    args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'], // USDC
+    blockNumber: 22_000_000n, // historical read — it is just eth_call
+    account: '0x000000000000000000000000000000000000dEaD', // msg.sender seen by the script
+  });
+  void out; // { totalSupply: bigint; decimals: number }
+} catch (e) {
+  if (e instanceof BaseError) {
+    const revert = e.walk((err) => err instanceof ContractFunctionRevertedError);
+    if (revert instanceof ContractFunctionRevertedError && revert.raw !== undefined) {
+      // human-readable: panic / EVS error / bubbled callee revert, with your source line
+      throw new Error(compiled.explainRevert(revert.raw).message, { cause: e });
+    }
+  }
+  throw e;
+}
+```
+
+State-override mode places the runtime bytecode at a deterministic address
+(`DEFAULT_SCRIPT_ADDRESS` unless you pass one) and makes `msg.sender` controllable via the
+`account` call parameter — it is the only mode where `s.env('caller')` is meaningful. Pinning
+`blockNumber` works in either mode because everything is plain `eth_call`. When a call
+reverts, pull the raw revert data off viem's `ContractFunctionRevertedError` and feed it to
+`compiled.explainRevert` — panics, the EVS error ABI, and bubbled callee reverts all decode
+back to a message with your source location. See [execution](/guides/execution/) and
+[errors and debugging](/guides/errors-and-debugging/).
+
+:::caution
+State-override mode needs a provider that supports the third `eth_call` parameter (geth and
+anvil do; some hosted providers do not document it). The default deployless mode works
+everywhere — see [execution](/guides/execution/) for choosing between them.
+:::

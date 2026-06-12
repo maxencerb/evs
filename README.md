@@ -16,6 +16,9 @@ literal ABI.
 TS callback ──record──▶ IR ──compile──▶ runtime bytecode ──eth_call──▶ typed object
 ```
 
+**Documentation: <https://evs.maxencerb.com>** (source in [`apps/docs`](apps/docs), deployed
+via Cloudflare Workers Builds).
+
 ## Install
 
 ```sh

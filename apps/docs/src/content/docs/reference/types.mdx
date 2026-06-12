@@ -1,0 +1,248 @@
+---
+title: Types and Expr
+description: "The t type namespace, the exported type aliases, literal coercion via LitOf/IntoExpr, and the complete Expr method surface."
+---
+
+This page is the reference for the type vocabulary and the `Expr` value handle. For the
+narrative version (and the staging-misuse failure modes), see
+[values and types](/guides/values-and-types/).
+
+## The t namespace
+
+```ts
+import type { DynType, WordType } from '@maxencerb/evs';
+
+declare const t: { readonly [k in WordType | DynType]: k } & {
+  array<const e extends WordType>(elem: e): `${e}[]`;
+};
+```
+
+`t` is a frozen object whose every property is its own literal type string — pure autocomplete
+sugar. Raw type strings are accepted everywhere `t.*` is.
+
+| Members                          | Value                          | Notes                                                                       |
+| -------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
+| `t.address`                      | `'address'`                    | 160-bit word                                                                |
+| `t.bool`                         | `'bool'`                       | canonical 0 or 1                                                            |
+| `t.uint8` through `t.uint256`    | `'uint8'` … `'uint256'`        | one key per width in `UintBits` (every multiple of 8), 32 keys              |
+| `t.int8` through `t.int256`      | `'int8'` … `'int256'`          | same 32 widths, signed (two's complement)                                   |
+| `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
+| `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
+| `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
+| `t.array(elem)`                  | `` `${elem}[]` ``              | function: builds a dynamic-array type; `elem` must be a word type           |
+
+`t.array` validates its element at the call site — a non-word element (so no `string[]`, no
+nested arrays) throws `EvsTypeError`.
+
+```ts
+import { arg, t } from '@maxencerb/evs';
+
+const fees = arg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
+const amount = arg('amount', 'uint128'); // raw strings work identically
+```
+
+## Type aliases
+
+The full exported vocabulary, exactly as defined:
+
+```ts
+type Hex = `0x${string}`;
+type UintBits =
+  | 8 | 16 | 24 | 32 | 40 | 48 | 56 | 64 | 72 | 80 | 88 | 96 | 104 | 112 | 120 | 128
+  | 136 | 144 | 152 | 160 | 168 | 176 | 184 | 192 | 200 | 208 | 216 | 224 | 232 | 240
+  | 248 | 256;
+type BytesSize =
+  | 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16
+  | 17 | 18 | 19 | 20 | 21 | 22 | 23 | 24 | 25 | 26 | 27 | 28 | 29 | 30 | 31 | 32;
+type UintType = `uint${UintBits}`;
+type IntType = `int${UintBits}`;
+type BytesNType = `bytes${BytesSize}`;
+type WordType = UintType | IntType | 'address' | 'bool' | BytesNType;
+type DynType = 'string' | 'bytes';
+type ArrayType = `${WordType}[]`;
+type EvsType = WordType | DynType | ArrayType;
+type ArgType = EvsType;
+type NumericType = UintType | IntType;
+type BitsType = UintType | BytesNType;
+```
+
+| Alias         | Meaning                                                                                     |
+| ------------- | ------------------------------------------------------------------------------------------- |
+| `Hex`         | A `0x`-prefixed hex string.                                                                  |
+| `Address`     | The address string type, re-exported from abitype (the same type viem uses).                 |
+| `UintBits`    | The 32 legal integer widths: every multiple of 8 from 8 to 256.                              |
+| `BytesSize`   | The legal `bytesN` sizes: 1 through 32.                                                      |
+| `UintType`    | `uint8` … `uint256` as a template-literal union.                                             |
+| `IntType`     | `int8` … `int256`.                                                                           |
+| `BytesNType`  | `bytes1` … `bytes32`.                                                                        |
+| `WordType`    | Every type that fits one EVM word: unsigned and signed integers, `address`, `bool`, `bytesN`.|
+| `DynType`     | The dynamic byte-string types: `string` and `bytes`.                                         |
+| `ArrayType`   | Dynamic arrays of word types — `uint256[]`, `address[]`, and so on. v0 has no nested arrays. |
+| `EvsType`     | Every v0 value type: word, dynamic, or array.                                                |
+| `ArgType`     | Alias of `EvsType` — the valid script-argument types.                                        |
+| `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
+| `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
+| `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
+| `IntoExpr<t>` | `Expr` of `t`, or a `LitOf<t>` literal.                                                      |
+| `Expr<t>`     | The branded staged-value handle (below).                                                     |
+
+## Literal coercion: LitOf and IntoExpr
+
+Every builder position typed `IntoExpr` accepts either an `Expr` or a plain host literal:
+
+```ts
+import type { BytesNType, EvsType, Expr, NumericType, WordType } from '@maxencerb/evs';
+
+type LitOf<t extends EvsType> = t extends NumericType
+  ? bigint | number
+  : t extends 'address'
+    ? `0x${string}`
+    : t extends 'bool'
+      ? boolean
+      : t extends BytesNType
+        ? `0x${string}`
+        : t extends 'string'
+          ? string
+          : t extends 'bytes'
+            ? `0x${string}`
+            : t extends `${infer e extends WordType}[]`
+              ? readonly LitOf<e>[]
+              : never;
+
+type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
+```
+
+Literals are validated **at recording time**, with the call-site location (`EvsTypeError` on
+violation):
+
+| Literal                          | Rule                                                              |
+| -------------------------------- | ----------------------------------------------------------------- |
+| `number` for `uintN` or `intN`   | must be a safe integer; range-checked against N                   |
+| `bigint` for `uintN` or `intN`   | range-checked; negatives two's-complemented for `intN`            |
+| `boolean`                        | only for `bool`                                                   |
+| `0x` string for `address`        | exactly 20 bytes; checksum NOT enforced (viem-permissive)         |
+| `0x` string for `bytesN`         | exactly N bytes                                                   |
+| `0x` string for `bytes`          | any even-length hex                                               |
+| `string` for `string`            | UTF-8 encoded                                                     |
+| JS array for `T[]`               | element-wise rules of `T`                                         |
+
+Word literals canonicalize at recording; dynamic literals and literal arrays become bytecode
+data segments. All-literal pure operations fold at recording, and a fold that would certainly
+panic throws `EvsTypeError` (`CERTAIN_PANIC`) at that line instead. When inference needs help,
+construct the literal explicitly with `s.lit` ([builder reference](/reference/builder/)).
+
+## Expr
+
+```ts
+import type { EvsType } from '@maxencerb/evs';
+
+declare const exprBrand: unique symbol;
+interface Expr<t extends EvsType = EvsType> {
+  readonly [exprBrand]: t; // nominal, covariant phantom — you never construct an Expr yourself
+  readonly type: t; // runtime-readable type tag, e.g. 'uint256'
+}
+```
+
+(Abridged — the methods are tabulated below.) An `Expr` is a branded handle to a recorded
+program value. The brand makes it nominal: an `Expr<'uint8'>` is not assignable where
+`Expr<'uint16'>` is expected. The only runtime-readable member is `type`.
+
+Each method uses a `this`-parameter to restrict itself to the types it is defined on — calling
+`add` on an `Expr<'address'>` is a TypeScript error, not a runtime surprise. Every binary
+method also exists as a free function on the builder (`s.add(a, b)`, `s.lt(a, b)`, …) for
+literal-left operands; see the [builder reference](/reference/builder/).
+
+:::caution
+`Expr` handles are recorded program values, not host values. `x + 1`, `` `${x}` ``,
+`JSON.stringify(x)` throw `EvsStagingError` at the offending line; `if (x)` cannot be trapped
+and silently records the branch unconditionally. Details:
+[values and types](/guides/values-and-types/).
+:::
+
+### Arithmetic (checked)
+
+Available on numeric `Expr`s (`this: Expr` of `t` where `t` is a `NumericType`). All arithmetic
+is checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/).
+
+| Method | Signature                       | Checked semantics                                                  |
+| ------ | ------------------------------- | ------------------------------------------------------------------ |
+| `add`  | `add(rhs: IntoExpr<t>): Expr<t>` | Panic `0x11` on overflow                                          |
+| `sub`  | `sub(rhs: IntoExpr<t>): Expr<t>` | Panic `0x11` on underflow                                         |
+| `mul`  | `mul(rhs: IntoExpr<t>): Expr<t>` | Panic `0x11` on overflow                                          |
+| `div`  | `div(rhs: IntoExpr<t>): Expr<t>` | Panic `0x12` on zero divisor; Panic `0x11` on signed `minN / -1`  |
+| `mod`  | `mod(rhs: IntoExpr<t>): Expr<t>` | Panic `0x12` on zero divisor                                      |
+
+### Comparisons
+
+| Method                     | Signature                            | Notes                                                                  |
+| -------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
+| `lt`, `gt`, `lte`, `gte`   | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | Numeric types only; LT/GT vs SLT/SGT chosen from the static signedness |
+| `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any word type; no `string`/`bytes`/array equality in v0                |
+
+### Boolean logic
+
+| Method | Signature                              | Notes                                                       |
+| ------ | -------------------------------------- | ------------------------------------------------------------ |
+| `and`  | `and(rhs: IntoExpr<'bool'>): Expr<'bool'>` | Eager, NOT short-circuiting — both sides always execute |
+| `or`   | `or(rhs: IntoExpr<'bool'>): Expr<'bool'>`  | Eager, NOT short-circuiting                              |
+| `not`  | `not(): Expr<'bool'>`                      | Logical negation                                         |
+
+For conditional execution use `s.if` ([control flow](/guides/control-flow/)).
+
+### Bitwise and shifts
+
+Available on `BitsType` `Expr`s (`uintN` or `bytesN`). Results are re-canonicalized to the
+operand's width; shifts never panic — bits leaving the lane are dropped.
+
+| Method                        | Signature                                 | Notes                                         |
+| ----------------------------- | ----------------------------------------- | ---------------------------------------------- |
+| `bitAnd`, `bitOr`, `bitXor`   | `bitAnd(rhs: IntoExpr<t>): Expr<t>`       | Bitwise within the type's lane                |
+| `bitNot`                      | `bitNot(): Expr<t>`                       | Complement, re-masked to the type's width     |
+| `shl`, `shr`                  | `shl(bits: IntoExpr<'uint256'>): Expr<t>` | Shift amount is always `uint256`              |
+
+### Conversions and casts
+
+Widening is free; **narrowing is checked** (Panic `0x11` on out-of-range values).
+
+| Method      | Signature                          | Available on                            | Semantics                                              |
+| ----------- | ---------------------------------- | --------------------------------------- | ------------------------------------------------------- |
+| `toUint`    | `toUint(target: u): Expr<u>`       | any numeric `Expr`                      | checked against the target range                        |
+| `toInt`     | `toInt(target: i): Expr<i>`        | any numeric `Expr`                      | checked against the target range                        |
+| `asAddress` | `asAddress(): Expr<'address'>`     | `Expr<'uint256'>` or `Expr<'bytes32'>`  | checked: panics unless the top 96 bits are zero         |
+| `asUint256` | `asUint256(): Expr<'uint256'>`     | `Expr<'bytes32'>`                       | free reinterpret                                        |
+| `asBytes32` | `asBytes32(): Expr<'bytes32'>`     | `Expr<'uint256'>`                       | free reinterpret                                        |
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const casts = evscript({ name: 'casts', args: [arg('raw', t.bytes32)] }, (s) => {
+  const word = s.args.raw.asUint256(); // free reinterpret
+  const small = word.toUint(t.uint32); // checked narrowing — Panic 0x11 if out of range
+  const wide = small.toUint(t.uint256); // widening is free
+  const addr = s.args.raw.asAddress(); // checked: top 96 bits must be zero
+  return s.return({ small, wide, addr });
+});
+```
+
+### Dynamic values and arrays
+
+| Method   | Signature                                    | Available on                  | Semantics                                                       |
+| -------- | -------------------------------------------- | ----------------------------- | ---------------------------------------------------------------- |
+| `length` | `length(): Expr<'uint256'>`                  | `string`, `bytes`, any `T[]`  | byte length for `string`/`bytes`; element count for arrays      |
+| `at`     | `at(i: IntoExpr<'uint256'>): Expr<elem>`     | any `T[]`                     | bounds-checked — Panic `0x32` on an out-of-range index          |
+
+### Putting it together
+
+```ts
+import { arg, evscript, t } from '@maxencerb/evs';
+
+const flags = evscript(
+  { name: 'flags', args: [arg('mask', t.bytes4), arg('n', t.int128)] },
+  (s) => {
+    const isNeg = s.args.n.lt(0n); // SLT — signedness comes from the static type
+    const top = s.args.mask.shr(16n); // re-masked to the bytes4 lane
+    const both = isNeg.and(s.args.mask.neq('0x00000000')); // eager bool logic
+    return s.return({ isNeg, top, both });
+  },
+);
+```

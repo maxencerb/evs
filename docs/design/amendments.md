@@ -689,6 +689,27 @@ from `docs/design/`.
   file (MIT) now exists at the repo root and in `packages/evs/` so `npm pack` includes it.
 - Status: **accepted**.
 
+## 15. Documentation site (apps/docs, 2026-06-12)
+
+- **Deviation from repo-layout.md §1/§2 as originally frozen**: a third workspace family
+  `apps/*` now exists, holding `apps/docs` — an Astro Starlight site (Rapide theme) deployed
+  to Cloudflare Workers static assets at `evs.maxencerb.com`. Root `package.json` gains the
+  `docs` catalog; oxlint ignores `apps/docs/**` (astro-managed tsconfig — `astro check`
+  covers it via the workspace `typecheck` script); oxfmt ignores `apps/docs/src/content/**`
+  (MDX; oxfmt markdown formatting is non-idempotent, stack-testing gotcha).
+- **CI boundary**: docs build/deploy is owned by Cloudflare Workers Builds (GitHub app), NOT
+  `ci.yml` — its build command runs the docs gate (library build → snippet typecheck →
+  `astro build` with `starlight-links-validator`). Rationale: the deploy pipeline and the
+  quality gate are the same build, and Cloudflare posts the PR check; duplicating it in
+  GitHub Actions would double the cost for no extra signal.
+- **Snippet contract**: every ` ```ts ` fence in docs content must typecheck standalone
+  against the built package (`apps/docs/scripts/check-snippets.ts`); ` ```ts nocheck ` opts
+  out. This extends the testing.md doc-sync philosophy (docs that drift from the API fail a
+  build) to the website.
+- repo-layout.md §13 records the layout; `apps/docs/README.md` records the Cloudflare
+  dashboard settings.
+- Status: **accepted**.
+
 ---
 
 ## Spot-check summary (integration agent)

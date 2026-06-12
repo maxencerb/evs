@@ -1,0 +1,68 @@
+---
+title: Installation
+description: Install @maxencerb/evs and viem, check the peer dependency and runtime requirements, and verify the setup compiles a script.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+## Install
+
+`viem` is a required peer dependency — install it alongside the package:
+
+<Tabs syncKey="pkg">
+  <TabItem label="bun">
+    ```sh
+    bun add @maxencerb/evs viem
+    ```
+  </TabItem>
+  <TabItem label="npm">
+    ```sh
+    npm install @maxencerb/evs viem
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```sh
+    pnpm add @maxencerb/evs viem
+    ```
+  </TabItem>
+</Tabs>
+
+## Requirements
+
+| Requirement | Version | Notes |
+| --- | --- | --- |
+| `viem` | `>=2.14.1` | Required peer dependency. Execution and result typing go through viem's `readContract` inference. |
+| `typescript` | `>=5.5` | Optional peer dependency — the runtime works without it, but the typed surface (literal-typed ABI, `Expr` inference) is the point of the library. `strict` mode is required. |
+| Node.js | `>=20.19` | Or Bun. |
+
+:::caution[TypeScript strict mode is required]
+Set `"strict": true` in your `tsconfig.json`. The typed builder surface — argument tuples,
+`Expr` branding, viem result inference — is only sound under strict mode, and the binding
+API contract assumes it.
+:::
+
+## ESM only
+
+The package ships as ESM only (`"type": "module"`): there is no CommonJS build, so use
+`import`, not `require`. Everything is exported from the single entry point
+`@maxencerb/evs` — the exports map exposes no module subpaths, so deep imports like
+`@maxencerb/evs/core` do not resolve.
+
+## Verify the setup
+
+This compiles a one-argument script to bytecode without touching a network — if it
+typechecks and runs, you are set:
+
+```ts
+import { arg, compile, evscript, t } from '@maxencerb/evs';
+
+const ping = evscript({ name: 'ping', args: [arg('x', t.uint256)] }, (s) => {
+  return s.return({ doubled: s.args.x.mul(2n) });
+});
+
+export const artifact = compile(ping);
+// artifact.runtimeBytecode — EVM bytecode, ready for eth_call
+```
+
+Continue with the [quick start](/getting-started/quick-start/) to execute a script against a
+real node.

@@ -6,7 +6,7 @@ deploy, no multicall glue, and the result is fully typed end-to-end through viem
 Unlike a multicall, values flow **between** calls on-chain: `pool.token0()` →
 `token0.symbol()` is one round trip, not two.
 
-Full documentation, design docs and runnable examples:
+Full documentation: **<https://evs.maxencerb.com>** — design docs and runnable examples:
 **<https://github.com/maxencerb/evs>**
 
 ## Install

@@ -1,0 +1,270 @@
+---
+title: Testing scripts
+description: Unit-test evs scripts without a node — interpret() runs a script's IR against a MockChain with byte-exact EVM semantics, in milliseconds.
+---
+
+You do not need a node, a fork, or even the compiler to test a script's logic. `interpret()`
+executes a script's IR directly in TypeScript against a `MockChain` you define — and it is the
+same reference oracle the evs test suite holds the compiled bytecode against, byte for byte:
+returndata, `Panic` codes, decode errors, bubbled reverts, and `tryCall` zeroing all match the
+real thing exactly (see [Why trust the bytecode?](/concepts/trust-and-testing/)). If your
+script behaves under `interpret()`, the bytecode behaves the same way on-chain.
+
+## The signature
+
+```ts
+import type { InterpEnvOverrides, InterpResult, MockChain, ScriptIr } from '@maxencerb/evs';
+
+declare function interpret(
+  ir: ScriptIr,
+  args: readonly unknown[],
+  chain: MockChain,
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides },
+): InterpResult;
+
+interface MockChainShape {
+  // the one method a MockChain implements:
+  staticcall(req: { to: `0x${string}`; data: `0x${string}` }): {
+    success: boolean;
+    data: `0x${string}`;
+  };
+}
+```
+
+- `ir` — the script's IR, straight off the script: `interpret(myScript.ir, …)`. It is
+  validated on entry, so garbage IR fails loudly instead of producing garbage results.
+- `args` — the script's arguments as plain JS values (same conventions as viem; table below).
+- `chain` — your mock: every `s.call`/`s.tryCall` the script executes arrives as one
+  `staticcall` request with the target address and the exact ABI-encoded calldata the
+  compiled script would send.
+- `InterpResult.outcome` is either `{ kind: 'return', data, values }` — `data` is the
+  ABI-encoded returndata, `values` the decoded result record — or `{ kind: 'revert', data }`
+  with the byte-exact revert payload.
+
+## Mocking the chain
+
+A `MockChain` answers each sub-call with `{ success, data }`. Return `success: true` with
+ABI-encoded returndata (viem's `encodeFunctionResult` is the convenient way to build it), or
+`success: false` with a revert payload — a strict `s.call` bubbles it verbatim, a `s.tryCall`
+zeroes its outputs. This is a complete, runnable test with no test framework at all:
+
+```ts
+import { arg, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { encodeFunctionResult, erc20Abi, toFunctionSelector } from 'viem';
+
+const tokenInfo = evscript({ name: 'tokenInfo', args: [arg('token', t.address)] }, (s) => {
+  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ symbol, decimals });
+});
+
+const USDC = '0xA0b86991c6218b36c1D19D4a2e9Eb0cE3606eB48';
+const SYMBOL = toFunctionSelector('function symbol() view returns (string)');
+const DECIMALS = toFunctionSelector('function decimals() view returns (uint8)');
+
+const chain: MockChain = {
+  staticcall({ to, data }) {
+    if (to !== USDC.toLowerCase()) return { success: false, data: '0x' };
+    const selector = data.slice(0, 10);
+    if (selector === SYMBOL) {
+      return {
+        success: true,
+        data: encodeFunctionResult({ abi: erc20Abi, functionName: 'symbol', result: 'USDC' }),
+      };
+    }
+    if (selector === DECIMALS) {
+      return {
+        success: true,
+        data: encodeFunctionResult({ abi: erc20Abi, functionName: 'decimals', result: 6 }),
+      };
+    }
+    return { success: false, data: '0x' };
+  },
+};
+
+const result = interpret(tokenInfo.ir, [USDC], chain);
+
+if (result.outcome.kind !== 'return') throw new Error('expected a return');
+if (result.outcome.values['symbol'] !== 'USDC') throw new Error('wrong symbol');
+if (result.outcome.values['decimals'] !== 6) throw new Error('wrong decimals');
+```
+
+:::note
+The `to` address your mock receives is always **lowercase** (it is formatted from the 160-bit
+word the script holds), so normalize before comparing — `USDC.toLowerCase()` above.
+:::
+
+## Arguments in, values out
+
+`args` accepts the same JS shapes viem uses; a wrong shape or out-of-range value throws
+`EvsTypeError` immediately — a bug in your test, never a chain outcome.
+
+| Script arg type        | Accepted JS values                                  |
+| ---------------------- | ---------------------------------------------------- |
+| `uintN` / `intN`       | `bigint`, or a safe-integer `number` (range-checked) |
+| `bool`                 | `boolean`                                            |
+| `address`              | 20-byte `0x` hex string                              |
+| `bytesN`               | `0x` hex string of exactly N bytes                   |
+| `bytes`                | `0x` hex string                                      |
+| `string`               | `string`                                             |
+| `T[]`                  | array of element values                              |
+
+`outcome.values` decodes the return record with viem's conventions, so assertions written
+against `interpret()` match what `readContract` returns in production: `bool` becomes
+`boolean`, `address` a checksummed string, `uintN`/`intN` a `number` when N is at most 48 and
+a `bigint` otherwise, `bytesN`/`bytes` hex strings, `string` a string, arrays an array of
+element values. `outcome.data` is the raw ABI-encoded returndata — byte-equal to what the
+compiled script returns from `eth_call`.
+
+## Testing reverts
+
+Reverts come back as `{ kind: 'revert', data }` with the exact payload the bytecode would
+produce — so you can assert on raw bytes, or feed them to `explainRevert` from the compiled
+artifact (see [Errors & debugging](/guides/errors-and-debugging/)):
+
+```ts
+import { arg, compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [arg('x', t.uint256), arg('y', t.uint256)] }, (s) =>
+  s.return({ q: s.div(s.args.x, s.args.y) }),
+);
+
+const noCalls: MockChain = {
+  staticcall() {
+    throw new Error('this script makes no sub-calls');
+  },
+};
+
+const result = interpret(ratio.ir, [1n, 0n], noCalls);
+if (result.outcome.kind !== 'revert') throw new Error('expected a revert');
+
+// Same bytes the compiled script reverts with: Panic(0x12), division by zero.
+const explained = compile(ratio).explainRevert(result.outcome.data);
+if (explained.kind !== 'panic' || explained.panicCode !== 0x12n) throw new Error('wrong revert');
+```
+
+Malformed returndata is covered with the same fidelity: have your mock return `success: true`
+with truncated or structurally invalid bytes and a strict `s.call` reverts with
+`EvsDecodeError(site)`, while a `s.tryCall` reports `success = false` with zeroed values —
+exactly like the bytecode. See [Calling contracts](/guides/calls/) for those semantics.
+
+## Modeling the execution frame
+
+`s.env(…)` values default to the state-override execution frame:
+
+| Env op               | Default                                                          |
+| -------------------- | ----------------------------------------------------------------- |
+| `s.env('address')`   | `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` (`DEFAULT_SCRIPT_ADDRESS`) |
+| `s.env('caller')`    | `0x1000000000000000000000000000000000000001`                      |
+| `s.env('timestamp')` | `0n`                                                              |
+| `s.env('blocknumber')` | `0n`                                                            |
+| `s.env('chainid')`   | `1n`                                                              |
+
+Override any of them per call with `opts.env`:
+
+```ts
+import { evscript, interpret, type InterpEnvOverrides, type MockChain } from '@maxencerb/evs';
+
+const stamp = evscript({ name: 'stamp', args: [] }, (s) =>
+  s.return({ at: s.env('timestamp'), chain: s.env('chainid') }),
+);
+
+const noCalls: MockChain = {
+  staticcall() {
+    throw new Error('this script makes no sub-calls');
+  },
+};
+
+const env: InterpEnvOverrides = { timestamp: 1_750_000_000n, chainid: 8453n };
+const result = interpret(stamp.ir, [], noCalls, { env });
+
+if (result.outcome.kind !== 'return') throw new Error('expected a return');
+if (result.outcome.values['at'] !== 1_750_000_000n) throw new Error('wrong timestamp');
+```
+
+:::caution
+`s.env('caller')` and `s.env('address')` are execution-frame-dependent: the default deployless
+mode runs your script with a different caller and address than the state-override mode, which
+is why `compile()` emits the `ENV_FRAME_DEPENDENT` diagnostic for them. Use `opts.env` to test
+both frames — and read [Executing scripts](/guides/execution/) before relying on either value.
+:::
+
+## Tracing and the step budget
+
+Pass `{ trace: true }` and the result carries a `trace` array with one entry per executed
+statement — `{ stmtPath, loc, note }`: the statement's path in the IR tree, its recording-time
+source location, and a short note such as `call symbol() [strict] site 0`. It is the quickest
+way to see which branch ran or how many loop iterations executed.
+
+Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement plus
+one per loop iteration). Exceeding it throws `EvsCompileError` with code `COMPILE_LIMIT` on
+the host — usually an unbounded loop in the script; raise `opts.maxSteps` if the workload is
+genuinely that large.
+
+## Shipping IR: `serializeIr` and `deserializeIr`
+
+A script's IR is plain JSON-safe data. `serializeIr` produces a stable string (keys sorted, so
+structurally equal IRs serialize identically — ideal for snapshot tests), and `deserializeIr`
+parses one back with a full structural shape-and-version check, throwing `EvsTypeError` with
+the offending JSON path on any malformation. Both `interpret()` and `compile()` re-validate
+IR semantically, so externally loaded IR is as trustworthy as freshly recorded IR.
+
+```ts
+import {
+  arg,
+  deserializeIr,
+  evscript,
+  interpret,
+  serializeIr,
+  t,
+  type MockChain,
+} from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [arg('x', t.uint256)] }, (s) =>
+  s.return({ y: s.mul(s.args.x, 2n) }),
+);
+
+const json = serializeIr(double.ir); // store it, snapshot it, send it to another process
+const restored = deserializeIr(json); // shape + version checked on the way in
+
+const noCalls: MockChain = {
+  staticcall() {
+    throw new Error('this script makes no sub-calls');
+  },
+};
+
+const result = interpret(restored, [21n], noCalls);
+if (result.outcome.kind !== 'return' || result.outcome.values['y'] !== 42n) {
+  throw new Error('round trip failed');
+}
+```
+
+## In a test runner
+
+Everything above is framework-agnostic — `interpret()` is a pure synchronous function, so it
+drops into any runner. A vitest example (this fence is not checked by the docs snippet gate
+because vitest is not a docs dependency; it typechecks in a project that has vitest installed):
+
+```ts nocheck
+import { interpret } from '@maxencerb/evs';
+import { describe, expect, test } from 'vitest';
+
+import { chain, tokenInfo, USDC } from './fixtures.js';
+
+describe('tokenInfo', () => {
+  test('returns symbol and decimals', () => {
+    const result = interpret(tokenInfo.ir, [USDC], chain);
+    expect(result.outcome).toMatchObject({
+      kind: 'return',
+      values: { symbol: 'USDC', decimals: 6 },
+    });
+  });
+});
+```
+
+:::tip[Going end to end]
+`interpret()` proves your script's logic; it does not exercise a real RPC node. For full
+end-to-end coverage, run the compiled script against a local anvil instance (the prool package
+manages per-worker instances nicely) through `readContract`, exactly as in
+[Executing scripts](/guides/execution/) — both execution modes work against anvil.
+:::
