@@ -1,0 +1,164 @@
+/**
+ * M9 type tests — both `toViem()` shapes spread into viem's `readContract` and typecheck
+ * under tsc --strict; the generated literal ABI flows through `readContract` inference for
+ * the flagship script; omitting both `address` and `code` is a type error
+ * (testing.md §5 "compile/viem").
+ */
+
+import type { Abi, Address } from 'abitype';
+import type { PublicClient, ReadContractParameters, StateOverride } from 'viem';
+import { expectTypeOf, test } from 'vitest';
+
+import { evscript } from './builder/script.js';
+import { compile } from './compile.js';
+import { arg, t, type Hex } from './core/types.js';
+import { toCreationBytecode, toViemDeployless, toViemStateOverride } from './viem.js';
+
+// ---------------------------------------------------------------------------
+// the flagship-shaped script (api.md E1, trimmed): full inference end to end
+// ---------------------------------------------------------------------------
+
+const poolAbi = [
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+] as const satisfies Abi;
+
+const erc20Abi = [
+  {
+    type: 'function',
+    name: 'symbol',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'string' }],
+  },
+  {
+    type: 'function',
+    name: 'decimals',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint8' }],
+  },
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const satisfies Abi;
+
+const poolMeta = evscript(
+  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
+  (s) => {
+    const token0 = s.call({ address: s.args.pool, abi: poolAbi, functionName: 'token0' });
+    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const decimals0 = s.select(dec.success, dec.value, 18);
+    const bal0 = s.call({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.user],
+    });
+    return s.return({ token0, symbol0, decimals0, bal0 });
+  },
+);
+const compiled = compile(poolMeta);
+
+declare const client: PublicClient;
+declare const pool: Address;
+declare const user: Address;
+
+type ExpectedOut = {
+  token0: `0x${string}`;
+  symbol0: string;
+  decimals0: number; // uint8 → number (abitype ≤ 48 bits)
+  bal0: bigint;
+};
+
+test('compile() and the .compile() sugar agree, with exact literal generics', () => {
+  expectTypeOf(poolMeta.compile()).toEqualTypeOf(compiled);
+  expectTypeOf(compiled.abi).toEqualTypeOf(poolMeta.abi);
+  expectTypeOf(compiled.abi[0]['name']).toEqualTypeOf<'poolMeta'>();
+  expectTypeOf(compiled.runtimeBytecode).toEqualTypeOf<Hex>();
+  expectTypeOf(compiled.initBytecode).toEqualTypeOf<Hex>();
+});
+
+test('deployless toViem() spreads into readContract — full return inference', async () => {
+  const shape = compiled.toViem();
+  expectTypeOf(shape).toEqualTypeOf<{ abi: typeof compiled.abi; code: Hex }>();
+  expectTypeOf(compiled.toViem({ mode: 'deployless' })).toEqualTypeOf(shape);
+
+  const out = await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'poolMeta',
+    args: [pool, user],
+  });
+  expectTypeOf(out).toEqualTypeOf<ExpectedOut>();
+});
+
+test('stateOverride toViem() spreads into readContract (composable with account/block)', async () => {
+  const shape = compiled.toViem({ mode: 'stateOverride' });
+  expectTypeOf(shape.abi).toEqualTypeOf(compiled.abi);
+  expectTypeOf(shape.address).toEqualTypeOf<Address>();
+  expectTypeOf(shape.stateOverride).toEqualTypeOf<[{ address: Address; code: Hex }]>();
+  // the tuple is assignable to viem's mutable StateOverride array type
+  expectTypeOf(shape.stateOverride).toMatchTypeOf<StateOverride>();
+
+  const out = await client.readContract({
+    ...compiled.toViem({ mode: 'stateOverride' }),
+    functionName: 'poolMeta',
+    args: [pool, user],
+    account: user, // msg.sender seen by the script
+    blockNumber: 22_000_000n, // historical reads — it is just eth_call
+  });
+  expectTypeOf(out).toEqualTypeOf<ExpectedOut>();
+
+  // custom address mode
+  void compiled.toViem({ mode: 'stateOverride', address: pool });
+});
+
+test('omitting both address and code is a type error', () => {
+  // @ts-expect-error — readContract needs either `address` (deployed/override) or `code` (deployless)
+  void client.readContract({
+    abi: compiled.abi,
+    functionName: 'poolMeta',
+    args: [pool, user],
+  });
+  expectTypeOf(compiled.abi).toMatchTypeOf<Abi>();
+});
+
+test('args is the labeled positional tuple in declaration order', () => {
+  type P = ReadContractParameters<typeof compiled.abi, 'poolMeta'>;
+  expectTypeOf<P['args']>().toEqualTypeOf<readonly [pool: `0x${string}`, user: `0x${string}`]>();
+  expectTypeOf<P['functionName']>().toEqualTypeOf<'poolMeta'>();
+});
+
+// ---------------------------------------------------------------------------
+// viem.ts helper shapes (frozen signatures)
+// ---------------------------------------------------------------------------
+
+test('toViemDeployless preserves the literal abi and yields { abi, code }', () => {
+  const shape = toViemDeployless({
+    abi: compiled.abi,
+    initBytecode: toCreationBytecode('0x60016000f3', 'cancun'),
+  });
+  expectTypeOf(shape).toEqualTypeOf<{ abi: typeof compiled.abi; code: Hex }>();
+});
+
+test('toViemStateOverride yields { abi, address, stateOverride: StateOverride }', () => {
+  const shape = toViemStateOverride(
+    { abi: compiled.abi, runtimeBytecode: '0x60016000f3' },
+    { address: '0x1000000000000000000000000000000000000001' },
+  );
+  expectTypeOf(shape).toEqualTypeOf<{
+    abi: typeof compiled.abi;
+    address: Address;
+    stateOverride: StateOverride;
+  }>();
+});

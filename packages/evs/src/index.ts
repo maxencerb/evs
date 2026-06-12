@@ -1,6 +1,7 @@
-// STUB — replaced by module agent
-// The complete public surface per docs/design/module-interfaces.md §M9 (nothing else is
-// exported from the package; single entry point, no subpath exports in v0).
+/**
+ * `@maxencerb/evs` — the complete public surface per docs/design/module-interfaces.md §M9.
+ * Nothing else is exported from the package; single entry point, no subpath exports in v0.
+ */
 
 // core
 export {
