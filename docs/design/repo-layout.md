@@ -385,9 +385,11 @@ jobs:
 
       - name: Package health (publint + attw)
         working-directory: packages/evs
+        # esm-only profile: CJSResolvesToESM is the accepted cost of shipping ESM-only
+        # (repo-layout.md §5 decision); attw exits 1 on ANY problem without the profile.
         run: |
           bunx publint
-          bunx @arethetypeswrong/cli --pack .
+          bunx @arethetypeswrong/cli --pack . --profile esm-only
 
   fork-tests:
     name: Mainnet-fork suite (scheduled / manual)
