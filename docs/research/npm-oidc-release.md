@@ -193,7 +193,11 @@ echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
 
 Three ways to write it into `packages/evs/package.json` (keep the committed version at `0.0.0` and treat the tag as the single source of truth):
 
-1. **`npm version` (recommended — extra validation/normalization):**
+1. **`npm version` — CORRECTION (2026-06-12): does NOT work in this repo.** Despite the
+   reasoning below, npm still resolves the workspace dependency tree and fails with
+   `EUNSUPPORTEDPROTOCOL Unsupported URL Type "catalog:"` (reproduced locally and by the
+   package owner). Use `bun pm version "$VERSION" --no-git-tag-version` instead (verified
+   incl. prerelease strings). Original text kept for the record:
    `npm version "$VERSION" --no-git-tag-version` run with `working-directory: packages/evs`. Only rewrites `package.json` (no `package-lock.json` exists in a bun repo); also accepts `v0.1.0` and normalizes it.
 2. **bun-native:** `bun pm version "$VERSION" --no-git-tag-version` — verified working on bun 1.3.14 (prints `v0.1.0`, edits only `package.json`, no git tag created). `bun pm pkg set version="$VERSION"` also works but performs no semver validation.
 3. **jq fallback:** `jq --arg v "$VERSION" '.version = $v' package.json > package.json.tmp && mv package.json.tmp package.json`.

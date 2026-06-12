@@ -511,7 +511,9 @@ jobs:
 
       - name: Inject version
         working-directory: packages/evs
-        run: npm version "${{ steps.version.outputs.version }}" --no-git-tag-version
+        # bun pm version, NOT npm version: npm cannot parse the workspace's catalog:
+        # protocol deps and fails with EUNSUPPORTEDPROTOCOL (verified 2026-06-12).
+        run: bun pm version "${{ steps.version.outputs.version }}" --no-git-tag-version
 
       - name: Rebuild with release version
         working-directory: packages/evs

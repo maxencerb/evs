@@ -15,7 +15,7 @@ package must already exist before a trusted publisher can be configured. Once, b
 cd packages/evs
 bun install && bun run build
 npm login                                   # as the owner of the @maxencerb scope
-npm version 0.0.1 --no-git-tag-version      # first real version
+bun pm version 0.0.1 --no-git-tag-version   # NOT npm version: npm chokes on catalog: deps
 cd ../.. && bun install                     # re-sync the lockfile before packing
 cd packages/evs
 TARBALL=$(bun pm pack --quiet)
