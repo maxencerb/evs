@@ -1,12 +1,19 @@
 {
   "$schema": "./node_modules/oxlint/configuration_schema.json",
   "plugins": ["eslint", "typescript", "unicorn", "oxc", "import", "promise", "node"],
-  "categories": { "correctness": "error", "suspicious": "warn", "perf": "warn" },
+  "categories": {
+    "correctness": "error",
+    "suspicious": "warn",
+    "perf": "warn"
+  },
   "options": {
     "typeAware": true,
     "reportUnusedDisableDirectives": "warn"
   },
-  "env": { "shared-node-browser": true, "es2026": true },
+  "env": {
+    "shared-node-browser": true,
+    "es2026": true
+  },
   "rules": {
     "typescript/no-floating-promises": "error",
     "typescript/no-misused-promises": "error",
@@ -32,6 +39,22 @@
         "typescript/no-explicit-any": "off",
         "no-console": "off"
       }
+    },
+    {
+      "files": ["examples/**"],
+      "rules": {
+        "no-console": "off",
+        "no-await-in-loop": "off"
+      }
+    },
+    {
+      "files": ["packages/evs/test/integration/**"],
+      "rules": {
+        "vitest/no-conditional-expect": "off",
+        "no-await-in-loop": "off",
+        "typescript/no-unsafe-type-assertion": "off"
+      },
+      "plugins": ["vitest"]
     }
   ]
 }

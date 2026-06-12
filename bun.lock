@@ -20,6 +20,24 @@
       "name": "@maxencerb/evs-example-pool-meta",
       "dependencies": {
         "@maxencerb/evs": "workspace:*",
+        "@maxencerb/evs-examples-shared": "workspace:*",
+        "prool": "catalog:testing",
+        "viem": "catalog:",
+      },
+    },
+    "examples/shared": {
+      "name": "@maxencerb/evs-examples-shared",
+      "dependencies": {
+        "prool": "catalog:testing",
+        "viem": "catalog:",
+      },
+    },
+    "examples/token-balances": {
+      "name": "@maxencerb/evs-example-token-balances",
+      "dependencies": {
+        "@maxencerb/evs": "workspace:*",
+        "@maxencerb/evs-examples-shared": "workspace:*",
+        "prool": "catalog:testing",
         "viem": "catalog:",
       },
     },
@@ -152,6 +170,10 @@
     "@maxencerb/evs-contracts": ["@maxencerb/evs-contracts@workspace:packages/contracts"],
 
     "@maxencerb/evs-example-pool-meta": ["@maxencerb/evs-example-pool-meta@workspace:examples/pool-meta"],
+
+    "@maxencerb/evs-example-token-balances": ["@maxencerb/evs-example-token-balances@workspace:examples/token-balances"],
+
+    "@maxencerb/evs-examples-shared": ["@maxencerb/evs-examples-shared@workspace:examples/shared"],
 
     "@noble/ciphers": ["@noble/ciphers@1.3.0", "", {}, "sha512-2I0gnIVPtfnMw9ee9h1dJG7tp81+8Ob3OJb3Mv37rx5L40/b0i7djjCVvGOVqc9AEIQyvyu1i6ypKdFw8R8gQw=="],
 

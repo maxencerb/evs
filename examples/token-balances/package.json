@@ -1,5 +1,5 @@
 {
-  "name": "@maxencerb/evs-example-pool-meta",
+  "name": "@maxencerb/evs-example-token-balances",
   "private": true,
   "type": "module",
   "dependencies": {

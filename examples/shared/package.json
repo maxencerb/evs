@@ -1,0 +1,12 @@
+{
+  "name": "@maxencerb/evs-examples-shared",
+  "private": true,
+  "type": "module",
+  "exports": {
+    "./run-anvil": "./run-anvil.ts"
+  },
+  "dependencies": {
+    "prool": "catalog:testing",
+    "viem": "catalog:"
+  }
+}
