@@ -83,6 +83,14 @@ jobs:
         # protocol deps and fails with EUNSUPPORTEDPROTOCOL (verified 2026-06-12).
         run: bun pm version "${{ steps.version.outputs.version }}" --no-git-tag-version
 
+      - name: Re-sync lockfile after version bump
+        # NOT frozen: the bump changed the workspace version, and packing against a stale
+        # bun.lock makes `bun pm pack --quiet` chatty (extra "Saved lockfile" line broke the
+        # GITHUB_OUTPUT capture in run 27402030447) and risks oven-sh/bun#20477 stale
+        # version substitution. Dependencies are unchanged; only the lock's workspace
+        # version is updated.
+        run: bun install
+
       - name: Rebuild with release version
         working-directory: packages/evs
         run: bun run build
@@ -90,7 +98,8 @@ jobs:
       - name: 'Pack (bun rewrites workspace:/catalog: protocols)'
         id: pack
         working-directory: packages/evs
-        run: echo "tarball=$(bun pm pack --quiet)" >> "$GITHUB_OUTPUT"
+        # tail -n1: pack's stdout must be exactly the filename for GITHUB_OUTPUT
+        run: echo "tarball=$(bun pm pack --quiet | tail -n1)" >> "$GITHUB_OUTPUT"
 
       # validate the EXACT tarball being published (testing.md §8) — publint accepts a
       # tarball path and checks the rewritten manifest, not the workspace source
