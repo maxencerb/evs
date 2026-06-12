@@ -452,29 +452,152 @@ because that changes node counts and labels. The verifier's fork gate is the bac
 ## 11. Dispatcher + runtime layout (decision 9)
 
 ```
-prologue:   PUSH2 frameEnd PUSH1 0x40 MSTORE
+prologue:   PUSH frameEnd PUSH1 0x40 MSTORE           ; minimal-width frameEnd immediate
 dispatch:   PUSH1 0x04 CALLDATASIZE LT PUSH2 @badcd JUMPI
             PUSH0 CALLDATALOAD PUSH1 0xE0 SHR
             PUSH4 <selector> EQ PUSH2 @main JUMPI
-@badcd:     JUMPDEST                                  ; EvsInvalidCalldata() — named, zero-arg
-            PUSH4 <sel(EvsInvalidCalldata())> PUSH1 0xE0 SHL PUSH0 MSTORE
-            PUSH1 0x04 PUSH0 REVERT
+            PUSH2 @badcd JUMP                         ; explicit fallback jump (amendment 10.3)
 @main:      JUMPDEST
             <cds ≥ 4+32·n guard → @badcd> <arg decode (§8.1)>
-            <body statement templates>
+            <body statement templates — @zero_* tryCall zeroing blocks sit inline (amendment 9.6)>
             <return encode (§8.2)> RETURN
 @fn_*:      <subroutines (§9)>
 @memcpy:    <shared word-loop — only if evmVersion < cancun AND any copy emitted>
+@dfail_*:   <per-site stubs → @decode_revert>
 @panic_overflow/@panic_divzero/@panic_bounds/@panic_alloc → @panic:  <shared Panic tail (§15.0)>
-@dfail_*:   <per-site stubs> → @decode_revert: <EvsDecodeError(site) tail>
-@zero_*:    <tryCall zeroing blocks>
+@decode_revert: <EvsDecodeError(site) tail>
+@badcd:     <EvsInvalidCalldata() tail — named, zero-arg; revert(0, 4)>
 INVALID     <data segments (dataLabel-addressed blobs)>
 ```
 
 Single function ⇒ single selector compare. Selector = viem `toFunctionSelector` over
-`name(argTypes…)` (inputs only; the tuple output does not affect it). Tails are emitted lazily
-(only the codes actually referenced). The fallback is the **named** `EvsInvalidCalldata()` (A
-graft) — viem decodes it from the generated ABI instead of a bare `revert(0,0)`.
+`name(argTypes…)` (inputs only; the tuple output does not affect it). All shared tails are
+emitted unconditionally and grouped at program end — unreferenced tails cost a few dozen
+unreachable bytes (amendment 10.2) — and the dispatcher reaches `@badcd` through the explicit
+`PUSH2 @badcd JUMP` above (amendment 10.3). The fallback is the **named**
+`EvsInvalidCalldata()` (A graft) — viem decodes it from the generated ABI instead of a bare
+`revert(0,0)`.
+
+The sketch above is the map; the listing below is the territory — the complete annotated
+disassembly of the minimal script `echo(uint256)`
+(`evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) => s.return({ x: s.args.x }))`),
+compiled with defaults (cancun). Like every marked listing in this document it is generated
+from the real compiler and machine-checked against it (see §15 conventions).
+
+<!-- The listings between `docsync:begin/end` markers in this file are generated compiler
+output. Regenerate after an intentional codegen change with:
+  DOCSYNC_UPDATE=1 bunx vitest run packages/evs/src/docsync.test.ts --project unit
+then run `bun run fmt` twice. Drift fails CI via packages/evs/src/docsync.test.ts. -->
+
+<!-- docsync:begin dispatcher-echo -->
+
+```
+0x0000  60a0        PUSH1 0xa0  ; frameEnd
+0x0002  6040        PUSH1 0x40
+0x0004  52          MSTORE  ; free-ptr init
+0x0005  6004        PUSH1 0x04
+0x0007  36          CALLDATASIZE
+0x0008  10          LT
+0x0009  610088      PUSH2 0x0088 → @badcd
+0x000c  57          JUMPI
+0x000d  5f          PUSH0
+0x000e  35          CALLDATALOAD
+0x000f  60e0        PUSH1 0xe0
+0x0011  1c          SHR
+0x0012  636279e43c  PUSH4 0x6279e43c  ; selector echo(uint256)
+0x0017  14          EQ
+0x0018  610020      PUSH2 0x0020 → @main
+0x001b  57          JUMPI
+0x001c  610088      PUSH2 0x0088 → @badcd
+0x001f  56          JUMP
+@main:
+0x0020  5b          JUMPDEST  ; @main
+0x0021  6024        PUSH1 0x24  ; calldata floor 36
+0x0023  36          CALLDATASIZE
+0x0024  10          LT
+0x0025  610088      PUSH2 0x0088 → @badcd
+0x0028  57          JUMPI
+0x0029  6004        PUSH1 0x04  ; arg #0 head
+0x002b  35          CALLDATALOAD
+0x002c  6080        PUSH1 0x80
+0x002e  52          MSTORE
+0x002f  6040        PUSH1 0x40
+0x0031  51          MLOAD  ; return buffer
+0x0032  6020        PUSH1 0x20 → @main
+0x0034  01          ADD
+0x0035  5f          PUSH0
+0x0036  52          MSTORE
+0x0037  6080        PUSH1 0x80
+0x0039  51          MLOAD  ; head x
+0x003a  6040        PUSH1 0x40
+0x003c  51          MLOAD
+0x003d  52          MSTORE
+0x003e  5f          PUSH0
+0x003f  51          MLOAD
+0x0040  6040        PUSH1 0x40
+0x0042  51          MLOAD
+0x0043  80          DUP1
+0x0044  91          SWAP2
+0x0045  03          SUB
+0x0046  90          SWAP1
+0x0047  f3          RETURN  ; return tuple
+@panic_overflow:
+0x0048  5b          JUMPDEST  ; @panic_overflow
+0x0049  6011        PUSH1 0x11  ; panic code 0x11
+0x004b  610064      PUSH2 0x0064 → @panic
+0x004e  56          JUMP
+@panic_divzero:
+0x004f  5b          JUMPDEST  ; @panic_divzero
+0x0050  6012        PUSH1 0x12  ; panic code 0x12
+0x0052  610064      PUSH2 0x0064 → @panic
+0x0055  56          JUMP
+@panic_bounds:
+0x0056  5b          JUMPDEST  ; @panic_bounds
+0x0057  6032        PUSH1 0x32  ; panic code 0x32
+0x0059  610064      PUSH2 0x0064 → @panic
+0x005c  56          JUMP
+@panic_alloc:
+0x005d  5b          JUMPDEST  ; @panic_alloc
+0x005e  6041        PUSH1 0x41  ; panic code 0x41
+0x0060  610064      PUSH2 0x0064 → @panic
+0x0063  56          JUMP
+@panic:
+0x0064  5b          JUMPDEST  ; @panic
+0x0065  634e487b71  PUSH4 0x4e487b71  ; selector 0x4e487b71
+0x006a  60e0        PUSH1 0xe0
+0x006c  1b          SHL
+0x006d  5f          PUSH0
+0x006e  52          MSTORE
+0x006f  6004        PUSH1 0x04
+0x0071  52          MSTORE
+0x0072  6024        PUSH1 0x24
+0x0074  5f          PUSH0
+0x0075  fd          REVERT  ; Panic(code)
+@decode_revert:
+0x0076  5b          JUMPDEST  ; @decode_revert
+0x0077  6320cf27b7  PUSH4 0x20cf27b7  ; selector 0x20cf27b7
+0x007c  60e0        PUSH1 0xe0
+0x007e  1b          SHL
+0x007f  5f          PUSH0
+0x0080  52          MSTORE
+0x0081  6004        PUSH1 0x04
+0x0083  52          MSTORE
+0x0084  6024        PUSH1 0x24
+0x0086  5f          PUSH0
+0x0087  fd          REVERT  ; EvsDecodeError(site)
+@badcd:
+0x0088  5b          JUMPDEST  ; @badcd
+0x0089  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
+0x008e  60e0        PUSH1 0xe0
+0x0090  1b          SHL
+0x0091  5f          PUSH0
+0x0092  52          MSTORE
+0x0093  6004        PUSH1 0x04
+0x0095  5f          PUSH0
+0x0096  fd          REVERT  ; EvsInvalidCalldata()
+```
+
+<!-- docsync:end -->
 
 On-chain error set (both declared in the generated ABI, always — the literal ABI type is
 independent of compile options):
@@ -558,41 +681,97 @@ snapshot format. The honesty rule: every documented listing is real compiler out
 
 ## 15. Worked codegen examples (hand-verified against [evm §2])
 
-Conventions: stack comments list **top first**; `slot[X]` is frame memory; `@x` = PUSH2-fixup
-label. These are the v0 compiler's actual output shape — no optimization shown that the
-compiler does not perform.
+<!-- The listings between `docsync:begin/end` markers are generated compiler output —
+regenerate with: DOCSYNC_UPDATE=1 bunx vitest run packages/evs/src/docsync.test.ts
+--project unit (then `bun run fmt` twice). -->
+
+Conventions: every marked listing is **real compiler output** —
+`compile(script).disassemble().format({ locs: false })` of the named example script (or a
+contiguous excerpt of it), generated and machine-verified by the doc-sync test
+(`packages/evs/src/docsync.test.ts`, testing.md §6 — A's honesty rule, enforced). Stack
+effects are described in prose, top of stack first; `slot[X]` is frame memory; `@x` = a
+PUSH2-fixup label. One disassembler quirk to read past: a push whose **value** coincides with
+some label's pc gets a speculative `→ @label` annotation (e.g. `PUSH1 0xa0 → @badcd` on a
+plain frame-slot load when `@badcd` happens to sit at pc 0xa0); only `PUSH2` immediates
+feeding a `JUMP`/`JUMPI` are actual targets. Label numbering (`@while_13`) is recorder-derived
+and deterministic. No optimization is shown that the compiler does not perform.
 
 ### 15.0 Shared panic tail (emitted once; stack class `'any'`)
 
+Four code-pushing entry stubs funnel into one shared `@panic` body: it builds
+`Panic(uint256)` — selector `0x4e487b71` shifted into the top 4 bytes of scratch `0x00`, the
+code word at `0x04` — and `revert(0, 36)`. Excerpt from the `echo(uint256)` listing (§11):
+
+<!-- docsync:begin panic-tail -->
+
 ```
-@panic_overflow: JUMPDEST  PUSH1 0x11  PUSH2 @panic  JUMP
-@panic_divzero:  JUMPDEST  PUSH1 0x12  PUSH2 @panic  JUMP
-@panic_bounds:   JUMPDEST  PUSH1 0x32  PUSH2 @panic  JUMP
-@panic_alloc:    JUMPDEST  PUSH1 0x41  PUSH2 @panic  JUMP
-@panic:          JUMPDEST                 ; [code, …dead]
-  PUSH4 0x4e487b71  PUSH1 0xE0  SHL       ; [selWord, code]
-  PUSH0  MSTORE                           ; MSTORE pops offset=0, value=selWord    [code]
-  PUSH1 0x04  MSTORE                      ; mem[4..36) = code                      []
-  PUSH1 0x24  PUSH0  REVERT               ; revert(offset=0, size=36) — Panic(code)
+@panic_overflow:
+0x0048  5b          JUMPDEST  ; @panic_overflow
+0x0049  6011        PUSH1 0x11  ; panic code 0x11
+0x004b  610064      PUSH2 0x0064 → @panic
+0x004e  56          JUMP
+@panic_divzero:
+0x004f  5b          JUMPDEST  ; @panic_divzero
+0x0050  6012        PUSH1 0x12  ; panic code 0x12
+0x0052  610064      PUSH2 0x0064 → @panic
+0x0055  56          JUMP
+@panic_bounds:
+0x0056  5b          JUMPDEST  ; @panic_bounds
+0x0057  6032        PUSH1 0x32  ; panic code 0x32
+0x0059  610064      PUSH2 0x0064 → @panic
+0x005c  56          JUMP
+@panic_alloc:
+0x005d  5b          JUMPDEST  ; @panic_alloc
+0x005e  6041        PUSH1 0x41  ; panic code 0x41
+0x0060  610064      PUSH2 0x0064 → @panic
+0x0063  56          JUMP
+@panic:
+0x0064  5b          JUMPDEST  ; @panic
+0x0065  634e487b71  PUSH4 0x4e487b71  ; selector 0x4e487b71
+0x006a  60e0        PUSH1 0xe0
+0x006c  1b          SHL
+0x006d  5f          PUSH0
+0x006e  52          MSTORE
+0x006f  6004        PUSH1 0x04
+0x0071  52          MSTORE
+0x0072  6024        PUSH1 0x24
+0x0074  5f          PUSH0
+0x0075  fd          REVERT  ; Panic(code)
 ```
+
+<!-- docsync:end -->
 
 `@decode_revert` is the same shape with `PUSH4 <sel(EvsDecodeError(uint256))>` and the site id
 pushed by the per-site stub; `@badcd` is the 4-byte-payload variant (`revert(0, 4)`).
 
 ### 15.1 Checked ADD (uint256) — `const c = a.add(b)`; a→`0x80`, b→`0xA0`, c→`0xC0`
 
+From the script `addu(a, b)` returning `{ c: a.add(b) }`: `a` and `b` are the two args
+(slots `0x80`/`0xA0` per §8.1), `c` is the first value (slot `0xC0`). The excerpt is the one
+`bin add` statement template. Stack story, top first: load `b` then `a` → `[a, b]`; `DUP2 ADD`
+→ `[r, b]` with `r = a+b` wrapping; `DUP1 SWAP2 GT` → `[b>r, r]` — overflow ⇔ `r < b`; `JUMPI`
+to the shared tail, else `MSTORE` to `slot[0xC0]`. (The `→ @badcd` on the first line is the
+§15-conventions disassembler quirk: `0xa0` is both `b`'s slot and `@badcd`'s pc here.)
+
+<!-- docsync:begin checked-add -->
+
 ```
-PUSH1 0xA0  MLOAD          ; [b]
-PUSH1 0x80  MLOAD          ; [a, b]
-DUP2                       ; [b, a, b]
-ADD                        ; [r, b]            r = a+b (wrapping)
-DUP1                       ; [r, r, b]
-SWAP2                      ; [b, r, r]
-GT                         ; [b>r, r]          overflow ⇔ r < b
-PUSH2 @panic_overflow
-JUMPI                      ; [r]
-PUSH1 0xC0  MSTORE         ; []                slot[0xC0] = r
+0x0035  60a0        PUSH1 0xa0 → @badcd  ; checked add uint256
+0x0037  51          MLOAD
+0x0038  6080        PUSH1 0x80
+0x003a  51          MLOAD
+0x003b  81          DUP2
+0x003c  01          ADD
+0x003d  80          DUP1
+0x003e  91          SWAP2
+0x003f  11          GT
+0x0040  610060      PUSH2 0x0060 → @panic_overflow
+0x0043  57          JUMPI
+0x0044  60c0        PUSH1 0xc0
+0x0046  52          MSTORE
 ```
+
+<!-- docsync:end -->
 
 Net stack 0 (the statement-boundary invariant §10 checks). Width variants per §6: `uintN<256`
 replaces the GT-check with `r > maxN`; `intN<256` uses the SIGNEXTEND fixpoint; `int256` the
@@ -600,121 +779,259 @@ solc sign-case formula.
 
 ### 15.2 STATICCALL `symbol()` → dynamic string (the decode-soundness graft applied)
 
-`token0`→`0x80`; result memref `symbol0`→`0xA0`; site id 7. Calldata is all-literal after
-folding (selector only).
+From the script `sym(token0)` returning `{ symbol0: s.call({ address: token0, abi: erc20Abi,
+functionName: 'symbol' }) }`: arg `token0`→`0x80`, result memref `symbol0`→`0xA0`, the call is
+**site 0**. Calldata is all-literal after folding (selector only) and is built at transient
+scratch with the stack empty, recomputing the buffer pointer from `0x40` instead of keeping it
+on the stack (amendment 9.8). Reading the excerpt top to bottom:
+
+- **§8.1 arg decode**: calldata-floor guard, `CALLDATALOAD`, `PUSH20`-mask to canonical
+  address, store to `slot[0x80]`.
+- **calldata build** (free ptr NOT bumped): selector word `MSTORE`d at `MLOAD(0x40)`.
+- **staticcall(gas, token0, buf, 4, 0, 0)**: operands pushed retSize=0, retOff=0, argsSize=4,
+  argsOff=buf (`DUP4`), target, `GAS` on top (resolved flaw 35: retSize first).
+- **failure path**: bubble the callee revert verbatim — RETURNDATACOPY shape 1
+  `(0, 0, rds)`, then `revert(0, rds)`.
+- **`@call_ok_0`** (checked label, stack 1): the **HEAD-SIZE GUARD** `rds ≥ 32·nOutputs`
+  fires before any decode read; then the ENTIRE returndata is snapshotted at `buf`
+  (RETURNDATACOPY shape 2) and the free pointer bumps by `ceil32(rds)`.
+- **dynamic head decode**: `off ≤ 2^64−1`, `off+32 ≤ rds`, then `ptr = buf+off`,
+  `len ≤ 2^64−1`, `off+32+len ≤ rds` — every violation jumps to `@dfail_0`; finally
+  `slot[0xA0] = ptr` (the memref aliases the snapshot) and the `POP` restores stack 0.
+
+<!-- docsync:begin call-symbol -->
 
 ```
-; -- build calldata at transient scratch (free ptr NOT bumped) --------------------
-PUSH1 0x40  MLOAD               ; [buf]
-PUSH4 0x95d89b41  PUSH1 0xE0  SHL                 ; [selWord, buf]
-DUP2  MSTORE                    ; [buf]            mem[buf..buf+32) = selector word
-
-; -- staticcall(gas(), token0, buf, 4, 0, 0) --------------------------------------
-PUSH0                           ; [retSize=0, buf]
-PUSH0                           ; [retOff=0, retSize, buf]
-PUSH1 0x04                      ; [argsSize=4, retOff, retSize, buf]
-DUP4                            ; [argsOff=buf, 4, 0, 0, buf]
-PUSH1 0x80  MLOAD               ; [token0, argsOff, argsSize, retOff, retSize, buf]
-GAS                             ; [gas, token0, …, buf]
-STATICCALL                      ; [success, buf]
-PUSH2 @ok_7  JUMPI              ; [buf]
-
-; -- failure: bubble callee revert verbatim (RETURNDATACOPY shape 1) ---------------
-RETURNDATASIZE  PUSH0  PUSH0    ; [dest=0, off=0, size=rds, buf]
-RETURNDATACOPY                  ; [buf]
-RETURNDATASIZE  PUSH0  REVERT   ; revert(0, rds)
-
-@ok_7: JUMPDEST                 ; [buf]  (label stack=1)
-; -- HEAD-SIZE GUARD before any decode read: rds ≥ 32·nOutputs = 0x20 --------------
-RETURNDATASIZE  PUSH1 0x20  GT  ; [0x20 > rds, buf]
-PUSH2 @dfail_7  JUMPI           ; [buf]
-
-; -- snapshot ENTIRE returndata at buf (RETURNDATACOPY shape 2), bump free ptr -----
-RETURNDATASIZE  PUSH0  DUP3     ; [dest=buf, off=0, size=rds, buf]
-RETURNDATACOPY                  ; [buf]
-RETURNDATASIZE  PUSH1 0x1F  ADD
-PUSH1 0x1F  NOT  AND            ; [ceil32(rds), buf]
-DUP2  ADD  PUSH1 0x40  MSTORE   ; [buf]            freePtr = buf + ceil32(rds)
-
-; -- decode dynamic head: off ≤ 2^64−1, off+32 ≤ rds --------------------------------
-DUP1  MLOAD                     ; [off, buf]        safe: rds ≥ 32 established above
-PUSH8 0xffffffffffffffff  DUP2  GT                  ; [off > 2^64−1, off, buf]
-PUSH2 @dfail_7  JUMPI           ; [off, buf]
-DUP1  PUSH1 0x20  ADD           ; [off+32, off, buf]
-RETURNDATASIZE  LT              ; [rds < off+32, off, buf]
-PUSH2 @dfail_7  JUMPI           ; [off, buf]
-; -- ptr = buf+off; len checks: len ≤ 2^64−1, off+32+len ≤ rds ----------------------
-DUP2  ADD                       ; [ptr, buf]
-DUP1  MLOAD                     ; [len, ptr, buf]
-PUSH8 0xffffffffffffffff  DUP2  GT  PUSH2 @dfail_7  JUMPI    ; [len, ptr, buf]
-DUP2  PUSH1 0x20  ADD  ADD      ; [end = ptr+32+len, ptr, buf]
-RETURNDATASIZE  DUP4  ADD       ; [buf+rds, end, ptr, buf]
-LT                              ; [buf+rds < end, ptr, buf]
-PUSH2 @dfail_7  JUMPI           ; [ptr, buf]
-PUSH1 0xA0  MSTORE              ; [buf]             slot[0xA0] = ptr (memref aliases snapshot)
-POP                             ; []
-
-; -- elsewhere ---------------------------------------------------------------------
-@dfail_7:       JUMPDEST  PUSH1 0x07  PUSH2 @decode_revert  JUMP        ; ('any')
-@decode_revert: JUMPDEST  <EvsDecodeError(site) tail — §15.0 shape>
+@main:
+0x0020  5b          JUMPDEST  ; @main
+0x0021  6024        PUSH1 0x24  ; calldata floor 36
+0x0023  36          CALLDATASIZE
+0x0024  10          LT
+0x0025  610164      PUSH2 0x0164 → @badcd
+0x0028  57          JUMPI
+0x0029  6004        PUSH1 0x04  ; arg #0 head
+0x002b  35          CALLDATALOAD
+0x002c  73ffffffffffffffffffffffffffffffffffffffff  PUSH20 0xffffffffffffffffffffffffffffffffffffffff  ; mask address
+0x0041  16          AND
+0x0042  6080        PUSH1 0x80
+0x0044  52          MSTORE
+0x0045  6395d89b41  PUSH4 0x95d89b41  ; const calldata
+0x004a  60e0        PUSH1 0xe0
+0x004c  1b          SHL
+0x004d  6040        PUSH1 0x40
+0x004f  51          MLOAD
+0x0050  52          MSTORE
+0x0051  6040        PUSH1 0x40
+0x0053  51          MLOAD
+0x0054  5f          PUSH0
+0x0055  5f          PUSH0
+0x0056  6004        PUSH1 0x04
+0x0058  83          DUP4
+0x0059  6080        PUSH1 0x80
+0x005b  51          MLOAD  ; target
+0x005c  5a          GAS
+0x005d  fa          STATICCALL  ; strict call symbol (site 0)
+0x005e  610069      PUSH2 0x0069 → @call_ok_0
+0x0061  57          JUMPI
+0x0062  3d          RETURNDATASIZE
+0x0063  5f          PUSH0
+0x0064  5f          PUSH0
+0x0065  3e          RETURNDATACOPY
+0x0066  3d          RETURNDATASIZE
+0x0067  5f          PUSH0
+0x0068  fd          REVERT  ; bubble callee revert
+@call_ok_0:
+0x0069  5b          JUMPDEST  ; @call_ok_0
+0x006a  3d          RETURNDATASIZE
+0x006b  6020        PUSH1 0x20 → @main  ; staticMinSize 32
+0x006d  11          GT
+0x006e  61011e      PUSH2 0x011e → @dfail_0
+0x0071  57          JUMPI
+0x0072  3d          RETURNDATASIZE
+0x0073  5f          PUSH0
+0x0074  82          DUP3
+0x0075  3e          RETURNDATACOPY
+0x0076  3d          RETURNDATASIZE
+0x0077  601f        PUSH1 0x1f
+0x0079  01          ADD
+0x007a  601f        PUSH1 0x1f
+0x007c  19          NOT
+0x007d  16          AND
+0x007e  81          DUP2
+0x007f  01          ADD
+0x0080  6040        PUSH1 0x40
+0x0082  52          MSTORE
+0x0083  80          DUP1
+0x0084  51          MLOAD
+0x0085  67ffffffffffffffff  PUSH8 0xffffffffffffffff
+0x008e  81          DUP2
+0x008f  11          GT
+0x0090  61011e      PUSH2 0x011e → @dfail_0
+0x0093  57          JUMPI
+0x0094  80          DUP1
+0x0095  6020        PUSH1 0x20 → @main
+0x0097  01          ADD
+0x0098  3d          RETURNDATASIZE
+0x0099  10          LT
+0x009a  61011e      PUSH2 0x011e → @dfail_0
+0x009d  57          JUMPI
+0x009e  81          DUP2
+0x009f  01          ADD
+0x00a0  80          DUP1
+0x00a1  51          MLOAD
+0x00a2  67ffffffffffffffff  PUSH8 0xffffffffffffffff
+0x00ab  81          DUP2
+0x00ac  11          GT
+0x00ad  61011e      PUSH2 0x011e → @dfail_0
+0x00b0  57          JUMPI
+0x00b1  81          DUP2
+0x00b2  6020        PUSH1 0x20 → @main
+0x00b4  01          ADD
+0x00b5  01          ADD
+0x00b6  3d          RETURNDATASIZE
+0x00b7  83          DUP4
+0x00b8  01          ADD
+0x00b9  10          LT
+0x00ba  61011e      PUSH2 0x011e → @dfail_0
+0x00bd  57          JUMPI
+0x00be  60a0        PUSH1 0xa0
+0x00c0  52          MSTORE  ; out #0 string (memref aliases snapshot)
+0x00c1  50          POP
 ```
+
+<!-- docsync:end -->
+
+The per-site stub lives with the tails (`'any'` stack class) and pushes the site id for the
+shared `@decode_revert` tail (§15.0 shape):
+
+<!-- docsync:begin call-symbol-dfail -->
+
+```
+@dfail_0:
+0x011e  5b          JUMPDEST  ; @dfail_0
+0x011f  5f          PUSH0  ; site 0
+0x0120  610152      PUSH2 0x0152 → @decode_revert
+0x0123  56          JUMP
+```
+
+<!-- docsync:end -->
 
 Every head word read happens **after** `rds ≥ 32·nOutputs` is established — no stale-memory
 read exists on any path (the resolved C §14.2 hole). The string body is never copied twice.
-`tryCall` variant: the post-STATICCALL `JUMPI` inverts to the `@zero_7` block and `@dfail_7`
-jumps there too; `@zero_7` sets `success=0`, `slot[0xA0]=0x60`, falls through.
+`tryCall` variant: the post-STATICCALL `JUMPI` inverts to the `@zero_0` block and `@dfail_0`
+jumps there too; `@zero_0` sets `success=0`, `slot[0xA0]=0x60`, and rejoins inline at the
+per-site join label (amendment 9.6).
 
-### 15.3 While loop with `s.let` cells — sum 0..n−1 with break support
+### 15.3 While loop with `s.let` cells — sum 0..n−1
 
 ```ts
-const total = s.let(t.uint256, 0n);
-const i = s.let(t.uint256, 0n);
-s.while(
-  () => i.get().lt(s.args.n),
-  (loop) => {
-    total.set(total.get().add(i.get()));
-    i.set(i.get().add(1n));
-  },
-);
+const sum = evscript({ name: 'sum', args: [arg('n', t.uint256)] }, (s) => {
+  const total = s.let(t.uint256, 0n);
+  const i = s.let(t.uint256, 0n);
+  s.while(
+    () => i.get().lt(s.args.n),
+    () => {
+      total.set(total.get().add(i.get()));
+      i.set(i.get().add(1n));
+    },
+  );
+  return s.return({ total: total.get() });
+});
 ```
 
-Frame: `n`→0x80, `total`→0xA0, `i`→0xC0; values v1(i.get)→0xE0, v2(lt)→0x100,
-v3(total.get)→0x120, v4(i.get)→0x140, v5(add)→0x160, v6(i.get)→0x180, v7(add)→0x1A0
-(literals 0 and 1 fold — no slots).
+Frame: arg `n`→0x80; cells `total`→0xA0, `i`→0xC0; values v1(header `i.get`)→0xE0,
+v2(lt)→0x100, v3(total.get)→0x120, v4(i.get)→0x140, v5(add)→0x160, v6(i.get)→0x180,
+v7(add)→0x1A0, v8(the final `total.get`)→0x1C0; frameEnd 0x1E0 (the literals 0 and 1 fold —
+no slots). The excerpt runs from the §8.1 arg decode through the loop; the §8.2 return encode
+of v8 follows `@endwhile_13` and is elided. The header (`@while_13`, checked label, stack 0)
+re-executes per iteration: v1 = i, v2 = v1 < n, exit on `ISZERO`. The body is two §15.1
+checked-add statements bracketed by cell reads/writes; `PUSH1 0x01` is the folded literal.
+
+<!-- docsync:begin while-loop -->
 
 ```
-PUSH0  PUSH1 0xA0  MSTORE               ; cell total = 0
-PUSH0  PUSH1 0xC0  MSTORE               ; cell i = 0
-@while_1: JUMPDEST                      ; header (label stack=0) — re-executed per iteration
-  PUSH1 0xC0 MLOAD  PUSH1 0xE0 MSTORE   ; v1 = i
-  PUSH1 0x80 MLOAD                      ; [n]          right operand first
-  PUSH1 0xE0 MLOAD                      ; [v1, n]      left on top
-  LT                                    ; [v1 < n]
-  PUSH1 0x100 MSTORE                    ; v2 = cond
-  PUSH1 0x100 MLOAD  ISZERO
-  PUSH2 @endwhile_1  JUMPI
-  ; body: total.set(total.get().add(i.get()))
-  PUSH1 0xA0 MLOAD  PUSH1 0x120 MSTORE  ; v3 = total
-  PUSH1 0xC0 MLOAD  PUSH1 0x140 MSTORE  ; v4 = i
-  PUSH1 0x140 MLOAD                     ; [b = v4]
-  PUSH1 0x120 MLOAD                     ; [a = v3, b]
-  DUP2 ADD DUP1 SWAP2 GT                ; [b>r, r]     checked add (§15.1 core)
-  PUSH2 @panic_overflow JUMPI           ; [r]
-  PUSH1 0x160 MSTORE                    ; v5 = r
-  PUSH1 0x160 MLOAD  PUSH1 0xA0 MSTORE  ; total = v5
-  ; i.set(i.get().add(1))
-  PUSH1 0xC0 MLOAD  PUSH1 0x180 MSTORE  ; v6 = i
-  PUSH1 0x01                            ; [b = 1]      folded literal
-  PUSH1 0x180 MLOAD                     ; [a = v6, b]
-  DUP2 ADD DUP1 SWAP2 GT
-  PUSH2 @panic_overflow JUMPI           ; [r]
-  PUSH1 0x1A0 MSTORE                    ; v7 = r
-  PUSH1 0x1A0 MLOAD  PUSH1 0xC0 MSTORE  ; i = v7
-  PUSH2 @while_1  JUMP
-@endwhile_1: JUMPDEST                   ; (label stack=0)
+0x002a  6004        PUSH1 0x04  ; arg #0 head
+0x002c  35          CALLDATALOAD
+0x002d  6080        PUSH1 0x80
+0x002f  52          MSTORE
+0x0030  5f          PUSH0  ; cell 0 ←
+0x0031  60a0        PUSH1 0xa0
+0x0033  52          MSTORE
+0x0034  5f          PUSH0  ; cell 1 ←
+0x0035  60c0        PUSH1 0xc0
+0x0037  52          MSTORE
+@while_13:
+0x0038  5b          JUMPDEST  ; @while_13
+0x0039  60c0        PUSH1 0xc0  ; cell 1 →
+0x003b  51          MLOAD
+0x003c  60e0        PUSH1 0xe0 → @panic
+0x003e  52          MSTORE
+0x003f  6080        PUSH1 0x80  ; lt uint256
+0x0041  51          MLOAD
+0x0042  60e0        PUSH1 0xe0 → @panic
+0x0044  51          MLOAD
+0x0045  10          LT
+0x0046  610100      PUSH2 0x0100
+0x0049  52          MSTORE
+0x004a  610100      PUSH2 0x0100  ; while cond
+0x004d  51          MLOAD
+0x004e  15          ISZERO
+0x004f  6100a2      PUSH2 0x00a2 → @endwhile_13
+0x0052  57          JUMPI
+0x0053  60a0        PUSH1 0xa0  ; cell 0 →
+0x0055  51          MLOAD
+0x0056  610120      PUSH2 0x0120
+0x0059  52          MSTORE
+0x005a  60c0        PUSH1 0xc0  ; cell 1 →
+0x005c  51          MLOAD
+0x005d  610140      PUSH2 0x0140
+0x0060  52          MSTORE
+0x0061  610140      PUSH2 0x0140  ; checked add uint256
+0x0064  51          MLOAD
+0x0065  610120      PUSH2 0x0120
+0x0068  51          MLOAD
+0x0069  81          DUP2
+0x006a  01          ADD
+0x006b  80          DUP1
+0x006c  91          SWAP2
+0x006d  11          GT
+0x006e  6100c4      PUSH2 0x00c4 → @panic_overflow
+0x0071  57          JUMPI
+0x0072  610160      PUSH2 0x0160
+0x0075  52          MSTORE
+0x0076  610160      PUSH2 0x0160  ; cell 0 ←
+0x0079  51          MLOAD
+0x007a  60a0        PUSH1 0xa0
+0x007c  52          MSTORE
+0x007d  60c0        PUSH1 0xc0  ; cell 1 →
+0x007f  51          MLOAD
+0x0080  610180      PUSH2 0x0180
+0x0083  52          MSTORE
+0x0084  6001        PUSH1 0x01  ; checked add uint256
+0x0086  610180      PUSH2 0x0180
+0x0089  51          MLOAD
+0x008a  81          DUP2
+0x008b  01          ADD
+0x008c  80          DUP1
+0x008d  91          SWAP2
+0x008e  11          GT
+0x008f  6100c4      PUSH2 0x00c4 → @panic_overflow
+0x0092  57          JUMPI
+0x0093  6101a0      PUSH2 0x01a0
+0x0096  52          MSTORE
+0x0097  6101a0      PUSH2 0x01a0  ; cell 1 ←
+0x009a  51          MLOAD
+0x009b  60c0        PUSH1 0xc0
+0x009d  52          MSTORE
+0x009e  610038      PUSH2 0x0038 → @while_13
+0x00a1  56          JUMP
+@endwhile_13:
+0x00a2  5b          JUMPDEST  ; @endwhile_13
 ```
 
-`loop.break()` lowers to `PUSH2 @endwhile_1 JUMP`; `loop.continue()` to `PUSH2 @while_1 JUMP`
+<!-- docsync:end -->
+
+`loop.break()` lowers to `PUSH2 @endwhile_13 JUMP`; `loop.continue()` to `PUSH2 @while_13 JUMP`
 (both legal at statement boundaries — stack is empty). The back-to-back `MSTORE/MLOAD` pairs
 are the uniform-lowering tax (~60 gas/iteration; 10,000 iterations ≈ 1.4M gas — far inside
 eth_call budgets [evm §4]) and the first documented peephole candidate, not v0.
