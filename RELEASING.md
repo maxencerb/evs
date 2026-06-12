@@ -43,11 +43,9 @@ Finally **log out / revoke any publish token** — from now on only the workflow
    publishes under the `beta` dist-tag, etc.) → Publish.
 3. The workflow does the rest. Watch it: `gh run watch --repo maxencerb/evs`.
 
-## When the repo goes public
+## Provenance (enabled 2026-06-12)
 
-Provenance attestations require a public repo. Two coordinated edits (both marked with
-comments in place):
-
-1. `packages/evs/package.json` → `publishConfig.provenance`: `false` → `true`.
-2. `.github/workflows/release.yml` → enable the `--provenance` flag on the publish step
-   (see the comment next to it).
+The repo is public and releases publish **with provenance attestations**
+(`publishConfig.provenance: true` + `--provenance` in `release.yml`). npm verifies the
+package was built by this repo's `release.yml` on GitHub-hosted runners. If the repo ever
+goes private again, both switches must be flipped back off or publishes will fail.

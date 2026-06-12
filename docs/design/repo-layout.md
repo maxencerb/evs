@@ -543,14 +543,14 @@ jobs:
         working-directory: packages/evs
         env:
           NODE_AUTH_TOKEN: "" # defuse setup-node's placeholder so OIDC wins
-          # While the repo is PRIVATE, provenance must stay off (publishConfig.provenance=false
-          # in package.json). When the repo goes public: flip publishConfig.provenance to true
-          # and append --provenance below.
+          # Provenance is ON (repo is public since 2026-06-12; publishConfig.provenance=true).
+          # It would fail on a private repo — if the repo ever goes private again, flip both back.
         run: |
           TAG_FLAG=latest
           if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then TAG_FLAG=next; fi
           npm publish "${{ steps.pack.outputs.tarball }}" \
             --access public \
+            --provenance \
             --tag "$TAG_FLAG"
 ```
 
