@@ -126,8 +126,8 @@ never re-executes. This is the direct answer to the PyTeal post-mortem [prior-ar
 - **Recording-time constant folding of all-literal pure ops**: when every operand of a
   `bin`/`un`/`convert` is a literal, the builder folds it to a `const`. If the fold would Panic
   (e.g. `s.add(MAX_U256, 1n)`, division by literal zero, out-of-range narrowing), recording
-  throws `EvsTypeError` with the call site and the documented escape hatch: *route one operand
-  through a cell* (`s.let(t.uint256, x).get()`) if a guaranteed runtime panic is genuinely
+  throws `EvsTypeError` with the call site and the documented escape hatch: _route one operand
+  through a cell_ (`s.let(t.uint256, x).get()`) if a guaranteed runtime panic is genuinely
   intended. (Resolves B's constFold-hard-error flaw: the check moves to recording time, where
   branch reachability is not yet a question and the location is exact, and gets an escape hatch.)
 
@@ -186,13 +186,13 @@ Stmt = { loc, site: SiteId } & (
 
 Solidity layout, kept verbatim [evm §6]:
 
-| Range | Use |
-|---|---|
-| `0x00–0x3f` | scratch — revert payload assembly, intra-template temporaries only |
-| `0x40–0x5f` | free-memory pointer |
-| `0x60–0x7f` | zero slot — never written; the canonical empty memref (tryCall failure values point here) |
-| `0x80 … frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, fn param/result |
-| `frameEnd …` | bump allocations: returndata snapshots, dynamic values, mutable arrays, the return tuple |
+| Range             | Use                                                                                       |
+| ----------------- | ----------------------------------------------------------------------------------------- |
+| `0x00–0x3f`       | scratch — revert payload assembly, intra-template temporaries only                        |
+| `0x40–0x5f`       | free-memory pointer                                                                       |
+| `0x60–0x7f`       | zero slot — never written; the canonical empty memref (tryCall failure values point here) |
+| `0x80 … frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, fn param/result                  |
+| `frameEnd …`      | bump allocations: returndata snapshots, dynamic values, mutable arrays, the return tuple  |
 
 Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
 
@@ -228,17 +228,20 @@ Yul-level specs below are normative; the asm templates derive from them and are 
 against a solc reference contract (testing.md §4).
 
 **ADD** (`r := add(a,b)`)
+
 - `uint256`: overflow ⇔ `lt(r, b)`.
 - `uintN, N<256`: true sum < 2^257 never wraps mod 2^256 for canonical operands; overflow ⇔ `gt(r, maxN)`.
 - `intN, N<256`: overflow ⇔ `signextend(N/8-1, r) != r` (operands canonical ⇒ true sum representable in 256 bits).
 - `int256`: overflow ⇔ `or(and(iszero(slt(b,0)), slt(r,a)), and(slt(b,0), sgt(r,a)))` (solc `checked_add_t_int256`).
 
 **SUB** (`r := sub(a,b)`)
+
 - `uint256` / `uintN`: underflow ⇔ `lt(a, b)` (check before SUB; result stays canonical).
 - `intN, N<256`: signextend-fixpoint check on `r`.
 - `int256`: overflow ⇔ `or(and(iszero(slt(b,0)), sgt(r,a)), and(slt(b,0), slt(r,a)))`.
 
 **MUL** (`r := mul(a,b)`) — the width-dependent rule both A and B got wrong:
+
 - `uint256`: overflow ⇔ `iszero(or(iszero(a), eq(div(r,a), b)))` (div-back; [evm §5] sequence verbatim).
 - `uintN, N ≤ 128`: the true product of canonical operands is < 2^256 (no 256-bit wrap) ⇒
   range check alone is sound: overflow ⇔ `gt(r, maxN)`.
@@ -250,6 +253,7 @@ against a solc reference contract (testing.md §4).
 - `intN, 128 < N < 256`: int256 check above **then** signextend-fixpoint check.
 
 **DIV / MOD**
+
 - All types: `iszero(b)` → Panic `0x12` (also under any future unchecked mode, matching solc).
 - `uintN`: `DIV`/`MOD`; result ≤ a ⇒ canonical, no further check.
 - `int256` DIV: `and(eq(a, shl(255,1)), eq(b, not(0)))` → Panic `0x11` (EVM SDIV silently wraps
@@ -308,7 +312,7 @@ scratch `MLOAD(0x40)`, not bumped.
    `ISZERO ISZERO`) — normalize-don't-revert, matching viem's lenient decoding (documented
    divergence from solc's strict cleanup; resolves C's sloppy-token flaw). Store to slots.
 5. **Dynamic outputs** decode **in place, aliasing the snapshot** (the ABI tail `[len][data]`
-   *is* the evs memref layout — zero copy): validate `off ≤ 2^64−1`, `off + 32 ≤ rds`,
+   _is_ the evs memref layout — zero copy): validate `off ≤ 2^64−1`, `off + 32 ≤ rds`,
    `len ≤ 2^64−1`, `off + 32 + len ≤ rds` (arrays: `off + 32 + 32·len ≤ rds`; the 2^64 guards
    make the bounds arithmetic overflow-free). Structural failure → decode-fail. Array elements
    are normalized **eagerly** with a small emitted loop after validation (skipped for
@@ -343,8 +347,8 @@ of the recording-time guard — no other module changes.
   calldata hole; CALLDATALOAD zero-pads, so without this check short calldata silently decodes
   as zero args).
 - **Word arg** at `4 + 32·i`: `CALLDATALOAD` + normalize (mask / SIGNEXTEND / `ISZERO ISZERO`)
-  + `MSTORE slot`. Normalize-don't-revert on dirty high bits (viem always encodes canonically;
-  documented divergence from solc).
+  - `MSTORE slot`. Normalize-don't-revert on dirty high bits (viem always encodes canonically;
+    documented divergence from solc).
 - **Dynamic arg** (`string`/`bytes`/`T[]`): `off := CALLDATALOAD(4+32·i)`; checks
   `off ≤ 2^64−1`, `4 + off + 32 ≤ cds`; `len := CALLDATALOAD(4+off)`; `len ≤ 2^64−1`;
   bytes/string: `4 + off + 32 + len ≤ cds`; arrays: `4 + off + 32 + 32·len ≤ cds` (no overflow:
@@ -436,11 +440,11 @@ AsmNode = op | push{value: bigint}        // minimal-width PUSHn; 0 → PUSH0 (p
 
 ### evmVersion lowering (`'paris' | 'shanghai' | 'cancun'`, default `'cancun'` [evm §1])
 
-| Construct | cancun | shanghai | paris |
-|---|---|---|---|
-| zero push | `PUSH0` | `PUSH0` | `PUSH1 00` (assembler-level) |
-| memory copy | `MCOPY` | `@memcpy` word-loop subroutine | `@memcpy` (codegen-level) |
-| init wrapper | `61RRRR80600A5F395FF3` | same | `61RRRR80600A3D393DF3` (`3D` = RETURNDATASIZE-as-zero) |
+| Construct    | cancun                 | shanghai                       | paris                                                  |
+| ------------ | ---------------------- | ------------------------------ | ------------------------------------------------------ |
+| zero push    | `PUSH0`                | `PUSH0`                        | `PUSH1 00` (assembler-level)                           |
+| memory copy  | `MCOPY`                | `@memcpy` word-loop subroutine | `@memcpy` (codegen-level)                              |
+| init wrapper | `61RRRR80600A5F395FF3` | same                           | `61RRRR80600A3D393DF3` (`3D` = RETURNDATASIZE-as-zero) |
 
 The assembler owns immediate selection (`push 0`); codegen owns sequence-level lowering (MCOPY),
 because that changes node counts and labels. The verifier's fork gate is the backstop.
@@ -504,11 +508,11 @@ runtime [evm §6]; paris variant swaps `5F`→`3D`), `sourceMap`, `ir`, `options
 `disassemble()`, `explainRevert(data)`.
 
 - `toViem()` (no args) = **deployless**: `{ abi, code: initBytecode }` — maximal RPC
-  portability [viem §3.2]. `code` is *only ever* creation bytecode; there is deliberately no
+  portability [viem §3.2]. `code` is _only ever_ creation bytecode; there is deliberately no
   field named `code`/`bytecode` on the artifact itself (the verified silent-failure footgun
   [viem §1.3 test 2] is fenced by naming: `runtimeBytecode` / `initBytecode`).
 - `toViem({ mode: 'stateOverride', address? })` = `{ abi, address, stateOverride: [{ address,
-  code: runtimeBytecode }] }`; default address `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`
+code: runtimeBytecode }] }`; default address `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`
   [viem §5.1]. Both shapes spread into `readContract` and typecheck (compile-verified pattern
   [viem §5.2]). Peer dep floor: `viem >= 2.14.1` [viem §1.2].
 - `script.abi` exists pre-compile (recording-derived); codegen failures cannot corrupt the
@@ -663,12 +667,15 @@ jumps there too; `@zero_7` sets `success=0`, `slot[0xA0]=0x60`, falls through.
 ### 15.3 While loop with `s.let` cells — sum 0..n−1 with break support
 
 ```ts
-const total = s.let(t.uint256, 0n)
-const i = s.let(t.uint256, 0n)
-s.while(() => i.get().lt(s.args.n), (loop) => {
-  total.set(total.get().add(i.get()))
-  i.set(i.get().add(1n))
-})
+const total = s.let(t.uint256, 0n);
+const i = s.let(t.uint256, 0n);
+s.while(
+  () => i.get().lt(s.args.n),
+  (loop) => {
+    total.set(total.get().add(i.get()));
+    i.set(i.get().add(1n));
+  },
+);
 ```
 
 Frame: `n`→0x80, `total`→0xA0, `i`→0xC0; values v1(i.get)→0xE0, v2(lt)→0x100,
@@ -714,90 +721,69 @@ eth_call budgets [evm §4]) and the first documented peephole candidate, not v0.
 
 ## 16. Constraint → mechanism traceability (merged A §13 / B §14 / C §13 — living CI checklist)
 
-| Constraint (source) | Mechanism (module) |
-|---|---|
-| RETURNDATACOPY OOB = exceptional halt, all gas [evm §2] | only `(0,0,rds)`/`(base,0,rds)` shapes; assembler shape lint (asm/verify) |
+| Constraint (source)                                                       | Mechanism (module)                                                                                                                              |
+| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| RETURNDATACOPY OOB = exceptional halt, all gas [evm §2]                   | only `(0,0,rds)`/`(base,0,rds)` shapes; assembler shape lint (asm/verify)                                                                       |
 | viem `code` executes as init code; raw runtime fails silently [viem §1.3] | `toViem()` only exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode`; deployless regression test (viem.ts, tests) |
-| JUMPDEST validity skips PUSH immediates [evm §3] | PUSH2-only label pushes + consensus-identical post-assembly scan (asm/verify) |
-| EIP-170 24,576 runtime / EIP-3860 init [evm §4] | `EvsCompileError` with per-region size breakdown (compile.ts) |
-| eth_call gas caps: anvil 30M default, geth 50M floor [evm §4] | harness/anvil pinned `--gas-limit 100000000`; docs state the 50M production floor |
-| TSTORE/TLOAD/state-writes halt in static context [evm §1] | never emitted; shape lint blocklist (asm/verify) |
-| stack limit 1024 / DUP-SWAP reach 16 [evm §2] | empty-statement-boundary invariant + ≤16 template depth, machine-checked (asm/verify) |
-| Panic encoding `0x4e487b71` + 36-byte payload [evm §5] | shared tails (§15.0), golden-tested byte-exact |
-| `−2^255 / −1` SDIV silent wrap [evm §5] | explicit check → Panic 0x11 (§6) |
-| sub-word MUL 256-bit wrap-back (N>128) | div-back + range check (§6); boundary-matrix tests incl. wrap-past-2^256 cases |
-| UnionToTuple order instability [abitype §4.2] | ordered ArgSpec tuple inputs; single named-tuple output → object; CI type regression |
-| empty component name degrades object→array [abitype §4.3] | recording-time rejection of empty return keys (builder) |
-| viem ≥ 2.14.1 floor; type-volatile patches [viem §1.2, abitype §0] | peerDeps floor; CI pins exact viem for type tests |
-| anvil deployless constructor-return history [stack §3] | permanent pinned integration test on the `code` path |
-| stateOverride undocumented on Alchemy/Infura [viem §4] | deployless is the `toViem()` default |
-| override `code` does not clear account state [viem §3.1] | vanity `DEFAULT_SCRIPT_ADDRESS`; scripts never SLOAD |
-| warm/cold 2600/100 [evm §2] | documented; no dedup in v0 |
-| ABIs must be inline or `as const` [prior-art §5] | `script.abi` is a literal-typed runtime value; any file emission is `.ts` `as const` |
-| PyTeal silent-misuse / late sourcemaps [prior-art §2] | value semantics, throwing brands (+toJSON), locs on every node, sourceMap/disasm/explainRevert day one |
+| JUMPDEST validity skips PUSH immediates [evm §3]                          | PUSH2-only label pushes + consensus-identical post-assembly scan (asm/verify)                                                                   |
+| EIP-170 24,576 runtime / EIP-3860 init [evm §4]                           | `EvsCompileError` with per-region size breakdown (compile.ts)                                                                                   |
+| eth_call gas caps: anvil 30M default, geth 50M floor [evm §4]             | harness/anvil pinned `--gas-limit 100000000`; docs state the 50M production floor                                                               |
+| TSTORE/TLOAD/state-writes halt in static context [evm §1]                 | never emitted; shape lint blocklist (asm/verify)                                                                                                |
+| stack limit 1024 / DUP-SWAP reach 16 [evm §2]                             | empty-statement-boundary invariant + ≤16 template depth, machine-checked (asm/verify)                                                           |
+| Panic encoding `0x4e487b71` + 36-byte payload [evm §5]                    | shared tails (§15.0), golden-tested byte-exact                                                                                                  |
+| `−2^255 / −1` SDIV silent wrap [evm §5]                                   | explicit check → Panic 0x11 (§6)                                                                                                                |
+| sub-word MUL 256-bit wrap-back (N>128)                                    | div-back + range check (§6); boundary-matrix tests incl. wrap-past-2^256 cases                                                                  |
+| UnionToTuple order instability [abitype §4.2]                             | ordered ArgSpec tuple inputs; single named-tuple output → object; CI type regression                                                            |
+| empty component name degrades object→array [abitype §4.3]                 | recording-time rejection of empty return keys (builder)                                                                                         |
+| viem ≥ 2.14.1 floor; type-volatile patches [viem §1.2, abitype §0]        | peerDeps floor; CI pins exact viem for type tests                                                                                               |
+| anvil deployless constructor-return history [stack §3]                    | permanent pinned integration test on the `code` path                                                                                            |
+| stateOverride undocumented on Alchemy/Infura [viem §4]                    | deployless is the `toViem()` default                                                                                                            |
+| override `code` does not clear account state [viem §3.1]                  | vanity `DEFAULT_SCRIPT_ADDRESS`; scripts never SLOAD                                                                                            |
+| warm/cold 2600/100 [evm §2]                                               | documented; no dedup in v0                                                                                                                      |
+| ABIs must be inline or `as const` [prior-art §5]                          | `script.abi` is a literal-typed runtime value; any file emission is `.ts` `as const`                                                            |
+| PyTeal silent-misuse / late sourcemaps [prior-art §2]                     | value semantics, throwing brands (+toJSON), locs on every node, sourceMap/disasm/explainRevert day one                                          |
 
 ## 17. Resolved flaws (every judged flaw, with its fix)
 
 **Against A (adopted lessons / avoided defects):**
-1. *Unsound sub-word checked MUL range-check claim* → full width-dependent MUL spec with
+
+1. _Unsound sub-word checked MUL range-check claim_ → full width-dependent MUL spec with
    div-back for N>128 (§6), plus a boundary test matrix including wrap-past-2^256 cases.
-2. *int256 SDIV `−2^255/−1` unhandled* → explicit Panic 0x11 check specified (§6).
-3. *No stack-height verification* → assembler verification pass 2 with checked/'any' label
+2. _int256 SDIV `−2^255/−1` unhandled_ → explicit Panic 0x11 check specified (§6).
+3. _No stack-height verification_ → assembler verification pass 2 with checked/'any' label
    classes (§10).
-4. *Dispatcher missing `calldatasize ≥ 4+32·n`* → explicit guard → `EvsInvalidCalldata` (§8.1).
-5. *No data-segment kind (EIP-170 pressure)* → `data`/`dataLabel` + INVALID guard (§10).
-6. *"JSON.stringify not interceptable" false* → throwing `toJSON` on handles (§3).
-7. *Graceful widening dropped* → viem-style widening adopted at every generic boundary (§7, api.md).
-8. *Cell-extends-Expr implicit reads* → explicit `Cell.get()`; Cell is not an Expr (§3).
-9. *fn capture semantics unspecified* → strict no-capture, `EvsScopeError` (§3, §9).
-10. *Zero-arg unattributable decode errors* → `EvsDecodeError(uint256 site)` + site table (§11).
-11. *`s.select` missing* → included (§3).
-12. *Loop header/body region parentage unstated* → body is a child of header (§3).
-13. *vitest vs CLAUDE.md `bun test` contradiction* → ruled: vitest via `bun run test`, deviation
+4. _Dispatcher missing `calldatasize ≥ 4+32·n`_ → explicit guard → `EvsInvalidCalldata` (§8.1).
+5. _No data-segment kind (EIP-170 pressure)_ → `data`/`dataLabel` + INVALID guard (§10).
+6. _"JSON.stringify not interceptable" false_ → throwing `toJSON` on handles (§3).
+7. _Graceful widening dropped_ → viem-style widening adopted at every generic boundary (§7, api.md).
+8. _Cell-extends-Expr implicit reads_ → explicit `Cell.get()`; Cell is not an Expr (§3).
+9. _fn capture semantics unspecified_ → strict no-capture, `EvsScopeError` (§3, §9).
+10. _Zero-arg unattributable decode errors_ → `EvsDecodeError(uint256 site)` + site table (§11).
+11. _`s.select` missing_ → included (§3).
+12. _Loop header/body region parentage unstated_ → body is a child of header (§3).
+13. _vitest vs CLAUDE.md `bun test` contradiction_ → ruled: vitest via `bun run test`, deviation
     recorded with rationale (§0, testing.md §0).
-14. *TempAllocator unpinned on a frozen boundary* → no such type exists; scratch slots come from
+14. _TempAllocator unpinned on a frozen boundary_ → no such type exists; scratch slots come from
     the pinned `FrameLayout`; every cross-module type is in module-interfaces.md.
 
-**Against B:**
-15. *deadCode drops reverting "pure" ops (live miscompile, default-on)* → no LIR/DCE in v0; the
-    v1 pass contract carries "reverting ops are never dead" verbatim (§1).
-16. *"range-check the full-width result" stated as the general sub-word rule* → corrected MUL
-    table (§6).
-17. *int256 SDIV edge unmentioned* → specified (§6).
-18. *constFold certain-panic hard error without escape hatch* → moved to recording time with a
-    documented escape hatch (§3).
-19. *optimizer on by default in v0* → all passes off; peephole hook ships identity (§10).
-20. *`EvsError(uint256)` numeric codes + TS name collision* → named `EvsInvalidCalldata` /
-    `EvsDecodeError(site)`; no on-chain/TS name overlap (§11, §13).
-21. *`s.cast` silent truncation* → checked narrowing conversions; free widening; explicit
-    reinterprets only where lossless (§6).
-22. *Stack fusion weakens the empty-stack invariant across agents* → no fusion; uniform slots;
-    invariant machine-checked on final asm (§5, §10).
-23. *Hand-rolled `Bun.spawn` anvil* → prool + `VITEST_POOL_ID`, viem's production pattern
-    (testing.md §3).
-24. *`s.for` hardwired to uint256* → generic word-type ranges (api.md §7).
-25. *`ScriptReturn` referenced but undefined* → defined (api.md §9, module-interfaces §builder).
+**Against B:** 15. _deadCode drops reverting "pure" ops (live miscompile, default-on)_ → no LIR/DCE in v0; the
+v1 pass contract carries "reverting ops are never dead" verbatim (§1). 16. _"range-check the full-width result" stated as the general sub-word rule_ → corrected MUL
+table (§6). 17. _int256 SDIV edge unmentioned_ → specified (§6). 18. _constFold certain-panic hard error without escape hatch_ → moved to recording time with a
+documented escape hatch (§3). 19. _optimizer on by default in v0_ → all passes off; peephole hook ships identity (§10). 20. _`EvsError(uint256)` numeric codes + TS name collision_ → named `EvsInvalidCalldata` /
+`EvsDecodeError(site)`; no on-chain/TS name overlap (§11, §13). 21. _`s.cast` silent truncation_ → checked narrowing conversions; free widening; explicit
+reinterprets only where lossless (§6). 22. _Stack fusion weakens the empty-stack invariant across agents_ → no fusion; uniform slots;
+invariant machine-checked on final asm (§5, §10). 23. _Hand-rolled `Bun.spawn` anvil_ → prool + `VITEST_POOL_ID`, viem's production pattern
+(testing.md §3). 24. _`s.for` hardwired to uint256_ → generic word-type ranges (api.md §7). 25. _`ScriptReturn` referenced but undefined_ → defined (api.md §9, module-interfaces §builder).
 
-**Against C (the base — every judged flaw fixed in place):**
-26. *§14.2 reads the head word with no `rds ≥ headSize` guard (stale-memory decode hole)* →
-    B's staticMinSize guard emitted **before any head read**; worked example §15.2 re-verified
-    line by line.
-27. *Stack verifier inconsistent with multi-depth `@dfail_*` entries* → two-class label scheme
-    with `'any'` (relative, may-go-negative, must-terminate) semantics (§10).
-28. *Script args restricted to word types (under-delivers locked scope)* → dynamic args
-    (`string`/`bytes`/`T[]`) decoded at dispatch with overflow-safe bounds checks (§8.1).
-29. *break/continue deferred* → restored via scoped `LoopCtl` (§3).
-30. *Strict returndata cleanup reverts where viem succeeds* → normalize-don't-revert on word
-    values; revert only on structural bounds failures (§7.2, §8.1).
-31. *`debug: true` forks panic shapes/bytes (doubled test matrix, non-standard reverts)* →
-    removed; single standard `Panic` shape always; `explainRevert` degrades gracefully (§11).
-32. *eq/neq word-only restriction as a comment* → this-parameter type constraint (§6, api.md).
-33. *Largest v0 surface / stream imbalance / unpriced interpreter* → interpreter is its own
-    work unit; codegen split into two units; rebalanced plan (module-interfaces.md §plan).
-34. *Diagnostics channel wobble* → pinned `onDiagnostic` callback; pure artifact (§13.3).
-35. *§14.2 stack comment inversion (retSize/retOffset)* → corrected and hand-verified (§15.2:
-    retSize pushed first, retOffset above it, gas on top at STATICCALL).
-36. *Bare `revert(0,0)` fallback* → named `EvsInvalidCalldata()` (§11).
+**Against C (the base — every judged flaw fixed in place):** 26. _§14.2 reads the head word with no `rds ≥ headSize` guard (stale-memory decode hole)_ →
+B's staticMinSize guard emitted **before any head read**; worked example §15.2 re-verified
+line by line. 27. \_Stack verifier inconsistent with multi-depth `@dfail\__`entries* → two-class label scheme
+with`'any'` (relative, may-go-negative, must-terminate) semantics (§10). 28. *Script args restricted to word types (under-delivers locked scope)* → dynamic args
+(`string`/`bytes`/`T[]`) decoded at dispatch with overflow-safe bounds checks (§8.1). 29. *break/continue deferred* → restored via scoped `LoopCtl` (§3). 30. *Strict returndata cleanup reverts where viem succeeds* → normalize-don't-revert on word
+values; revert only on structural bounds failures (§7.2, §8.1). 31. *`debug: true`forks panic shapes/bytes (doubled test matrix, non-standard reverts)* →
+removed; single standard`Panic`shape always;`explainRevert`degrades gracefully (§11). 32. *eq/neq word-only restriction as a comment* → this-parameter type constraint (§6, api.md). 33. *Largest v0 surface / stream imbalance / unpriced interpreter* → interpreter is its own
+work unit; codegen split into two units; rebalanced plan (module-interfaces.md §plan). 34. *Diagnostics channel wobble* → pinned`onDiagnostic`callback; pure artifact (§13.3). 35. *§14.2 stack comment inversion (retSize/retOffset)* → corrected and hand-verified (§15.2:
+retSize pushed first, retOffset above it, gas on top at STATICCALL). 36. *Bare`revert(0,0)`fallback\* → named`EvsInvalidCalldata()` (§11).
 
 ## 18. Deferred (v1 landing zones)
 

@@ -6,6 +6,7 @@ design-doc amendment. Two agents implementing neighboring modules must never nee
 you think you need to, the contract is the answer.
 
 Conventions for every module:
+
 - ESM, `module: NodeNext` — relative imports carry explicit `.js` extensions.
 - All exported types must survive `tsc -p tsconfig.build.json` declaration emit without
   widening.
@@ -82,41 +83,60 @@ Invariants: `arg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `isEvsType
 ### `core/errors.ts`
 
 ```ts
-export interface SourceLoc { file: string; line: number; column: number }
+export interface SourceLoc {
+  file: string;
+  line: number;
+  column: number;
+}
 export type EvsErrorCode =
-  | 'STAGING_MISUSE' | 'TYPE_MISMATCH' | 'LITERAL_RANGE' | 'CERTAIN_PANIC'
-  | 'SCOPE_VIOLATION' | 'FOREIGN_HANDLE' | 'RECORDING_CLOSED' | 'UNSUPPORTED_V0'
-  | 'ABI_SHAPE' | 'COMPILE_LIMIT' | 'EVM_VERSION' | 'INTERNAL'
+  | 'STAGING_MISUSE'
+  | 'TYPE_MISMATCH'
+  | 'LITERAL_RANGE'
+  | 'CERTAIN_PANIC'
+  | 'SCOPE_VIOLATION'
+  | 'FOREIGN_HANDLE'
+  | 'RECORDING_CLOSED'
+  | 'UNSUPPORTED_V0'
+  | 'ABI_SHAPE'
+  | 'COMPILE_LIMIT'
+  | 'EVM_VERSION'
+  | 'INTERNAL';
 
 export class EvsError extends Error {
-  readonly code: EvsErrorCode
-  readonly loc: SourceLoc | null
-  readonly relatedLocs: readonly { label: string; loc: SourceLoc | null }[]
-  constructor(code: EvsErrorCode, message: string,
-    opts?: { loc?: SourceLoc | null; relatedLocs?: readonly { label: string; loc: SourceLoc | null }[] })
+  readonly code: EvsErrorCode;
+  readonly loc: SourceLoc | null;
+  readonly relatedLocs: readonly { label: string; loc: SourceLoc | null }[];
+  constructor(
+    code: EvsErrorCode,
+    message: string,
+    opts?: {
+      loc?: SourceLoc | null;
+      relatedLocs?: readonly { label: string; loc: SourceLoc | null }[];
+    },
+  );
 }
 export class EvsStagingError extends EvsError {}
 export class EvsTypeError extends EvsError {}
 export class EvsScopeError extends EvsError {}
 export class EvsCompileError extends EvsError {}
-export class EvsInternalError extends EvsError {}   // message MUST contain "bug in evs, please report"
+export class EvsInternalError extends EvsError {} // message MUST contain "bug in evs, please report"
 
 export interface EvsDiagnostic {
-  severity: 'warning'
-  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME'
-  message: string
-  loc: SourceLoc | null
+  severity: 'warning';
+  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME';
+  message: string;
+  loc: SourceLoc | null;
 }
 ```
 
 ### `core/loc.ts`
 
 ```ts
-export function captureLoc(): SourceLoc | null
+export function captureLoc(): SourceLoc | null;
 // Eagerly stores `new Error().stack`; parses lazily on first property access (implementation
 // returns a lazily-resolving object; the SourceLoc fields are getters). Skips frames whose
 // filename is inside @maxencerb/evs (dist or src). Returns null when unparseable.
-export function setLocCapture(enabled: boolean): void   // used by evscript({locations:false}); scoped per recorder via builder
+export function setLocCapture(enabled: boolean): void; // used by evscript({locations:false}); scoped per recorder via builder
 ```
 
 **Unit tests (M1)**: `isEvsType`/`bitsOf` exhaustive table over every v0 type string; rejection
@@ -136,80 +156,122 @@ Imports allowed: `core/*`.
 ### `ir/nodes.ts`
 
 ```ts
-export type ValueId = number; export type CellId = number
-export type FnId = number;    export type SiteId = number
+export type ValueId = number;
+export type CellId = number;
+export type FnId = number;
+export type SiteId = number;
 
 export interface ScriptIr {
-  readonly irVersion: 1
-  readonly name: string
-  readonly args: readonly { name: string; type: ArgType }[]
-  readonly values: readonly ValueInfo[]            // indexed by ValueId
-  readonly cells: readonly CellInfo[]              // indexed by CellId
-  readonly fns: readonly FnIr[]                    // indexed by FnId, topologically recorded
-  readonly body: readonly Stmt[]
-  readonly returns: readonly { name: string; type: EvsType; value: ValueId }[]
-  readonly loc: SourceLoc | null
+  readonly irVersion: 1;
+  readonly name: string;
+  readonly args: readonly { name: string; type: ArgType }[];
+  readonly values: readonly ValueInfo[]; // indexed by ValueId
+  readonly cells: readonly CellInfo[]; // indexed by CellId
+  readonly fns: readonly FnIr[]; // indexed by FnId, topologically recorded
+  readonly body: readonly Stmt[];
+  readonly returns: readonly { name: string; type: EvsType; value: ValueId }[];
+  readonly loc: SourceLoc | null;
 }
-export interface ValueInfo { readonly type: EvsType; readonly loc: SourceLoc | null; readonly debugName?: string }
-export interface CellInfo  { readonly type: EvsType; readonly loc: SourceLoc | null; readonly debugName?: string }
+export interface ValueInfo {
+  readonly type: EvsType;
+  readonly loc: SourceLoc | null;
+  readonly debugName?: string;
+}
+export interface CellInfo {
+  readonly type: EvsType;
+  readonly loc: SourceLoc | null;
+  readonly debugName?: string;
+}
 export interface FnIr {
-  readonly name: string
-  readonly params: readonly { name: string; type: EvsType; value: ValueId }[]
-  readonly results: readonly { type: EvsType }[]
-  readonly body: readonly Stmt[]
-  readonly resultValues: readonly ValueId[]
-  readonly loc: SourceLoc | null
+  readonly name: string;
+  readonly params: readonly { name: string; type: EvsType; value: ValueId }[];
+  readonly results: readonly { type: EvsType }[];
+  readonly body: readonly Stmt[];
+  readonly resultValues: readonly ValueId[];
+  readonly loc: SourceLoc | null;
 }
 
-export type BinOp = 'add'|'sub'|'mul'|'div'|'mod'
-  | 'lt'|'gt'|'lte'|'gte'|'eq'|'neq'
-  | 'and'|'or'|'bitand'|'bitor'|'bitxor'|'shl'|'shr'
-export type UnOp = 'not' | 'bitnot' | 'iszero'
-export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'
+export type BinOp =
+  | 'add'
+  | 'sub'
+  | 'mul'
+  | 'div'
+  | 'mod'
+  | 'lt'
+  | 'gt'
+  | 'lte'
+  | 'gte'
+  | 'eq'
+  | 'neq'
+  | 'and'
+  | 'or'
+  | 'bitand'
+  | 'bitor'
+  | 'bitxor'
+  | 'shl'
+  | 'shr';
+export type UnOp = 'not' | 'bitnot' | 'iszero';
+export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
 
 export type ConstData =
-  | { kind: 'word'; hex: Hex }     // canonical 32-byte value
-  | { kind: 'data'; hex: Hex }     // pre-encoded memref payload [len:32][payload…]
+  | { kind: 'word'; hex: Hex } // canonical 32-byte value
+  | { kind: 'data'; hex: Hex }; // pre-encoded memref payload [len:32][payload…]
 
-export interface PlainAbiParam { readonly name: string; readonly type: string
-  readonly components?: readonly PlainAbiParam[] }
+export interface PlainAbiParam {
+  readonly name: string;
+  readonly type: string;
+  readonly components?: readonly PlainAbiParam[];
+}
 export interface PlainAbiFunction {
-  readonly name: string; readonly selector: Hex
-  readonly inputs: readonly PlainAbiParam[]; readonly outputs: readonly PlainAbiParam[]
+  readonly name: string;
+  readonly selector: Hex;
+  readonly inputs: readonly PlainAbiParam[];
+  readonly outputs: readonly PlainAbiParam[];
 }
 
 export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
-  | { k: 'const';   out: ValueId; data: ConstData; type: EvsType }
-  | { k: 'bin';     op: BinOp; a: ValueId; b: ValueId; out: ValueId }
-  | { k: 'un';      op: UnOp; a: ValueId; out: ValueId }
-  | { k: 'env';     op: EnvOp; out: ValueId }
-  | { k: 'convert'; a: ValueId; out: ValueId }     // semantics from values[a].type → values[out].type
-  | { k: 'select';  cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
-  | { k: 'index';   arr: ValueId; i: ValueId; out: ValueId }
-  | { k: 'len';     a: ValueId; out: ValueId }
-  | { k: 'arrnew';  elem: WordType; length: ValueId; out: ValueId }
-  | { k: 'arrset';  arr: ValueId; i: ValueId; value: ValueId }
+  | { k: 'const'; out: ValueId; data: ConstData; type: EvsType }
+  | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
+  | { k: 'un'; op: UnOp; a: ValueId; out: ValueId }
+  | { k: 'env'; op: EnvOp; out: ValueId }
+  | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
+  | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
+  | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }
+  | { k: 'len'; a: ValueId; out: ValueId }
+  | { k: 'arrnew'; elem: WordType; length: ValueId; out: ValueId }
+  | { k: 'arrset'; arr: ValueId; i: ValueId; value: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
-  | { k: 'call';    target: ValueId; fnAbi: PlainAbiFunction; args: readonly ValueId[]
-                    outs: readonly ValueId[]; mode: 'strict' | 'try'; successOut?: ValueId
-                    gas?: ValueId }
-  | { k: 'fncall';  fn: FnId; args: readonly ValueId[]; outs: readonly ValueId[] }
-  | { k: 'if';      cond: ValueId; then: readonly Stmt[]; else: readonly Stmt[] }
-  | { k: 'while';   header: readonly Stmt[]; cond: ValueId; body: readonly Stmt[] }
-  | { k: 'break' } | { k: 'continue' }
-)
+  | {
+      k: 'call';
+      target: ValueId;
+      fnAbi: PlainAbiFunction;
+      args: readonly ValueId[];
+      outs: readonly ValueId[];
+      mode: 'strict' | 'try';
+      successOut?: ValueId;
+      gas?: ValueId;
+    }
+  | { k: 'fncall'; fn: FnId; args: readonly ValueId[]; outs: readonly ValueId[] }
+  | { k: 'if'; cond: ValueId; then: readonly Stmt[]; else: readonly Stmt[] }
+  | { k: 'while'; header: readonly Stmt[]; cond: ValueId; body: readonly Stmt[] }
+  | { k: 'break' }
+  | { k: 'continue' }
+);
 
-export function serializeIr(ir: ScriptIr): string          // stable JSON
-export function deserializeIr(json: string): ScriptIr       // shape+version check, throws EvsTypeError
-export function walkStmts(stmts: readonly Stmt[], visit: (s: Stmt, path: readonly number[]) => void): void
+export function serializeIr(ir: ScriptIr): string; // stable JSON
+export function deserializeIr(json: string): ScriptIr; // shape+version check, throws EvsTypeError
+export function walkStmts(
+  stmts: readonly Stmt[],
+  visit: (s: Stmt, path: readonly number[]) => void,
+): void;
 ```
 
 ### `ir/validate.ts`
 
 ```ts
-export function validateIr(ir: ScriptIr): void
+export function validateIr(ir: ScriptIr): void;
 // Throws EvsInternalError (for compiler-produced IR) on: operand type mismatch per op table,
 // def-before-use under the scope rule (header dominates body; if/else branches isolated),
 // unknown ids, cell type mismatches, break/continue outside while, call-graph cycles,
@@ -232,14 +294,20 @@ Imports allowed: `core/*`, `ir/nodes.js` (PlainAbiParam types), `abitype` (types
 ### `abi/layout.ts`
 
 ```ts
-export type WordLayout = { kind: 'word'; abi: WordType; bits: number; signed: boolean; leftAligned: boolean }
+export type WordLayout = {
+  kind: 'word';
+  abi: WordType;
+  bits: number;
+  signed: boolean;
+  leftAligned: boolean;
+};
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  | { kind: 'array'; abi: string; elem: WordLayout }       // dynamic arrays of words only in v0
-export function layoutOf(abiType: string): TypeLayout      // throws EvsTypeError(UNSUPPORTED_V0) on tuple/T[N]/nested
-export function isDynamic(l: TypeLayout): boolean
-export function headBytes(params: readonly PlainAbiParam[]): number   // 32 × params.length in v0
+  | { kind: 'array'; abi: string; elem: WordLayout }; // dynamic arrays of words only in v0
+export function layoutOf(abiType: string): TypeLayout; // throws EvsTypeError(UNSUPPORTED_V0) on tuple/T[N]/nested
+export function isDynamic(l: TypeLayout): boolean;
+export function headBytes(params: readonly PlainAbiParam[]): number; // 32 × params.length in v0
 ```
 
 ### `abi/artifact.ts`
@@ -248,7 +316,7 @@ export function headBytes(params: readonly PlainAbiParam[]): number   // 32 × p
 export const EVS_ERROR_ABI = [
   { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
   { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
-] as const
+] as const;
 
 export type ScriptAbi<
   name extends string,
@@ -256,25 +324,38 @@ export type ScriptAbi<
   ret extends Record<string, Expr>,
 > = readonly [
   {
-    readonly type: 'function'; readonly name: name; readonly stateMutability: 'view'
-    readonly inputs: { readonly [i in keyof args]: { readonly name: args[i]['name']; readonly type: args[i]['type'] } }
-    readonly outputs: readonly [{
-      readonly name: 'result'; readonly type: 'tuple'
-      readonly components: ReturnSpecToComponents<ret>     // UnionToTuple-based; order-unstable but
-    }]                                                     // SAFE (object inference) — abitype §4.2
+    readonly type: 'function';
+    readonly name: name;
+    readonly stateMutability: 'view';
+    readonly inputs: {
+      readonly [i in keyof args]: {
+        readonly name: args[i]['name'];
+        readonly type: args[i]['type'];
+      };
+    };
+    readonly outputs: readonly [
+      {
+        readonly name: 'result';
+        readonly type: 'tuple';
+        readonly components: ReturnSpecToComponents<ret>; // UnionToTuple-based; order-unstable but
+      },
+    ]; // SAFE (object inference) — abitype §4.2
   },
   (typeof EVS_ERROR_ABI)[0],
   (typeof EVS_ERROR_ABI)[1],
-]
+];
 
-export function buildScriptAbi(name: string, args: readonly ArgSpec[],
-  returns: readonly { name: string; type: EvsType }[]): Abi
+export function buildScriptAbi(
+  name: string,
+  args: readonly ArgSpec[],
+  returns: readonly { name: string; type: EvsType }[],
+): Abi;
 // runtime mirror; inputs order = args tuple order; components order = returns insertion order
 
-export function selectorOf(name: string, argTypes: readonly string[]): Hex   // viem toFunctionSelector
-export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction      // + selector; validates v0 types
-export function encodeLiteralWord(type: WordType, value: unknown): Hex       // canonical 32-byte word
-export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex  // [len][payload] memref bytes
+export function selectorOf(name: string, argTypes: readonly string[]): Hex; // viem toFunctionSelector
+export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction; // + selector; validates v0 types
+export function encodeLiteralWord(type: WordType, value: unknown): Hex; // canonical 32-byte word
+export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex; // [len][payload] memref bytes
 ```
 
 Invariants: `buildScriptAbi` output and the `ScriptAbi` type agree (type test with
@@ -365,14 +446,20 @@ big-endian; `push 0` lowers to `PUSH0` (shanghai+) or `PUSH1 00` (paris).
 ### `asm/verify.ts`
 
 ```ts
-export function verifyJumpdests(bytecode: Uint8Array, jumpTargets: ReadonlySet<number>,
-  dataStart: number): void                                  // consensus-identical PUSH-skipping scan
-export function verifyStack(nodes: readonly AsmNode[], labelPcs: ReadonlyMap<LabelId, number>): void
+export function verifyJumpdests(
+  bytecode: Uint8Array,
+  jumpTargets: ReadonlySet<number>,
+  dataStart: number,
+): void; // consensus-identical PUSH-skipping scan
+export function verifyStack(
+  nodes: readonly AsmNode[],
+  labelPcs: ReadonlyMap<LabelId, number>,
+): void;
 // Two label classes: `stack: n` (checked — all in-edges and fallthrough must agree; underflow
 // and template depth > 16 are errors) and `stack: 'any'` (relative counter from 0, may go
 // negative; region must terminate in REVERT/RETURN/INVALID or jump only to 'any' labels;
 // falling through into a checked label is an error). main baseline 0; fn-entry labels carry 1.
-export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmVersion }): void
+export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmVersion }): void;
 // (a) every RETURNDATACOPY immediately preceded by [RETURNDATASIZE, PUSH0, (PUSH0|DUPn)];
 // (b) no op with since > evmVersion; (c) no FORBIDDEN opcode.
 ```
@@ -383,24 +470,41 @@ All three run inside `assemble` when `verify: true`; failures throw `EvsInternal
 
 ```ts
 export interface SourceMap {
-  readonly version: 1
-  readonly segments: readonly { pc: number; len: number; loc: SourceLoc | null; note?: string }[]
-  readonly sites: readonly { id: SiteId; kind: 'panic' | 'decode' | 'call' | 'stmt'
-    loc: SourceLoc | null; detail: string }[]
-  readonly labels: readonly { pc: number; name: string }[]
+  readonly version: 1;
+  readonly segments: readonly { pc: number; len: number; loc: SourceLoc | null; note?: string }[];
+  readonly sites: readonly {
+    id: SiteId;
+    kind: 'panic' | 'decode' | 'call' | 'stmt';
+    loc: SourceLoc | null;
+    detail: string;
+  }[];
+  readonly labels: readonly { pc: number; name: string }[];
 }
-export function lookupPc(map: SourceMap, pc: number): { loc: SourceLoc | null; note?: string } | undefined
-export function siteById(map: SourceMap, id: SiteId): SourceMap['sites'][number] | undefined
+export function lookupPc(
+  map: SourceMap,
+  pc: number,
+): { loc: SourceLoc | null; note?: string } | undefined;
+export function siteById(map: SourceMap, id: SiteId): SourceMap['sites'][number] | undefined;
 ```
 
 ### `asm/disasm.ts`
 
 ```ts
-export interface DisasmLine { pc: number; raw: Hex; mnemonic: string; pushValue?: Hex
-  targetLabel?: string; label?: string; loc?: SourceLoc | null; note?: string }
-export interface Disassembly { readonly lines: readonly DisasmLine[]
-  format(opts?: { locs?: boolean }): string }
-export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): Disassembly
+export interface DisasmLine {
+  pc: number;
+  raw: Hex;
+  mnemonic: string;
+  pushValue?: Hex;
+  targetLabel?: string;
+  label?: string;
+  loc?: SourceLoc | null;
+  note?: string;
+}
+export interface Disassembly {
+  readonly lines: readonly DisasmLine[];
+  format(opts?: { locs?: boolean }): string;
+}
+export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): Disassembly;
 // independent of the assembler (raw-bytes consumer); assemble→disassemble round-trips in
 // property tests
 ```
@@ -419,7 +523,7 @@ App. A) hand-assembled here and executed on the M10 harness.
 
 Files: `src/builder/args.ts` (re-exports arg/t wiring), `src/builder/expr.ts`,
 `src/builder/script.ts`.
-Imports allowed: `core/*`, `ir/nodes.js`, `abi/*` (toPlainAbiFunction, encodeLiteral*,
+Imports allowed: `core/*`, `ir/nodes.js`, `abi/*` (toPlainAbiFunction, encodeLiteral\*,
 buildScriptAbi), `compile.js` (the `compile` function — for the `.compile()` sugar only),
 `abitype` (types), `viem` (types only).
 
@@ -429,21 +533,36 @@ export function evscript<
   const name extends string,
   const args extends readonly ArgSpec[],
   ret extends Record<string, Expr>,
->(def: { name: name; args: args },
+>(
+  def: { name: name; args: args },
   body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
   opts?: { locations?: boolean },
-): EvsScript<name, args, ret>
+): EvsScript<name, args, ret>;
 
-export interface EvsScript<name, args, ret> { /* exactly api.md §1 */ }
-export interface ScriptBuilder<args extends readonly ArgSpec[]> { /* exactly api.md §4 */ }
-export interface Cell<t extends EvsType> { /* api.md §5 */ }
-export interface MutArray<e extends WordType> { /* api.md §5 */ }
-export interface LoopCtl { break(): void; continue(): void }
-export declare const returnBrand: unique symbol
-export interface ScriptReturn<ret extends Record<string, Expr>> { readonly [returnBrand]: ret }
+export interface EvsScript<name, args, ret> {
+  /* exactly api.md §1 */
+}
+export interface ScriptBuilder<args extends readonly ArgSpec[]> {
+  /* exactly api.md §4 */
+}
+export interface Cell<t extends EvsType> {
+  /* api.md §5 */
+}
+export interface MutArray<e extends WordType> {
+  /* api.md §5 */
+}
+export interface LoopCtl {
+  break(): void;
+  continue(): void;
+}
+export declare const returnBrand: unique symbol;
+export interface ScriptReturn<ret extends Record<string, Expr>> {
+  readonly [returnBrand]: ret;
+}
 ```
 
 Implementation invariants (binding):
+
 1. **Handle internals in a module-private WeakMap** keyed by the handle object:
    `{ owner: Recorder; id: ValueId }`. Lookup miss or owner mismatch →
    `EvsScopeError(FOREIGN_HANDLE)` naming both scripts (by `name` + loc).
@@ -483,16 +602,20 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `viem` (encode/decode for ABI byte-a
 
 ```ts
 export interface MockChain {
-  staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex }
+  staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
 }
 export interface InterpResult {
   outcome:
-    | { kind: 'return'; data: Hex; values: Record<string, unknown> }   // data = ABI-encoded returndata
-    | { kind: 'revert'; data: Hex }                                    // byte-exact revert payload
-  trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[]
+    | { kind: 'return'; data: Hex; values: Record<string, unknown> } // data = ABI-encoded returndata
+    | { kind: 'revert'; data: Hex }; // byte-exact revert payload
+  trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[];
 }
-export function interpret(ir: ScriptIr, args: readonly unknown[], chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number }): InterpResult
+export function interpret(
+  ir: ScriptIr,
+  args: readonly unknown[],
+  chain: MockChain,
+  opts?: { trace?: boolean; maxSteps?: number },
+): InterpResult;
 ```
 
 Binding invariant: **bit-for-bit agreement with the compiled bytecode** on both returndata and
@@ -514,37 +637,59 @@ Imports allowed: `core/*`, `ir/nodes.js`, `abi/*`, `asm/*`.
 ```ts
 // codegen/abi.ts
 export interface SharedTails {
-  panicOverflow: LabelId; panicDivZero: LabelId; panicBounds: LabelId; panicAlloc: LabelId
-  invalidCalldata: LabelId; decodeRevert: LabelId
-  memcpy: LabelId | null            // null on cancun (MCOPY inline)
+  panicOverflow: LabelId;
+  panicDivZero: LabelId;
+  panicBounds: LabelId;
+  panicAlloc: LabelId;
+  invalidCalldata: LabelId;
+  decodeRevert: LabelId;
+  memcpy: LabelId | null; // null on cancun (MCOPY inline)
 }
-export interface SlotRef { slot: number; type: EvsType }   // absolute memory offset
+export interface SlotRef {
+  slot: number;
+  type: EvsType;
+} // absolute memory offset
 
-export function emitCalldataDecode(w: AsmWriter, args: readonly SlotRef[],
-  tails: SharedTails, opts: { evmVersion: EvmVersion }): void
+export function emitCalldataDecode(
+  w: AsmWriter,
+  args: readonly SlotRef[],
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void;
 // architecture §8.1: size guard, word normalize, dynamic bounds checks → invalidCalldata,
 // CALLDATACOPY into memrefs, eager element normalization.
 
-export function emitReturnEncode(w: AsmWriter, components: readonly { name: string; ref: SlotRef }[],
-  tails: SharedTails, opts: { evmVersion: EvmVersion }): void
+export function emitReturnEncode(
+  w: AsmWriter,
+  components: readonly { name: string; ref: SlotRef }[],
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void;
 // architecture §8.2; ends with RETURN.
 
-export function emitMemCopy(w: AsmWriter, tails: SharedTails, opts: { evmVersion: EvmVersion }): void
+export function emitMemCopy(
+  w: AsmWriter,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void;
 // emits MCOPY (cancun) or call to tails.memcpy; stack contract: [dst, src, len] → []
 
 // codegen/call.ts
 export interface CallSitePlan {
-  stmt: Extract<Stmt, { k: 'call' }>
-  argRefs: readonly (SlotRef | { literal: ConstData })[]
-  outRefs: readonly SlotRef[]
-  successRef: SlotRef | null
-  dfailLabel: LabelId               // per-site stub target (strict) or zero-block (try)
-  siteId: SiteId
+  stmt: Extract<Stmt, { k: 'call' }>;
+  argRefs: readonly (SlotRef | { literal: ConstData })[];
+  outRefs: readonly SlotRef[];
+  successRef: SlotRef | null;
+  dfailLabel: LabelId; // per-site stub target (strict) or zero-block (try)
+  siteId: SiteId;
 }
-export function emitStaticCall(w: AsmWriter, plan: CallSitePlan, tails: SharedTails,
+export function emitStaticCall(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  tails: SharedTails,
   opts: { evmVersion: EvmVersion },
-  dataSeg: (bytes: Uint8Array) => LabelId          // request a data segment, get its dataLabel
-): void
+  dataSeg: (bytes: Uint8Array) => LabelId, // request a data segment, get its dataLabel
+): void;
 // architecture §7 exactly: CalldataTemplate (const-merged literals; >96-byte const → dataSeg +
 // CODECOPY), STATICCALL retSize 0, bubble (strict), staticMinSize guard BEFORE head reads,
 // snapshot via w.returndatacopyAll, word normalize, dynamic in-place validate, try zeroing.
@@ -572,36 +717,40 @@ Imports allowed: `core/*`, `ir/*` (nodes+validate), `abi/*`, `asm/*`, `codegen/a
 ```ts
 // codegen/frame.ts
 export interface FrameLayout {
-  slotOfValue(v: ValueId): number | null     // null = folded const (operand becomes push)
-  slotOfCell(c: CellId): number
-  fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] }
-  frameEnd: number                            // 0x80 + 32 × slotCount, ceil to 32
+  slotOfValue(v: ValueId): number | null; // null = folded const (operand becomes push)
+  slotOfCell(c: CellId): number;
+  fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] };
+  frameEnd: number; // 0x80 + 32 × slotCount, ceil to 32
 }
-export function layoutFrames(ir: ScriptIr): FrameLayout
+export function layoutFrames(ir: ScriptIr): FrameLayout;
 
 // codegen/lower.ts
 export interface LowerCtx {
-  ir: ScriptIr; frame: FrameLayout; tails: SharedTails
-  opts: { evmVersion: EvmVersion }
-  loop: { breakTo: LabelId; continueTo: LabelId } | null
-  fnBaseline: 0 | 1                           // stack baseline (1 inside fn bodies)
-  dataSeg: (bytes: Uint8Array) => LabelId
-  siteOf(stmt: Stmt): SiteId
+  ir: ScriptIr;
+  frame: FrameLayout;
+  tails: SharedTails;
+  opts: { evmVersion: EvmVersion };
+  loop: { breakTo: LabelId; continueTo: LabelId } | null;
+  fnBaseline: 0 | 1; // stack baseline (1 inside fn bodies)
+  dataSeg: (bytes: Uint8Array) => LabelId;
+  siteOf(stmt: Stmt): SiteId;
 }
-export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx): void
+export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx): void;
 // every statement template implements architecture §6 (checked-op table — NORMATIVE),
 // §5 (canonical word invariant), §3 (control-flow shapes), §9 (fncall convention).
 
 // codegen/program.ts — the single entry point compile.ts consumes (the optimizer seam)
 export interface LowerResult {
-  nodes: readonly AsmNode[]
-  frameEnd: number
-  sites: SourceMap['sites']
-  labelNames: ReadonlyMap<LabelId, string>
-  diagnostics: readonly EvsDiagnostic[]       // LOOP_ALLOCATION etc. — compile.ts forwards
+  nodes: readonly AsmNode[];
+  frameEnd: number;
+  sites: SourceMap['sites'];
+  labelNames: ReadonlyMap<LabelId, string>;
+  diagnostics: readonly EvsDiagnostic[]; // LOOP_ALLOCATION etc. — compile.ts forwards
 }
-export function lowerProgram(ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; locations: boolean }): LowerResult
+export function lowerProgram(
+  ir: ScriptIr,
+  opts: { evmVersion: EvmVersion; locations: boolean },
+): LowerResult;
 // validates IR, lays frames, emits: prologue, dispatcher (incl. EvsInvalidCalldata tail),
 // arg decode, body, return encode, fn subroutines (uncalled fns dropped), memcpy (if needed),
 // panic tails, dfail stubs + decodeRevert tail, tryCall zero blocks, data segments LAST.
@@ -624,32 +773,39 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `asm/*`, `codegen/program.js`, `viem
 
 ```ts
 // compile.ts
-export interface CompileOptions { /* exactly api.md §10 */ }
-export interface CompiledEvsScript<name, args, ret> { /* exactly api.md §10 */ }
-export interface RevertExplanation {
-  kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty'
-  message: string
-  panicCode?: bigint
-  site?: { id: SiteId; loc: SourceLoc | null; detail: string }
-  candidateSites?: readonly { id: SiteId; loc: SourceLoc | null; detail: string }[]  // Panic only
-  raw: Hex
+export interface CompileOptions {
+  /* exactly api.md §10 */
 }
-export function compile<s extends EvsScript>(script: s, options?: CompileOptions): CompiledOf<s>
-export type CompiledOf<s> = s extends EvsScript<infer n, infer a, infer r>
-  ? CompiledEvsScript<n, a, r> : never
+export interface CompiledEvsScript<name, args, ret> {
+  /* exactly api.md §10 */
+}
+export interface RevertExplanation {
+  kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
+  message: string;
+  panicCode?: bigint;
+  site?: { id: SiteId; loc: SourceLoc | null; detail: string };
+  candidateSites?: readonly { id: SiteId; loc: SourceLoc | null; detail: string }[]; // Panic only
+  raw: Hex;
+}
+export function compile<s extends EvsScript>(script: s, options?: CompileOptions): CompiledOf<s>;
+export type CompiledOf<s> =
+  s extends EvsScript<infer n, infer a, infer r> ? CompiledEvsScript<n, a, r> : never;
 // pipeline: validateIr → lowerProgram → peephole (user hook) → assemble(verify) →
 // EIP-170 check (per-region breakdown via labelNames) → merge sites into sourceMap →
 // build artifact. Diagnostics forwarded to onDiagnostic; nothing logged.
 
 // viem.ts
-export const INIT_CODE_PREFIX_SHANGHAI: Hex   // computed: 0x61 RRRR 80 600A 5F 39 5F F3 builder
-export function toCreationBytecode(runtime: Hex, evmVersion: EvmVersion): Hex
-export const DEFAULT_SCRIPT_ADDRESS: Address  // 0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530
-export function toViemDeployless<const abi extends Abi>(s: { abi: abi; initBytecode: Hex }):
-  { abi: abi; code: Hex }
+export const INIT_CODE_PREFIX_SHANGHAI: Hex; // computed: 0x61 RRRR 80 600A 5F 39 5F F3 builder
+export function toCreationBytecode(runtime: Hex, evmVersion: EvmVersion): Hex;
+export const DEFAULT_SCRIPT_ADDRESS: Address; // 0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530
+export function toViemDeployless<const abi extends Abi>(s: {
+  abi: abi;
+  initBytecode: Hex;
+}): { abi: abi; code: Hex };
 export function toViemStateOverride<const abi extends Abi>(
-  s: { abi: abi; runtimeBytecode: Hex }, opts?: { address?: Address }):
-  { abi: abi; address: Address; stateOverride: StateOverride }
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address },
+): { abi: abi; address: Address; stateOverride: StateOverride };
 
 // index.ts — the complete public surface (nothing else is exported from the package; single
 // entry point, no subpath exports in v0):
@@ -677,17 +833,23 @@ Files: `packages/evs/test/harness/evm.ts`, `packages/evs/test/harness/anvil.ts`,
 
 ```ts
 // evm.ts — @ethereumjs/evm in-process (unit tier)
-export interface EvmFixture { contracts?: Record<Address, Hex>; gasLimit?: bigint }  // default 30M
-export async function execRuntime(runtime: Hex, calldata: Hex, fixture?: EvmFixture):
-  Promise<{ success: boolean; data: Hex; gasUsed: bigint }>
+export interface EvmFixture {
+  contracts?: Record<Address, Hex>;
+  gasLimit?: bigint;
+} // default 30M
+export async function execRuntime(
+  runtime: Hex,
+  calldata: Hex,
+  fixture?: EvmFixture,
+): Promise<{ success: boolean; data: Hex; gasUsed: bigint }>;
 // plants runtime at a fixed SCRIPT address + fixture mocks, evm.runCall. Exact @ethereumjs/evm
 // v10 API names resolved at implementation against the pinned version; THIS signature is frozen.
 
 // anvil.ts — prool client helpers (integration tier)
-export const poolId: number                       // Number(process.env.VITEST_POOL_ID ?? 1)
-export const rpcUrl: string                       // http://127.0.0.1:8545/<poolId>
-export const publicClient: PublicClient
-export const testClient: TestClient               // mode 'anvil' (setCode etc.)
+export const poolId: number; // Number(process.env.VITEST_POOL_ID ?? 1)
+export const rpcUrl: string; // http://127.0.0.1:8545/<poolId>
+export const publicClient: PublicClient;
+export const testClient: TestClient; // mode 'anvil' (setCode etc.)
 
 // global-setup.ts — vitest globalSetup: prool Server with Instance.anvil
 // ({ chainId: 31337, hardfork: 'Prague', gasLimit: 100_000_000 }), port 8545; returns teardown.
@@ -700,21 +862,21 @@ respected.
 
 ## Work plan (1:1 with the units above; 5–6 agents)
 
-| Unit | Path | Depends on | Agent-day estimate |
-|---|---|---|---|
-| U1 core | `packages/evs/src/core/` | — | 1 |
-| U2 ir | `packages/evs/src/ir/` (nodes, validate) | U1 | 1.5 |
-| U3 abi | `packages/evs/src/abi/` | U1 (types of U2 via frozen stubs) | 1.5 |
-| U4 asm | `packages/evs/src/asm/` | U1 | 3 |
-| U5 evm-harness | `packages/evs/test/harness/` | U1 | 1 |
-| U6 builder | `packages/evs/src/builder/` | U1–U3 (+ M9 type stub) | 3.5 |
-| U7 interp | `packages/evs/src/ir/interp.ts` | U1–U3 | 2.5 |
-| U8 codegen-abi | `packages/evs/src/codegen/{abi,call}.ts` | U2–U4, U5 | 3.5 |
-| U9 codegen-program | `packages/evs/src/codegen/{frame,lower,program}.ts` | U2–U4, U8 | 3.5 |
-| U10 compile+viem | `packages/evs/src/{compile,viem,index}.ts` | U8, U9 | 2 |
-| U11 contracts | `packages/contracts/` | — | 1 |
-| U12 integration | `packages/evs/test/integration/` + examples | U5, U6, U7, U10, U11 | 2.5 |
-| U13 repo-infra | root configs + `.github/workflows/` | — | 0.5 |
+| Unit               | Path                                                | Depends on                        | Agent-day estimate |
+| ------------------ | --------------------------------------------------- | --------------------------------- | ------------------ |
+| U1 core            | `packages/evs/src/core/`                            | —                                 | 1                  |
+| U2 ir              | `packages/evs/src/ir/` (nodes, validate)            | U1                                | 1.5                |
+| U3 abi             | `packages/evs/src/abi/`                             | U1 (types of U2 via frozen stubs) | 1.5                |
+| U4 asm             | `packages/evs/src/asm/`                             | U1                                | 3                  |
+| U5 evm-harness     | `packages/evs/test/harness/`                        | U1                                | 1                  |
+| U6 builder         | `packages/evs/src/builder/`                         | U1–U3 (+ M9 type stub)            | 3.5                |
+| U7 interp          | `packages/evs/src/ir/interp.ts`                     | U1–U3                             | 2.5                |
+| U8 codegen-abi     | `packages/evs/src/codegen/{abi,call}.ts`            | U2–U4, U5                         | 3.5                |
+| U9 codegen-program | `packages/evs/src/codegen/{frame,lower,program}.ts` | U2–U4, U8                         | 3.5                |
+| U10 compile+viem   | `packages/evs/src/{compile,viem,index}.ts`          | U8, U9                            | 2                  |
+| U11 contracts      | `packages/contracts/`                               | —                                 | 1                  |
+| U12 integration    | `packages/evs/test/integration/` + examples         | U5, U6, U7, U10, U11              | 2.5                |
+| U13 repo-infra     | root configs + `.github/workflows/`                 | —                                 | 0.5                |
 
 Day-0 commit: U1 plus **type-only stubs** (`export declare`) for every exported signature in
 M2–M9 so all agents code against real imports. Suggested 6-agent split: A=(U1,U13,U3),

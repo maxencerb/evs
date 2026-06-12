@@ -5,7 +5,7 @@ law). Everything here is the public surface of `@maxencerb/evs`. TS floor: **≥
 mode** (viem requires ≥ 5.0.4 strict). ESM only.
 
 ```ts
-import { evscript, compile, arg, t } from '@maxencerb/evs'
+import { evscript, compile, arg, t } from '@maxencerb/evs';
 ```
 
 ## 1. `evscript` — entry point
@@ -18,18 +18,18 @@ export function evscript<
 >(
   def: { name: name; args: args },
   body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
-  opts?: { locations?: boolean },                 // default true: capture source locations
-): EvsScript<name, args, ret>
+  opts?: { locations?: boolean }, // default true: capture source locations
+): EvsScript<name, args, ret>;
 
 export interface EvsScript<
   name extends string = string,
   args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
-  readonly name: name
-  readonly ir: ScriptIr                           // frozen, JSON-serializable
-  readonly abi: ScriptAbi<name, args, ret>        // literal-typed value, exists pre-compile
-  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>   // sugar for compile()
+  readonly name: name;
+  readonly ir: ScriptIr; // frozen, JSON-serializable
+  readonly abi: ScriptAbi<name, args, ret>; // literal-typed value, exists pre-compile
+  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>; // sugar for compile()
 }
 ```
 
@@ -40,23 +40,29 @@ ABIs: declare `as const satisfies Abi`.
 
 ```ts
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
-  readonly name: name
-  readonly type: type
+  readonly name: name;
+  readonly type: type;
 }
 export function arg<const name extends string, const type extends ArgType>(
-  name: name, type: type,
-): ArgSpec<name, type>
+  name: name,
+  type: type,
+): ArgSpec<name, type>;
 // runtime: validates non-empty identifier name (/^[A-Za-z_]\w*$/) and known type string;
 // throws EvsTypeError with the call-site loc; returns Object.freeze({ name, type }).
 
 export const t: {
-  readonly address: 'address'; readonly bool: 'bool'
-  readonly uint8: 'uint8'; /* …every uintN/intN multiple of 8… */ readonly uint256: 'uint256'
-  readonly int8: 'int8'; /* … */ readonly int256: 'int256'
-  readonly bytes1: 'bytes1'; /* … */ readonly bytes32: 'bytes32'
-  readonly string: 'string'; readonly bytes: 'bytes'
-  array<const e extends WordType>(elem: e): `${e}[]`        // t.array(t.address) -> 'address[]'
-}
+  readonly address: 'address';
+  readonly bool: 'bool';
+  readonly uint8: 'uint8';
+  /* …every uintN/intN multiple of 8… */ readonly uint256: 'uint256';
+  readonly int8: 'int8';
+  /* … */ readonly int256: 'int256';
+  readonly bytes1: 'bytes1';
+  /* … */ readonly bytes32: 'bytes32';
+  readonly string: 'string';
+  readonly bytes: 'bytes';
+  array<const e extends WordType>(elem: e): `${e}[]`; // t.array(t.address) -> 'address[]'
+};
 ```
 
 Raw type strings are accepted everywhere `t.*` is (the `t` namespace is autocomplete sugar).
@@ -74,56 +80,61 @@ are all valid script args in v0. Fixed arrays `T[N]` and tuples are recording-ti
 ## 3. Types, `Expr`, and literal coercion
 
 ```ts
-export type WordType  = `uint${UintBits}` | `int${UintBits}` | 'address' | 'bool' | `bytes${BytesSize}`
-export type DynType   = 'string' | 'bytes'
-export type ArrayType = `${WordType}[]`
-export type EvsType   = WordType | DynType | ArrayType
-export type NumericType = `uint${UintBits}` | `int${UintBits}`
-export type BitsType    = `uint${UintBits}` | `bytes${BytesSize}`
+export type WordType =
+  | `uint${UintBits}`
+  | `int${UintBits}`
+  | 'address'
+  | 'bool'
+  | `bytes${BytesSize}`;
+export type DynType = 'string' | 'bytes';
+export type ArrayType = `${WordType}[]`;
+export type EvsType = WordType | DynType | ArrayType;
+export type NumericType = `uint${UintBits}` | `int${UintBits}`;
+export type BitsType = `uint${UintBits}` | `bytes${BytesSize}`;
 
-declare const exprBrand: unique symbol
+declare const exprBrand: unique symbol;
 export interface Expr<t extends EvsType = EvsType> {
-  readonly [exprBrand]: t              // nominal, covariant phantom
-  readonly type: t                     // runtime-readable type tag
+  readonly [exprBrand]: t; // nominal, covariant phantom
+  readonly type: t; // runtime-readable type tag
 
   // arithmetic — checked (Panic 0x11 / 0x12); this-parameter restricts to numeric types
-  add(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  sub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  mul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  div(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  mod(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
+  add(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  sub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  mul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  div(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  mod(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
 
   // comparisons — LT/GT vs SLT/SGT chosen from the static type
-  lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  eq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>     // word types only (typed)
-  neq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>
+  lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  eq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>; // word types only (typed)
+  neq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>;
 
   // bool logic — eager, NOT short-circuiting (use s.if for conditional execution)
-  and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>
-  or(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>
-  not(this: Expr<'bool'>): Expr<'bool'>
+  and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
+  or(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
+  not(this: Expr<'bool'>): Expr<'bool'>;
 
   // bitwise (result re-canonicalized to t's width)
-  bitAnd(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitNot(this: Expr<t & BitsType>): Expr<t>
-  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>
-  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>   // SAR for intN via s.shr
+  bitAnd(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitNot(this: Expr<t & BitsType>): Expr<t>;
+  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>; // SAR for intN via s.shr
 
   // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range)
-  toUint<const u extends `uint${UintBits}`>(target: u): Expr<u>
-  toInt<const i extends `int${UintBits}`>(target: i): Expr<i>
-  asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>       // checked: high 96 bits zero
-  asUint256(this: Expr<'bytes32'>): Expr<'uint256'>                   // free reinterpret
-  asBytes32(this: Expr<'uint256'>): Expr<'bytes32'>                   // free reinterpret
+  toUint<const u extends `uint${UintBits}`>(target: u): Expr<u>;
+  toInt<const i extends `int${UintBits}`>(target: i): Expr<i>;
+  asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>; // checked: high 96 bits zero
+  asUint256(this: Expr<'bytes32'>): Expr<'uint256'>; // free reinterpret
+  asBytes32(this: Expr<'uint256'>): Expr<'bytes32'>; // free reinterpret
 
   // dynamic / array values (memrefs)
-  length(this: Expr<DynType | ArrayType>): Expr<'uint256'>
-  at<elem extends WordType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>
+  length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
+  at<elem extends WordType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>;
   // bounds-checked → Panic 0x32
 }
 ```
@@ -134,30 +145,36 @@ literal-left cases (`s.sub(100n, x)`); at least one operand must be an `Expr`.
 ### Literal coercion (`IntoExpr`) and validation rules
 
 ```ts
-export type LitOf<t extends EvsType> =
-  t extends NumericType ? bigint | number :
-  t extends 'address'   ? `0x${string}` :
-  t extends 'bool'      ? boolean :
-  t extends `bytes${BytesSize}` ? `0x${string}` :
-  t extends 'string'    ? string :
-  t extends 'bytes'     ? `0x${string}` :
-  t extends `${infer e extends WordType}[]` ? readonly LitOf<e>[] :
-  never
-export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>
+export type LitOf<t extends EvsType> = t extends NumericType
+  ? bigint | number
+  : t extends 'address'
+    ? `0x${string}`
+    : t extends 'bool'
+      ? boolean
+      : t extends `bytes${BytesSize}`
+        ? `0x${string}`
+        : t extends 'string'
+          ? string
+          : t extends 'bytes'
+            ? `0x${string}`
+            : t extends `${infer e extends WordType}[]`
+              ? readonly LitOf<e>[]
+              : never;
+export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
 
 Validated **at recording time** with the call-site loc (`EvsTypeError` on violation):
 
-| Literal | Rule |
-|---|---|
-| `number` for `uintN`/`intN` | must be a safe integer; range-checked against N |
-| `bigint` for `uintN`/`intN` | range-checked; negatives two's-complemented for `intN` |
-| `boolean` | only for `'bool'` |
-| `0x` string for `address` | exactly 20 bytes; checksum NOT enforced (viem-permissive) |
-| `0x` string for `bytesN` | exactly N bytes |
-| `0x` string for `bytes` | any even-length hex |
-| `string` for `'string'` | UTF-8 encoded |
-| JS array for `T[]` | element-wise rules of `T` |
+| Literal                     | Rule                                                      |
+| --------------------------- | --------------------------------------------------------- |
+| `number` for `uintN`/`intN` | must be a safe integer; range-checked against N           |
+| `bigint` for `uintN`/`intN` | range-checked; negatives two's-complemented for `intN`    |
+| `boolean`                   | only for `'bool'`                                         |
+| `0x` string for `address`   | exactly 20 bytes; checksum NOT enforced (viem-permissive) |
+| `0x` string for `bytesN`    | exactly N bytes                                           |
+| `0x` string for `bytes`     | any even-length hex                                       |
+| `string` for `'string'`     | UTF-8 encoded                                             |
+| JS array for `T[]`          | element-wise rules of `T`                                 |
 
 Word literals canonicalize at recording. Dynamic literals (and literal arrays) become bytecode
 **data segments** materialized by CODECOPY on first use. Explicit constructor when inference
@@ -232,9 +249,9 @@ export interface ScriptBuilder<args extends readonly ArgSpec[]> {
 
 ```ts
 export interface Cell<t extends EvsType> {
-  readonly type: t
-  get(): Expr<t>                       // fresh snapshot at this program point
-  set(value: IntoExpr<t>): void
+  readonly type: t;
+  get(): Expr<t>; // fresh snapshot at this program point
+  set(value: IntoExpr<t>): void;
 }
 ```
 
@@ -244,12 +261,12 @@ pointer assignment (reference semantics — documented).
 
 ```ts
 export interface MutArray<e extends WordType> {
-  readonly elemType: e
-  readonly length: Expr<'uint256'>
-  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void   // bounds-checked → Panic 0x32
-  get(i: IntoExpr<'uint256'>): Expr<e>                // bounds-checked → Panic 0x32
-  expr(): Expr<`${e}[]`>     // memref handle to the SAME buffer (later set() calls are visible
-}                            //  through it — reference semantics, documented)
+  readonly elemType: e;
+  readonly length: Expr<'uint256'>;
+  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
+  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
+  expr(): Expr<`${e}[]`>; // memref handle to the SAME buffer (later set() calls are visible
+} //  through it — reference semantics, documented)
 ```
 
 `s.newArray(elem, length)` allocates `[len][len × 32 bytes]`, **zero-filled**; runtime lengths
@@ -258,8 +275,8 @@ the multicall-replacement pattern (example E2).
 
 ```ts
 export interface LoopCtl {
-  break(): void      // jump past the owning loop
-  continue(): void   // jump to the owning loop's header (for-loops: to the step)
+  break(): void; // jump past the owning loop
+  continue(): void; // jump to the owning loop's header (for-loops: to the step)
 }
 ```
 
@@ -399,7 +416,7 @@ export interface CompiledEvsScript<name, args, ret> {
 
 - **`toViem()` default = deployless** (`{ abi, code }` with `code` = init bytecode): plain
   2-param `eth_call`, works on every provider. Never pass `runtimeBytecode` to viem's `code` —
-  it fails *silently* (the artifact never exposes a field named `code`/`bytecode` for this
+  it fails _silently_ (the artifact never exposes a field named `code`/`bytecode` for this
   reason).
 - **`stateOverride` mode**: deterministic `address(this)` (default
   `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`), controllable `msg.sender` via `account`,
@@ -411,35 +428,39 @@ export interface CompiledEvsScript<name, args, ret> {
 ### E1 — Flagship: Uniswap V3 pool metadata in one round trip
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs'
-import { erc20Abi } from 'viem'
-import { uniswapV3PoolAbi } from './abis'        // as const satisfies Abi
+import { evscript, arg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+import { uniswapV3PoolAbi } from './abis'; // as const satisfies Abi
 
 const poolMeta = evscript(
   { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
   (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' })
+    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>
-    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' })
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' })
+    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, …]
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' })
+    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     //    ^? Expr<'string'>   — data flows BETWEEN calls; multicall cannot do this
-    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' })
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' })
-    const decimals0 = s.select(dec.success, dec.value, 18)        // default on failure
-    const bal0 = s.call({ address: token0, abi: erc20Abi, functionName: 'balanceOf',
-                          args: [s.args.user] })
-    return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 })
+    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const decimals0 = s.select(dec.success, dec.value, 18); // default on failure
+    const bal0 = s.call({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.user],
+    });
+    return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
   },
-)
+);
 
-const compiled = poolMeta.compile()
+const compiled = poolMeta.compile();
 const out = await client.readContract({
-  ...compiled.toViem(),                  // { abi, code } — deployless
+  ...compiled.toViem(), // { abi, code } — deployless
   functionName: 'poolMeta',
-  args: [pool, user],                    // readonly [pool: `0x${string}`, user: `0x${string}`]
-})
+  args: [pool, user], // readonly [pool: `0x${string}`, user: `0x${string}`]
+});
 // out: { token0: `0x${string}`; token1: `0x${string}`; symbol0: string; symbol1: string;
 //        tick: number; decimals0: number; bal0: bigint }
 ```
@@ -450,36 +471,37 @@ const out = await client.readContract({
 const balances = evscript(
   { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
   (s) => {
-    const n = s.args.tokens.length()
-    const out = s.newArray(t.uint256, n)               // zero-filled uint256[n]
+    const n = s.args.tokens.length();
+    const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = s.args.tokens.at(i)                // bounds-checked
-      const r = s.tryCall({ address: token, abi: erc20Abi, functionName: 'balanceOf',
-                            args: [s.args.owner] })
-      out.set(i, s.select(r.success, r.value, 0n))     // non-token addresses → 0, no revert
-    })
-    return s.return({ balances: out.expr() })
+      const token = s.args.tokens.at(i); // bounds-checked
+      const r = s.tryCall({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [s.args.owner],
+      });
+      out.set(i, s.select(r.success, r.value, 0n)); // non-token addresses → 0, no revert
+    });
+    return s.return({ balances: out.expr() });
   },
-)
+);
 
 const res = await client.readContract({
   ...balances.compile().toViem(),
   functionName: 'balances',
   args: [[usdc, weth, dai], owner],
-})
+});
 // res: { balances: readonly bigint[] }
 ```
 
 ### E3 — tryCall with a default (no boilerplate)
 
 ```ts
-const tokenDecimals = evscript(
-  { name: 'tokenDecimals', args: [arg('token', t.address)] },
-  (s) => {
-    const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' })
-    return s.return({ decimals: s.select(d.success, d.value, 18) })
-  },
-)
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
+  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ decimals: s.select(d.success, d.value, 18) });
+});
 ```
 
 ### E4 — while loop + cells + break: first fee tier with a deployed pool
@@ -488,24 +510,31 @@ const tokenDecimals = evscript(
 const firstPool = evscript(
   { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
   (s) => {
-    const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n])  // data segment
-    const found = s.let(t.address, '0x0000000000000000000000000000000000000000')
-    const feeOut = s.let(t.uint24, 0n)
-    const i = s.let(t.uint256, 0n)
-    s.while(() => i.get().lt(fees.length()), (loop) => {
-      const fee = fees.at(i.get())
-      const pool = s.call({ address: FACTORY, abi: uniswapV3FactoryAbi,
-                            functionName: 'getPool', args: [s.args.a, s.args.b, fee] })
-      s.if(pool.neq('0x0000000000000000000000000000000000000000'), () => {
-        found.set(pool)
-        feeOut.set(fee)
-        loop.break()
-      })
-      i.set(i.get().add(1n))
-    })
-    return s.return({ pool: found.get(), fee: feeOut.get() })
+    const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
+    const found = s.let(t.address, '0x0000000000000000000000000000000000000000');
+    const feeOut = s.let(t.uint24, 0n);
+    const i = s.let(t.uint256, 0n);
+    s.while(
+      () => i.get().lt(fees.length()),
+      (loop) => {
+        const fee = fees.at(i.get());
+        const pool = s.call({
+          address: FACTORY,
+          abi: uniswapV3FactoryAbi,
+          functionName: 'getPool',
+          args: [s.args.a, s.args.b, fee],
+        });
+        s.if(pool.neq('0x0000000000000000000000000000000000000000'), () => {
+          found.set(pool);
+          feeOut.set(fee);
+          loop.break();
+        });
+        i.set(i.get().add(1n));
+      },
+    );
+    return s.return({ pool: found.get(), fee: feeOut.get() });
   },
-)
+);
 ```
 
 ### E5 — `s.fn`: reusable typed subroutine
@@ -515,22 +544,29 @@ const portfolio = evscript(
   { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
   (s) => {
     const meta = s.fn('meta', [arg('token', t.address)] as const, (token) => {
-      const bal = s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf',
-                           args: [s.args.owner] })    // ✗ EvsScopeError: no outer capture!
-      return bal
-    })
+      const bal = s.call({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [s.args.owner],
+      }); // ✗ EvsScopeError: no outer capture!
+      return bal;
+    });
     // correct version: pass everything as params
-    const balOf = s.fn('balOf', [arg('token', t.address), arg('who', t.address)] as const,
+    const balOf = s.fn(
+      'balOf',
+      [arg('token', t.address), arg('who', t.address)] as const,
       (token, who) =>
-        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }))
-    const n = s.args.tokens.length()
-    const out = s.newArray(t.uint256, n)
+        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+    );
+    const n = s.args.tokens.length();
+    const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      out.set(i, balOf(s.args.tokens.at(i), s.args.owner))   // fncall — fresh Expr per call
-    })
-    return s.return({ balances: out.expr() })
+      out.set(i, balOf(s.args.tokens.at(i), s.args.owner)); // fncall — fresh Expr per call
+    });
+    return s.return({ balances: out.expr() });
   },
-)
+);
 ```
 
 (The first `meta` definition is shown to document the no-capture rule: touching `s.args.owner`
@@ -542,55 +578,64 @@ inside an `s.fn` body throws `EvsScopeError` at recording, naming both locations
 const healthCheck = evscript(
   { name: 'healthCheck', args: [arg('vault', t.address), arg('user', t.address)] },
   (s) => {
-    const debt = s.call({ address: s.args.vault, abi: vaultAbi, functionName: 'debtOf',
-                          args: [s.args.user] })
-    const coll = s.call({ address: s.args.vault, abi: vaultAbi, functionName: 'collateralOf',
-                          args: [s.args.user] })
-    const ratioBps = s.let(t.uint256, 0n)
-    s.if(debt.gt(0n),
-      () => ratioBps.set(coll.mul(10_000n).div(debt)),  // mul checked: Panic 0x11 on overflow
+    const debt = s.call({
+      address: s.args.vault,
+      abi: vaultAbi,
+      functionName: 'debtOf',
+      args: [s.args.user],
+    });
+    const coll = s.call({
+      address: s.args.vault,
+      abi: vaultAbi,
+      functionName: 'collateralOf',
+      args: [s.args.user],
+    });
+    const ratioBps = s.let(t.uint256, 0n);
+    s.if(
+      debt.gt(0n),
+      () => ratioBps.set(coll.mul(10_000n).div(debt)), // mul checked: Panic 0x11 on overflow
       () => ratioBps.set(s.lit(t.uint256, 2n ** 255n)), // "infinite" sentinel
-    )
-    const healthy = ratioBps.get().gte(15_000n)
-    return s.return({ debt, coll, ratioBps: ratioBps.get(), healthy })
+    );
+    const healthy = ratioBps.get().gte(15_000n);
+    return s.return({ debt, coll, ratioBps: ratioBps.get(), healthy });
   },
-)
+);
 ```
 
 ### E7 — State-override mode, block pinning, and `explainRevert`
 
 ```ts
-const compiled = poolMeta.compile({ evmVersion: 'paris' })   // pre-Shanghai L2 target
+const compiled = poolMeta.compile({ evmVersion: 'paris' }); // pre-Shanghai L2 target
 
 // state-override: stable address(this), controllable msg.sender
 const out = await client.readContract({
   ...compiled.toViem({ mode: 'stateOverride' }),
   functionName: 'poolMeta',
   args: [pool, user],
-  blockNumber: 22_000_000n,         // historical reads work — it is just eth_call
-  account: someEoa,                 // msg.sender seen by the script
-})
+  blockNumber: 22_000_000n, // historical reads work — it is just eth_call
+  account: someEoa, // msg.sender seen by the script
+});
 
 // when something reverts:
 try {
-  await client.readContract({ ...compiled.toViem(), functionName: 'poolMeta', args: [pool, user] })
+  await client.readContract({ ...compiled.toViem(), functionName: 'poolMeta', args: [pool, user] });
 } catch (e) {
-  const revertData = extractRevertData(e)          // from viem's ContractFunctionRevertedError
-  console.log(compiled.explainRevert(revertData).message)
+  const revertData = extractRevertData(e); // from viem's ContractFunctionRevertedError
+  console.log(compiled.explainRevert(revertData).message);
   // "decoding `symbol()` returndata failed (EvsDecodeError site 7) — recorded at pools.ts:9:18"
-  console.log(compiled.disassemble().format())     // annotated listing, source lines per pc
+  console.log(compiled.disassemble().format()); // annotated listing, source lines per pc
 }
 ```
 
 ## 12. What runs when (the one-page mental model)
 
-| Runs at build time (TS) | Runs on-chain (compiled) |
-|---|---|
-| the builder callback, exactly once | the recorded statements, in recorded order |
-| JS `if`/`for` over host values (unrolled/specialized) | `s.if`/`s.while`/`s.for` over runtime values |
-| literal validation & folding, ABI resolution, selectors | checked arithmetic, calls, decoding |
-| `s.fn` body (once, at definition) | the subroutine, once per recorded call |
-| loop-condition thunks: recorded once into the header | the header, once per iteration |
+| Runs at build time (TS)                                 | Runs on-chain (compiled)                     |
+| ------------------------------------------------------- | -------------------------------------------- |
+| the builder callback, exactly once                      | the recorded statements, in recorded order   |
+| JS `if`/`for` over host values (unrolled/specialized)   | `s.if`/`s.while`/`s.for` over runtime values |
+| literal validation & folding, ABI resolution, selectors | checked arithmetic, calls, decoding          |
+| `s.fn` body (once, at definition)                       | the subroutine, once per recorded call       |
+| loop-condition thunks: recorded once into the header    | the header, once per iteration               |
 
 Everything that composes runtime values returns a branded `Expr`; everything that uses one in a
 host position throws. Recording is the only sequencing primitive.

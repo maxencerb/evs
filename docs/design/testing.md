@@ -21,16 +21,16 @@ files); `package.json` wires `"test": "vitest run --project unit"` etc., and CI 
 
 ## 1. Tiers
 
-| Tier | Project name | What runs | EVM | Speed |
-|---|---|---|---|---|
-| unit | `unit` | per-module tests in `src/**/*.test.ts` | `@ethereumjs/evm` in-process (harness) or none | ms |
-| types | `types` | `src/**/*.test-d.ts` via vitest typecheck | none | s |
-| integration | `integration` | `test/integration/**/*.test.ts` | anvil via prool | s–min |
+| Tier        | Project name  | What runs                                 | EVM                                            | Speed |
+| ----------- | ------------- | ----------------------------------------- | ---------------------------------------------- | ----- |
+| unit        | `unit`        | per-module tests in `src/**/*.test.ts`    | `@ethereumjs/evm` in-process (harness) or none | ms    |
+| types       | `types`       | `src/**/*.test-d.ts` via vitest typecheck | none                                           | s     |
+| integration | `integration` | `test/integration/**/*.test.ts`           | anvil via prool                                | s–min |
 
 `packages/evs/vitest.config.ts` (exact):
 
 ```ts
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
@@ -57,7 +57,7 @@ export default defineConfig({
       },
     ],
   },
-})
+});
 ```
 
 Root `vitest.config.ts` lists `projects: ['packages/*/vitest.config.ts']` and holds the
@@ -89,23 +89,25 @@ Per stack-testing §3 — viem's production pattern, verbatim:
 
 ```ts
 // packages/evs/test/global-setup.ts
-import { Instance, Server } from 'prool'
+import { Instance, Server } from 'prool';
 export default async function setup() {
   const server = Server.create({
     instance: Instance.anvil({
       chainId: 31337,
-      hardfork: 'Prague',          // PINNED — anvil's default `latest` moves over time
-      gasLimit: 100_000_000,       // headroom over the 30M default for stress tests
+      hardfork: 'Prague', // PINNED — anvil's default `latest` moves over time
+      gasLimit: 100_000_000, // headroom over the 30M default for stress tests
     }),
     port: 8545,
-  })
-  const stop = await server.start()
-  return async () => { await stop() }
+  });
+  const stop = await server.start();
+  return async () => {
+    await stop();
+  };
 }
 
 // packages/evs/test/harness/anvil.ts
-export const poolId = Number(process.env.VITEST_POOL_ID ?? 1)
-export const rpcUrl = `http://127.0.0.1:8545/${poolId}`   // one anvil per vitest worker
+export const poolId = Number(process.env.VITEST_POOL_ID ?? 1);
+export const rpcUrl = `http://127.0.0.1:8545/${poolId}`; // one anvil per vitest worker
 ```
 
 Rules: no `test.concurrent()` in integration files (per-worker instances are safe because one
@@ -113,6 +115,7 @@ worker runs files serially); read-only eth_call tests need no state reset; tests
 mocks use `testClient.setCode` / `deployContract` and are deterministic per worker.
 
 **Execution paths covered, every release:**
+
 1. `anvil_setCode(runtimeBytecode)` + plain `readContract` (primary, most debuggable).
 2. `stateOverride` mode: `readContract({ ...toViem({mode:'stateOverride'}), ... })`.
 3. **Deployless `code` path regression** (permanent, pinned anvil version): viem's `code` param
@@ -121,7 +124,7 @@ mocks use `testClient.setCode` / `deployContract` and are deterministic per work
    raw-runtime-as-`code` canary test asserts the empty-data failure mode still exists, so the
    guard rails stay honest).
 4. Revert bubbling end-to-end: a Solidity contract reverting with `Error(string)`, `Panic`,
-   a custom error, and empty revert — assert viem surfaces the *callee's* error through the
+   a custom error, and empty revert — assert viem surfaces the _callee's_ error through the
    script unchanged.
 5. Fork-mode (env-gated, `ANVIL_FORK_URL` + pinned block): mainnet WETH `symbol()` through a
    compiled script, both modes — reproduces viem-integration §3 tests 4/5. Skipped when the
@@ -175,6 +178,7 @@ asserts identical success/revert outcomes and identical `Panic(code)` payloads. 
 architecture §6 table to solc ground truth.
 
 Also in `packages/contracts/src`:
+
 - `MockERC20.sol`, `MockUniV3Pool.sol` (slot0/token0/token1/fee) — integration fixtures.
 - `Reverter.sol` — reverts with Error(string)/Panic(via assert/overflow)/custom error/empty,
   selected by selector — the bubbling suite's callee.

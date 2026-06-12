@@ -25,8 +25,8 @@ const lib = weiroll.Contract.createLibrary(ethersContract);
 const c = weiroll.Contract.createContract(ethersContract, CommandFlags.STATICCALL);
 
 const planner = new weiroll.Planner();
-const ret = planner.add(c.func(a, b));          // returns a ReturnValue handle
-planner.add(other.use(ret));                     // handles feed later calls
+const ret = planner.add(c.func(a, b)); // returns a ReturnValue handle
+planner.add(other.use(ret)); // handles feed later calls
 const { commands, state } = planner.plan();
 ```
 
@@ -102,7 +102,7 @@ and that the generative/metaprogramming paradigm "presents an additional hurdle 
 
 PyTeal **0.24.0** added source mapping (https://developer.algorand.org/articles/pyteal-sourcemapping/, https://pyteal.readthedocs.io/en/stable/sourcemap.html): `Compilation(...).compile(with_sourcemap=True, annotate_teal=True, pcs_in_sourcemap=True, annotate_teal_headers=..., annotate_teal_concise=...)` produces TEAL annotated with the PyTeal file/line that generated each line, and PC→source mapping, so "assert failed pc=70" maps back to a Python line. This was requested as far back as issue #116 (2021): https://github.com/algorand/pyteal/issues/116. Build this in from day one in evs.
 
-Takeaway: the expression-builder paradigm is viable for *small* programs (evs scripts are small read DAGs), but only with aggressive guardrails: brand handles so host-language misuse throws immediately, attach source locations to every node, and keep diagnostics in user vocabulary. PyTeal's fate (replaced by a real-syntax compiler) was driven by people writing *whole applications* in it — not evs's use case — but every one of its failure modes applies at small scale too.
+Takeaway: the expression-builder paradigm is viable for _small_ programs (evs scripts are small read DAGs), but only with aggressive guardrails: brand handles so host-language misuse throws immediately, attach source locations to every node, and keep diagnostics in user vocabulary. PyTeal's fate (replaced by a real-syntax compiler) was driven by people writing _whole applications_ in it — not evs's use case — but every one of its failure modes applies at small scale too.
 
 ---
 
@@ -120,16 +120,18 @@ All builders are generic over the string-literal types, so TS infers everything 
 
 ```ts
 const lambert = defn(
-    "float",                       // return type
-    "lambert",                     // function name (for codegen)
-    ["vec3", "vec3", "bool"],      // arg types
-    (n, ldir, bidir) => {          // body fn receives typed Sym<"vec3">, Sym<"vec3">, Sym<"bool">
-        let d: FloatSym;
-        return [                   // body = array of statement nodes
-            (d = sym(dot(n, ldir))),
-            ret(ternary(bidir, fit1101(d), clamp(d, float(0), float(1))))
-        ];
-    }
+  'float', // return type
+  'lambert', // function name (for codegen)
+  ['vec3', 'vec3', 'bool'], // arg types
+  (n, ldir, bidir) => {
+    // body fn receives typed Sym<"vec3">, Sym<"vec3">, Sym<"bool">
+    let d: FloatSym;
+    return [
+      // body = array of statement nodes
+      (d = sym(dot(n, ldir))),
+      ret(ternary(bidir, fit1101(d), clamp(d, float(0), float(1)))),
+    ];
+  },
 );
 ```
 
@@ -156,7 +158,7 @@ AssemblyScript compiles **actual TypeScript-ish syntax** ahead-of-time to WebAss
 - **No closures** ("functions with a captured environment are not yet supported and we are waiting for the Function References and Garbage collection proposals to land").
 - **No union types** (`string | boolean`), no `any`, no optional properties like `firstName?: string`; generics partially substitute.
 - **No exceptions** (Wasm limitation at the time).
-- They had to reimplement an entire standard library, and virtually no existing npm package can be consumed — the ecosystem is parallel, not shared. The result is a language that *looks like* TypeScript but silently isn't, which is its most-cited DX complaint (e.g. https://blog.suborbital.dev/assemblyscript-vs-typescript).
+- They had to reimplement an entire standard library, and virtually no existing npm package can be consumed — the ecosystem is parallel, not shared. The result is a language that _looks like_ TypeScript but silently isn't, which is its most-cited DX complaint (e.g. https://blog.suborbital.dev/assemblyscript-vs-typescript).
 
 For evs the equivalent trap would be parsing real TS function bodies (or a custom `.evs.ts` syntax) and compiling them to EVM bytecode: you would have to define semantics for the whole language on a 256-bit stack machine, fork type-checking, and break every editor/linter/test tool. KimlikDAO's EvmScript (section 5) pays exactly this cost with its `.evm.ts` transpiler. A plain-TS callback builder keeps oxlint/oxfmt, bun test, tsc and editor tooling working unchanged, and the type system itself (via abitype) does the heavy lifting.
 
@@ -170,17 +172,17 @@ Nothing found does what evs does (typed plain-TS builder → EVM runtime bytecod
 
 ### Assemblers / low-level DSLs
 
-| Project | Lang/host | What it is | Status (2026-06) |
-|---|---|---|---|
-| `@ethersproject/asm` (https://docs.ethers.org/v5/cli/asm/, npm `@ethersproject/asm`) | JS, text DSL | "Ethers ASM Dialect": labels (auto-`JUMPDEST`), functional + stack notation with operand-count verification, multi-pass assembly "until the bytecode stabilizes" (compact jumpdests), embedded JS meta-programming via `{{! code }}` / `{{= code }}` | ethers-v5-era experimental; **not carried into ethers v6**; unmaintained |
-| `evmasm` (https://github.com/ajlopez/evmasm, npm `evmasm`) | JS, text DSL | `evmasm.compile('mstore(0x40, 0x60)')` → bytecode | hobby project, stale |
-| `emasm` (https://www.npmjs.com/package/emasm) | JS, S-expressions | assembles bytecode from a nested-array AST; lowercase opcode atoms; numbers → minimal-width PUSH; explicitly markets generating "**eth_call tx script payloads** or full-fledged contracts" — closest in *goal* to evs but completely untyped | stale |
-| `evmscript` (npm, v0.0.2, 2021-09, Tim Coulter) | JS | "Write EVM assembly using Javascript!" (https://registry.npmjs.org/evmscript/latest) | abandoned |
-| **EvmScript** (KimlikDAO, https://docs.evmscript.org/, https://github.com/KimlikDAO/EvmScript) | TS + custom syntax | `.evm.ts` modules with an `evm (...) => {}` syntax extension, transpiled (like `.tsx`) into TS library calls (`inline()`, `set()`, `staticFor()`); "typed stack algebra": `Fragment`s carry typed stack signatures so "composition fails early"; `static for` compile-time unrolling; A* "solver-guided assembly" searches minimum-cost DUP/SWAP choreography; outputs `Uint8Array` for viem/ethers/wagmi | MIT, active but tiny (6 stars); aimed at deployed gas-critical hot paths (verifiers, payout programs), **not** read scripts; no ABI generation; requires custom transpile step |
-| `huffc` (TS) (https://github.com/huff-language/huffc, npm `huffc` 0.0.25) | TS, Huff lang | original Huff compiler in TypeScript | **deprecated 2022-07-04** in favor of Rust `huff-rs` (https://github.com/huff-language/huff-rs, https://huff.sh) — note: even an EVM-DSL team abandoned TS for the compiler core; evs stays TS deliberately (small programs, type-system integration is the product) |
-| `etk` / EVM Toolkit (https://github.com/quilt/etk, book: https://quilt.github.io/etk) | Rust, text | `eas` assembler + `disease` disassembler; labels, macros, expressions | last release v0.2.1 (2022-05); low activity |
-| `geas` "Good Ethereum Assembler" (https://github.com/fjl/geas) | Go, text | macro assembler, all EVM instructions, includes a disassembler; "intended to be a direct representation of EVM bytecode"; used to write the Pectra system contracts (EIP-2935/7002/7251 predeploys) (https://www.blog.blockscout.com/verifying-ethereum-predeploy-contracts/) | actively used by Ethereum core devs |
-| SpecOps (https://github.com/solidifylabs/specops, https://pkg.go.dev/github.com/solidifylabs/specops) | Go, embedded DSL | Go-embedded bytecode DSL with execution + a **terminal debugger** (`RunTerminalDebugger`, programmatic `Step()`/`FastForward()`) | niche, maintained |
+| Project                                                                                               | Lang/host          | What it is                                                                                                                                                                                                                                                                                                                                                                                                 | Status (2026-06)                                                                                                                                                                                                                                                     |
+| ----------------------------------------------------------------------------------------------------- | ------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `@ethersproject/asm` (https://docs.ethers.org/v5/cli/asm/, npm `@ethersproject/asm`)                  | JS, text DSL       | "Ethers ASM Dialect": labels (auto-`JUMPDEST`), functional + stack notation with operand-count verification, multi-pass assembly "until the bytecode stabilizes" (compact jumpdests), embedded JS meta-programming via `{{! code }}` / `{{= code }}`                                                                                                                                                       | ethers-v5-era experimental; **not carried into ethers v6**; unmaintained                                                                                                                                                                                             |
+| `evmasm` (https://github.com/ajlopez/evmasm, npm `evmasm`)                                            | JS, text DSL       | `evmasm.compile('mstore(0x40, 0x60)')` → bytecode                                                                                                                                                                                                                                                                                                                                                          | hobby project, stale                                                                                                                                                                                                                                                 |
+| `emasm` (https://www.npmjs.com/package/emasm)                                                         | JS, S-expressions  | assembles bytecode from a nested-array AST; lowercase opcode atoms; numbers → minimal-width PUSH; explicitly markets generating "**eth_call tx script payloads** or full-fledged contracts" — closest in _goal_ to evs but completely untyped                                                                                                                                                              | stale                                                                                                                                                                                                                                                                |
+| `evmscript` (npm, v0.0.2, 2021-09, Tim Coulter)                                                       | JS                 | "Write EVM assembly using Javascript!" (https://registry.npmjs.org/evmscript/latest)                                                                                                                                                                                                                                                                                                                       | abandoned                                                                                                                                                                                                                                                            |
+| **EvmScript** (KimlikDAO, https://docs.evmscript.org/, https://github.com/KimlikDAO/EvmScript)        | TS + custom syntax | `.evm.ts` modules with an `evm (...) => {}` syntax extension, transpiled (like `.tsx`) into TS library calls (`inline()`, `set()`, `staticFor()`); "typed stack algebra": `Fragment`s carry typed stack signatures so "composition fails early"; `static for` compile-time unrolling; A\* "solver-guided assembly" searches minimum-cost DUP/SWAP choreography; outputs `Uint8Array` for viem/ethers/wagmi | MIT, active but tiny (6 stars); aimed at deployed gas-critical hot paths (verifiers, payout programs), **not** read scripts; no ABI generation; requires custom transpile step                                                                                       |
+| `huffc` (TS) (https://github.com/huff-language/huffc, npm `huffc` 0.0.25)                             | TS, Huff lang      | original Huff compiler in TypeScript                                                                                                                                                                                                                                                                                                                                                                       | **deprecated 2022-07-04** in favor of Rust `huff-rs` (https://github.com/huff-language/huff-rs, https://huff.sh) — note: even an EVM-DSL team abandoned TS for the compiler core; evs stays TS deliberately (small programs, type-system integration is the product) |
+| `etk` / EVM Toolkit (https://github.com/quilt/etk, book: https://quilt.github.io/etk)                 | Rust, text         | `eas` assembler + `disease` disassembler; labels, macros, expressions                                                                                                                                                                                                                                                                                                                                      | last release v0.2.1 (2022-05); low activity                                                                                                                                                                                                                          |
+| `geas` "Good Ethereum Assembler" (https://github.com/fjl/geas)                                        | Go, text           | macro assembler, all EVM instructions, includes a disassembler; "intended to be a direct representation of EVM bytecode"; used to write the Pectra system contracts (EIP-2935/7002/7251 predeploys) (https://www.blog.blockscout.com/verifying-ethereum-predeploy-contracts/)                                                                                                                              | actively used by Ethereum core devs                                                                                                                                                                                                                                  |
+| SpecOps (https://github.com/solidifylabs/specops, https://pkg.go.dev/github.com/solidifylabs/specops) | Go, embedded DSL   | Go-embedded bytecode DSL with execution + a **terminal debugger** (`RunTerminalDebugger`, programmatic `Step()`/`FastForward()`)                                                                                                                                                                                                                                                                           | niche, maintained                                                                                                                                                                                                                                                    |
 
 ### Execution/analysis libraries (complements, not competitors)
 
@@ -212,7 +214,7 @@ plus `stateOverride` on `call`/`readContract` (per-address `{ code, balance, non
 
 ### Differentiation statement
 
-evs is, as far as this survey found, the **only** project combining: (1) a plain-TS staged builder (no transpiler, no custom syntax) with (2) end-to-end abitype inference on call arguments *and* cross-call data flow, (3) compilation to a self-contained EVM runtime-bytecode artifact executed read-only via `eth_call` state-override/deployless, and (4) a generated literal ABI making the script itself a first-class viem contract. Nearest neighbors each miss ≥2 axes: weiroll (deployed interpreter, untyped, transaction-oriented), multicalls (no inter-call data flow), EvmScript (custom transpiled syntax, deploy-oriented, no ABI/read story), text assemblers (untyped, low-level), AssemblyScript (different VM, whole-language cost).
+evs is, as far as this survey found, the **only** project combining: (1) a plain-TS staged builder (no transpiler, no custom syntax) with (2) end-to-end abitype inference on call arguments _and_ cross-call data flow, (3) compilation to a self-contained EVM runtime-bytecode artifact executed read-only via `eth_call` state-override/deployless, and (4) a generated literal ABI making the script itself a first-class viem contract. Nearest neighbors each miss ≥2 axes: weiroll (deployed interpreter, untyped, transaction-oriented), multicalls (no inter-call data flow), EvmScript (custom transpiled syntax, deploy-oriented, no ABI/read story), text assemblers (untyped, low-level), AssemblyScript (different VM, whole-language cost).
 
 ---
 
@@ -232,7 +234,7 @@ evs is, as far as this survey found, the **only** project combining: (1) a plain
 
 7. **Ship a disassembler and an annotated dump from day one.** Every healthy low-level toolchain pairs assembler+disassembler (geas, etk's `eas`/`disease`, ethers-asm, SpecOps' debugger). evs should expose `compile(...).disassemble()` returning mnemonics annotated with the originating IR node/source line, and consider `sevm` as a dev-dependency for independent cross-checks in snapshot tests.
 
-8. **Test execution in-process before anvil.** Two proven routes: run compiled bytecode on `@ethereumjs/evm` v10 (TS, maintained) with stubbed STATICCALL targets for fast unit tests; and/or follow `@thi.ng/shader-ast-js` — a second codegen target that *interprets the IR in JS* against a mock chain, giving printf-style debugging without any EVM at all. The IR-interpreter also doubles as a differential-testing oracle against the bytecode backend.
+8. **Test execution in-process before anvil.** Two proven routes: run compiled bytecode on `@ethereumjs/evm` v10 (TS, maintained) with stubbed STATICCALL targets for fast unit tests; and/or follow `@thi.ng/shader-ast-js` — a second codegen target that _interprets the IR in JS_ against a mock chain, giving printf-style debugging without any EVM at all. The IR-interpreter also doubles as a differential-testing oracle against the bytecode backend.
 
 9. **Keep the IR serializable, versioned, plain data.** shader-ast is "an embedded DSL **and IR format**"; weiroll's `{commands, state}` is similarly inspectable. A JSON-stable IR (`{tag, type, info, children}`-shaped) enables snapshot tests of compilation, caching, alternate backends, and printing the plan in error messages.
 

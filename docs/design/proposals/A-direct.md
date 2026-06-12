@@ -8,20 +8,20 @@ Inputs: all seven research reports under `docs/research/` (facts cited inline as
 
 The simplest architecture that is **fully correct** and shippable for the locked v0 scope:
 
-- **One lowering.** The recorded builder program *is* the IR (a flat, typed, three-address-style
+- **One lowering.** The recorded builder program _is_ the IR (a flat, typed, three-address-style
   statement list with nested regions for control flow). A single pass (`lower`) walks it and emits an
   assembly item stream; a two-pass assembler patches labels and produces bytes. No CFG, no SSA pass,
   no register allocator, no optimizer.
 - **Memory-slot locals, zero stack scheduling.** Every value lives in a statically assigned 32-byte
   memory slot. Every statement's codegen is a self-contained template: load operands (MLOAD/PUSH),
   compute, MSTORE result. Max stack depth stays under ~8 by construction; the stack-choreography
-  search problem that EvmScript solves with A* [prior-art §5] simply does not exist here.
+  search problem that EvmScript solves with A\* [prior-art §5] simply does not exist here.
 - **Two intrinsically-safe RETURNDATACOPY shapes only** (see §13). All dynamic-returndata decoding
-  works on a *memory snapshot* of the full returndata, so the all-gas-consuming OOB halt [evm §2]
+  works on a _memory snapshot_ of the full returndata, so the all-gas-consuming OOB halt [evm §2]
   is unreachable by construction, not by per-site cleverness.
 - **Pay gas, not complexity.** Uniform lowering costs ~6–15 extra gas per statement versus
-  stack-scheduled code. eth_call headroom is 30–550M gas [evm §4]; a 200-statement script wastes
-  under 5k gas. This is the right trade for a v0 whose product is *types + correctness*.
+  stack-scheduled code. eth*call headroom is 30–550M gas [evm §4]; a 200-statement script wastes
+  under 5k gas. This is the right trade for a v0 whose product is \_types + correctness*.
 
 Every simplification below states its deferred-but-documented path to the v1 features
 (nested tuples, optimizer).
@@ -29,28 +29,33 @@ Every simplification below states its deferred-but-documented path to the v1 fea
 ### The user-visible shape (running example)
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs'
+import { evscript, arg, t } from '@maxencerb/evs';
 
 const poolMeta = evscript(
   { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
   (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' })
+    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>
-    const [, tick] = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' })
+    const [, tick] = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //       ^? Expr<'int24'>
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' })
+    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     //    ^? Expr<'string'>
-    const bal = s.call({ address: token0, abi: erc20Abi, functionName: 'balanceOf', args: [s.args.user] })
-    return s.return({ token0, symbol0, tick, bal })
+    const bal = s.call({
+      address: token0,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.args.user],
+    });
+    return s.return({ token0, symbol0, tick, bal });
   },
-)
+);
 
-const compiled = poolMeta.compile()                       // { evmVersion: 'cancun' } default
+const compiled = poolMeta.compile(); // { evmVersion: 'cancun' } default
 const out = await client.readContract({
-  ...compiled.toViem(),                                   // deployless: { abi, code: initBytecode }
+  ...compiled.toViem(), // deployless: { abi, code: initBytecode }
   functionName: 'poolMeta',
-  args: [pool, user],                                     // readonly [pool: `0x${string}`, user: `0x${string}`]
-})
+  args: [pool, user], // readonly [pool: `0x${string}`, user: `0x${string}`]
+});
 // out: { token0: `0x${string}`; symbol0: string; tick: number; bal: bigint }
 ```
 
@@ -63,36 +68,36 @@ const out = await client.readContract({
 ```ts
 // types.ts
 export interface ArgSpec<name extends string = string, type extends ValueType = ValueType> {
-  readonly kind: 'evs-arg'
-  readonly name: name
-  readonly type: type
+  readonly kind: 'evs-arg';
+  readonly name: name;
+  readonly type: type;
 }
 
 // builder.ts (runtime: returns the frozen object; throws EvsTypeError on empty name / bad type string)
 export function arg<const name extends string, const type extends ValueType>(
   name: name,
   type: type,
-): ArgSpec<name, type>
+): ArgSpec<name, type>;
 
 // autocomplete sugar; plain strings are equally accepted because of `const type` params
-export const t: { readonly [k in ValueType]: k }
+export const t: { readonly [k in ValueType]: k };
 ```
 
-The args parameter of `evscript` is a **readonly tuple of `ArgSpec`s**, so the *type-level order and
-the runtime order are the same object* — the entire `UnionToTuple` interning hazard [abitype §4.2]
+The args parameter of `evscript` is a **readonly tuple of `ArgSpec`s**, so the _type-level order and
+the runtime order are the same object_ — the entire `UnionToTuple` interning hazard [abitype §4.2]
 is structurally impossible on the input side. The two derived artifacts:
 
 ```ts
 // tuple -> record (SAFE direction: object types are order-insensitive)
 export type ArgExprs<specs extends readonly ArgSpec[]> = {
-  readonly [s in specs[number] as s['name']]: Expr<s['type']>
-}
+  readonly [s in specs[number] as s['name']]: Expr<s['type']>;
+};
 // s.args.pool: Expr<'address'>, s.args.fee: Expr<'uint24'>
 
 // tuple -> ABI inputs (order-preserving mapped tuple, never UnionToTuple)
 export type ArgSpecsToAbiInputs<specs extends readonly ArgSpec[]> = {
-  readonly [i in keyof specs]: { readonly name: specs[i]['name']; readonly type: specs[i]['type'] }
-}
+  readonly [i in keyof specs]: { readonly name: specs[i]['name']; readonly type: specs[i]['type'] };
+};
 ```
 
 Runtime ABI inputs are produced by `specs.map(({name, type}) => ({name, type}))` — same array, same
@@ -103,7 +108,7 @@ Why not the alternatives:
 
 - **(a) single named-tuple input** is order-immune but changes the call-site UX to
   `args: [{ pool, fee }]` — unidiomatic versus every other viem contract a user touches. We keep it
-  as a documented *future option flag*, not the default.
+  as a documented _future option flag_, not the default.
 - **(b) entries tuples** `[['pool','address']]` are order-safe too, but give no room for per-arg
   options later (docs, default values) and read worse. `arg()` costs one tiny function.
 - **(d) record + UnionToTuple** is the demonstrated silent-reordering bug [abitype §4.2]. Rejected.
@@ -111,7 +116,7 @@ Why not the alternatives:
 Recording-time validation (decision 12): duplicate names, empty names, unsupported type strings →
 `EvsTypeError` with the `evscript` call site. Output side is settled per the brief: one named tuple
 output (`result`), components from the `s.return` record keys (insertion order at runtime; type-level
-component order may differ, which is harmless because viem produces an *object* result type
+component order may differ, which is harmless because viem produces an _object_ result type
 [abitype §4.2 table, row 1]). The compiler rejects empty-string return keys so the all-named-components
 object inference rule [abitype §4.3.4] always holds.
 
@@ -120,11 +125,11 @@ object inference rule [abitype §4.3.4] always holds.
 ## 2. Decision 2 — Expr semantics: VALUE semantics
 
 **Choice: value semantics.** Every `s.*` op executes exactly once, at the point it is recorded, in the
-current region. The returned `Expr<t>` is a handle to a *computed value* (a memory slot), never a
+current region. The returned `Expr<t>` is a handle to a _computed value_ (a memory slot), never a
 re-emittable expression template. Reusing a handle re-reads the slot (one MLOAD); it never re-executes
 the producing op. This is the direct answer to the PyTeal post-mortem [prior-art §2]: expression
 templates make "where does this run and how many times" invisible; value semantics make recording
-order the *only* sequencing rule, the same rule weiroll docs shout about [prior-art lesson 1].
+order the _only_ sequencing rule, the same rule weiroll docs shout about [prior-art lesson 1].
 
 Mutable state is explicit cells:
 
@@ -136,12 +141,12 @@ export interface Cell<type extends ValueType = ValueType> extends Expr<type> {
 }
 ```
 
-A `Cell` *is an* `Expr`, so it reads naturally in expressions; each use MLOADs the slot at that point,
+A `Cell` _is an_ `Expr`, so it reads naturally in expressions; each use MLOADs the slot at that point,
 giving ordinary mutable-variable semantics. For dynamic types (`string`/`bytes`/`T[]`) the slot holds
 a memory pointer, so `cell.set(otherString)` is pointer assignment (reference semantics — documented).
 
 **Loop-condition design this forces:** a condition must re-evaluate every iteration, so it cannot be a
-pre-computed `Expr`. The condition is a thunk recorded into a dedicated *header region*:
+pre-computed `Expr`. The condition is a thunk recorded into a dedicated _header region_:
 
 ```ts
 if(cond: ExprIn<'bool'>, then: () => void, orElse?: () => void): void   // cond evaluated once, before the branch
@@ -157,7 +162,7 @@ re-executes the header block each iteration. `s.if`'s condition is a plain value
 written — which is exactly what value semantics promises.
 
 **Scope rule (the guardrail that replaces PyTeal's silent wrongness):** every value records its defining
-region. Using an `Expr` whose defining region is not an *ancestor* of the current recording region
+region. Using an `Expr` whose defining region is not an _ancestor_ of the current recording region
 throws `EvsScopeError` at recording time with both source locations. This statically rejects:
 value defined in `then` used after the `if`; value defined in a loop body used after the loop
 (zero-iteration staleness); value used across scripts; value used after `s.return` (builder is frozen).
@@ -174,91 +179,133 @@ Deliberately out of v0: `s.select` ternary (sugar for `let`+`if`, easy later), e
 
 ## 3. Decision 3 — IR design
 
-The IR is **the recorded program**: a flat table of typed values plus a tree of *regions* containing
+The IR is **the recorded program**: a flat table of typed values plus a tree of _regions_ containing
 linear statement lists. There are no expression trees — value semantics means every op is a statement
 producing a `ValueId` (three-address style over memory slots). Plain data, JSON-serializable, versioned.
 
 ```ts
 // ir.ts — the single contract between builder and codegen
-export type ValueId = number & { readonly __evsValueId: unique symbol }
-export type RegionId = number & { readonly __evsRegionId: unique symbol }
-export type FnId = number & { readonly __evsFnId: unique symbol }
+export type ValueId = number & { readonly __evsValueId: unique symbol };
+export type RegionId = number & { readonly __evsRegionId: unique symbol };
+export type FnId = number & { readonly __evsFnId: unique symbol };
 
-export interface NodeLoc { readonly stack: string }       // raw new Error().stack; parsed lazily on demand
-export interface ParsedLoc { file: string; line: number; column: number; frame: string }
-export function parseLoc(loc: NodeLoc): ParsedLoc | null  // errors.ts helper
+export interface NodeLoc {
+  readonly stack: string;
+} // raw new Error().stack; parsed lazily on demand
+export interface ParsedLoc {
+  file: string;
+  line: number;
+  column: number;
+  frame: string;
+}
+export function parseLoc(loc: NodeLoc): ParsedLoc | null; // errors.ts helper
 
 export type LiteralValue =
-  | { kind: 'word'; type: WordType; value: bigint }                    // canonical: masked/sign-extended at recording
+  | { kind: 'word'; type: WordType; value: bigint } // canonical: masked/sign-extended at recording
   | { kind: 'bytes'; type: 'string' | 'bytes'; value: Uint8Array }
-  | { kind: 'array'; type: `${WordType}[]`; values: readonly bigint[] }
+  | { kind: 'array'; type: `${WordType}[]`; values: readonly bigint[] };
 
-export type ValueRef = { kind: 'value'; id: ValueId } | { kind: 'literal'; literal: LiteralValue }
+export type ValueRef = { kind: 'value'; id: ValueId } | { kind: 'literal'; literal: LiteralValue };
 
 export interface ValueInfo {
-  readonly id: ValueId
-  readonly type: ValueType
-  readonly mutable: boolean          // true for cells
-  readonly region: RegionId          // defining region (scope checks)
-  readonly loc: NodeLoc
-  readonly debugName?: string        // 'arg:pool', 'call:symbol#2.out0', ...
+  readonly id: ValueId;
+  readonly type: ValueType;
+  readonly mutable: boolean; // true for cells
+  readonly region: RegionId; // defining region (scope checks)
+  readonly loc: NodeLoc;
+  readonly debugName?: string; // 'arg:pool', 'call:symbol#2.out0', ...
 }
 
 export type BinOp =
-  | 'add' | 'sub' | 'mul' | 'div' | 'mod'                              // arithmetic (checked flag applies)
-  | 'lt' | 'gt' | 'lte' | 'gte' | 'eq' | 'neq'                         // comparisons (signedness from operand type)
-  | 'and' | 'or'                                                       // bool logic
-  | 'bitAnd' | 'bitOr' | 'bitXor' | 'shl' | 'shr'                      // bitwise (shr arithmetic for intN)
-export type UnOp = 'not' | 'bitNot'                                    // not: bool; bitNot: masked to width
+  | 'add'
+  | 'sub'
+  | 'mul'
+  | 'div'
+  | 'mod' // arithmetic (checked flag applies)
+  | 'lt'
+  | 'gt'
+  | 'lte'
+  | 'gte'
+  | 'eq'
+  | 'neq' // comparisons (signedness from operand type)
+  | 'and'
+  | 'or' // bool logic
+  | 'bitAnd'
+  | 'bitOr'
+  | 'bitXor'
+  | 'shl'
+  | 'shr'; // bitwise (shr arithmetic for intN)
+export type UnOp = 'not' | 'bitNot'; // not: bool; bitNot: masked to width
 
 export type Stmt =
-  | { kind: 'binop'; op: BinOp; checked: boolean; a: ValueRef; b: ValueRef; out: ValueId; loc: NodeLoc }
+  | {
+      kind: 'binop';
+      op: BinOp;
+      checked: boolean;
+      a: ValueRef;
+      b: ValueRef;
+      out: ValueId;
+      loc: NodeLoc;
+    }
   | { kind: 'unop'; op: UnOp; a: ValueRef; out: ValueId; loc: NodeLoc }
-  | { kind: 'cast'; a: ValueRef; out: ValueId; loc: NodeLoc }          // widening / reinterpret only (see §11)
+  | { kind: 'cast'; a: ValueRef; out: ValueId; loc: NodeLoc } // widening / reinterpret only (see §11)
   | { kind: 'set'; cell: ValueId; value: ValueRef; loc: NodeLoc }
-  | { kind: 'index'; arr: ValueRef; i: ValueRef; out: ValueId; loc: NodeLoc }   // bounds-checked, Panic 0x32
+  | { kind: 'index'; arr: ValueRef; i: ValueRef; out: ValueId; loc: NodeLoc } // bounds-checked, Panic 0x32
   | { kind: 'length'; src: ValueRef; out: ValueId; loc: NodeLoc }
-  | { kind: 'staticcall'
-      addr: ValueRef
-      fn: AbiFunction                                                  // the single resolved runtime ABI item
-      selector: Hex                                                    // precomputed via viem toFunctionSelector
-      args: readonly ValueRef[]
-      outs: readonly ValueId[]                                         // one per output param
-      try: { ok: ValueId } | null                                      // tryCall variant
-      loc: NodeLoc }
+  | {
+      kind: 'staticcall';
+      addr: ValueRef;
+      fn: AbiFunction; // the single resolved runtime ABI item
+      selector: Hex; // precomputed via viem toFunctionSelector
+      args: readonly ValueRef[];
+      outs: readonly ValueId[]; // one per output param
+      try: { ok: ValueId } | null; // tryCall variant
+      loc: NodeLoc;
+    }
   | { kind: 'if'; cond: ValueRef; then: RegionId; else: RegionId | null; loc: NodeLoc }
-  | { kind: 'while'; header: RegionId; cond: ValueRef; body: RegionId; step: RegionId | null; loc: NodeLoc }
+  | {
+      kind: 'while';
+      header: RegionId;
+      cond: ValueRef;
+      body: RegionId;
+      step: RegionId | null;
+      loc: NodeLoc;
+    }
   | { kind: 'break'; loc: NodeLoc }
   | { kind: 'continue'; loc: NodeLoc }
   | { kind: 'callfn'; fn: FnId; args: readonly ValueRef[]; outs: readonly ValueId[]; loc: NodeLoc }
-  | { kind: 'return'; fields: readonly { name: string; value: ValueRef }[]; loc: NodeLoc }
+  | { kind: 'return'; fields: readonly { name: string; value: ValueRef }[]; loc: NodeLoc };
 
-export interface Region { readonly id: RegionId; readonly parent: RegionId | null; readonly stmts: Stmt[] }
+export interface Region {
+  readonly id: RegionId;
+  readonly parent: RegionId | null;
+  readonly stmts: Stmt[];
+}
 
 export interface FnDef {
-  readonly id: FnId
-  readonly name: string
-  readonly params: readonly { name: string; type: ValueType }[]
-  readonly paramIds: readonly ValueId[]
-  readonly results: readonly ValueType[]
-  readonly resultIds: readonly ValueId[]                               // fn-owned result slots
-  readonly body: RegionId
+  readonly id: FnId;
+  readonly name: string;
+  readonly params: readonly { name: string; type: ValueType }[];
+  readonly paramIds: readonly ValueId[];
+  readonly results: readonly ValueType[];
+  readonly resultIds: readonly ValueId[]; // fn-owned result slots
+  readonly body: RegionId;
 }
 
 export interface ScriptProgram {
-  readonly version: 1
-  readonly name: string
-  readonly args: readonly { name: string; type: ValueType }[]
-  readonly argIds: readonly ValueId[]
-  readonly returns: readonly { name: string; type: ValueType }[]
-  readonly values: readonly ValueInfo[]                                // index == id
-  readonly regions: readonly Region[]                                  // index == id
-  readonly fns: readonly FnDef[]
-  readonly body: RegionId
+  readonly version: 1;
+  readonly name: string;
+  readonly args: readonly { name: string; type: ValueType }[];
+  readonly argIds: readonly ValueId[];
+  readonly returns: readonly { name: string; type: ValueType }[];
+  readonly values: readonly ValueInfo[]; // index == id
+  readonly regions: readonly Region[]; // index == id
+  readonly fns: readonly FnDef[];
+  readonly body: RegionId;
 }
 
-export function serializeProgram(p: ScriptProgram): string             // JSON (bigints as 0x-hex, bytes as hex)
-export function deserializeProgram(json: string): ScriptProgram        // validates version + shape
+export function serializeProgram(p: ScriptProgram): string; // JSON (bigints as 0x-hex, bytes as hex)
+export function deserializeProgram(json: string): ScriptProgram; // validates version + shape
 ```
 
 Design points:
@@ -285,13 +332,13 @@ Design points:
 
 Solidity conventions, kept verbatim [evm §6]:
 
-| Range | Use |
-|---|---|
-| `0x00–0x3f` | scratch (revert payload building, never live across a statement) |
-| `0x40–0x5f` | free memory pointer |
-| `0x60–0x7f` | zero slot — never written; empty `string`/`bytes`/`T[]` values point here (len reads as 0) |
-| `0x80 … frameEnd` | **the locals frame**: slot `i` of value `id` at `0x80 + 32*id` |
-| `frameEnd …` | bump allocations (call returndata snapshots, dynamic values, return buffer) |
+| Range             | Use                                                                                        |
+| ----------------- | ------------------------------------------------------------------------------------------ |
+| `0x00–0x3f`       | scratch (revert payload building, never live across a statement)                           |
+| `0x40–0x5f`       | free memory pointer                                                                        |
+| `0x60–0x7f`       | zero slot — never written; empty `string`/`bytes`/`T[]` values point here (len reads as 0) |
+| `0x80 … frameEnd` | **the locals frame**: slot `i` of value `id` at `0x80 + 32*id`                             |
+| `frameEnd …`      | bump allocations (call returndata snapshots, dynamic values, return buffer)                |
 
 - **Locals = static memory slots, one per `ValueId`** (script args, every op result, cells, fn params,
   fn results, compiler temps). `frameEnd = 0x80 + 32 * values.length`, computed after recording; the
@@ -309,7 +356,7 @@ Solidity conventions, kept verbatim [evm §6]:
   (exactly like Solidity). Documented consequence: a loop performing M calls with dynamic outputs
   uses O(M) memory; quadratic memexp only bites past ~23KB and 1MB ≈ 2.1M gas [evm §4] — fine for
   read scripts, and `compile()` emits no static error for it (a doc note + the disassembler make it
-  visible). Scratch *calldata* buffers for sub-calls are built at `mload(0x40)` **without bumping**
+  visible). Scratch _calldata_ buffers for sub-calls are built at `mload(0x40)` **without bumping**
   (dead after the STATICCALL, legal because nothing allocates in between) — so a call with static
   outputs allocates nothing at all.
 - **Function frames:** none. No recursion (§5) ⇒ every fn's params/locals/results get globally unique
@@ -347,7 +394,7 @@ export interface EvsFn<params extends readonly ArgSpec[], r extends FnReturn> {
 returns fresh handles of identical types.)
 
 - **Recorded once:** `s.fn` immediately runs `body` with param handles inside a fresh fn region.
-  This is why subroutines beat inlining here: inlining would re-invoke the *user's JS callback* per
+  This is why subroutines beat inlining here: inlining would re-invoke the _user's JS callback_ per
   call site — a recipe for closure-capture surprises and duplicated source locations, the exact class
   of staging bug PyTeal warns about. It also avoids EIP-170 blow-up.
 - **Calling convention** (uniform with the memory model): the caller MSTOREs argument values into the
@@ -358,7 +405,7 @@ returns fresh handles of identical types.)
   same fn don't alias. Stack discipline: the return address is the only thing on the stack across
   the body — every statement template is stack-neutral, so it is provably undisturbed.
 - **Returns:** the fn body's returned handle shape fixes `results`. v0 keeps fn returns
-  *unconditional* (the body region must not contain `return`-like early exits; the value flows out of
+  _unconditional_ (the body region must not contain `return`-like early exits; the value flows out of
   the recorded body's tail expression). Conditional results use cells, same as the script body.
 - **Recursion stance: rejected.** Static slots alias under reentry, so: (a) direct recursion —
   calling `f` while `f`'s body is being recorded — throws `EvsRecursionError` (the builder keeps a
@@ -412,37 +459,37 @@ with the user's source location.
 1. **Calldata build.** Head size `H = 4 + 32 * inputs.length` is static. The buffer lives at
    `mload(0x40)` un-bumped (§4). Selector first: `PUSH4 sel, PUSH1 0xE0, SHL, MSTORE buf`. Then per
    arg, in order:
-   - *Literal arg (any type):* constant-folded at compile time. The whole head word (and for dynamic
+   - _Literal arg (any type):_ constant-folded at compile time. The whole head word (and for dynamic
      literals, the tail bytes) are precomputed in TS using viem's `encodeAbiParameters`, and emitted
      as `PUSH32 word / MSTORE` pairs. **If every arg is a literal, the entire calldata (selector
      included) is one precomputed byte string** written word-by-word — zero runtime encoding.
-   - *Static Expr arg:* `MLOAD slot, MSTORE buf+off` (values are canonical by the §8 invariant — no
+   - _Static Expr arg:_ `MLOAD slot, MSTORE buf+off` (values are canonical by the §8 invariant — no
      masking needed here).
-   - *Dynamic Expr arg (`string`/`bytes`/`T[]`):* head word = running tail offset (tracked in a
+   - _Dynamic Expr arg (`string`/`bytes`/`T[]`):_ head word = running tail offset (tracked in a
      compiler temp slot because lengths are runtime values); tail = copy `[len][data]` from the
      value's memory ref via `MCOPY` (Cancun) or an emitted word-copy loop (pre-Cancun lowering).
-     For `string`/`bytes`, a zero word is MSTOREd at `tailDst + 32 + len` *before* the data copy so
+     For `string`/`bytes`, a zero word is MSTOREd at `tailDst + 32 + len` _before_ the data copy so
      padding is canonically zero even when the source buffer's padding bytes are dirty.
 2. **The call.** `argsSize` is `H` (all-static) or a computed temp. Static-only outputs:
    `retOffset = fresh allocation of 32*n, retSize = 32*n`. Any dynamic output: `retOffset = 0,
-   retSize = 0` (we snapshot instead, step 4). Then
+retSize = 0` (we snapshot instead, step 4). Then
    `GAS … STATICCALL` (forward-all; EIP-150 63/64 applies automatically).
 3. **Failure path.** `JUMPI @ok` on success; fallthrough `PUSH2 @bubble JUMP` to the shared
    revert-bubbling tail (`RETURNDATACOPY(0,0,rds); REVERT(0,rds)` — verbatim from [evm §5], safe by
    construction). For `tryCall`, the failure path instead zeroes the out slots (dynamic outs are
    pointed at the zero slot `0x60` ⇒ empty), sets `ok = 0`, and jumps past decoding.
 4. **Decode.**
-   - *Static outputs:* check `RETURNDATASIZE >= 32*n` else `@shortReturndata` (custom error, §7);
+   - _Static outputs:_ check `RETURNDATASIZE >= 32*n` else `@shortReturndata` (custom error, §7);
      the returned words are already in the ret buffer; per output: `MLOAD buf+32*i`, normalize to
      canonical form (§8), `MSTORE outSlot`.
-   - *Any dynamic output:* snapshot **the whole returndata** to a fresh allocation
+   - _Any dynamic output:_ snapshot **the whole returndata** to a fresh allocation
      (`RETURNDATACOPY(base, 0, RETURNDATASIZE)` — intrinsically safe), bump the free pointer by
      `pad32(rds)`, then run the §7 decoder against the snapshot with pure-memory bounds checks.
-     Decoded dynamic values are *pointers into the snapshot* (`[len][data]` is already contiguous in
+     Decoded dynamic values are _pointers into the snapshot_ (`[len][data]` is already contiguous in
      ABI encoding) — no second copy. Word outputs in the same returndata are MLOADed from the
      snapshot, normalized, stored.
    - `tryCall`: a failed bounds check sets `ok = 0` + zero/empty outs instead of reverting
-     (documented divergence from Solidity try/catch, where decode failure of a *successful* call
+     (documented divergence from Solidity try/catch, where decode failure of a _successful_ call
      bubbles — one failure path is simpler and more useful for a read DSL).
 5. Worked example with exact instructions: §12 E2.
 
@@ -460,35 +507,62 @@ is the "generality-ready for nested tuples" requirement made concrete: adding tu
 
 ```ts
 // codegen/abi-codegen.ts — all functions append AsmItems via the shared AsmBuilder (§8)
-export interface SharedTails {                              // labels of the once-emitted tails
-  panic11: LabelId; panic12: LabelId; panic32: LabelId
-  bubbleRevert: LabelId; shortReturndata: LabelId; invalidCalldata: LabelId
+export interface SharedTails {
+  // labels of the once-emitted tails
+  panic11: LabelId;
+  panic12: LabelId;
+  panic32: LabelId;
+  bubbleRevert: LabelId;
+  shortReturndata: LabelId;
+  invalidCalldata: LabelId;
 }
-export interface SlotRef { slot: number; type: ValueType }  // slot = absolute memory offset
+export interface SlotRef {
+  slot: number;
+  type: ValueType;
+} // slot = absolute memory offset
 
 /** Dispatcher side: calldata args -> locals frame. Emits bounds checks for dynamic args. */
-export function emitDecodeCalldataArgs(a: AsmBuilder, args: readonly SlotRef[], tails: SharedTails): void
+export function emitDecodeCalldataArgs(
+  a: AsmBuilder,
+  args: readonly SlotRef[],
+  tails: SharedTails,
+): void;
 
 /** Tail of main: encode the single named tuple output at a fresh allocation, then RETURN. */
-export function emitEncodeReturnTuple(a: AsmBuilder, components: readonly SlotRef[], tails: SharedTails,
-  opts: { evmVersion: EvmVersion }): void
+export function emitEncodeReturnTuple(
+  a: AsmBuilder,
+  components: readonly SlotRef[],
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void;
 
 /** Sub-call request: selector + args at mload(0x40); leaves argsSize on stack (or static const). */
-export function emitCallArgsEncode(a: AsmBuilder, fn: AbiFunction, selector: Hex,
-  args: readonly (SlotRef | { literal: LiteralValue })[], tempSlots: TempAllocator, tails: SharedTails,
-  opts: { evmVersion: EvmVersion }): { staticArgsSize: number | null }
+export function emitCallArgsEncode(
+  a: AsmBuilder,
+  fn: AbiFunction,
+  selector: Hex,
+  args: readonly (SlotRef | { literal: LiteralValue })[],
+  tempSlots: TempAllocator,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): { staticArgsSize: number | null };
 
 /** Sub-call response: returndata (buffer or snapshot) -> out slots, with normalization. */
-export function emitReturndataDecode(a: AsmBuilder, outputs: readonly AbiParameter[],
-  outs: readonly SlotRef[], mode: { kind: 'revert' } | { kind: 'try'; okSlot: number },
-  tempSlots: TempAllocator, tails: SharedTails): void
+export function emitReturndataDecode(
+  a: AsmBuilder,
+  outputs: readonly AbiParameter[],
+  outs: readonly SlotRef[],
+  mode: { kind: 'revert' } | { kind: 'try'; okSlot: number },
+  tempSlots: TempAllocator,
+  tails: SharedTails,
+): void;
 ```
 
 **Calldata arg decoding at dispatch** (per declared script arg, in order):
 
 - Static word at `4 + 32*i`: `CALLDATALOAD`, normalize (mask for `uintN`/`address`,
   `SIGNEXTEND` for `intN`, `ISZERO ISZERO` for `bool`, left-mask for `bytesN`), `MSTORE slot`.
-  We *normalize rather than revert* on dirty high bits — a deliberate, documented divergence from
+  We _normalize rather than revert_ on dirty high bits — a deliberate, documented divergence from
   solc (viem always encodes canonically, so this path is theoretical; normalization is smaller and
   preserves the §8 canonical-word invariant either way).
 - Dynamic arg: load head offset, check `off <= calldatasize - H` and
@@ -523,7 +597,7 @@ test in reverse for calldata decoding (`encodeFunctionData` → script must see 
 ```
 
 `Panic(uint256)` and `Error(string)` need no ABI entries (viem decodes them natively); the script
-*bubbles* callee reverts verbatim and *constructs* only `Panic` (checked math) and the two evs errors.
+_bubbles_ callee reverts verbatim and _constructs_ only `Panic` (checked math) and the two evs errors.
 
 ---
 
@@ -557,31 +631,48 @@ export function createAsmBuilder(): AsmBuilder
 
 ```ts
 // codegen/assembler.ts
-export interface AssembleResult { bytecode: Uint8Array; sourceMap: PcSourceMap }
-export type PcSourceMap = readonly { pc: number; len: number; loc: NodeLoc | null; note: string | null }[]
+export interface AssembleResult {
+  bytecode: Uint8Array;
+  sourceMap: PcSourceMap;
+}
+export type PcSourceMap = readonly {
+  pc: number;
+  len: number;
+  loc: NodeLoc | null;
+  note: string | null;
+}[];
 
-export function assemble(items: readonly AsmItem[], opts: { evmVersion: EvmVersion }): AssembleResult
-export function disassemble(bytecode: Uint8Array | Hex, sourceMap?: PcSourceMap): string
-export function lookupPc(map: PcSourceMap, pc: number): { loc: ParsedLoc | null; note: string | null }
-export const OPCODES: Readonly<Record<OpName, number>>                  // table per evm-target §2
-export type Peephole = (items: readonly AsmItem[]) => readonly AsmItem[]
-export function assembleWithPasses(items: readonly AsmItem[], passes: readonly Peephole[],
-  opts: { evmVersion: EvmVersion }): AssembleResult
+export function assemble(
+  items: readonly AsmItem[],
+  opts: { evmVersion: EvmVersion },
+): AssembleResult;
+export function disassemble(bytecode: Uint8Array | Hex, sourceMap?: PcSourceMap): string;
+export function lookupPc(
+  map: PcSourceMap,
+  pc: number,
+): { loc: ParsedLoc | null; note: string | null };
+export const OPCODES: Readonly<Record<OpName, number>>; // table per evm-target §2
+export type Peephole = (items: readonly AsmItem[]) => readonly AsmItem[];
+export function assembleWithPasses(
+  items: readonly AsmItem[],
+  passes: readonly Peephole[],
+  opts: { evmVersion: EvmVersion },
+): AssembleResult;
 ```
 
 - **Two-pass label patching exactly as researched** [evm §3]: `pushLabel` always emits
   `PUSH2 0x0000` + a `{ patchOffset, label }` fixup; after emission, offsets are final (PUSH2 fixed
   width); patch big-endian. PUSH2 always suffices because EIP-170/EIP-3860 keep all offsets < 2^16.
 - **Final validation scan** (always on): linear opcode walk skipping PUSH immediates; assert every
-  patched target lands on a `JUMPDEST` *opcode*, every label is defined, no fixup unpatched, runtime
+  patched target lands on a `JUMPDEST` _opcode_, every label is defined, no fixup unpatched, runtime
   size ≤ 24,576 (EIP-170) → `EvsAssembleError` (internal invariant) or `EvsCompileError` (size, with
   actionable message).
-- **evmVersion handling split:** the assembler owns *instruction selection of immediates*
-  (`push(0)` → `PUSH0` on shanghai+, `PUSH1 00` on paris); `lower` owns *sequence-level* lowering
+- **evmVersion handling split:** the assembler owns _instruction selection of immediates_
+  (`push(0)` → `PUSH0` on shanghai+, `PUSH1 00` on paris); `lower` owns _sequence-level_ lowering
   (`MCOPY` → emitted word-copy loop pre-Cancun) because that changes item counts and labels.
 - **Peephole hooks: present, empty.** `assembleWithPasses` takes pure `AsmItem[] -> AsmItem[]`
   passes; v0 ships none (candidates documented: `MSTORE slot; PUSH slot; MLOAD` → `DUP1; MSTORE slot`;
-  constant-pool dedup via CODECOPY). Passes run *before* fixup so they may not reorder across labels —
+  constant-pool dedup via CODECOPY). Passes run _before_ fixup so they may not reorder across labels —
   the contract is documented on the type.
 - **Disassembler + PC→source map ship day one** [prior-art lesson 7]: `disassemble` prints
   `0x002a JUMPDEST        ; while-header  pools.ts:12:9`, the sourceMap is part of the artifact, and
@@ -628,36 +719,44 @@ peer dependency — no own keccak).
 
 ```ts
 // compile.ts
-export interface CompileOptions { evmVersion?: EvmVersion }              // default 'cancun' [evm §1]
+export interface CompileOptions {
+  evmVersion?: EvmVersion;
+} // default 'cancun' [evm §1]
 
 export interface CompiledScript<
   name extends string,
   args extends readonly ArgSpec[],
   ret extends Readonly<Record<string, Expr>>,
 > {
-  readonly name: name
-  readonly abi: ScriptAbi<name, args, ret>                               // as-const-typed VALUE (function + evs errors)
-  readonly runtimeBytecode: Hex                                          // explicit names — never a bare `code`/
-  readonly initBytecode: Hex                                             // `bytecode` field (viem silent-failure footgun)
-  readonly sourceMap: PcSourceMap
-  readonly program: ScriptProgram                                        // serializable IR (debugging, snapshots)
-  disassemble(): string
-  toViem(): DeploylessTarget<ScriptAbi<name, args, ret>>                 // default: max RPC compatibility [viem §3.2]
-  toViem(opts: { mode: 'deployless' }): DeploylessTarget<ScriptAbi<name, args, ret>>
-  toViem(opts: { mode: 'stateOverride'; address?: Address }): StateOverrideTarget<ScriptAbi<name, args, ret>>
+  readonly name: name;
+  readonly abi: ScriptAbi<name, args, ret>; // as-const-typed VALUE (function + evs errors)
+  readonly runtimeBytecode: Hex; // explicit names — never a bare `code`/
+  readonly initBytecode: Hex; // `bytecode` field (viem silent-failure footgun)
+  readonly sourceMap: PcSourceMap;
+  readonly program: ScriptProgram; // serializable IR (debugging, snapshots)
+  disassemble(): string;
+  toViem(): DeploylessTarget<ScriptAbi<name, args, ret>>; // default: max RPC compatibility [viem §3.2]
+  toViem(opts: { mode: 'deployless' }): DeploylessTarget<ScriptAbi<name, args, ret>>;
+  toViem(opts: {
+    mode: 'stateOverride';
+    address?: Address;
+  }): StateOverrideTarget<ScriptAbi<name, args, ret>>;
 }
-export interface DeploylessTarget<abi extends Abi> { readonly abi: abi; readonly code: Hex }
+export interface DeploylessTarget<abi extends Abi> {
+  readonly abi: abi;
+  readonly code: Hex;
+}
 export interface StateOverrideTarget<abi extends Abi> {
-  readonly abi: abi
-  readonly address: Address
-  readonly stateOverride: StateOverride                                  // [{ address, code: runtimeBytecode }]
+  readonly abi: abi;
+  readonly address: Address;
+  readonly stateOverride: StateOverride; // [{ address, code: runtimeBytecode }]
 }
 ```
 
 - `initBytecode` = the **locked 10-byte wrapper** `61 RRRR 80 600A 5F 39 5F F3` ++ runtime
   (`RRRR` = runtime length BE) [evm §6]; for `evmVersion: 'paris'`, the two `5F`s become `3D`
   (RETURNDATASIZE-as-zero). `toViem()` (deployless) returns `{ abi, code: initBytecode }` — runtime
-  bytecode is *never* exposed under a `code` key, because viem executes `code` as init code and
+  bytecode is _never_ exposed under a `code` key, because viem executes `code` as init code and
   passing runtime fails silently with empty data [viem §1.3, test 2].
 - State-override default address: `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` [viem §5.1], overridable.
 - Both `toViem` shapes spread directly into `readContract` and typecheck (verified pattern,
@@ -697,7 +796,7 @@ negatives two's-complemented for `intN`); `boolean` for `bool`; `0x`-string for
 enforcement, matching viem's permissiveness); `string | 0x-string` for `string`
 (UTF-8 encoded); JS arrays of the element literal type for `T[]`. All literals are canonicalized at
 recording (`LiteralValue.word` stores the masked/sign-extended 256-bit value), which is one half of the
-**canonical-word invariant**: *every word stored in a slot or decoded buffer is canonical*
+**canonical-word invariant**: _every word stored in a slot or decoded buffer is canonical_
 (the other half is decode-time normalization §7 and width-masking after unchecked sub-256 ops and
 `bitNot`). Checked ops can therefore use simple range checks; comparisons map to LT/GT vs SLT/SGT by
 the operand type's signedness.
@@ -712,22 +811,24 @@ export type ScriptAbi<
   ret extends Readonly<Record<string, Expr>>,
 > = readonly [
   {
-    readonly type: 'function'
-    readonly name: name
-    readonly stateMutability: 'view'
-    readonly inputs: ArgSpecsToAbiInputs<specs>
-    readonly outputs: readonly [{
-      readonly name: 'result'
-      readonly type: 'tuple'
-      readonly components: RetComponents<ret>              // UnionToTuple-based — order-unstable but SAFE:
-    }]                                                     // result is an OBJECT type [abitype §4.2 row 1]
+    readonly type: 'function';
+    readonly name: name;
+    readonly stateMutability: 'view';
+    readonly inputs: ArgSpecsToAbiInputs<specs>;
+    readonly outputs: readonly [
+      {
+        readonly name: 'result';
+        readonly type: 'tuple';
+        readonly components: RetComponents<ret>; // UnionToTuple-based — order-unstable but SAFE:
+      },
+    ]; // result is an OBJECT type [abitype §4.2 row 1]
   },
   { readonly type: 'error'; readonly name: 'EvsShortReturndata'; readonly inputs: readonly [] },
   { readonly type: 'error'; readonly name: 'EvsInvalidCalldata'; readonly inputs: readonly [] },
-]
+];
 ```
 
-Honest caveat, documented: the *type-level* order of `components` may differ from the runtime array's
+Honest caveat, documented: the _type-level_ order of `components` may differ from the runtime array's
 insertion order (TS interning). This is harmless — viem's decode uses the runtime ABI value, and the
 inferred result is an order-insensitive object — but `script.abi[0].outputs[0].components[i]` is not a
 reliable typed index. A CI type-test (vitest `expectTypeOf`) asserts
@@ -736,7 +837,7 @@ scripts, per the [abitype §4.2] recommendation.
 
 viem-permissiveness patterns mirrored: `const` type params on `evscript`/`arg`/`s.call` (inline ABIs
 need no `as const`; standalone ABIs documented as `as const satisfies Abi` [abitype §4.1]);
-`functionName: name | AllNames` for live autocomplete; mutability filtered at the *name* level so
+`functionName: name | AllNames` for live autocomplete; mutability filtered at the _name_ level so
 nonpayable functions are compile errors in `s.call`; per-parameter `Expr | primitive` unions
 [abitype §4.6]. We do **not** adopt viem's full graceful-widening for non-const ABIs in v0: a widened
 ABI fails the `ExtractAbiFunctionNames` constraint with a clear error rather than silently degrading —
@@ -759,23 +860,28 @@ evs exactly as through viem [abitype §4.4]. abitype is a direct dependency alig
 ```ts
 // errors.ts
 export type EvsErrorCode =
-  | 'staging-misuse' | 'type' | 'scope' | 'recursion' | 'unsupported-abi'
-  | 'compile' | 'assemble-internal'
+  | 'staging-misuse'
+  | 'type'
+  | 'scope'
+  | 'recursion'
+  | 'unsupported-abi'
+  | 'compile'
+  | 'assemble-internal';
 
 export class EvsError extends Error {
-  readonly code: EvsErrorCode
-  readonly loc: NodeLoc | null            // where the offending builder call happened
-  readonly relatedLoc: NodeLoc | null     // e.g. where the misused handle was created
-  readonly hint: string | null
+  readonly code: EvsErrorCode;
+  readonly loc: NodeLoc | null; // where the offending builder call happened
+  readonly relatedLoc: NodeLoc | null; // e.g. where the misused handle was created
+  readonly hint: string | null;
 }
-export class EvsStagingError extends EvsError {}   // valueOf/toPrimitive/template-string on a handle
-export class EvsTypeError    extends EvsError {}   // literal coercion, arg validation, overloads, unsupported ABI types
-export class EvsScopeError   extends EvsError {}   // cross-script handle, region violation, use-after-return
+export class EvsStagingError extends EvsError {} // valueOf/toPrimitive/template-string on a handle
+export class EvsTypeError extends EvsError {} // literal coercion, arg validation, overloads, unsupported ABI types
+export class EvsScopeError extends EvsError {} // cross-script handle, region violation, use-after-return
 export class EvsRecursionError extends EvsError {} // s.fn reentry
-export class EvsCompileError extends EvsError {}   // lowering/size-limit failures (EIP-170 etc.)
-export class EvsAssembleError extends EvsError {}  // internal invariants (undefined label, bad JUMPDEST) — "please report"
+export class EvsCompileError extends EvsError {} // lowering/size-limit failures (EIP-170 etc.)
+export class EvsAssembleError extends EvsError {} // internal invariants (undefined label, bad JUMPDEST) — "please report"
 
-export function captureLoc(): NodeLoc               // new Error().stack, raw; parse lazily
+export function captureLoc(): NodeLoc; // new Error().stack, raw; parse lazily
 ```
 
 Policy:
@@ -783,7 +889,7 @@ Policy:
 - **Validate at recording, not at compile, wherever the information exists at recording** — which is
   almost everywhere, because `s.call` sees its ABI fragment immediately. Recording-time checks:
   literal ranges/shapes, duplicate/empty arg names, unsupported ABI types in call fragments,
-  overloaded names, handle ownership (every handle carries its program; foreign handles name *both*
+  overloaded names, handle ownership (every handle carries its program; foreign handles name _both_
   scripts), region scoping, `break`/`continue` outside loops, fn recursion, use-after-`s.return`
   (builder freezes), missing/double `s.return`.
 - Compile-time is reserved for whole-program facts: EIP-170 size, frameEnd bounds, evmVersion gaps.
@@ -891,12 +997,15 @@ No copy of the string body, no per-site RETURNDATACOPY bounds reasoning, and `@s
 ### E3 — while loop with an `s.let` counter
 
 ```ts
-const i = s.let(t.uint256, 0n)
-const sum = s.let(t.uint256, 0n)
-s.while(() => s.lt(i, 5n), () => {
-  sum.set(s.add(sum, i))
-  i.set(s.add(i, 1n))
-})
+const i = s.let(t.uint256, 0n);
+const sum = s.let(t.uint256, 0n);
+s.while(
+  () => s.lt(i, 5n),
+  () => {
+    sum.set(s.add(sum, i));
+    i.set(s.add(i, 1n));
+  },
+);
 ```
 
 Slots: `i` id 0 → `0x80`, `sum` id 1 → `0xA0`, cond id 2 → `0xC0`, add₁ id 3 → `0xE0`,
@@ -951,23 +1060,23 @@ RETURN                                 ; return(ret, 32)
 
 ## 13. Decision 13 — Research-flagged constraints (and where each is handled)
 
-| Constraint | Source | Where handled |
-|---|---|---|
-| RETURNDATACOPY OOB = exceptional halt consuming **all** gas | [evm §2] | §6/§12-E2: only `(0,0,rds)` / `(base,0,rds)` shapes are ever emitted; all other reads are bounds-checked memory reads on a snapshot |
-| viem `code` executes as **init** code; runtime fails *silently* | [viem §1.3] | §9: `toViem()` only ever exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode`; integration test asserts deployless path returns data |
-| JUMPDEST validity excludes PUSH-immediate bytes | [evm §3] | §8: PUSH2-only label pushes + mandatory post-assembly validation scan |
-| EIP-170 24,576-byte runtime / EIP-3860 49,152 init | [evm §4] | §8 assembler check → `EvsCompileError` with size + biggest-contributor hint |
-| eth_call gas caps (anvil 30M default; geth 50M floor) | [evm §4] | test harness runs anvil with `--gas-limit 100000000`; docs state 50M production floor; loop+alloc gas note §4 |
-| `TSTORE`/`TLOAD` halt in static context | [evm §1] | never emitted (not in the op table the lowerer uses); scripts contain no state writes at all |
-| anvil history: constructor-return over eth_call once broken | [stack §3] | one pinned integration test exercises viem's `code` path; primary tested paths are `anvil_setCode`+plain call and `stateOverride` |
-| stateOverride not documented on Alchemy/Infura eth_call | [viem §4] | deployless is the `toViem()` default; stateOverride opt-in |
-| state-override `code` does not clear existing storage/balance | [viem §3.1] | default override address is the no-state vanity constant; documented |
-| Warm/cold account access (2600/100) | [evm §2] | doc note only; no dedup in v0 |
-| abitype label lookup is finite; unknown names lose only the cosmetic label | [abitype §1] | doc note; types always preserved |
-| `int/uint ≤ 48 bits → number` (Register-configurable) | [abitype §3, §4.4] | evs types via `AbiParameterToPrimitiveType`; Register flows through |
-| TS ≥ 5.0.4 strict; viem types pinned per-patch in CI | [abitype §0] | peer deps `viem >= 2.14.1`, `typescript >= 5.5` optional; CI type-test matrix pins exact viem |
-| ESM-only, NodeNext, explicit `.js` import extensions, tsc emitter | [stack §5] | package layout per stack report; `bun build` never used for d.ts |
-| stack limit 1024 / call depth | [evm §2] | uniform templates keep depth < ~8; only fn return addresses persist (no recursion ⇒ ≤ depth of textual fn nesting) |
+| Constraint                                                                 | Source             | Where handled                                                                                                                                                      |
+| -------------------------------------------------------------------------- | ------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RETURNDATACOPY OOB = exceptional halt consuming **all** gas                | [evm §2]           | §6/§12-E2: only `(0,0,rds)` / `(base,0,rds)` shapes are ever emitted; all other reads are bounds-checked memory reads on a snapshot                                |
+| viem `code` executes as **init** code; runtime fails _silently_            | [viem §1.3]        | §9: `toViem()` only ever exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode`; integration test asserts deployless path returns data |
+| JUMPDEST validity excludes PUSH-immediate bytes                            | [evm §3]           | §8: PUSH2-only label pushes + mandatory post-assembly validation scan                                                                                              |
+| EIP-170 24,576-byte runtime / EIP-3860 49,152 init                         | [evm §4]           | §8 assembler check → `EvsCompileError` with size + biggest-contributor hint                                                                                        |
+| eth_call gas caps (anvil 30M default; geth 50M floor)                      | [evm §4]           | test harness runs anvil with `--gas-limit 100000000`; docs state 50M production floor; loop+alloc gas note §4                                                      |
+| `TSTORE`/`TLOAD` halt in static context                                    | [evm §1]           | never emitted (not in the op table the lowerer uses); scripts contain no state writes at all                                                                       |
+| anvil history: constructor-return over eth_call once broken                | [stack §3]         | one pinned integration test exercises viem's `code` path; primary tested paths are `anvil_setCode`+plain call and `stateOverride`                                  |
+| stateOverride not documented on Alchemy/Infura eth_call                    | [viem §4]          | deployless is the `toViem()` default; stateOverride opt-in                                                                                                         |
+| state-override `code` does not clear existing storage/balance              | [viem §3.1]        | default override address is the no-state vanity constant; documented                                                                                               |
+| Warm/cold account access (2600/100)                                        | [evm §2]           | doc note only; no dedup in v0                                                                                                                                      |
+| abitype label lookup is finite; unknown names lose only the cosmetic label | [abitype §1]       | doc note; types always preserved                                                                                                                                   |
+| `int/uint ≤ 48 bits → number` (Register-configurable)                      | [abitype §3, §4.4] | evs types via `AbiParameterToPrimitiveType`; Register flows through                                                                                                |
+| TS ≥ 5.0.4 strict; viem types pinned per-patch in CI                       | [abitype §0]       | peer deps `viem >= 2.14.1`, `typescript >= 5.5` optional; CI type-test matrix pins exact viem                                                                      |
+| ESM-only, NodeNext, explicit `.js` import extensions, tsc emitter          | [stack §5]         | package layout per stack report; `bun build` never used for d.ts                                                                                                   |
+| stack limit 1024 / call depth                                              | [evm §2]           | uniform templates keep depth < ~8; only fn return addresses persist (no recursion ⇒ ≤ depth of textual fn nesting)                                                 |
 
 ---
 
@@ -1001,14 +1110,14 @@ export function compileProgram<...>(program: ScriptProgram, abi: ..., opts?: Com
 
 **Dependency order & agent assignment (6 agents):**
 
-| Agent | Owns | Depends on | Can start |
-|---|---|---|---|
-| A | M0 (`types.ts`, `errors.ts`, `ir.ts`, `codegen/asm.ts` — *interfaces only first*) | — | day 0; freezes contracts for everyone |
-| B | M1 builder + abi | M0 | after M0 types land |
-| C | M2 assembler + disassembler + **test harness** | M0 (`asm.ts`) | after M0 |
-| D | M3 abi-codegen | M0 + C's `AsmBuilder` (interface in M0, impl stubbed) | after M0 |
-| E | M4 lower | M0 + D's emitter signatures | after M0 (codes against fixtures: hand-written `ScriptProgram` JSON) |
-| F | M5 compile/viem/index + integration tests | all | wiring starts immediately against stubs |
+| Agent | Owns                                                                              | Depends on                                            | Can start                                                            |
+| ----- | --------------------------------------------------------------------------------- | ----------------------------------------------------- | -------------------------------------------------------------------- |
+| A     | M0 (`types.ts`, `errors.ts`, `ir.ts`, `codegen/asm.ts` — _interfaces only first_) | —                                                     | day 0; freezes contracts for everyone                                |
+| B     | M1 builder + abi                                                                  | M0                                                    | after M0 types land                                                  |
+| C     | M2 assembler + disassembler + **test harness**                                    | M0 (`asm.ts`)                                         | after M0                                                             |
+| D     | M3 abi-codegen                                                                    | M0 + C's `AsmBuilder` (interface in M0, impl stubbed) | after M0                                                             |
+| E     | M4 lower                                                                          | M0 + D's emitter signatures                           | after M0 (codes against fixtures: hand-written `ScriptProgram` JSON) |
+| F     | M5 compile/viem/index + integration tests                                         | all                                                   | wiring starts immediately against stubs                              |
 
 The trick making this parallel: **all five inter-module interfaces (`ScriptProgram`, `AsmItem`/
 `AsmBuilder`, the abi-codegen emitter signatures, `lower`, `CompiledScript`) live in M0-owned files
@@ -1019,13 +1128,17 @@ builder (they consume hand-written `ScriptProgram` fixtures).
 
 ```ts
 // test/harness/evm.ts  — @ethereumjs/evm v10 [stack §3, prior-art lesson 8]
-export interface RunResult { success: boolean; returnData: Hex; gasUsed: bigint }
+export interface RunResult {
+  success: boolean;
+  returnData: Hex;
+  gasUsed: bigint;
+}
 export async function runRuntime(opts: {
-  runtime: Hex                                   // planted at a fixed script address
-  calldata: Hex
-  contracts?: Record<Address, Hex>               // mock STATICCALL targets (runtime code per address)
-  gasLimit?: bigint                              // default 30_000_000
-}): Promise<RunResult>
+  runtime: Hex; // planted at a fixed script address
+  calldata: Hex;
+  contracts?: Record<Address, Hex>; // mock STATICCALL targets (runtime code per address)
+  gasLimit?: bigint; // default 30_000_000
+}): Promise<RunResult>;
 // impl sketch: createEVM() + state manager putCode for script & mocks, evm.runCall({ to: SCRIPT, data }).
 // Exact v10 API names (createEVM / stateManager.putCode vs putContractCode) verified at implementation
 // time against the pinned version — the harness contract above is what other agents code against.
@@ -1033,23 +1146,23 @@ export async function runRuntime(opts: {
 
 **Per-module unit tests:**
 
-- *builder (B):* IR JSON snapshots for each op; every recording-time error (staging traps, scope
+- _builder (B):_ IR JSON snapshots for each op; every recording-time error (staging traps, scope
   violations, recursion, overloads, literal ranges) asserted with location substrings; type-level
   tests (`*.test-d.ts`, vitest `expectTypeOf`) for `s.args`, `s.call` outputs, `ScriptAbi`,
   `ReadContractReturnType`/`Parameters` round-trips.
-- *assembler (C):* opcode-table round-trip vs `disassemble`; label patching goldens; JUMPDEST
+- _assembler (C):_ opcode-table round-trip vs `disassemble`; label patching goldens; JUMPDEST
   validation scan catches a deliberately corrupted stream; PUSH0/paris lowering; EIP-170 rejection;
   tiny hand-written programs (the research fixtures `RUNTIME_42`, `RUNTIME_WHOAMI` [viem App. A])
   executed on the harness.
-- *abi-codegen (D):* **differential vs viem** — for a matrix of arg/return shapes
+- _abi-codegen (D):_ **differential vs viem** — for a matrix of arg/return shapes
   (words × string/bytes × arrays × mixed), run the emitted decode/encode on the harness and compare
   byte-exactly with `encodeFunctionData`/`encodeAbiParameters`/`decodeFunctionResult`; bounds-check
   paths fed truncated returndata via a mock contract that returns attacker-shaped payloads
   (huge offsets, huge lengths, off-by-one) and must revert `EvsShortReturndata`, never halt.
-- *lower (E):* golden `disassemble()` snapshots for the §12 examples from hand-written
+- _lower (E):_ golden `disassemble()` snapshots for the §12 examples from hand-written
   `ScriptProgram` fixtures; semantic execution on the harness (checked-math panics produce exact
   `0x4e487b71…11/12/32` payloads; loops; fn calls ×2 don't alias; tryCall ok/fail paths).
-- *compile/viem (F):* end-to-end `evscript → compile → harness`; then anvil integration (prool,
+- _compile/viem (F):_ end-to-end `evscript → compile → harness`; then anvil integration (prool,
   one instance per vitest worker via `VITEST_POOL_ID` [stack §3]) covering: `anvil_setCode` + plain
   read, `stateOverride` read, deployless `code` read (the pinned anvil regression), revert bubbling
   from a real reverting contract, fork-mode test against pinned-block mainnet WETH `symbol()`
@@ -1096,7 +1209,7 @@ export async function runRuntime(opts: {
    peephole hook (empty in v0), disassembler + PC→source map from day one.
 9. **Dispatcher/artifact:** 4-byte selector match, `revert(0,0)` fallback; artifact =
    `{ runtimeBytecode, initBytecode(61RRRR80600A5F395FF3), as-const abi, toViem(deployless default /
-   stateOverride), disassemble, sourceMap, program }`.
+stateOverride), disassemble, sourceMap, program }`.
 10. **Types:** `Expr<ValueType>` phantom strings; `ExprIn` literal coercion with recording validation;
     `ScriptAbi` literal type (tuple-mapped inputs, record components outputs); Register passthrough;
     viem generic patterns mirrored.

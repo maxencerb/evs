@@ -70,12 +70,14 @@ No dominator trees, no SSA construction, no phis (locals are memory slots, §4/�
 **Choice: (c) ordered arg declarators** — a readonly tuple of `arg(name, type)` specs.
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs'
+import { evscript, arg, t } from '@maxencerb/evs';
 
 const script = evscript(
   { name: 'poolMeta', args: [arg('pool', t.address), arg('fee', t.uint24)] },
-  (s) => { /* s.args.pool: Expr<'address'>, s.args.fee: Expr<'uint24'> */ },
-)
+  (s) => {
+    /* s.args.pool: Expr<'address'>, s.args.fee: Expr<'uint24'> */
+  },
+);
 ```
 
 ### Exact signatures
@@ -158,15 +160,15 @@ that one computed value; using it five times reads the same value, never re-exec
 Mutable state exists only through explicit cells:
 
 ```ts
-const i = s.let(t.uint256, 0n)   // Cell<'uint256'>
-i.set(s.add(i.get(), 1n))        // i.get() reads the cell *at this program point*
+const i = s.let(t.uint256, 0n); // Cell<'uint256'>
+i.set(s.add(i.get(), 1n)); // i.get() reads the cell *at this program point*
 ```
 
 ### Why not expression templates (PyTeal-style trees)
 
 The PyTeal post-mortem (prior-art.md §2) is decisive. Re-emitting trees per use means:
 (1) an `Expr` holding a `staticcall` silently re-executes the call (double gas, and
-divergent results are *possible* within one eth_call only via msize/gas — but duplicated
+divergent results are _possible_ within one eth_call only via msize/gas — but duplicated
 reverts and gas are real); (2) sharing requires the user to learn an extra `cache`/`Seq`
 vocabulary; (3) host-language interaction bugs ("errors … go unnoticed until TEAL
 generation, or worse go completely unnoticed" — Puya principles, quoted in research)
@@ -205,7 +207,7 @@ condition is a plain operand (evaluated once, before the branch) — only loops 
 Semantic fine print (documented, enforced):
 
 - `cell.get()` materializes a copy: a `get` captured before a `set` keeps the old value.
-- `s.select` operands are *already-computed values* — both sides are evaluated eagerly at
+- `s.select` operands are _already-computed values_ — both sides are evaluated eagerly at
   their recording points. For lazy/conditional evaluation use `s.if` + a cell. (This is the
   honest consequence of value semantics; hiding it would recreate PyTeal's confusion.)
 - An unused `s.call(...)` result still executes the call (it was recorded). DCE never
@@ -227,18 +229,36 @@ Two IRs, both serializable plain data (`prior-art` lesson 9), every node carryin
 
 ```ts
 // src/ast.ts
-export type ValueId = number
-export type LocalId = number
-export type FnId = number
-export type NodeId = number
+export type ValueId = number;
+export type LocalId = number;
+export type FnId = number;
+export type NodeId = number;
 
-export interface SourceLocation { file: string; line: number; column: number }
+export interface SourceLocation {
+  file: string;
+  line: number;
+  column: number;
+}
 
 export type BinKind =
-  | 'add' | 'sub' | 'mul' | 'div' | 'mod'                  // numeric, checked flag applies
-  | 'lt' | 'gt' | 'lte' | 'gte' | 'eq' | 'neq'             // → bool; signedness from operand type
-  | 'band' | 'bor' | 'bxor' | 'shl' | 'shr'                // bitwise (shr = SAR for intN)
-  | 'and' | 'or'                                           // bool ∧/∨ (non-short-circuit)
+  | 'add'
+  | 'sub'
+  | 'mul'
+  | 'div'
+  | 'mod' // numeric, checked flag applies
+  | 'lt'
+  | 'gt'
+  | 'lte'
+  | 'gte'
+  | 'eq'
+  | 'neq' // → bool; signedness from operand type
+  | 'band'
+  | 'bor'
+  | 'bxor'
+  | 'shl'
+  | 'shr' // bitwise (shr = SAR for intN)
+  | 'and'
+  | 'or'; // bool ∧/∨ (non-short-circuit)
 
 export type AstOp =
   | { op: 'const'; type: EvsAbiType; value: bigint | Uint8Array | readonly bigint[] }
@@ -246,47 +266,73 @@ export type AstOp =
   | { op: 'env'; kind: 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid' }
   | { op: 'bin'; kind: BinKind; checked: boolean; a: ValueId; b: ValueId }
   | { op: 'un'; kind: 'not' | 'bitnot'; a: ValueId }
-  | { op: 'cast'; to: EvsAbiType; a: ValueId }             // solidity explicit-cast semantics
+  | { op: 'cast'; to: EvsAbiType; a: ValueId } // solidity explicit-cast semantics
   | { op: 'select'; cond: ValueId; a: ValueId; b: ValueId }
-  | { op: 'index'; arr: ValueId; i: ValueId }              // bounds-checked → Panic 0x32
+  | { op: 'index'; arr: ValueId; i: ValueId } // bounds-checked → Panic 0x32
   | { op: 'len'; a: ValueId }
   | { op: 'arrayLit'; elem: WordType; items: readonly ValueId[] }
   | { op: 'localGet'; local: LocalId }
-  | { op: 'staticcall'; target: ValueId; fnAbi: AbiFunction; args: readonly ValueId[]; try: boolean }
-  | { op: 'fnCall'; fn: FnId; args: readonly ValueId[] }
+  | {
+      op: 'staticcall';
+      target: ValueId;
+      fnAbi: AbiFunction;
+      args: readonly ValueId[];
+      try: boolean;
+    }
+  | { op: 'fnCall'; fn: FnId; args: readonly ValueId[] };
 
 export type Stmt =
   | { kind: 'bind'; id: NodeId; loc: SourceLocation; op: AstOp; results: readonly ValueId[] }
-  | { kind: 'localDecl'; id: NodeId; loc: SourceLocation; local: LocalId; type: EvsAbiType; init: ValueId }
+  | {
+      kind: 'localDecl';
+      id: NodeId;
+      loc: SourceLocation;
+      local: LocalId;
+      type: EvsAbiType;
+      init: ValueId;
+    }
   | { kind: 'localSet'; id: NodeId; loc: SourceLocation; local: LocalId; value: ValueId }
   | { kind: 'assert'; id: NodeId; loc: SourceLocation; cond: ValueId; panicCode: number }
   | { kind: 'if'; id: NodeId; loc: SourceLocation; cond: ValueId; then: Stmt[]; else: Stmt[] }
-  | { kind: 'while'; id: NodeId; loc: SourceLocation; condBody: Stmt[]; cond: ValueId; body: Stmt[] }
+  | {
+      kind: 'while';
+      id: NodeId;
+      loc: SourceLocation;
+      condBody: Stmt[];
+      cond: ValueId;
+      body: Stmt[];
+    }
   | { kind: 'break' | 'continue'; id: NodeId; loc: SourceLocation }
-  | { kind: 'return'; id: NodeId; loc: SourceLocation
-      record: readonly { name: string; value: ValueId }[] }
+  | {
+      kind: 'return';
+      id: NodeId;
+      loc: SourceLocation;
+      record: readonly { name: string; value: ValueId }[];
+    };
 
 export interface FnAst {
-  id: FnId; name: string
-  params: readonly { name: string; type: EvsAbiType; value: ValueId }[]
-  body: Stmt[]
-  results: readonly EvsAbiType[]
+  id: FnId;
+  name: string;
+  params: readonly { name: string; type: EvsAbiType; value: ValueId }[];
+  body: Stmt[];
+  results: readonly EvsAbiType[];
 }
 
 export interface ScriptAst {
-  version: 1
-  name: string
-  args: readonly { name: string; type: EvsAbiType }[]
-  fns: readonly FnAst[]
-  body: readonly Stmt[]
-  values: ReadonlyMap<ValueId, { type: EvsAbiType; loc: SourceLocation; scope: FnId | 'main' }>
+  version: 1;
+  name: string;
+  args: readonly { name: string; type: EvsAbiType }[];
+  fns: readonly FnAst[];
+  body: readonly Stmt[];
+  values: ReadonlyMap<ValueId, { type: EvsAbiType; loc: SourceLocation; scope: FnId | 'main' }>;
 }
 
-export function serializeAst(ast: ScriptAst): string          // stable JSON (values as array)
-export function walkStmts(stmts: readonly Stmt[], visit: (s: Stmt) => void): void
+export function serializeAst(ast: ScriptAst): string; // stable JSON (values as array)
+export function walkStmts(stmts: readonly Stmt[], visit: (s: Stmt) => void): void;
 ```
 
 Notes:
+
 - **Multi-result is first-class** (`results: ValueId[]`): a staticcall to `slot0()` binds
   three values; `try` calls bind `[ok, ...outputs]`.
 - All literals are normalized into `const` bind nodes at recording (one place to range-check,
@@ -309,71 +355,129 @@ Notes:
 
 ```ts
 // src/lir.ts
-export type VId = number
-export type BlockId = number
+export type VId = number;
+export type BlockId = number;
 
 export type LirOperand =
   | { kind: 'v'; v: VId }
   | { kind: 'imm'; value: bigint }
-  | { kind: 'data'; bytes: Uint8Array }       // pre-encoded constant blobs (calldata, array lits)
+  | { kind: 'data'; bytes: Uint8Array }; // pre-encoded constant blobs (calldata, array lits)
 
 export type LirInstr =
   | { op: 'iconst'; results: [VId]; value: bigint; meta: Meta }
-  | { op: 'bin'; kind: 'add'|'sub'|'mul'|'divu'|'divs'|'modu'|'mods'
-                |'ltu'|'gtu'|'lts'|'gts'|'eq'|'band'|'bor'|'bxor'|'shl'|'shr'|'sar'
-      checked: boolean; bits: number               // bits: result width for overflow checks
-      a: LirOperand; b: LirOperand; results: [VId]; meta: Meta }
-  | { op: 'un'; kind: 'iszero'|'bnot'; a: LirOperand; results: [VId]; meta: Meta }
+  | {
+      op: 'bin';
+      kind:
+        | 'add'
+        | 'sub'
+        | 'mul'
+        | 'divu'
+        | 'divs'
+        | 'modu'
+        | 'mods'
+        | 'ltu'
+        | 'gtu'
+        | 'lts'
+        | 'gts'
+        | 'eq'
+        | 'band'
+        | 'bor'
+        | 'bxor'
+        | 'shl'
+        | 'shr'
+        | 'sar';
+      checked: boolean;
+      bits: number; // bits: result width for overflow checks
+      a: LirOperand;
+      b: LirOperand;
+      results: [VId];
+      meta: Meta;
+    }
+  | { op: 'un'; kind: 'iszero' | 'bnot'; a: LirOperand; results: [VId]; meta: Meta }
   | { op: 'clean'; layout: WordLayout; a: LirOperand; results: [VId]; meta: Meta }
   | { op: 'select'; cond: LirOperand; a: LirOperand; b: LirOperand; results: [VId]; meta: Meta }
-  | { op: 'env'; kind: 'address'|'caller'|'timestamp'|'blocknumber'|'chainid'; results: [VId]; meta: Meta }
+  | {
+      op: 'env';
+      kind: 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
+      results: [VId];
+      meta: Meta;
+    }
   | { op: 'local.get'; local: LocalId; results: [VId]; meta: Meta }
   | { op: 'local.set'; local: LocalId; value: LirOperand; results: []; meta: Meta }
-  | { op: 'arr.new'; elem: WordLayout; length: number | null; items: readonly LirOperand[]
-      results: [VId]; meta: Meta }                 // → memref
-  | { op: 'arr.get'; arr: LirOperand; index: LirOperand; elem: WordLayout; results: [VId]; meta: Meta }
+  | {
+      op: 'arr.new';
+      elem: WordLayout;
+      length: number | null;
+      items: readonly LirOperand[];
+      results: [VId];
+      meta: Meta;
+    } // → memref
+  | {
+      op: 'arr.get';
+      arr: LirOperand;
+      index: LirOperand;
+      elem: WordLayout;
+      results: [VId];
+      meta: Meta;
+    }
   | { op: 'arr.len'; arr: LirOperand; results: [VId]; meta: Meta }
-  | { op: 'call.static'
-      target: LirOperand; selector: Hex
-      argLayouts: readonly TypeLayout[]; retLayouts: readonly TypeLayout[]
-      args: readonly LirOperand[]                  // collapses to one {kind:'data'} when all-imm
-      try: boolean
-      results: readonly VId[]                      // try: [ok, ...outs] else [...outs]
-      meta: Meta }
-  | { op: 'fn.call'; fn: FnId; args: readonly LirOperand[]; results: readonly VId[]; meta: Meta }
+  | {
+      op: 'call.static';
+      target: LirOperand;
+      selector: Hex;
+      argLayouts: readonly TypeLayout[];
+      retLayouts: readonly TypeLayout[];
+      args: readonly LirOperand[]; // collapses to one {kind:'data'} when all-imm
+      try: boolean;
+      results: readonly VId[]; // try: [ok, ...outs] else [...outs]
+      meta: Meta;
+    }
+  | { op: 'fn.call'; fn: FnId; args: readonly LirOperand[]; results: readonly VId[]; meta: Meta };
 
-export interface Meta { loc?: SourceLocation; astId?: NodeId }
+export interface Meta {
+  loc?: SourceLocation;
+  astId?: NodeId;
+}
 
 export type LirTerm =
   | { kind: 'jump'; to: BlockId }
   | { kind: 'brif'; cond: LirOperand; then: BlockId; else: BlockId }
-  | { kind: 'ret'; values: readonly LirOperand[] }                  // user-fn return
-  | { kind: 'scriptReturn'; values: readonly LirOperand[] }         // encode tuple + RETURN
-  | { kind: 'panic'; code: number }                                 // Panic(uint256)
-  | { kind: 'fail'; code: number }                                  // EvsError(uint256)
+  | { kind: 'ret'; values: readonly LirOperand[] } // user-fn return
+  | { kind: 'scriptReturn'; values: readonly LirOperand[] } // encode tuple + RETURN
+  | { kind: 'panic'; code: number } // Panic(uint256)
+  | { kind: 'fail'; code: number }; // EvsError(uint256)
 
-export interface LirBlock { id: BlockId; instrs: LirInstr[]; term: LirTerm }
-export interface LirFn {
-  id: FnId | 'main'
-  params: readonly { v: VId; type: EvsAbiType }[]
-  locals: readonly { l: LocalId; type: EvsAbiType }[]
-  blocks: LirBlock[]                                // blocks[0] is entry
-  results: readonly EvsAbiType[]
+export interface LirBlock {
+  id: BlockId;
+  instrs: LirInstr[];
+  term: LirTerm;
 }
-export interface LirProgram { main: LirFn; fns: readonly LirFn[]; valueTypes: ReadonlyMap<VId, EvsAbiType> }
+export interface LirFn {
+  id: FnId | 'main';
+  params: readonly { v: VId; type: EvsAbiType }[];
+  locals: readonly { l: LocalId; type: EvsAbiType }[];
+  blocks: LirBlock[]; // blocks[0] is entry
+  results: readonly EvsAbiType[];
+}
+export interface LirProgram {
+  main: LirFn;
+  fns: readonly LirFn[];
+  valueTypes: ReadonlyMap<VId, EvsAbiType>;
+}
 
-export type LirPass = (p: LirProgram) => LirProgram
-export const constFold: LirPass        // pure ops, all-imm → imm; certain-panic → EvsCompileError
-export const deadCode: LirPass         // zero-use pure results removed; calls/local.set kept
-export function verifyLir(p: LirProgram): void   // throws EvsCompileError on malformed IR
-export function printLir(p: LirProgram): string  // stable text form, snapshot-friendly
+export type LirPass = (p: LirProgram) => LirProgram;
+export const constFold: LirPass; // pure ops, all-imm → imm; certain-panic → EvsCompileError
+export const deadCode: LirPass; // zero-use pure results removed; calls/local.set kept
+export function verifyLir(p: LirProgram): void; // throws EvsCompileError on malformed IR
+export function printLir(p: LirProgram): string; // stable text form, snapshot-friendly
 ```
 
 **Why no phis:** every Expr is single-assignment by construction; the only mutable state is
 cells, which lower to `LocalId`s (memory slots, §5). Values defined before a loop and used
 inside it are loop-invariant — read from their slot. This is the classic "virtual registers
-+ memory locals" mid-IR; SSA/phi machinery would be pure cost in v0 and can be introduced
-later as a pass without changing producers.
+
+- memory locals" mid-IR; SSA/phi machinery would be pure cost in v0 and can be introduced
+  later as a pass without changing producers.
 
 **constFold detail:** folding a checked op that would always panic (e.g. `s.add(uintMax, 1n)`
 with both literal) is reported as `EvsCompileError` ("this expression always reverts with
@@ -388,24 +492,24 @@ computed with viem (peer dep used at compile time only).
 
 Solidity-compatible map (evm-target.md §6), extended with a static frame:
 
-| Range | Use |
-|---|---|
-| `0x00–0x3f` | scratch — revert-tail payload building, short-lived codegen temporaries |
-| `0x40–0x5f` | free-memory pointer |
-| `0x60–0x7f` | zero slot, never written — doubles as the canonical **empty memref** (`mload(0x60)=0` ⇒ length 0), used for `tryCall` failure defaults |
+| Range           | Use                                                                                                                                                                         |
+| --------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `0x00–0x3f`     | scratch — revert-tail payload building, short-lived codegen temporaries                                                                                                     |
+| `0x40–0x5f`     | free-memory pointer                                                                                                                                                         |
+| `0x60–0x7f`     | zero slot, never written — doubles as the canonical **empty memref** (`mload(0x60)=0` ⇒ length 0), used for `tryCall` failure defaults                                      |
 | `0x80 … 0x80+F` | **static frame**: one 32-byte slot per (a) script arg, (b) local (cell), (c) spilled virtual value, (d) user-fn param/result slot — assigned at codegen, F known statically |
-| `0x80+F …` | bump allocations (call buffers, returndata staging, arrays, return tuple) |
+| `0x80+F …`      | bump allocations (call buffers, returndata staging, arrays, return tuple)                                                                                                   |
 
 Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE` (frameEnd = 0x80+F rounded to 32).
 
 **Locals & virtual values — the slot strategy.** Every LIR value is classified at codegen:
 
-- **fused**: produced and consumed exactly once by the *next* instruction in the same block
+- **fused**: produced and consumed exactly once by the _next_ instruction in the same block
   → lives transiently on the operand stack, zero memory traffic;
 - **slotted**: everything else (multi-use, crosses an instruction gap, crosses a block edge)
   → a frame slot; producers `MSTORE slot`, consumers `MLOAD slot`.
 
-Locals are always slotted. This eliminates stack scheduling (EvmScript's A* search — a
+Locals are always slotted. This eliminates stack scheduling (EvmScript's A\* search — a
 deliberately skipped problem, prior-art lesson 15) and yields a hard invariant: **the operand
 stack is empty at every instruction boundary except inside a fusion chain**, with a codegen
 assert that simulated depth ≤ 16 (so DUP/SWAP always reach; deeper expressions force a
@@ -461,14 +565,14 @@ type RebindResults<r> =      // fresh Exprs at each call site, same types as the
 ```
 
 Recording: the body runs **once at definition**, inside a pushed fn scope (the same `s` is
-used; the recorder maintains a scope stack). Each *call* records a one-statement `fnCall`
+used; the recorder maintains a scope stack). Each _call_ records a one-statement `fnCall`
 bind. Recursion (direct or mutual) is rejected: recording a call to a fn whose body is
 currently open throws `EvsBuildError`, and `compile()` re-checks the call graph for cycles.
 
 **Scope rule (strict in v0):** an `Expr` or `Cell` created in one scope may not be used in
 another — args must be passed explicitly. Enforced per-handle (scope id check on every use;
 `EvsScopeError` names both scopes and both source locations). Rationale: with static frames,
-outer capture *would* be sound for dominating definitions, but "reads the slot's current
+outer capture _would_ be sound for dominating definitions, but "reads the slot's current
 content" semantics for non-dominating ones is a silent footgun; the strict rule is teachable
 and droppable later without breaking code that obeyed it.
 
@@ -538,7 +642,7 @@ ABI); the `ExtractAbiFunctionForArgs` disambiguation pattern is documented as th
 4. **Output decode** (§8): minimal-size check (`rds < staticMinSize` → `fail(0x03)`), copy
    whole returndata to a fresh allocation once, then bounds-checked in-memory decoding —
    static words MLOADed + `clean`ed; dynamic members validated (offset ≤ 2⁶⁴-1, len ≤ 2⁶⁴-1,
-   `base+32+len ≤ end`) and **decoded in place** (the ABI tail `[len][data]` *is* the evs
+   `base+32+len ≤ end`) and **decoded in place** (the ABI tail `[len][data]` _is_ the evs
    memref layout — zero copy), malformed → `fail(0x04)`.
 5. **tryCall**: `ok = success AND decode-ok`. Failure path skips decode and binds defaults:
    words → 0, memrefs → `0x60` (the zero slot ⇒ empty). Decode-validation failures branch to
@@ -557,15 +661,21 @@ tuples later = deleting a builder-side guard, not new codegen.
 
 ```ts
 // src/abi.ts
-export type WordLayout = { kind: 'word'; abi: WordType; bits: number; signed: boolean; leftAligned: boolean }
+export type WordLayout = {
+  kind: 'word';
+  abi: WordType;
+  bits: number;
+  signed: boolean;
+  leftAligned: boolean;
+};
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  | { kind: 'array'; abi: string; elem: TypeLayout; length: number | null }   // null = dynamic
-  | { kind: 'tuple'; abi: 'tuple'; components: readonly (TypeLayout & { name: string })[] }
-export function layoutOf(abiType: string): TypeLayout        // throws EvsBuildError on unsupported
-export function isDynamic(l: TypeLayout): boolean
-export function headBytes(l: TypeLayout): number             // static arrays: N*elemHead, inline
+  | { kind: 'array'; abi: string; elem: TypeLayout; length: number | null } // null = dynamic
+  | { kind: 'tuple'; abi: 'tuple'; components: readonly (TypeLayout & { name: string })[] };
+export function layoutOf(abiType: string): TypeLayout; // throws EvsBuildError on unsupported
+export function isDynamic(l: TypeLayout): boolean;
+export function headBytes(l: TypeLayout): number; // static arrays: N*elemHead, inline
 ```
 
 **Canonical word form** (everything on stack/slots is a full word): uintN zero-extended,
@@ -610,27 +720,57 @@ sub-call arguments. Differential tests pit the emitted decoder/encoder against v
 
 ```ts
 // src/asm.ts
-export type EvmVersion = 'paris' | 'shanghai' | 'cancun'
-export interface OpInfo { code: number; pops: number; pushes: number; since: EvmVersion | 'frontier' }
-export const OPCODES: Readonly<Record<Mnemonic, OpInfo>>     // table from evm-target.md §2
+export type EvmVersion = 'paris' | 'shanghai' | 'cancun';
+export interface OpInfo {
+  code: number;
+  pops: number;
+  pushes: number;
+  since: EvmVersion | 'frontier';
+}
+export const OPCODES: Readonly<Record<Mnemonic, OpInfo>>; // table from evm-target.md §2
 
-export type LabelId = number
+export type LabelId = number;
 export type AsmItem =
   | { kind: 'op'; op: Mnemonic; meta?: Meta }
-  | { kind: 'push'; value: bigint; meta?: Meta }             // emitted as minimal-width PUSHn / PUSH0
-  | { kind: 'pushLabel'; label: LabelId; meta?: Meta }       // always PUSH2 + fixup
-  | { kind: 'label'; label: LabelId; jumpdest: boolean }     // jumpdest:false for data labels
-  | { kind: 'bytes'; data: Uint8Array; meta?: Meta }         // data segment blobs
+  | { kind: 'push'; value: bigint; meta?: Meta } // emitted as minimal-width PUSHn / PUSH0
+  | { kind: 'pushLabel'; label: LabelId; meta?: Meta } // always PUSH2 + fixup
+  | { kind: 'label'; label: LabelId; jumpdest: boolean } // jumpdest:false for data labels
+  | { kind: 'bytes'; data: Uint8Array; meta?: Meta }; // data segment blobs
 
-export interface SourceMapEntry { pc: number; len: number; loc?: SourceLocation; astId?: NodeId }
-export interface SourceMap { entries: readonly SourceMapEntry[]; lookup(pc: number): SourceMapEntry | undefined }
-export interface AssembleResult { bytecode: Uint8Array; sourceMap: SourceMap; labelPcs: ReadonlyMap<LabelId, number> }
+export interface SourceMapEntry {
+  pc: number;
+  len: number;
+  loc?: SourceLocation;
+  astId?: NodeId;
+}
+export interface SourceMap {
+  entries: readonly SourceMapEntry[];
+  lookup(pc: number): SourceMapEntry | undefined;
+}
+export interface AssembleResult {
+  bytecode: Uint8Array;
+  sourceMap: SourceMap;
+  labelPcs: ReadonlyMap<LabelId, number>;
+}
 
-export function assemble(items: readonly AsmItem[], opts: { evmVersion: EvmVersion }): AssembleResult
-export function disassemble(code: Uint8Array | Hex, sourceMap?: SourceMap): readonly DisasmLine[]
-export interface DisasmLine { pc: number; op: string; imm?: Hex; jumpdest: boolean; loc?: SourceLocation }
-export type PeepholeRule = { name: string; match: number; apply(win: readonly AsmItem[]): AsmItem[] | null }
-export function peephole(items: readonly AsmItem[], rules?: readonly PeepholeRule[]): AsmItem[]
+export function assemble(
+  items: readonly AsmItem[],
+  opts: { evmVersion: EvmVersion },
+): AssembleResult;
+export function disassemble(code: Uint8Array | Hex, sourceMap?: SourceMap): readonly DisasmLine[];
+export interface DisasmLine {
+  pc: number;
+  op: string;
+  imm?: Hex;
+  jumpdest: boolean;
+  loc?: SourceLocation;
+}
+export type PeepholeRule = {
+  name: string;
+  match: number;
+  apply(win: readonly AsmItem[]): AsmItem[] | null;
+};
+export function peephole(items: readonly AsmItem[], rules?: readonly PeepholeRule[]): AsmItem[];
 ```
 
 - **Labels/fixups** (evm-target §3): every `pushLabel` emits `PUSH2 0x0000` + fixup record;
@@ -673,37 +813,43 @@ selector"). Revert tails are emitted once, lazily (only the codes actually refer
 
 ```ts
 // src/abi.ts (runtime constant + its literal type baked into ScriptAbi)
-export const EVS_ERROR_ABI = [{
-  type: 'error', name: 'EvsError',
-  inputs: [{ name: 'code', type: 'uint256' }],
-}] as const
+export const EVS_ERROR_ABI = [
+  {
+    type: 'error',
+    name: 'EvsError',
+    inputs: [{ name: 'code', type: 'uint256' }],
+  },
+] as const;
 ```
 
 **Artifact** (`src/compile.ts` + `src/viem.ts`):
 
 ```ts
 export interface CompileOptions {
-  evmVersion?: EvmVersion          // default 'cancun'; 'shanghai' drops MCOPY; 'paris' also drops PUSH0
-  optimize?: boolean               // default true: constFold + deadCode + peephole
-  locations?: boolean              // default true: thread source map through
+  evmVersion?: EvmVersion; // default 'cancun'; 'shanghai' drops MCOPY; 'paris' also drops PUSH0
+  optimize?: boolean; // default true: constFold + deadCode + peephole
+  locations?: boolean; // default true: thread source map through
 }
 
-export function compile<s extends AnyScript>(script: s, options?: CompileOptions): CompiledOf<s>
+export function compile<s extends AnyScript>(script: s, options?: CompileOptions): CompiledOf<s>;
 
 export interface Compiled<abi extends Abi> {
-  readonly name: string
-  readonly abi: abi                              // literal-typed: [fn, ...EVS_ERROR_ABI]
-  readonly runtimeBytecode: Hex                  // NEVER exposed under a key named `code`
-  readonly initBytecode: Hex                     // 0x61{len,2B BE}80600A5F395FF3 ++ runtime
-                                                 // paris: 0x61{len}80600A3D393DF3 ++ runtime
-  readonly sourceMap: SourceMap
-  toViem(): { abi: abi; code: Hex }                              // deployless (default)
-  toViem(o: { mode: 'deployless' }): { abi: abi; code: Hex }
-  toViem(o: { mode: 'stateOverride'; address?: Address }):
-    { abi: abi; address: Address; stateOverride: StateOverride }
-  disassemble(opts?: { source?: boolean }): string
+  readonly name: string;
+  readonly abi: abi; // literal-typed: [fn, ...EVS_ERROR_ABI]
+  readonly runtimeBytecode: Hex; // NEVER exposed under a key named `code`
+  readonly initBytecode: Hex; // 0x61{len,2B BE}80600A5F395FF3 ++ runtime
+  // paris: 0x61{len}80600A3D393DF3 ++ runtime
+  readonly sourceMap: SourceMap;
+  toViem(): { abi: abi; code: Hex }; // deployless (default)
+  toViem(o: { mode: 'deployless' }): { abi: abi; code: Hex };
+  toViem(o: { mode: 'stateOverride'; address?: Address }): {
+    abi: abi;
+    address: Address;
+    stateOverride: StateOverride;
+  };
+  disassemble(opts?: { source?: boolean }): string;
 }
-export const DEFAULT_SCRIPT_ADDRESS = '0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530' as const
+export const DEFAULT_SCRIPT_ADDRESS = '0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530' as const;
 ```
 
 Per viem-integration.md: deployless is the default (`toViem()` spreads into `readContract`
@@ -723,23 +869,30 @@ side swapped to the ArgSpec tuple (§2).
 
 ```ts
 // Expr phantom flow
-declare const exprBrand: unique symbol
+declare const exprBrand: unique symbol;
 export interface Expr<type extends EvsAbiType = EvsAbiType> {
-  readonly [exprBrand]: type
-  readonly type: type
-  valueOf(): never; toString(): never; [Symbol.toPrimitive](hint: string): never
+  readonly [exprBrand]: type;
+  readonly type: type;
+  valueOf(): never;
+  toString(): never;
+  [Symbol.toPrimitive](hint: string): never;
 }
 
 // literal coercion where an Expr is expected (per-parameter union — research §4.6)
-export type Literal<type extends EvsAbiType> =
-  type extends 'bool' ? boolean
-  : type extends 'address' ? Address
-  : type extends 'string' ? string
-  : type extends 'bytes' | `bytes${number}` ? Hex
-  : type extends `uint${number}` | `int${number}` ? bigint | number
-  : type extends `${infer e extends WordType}[${string}]` ? readonly Literal<e>[]
-  : never
-export type Operand<type extends EvsAbiType> = Expr<type> | Literal<type>
+export type Literal<type extends EvsAbiType> = type extends 'bool'
+  ? boolean
+  : type extends 'address'
+    ? Address
+    : type extends 'string'
+      ? string
+      : type extends 'bytes' | `bytes${number}`
+        ? Hex
+        : type extends `uint${number}` | `int${number}`
+          ? bigint | number
+          : type extends `${infer e extends WordType}[${string}]`
+            ? readonly Literal<e>[]
+            : never;
+export type Operand<type extends EvsAbiType> = Expr<type> | Literal<type>;
 ```
 
 Runtime coercion rules (validated at recording, `EvsTypeError` on violation): `number` must
@@ -752,18 +905,25 @@ Generated ABI type (output record → single named tuple, per §2):
 
 ```ts
 export type ScriptAbi<
-  name extends string, params extends readonly AnyArgSpec[], ret extends Record<string, Expr>,
+  name extends string,
+  params extends readonly AnyArgSpec[],
+  ret extends Record<string, Expr>,
 > = readonly [
   {
-    readonly type: 'function'; readonly name: name; readonly stateMutability: 'view'
-    readonly inputs: ParamsToInputs<params>
-    readonly outputs: readonly [{
-      readonly name: 'result'; readonly type: 'tuple'
-      readonly components: RetToComponents<ret>      // UnionToTuple-based; order-unstable but
-    }]                                               // SAFE: decoded as an object (research §4.2)
+    readonly type: 'function';
+    readonly name: name;
+    readonly stateMutability: 'view';
+    readonly inputs: ParamsToInputs<params>;
+    readonly outputs: readonly [
+      {
+        readonly name: 'result';
+        readonly type: 'tuple';
+        readonly components: RetToComponents<ret>; // UnionToTuple-based; order-unstable but
+      },
+    ]; // SAFE: decoded as an object (research §4.2)
   },
   (typeof EVS_ERROR_ABI)[0],
-]
+];
 
 export function evscript<
   const name extends string,
@@ -773,13 +933,17 @@ export function evscript<
   def: { name: name; args: params },
   body: (s: ScriptBuilder<params>) => ScriptReturn<ret>,
   opts?: { locations?: boolean },
-): Script<name, params, ret>
+): Script<name, params, ret>;
 
-export interface Script<name extends string, params extends readonly AnyArgSpec[], ret extends Record<string, Expr>> {
-  readonly name: name
-  readonly abi: ScriptAbi<name, params, ret>        // available pre-compile
-  readonly ast: ScriptAst
-  compile(options?: CompileOptions): Compiled<ScriptAbi<name, params, ret>>
+export interface Script<
+  name extends string,
+  params extends readonly AnyArgSpec[],
+  ret extends Record<string, Expr>,
+> {
+  readonly name: name;
+  readonly abi: ScriptAbi<name, params, ret>; // available pre-compile
+  readonly ast: ScriptAst;
+  compile(options?: CompileOptions): Compiled<ScriptAbi<name, params, ret>>;
 }
 ```
 
@@ -825,14 +989,14 @@ Dependency DAG (strict, enforced by `import/no-cycle`):
 **Inter-module contracts are exactly the signatures in §§2–11** — frozen in a day-0 commit
 as type-only stubs (`export declare …` + TODO bodies) so agents code against real imports.
 
-| Agent | Modules | Key unit tests |
-|---|---|---|
-| A1 | core/types, core/errors, abi | `layoutOf` golden table (every v0 type); headBytes/isDynamic; `buildScriptAbi` vs `ScriptAbi` type equality (expect-type); error class loc capture |
-| A2 | asm + test/harness/evm | assemble→disassemble round-trip; fixup patching goldens; JUMPDEST audit catches a push-data 0x5B; peephole rule table; paris build rejects MCOPY; harness runs `RUNTIME_42` fixture from viem-integration Appendix A |
-| A3 | ast, builder | recording snapshot (serializeAst) per builder op; staging-misuse throws (`x+1`, template literal); cross-script & cross-scope handle errors; literal range/format rejections; duplicate arg names; s.return-position rules |
-| A4 | lir, lower | golden `printLir` snapshots for if/while/for/break/fn; verifyLir catches seeded malformed IR; constFold (incl. all-literal calldata collapse, certain-panic error); deadCode keeps calls/local.set |
-| A5 | codegen | per-pattern bytecode goldens (checked ops, select, index, clean) **executed on the evm harness**; encoder/decoder differential-fuzz vs viem `encodeAbiParameters`/`decodeFunctionResult`; call pattern vs mock callee bytecode (success, revert-bubble, short/malformed returndata, tryCall defaults); stack-depth simulator assert |
-| A6 | compile, viem, integration | end-to-end flagship script on anvil (both `toViem` modes — keep the deployless-path regression test per stack-testing.md anvil history); EIP-170 error; evmVersion matrix (cancun/shanghai/paris) on the harness with fork-pinned anvil; npm packaging checks (publint/attw) |
+| Agent | Modules                      | Key unit tests                                                                                                                                                                                                                                                                                                                      |
+| ----- | ---------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| A1    | core/types, core/errors, abi | `layoutOf` golden table (every v0 type); headBytes/isDynamic; `buildScriptAbi` vs `ScriptAbi` type equality (expect-type); error class loc capture                                                                                                                                                                                  |
+| A2    | asm + test/harness/evm       | assemble→disassemble round-trip; fixup patching goldens; JUMPDEST audit catches a push-data 0x5B; peephole rule table; paris build rejects MCOPY; harness runs `RUNTIME_42` fixture from viem-integration Appendix A                                                                                                                |
+| A3    | ast, builder                 | recording snapshot (serializeAst) per builder op; staging-misuse throws (`x+1`, template literal); cross-script & cross-scope handle errors; literal range/format rejections; duplicate arg names; s.return-position rules                                                                                                          |
+| A4    | lir, lower                   | golden `printLir` snapshots for if/while/for/break/fn; verifyLir catches seeded malformed IR; constFold (incl. all-literal calldata collapse, certain-panic error); deadCode keeps calls/local.set                                                                                                                                  |
+| A5    | codegen                      | per-pattern bytecode goldens (checked ops, select, index, clean) **executed on the evm harness**; encoder/decoder differential-fuzz vs viem `encodeAbiParameters`/`decodeFunctionResult`; call pattern vs mock callee bytecode (success, revert-bubble, short/malformed returndata, tryCall defaults); stack-depth simulator assert |
+| A6    | compile, viem, integration   | end-to-end flagship script on anvil (both `toViem` modes — keep the deployless-path regression test per stack-testing.md anvil history); EIP-170 error; evmVersion matrix (cancun/shanghai/paris) on the harness with fork-pinned anvil; npm packaging checks (publint/attw)                                                        |
 
 Schedule: A1+A2 have no internal deps (start immediately); A3+A4 start against stubs same
 day; A5 needs A2's harness early (it lands day 1–2); A6 integrates continuously. The LIR
@@ -844,23 +1008,27 @@ noted but Bun's runner is this repo's convention):
 
 ```ts
 // test/harness/evm.ts
-import { test, expect } from 'bun:test'   // consumer side
-export interface RunResult { success: boolean; returnData: Hex; gasUsed: bigint }
+import { test, expect } from 'bun:test'; // consumer side
+export interface RunResult {
+  success: boolean;
+  returnData: Hex;
+  gasUsed: bigint;
+}
 export async function runScript(opts: {
-  runtime: Hex
-  calldata: Hex
-  mocks?: Record<Address, Hex>     // runtime bytecode planted at addresses (stubbed callees)
-  gasLimit?: bigint                // default 30_000_000n (anvil parity)
-}): Promise<RunResult>
+  runtime: Hex;
+  calldata: Hex;
+  mocks?: Record<Address, Hex>; // runtime bytecode planted at addresses (stubbed callees)
+  gasLimit?: bigint; // default 30_000_000n (anvil parity)
+}): Promise<RunResult>;
 // impl: new EVM(); for each mock: stateManager.putCode(addr, bytes)
 //       evm.runCall({ to: SCRIPT, data, gasLimit }) with putCode(SCRIPT, runtime)
 
 // example codegen test
 test('checked add overflows → Panic(0x11)', async () => {
-  const r = await runScript({ runtime, calldata: encodeArgs(MAX_U256, 1n) })
-  expect(r.success).toBe(false)
-  expect(r.returnData).toBe('0x4e487b71' + '11'.padStart(64, '0'))
-})
+  const r = await runScript({ runtime, calldata: encodeArgs(MAX_U256, 1n) });
+  expect(r.success).toBe(false);
+  expect(r.returnData).toBe('0x4e487b71' + '11'.padStart(64, '0'));
+});
 ```
 
 ---
@@ -871,18 +1039,19 @@ Fail at the recording line, in user vocabulary, with source locations (PyTeal le
 
 ```ts
 // src/core/errors.ts
-export class EvsError extends Error {            // TS-side base (distinct from on-chain EvsError(uint256))
-  readonly loc?: SourceLocation
-  readonly related?: readonly { message: string; loc?: SourceLocation }[]
+export class EvsError extends Error {
+  // TS-side base (distinct from on-chain EvsError(uint256))
+  readonly loc?: SourceLocation;
+  readonly related?: readonly { message: string; loc?: SourceLocation }[];
 }
-export class EvsBuildError   extends EvsError {} // recording-time: structure/usage violations
-export class EvsTypeError    extends EvsBuildError {} // operand type mismatch, literal range/format
-export class EvsScopeError   extends EvsBuildError {} // handle used across scripts/fn scopes/after seal
+export class EvsBuildError extends EvsError {} // recording-time: structure/usage violations
+export class EvsTypeError extends EvsBuildError {} // operand type mismatch, literal range/format
+export class EvsScopeError extends EvsBuildError {} // handle used across scripts/fn scopes/after seal
 export class EvsStagingError extends EvsError {} // host-language misuse (poisoned valueOf/toString)
 export class EvsCompileError extends EvsError {} // compile(): recursion cycle, EIP-170, always-panic fold,
-                                                 // unsupported type for evmVersion, verifier failures
+// unsupported type for evmVersion, verifier failures
 export class EvsAssembleError extends EvsCompileError {} // fixup/JUMPDEST/fork-floor violations
-export function captureLoc(skipFrames?: number): SourceLocation | undefined
+export function captureLoc(skipFrames?: number): SourceLocation | undefined;
 ```
 
 Recording-time validation checklist (each throws with `loc`, plus `related` locs where two
@@ -903,25 +1072,25 @@ Error messages embed the decorated frame, e.g.
 
 ## 14. Decision 13 — research-flagged constraints (compliance checklist)
 
-| Constraint (source) | Where handled |
-|---|---|
-| RETURNDATACOPY OOB = exceptional halt, all gas (evm-target §2) | only ever `(dest, 0, RETURNDATASIZE)`; all offset/len validation on copied memory (§7/§8) |
-| JUMPDEST validity skips PUSH immediates; PUSH2 always sufficient under EIP-170 (evm-target §3) | assembler fixed-width PUSH2 fixups + post-assembly JUMPDEST audit (§9) |
-| EIP-170 24,576-byte runtime cap; EIP-3860 init cap non-binding (evm-target §4) | `compile()` hard error with size breakdown (§10) |
+| Constraint (source)                                                                                    | Where handled                                                                                                 |
+| ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
+| RETURNDATACOPY OOB = exceptional halt, all gas (evm-target §2)                                         | only ever `(dest, 0, RETURNDATASIZE)`; all offset/len validation on copied memory (§7/§8)                     |
+| JUMPDEST validity skips PUSH immediates; PUSH2 always sufficient under EIP-170 (evm-target §3)         | assembler fixed-width PUSH2 fixups + post-assembly JUMPDEST audit (§9)                                        |
+| EIP-170 24,576-byte runtime cap; EIP-3860 init cap non-binding (evm-target §4)                         | `compile()` hard error with size breakdown (§10)                                                              |
 | viem `code` = CREATION bytecode; runtime passed raw fails **silently** (viem-integration §1.3, test 2) | `toViem()` only ever exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode` (§10) |
-| Init wrapper `61RRRR80600A5F395FF3`; paris variant with `3D` (evm-target §6) | `src/viem.ts`, selected by `evmVersion` |
-| stateOverride undocumented on Alchemy/Infura → deployless default (viem-integration §4) | `toViem()` default mode (§10) |
-| anvil deployless constructor-return history (stack-testing §3) | permanent integration test on the `code` path against pinned anvil |
-| TSTORE/TLOAD halt in static context; scripts must stay STATICCALL-clean | never emitted; only STATICCALL is generated |
-| eth_call gas caps: anvil 30M default, geth 50M floor (evm-target §4) | harness default 30M; docs note per-call ~2.6k cold + decode overhead budgeting |
-| Stack limit 1024 / DUP-SWAP reach 16 | empty-stack invariant + simulated-depth ≤ 16 assert with forced spill (§5) |
-| Panic encoding `0x4e487b71` + 36-byte payload; bubble pattern (evm-target §5) | shared tails (§10), bubble sequence verbatim (§7) |
-| UnionToTuple order instability (abitype-typing §4.2) | inputs from ordered ArgSpec tuple; outputs single named tuple → object (§2) |
-| Single-output unwrap / empty-name component degradation (abitype-typing §4.3) | builder rejects empty keys; `UnwrapSingle` mirrors viem (§7/§11) |
-| abitype label lookup is finite/cosmetic (abitype-typing §1) | documented; types never depend on labels |
-| viem ≥ 2.14.1 floor (viem-integration §1.2) | peerDependencies `"viem": ">=2.14.1"` |
-| ABIs must be inline or `as const`; emitted ABI artifact must be TS, not JSON (prior-art §5) | `script.abi` is a literal-typed value; any codegen-to-file emits `.ts` with `as const` |
-| EIP-2929 cold/warm (2600/100) on first call per address (evm-target §2) | documented in gas notes; no codegen impact |
+| Init wrapper `61RRRR80600A5F395FF3`; paris variant with `3D` (evm-target §6)                           | `src/viem.ts`, selected by `evmVersion`                                                                       |
+| stateOverride undocumented on Alchemy/Infura → deployless default (viem-integration §4)                | `toViem()` default mode (§10)                                                                                 |
+| anvil deployless constructor-return history (stack-testing §3)                                         | permanent integration test on the `code` path against pinned anvil                                            |
+| TSTORE/TLOAD halt in static context; scripts must stay STATICCALL-clean                                | never emitted; only STATICCALL is generated                                                                   |
+| eth_call gas caps: anvil 30M default, geth 50M floor (evm-target §4)                                   | harness default 30M; docs note per-call ~2.6k cold + decode overhead budgeting                                |
+| Stack limit 1024 / DUP-SWAP reach 16                                                                   | empty-stack invariant + simulated-depth ≤ 16 assert with forced spill (§5)                                    |
+| Panic encoding `0x4e487b71` + 36-byte payload; bubble pattern (evm-target §5)                          | shared tails (§10), bubble sequence verbatim (§7)                                                             |
+| UnionToTuple order instability (abitype-typing §4.2)                                                   | inputs from ordered ArgSpec tuple; outputs single named tuple → object (§2)                                   |
+| Single-output unwrap / empty-name component degradation (abitype-typing §4.3)                          | builder rejects empty keys; `UnwrapSingle` mirrors viem (§7/§11)                                              |
+| abitype label lookup is finite/cosmetic (abitype-typing §1)                                            | documented; types never depend on labels                                                                      |
+| viem ≥ 2.14.1 floor (viem-integration §1.2)                                                            | peerDependencies `"viem": ">=2.14.1"`                                                                         |
+| ABIs must be inline or `as const`; emitted ABI artifact must be TS, not JSON (prior-art §5)            | `script.abi` is a literal-typed value; any codegen-to-file emits `.ts` with `as const`                        |
+| EIP-2929 cold/warm (2600/100) on first call per address (evm-target §2)                                | documented in gas notes; no codegen impact                                                                    |
 
 ---
 
@@ -967,7 +1136,7 @@ panic_common: JUMPDEST                      ; [code, …junk]
 `const sym = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' })`
 `token` in slot `0x80`; result memref `sym` → slot `0xa0`. Calldata is all-literal after
 folding (just the selector) → push-chunk path. Decode is **in place**: after copying the
-whole returndata to fresh memory, the ABI tail `[len][data]` already *is* the evs string
+whole returndata to fresh memory, the ABI tail `[len][data]` already _is_ the evs string
 layout, so the memref is a pointer into the copied buffer (zero extra copies).
 
 ```
@@ -1026,13 +1195,16 @@ empty string) and skips decoding.
 ### 15.C While loop with an `s.let` counter
 
 ```ts
-const total = s.let(t.uint256, 0n)
-const i = s.let(t.uint256, 0n)
-s.while(() => s.lt(i.get(), s.args.n), () => {
-  total.set(s.add(total.get(), i.get()))
-  i.set(s.add(i.get(), 1n))
-})
-return s.return({ total: total.get() })
+const total = s.let(t.uint256, 0n);
+const i = s.let(t.uint256, 0n);
+s.while(
+  () => s.lt(i.get(), s.args.n),
+  () => {
+    total.set(s.add(total.get(), i.get()));
+    i.set(s.add(i.get(), 1n));
+  },
+);
+return s.return({ total: total.get() });
 ```
 
 Slots: `n` (arg) `0x80`, `total` `0xa0`, `i` `0xc0`. LIR blocks: entry → header ⇄ body → exit.

@@ -160,8 +160,11 @@ and `attw --pack`.
 ## 4. `packages/contracts`
 
 ```json
-{ "name": "@maxencerb/evs-contracts", "private": true,
-  "scripts": { "build": "forge build", "test": "forge test", "codegen": "bun scripts/codegen.ts" } }
+{
+  "name": "@maxencerb/evs-contracts",
+  "private": true,
+  "scripts": { "build": "forge build", "test": "forge test", "codegen": "bun scripts/codegen.ts" }
+}
 ```
 
 ```toml
@@ -200,9 +203,9 @@ prior-art §5 / stack-testing §4).
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
     // NO baseUrl — required by oxlint-tsgolint (TS7 semantics, oxc-tooling §5)
-  }
+  },
 }
 ```
 
@@ -215,11 +218,15 @@ prior-art §5 / stack-testing §4).
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "noEmit": false, "rootDir": "src", "outDir": "dist",
-    "declaration": true, "declarationMap": true, "sourceMap": true
+    "noEmit": false,
+    "rootDir": "src",
+    "outDir": "dist",
+    "declaration": true,
+    "declarationMap": true,
+    "sourceMap": true,
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts"],
 }
 ```
 
@@ -236,7 +243,7 @@ prior-art §5 / stack-testing §4).
   "categories": { "correctness": "error", "suspicious": "warn", "perf": "warn" },
   "options": {
     "typeAware": true,
-    "reportUnusedDisableDirectives": "warn"
+    "reportUnusedDisableDirectives": "warn",
   },
   "env": { "shared-node-browser": true, "es2026": true },
   "rules": {
@@ -245,12 +252,15 @@ prior-art §5 / stack-testing §4).
     "typescript/await-thenable": "error",
     "typescript/strict-boolean-expressions": "error",
     "import/no-cycle": "error",
-    "no-console": "warn"
+    "no-console": "warn",
   },
   "ignorePatterns": [
-    "**/dist/**", "**/coverage/**",
-    "**/contracts/out/**", "**/contracts/cache/**", "**/contracts/lib/**",
-    "**/test/generated/**"
+    "**/dist/**",
+    "**/coverage/**",
+    "**/contracts/out/**",
+    "**/contracts/cache/**",
+    "**/contracts/lib/**",
+    "**/test/generated/**",
   ],
   "overrides": [
     {
@@ -259,10 +269,10 @@ prior-art §5 / stack-testing §4).
       "rules": {
         "vitest/no-focused-tests": "error",
         "typescript/no-explicit-any": "off",
-        "no-console": "off"
-      }
-    }
-  ]
+        "no-console": "off",
+      },
+    },
+  ],
 }
 ```
 
@@ -286,10 +296,13 @@ builds before linting.
   "sortImports": { "internalPattern": ["@maxencerb/"] },
   "sortPackageJson": true,
   "ignorePatterns": [
-    "**/dist/**", "**/coverage/**",
-    "**/contracts/out/**", "**/contracts/cache/**", "**/contracts/lib/**",
-    "**/test/generated/**"
-  ]
+    "**/dist/**",
+    "**/coverage/**",
+    "**/contracts/out/**",
+    "**/contracts/cache/**",
+    "**/contracts/lib/**",
+    "**/test/generated/**",
+  ],
 }
 ```
 
@@ -298,14 +311,14 @@ builds before linting.
 ## 8. Root `vitest.config.ts`
 
 ```ts
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
     projects: ['packages/*/vitest.config.ts'],
     coverage: { provider: 'v8', include: ['packages/evs/src/**'] },
   },
-})
+});
 ```
 
 Per-package config: testing.md §1. Vitest 3.2+ `projects`; migration note for vitest 4
@@ -526,6 +539,6 @@ packages/evs/test/generated/
 {
   "editor.defaultFormatter": "oxc.oxc-vscode",
   "editor.formatOnSave": true,
-  "editor.codeActionsOnSave": { "source.fixAll.oxc": "explicit" }
+  "editor.codeActionsOnSave": { "source.fixAll.oxc": "explicit" },
 }
 ```

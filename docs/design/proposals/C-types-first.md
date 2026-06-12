@@ -1,12 +1,12 @@
 # Proposal C — "types-and-debuggability-first"
 
 Design angle: start from the user's TypeScript experience and work inward. The two products of
-this library are (1) the *types* the user sees in their editor — at authoring time inside the
-builder callback and at consumption time through `readContract` — and (2) the *explanations* the
+this library are (1) the _types_ the user sees in their editor — at authoring time inside the
+builder callback and at consumption time through `readContract` — and (2) the _explanations_ the
 user gets when something goes wrong: at recording time (exact source line), at compile time
 (actionable resource errors), and at execution time (revert data that maps back to a source
 location). The compiler internals (IR, memory model, codegen) are deliberately boring and
-uniform so that those two products are achievable; gas optimality is explicitly *not* a v0 goal
+uniform so that those two products are achievable; gas optimality is explicitly _not_ a v0 goal
 (eth_call headroom is 30–550M gas; a naive script burns a few hundred thousand).
 
 Inheritances from research that this proposal treats as fixed facts (citations are to the
@@ -25,42 +25,39 @@ research reports in `docs/research/`):
 ## 0. The user experience we are designing backwards from
 
 ```ts
-import { evscript, arg } from '@maxencerb/evs'
-import { erc20Abi } from 'viem'
-import { uniswapV3PoolAbi } from './abis'   // as const satisfies Abi
+import { evscript, arg } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+import { uniswapV3PoolAbi } from './abis'; // as const satisfies Abi
 
-const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', 'address')] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' })
-    //    ^? Expr<'address'>
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' })
-    //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, ...]
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' })
-    //    ^? Expr<'string'>
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' })
-    //    ^? { success: Expr<'bool'>; value: Expr<'uint8'> }
-    const decimals0 = s.select(dec.success, dec.value, 18)
-    return s.return({ token0, symbol0, tick: slot0[1], decimals0 })
-  },
-)
+const poolMeta = evscript({ name: 'poolMeta', args: [arg('pool', 'address')] }, (s) => {
+  const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  //    ^? Expr<'address'>
+  const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+  //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, ...]
+  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  //    ^? Expr<'string'>
+  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  //    ^? { success: Expr<'bool'>; value: Expr<'uint8'> }
+  const decimals0 = s.select(dec.success, dec.value, 18);
+  return s.return({ token0, symbol0, tick: slot0[1], decimals0 });
+});
 
-const compiled = poolMeta.compile()                  // CompiledEvsScript
+const compiled = poolMeta.compile(); // CompiledEvsScript
 const out = await client.readContract({
-  ...compiled.toViem(),                              // { abi, code } — deployless, portable
+  ...compiled.toViem(), // { abi, code } — deployless, portable
   functionName: 'poolMeta',
-  args: [pool],                                      // readonly [pool: `0x${string}`]
-})
+  args: [pool], // readonly [pool: `0x${string}`]
+});
 // out: { token0: `0x${string}`; symbol0: string; tick: number; decimals0: number }
 ```
 
 Debuggability artifacts, all first-class on the compiled object:
 
 ```ts
-compiled.disassemble().format()   // annotated mnemonics with source lines per instruction
-compiled.sourceMap                // PC→loc JSON, plus a "site" table for revert decoding
-compiled.explainRevert(data)      // Panic(0x11) → "checked add overflowed — recorded at pools.ts:12:30"
-poolMeta.ir                       // frozen, JSON-serializable, snapshot-testable
+compiled.disassemble().format(); // annotated mnemonics with source lines per instruction
+compiled.sourceMap; // PC→loc JSON, plus a "site" table for revert decoding
+compiled.explainRevert(data); // Panic(0x11) → "checked add overflowed — recorded at pools.ts:12:30"
+poolMeta.ir; // frozen, JSON-serializable, snapshot-testable
 ```
 
 Everything below exists to make this surface real.
@@ -76,7 +73,7 @@ evscript({ name: 'quote', args: [arg('pool', 'address'), arg('fee', 'uint24')] }
 ```
 
 - `args` is a **readonly tuple of `ArgSpec` objects**, so declaration order, type-level order,
-  runtime encode order, and the emitted ABI `inputs` order are all the *same* tuple. The
+  runtime encode order, and the emitted ABI `inputs` order are all the _same_ tuple. The
   UnionToTuple hazard (abitype-typing §4.2) never arises because we never convert a record key
   union to a tuple on the input side.
 - `s.args` is derived **tuple→record**, which is order-safe (object types are unordered):
@@ -146,7 +143,7 @@ One output, `{ name: 'result', type: 'tuple', components: [...] }`, every compon
 the `s.return({...})` record keys (empty-string keys rejected at recording time — abitype
 degrades the whole object to a positional array if any name is empty, abitype-typing §4.3 item
 4). The type-level component order may differ from runtime insertion order (UnionToTuple
-instability); this is *harmless by construction* because consumers receive an object keyed by
+instability); this is _harmless by construction_ because consumers receive an object keyed by
 names, and the runtime decoder uses the runtime ABI array. A CI type-test pins
 `ReadContractReturnType<abi,'name'>` for representative scripts.
 
@@ -157,14 +154,14 @@ names, and the runtime decoder uses the runtime ABI array. A CI type-test pins
 ### Decision
 
 Every `s.*` operation and every `Expr` method **executes exactly once, at the place it is
-written**, appending one or more statements to the *current recording block*. The returned
+written**, appending one or more statements to the _current recording block_. The returned
 `Expr<t>` is a handle to that single computed value (an SSA-ish `ValueId`). Re-using the handle
 later does not recompute anything; codegen reads the value's memory slot.
 
 This is the direct answer to the PyTeal post-mortem: expression-template semantics (trees
 re-emitted per use) mean a `s.call` handle used twice performs the STATICCALL twice, and host
 control flow over handles silently reorders or duplicates effects. With value semantics, the
-recorded statement list *is* the program; what you read top-to-bottom is what executes.
+recorded statement list _is_ the program; what you read top-to-bottom is what executes.
 
 Consequences and the API they force:
 
@@ -183,7 +180,7 @@ let<t extends EvsType>(init: Expr<t>): Cell<t>     // type inferred from an exis
 ```
 
 **Loop conditions are recorded into the loop header.** Since recording happens where code runs,
-the condition of a `while` must be re-recorded per iteration — so it is a *callback* whose
+the condition of a `while` must be re-recorded per iteration — so it is a _callback_ whose
 statements land in a dedicated header block that codegen re-executes every iteration:
 
 ```ts
@@ -216,7 +213,7 @@ is what makes the memory-slot model sound without a real dominance analysis.
 
 **Host-language misuse explodes immediately** (decision 12 has the error classes): handles
 implement `valueOf`, `Symbol.toPrimitive`, `toString`, `toJSON` as throwing `EvsStagingError`
-with the *handle's* recorded loc and the *misuse* loc; `if (expr)` can't be caught at runtime
+with the _handle's_ recorded loc and the _misuse_ loc; `if (expr)` can't be caught at runtime
 (truthiness of an object is `true`) — but every API that should have received the result of a
 comparison takes `IntoExpr<'bool'>`, so the type system rejects raw JS booleans where a staged
 bool is required and vice versa. Node's `util.inspect.custom` is implemented NON-throwing:
@@ -228,52 +225,55 @@ debugging, not misuse.
 Methods, not operators (operators can't be overloaded; methods carry types):
 
 ```ts
-declare const exprBrand: unique symbol
+declare const exprBrand: unique symbol;
 export interface Expr<t extends EvsType = EvsType> {
-  readonly [exprBrand]: t            // nominal brand; covariant (Expr<'uint256'> <: Expr<EvsType>)
-  readonly type: t                   // runtime-readable type tag
+  readonly [exprBrand]: t; // nominal brand; covariant (Expr<'uint256'> <: Expr<EvsType>)
+  readonly type: t; // runtime-readable type tag
 
   // arithmetic — only callable when t is numeric (this-parameter typing)
-  add(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>     // checked, Panic(0x11)
-  sub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  mul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
-  div(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>     // Panic(0x12) on 0
-  mod(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>
+  add(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>; // checked, Panic(0x11)
+  sub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  mul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  div(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>; // Panic(0x12) on 0
+  mod(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
 
   // comparisons — opcode chosen from the static type (LT vs SLT): a types-first win
-  lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>
-  eq(rhs: IntoExpr<t>): Expr<'bool'>          // word types only in v0 (memref eq deferred)
-  neq(rhs: IntoExpr<t>): Expr<'bool'>
+  lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  eq(rhs: IntoExpr<t>): Expr<'bool'>; // word types only in v0 (memref eq deferred)
+  neq(rhs: IntoExpr<t>): Expr<'bool'>;
 
   // bool logic (canonical 0/1 words) — eager, not short-circuiting (document!)
-  and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>
-  or(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>
-  not(this: Expr<'bool'>): Expr<'bool'>
+  and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
+  or(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
+  not(this: Expr<'bool'>): Expr<'bool'>;
 
   // bitwise on uintN / bytesN (result masked back to t's canonical form)
-  bitAnd(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>
-  bitNot(this: Expr<t & BitsType>): Expr<t>
-  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>
-  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>
+  bitAnd(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
+  bitNot(this: Expr<t & BitsType>): Expr<t>;
+  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
 
   // conversions — explicit, checked where narrowing (Panic 0x11 style on out-of-range)
-  toUint<const u extends UintType>(target: u): Expr<u>
-  toInt<const i extends IntType>(target: i): Expr<i>
-  asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>   // checked high-bits-zero (uint256 path)
+  toUint<const u extends UintType>(target: u): Expr<u>;
+  toInt<const i extends IntType>(target: i): Expr<i>;
+  asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>; // checked high-bits-zero (uint256 path)
 
   // dynamic / array values (memrefs)
-  length(this: Expr<DynType | ArrayType>): Expr<'uint256'>
-  at<elem extends WordType>(this: Expr<`${elem}[]` | `${elem}[${number}]`>, i: IntoExpr<'uint256'>): Expr<elem>
+  length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
+  at<elem extends WordType>(
+    this: Expr<`${elem}[]` | `${elem}[${number}]`>,
+    i: IntoExpr<'uint256'>,
+  ): Expr<elem>;
   // bounds-checked, Panic(0x32)
 }
 
-export type NumericType = UintType | IntType
-export type BitsType = UintType | BytesNType | 'bool'
+export type NumericType = UintType | IntType;
+export type BitsType = UintType | BytesNType | 'bool';
 ```
 
 Free-function mirrors on the builder (`s.add(a, b)` etc.) exist for symmetry and for the cases
@@ -283,15 +283,20 @@ where the left operand is a literal: `s.add(1n, x)`. At least one operand of eve
 ### Literal coercion (`IntoExpr`)
 
 ```ts
-export type LitOf<t extends EvsType> =
-  t extends NumericType ? bigint | number :
-  t extends 'address' ? `0x${string}` :
-  t extends 'bool' ? boolean :
-  t extends BytesNType ? `0x${string}` :
-  t extends 'string' ? string :
-  t extends 'bytes' ? `0x${string}` :
-  never
-export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>
+export type LitOf<t extends EvsType> = t extends NumericType
+  ? bigint | number
+  : t extends 'address'
+    ? `0x${string}`
+    : t extends 'bool'
+      ? boolean
+      : t extends BytesNType
+        ? `0x${string}`
+        : t extends 'string'
+          ? string
+          : t extends 'bytes'
+            ? `0x${string}`
+            : never;
+export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
 
 Coercion is **validated at recording time with the call-site loc**: `uint8` literal `300` →
@@ -311,79 +316,116 @@ to memory by CODECOPY on first use. Explicit constructor for when inference need
 Two id spaces, both dense integers: `ValueId` (every computed value) and `CellId` (every
 `s.let`). The program is a **structured tree** (not an arbitrary CFG): the builder can only
 produce structured control flow, so the IR keeps `if`/`while` as nested statement lists. This
-is the shader-ast lesson applied: the IR is *the* interchange format — serializable, versioned,
+is the shader-ast lesson applied: the IR is _the_ interchange format — serializable, versioned,
 diffable in snapshots, interpretable in JS, and printable in error messages.
 
 ```ts
 // src/ir/nodes.ts — everything here is JSON-safe plain data (bigints serialized as 0x-strings)
-export type ValueId = number
-export type CellId = number
-export type FnId = number
-export type SiteId = number          // stable id for revert-site mapping (sourceMap.sites)
+export type ValueId = number;
+export type CellId = number;
+export type FnId = number;
+export type SiteId = number; // stable id for revert-site mapping (sourceMap.sites)
 
-export interface SourceLoc { file: string; line: number; column: number }
+export interface SourceLoc {
+  file: string;
+  line: number;
+  column: number;
+}
 
 export interface ScriptIr {
-  readonly irVersion: 1
-  readonly name: string
-  readonly args: readonly { name: string; type: ArgType }[]
-  readonly values: readonly ValueInfo[]          // indexed by ValueId
-  readonly cells: readonly CellInfo[]            // indexed by CellId
-  readonly fns: readonly FnIr[]                  // indexed by FnId, topologically recorded
-  readonly body: readonly Stmt[]
-  readonly returns: readonly { name: string; type: EvsType; value: ValueId }[]
-  readonly loc: SourceLoc | null
+  readonly irVersion: 1;
+  readonly name: string;
+  readonly args: readonly { name: string; type: ArgType }[];
+  readonly values: readonly ValueInfo[]; // indexed by ValueId
+  readonly cells: readonly CellInfo[]; // indexed by CellId
+  readonly fns: readonly FnIr[]; // indexed by FnId, topologically recorded
+  readonly body: readonly Stmt[];
+  readonly returns: readonly { name: string; type: EvsType; value: ValueId }[];
+  readonly loc: SourceLoc | null;
 }
 
 export interface ValueInfo {
-  readonly type: EvsType
-  readonly loc: SourceLoc | null
-  readonly debugName?: string         // 'arg:pool', 'call:symbol#2', for disassembly comments
+  readonly type: EvsType;
+  readonly loc: SourceLoc | null;
+  readonly debugName?: string; // 'arg:pool', 'call:symbol#2', for disassembly comments
 }
-export interface CellInfo { readonly type: EvsType; readonly loc: SourceLoc | null; readonly debugName?: string }
+export interface CellInfo {
+  readonly type: EvsType;
+  readonly loc: SourceLoc | null;
+  readonly debugName?: string;
+}
 
 export interface FnIr {
-  readonly name: string
-  readonly params: readonly { name: string; type: EvsType; value: ValueId }[]
-  readonly results: readonly { type: EvsType }[]
-  readonly body: readonly Stmt[]
-  readonly resultValues: readonly ValueId[]      // values returned by the body callback
-  readonly loc: SourceLoc | null
+  readonly name: string;
+  readonly params: readonly { name: string; type: EvsType; value: ValueId }[];
+  readonly results: readonly { type: EvsType }[];
+  readonly body: readonly Stmt[];
+  readonly resultValues: readonly ValueId[]; // values returned by the body callback
+  readonly loc: SourceLoc | null;
 }
 
 export type BinOp =
-  | 'add' | 'sub' | 'mul' | 'div' | 'mod'                       // checked per type
-  | 'lt' | 'gt' | 'lte' | 'gte' | 'eq' | 'neq'                  // signedness from operand type
-  | 'and' | 'or' | 'bitand' | 'bitor' | 'bitxor' | 'shl' | 'shr'
-export type UnOp = 'not' | 'bitnot' | 'iszero'
-export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid' | 'gasleft'
+  | 'add'
+  | 'sub'
+  | 'mul'
+  | 'div'
+  | 'mod' // checked per type
+  | 'lt'
+  | 'gt'
+  | 'lte'
+  | 'gte'
+  | 'eq'
+  | 'neq' // signedness from operand type
+  | 'and'
+  | 'or'
+  | 'bitand'
+  | 'bitor'
+  | 'bitxor'
+  | 'shl'
+  | 'shr';
+export type UnOp = 'not' | 'bitnot' | 'iszero';
+export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid' | 'gasleft';
 
 export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
-  | { k: 'const'; out: ValueId; data: ConstData }                       // literal (word or data-segment ref)
+  | { k: 'const'; out: ValueId; data: ConstData } // literal (word or data-segment ref)
   | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'un'; op: UnOp; a: ValueId; out: ValueId }
   | { k: 'env'; op: EnvOp; out: ValueId }
-  | { k: 'convert'; a: ValueId; out: ValueId }                          // checked narrowing/widening
+  | { k: 'convert'; a: ValueId; out: ValueId } // checked narrowing/widening
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
-  | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }              // bounds-checked, Panic(0x32)
+  | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId } // bounds-checked, Panic(0x32)
   | { k: 'len'; a: ValueId; out: ValueId }
   | { k: 'cell.new'; cell: CellId; init: ValueId }
   | { k: 'cell.get'; cell: CellId; out: ValueId }
   | { k: 'cell.set'; cell: CellId; value: ValueId }
-  | { k: 'call'; target: ValueId; fnAbi: PlainAbiFunction; args: readonly ValueId[];
-      outs: readonly ValueId[]; mode: 'strict' | 'try'; successOut?: ValueId }
+  | {
+      k: 'call';
+      target: ValueId;
+      fnAbi: PlainAbiFunction;
+      args: readonly ValueId[];
+      outs: readonly ValueId[];
+      mode: 'strict' | 'try';
+      successOut?: ValueId;
+    }
   | { k: 'fncall'; fn: FnId; args: readonly ValueId[]; outs: readonly ValueId[] }
   | { k: 'if'; cond: ValueId; then: readonly Stmt[]; else: readonly Stmt[] }
   | { k: 'while'; header: readonly Stmt[]; cond: ValueId; body: readonly Stmt[] }
-)
+);
 export type ConstData =
-  | { kind: 'word'; hex: `0x${string}` }                                // canonical 32-byte value
-  | { kind: 'data'; hex: `0x${string}` }                                // pre-encoded memref payload [len|elems…]
-export interface PlainAbiFunction {                                     // the *runtime* abi item, de-genericized
-  readonly name: string; readonly selector: `0x${string}`
-  readonly inputs: readonly PlainAbiParam[]; readonly outputs: readonly PlainAbiParam[]
+  | { kind: 'word'; hex: `0x${string}` } // canonical 32-byte value
+  | { kind: 'data'; hex: `0x${string}` }; // pre-encoded memref payload [len|elems…]
+export interface PlainAbiFunction {
+  // the *runtime* abi item, de-genericized
+  readonly name: string;
+  readonly selector: `0x${string}`;
+  readonly inputs: readonly PlainAbiParam[];
+  readonly outputs: readonly PlainAbiParam[];
 }
-export interface PlainAbiParam { readonly name: string; readonly type: string; readonly components?: readonly PlainAbiParam[] }
+export interface PlainAbiParam {
+  readonly name: string;
+  readonly type: string;
+  readonly components?: readonly PlainAbiParam[];
+}
 ```
 
 Notes:
@@ -402,7 +444,7 @@ Notes:
   ~1–3µs per node at script scale; disable with `evscript(def, body, { locations: false })`.
 - **Validation** (`src/ir/validate.ts`): re-checks everything the builder enforces (types of
   operands per op, def-before-use respecting the scope rule, cell types, single trailing
-  return) so that *deserialized* IR is as trustworthy as recorded IR. `compile()` always
+  return) so that _deserialized_ IR is as trustworthy as recorded IR. `compile()` always
   validates first.
 - **Branding of handles** (builder-side, not IR): `ExprHandle` is a class carrying
   `{ owner: RecorderInternals, id: ValueId, type }` in private fields plus the throwing
@@ -417,13 +459,13 @@ Notes:
 
 ### Layout
 
-| Range | Use |
-|---|---|
-| `0x00–0x3f` | scratch (panic payload assembly, short-lived temporaries inside one lowering pattern) |
-| `0x40–0x5f` | free-memory pointer |
-| `0x60–0x7f` | zero slot — never written; the canonical empty `string`/`bytes`/array memref (tryCall failure values point here) |
-| `0x80 … frameEnd` | **static frame**: one 32-byte slot per arg, per cell, per multi-use value, per fn param/result (see §5) |
-| `frameEnd …` | bump-allocated dynamic data: sub-call returndata copies, dynamic literals, the output tuple |
+| Range             | Use                                                                                                              |
+| ----------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `0x00–0x3f`       | scratch (panic payload assembly, short-lived temporaries inside one lowering pattern)                            |
+| `0x40–0x5f`       | free-memory pointer                                                                                              |
+| `0x60–0x7f`       | zero slot — never written; the canonical empty `string`/`bytes`/array memref (tryCall failure values point here) |
+| `0x80 … frameEnd` | **static frame**: one 32-byte slot per arg, per cell, per multi-use value, per fn param/result (see §5)          |
+| `frameEnd …`      | bump-allocated dynamic data: sub-call returndata copies, dynamic literals, the output tuple                      |
 
 Prologue (first bytes of the runtime): `PUSH2 frameEnd PUSH1 0x40 MSTORE` (frameEnd computed at
 compile time; PUSH2 because frames can exceed 255 bytes).
@@ -439,7 +481,7 @@ Why: (1) the EvmScript prior-art shows stack scheduling is a search problem (A* 
 all cost, no user-visible benefit at eth_call gas budgets; (2) uniform slot codegen makes the
 disassembly *legible* — every value has an address, the disassembler annotates
 `MLOAD ; t7 symbol0`, and the PC→loc map is dense and honest; (3) weiroll's liveness-based slot
-reuse is the proven *later* optimization, and it slots in as a frame-allocator change without
+reuse is the proven *later\* optimization, and it slots in as a frame-allocator change without
 touching lowering. Cost bound: a script with 200 values uses 6.4KB of frame → memory expansion
 ≈ a few hundred gas (quadratic term starts mattering ~23KB; evm-target §4).
 
@@ -453,13 +495,13 @@ contiguous words, length static).
 
 - Allocation = `ptr := MLOAD(0x40); MSTORE(0x40, ptr + ceil32(size))`. Never freed.
 - **Transient scratch above the free pointer**: sub-call calldata buffers are written at
-  `MLOAD(0x40)` *without* bumping — they are dead the instant the call returns, and the
+  `MLOAD(0x40)` _without_ bumping — they are dead the instant the call returns, and the
   returndata copy then allocates (and bumps) over the same region. One consequence handled in
   §7: memory above the free pointer is **not** guaranteed zero, so the ABI encoder zero-pads
   dynamic tails explicitly instead of relying on fresh-zero memory.
 - **Loops + allocation**: allocations inside a loop body grow memory monotonically per
   iteration (e.g. a `s.call` per iteration). This is correct and bounded by the quadratic
-  memory cost; `compile()` emits a *warning diagnostic* (not an error) when a `call` or dynamic
+  memory cost; `compile()` emits a _warning diagnostic_ (not an error) when a `call` or dynamic
   literal materialization appears inside a `while` body: "allocates each iteration; N
   iterations × M bytes ≈ … memory" — debuggability over silent gas surprises. (A
   region-reset optimization — restore the free pointer at loop top when no allocation escapes —
@@ -494,7 +536,7 @@ export type EvsFn<params extends readonly FnParam[], r extends FnReturn> =
 ```
 
 The body callback runs **once, immediately**, inside an isolated recording scope whose only
-in-scope values are the param placeholders (outer values/cells are *not* capturable —
+in-scope values are the param placeholders (outer values/cells are _not_ capturable —
 `EvsScopeError` on touch; this keeps fns pure functions of their params and makes the frame
 story trivial). Calling the returned `EvsFn` records a `fncall` stmt with fresh output values.
 
@@ -563,7 +605,7 @@ Recording-time runtime checks: function exists in the runtime abi, is view/pure,
 overloaded (v0 rejects overloaded names with a loc'd error; viem's `ExtractAbiFunctionForArgs`
 pattern is the documented future fix), arg count matches, each literal arg validates against
 its ABI type. Selector computed at compile time with viem's `toFunctionSelector` (viem is a
-peer dependency of the *compiler*, which runs in TS — no keccak reimplementation).
+peer dependency of the _compiler_, which runs in TS — no keccak reimplementation).
 
 Output types not representable in v0 (`tuple` outputs, nested arrays) are a **recording-time**
 `EvsTypeError` ("`slot0` returns a tuple component of type `tuple` — not supported in evs v0"),
@@ -576,12 +618,12 @@ For each `call` stmt the compiler builds a `CalldataTemplate`:
 ```ts
 // src/codegen/call.ts (internal)
 interface CalldataTemplate {
-  size: number                                  // static size in v0 (dyn args contribute head+tail of known-at-runtime size — see below)
+  size: number; // static size in v0 (dyn args contribute head+tail of known-at-runtime size — see below)
   segments: readonly (
-    | { kind: 'const'; offset: number; bytes: Uint8Array }     // selector + all literal args, pre-encoded & merged
-    | { kind: 'word'; offset: number; value: ValueId }         // runtime word arg → MSTORE
-    | { kind: 'dyn'; headOffset: number; value: ValueId }      // runtime string/bytes arg → head offset + tail copy
-  )[]
+    | { kind: 'const'; offset: number; bytes: Uint8Array } // selector + all literal args, pre-encoded & merged
+    | { kind: 'word'; offset: number; value: ValueId } // runtime word arg → MSTORE
+    | { kind: 'dyn'; headOffset: number; value: ValueId } // runtime string/bytes arg → head offset + tail copy
+  )[];
 }
 ```
 
@@ -591,12 +633,12 @@ interface CalldataTemplate {
 - Mixed calls: const segments written first, then `MSTORE` per runtime word at its offset.
   Runtime `string`/`bytes` args make total size dynamic: heads are patched and tails MCOPY'd
   from the memref; size tracked in a stack temp. (v0 supports word + `bytes`/`string` runtime
-  args; runtime *array* args are recording-time-rejected, literal array args fold to const.)
+  args; runtime _array_ args are recording-time-rejected, literal array args fold to const.)
 - Buffer location: transient scratch at `MLOAD(0x40)`, not bumped (§4).
 
 ### The call itself + revert bubbling (strict mode)
 
-`STATICCALL(gas, addr, buf, argsSize, 0, 0)` with `retOffset/retSize = 0` — we *always* fetch
+`STATICCALL(gas, addr, buf, argsSize, 0, 0)` with `retOffset/retSize = 0` — we _always_ fetch
 returndata via RETURNDATACOPY afterwards (uniform, and immune to the "expected size" guessing
 game for dynamic outputs). On `success == 0`, bubble verbatim (works for `Error(string)`,
 `Panic`, custom errors — evm-target §5):
@@ -629,7 +671,7 @@ RETURNDATASIZE PUSH0 REVERT
      pools.ts:9:18").
    - try mode → jump to the call's `@zero_<site>` block: `successOut = 0`, every word output
      `= 0`, every dynamic/array output's slot = `0x60` (the zero slot — a valid empty memref).
-     A failed STATICCALL takes the same block. So `tryCall.success` is false on *either*
+     A failed STATICCALL takes the same block. So `tryCall.success` is false on _either_
      call failure or malformed returndata — the typed contract of `value` ("zero values, safe
      to use") holds unconditionally.
 
@@ -640,17 +682,24 @@ Worked example (the exact emitted sequence for `symbol()` → dynamic string) is
 ## 7. ABI encode/decode codegen — recursive head/tail walker, v0-limited, generality-ready
 
 One internal module owns both directions, parameterized over `PlainAbiParam` trees so that
-nested tuples later are a *capability* unlock, not a rewrite:
+nested tuples later are a _capability_ unlock, not a rewrite:
 
 ```ts
 // src/codegen/abi.ts
 export interface AbiCodegen {
   /** dispatch-time: decode top-level word args from calldata into frame slots */
-  emitCalldataDecode(asm: AsmBuilder, args: readonly { type: ArgType; slot: number }[]): void
+  emitCalldataDecode(asm: AsmBuilder, args: readonly { type: ArgType; slot: number }[]): void;
   /** returndata: copy + validate + bind outputs (used by call.ts; see §6) */
-  emitReturndataDecode(asm: AsmBuilder, outs: readonly { param: PlainAbiParam; slot: number }[], failTarget: LabelId): void
+  emitReturndataDecode(
+    asm: AsmBuilder,
+    outs: readonly { param: PlainAbiParam; slot: number }[],
+    failTarget: LabelId,
+  ): void;
   /** terminal RETURN: encode the single named tuple from frame slots at the free pointer */
-  emitReturnEncode(asm: AsmBuilder, components: readonly { param: PlainAbiParam; slot: number }[]): void
+  emitReturnEncode(
+    asm: AsmBuilder,
+    components: readonly { param: PlainAbiParam; slot: number }[],
+  ): void;
 }
 ```
 
@@ -660,16 +709,16 @@ export interface AbiCodegen {
 cleanup check + `MSTORE slot`. Cleanup checks (solc-compatible, revert(0,0) on dirty input —
 matching what every Solidity caller expects):
 
-| type | check |
-|---|---|
-| `address` | `raw == raw & (2^160−1)` |
-| `bool` | `raw < 2` |
-| `uintN<256` | `raw ≤ 2^N−1` |
-| `intN<256` | `SIGNEXTEND(N/8−1, raw) == raw` |
-| `bytesN<32` | `raw & (2^(256−8N)−1) == 0` |
-| `uint256`/`int256`/`bytes32` | none |
+| type                         | check                           |
+| ---------------------------- | ------------------------------- |
+| `address`                    | `raw == raw & (2^160−1)`        |
+| `bool`                       | `raw < 2`                       |
+| `uintN<256`                  | `raw ≤ 2^N−1`                   |
+| `intN<256`                   | `SIGNEXTEND(N/8−1, raw) == raw` |
+| `bytesN<32`                  | `raw & (2^(256−8N)−1) == 0`     |
+| `uint256`/`int256`/`bytes32` | none                            |
 
-v0 restricts *script args* to word types (decision 1); the decoder interface above already
+v0 restricts _script args_ to word types (decision 1); the decoder interface above already
 takes `PlainAbiParam`, so dynamic args later reuse `emitReturndataDecode`'s bounds-checked
 walker pointed at calldata.
 
@@ -737,7 +786,7 @@ Mechanics (per evm-target §3):
 - **Verification passes** (assertion failures are `EvsInternalError` — they indicate compiler
   bugs, and they say so):
   1. JUMPDEST scan exactly as consensus does (skip PUSH immediates); assert every patched
-     target is a JUMPDEST *opcode*, every `dataLabel` is never jump-targeted.
+     target is a JUMPDEST _opcode_, every `dataLabel` is never jump-targeted.
   2. Stack-height simulation: linear walk using `OPS[op].pops/pushes`, joining at labels via
      the optional `stackHeight` annotations codegen attaches (loop headers, fn entries);
      mismatch or underflow → error naming the label and the originating loc. Cheap, and it has
@@ -750,25 +799,44 @@ Mechanics (per evm-target §3):
 ```ts
 // src/asm/sourcemap.ts
 export interface SourceMap {
-  readonly version: 1
-  readonly segments: readonly { pc: number; len: number; loc: SourceLoc | null; note?: string }[]  // sorted, non-overlapping
-  readonly sites: readonly { id: SiteId; kind: 'panic' | 'decode' | 'call' | 'stmt'; loc: SourceLoc | null; detail: string }[]
-  readonly labels: readonly { pc: number; name: string }[]
+  readonly version: 1;
+  readonly segments: readonly { pc: number; len: number; loc: SourceLoc | null; note?: string }[]; // sorted, non-overlapping
+  readonly sites: readonly {
+    id: SiteId;
+    kind: 'panic' | 'decode' | 'call' | 'stmt';
+    loc: SourceLoc | null;
+    detail: string;
+  }[];
+  readonly labels: readonly { pc: number; name: string }[];
 }
-export function lookupPc(map: SourceMap, pc: number): { loc: SourceLoc | null; note?: string } | undefined
+export function lookupPc(
+  map: SourceMap,
+  pc: number,
+): { loc: SourceLoc | null; note?: string } | undefined;
 
 // src/asm/disasm.ts — independent of the assembler (consumes raw bytecode), so it doubles as
 // a cross-check: disassemble(assemble(x)) round-trips in property tests.
 export interface DisasmLine {
-  pc: number; raw: `0x${string}`; mnemonic: string
-  pushValue?: `0x${string}`; targetLabel?: string; label?: string
-  loc?: SourceLoc | null; note?: string
+  pc: number;
+  raw: `0x${string}`;
+  mnemonic: string;
+  pushValue?: `0x${string}`;
+  targetLabel?: string;
+  label?: string;
+  loc?: SourceLoc | null;
+  note?: string;
 }
-export interface Disassembly { readonly lines: readonly DisasmLine[]; format(opts?: { locs?: boolean }): string }
-export function disassemble(bytecode: `0x${string}` | Uint8Array, sourceMap?: SourceMap): Disassembly
+export interface Disassembly {
+  readonly lines: readonly DisasmLine[];
+  format(opts?: { locs?: boolean }): string;
+}
+export function disassemble(
+  bytecode: `0x${string}` | Uint8Array,
+  sourceMap?: SourceMap,
+): Disassembly;
 ```
 
-`format()` output style (this is a *product*, prior-art lesson 7):
+`format()` output style (this is a _product_, prior-art lesson 7):
 
 ```
 0x004a  @main:           JUMPDEST
@@ -810,10 +878,10 @@ output does not affect the selector (selectors hash inputs only): `poolMeta(addr
 ```ts
 // src/compile.ts
 export interface CompileOptions {
-  evmVersion?: EvmVersion          // default 'cancun'; 'shanghai' drops MCOPY; 'paris' also drops PUSH0
-  debug?: boolean                  // default false; true → panics revert EvsPanic(uint256 code, uint256 site)
-  peephole?: (nodes: readonly AsmNode[]) => AsmNode[]
-  locations?: boolean              // default true (carried from recording; false strips locs from sourceMap)
+  evmVersion?: EvmVersion; // default 'cancun'; 'shanghai' drops MCOPY; 'paris' also drops PUSH0
+  debug?: boolean; // default false; true → panics revert EvsPanic(uint256 code, uint256 site)
+  peephole?: (nodes: readonly AsmNode[]) => AsmNode[];
+  locations?: boolean; // default true (carried from recording; false strips locs from sourceMap)
 }
 
 export interface EvsScript<
@@ -821,46 +889,50 @@ export interface EvsScript<
   args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
-  readonly name: name
-  readonly ir: ScriptIr                            // frozen, serializable
-  readonly abi: ScriptAbi<name, args, ret>         // literal-typed AND the runtime value
-  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>
+  readonly name: name;
+  readonly ir: ScriptIr; // frozen, serializable
+  readonly abi: ScriptAbi<name, args, ret>; // literal-typed AND the runtime value
+  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>;
 }
 
-export interface CompiledEvsScript<name extends string, args extends readonly ArgSpec[], ret extends Record<string, Expr>> {
-  readonly abi: ScriptAbi<name, args, ret>
-  readonly runtimeBytecode: `0x${string}`          // ≤ 24,576 bytes, enforced
-  readonly initBytecode: `0x${string}`             // 61 RRRR 80 600A 5F 39 5F F3 ++ runtime (paris: 5F→3D)
-  readonly sourceMap: SourceMap
-  readonly ir: ScriptIr
-  readonly options: Readonly<Required<CompileOptions>>
-  toViem(): { readonly abi: ScriptAbi<name, args, ret>; readonly code: `0x${string}` }
+export interface CompiledEvsScript<
+  name extends string,
+  args extends readonly ArgSpec[],
+  ret extends Record<string, Expr>,
+> {
+  readonly abi: ScriptAbi<name, args, ret>;
+  readonly runtimeBytecode: `0x${string}`; // ≤ 24,576 bytes, enforced
+  readonly initBytecode: `0x${string}`; // 61 RRRR 80 600A 5F 39 5F F3 ++ runtime (paris: 5F→3D)
+  readonly sourceMap: SourceMap;
+  readonly ir: ScriptIr;
+  readonly options: Readonly<Required<CompileOptions>>;
+  toViem(): { readonly abi: ScriptAbi<name, args, ret>; readonly code: `0x${string}` };
   toViem(opts: { mode: 'stateOverride'; address?: Address }): {
-    readonly abi: ScriptAbi<name, args, ret>
-    readonly address: Address
-    readonly stateOverride: readonly [{ readonly address: Address; readonly code: `0x${string}` }]
-  }
-  disassemble(): Disassembly
-  explainRevert(data: `0x${string}`): RevertExplanation
+    readonly abi: ScriptAbi<name, args, ret>;
+    readonly address: Address;
+    readonly stateOverride: readonly [{ readonly address: Address; readonly code: `0x${string}` }];
+  };
+  disassemble(): Disassembly;
+  explainRevert(data: `0x${string}`): RevertExplanation;
 }
 
 export interface RevertExplanation {
-  kind: 'panic' | 'evs-panic' | 'evs-decode' | 'error-string' | 'custom' | 'empty'
-  message: string                   // "arithmetic overflow (Panic 0x11) in checked add — recorded at pools.ts:12:30"
-  panicCode?: bigint
-  site?: { id: SiteId; loc: SourceLoc | null; detail: string }
-  raw: `0x${string}`
+  kind: 'panic' | 'evs-panic' | 'evs-decode' | 'error-string' | 'custom' | 'empty';
+  message: string; // "arithmetic overflow (Panic 0x11) in checked add — recorded at pools.ts:12:30"
+  panicCode?: bigint;
+  site?: { id: SiteId; loc: SourceLoc | null; detail: string };
+  raw: `0x${string}`;
 }
 ```
 
 - `toViem()` (no args) = **deployless**, the portable default; returns `code: initBytecode` —
-  the field named `code` is *only ever* creation bytecode, and there is deliberately no
+  the field named `code` is _only ever_ creation bytecode, and there is deliberately no
   `bytecode` field on the artifact (the §1.3 silent-failure footgun is fenced by naming:
   `runtimeBytecode` / `initBytecode` / `code`). `DEFAULT_SCRIPT_ADDRESS =
-  0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` for override mode (viem-integration §5.1).
+0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` for override mode (viem-integration §5.1).
 - The generated ABI includes the function **plus error declarations** so viem decodes our
   reverts by name: `EvsDecodeError(uint256 site)` always, `EvsPanic(uint256 code, uint256 site)`
-  always declared (only *emitted* in debug mode) — declaring both keeps `ScriptAbi`'s literal
+  always declared (only _emitted_ in debug mode) — declaring both keeps `ScriptAbi`'s literal
   type independent of `CompileOptions`. Standard `Panic(uint256)`/`Error(string)` need no ABI
   entries (viem built-ins).
 - `compile()` enforcement: EIP-170 (`runtimeBytecode ≤ 24,576` → `EvsCompileError` with a
@@ -890,39 +962,52 @@ order-safe tuple mapping from decision 1:
 
 ```ts
 // src/abi/artifact.ts
-type ReturnSpecToComponents<ret extends Record<string, Expr>,
-  keys extends readonly unknown[] = UnionToTuple<keyof ret>> = {
+type ReturnSpecToComponents<
+  ret extends Record<string, Expr>,
+  keys extends readonly unknown[] = UnionToTuple<keyof ret>,
+> = {
   readonly [i in keyof keys]: {
-    readonly name: keys[i] & string
-    readonly type: ret[keys[i] & keyof ret] extends Expr<infer t> ? t : never
-  }
-}
+    readonly name: keys[i] & string;
+    readonly type: ret[keys[i] & keyof ret] extends Expr<infer t> ? t : never;
+  };
+};
 export type ScriptAbi<
   name extends string,
   args extends readonly ArgSpec[],
   ret extends Record<string, Expr>,
 > = readonly [
   {
-    readonly type: 'function'
-    readonly name: name
-    readonly stateMutability: 'view'
-    readonly inputs: ArgsToAbiInputs<args>
-    readonly outputs: readonly [{
-      readonly name: 'result'
-      readonly type: 'tuple'
-      readonly components: ReturnSpecToComponents<ret>
-    }]
+    readonly type: 'function';
+    readonly name: name;
+    readonly stateMutability: 'view';
+    readonly inputs: ArgsToAbiInputs<args>;
+    readonly outputs: readonly [
+      {
+        readonly name: 'result';
+        readonly type: 'tuple';
+        readonly components: ReturnSpecToComponents<ret>;
+      },
+    ];
   },
-  { readonly type: 'error'; readonly name: 'EvsDecodeError'
-    readonly inputs: readonly [{ readonly name: 'site'; readonly type: 'uint256' }] },
-  { readonly type: 'error'; readonly name: 'EvsPanic'
+  {
+    readonly type: 'error';
+    readonly name: 'EvsDecodeError';
+    readonly inputs: readonly [{ readonly name: 'site'; readonly type: 'uint256' }];
+  },
+  {
+    readonly type: 'error';
+    readonly name: 'EvsPanic';
     readonly inputs: readonly [
       { readonly name: 'code'; readonly type: 'uint256' },
       { readonly name: 'site'; readonly type: 'uint256' },
-    ] },
-]
-export function buildScriptAbi(name: string, args: readonly ArgSpec[],
-  returns: readonly { name: string; type: EvsType }[]): Abi   // runtime mirror; component order = Object.keys insertion order
+    ];
+  },
+];
+export function buildScriptAbi(
+  name: string,
+  args: readonly ArgSpec[],
+  returns: readonly { name: string; type: EvsType }[],
+): Abi; // runtime mirror; component order = Object.keys insertion order
 ```
 
 `ReturnSpecToComponents` uses `UnionToTuple` — order-unstable, **accepted**: outputs are an
@@ -935,10 +1020,10 @@ decision 1 + the settled output decision.
 
 - `LitOf` consumes abitype's Register-resolved primitives where possible: the implementation of
   `LitOf<'address'>` is `Address` (= `ResolvedRegister['addressType']`) and numeric literal
-  acceptance is `bigint | number` regardless of the Register's `intType` split — *inputs* are
-  permissive, *outputs* are exact (viem's `Widen` philosophy, abitype-typing §2 pattern 4).
+  acceptance is `bigint | number` regardless of the Register's `intType` split — _inputs_ are
+  permissive, _outputs_ are exact (viem's `Widen` philosophy, abitype-typing §2 pattern 4).
 - Graceful widening: every generic boundary follows `abi extends Abi ? (Abi extends abi ?
-  permissive : inferred) : permissive`; a non-const ABI passed to `s.call` degrades to
+permissive : inferred) : permissive`; a non-const ABI passed to `s.call` degrades to
   `functionName: string`, `args: readonly unknown[]`, output `Expr<EvsType>` — never a hard
   error (pattern 1). `[x] extends [never]` guards after every `Extract` (pattern 2).
 - `functionName: name | ExtractAbiFunctionNames<…>` union keeps IDE autocomplete before `name`
@@ -973,38 +1058,54 @@ Already specified above: `core/types.ts` (§1), `core/errors.ts` (§12), `ir/nod
 
 ```ts
 // core/loc.ts
-export function captureLoc(): SourceLoc | null            // lazy stack parse; null when disabled/unparseable
+export function captureLoc(): SourceLoc | null; // lazy stack parse; null when disabled/unparseable
 
 // ir/interp.ts — the shader-ast-js move: a reference interpreter over the IR
 export interface MockChain {
-  staticcall(req: { to: `0x${string}`; data: `0x${string}` }): { success: boolean; data: `0x${string}` }
+  staticcall(req: { to: `0x${string}`; data: `0x${string}` }): {
+    success: boolean;
+    data: `0x${string}`;
+  };
 }
 export interface InterpResult {
   outcome:
-    | { kind: 'return'; values: Record<string, unknown> }                      // JS-native: bigint/string/boolean/Hex/arrays
-    | { kind: 'revert'; data: `0x${string}`; explanation: RevertExplanation }
-  trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[]   // opt-in step log
+    | { kind: 'return'; values: Record<string, unknown> } // JS-native: bigint/string/boolean/Hex/arrays
+    | { kind: 'revert'; data: `0x${string}`; explanation: RevertExplanation };
+  trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[]; // opt-in step log
 }
-export function interpret(ir: ScriptIr, args: readonly unknown[], chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number }): InterpResult
+export function interpret(
+  ir: ScriptIr,
+  args: readonly unknown[],
+  chain: MockChain,
+  opts?: { trace?: boolean; maxSteps?: number },
+): InterpResult;
 
 // codegen/program.ts — the single codegen entry point compile.ts consumes
-export interface LowerResult { nodes: readonly AsmNode[]; frameEnd: number }
-export function lowerProgram(ir: ScriptIr, opts: Readonly<Required<CompileOptions>>): LowerResult
+export interface LowerResult {
+  nodes: readonly AsmNode[];
+  frameEnd: number;
+}
+export function lowerProgram(ir: ScriptIr, opts: Readonly<Required<CompileOptions>>): LowerResult;
 
 // codegen/frame.ts
 export interface FrameLayout {
-  slotOfValue(v: ValueId): number | null      // null = folded constant
-  slotOfCell(c: CellId): number
-  fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] }
-  frameEnd: number
+  slotOfValue(v: ValueId): number | null; // null = folded constant
+  slotOfCell(c: CellId): number;
+  fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] };
+  frameEnd: number;
 }
-export function layoutFrames(ir: ScriptIr): FrameLayout
+export function layoutFrames(ir: ScriptIr): FrameLayout;
 
 // test/harness/evm.ts — @ethereumjs/evm in-process runner (unit-test tier)
-export interface EvmFixture { contracts?: Record<`0x${string}`, `0x${string}`>; evmVersion?: EvmVersion }
-export async function execRuntime(runtime: `0x${string}`, calldata: `0x${string}`, fixture?: EvmFixture):
-  Promise<{ success: boolean; data: `0x${string}`; gasUsed: bigint }>
+export interface EvmFixture {
+  contracts?: Record<`0x${string}`, `0x${string}`>;
+  evmVersion?: EvmVersion;
+}
+export async function execRuntime(
+  runtime: `0x${string}`,
+  calldata: `0x${string}`,
+  fixture?: EvmFixture,
+): Promise<{ success: boolean; data: `0x${string}`; gasUsed: bigint }>;
 ```
 
 ### Dependency order & the six streams
@@ -1015,14 +1116,14 @@ core ─┬─→ ir ────┬─→ builder
       └─→ asm    └─→ codegen ─→ compile/viem ─→ integration
 ```
 
-| Stream | Modules | Depends on | Unit tests |
-|---|---|---|---|
-| **A: core + abi** | core/*, abi/artifact | — | exhaustive `EvsType` validation table; `buildScriptAbi` runtime↔type agreement via `expectTypeOf` + `satisfies Abi`; loc capture under bun/node stack formats |
-| **B: IR + interp** | ir/* | core | validate accepts/rejects hand-built IRs (each Stmt kind, scope violations, type mismatches); interp golden tests over hand-built IRs with a scripted MockChain incl. revert/decode-fail paths; JSON round-trip `deserialize(serialize(ir))` deep-equals |
-| **C: builder** | builder/* | core, ir (nodes only) | records expected IR snapshots for every API; every `EvsTypeError`/`EvsScopeError`/`EvsStagingError` trigger has a test asserting message + loc; type-level tests (`expectTypeOf` on `s.call` inference, `@ts-expect-error` on nonpayable fns / wrong arg types) |
-| **D: asm** | asm/* | core | assemble→disassemble round-trip property tests (incl. `0x5B` inside PUSH data); label patching; stack-height verifier catches seeded bugs; paris PUSH0-lowering; hand-assembled fixtures executed on `execRuntime` (e.g. RUNTIME_42 from viem-integration App. A) |
-| **E: codegen** | codegen/* | ir, asm, abi | per-pattern: lower a one-stmt IR, run on `execRuntime`, assert returndata AND disassembly snapshot AND sourceMap segments; checked-op matrix (boundary values for every width, signed cases incl. `int256 min / −1`); decode bounds fuzz (malformed returndata → EvsDecodeError, never OOB halt); pre-cancun memcpy path |
-| **F: compile + viem + harness** | compile.ts, viem.ts, test/harness/*, integration | all | artifact shape; EIP-170 enforcement (synthetic huge script); `toViem()` spreads typecheck into `readContract` (tsd); **differential suite**: for each example script, `interpret(ir, …)` vs `execRuntime(compiled, …)` agree; anvil (prool, viem's `VITEST_POOL_ID` pattern, stack-testing §3) integration: both modes, mainnet-fork WETH `symbol()`, deployless-constructor-return regression (foundry #4549), revert bubbling end-to-end through viem error decoding |
+| Stream                          | Modules                                           | Depends on            | Unit tests                                                                                                                                                                                                                                                                                                                                                                                                                                                             |
+| ------------------------------- | ------------------------------------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| **A: core + abi**               | core/\*, abi/artifact                             | —                     | exhaustive `EvsType` validation table; `buildScriptAbi` runtime↔type agreement via `expectTypeOf` + `satisfies Abi`; loc capture under bun/node stack formats                                                                                                                                                                                                                                                                                                          |
+| **B: IR + interp**              | ir/\*                                             | core                  | validate accepts/rejects hand-built IRs (each Stmt kind, scope violations, type mismatches); interp golden tests over hand-built IRs with a scripted MockChain incl. revert/decode-fail paths; JSON round-trip `deserialize(serialize(ir))` deep-equals                                                                                                                                                                                                                |
+| **C: builder**                  | builder/\*                                        | core, ir (nodes only) | records expected IR snapshots for every API; every `EvsTypeError`/`EvsScopeError`/`EvsStagingError` trigger has a test asserting message + loc; type-level tests (`expectTypeOf` on `s.call` inference, `@ts-expect-error` on nonpayable fns / wrong arg types)                                                                                                                                                                                                        |
+| **D: asm**                      | asm/\*                                            | core                  | assemble→disassemble round-trip property tests (incl. `0x5B` inside PUSH data); label patching; stack-height verifier catches seeded bugs; paris PUSH0-lowering; hand-assembled fixtures executed on `execRuntime` (e.g. RUNTIME_42 from viem-integration App. A)                                                                                                                                                                                                      |
+| **E: codegen**                  | codegen/\*                                        | ir, asm, abi          | per-pattern: lower a one-stmt IR, run on `execRuntime`, assert returndata AND disassembly snapshot AND sourceMap segments; checked-op matrix (boundary values for every width, signed cases incl. `int256 min / −1`); decode bounds fuzz (malformed returndata → EvsDecodeError, never OOB halt); pre-cancun memcpy path                                                                                                                                               |
+| **F: compile + viem + harness** | compile.ts, viem.ts, test/harness/\*, integration | all                   | artifact shape; EIP-170 enforcement (synthetic huge script); `toViem()` spreads typecheck into `readContract` (tsd); **differential suite**: for each example script, `interpret(ir, …)` vs `execRuntime(compiled, …)` agree; anvil (prool, viem's `VITEST_POOL_ID` pattern, stack-testing §3) integration: both modes, mainnet-fork WETH `symbol()`, deployless-constructor-return regression (foundry #4549), revert bubbling end-to-end through viem error decoding |
 
 Streams A–D start immediately (A is a day of work and unblocks the rest); C and E both code
 against `ir/nodes.ts` as the contract; B's interpreter is E/F's oracle. `bun test` runs in tier
@@ -1037,20 +1138,28 @@ per the stack report's "bun test ≠ vitest" pitfall).
 ```ts
 // src/core/errors.ts
 export type EvsErrorCode =
-  | 'STAGING_MISUSE' | 'TYPE_MISMATCH' | 'LITERAL_RANGE' | 'SCOPE_VIOLATION'
-  | 'FOREIGN_HANDLE' | 'RECORDING_CLOSED' | 'UNSUPPORTED_V0' | 'ABI_SHAPE'
-  | 'COMPILE_LIMIT' | 'EVM_VERSION' | 'INTERNAL'
+  | 'STAGING_MISUSE'
+  | 'TYPE_MISMATCH'
+  | 'LITERAL_RANGE'
+  | 'SCOPE_VIOLATION'
+  | 'FOREIGN_HANDLE'
+  | 'RECORDING_CLOSED'
+  | 'UNSUPPORTED_V0'
+  | 'ABI_SHAPE'
+  | 'COMPILE_LIMIT'
+  | 'EVM_VERSION'
+  | 'INTERNAL';
 
 export class EvsError extends Error {
-  readonly code: EvsErrorCode
-  readonly loc: SourceLoc | null            // where the offending API call happened
-  readonly relatedLocs: readonly { label: string; loc: SourceLoc | null }[]  // e.g. where the value was recorded
+  readonly code: EvsErrorCode;
+  readonly loc: SourceLoc | null; // where the offending API call happened
+  readonly relatedLocs: readonly { label: string; loc: SourceLoc | null }[]; // e.g. where the value was recorded
 }
-export class EvsStagingError extends EvsError {}   // valueOf/toPrimitive/template-literal on a handle
-export class EvsTypeError extends EvsError {}      // op/arg type mismatch, literal range, empty return key, overloaded fn name
-export class EvsScopeError extends EvsError {}     // foreign handle, use-after-scope-close, use-after-return, capture in s.fn
-export class EvsCompileError extends EvsError {}   // EIP-170, evmVersion gating, unsupported-for-target
-export class EvsInternalError extends EvsError {}  // verifier failures: "this is a bug in evs, please report" + IR snapshot hint
+export class EvsStagingError extends EvsError {} // valueOf/toPrimitive/template-literal on a handle
+export class EvsTypeError extends EvsError {} // op/arg type mismatch, literal range, empty return key, overloaded fn name
+export class EvsScopeError extends EvsError {} // foreign handle, use-after-scope-close, use-after-return, capture in s.fn
+export class EvsCompileError extends EvsError {} // EIP-170, evmVersion gating, unsupported-for-target
+export class EvsInternalError extends EvsError {} // verifier failures: "this is a bug in evs, please report" + IR snapshot hint
 ```
 
 Principles:
@@ -1075,27 +1184,27 @@ Principles:
 
 ## 13. Research-flagged constraints and how the design answers them
 
-| Constraint (source) | Answer in this design |
-|---|---|
+| Constraint (source)                                                                  | Answer in this design                                                                                                                                                                                                                |
+| ------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ | ------------------------------------------------- |
 | `code` must be creation bytecode; raw runtime fails silently (viem-integration §1.3) | artifact exposes `runtimeBytecode`/`initBytecode`; `toViem()` only ever puts `initBytecode` under `code`; integration test asserts deployless 42-fixture works and a deliberately-raw-runtime call returns empty (regression canary) |
-| RETURNDATACOPY OOB = exceptional halt, all gas (evm-target §2) | compiler invariant: RETURNDATACOPY only with `size = RETURNDATASIZE`, offset 0 (§6); all offset/len validation happens on the *copy* in memory with 2^64 + bounds guards |
-| JUMPDEST validity / PUSH-immediate scanning (evm-target §3) | PUSH2-only label patching; post-assembly consensus-identical scan + target assertion (§8) |
-| EIP-170 24,576 / EIP-3860 (evm-target §4) | `EvsCompileError(COMPILE_LIMIT)` with per-region size breakdown; subroutines (not inlining) keep size linear (§5) |
-| eth_call gas caps: anvil 30M default, geth 50M (evm-target §4) | test harness pins `--gas-limit 100000000`; docs state 50M production floor; naive codegen ≈ thousands of gas per call — no realistic script approaches it |
-| warm/cold access 2600/100 (evm-target §2) | no action; repeated calls to one address are warm automatically |
-| `TSTORE` halts in static context (evm-target §1) | never emitted; no transient-storage feature in the surface |
-| UnionToTuple order instability (abitype-typing §4.2) | inputs are an ordered ArgSpec tuple (decision 1); outputs are an order-irrelevant named-tuple object; CI type-test reproduces the §4.2 scenario |
-| any unnamed tuple component degrades object→array (abitype-typing §4.3) | empty-string return keys rejected at recording time |
-| abitype `int/uintN≤48 → number` (abitype-typing §3) | documented; `LitOf` accepts `bigint|number` for all numerics; outputs follow Register |
-| single abitype copy needed for Register augmentation (abitype-typing §4.4) | evs declares `abitype` matching viem's range; consumes `Address`/`AbiParameterToPrimitiveType` rather than hardcoding |
-| viem types are patch-version-volatile (abitype-typing intro) | CI pins exact viem patch for type tests |
-| PyTeal: silent host-language misuse, late sourcemaps (prior-art §2) | value semantics + throwing brands + loc on every node + sourceMap/disassembler/explainRevert from day one |
-| weiroll: untyped handles, "must record" footgun (prior-art §1) | recording *is* the only way to get a handle; foreign-handle/closed-recorder errors |
-| anvil deployless constructor-return history (stack-testing §3) | dedicated integration test on pinned anvil for the `code` path; `stateOverride` + `anvil_setCode` as primary tested paths |
-| stateOverride doesn't clear target storage (viem-integration §3.1) | `DEFAULT_SCRIPT_ADDRESS` vanity constant; scripts never SLOAD |
-| Fusaka tx gas cap 2^24 doesn't bind eth_call (evm-target §1) | noted in docs as a *reason* the eth_call model matters; no design impact |
-| TS 6 `tsc file.ts` TS5112 (abitype-typing) | CI scripts use project configs / `--ignoreConfig` |
-| ESM-only, tsc-emitted d.ts, `bun test` vs vitest split (stack-testing §2,5) | adopted as-is; no bundler in the loop |
+| RETURNDATACOPY OOB = exceptional halt, all gas (evm-target §2)                       | compiler invariant: RETURNDATACOPY only with `size = RETURNDATASIZE`, offset 0 (§6); all offset/len validation happens on the _copy_ in memory with 2^64 + bounds guards                                                             |
+| JUMPDEST validity / PUSH-immediate scanning (evm-target §3)                          | PUSH2-only label patching; post-assembly consensus-identical scan + target assertion (§8)                                                                                                                                            |
+| EIP-170 24,576 / EIP-3860 (evm-target §4)                                            | `EvsCompileError(COMPILE_LIMIT)` with per-region size breakdown; subroutines (not inlining) keep size linear (§5)                                                                                                                    |
+| eth_call gas caps: anvil 30M default, geth 50M (evm-target §4)                       | test harness pins `--gas-limit 100000000`; docs state 50M production floor; naive codegen ≈ thousands of gas per call — no realistic script approaches it                                                                            |
+| warm/cold access 2600/100 (evm-target §2)                                            | no action; repeated calls to one address are warm automatically                                                                                                                                                                      |
+| `TSTORE` halts in static context (evm-target §1)                                     | never emitted; no transient-storage feature in the surface                                                                                                                                                                           |
+| UnionToTuple order instability (abitype-typing §4.2)                                 | inputs are an ordered ArgSpec tuple (decision 1); outputs are an order-irrelevant named-tuple object; CI type-test reproduces the §4.2 scenario                                                                                      |
+| any unnamed tuple component degrades object→array (abitype-typing §4.3)              | empty-string return keys rejected at recording time                                                                                                                                                                                  |
+| abitype `int/uintN≤48 → number` (abitype-typing §3)                                  | documented; `LitOf` accepts `bigint                                                                                                                                                                                                  | number` for all numerics; outputs follow Register |
+| single abitype copy needed for Register augmentation (abitype-typing §4.4)           | evs declares `abitype` matching viem's range; consumes `Address`/`AbiParameterToPrimitiveType` rather than hardcoding                                                                                                                |
+| viem types are patch-version-volatile (abitype-typing intro)                         | CI pins exact viem patch for type tests                                                                                                                                                                                              |
+| PyTeal: silent host-language misuse, late sourcemaps (prior-art §2)                  | value semantics + throwing brands + loc on every node + sourceMap/disassembler/explainRevert from day one                                                                                                                            |
+| weiroll: untyped handles, "must record" footgun (prior-art §1)                       | recording _is_ the only way to get a handle; foreign-handle/closed-recorder errors                                                                                                                                                   |
+| anvil deployless constructor-return history (stack-testing §3)                       | dedicated integration test on pinned anvil for the `code` path; `stateOverride` + `anvil_setCode` as primary tested paths                                                                                                            |
+| stateOverride doesn't clear target storage (viem-integration §3.1)                   | `DEFAULT_SCRIPT_ADDRESS` vanity constant; scripts never SLOAD                                                                                                                                                                        |
+| Fusaka tx gas cap 2^24 doesn't bind eth_call (evm-target §1)                         | noted in docs as a _reason_ the eth_call model matters; no design impact                                                                                                                                                             |
+| TS 6 `tsc file.ts` TS5112 (abitype-typing)                                           | CI scripts use project configs / `--ignoreConfig`                                                                                                                                                                                    |
+| ESM-only, tsc-emitted d.ts, `bun test` vs vitest split (stack-testing §2,5)          | adopted as-is; no bundler in the loop                                                                                                                                                                                                |
 
 ---
 
@@ -1209,12 +1318,15 @@ path sets `slot[success]=1`.
 ### 14.3 While loop with `s.let` counter — sum 0..n−1
 
 ```ts
-const total = s.let('uint256', 0n)
-const i = s.let('uint256', 0n)
-s.while(() => i.get().lt(s.args.n), () => {
-  total.set(total.get().add(i.get()))
-  i.set(i.get().add(1n))
-})
+const total = s.let('uint256', 0n);
+const i = s.let('uint256', 0n);
+s.while(
+  () => i.get().lt(s.args.n),
+  () => {
+    total.set(total.get().add(i.get()));
+    i.set(i.get().add(1n));
+  },
+);
 ```
 
 Frame: `n`→0x80, cell `total`→0xA0, cell `i`→0xC0; values `v1`(i.get)→0xE0, `v2`(lt)→0x100,
@@ -1259,7 +1371,7 @@ PUSH0  PUSH1 0xC0  MSTORE
 ```
 
 The `MSTORE slot / MLOAD slot` back-to-back pairs are exactly what the sample store/load-fusion
-peephole (§8) removes — shown unfused because *this is the honest v0 output* and the uniformity
+peephole (§8) removes — shown unfused because _this is the honest v0 output_ and the uniformity
 is what makes the disassembly line-mappable. ~60 gas/iteration of overhead; 10,000 iterations
 ≈ 1.4M gas — far inside eth_call budgets.
 

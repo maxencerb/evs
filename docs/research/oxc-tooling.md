@@ -8,12 +8,12 @@ oxc.rs docs on this date; CLI help text captured from the actual published binar
 
 ## 1. Versions (verified on npm, 2026-06-11)
 
-| Package | Latest version | Notes |
-|---|---|---|
-| `oxlint` | **1.69.0** | Stable (1.x since mid-2025). Node engines: `^20.19.0 \|\| >=22.12.0` (native binary; runs fine under Bun via `bunx`/`bun run`). |
-| `oxfmt` | **0.54.0** | **Beta** (pre-1.0). Beta announced 2026-02-24; passes 100% of Prettier's JS/TS conformance tests. |
-| `oxlint-tsgolint` | **0.23.0** | Type-aware linting backend (typescript-go). `oxlint` declares it as an **optional peerDependency** `oxlint-tsgolint: >=0.22.1`. |
-| `@oxlint/migrate` | **1.69.0** | Converts an existing ESLint config to `.oxlintrc.json` (`npx @oxlint/migrate`). Versioned in lockstep with oxlint. |
+| Package           | Latest version | Notes                                                                                                                           |
+| ----------------- | -------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `oxlint`          | **1.69.0**     | Stable (1.x since mid-2025). Node engines: `^20.19.0 \|\| >=22.12.0` (native binary; runs fine under Bun via `bunx`/`bun run`). |
+| `oxfmt`           | **0.54.0**     | **Beta** (pre-1.0). Beta announced 2026-02-24; passes 100% of Prettier's JS/TS conformance tests.                               |
+| `oxlint-tsgolint` | **0.23.0**     | Type-aware linting backend (typescript-go). `oxlint` declares it as an **optional peerDependency** `oxlint-tsgolint: >=0.22.1`. |
+| `@oxlint/migrate` | **1.69.0**     | Converts an existing ESLint config to `.oxlintrc.json` (`npx @oxlint/migrate`). Versioned in lockstep with oxlint.              |
 
 Sources: <https://www.npmjs.com/package/oxlint>, <https://www.npmjs.com/package/oxfmt>,
 `npm view oxlint version peerDependencies peerDependenciesMeta engines`.
@@ -29,7 +29,7 @@ Docs: <https://oxc.rs/docs/guide/usage/linter/config.html>,
 ### 2.1 Config file: `.oxlintrc.json`
 
 - File names searched: **`.oxlintrc.json`** (JSONC — comments allowed) or **`oxlint.config.ts`**
-  (TS/JS config is *experimental* and requires running via Node.js per the CLI help — for a Bun
+  (TS/JS config is _experimental_ and requires running via Node.js per the CLI help — for a Bun
   monorepo, **use `.oxlintrc.json`**).
 - Aims for **ESLint v8 (eslintrc) compatibility** in shape.
 - JSON schema for editor validation: `"$schema": "./node_modules/oxlint/configuration_schema.json"`.
@@ -37,20 +37,20 @@ Docs: <https://oxc.rs/docs/guide/usage/linter/config.html>,
 
 #### Top-level keys (full schema)
 
-| Key | Type | Default | Purpose |
-|---|---|---|---|
-| `$schema` | string | — | editor validation |
-| `categories` | object | correctness enabled | enable rule groups by severity |
-| `plugins` | string[] | `null` → default set | built-in plugin set (see below) |
-| `rules` | object | — | per-rule severity/options |
-| `overrides` | array | — | per-glob config (see shape below) |
-| `extends` | string[] | — | inherit other config files |
-| `ignorePatterns` | string[] | `[]` | extra ignore globs |
-| `env` | `Record<string,boolean>` | — | predefined globals (`browser`, `node`, `es2026`, `shared-node-browser`, 40+ envs incl. test frameworks) |
-| `globals` | `Record<string,string>` | — | custom globals: `"readonly"` / `"writable"` / `"off"` |
-| `settings` | object | — | plugin-wide shared settings (ESLint-style, e.g. `settings.react`, `settings.jsdoc`) |
-| `jsPlugins` | array | — | JavaScript plugins (**alpha** since 2026-03-11, <https://oxc.rs/blog/2026-03-11-oxlint-js-plugins-alpha>) |
-| `options` | object | — | linter-level options (below) |
+| Key              | Type                     | Default              | Purpose                                                                                                   |
+| ---------------- | ------------------------ | -------------------- | --------------------------------------------------------------------------------------------------------- |
+| `$schema`        | string                   | —                    | editor validation                                                                                         |
+| `categories`     | object                   | correctness enabled  | enable rule groups by severity                                                                            |
+| `plugins`        | string[]                 | `null` → default set | built-in plugin set (see below)                                                                           |
+| `rules`          | object                   | —                    | per-rule severity/options                                                                                 |
+| `overrides`      | array                    | —                    | per-glob config (see shape below)                                                                         |
+| `extends`        | string[]                 | —                    | inherit other config files                                                                                |
+| `ignorePatterns` | string[]                 | `[]`                 | extra ignore globs                                                                                        |
+| `env`            | `Record<string,boolean>` | —                    | predefined globals (`browser`, `node`, `es2026`, `shared-node-browser`, 40+ envs incl. test frameworks)   |
+| `globals`        | `Record<string,string>`  | —                    | custom globals: `"readonly"` / `"writable"` / `"off"`                                                     |
+| `settings`       | object                   | —                    | plugin-wide shared settings (ESLint-style, e.g. `settings.react`, `settings.jsdoc`)                       |
+| `jsPlugins`      | array                    | —                    | JavaScript plugins (**alpha** since 2026-03-11, <https://oxc.rs/blog/2026-03-11-oxlint-js-plugins-alpha>) |
+| `options`        | object                   | —                    | linter-level options (below)                                                                              |
 
 #### `options` fields (exact names)
 
@@ -98,12 +98,12 @@ unambiguous rule names; prefixed form is e.g. `"typescript/no-floating-promises"
 {
   "overrides": [
     {
-      "files": ["**/*.test.ts"],          // required, glob array
+      "files": ["**/*.test.ts"], // required, glob array
       "excludeFiles": ["**/fixtures/**"], // optional
-      "plugins": ["vitest"],              // plus env, globals, rules, jsPlugins
-      "rules": { "typescript/no-explicit-any": "off" }
-    }
-  ]
+      "plugins": ["vitest"], // plus env, globals, rules, jsPlugins
+      "rules": { "typescript/no-explicit-any": "off" },
+    },
+  ],
 }
 ```
 
@@ -219,34 +219,34 @@ Precedence: defaults → root config → overrides → `.editorconfig` fallback.
 
 #### All options (exact names, types, defaults)
 
-| Option | Type | Default |
-|---|---|---|
-| `printWidth` | integer | `100` |
-| `tabWidth` | integer | `2` |
-| `useTabs` | boolean | `false` |
-| `semi` | boolean | `true` |
-| `singleQuote` | boolean | `false` |
-| `jsxSingleQuote` | boolean | `false` |
-| `quoteProps` | `"as-needed" \| "consistent" \| "preserve"` | `"as-needed"` |
-| `trailingComma` | `"all" \| "es5" \| "none"` | `"all"` |
-| `arrowParens` | `"always" \| "avoid"` | `"always"` |
-| `bracketSpacing` | boolean | `true` |
-| `bracketSameLine` | boolean | `false` |
-| `objectWrap` | `"preserve" \| "collapse"` | `"preserve"` |
-| `endOfLine` | `"lf" \| "crlf" \| "cr"` | `"lf"` |
-| `insertFinalNewline` | boolean | `true` |
-| `proseWrap` | `"always" \| "never" \| "preserve"` | `"preserve"` |
-| `embeddedLanguageFormatting` | `"auto" \| "off"` | `"auto"` |
-| `htmlWhitespaceSensitivity` | `"css" \| "strict" \| "ignore"` | `"css"` |
-| `singleAttributePerLine` | boolean | `false` |
-| `vueIndentScriptAndStyle` | boolean | `false` |
-| `ignorePatterns` | string[] | `[]` |
-| `overrides` | array | `[]` |
-| `sortImports` | object \| boolean | disabled |
-| `sortPackageJson` | object \| boolean | **enabled** (`sortScripts` sub-option default `false`) |
-| `sortTailwindcss` | object \| boolean | disabled |
-| `jsdoc` | object \| boolean | disabled |
-| `svelte` | object \| boolean | disabled |
+| Option                       | Type                                        | Default                                                |
+| ---------------------------- | ------------------------------------------- | ------------------------------------------------------ |
+| `printWidth`                 | integer                                     | `100`                                                  |
+| `tabWidth`                   | integer                                     | `2`                                                    |
+| `useTabs`                    | boolean                                     | `false`                                                |
+| `semi`                       | boolean                                     | `true`                                                 |
+| `singleQuote`                | boolean                                     | `false`                                                |
+| `jsxSingleQuote`             | boolean                                     | `false`                                                |
+| `quoteProps`                 | `"as-needed" \| "consistent" \| "preserve"` | `"as-needed"`                                          |
+| `trailingComma`              | `"all" \| "es5" \| "none"`                  | `"all"`                                                |
+| `arrowParens`                | `"always" \| "avoid"`                       | `"always"`                                             |
+| `bracketSpacing`             | boolean                                     | `true`                                                 |
+| `bracketSameLine`            | boolean                                     | `false`                                                |
+| `objectWrap`                 | `"preserve" \| "collapse"`                  | `"preserve"`                                           |
+| `endOfLine`                  | `"lf" \| "crlf" \| "cr"`                    | `"lf"`                                                 |
+| `insertFinalNewline`         | boolean                                     | `true`                                                 |
+| `proseWrap`                  | `"always" \| "never" \| "preserve"`         | `"preserve"`                                           |
+| `embeddedLanguageFormatting` | `"auto" \| "off"`                           | `"auto"`                                               |
+| `htmlWhitespaceSensitivity`  | `"css" \| "strict" \| "ignore"`             | `"css"`                                                |
+| `singleAttributePerLine`     | boolean                                     | `false`                                                |
+| `vueIndentScriptAndStyle`    | boolean                                     | `false`                                                |
+| `ignorePatterns`             | string[]                                    | `[]`                                                   |
+| `overrides`                  | array                                       | `[]`                                                   |
+| `sortImports`                | object \| boolean                           | disabled                                               |
+| `sortPackageJson`            | object \| boolean                           | **enabled** (`sortScripts` sub-option default `false`) |
+| `sortTailwindcss`            | object \| boolean                           | disabled                                               |
+| `jsdoc`                      | object \| boolean                           | disabled                                               |
+| `svelte`                     | object \| boolean                           | disabled                                               |
 
 #### `sortImports` sub-options
 
@@ -262,7 +262,7 @@ Precedence: defaults → root config → overrides → `.editorconfig` fallback.
 #### `overrides` shape
 
 ```jsonc
-{ "overrides": [ { "files": ["*.md"], "excludeFiles": [], "options": { "printWidth": 80 } } ] }
+{ "overrides": [{ "files": ["*.md"], "excludeFiles": [], "options": { "printWidth": 80 } }] }
 ```
 
 ### 3.3 CLI (exact, from `oxfmt@0.54.0 --help`)
@@ -305,12 +305,12 @@ or rely on the lockfile and upgrade deliberately.
   "categories": {
     "correctness": "error",
     "suspicious": "warn",
-    "perf": "warn"
+    "perf": "warn",
   },
   "options": {
     // requires devDep oxlint-tsgolint and a TS7-clean tsconfig (no baseUrl)
     "typeAware": true,
-    "reportUnusedDisableDirectives": "warn"
+    "reportUnusedDisableDirectives": "warn",
   },
   "env": { "shared-node-browser": true, "es2026": true },
   "rules": {
@@ -318,14 +318,14 @@ or rely on the lockfile and upgrade deliberately.
     "typescript/no-misused-promises": "error",
     "typescript/await-thenable": "error",
     "import/no-cycle": "error",
-    "no-console": "warn"
+    "no-console": "warn",
   },
   "ignorePatterns": [
     "**/dist/**",
     "**/coverage/**",
     "**/contracts/out/**",
     "**/contracts/cache/**",
-    "**/*.gen.ts"
+    "**/*.gen.ts",
   ],
   "overrides": [
     {
@@ -334,14 +334,15 @@ or rely on the lockfile and upgrade deliberately.
       "rules": {
         "vitest/no-focused-tests": "error",
         "typescript/no-explicit-any": "off",
-        "no-console": "off"
-      }
-    }
-  ]
+        "no-console": "off",
+      },
+    },
+  ],
 }
 ```
 
 Notes:
+
 - Categories set to `"error"`/`"warn"` explicitly because the built-in default emits warnings
   with exit code 0 (verified) — CI would otherwise pass on violations.
 - evs writes lots of `as const` ABI/typelevel code; if `unicorn`/`oxc` pedantry fights the
@@ -360,7 +361,7 @@ Notes:
   "arrowParens": "always",
   "endOfLine": "lf",
   "sortImports": {
-    "internalPattern": ["@maxencerb/"]
+    "internalPattern": ["@maxencerb/"],
   },
   "sortPackageJson": true,
   "ignorePatterns": [
@@ -369,8 +370,8 @@ Notes:
     "**/contracts/out/**",
     "**/contracts/cache/**",
     "**/contracts/lib/**",
-    "**/*.gen.ts"
-  ]
+    "**/*.gen.ts",
+  ],
 }
 ```
 
@@ -388,8 +389,8 @@ without `ignorePatterns`. Foundry `contracts/lib` submodules should be excluded 
     "lint:ci": "oxlint --deny-warnings --format github",
     "fmt": "oxfmt",
     "fmt:check": "oxfmt --check",
-    "check": "bun run fmt:check && bun run lint:ci"
-  }
+    "check": "bun run fmt:check && bun run lint:ci",
+  },
 }
 ```
 
@@ -406,7 +407,7 @@ without `ignorePatterns`. Foundry `contracts/lib` submodules should be excluded 
 - uses: oven-sh/setup-bun@v2
 - run: bun install --frozen-lockfile
 # type-aware rules need workspace .d.ts across package boundaries:
-- run: bun run build        # or tsc -b for the packages/ graph
+- run: bun run build # or tsc -b for the packages/ graph
 - run: bun run fmt:check
 - run: bun run lint:ci
 ```
@@ -419,14 +420,16 @@ without `ignorePatterns`. Foundry `contracts/lib` submodules should be excluded 
   <https://open-vsx.org/extension/oxc/oxc-vscode>)
 
   `.vscode/settings.json`:
+
   ```jsonc
   {
     "editor.defaultFormatter": "oxc.oxc-vscode",
     "editor.formatOnSave": true,
     "editor.formatOnSaveMode": "file",
-    "editor.codeActionsOnSave": { "source.fixAll.oxc": "explicit" }
+    "editor.codeActionsOnSave": { "source.fixAll.oxc": "explicit" },
   }
   ```
+
 - **JetBrains:** "Oxc" plugin (<https://plugins.jetbrains.com/plugin/27061-oxc>).
 - **Other editors (Zed/Neovim/Helix):** both tools ship LSP servers — `oxlint --lsp` and
   `oxfmt --lsp`.
@@ -448,7 +451,7 @@ without `ignorePatterns`. Foundry `contracts/lib` submodules should be excluded 
 3. **Cross-package types:** type-aware lint resolves workspace imports through declarations —
    **build `.d.ts` (or run `tsc -b` on a project-references graph) before `lint:ci`**. Without
    this, `typescript/*` type-aware rules degrade on imports from sibling packages.
-4. **Nested configs:** both tools pick the *nearest* config per file and oxlint configs do
+4. **Nested configs:** both tools pick the _nearest_ config per file and oxlint configs do
    **not** merge upward — keep exactly one root `.oxlintrc.json` + one root `.oxfmtrc.json`; if
    a package ever needs its own, have it `extends: ["../../.oxlintrc.json"]` (extends merges
    `rules`, `plugins`, `overrides`).

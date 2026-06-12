@@ -5,15 +5,15 @@ Audience: implementers without web access. Versions referenced below are current
 
 ## 0. Version snapshot (June 2026)
 
-| Tool | Current | Notes |
-|---|---|---|
-| Bun | 1.3.x (1.3.14+ released; 1.3 shipped 2025-10) | isolated installs default for new workspaces, catalogs since 1.2.14 |
-| Vitest | 4.0.x stable (released 2025-10-22); last 3.x = 3.2.4 | `projects` config exists in both 3.2+ and 4.x; v4 removes `poolOptions` |
-| prool | 0.2.4 (2026-03-24) | new `Instance`/`Server`/`Pool` API (old `createServer`/`prool/instances` API is pre-0.2) |
-| Foundry | 1.x stable line (>= 1.3.0) | v1.3.0 added block-context overrides for `eth_call` |
-| TypeScript | 6.0 stable (2026-03); 5.9 still widely used; TS 7 (Go `tsgo`) in beta | `isolatedDeclarations` since 5.5; `verbatimModuleSyntax` since 5.0 |
-| viem | 2.x | `code` / `stateOverride` params on `call`/`readContract` |
-| npm CLI (for OIDC publish) | >= 11.5.1 required, Node >= 22.14.0 | trusted publishing GA since 2025-07-31 |
+| Tool                       | Current                                                               | Notes                                                                                    |
+| -------------------------- | --------------------------------------------------------------------- | ---------------------------------------------------------------------------------------- |
+| Bun                        | 1.3.x (1.3.14+ released; 1.3 shipped 2025-10)                         | isolated installs default for new workspaces, catalogs since 1.2.14                      |
+| Vitest                     | 4.0.x stable (released 2025-10-22); last 3.x = 3.2.4                  | `projects` config exists in both 3.2+ and 4.x; v4 removes `poolOptions`                  |
+| prool                      | 0.2.4 (2026-03-24)                                                    | new `Instance`/`Server`/`Pool` API (old `createServer`/`prool/instances` API is pre-0.2) |
+| Foundry                    | 1.x stable line (>= 1.3.0)                                            | v1.3.0 added block-context overrides for `eth_call`                                      |
+| TypeScript                 | 6.0 stable (2026-03); 5.9 still widely used; TS 7 (Go `tsgo`) in beta | `isolatedDeclarations` since 5.5; `verbatimModuleSyntax` since 5.0                       |
+| viem                       | 2.x                                                                   | `code` / `stateOverride` params on `call`/`readContract`                                 |
+| npm CLI (for OIDC publish) | >= 11.5.1 required, Node >= 22.14.0                                   | trusted publishing GA since 2025-07-31                                                   |
 
 ---
 
@@ -109,7 +109,7 @@ Docs: https://vitest.dev/guide/projects , https://vitest.dev/config/ (globalSetu
 `projects` was introduced in **Vitest 3.2** (the separate `vitest.workspace.ts` file is deprecated; identical semantics). Root `vitest.config.ts`:
 
 ```ts
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
@@ -118,7 +118,7 @@ export default defineConfig({
     // root-only options:
     coverage: { provider: 'v8' },
   },
-})
+});
 ```
 
 Rules (verified at https://vitest.dev/guide/projects):
@@ -135,7 +135,7 @@ Rules (verified at https://vitest.dev/guide/projects):
 In `packages/evs/vitest.config.ts` define two projects with different file suffixes; only the integration project pays the anvil globalSetup cost:
 
 ```ts
-import { defineConfig } from 'vitest/config'
+import { defineConfig } from 'vitest/config';
 
 export default defineConfig({
   test: {
@@ -159,7 +159,7 @@ export default defineConfig({
       },
     ],
   },
-})
+});
 ```
 
 Run: `vitest --project unit`, `vitest --project integration`, or repeat `--project` to combine. (https://vitest.dev/guide/projects)
@@ -170,23 +170,27 @@ Run: `vitest --project unit`, `vitest --project integration`, or repeat `--proje
 
 ```ts
 // test/globalSetup.ts
-import type { TestProject } from 'vitest/node'
+import type { TestProject } from 'vitest/node';
 
 export default async function setup(project: TestProject) {
   // ... start servers ...
-  project.provide('anvilPort', 8545)
-  return async function teardown() { /* stop servers */ }
+  project.provide('anvilPort', 8545);
+  return async function teardown() {
+    /* stop servers */
+  };
 }
 
 declare module 'vitest' {
-  export interface ProvidedContext { anvilPort: number }
+  export interface ProvidedContext {
+    anvilPort: number;
+  }
 }
 ```
 
 ```ts
 // in a test
-import { inject } from 'vitest'
-const port = inject('anvilPort')
+import { inject } from 'vitest';
+const port = inject('anvilPort');
 ```
 
 (https://vitest.dev/config/#globalsetup)
@@ -212,6 +216,7 @@ const port = inject('anvilPort')
 Repo: https://github.com/wevm/prool — "programmatic HTTP testing instances for Ethereum". v0.2.4 as of 2026-03-24. Install: `bun add -d prool`.
 
 Why prool over hand-rolled spawn:
+
 1. **One anvil per Vitest worker with zero port bookkeeping**: prool starts a single proxy server on one port; requests to `http://localhost:8545/<key>` lazily spawn (or reuse) an anvil instance bound to that `<key>`, each on a random free port. Use `VITEST_POOL_ID` as the key.
 2. Readiness detection built in (resolves when anvil prints `Listening on`), retries (default 5), timeouts (default 45_000 ms), teardown of the whole pool in one call.
 3. It sets `FOUNDRY_DISABLE_NIGHTLY_WARNING=true` and converts camelCase options to anvil CLI flags via `toArgs()` (verified in source: https://github.com/wevm/prool/blob/main/src/instances/anvil.ts).
@@ -220,7 +225,7 @@ prool v0.2 API (NOTE: pre-0.2 examples on the web use `createServer` + `import {
 
 ```ts
 // packages/evs/test/globalSetup.ts  (vitest globalSetup)
-import { Instance, Server } from 'prool'
+import { Instance, Server } from 'prool';
 
 export default async function setup() {
   const server = Server.create({
@@ -234,25 +239,32 @@ export default async function setup() {
     }),
     port: 8545, // proxy port; instances get random free ports behind it
     // limit: 10, // optional max concurrent instances
-  })
-  const stop = await server.start()
-  return async () => { await stop() }
+  });
+  const stop = await server.start();
+  return async () => {
+    await stop();
+  };
 }
 ```
 
 ```ts
 // packages/evs/test/clients.ts — per-worker URL
-export const poolId = Number(process.env.VITEST_POOL_ID ?? 1)
-export const rpcUrl = `http://127.0.0.1:8545/${poolId}`
+export const poolId = Number(process.env.VITEST_POOL_ID ?? 1);
+export const rpcUrl = `http://127.0.0.1:8545/${poolId}`;
 
-import { createPublicClient, createTestClient, http } from 'viem'
-import { foundry } from 'viem/chains'
+import { createPublicClient, createTestClient, http } from 'viem';
+import { foundry } from 'viem/chains';
 
-export const publicClient = createPublicClient({ chain: foundry, transport: http(rpcUrl) })
-export const testClient = createTestClient({ chain: foundry, mode: 'anvil', transport: http(rpcUrl) })
+export const publicClient = createPublicClient({ chain: foundry, transport: http(rpcUrl) });
+export const testClient = createTestClient({
+  chain: foundry,
+  mode: 'anvil',
+  transport: http(rpcUrl),
+});
 ```
 
 This is exactly viem's production test setup (verified in source):
+
 - `viem/test/setup.global.ts` starts prool servers and documents the proxy pattern: "In vitest, each thread is assigned a unique, numerical id (`process.env.VITEST_POOL_ID`). We append this id to the local rpc url (e.g. `http://127.0.0.1:8545/<ID>`)."
 - `viem/test/src/anvil.ts` does `Server.create({ instance: Instance.anvil({ chainId, forkUrl, forkBlockNumber, hardfork: 'Prague', ...options }), port }).start()` and builds `http://127.0.0.1:${port}/${poolId}`.
 - viem also salts the pool id (`VITEST_POOL_ID * VITEST_SHARD_ID + random`) to survive shared CI machines — optional.
@@ -266,18 +278,22 @@ Server proxy endpoints (prool README): `/:key` (proxy), `/:key/start`, `/:key/st
 
 ```ts
 // globalSetup.ts — spawn one anvil per run (serial tests: fileParallelism false)
-import { spawn } from 'node:child_process'
+import { spawn } from 'node:child_process';
 
 export default async function setup() {
   const proc = spawn('anvil', ['--port', '8545', '--chain-id', '31337', '--hardfork', 'prague'], {
     stdio: ['ignore', 'pipe', 'pipe'],
-  })
+  });
   await new Promise<void>((resolve, reject) => {
-    proc.stdout.on('data', (d) => { if (String(d).includes('Listening on')) resolve() })
-    proc.on('exit', (code) => reject(new Error(`anvil exited ${code}`)))
-    setTimeout(() => reject(new Error('anvil start timeout')), 15_000)
-  })
-  return () => { proc.kill('SIGTERM') }
+    proc.stdout.on('data', (d) => {
+      if (String(d).includes('Listening on')) resolve();
+    });
+    proc.on('exit', (code) => reject(new Error(`anvil exited ${code}`)));
+    setTimeout(() => reject(new Error('anvil start timeout')), 15_000);
+  });
+  return () => {
+    proc.kill('SIGTERM');
+  };
 }
 ```
 
@@ -287,20 +303,20 @@ You then must either disable parallelism (`fileParallelism: false`) or compute `
 
 Reference: https://getfoundry.sh/anvil/reference/ , https://getfoundry.sh/anvil/overview/
 
-| Flag | Default | Use |
-|---|---|---|
-| `--mnemonic <phrase>` | **`test test test test test test test test test test test junk`** (anvil's default IS deterministic; accounts derived at `m/44'/60'/0'/0/n`) | only override to diverge |
-| `--accounts <n>` / `--balance <eth>` | 10 / 10000 | dev accounts |
-| `--hardfork <name>` | `latest` (moves over time!) | **pin it**, e.g. `--hardfork prague`, for stable gas/opcodes |
-| `--chain-id <id>` | 31337 | match `foundry` chain in viem |
-| `--port <n>` / `--host` | 8545 / 127.0.0.1 | prool overrides per instance |
-| `--fork-url <url>` + `--fork-block-number <n>` | — | fork mainnet; ALWAYS pin block number for determinism |
-| `--timestamp <unix>` | — | pin genesis timestamp |
-| `--no-mining` / `--block-time <s>` | auto-mine | irrelevant for pure eth_call tests; viem pins `noMining: true` on its fork instances |
-| `--silent` | off | quiet CI logs |
-| `--code-size-limit <bytes>` / `--disable-code-size-limit` | EIP-170 (24576) | raise if a compiled evs script ever exceeds 24,576 bytes of runtime code |
-| `--steps-tracing` | off | enables geth-style `debug_traceCall` traces — handy for debugging compiled bytecode |
-| `--dump-state` / `--load-state` | — | snapshot state to disk between runs |
+| Flag                                                      | Default                                                                                                                                      | Use                                                                                  |
+| --------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------ |
+| `--mnemonic <phrase>`                                     | **`test test test test test test test test test test test junk`** (anvil's default IS deterministic; accounts derived at `m/44'/60'/0'/0/n`) | only override to diverge                                                             |
+| `--accounts <n>` / `--balance <eth>`                      | 10 / 10000                                                                                                                                   | dev accounts                                                                         |
+| `--hardfork <name>`                                       | `latest` (moves over time!)                                                                                                                  | **pin it**, e.g. `--hardfork prague`, for stable gas/opcodes                         |
+| `--chain-id <id>`                                         | 31337                                                                                                                                        | match `foundry` chain in viem                                                        |
+| `--port <n>` / `--host`                                   | 8545 / 127.0.0.1                                                                                                                             | prool overrides per instance                                                         |
+| `--fork-url <url>` + `--fork-block-number <n>`            | —                                                                                                                                            | fork mainnet; ALWAYS pin block number for determinism                                |
+| `--timestamp <unix>`                                      | —                                                                                                                                            | pin genesis timestamp                                                                |
+| `--no-mining` / `--block-time <s>`                        | auto-mine                                                                                                                                    | irrelevant for pure eth_call tests; viem pins `noMining: true` on its fork instances |
+| `--silent`                                                | off                                                                                                                                          | quiet CI logs                                                                        |
+| `--code-size-limit <bytes>` / `--disable-code-size-limit` | EIP-170 (24576)                                                                                                                              | raise if a compiled evs script ever exceeds 24,576 bytes of runtime code             |
+| `--steps-tracing`                                         | off                                                                                                                                          | enables geth-style `debug_traceCall` traces — handy for debugging compiled bytecode  |
+| `--dump-state` / `--load-state`                           | —                                                                                                                                            | snapshot state to disk between runs                                                  |
 
 First anvil account (useful constant; from viem `test/src/constants.ts`): address `0xf39fd6e51aad88f6f4ce6ab8827279cfffb92266`, key `0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80`.
 
@@ -308,7 +324,7 @@ First anvil account (useful constant; from viem `test/src/constants.ts`): addres
 
 (https://getfoundry.sh/anvil/reference/ — "Custom Methods"; `hardhat_*` aliases also accepted)
 
-- **`anvil_setCode(address, bytecode)`** — plant the compiled evs **runtime bytecode** at a fixed address persistently. Then call it with a plain `eth_call`/`readContract` — *no state override needed on the call*. viem test-client action: `testClient.setCode({ address, bytecode })`.
+- **`anvil_setCode(address, bytecode)`** — plant the compiled evs **runtime bytecode** at a fixed address persistently. Then call it with a plain `eth_call`/`readContract` — _no state override needed on the call_. viem test-client action: `testClient.setCode({ address, bytecode })`.
 - `anvil_setStorageAt(address, slot, value)`, `anvil_setBalance`, `anvil_setNonce`
 - `anvil_impersonateAccount(address)` / `anvil_stopImpersonatingAccount`
 - `anvil_reset({ forking: { jsonRpcUrl, blockNumber } })` — reset between test files
@@ -329,25 +345,25 @@ pub async fn call(
 ```
 
 - Anvil accepts the geth-style third `eth_call` param `{ [address]: { balance, nonce, code, state, stateDiff } }` and (since Foundry **v1.3.0**, https://github.com/foundry-rs/foundry/releases/tag/v1.3.0) block-context overrides too. Same for `eth_estimateGas` and `eth_simulateV1`.
-- **Limitation:** overrides are rejected with `EvmOverrideError("not available on past forked blocks")` when the call targets a historical block *behind* the fork point in forking mode. Call against `latest` (default) and you're fine.
+- **Limitation:** overrides are rejected with `EvmOverrideError("not available on past forked blocks")` when the call targets a historical block _behind_ the fork point in forking mode. Call against `latest` (default) and you're fine.
 
 viem usage (state override on a read):
 
 ```ts
-const SCRIPT = '0x000000000000000000000000000000000000beef'
+const SCRIPT = '0x000000000000000000000000000000000000beef';
 const result = await publicClient.readContract({
   address: SCRIPT,
-  abi: evsGeneratedAbi,          // the literal ABI evs generates
+  abi: evsGeneratedAbi, // the literal ABI evs generates
   functionName: 'main',
   stateOverride: [{ address: SCRIPT, code: compiledRuntimeBytecode }],
-})
+});
 ```
 
 `stateOverride` entries: `{ address, balance?, nonce?, code?, state? | stateDiff? }` (`state` replaces all storage, `stateDiff` patches slots; mutually exclusive). Docs: https://viem.sh/docs/actions/public/call#stateoverride
 
 ### Deployless calls (viem `code` param) — one critical nuance + anvil history
 
-- viem deployless-via-bytecode: `call({ code, data })` / `readContract({ code, abi, functionName })`. **Verified in viem source** (`src/actions/public/call.ts`): it ABI-encodes `constructor(bytes bytecode, bytes data)` against a wrapper (`deploylessCallViaBytecodeBytecode`) whose constructor **CREATE2-deploys your bytes, calls the result, and returns the call result from the constructor**. Therefore **`code` must be CREATION bytecode (initcode), not runtime bytecode.** Since the evs compiler emits *runtime* bytecode, wrap it in trivial initcode (`codecopy` + `return`) before using viem's `code` param — or skip the deployless path and use `stateOverride`, which takes runtime bytecode directly.
+- viem deployless-via-bytecode: `call({ code, data })` / `readContract({ code, abi, functionName })`. **Verified in viem source** (`src/actions/public/call.ts`): it ABI-encodes `constructor(bytes bytecode, bytes data)` against a wrapper (`deploylessCallViaBytecodeBytecode`) whose constructor **CREATE2-deploys your bytes, calls the result, and returns the call result from the constructor**. Therefore **`code` must be CREATION bytecode (initcode), not runtime bytecode.** Since the evs compiler emits _runtime_ bytecode, wrap it in trivial initcode (`codecopy` + `return`) before using viem's `code` param — or skip the deployless path and use `stateOverride`, which takes runtime bytecode directly.
 - Also: deployless-via-bytecode cannot coexist with `to`; deployless-via-factory needs `factory`, `factoryData`, AND `to`. Docs: https://viem.sh/docs/actions/public/call#deployless-calls
 - **Anvil compatibility history:** returning data from a constructor over `eth_call` (exactly this pattern) was broken in early anvil — returned `0x` while Geth/Hardhat/Infura/Alchemy/Tenderly worked: [foundry-rs/foundry discussion #4549](https://github.com/foundry-rs/foundry/discussions/4549) and [issue #4568](https://github.com/foundry-rs/foundry/issues/4568). Issue #4568 is **closed as completed** (fixed), but a 2025-04 comment on #4549 claimed lingering trouble. **Action: keep one integration test that exercises viem's `code` path against your pinned anvil version; make `anvil_setCode` + plain call, and `stateOverride` (both definitively supported) the primary tested execution paths.**
 
@@ -422,22 +438,26 @@ packages/contracts/cache/
 
 ```jsonc
 {
-  "abi": [ /* standard ABI array */ ],
+  "abi": [
+    /* standard ABI array */
+  ],
   "bytecode": {
-    "object": "0x6080...",          // CREATION bytecode (initcode)
-    "sourceMap": "...",
-    "linkReferences": {}
-  },
-  "deployedBytecode": {
-    "object": "0x6080...",          // RUNTIME bytecode
+    "object": "0x6080...", // CREATION bytecode (initcode)
     "sourceMap": "...",
     "linkReferences": {},
-    "immutableReferences": {}
+  },
+  "deployedBytecode": {
+    "object": "0x6080...", // RUNTIME bytecode
+    "sourceMap": "...",
+    "linkReferences": {},
+    "immutableReferences": {},
   },
   "methodIdentifiers": { "token0()": "0dfe1681" },
-  "rawMetadata": "{...}",            // stringified solc metadata
-  "metadata": { /* solc metadata object */ },
-  "id": 0
+  "rawMetadata": "{...}", // stringified solc metadata
+  "metadata": {
+    /* solc metadata object */
+  },
+  "id": 0,
 }
 ```
 
@@ -450,25 +470,25 @@ Vitest (via Vite) and Bun both import JSON directly:
 
 ```ts
 // packages/evs/test/integration/helpers.ts
-import erc20Artifact from '../../../contracts/out/MockERC20.sol/MockERC20.json'
+import erc20Artifact from '../../../contracts/out/MockERC20.sol/MockERC20.json';
 
 const hash = await walletClient.deployContract({
   abi: erc20Artifact.abi,
   bytecode: erc20Artifact.bytecode.object as `0x${string}`,
   args: ['Mock', 'MCK', 18],
-})
+});
 ```
 
-Requirements: `"resolveJsonModule": true` in tsconfig (or use `with { type: 'json' }` import attributes under NodeNext). **Type caveat:** JSON imports produce *widened* types — `artifact.abi` is NOT a literal `as const` ABI, so viem cannot infer function names/args from it. For tests that's fine (cast or use `as const` on a hand-written ABI). If you want full inference for mock contracts, generate a TS file post-build, e.g. a small script:
+Requirements: `"resolveJsonModule": true` in tsconfig (or use `with { type: 'json' }` import attributes under NodeNext). **Type caveat:** JSON imports produce _widened_ types — `artifact.abi` is NOT a literal `as const` ABI, so viem cannot infer function names/args from it. For tests that's fine (cast or use `as const` on a hand-written ABI). If you want full inference for mock contracts, generate a TS file post-build, e.g. a small script:
 
 ```ts
 // packages/contracts/scripts/codegen.ts (run with: bun scripts/codegen.ts)
-const artifact = await Bun.file('out/MockERC20.sol/MockERC20.json').json()
+const artifact = await Bun.file('out/MockERC20.sol/MockERC20.json').json();
 await Bun.write(
   '../evs/test/generated/mockErc20.ts',
   `export const mockErc20Abi = ${JSON.stringify(artifact.abi)} as const\n` +
-  `export const mockErc20Bytecode = ${JSON.stringify(artifact.bytecode.object)} as const\n`,
-)
+    `export const mockErc20Bytecode = ${JSON.stringify(artifact.bytecode.object)} as const\n`,
+);
 ```
 
 CI: install Foundry with `foundry-rs/foundry-toolchain@v1` (inputs: `version: v1.3.0` etc.) — provides `forge`, `anvil`, `cast`. (https://github.com/foundry-rs/foundry-toolchain)
@@ -481,7 +501,7 @@ CI: install Foundry with `foundry-rs/foundry-toolchain@v1` (inputs: `version: v1
 
 - **`bun build` does NOT and will not emit `.d.ts`** — confirmed current (2026): "The Bun bundler is not intended to replace `tsc` for typechecking or generating type declarations." (https://bun.com/docs/bundler). It outputs ESM (default), CJS/IIFE experimental.
 - Since this library's value is its **types** and it has no bundling needs (plain TS, viem as peer dep), **use `tsc` as the sole emitter**: one pass produces `.js` + `.d.ts` + `.d.ts.map` + `.js.map` that all agree with each other. Skip `bun build` entirely. (If you ever want a bundle, run `bun build --target node --format esm` for JS and keep `tsc --emitDeclarationOnly` for types.)
-- **`isolatedDeclarations`** (TS **5.5+**, https://www.typescriptlang.org/tsconfig/#isolatedDeclarations): forces every exported symbol to have an explicitly-writable type so `.d.ts` can be emitted file-by-file without inference. Pros: future-proofs for parallel/native emitters (tsgo/oxc), guarantees declaration stability. Cons: for an inference-heavy builder API (deep conditional generic types flowing through `s.call(...)`), you must name and annotate every exported helper's return type. **Recommendation: enable it if the annotations stay tolerable; it is a quality ratchet, not a requirement. Do not let it force you to widen types — if a return-type annotation loses precision versus inference, turn it off.** Declaration *quality* is the product; verify with `@arethetypeswrong/cli` and by snapshotting `.d.ts` output in tests.
+- **`isolatedDeclarations`** (TS **5.5+**, https://www.typescriptlang.org/tsconfig/#isolatedDeclarations): forces every exported symbol to have an explicitly-writable type so `.d.ts` can be emitted file-by-file without inference. Pros: future-proofs for parallel/native emitters (tsgo/oxc), guarantees declaration stability. Cons: for an inference-heavy builder API (deep conditional generic types flowing through `s.call(...)`), you must name and annotate every exported helper's return type. **Recommendation: enable it if the annotations stay tolerable; it is a quality ratchet, not a requirement. Do not let it force you to widen types — if a return-type annotation loses precision versus inference, turn it off.** Declaration _quality_ is the product; verify with `@arethetypeswrong/cli` and by snapshotting `.d.ts` output in tests.
 - **Ship `declarationMap` + the `src/` folder** so consumers' "Go to Definition" lands in real TypeScript source instead of `.d.ts`. This is cheap (source is small) and is exactly what types-first libraries (e.g. trpc) do. `declarationMap` docs: https://www.typescriptlang.org/tsconfig/#declarationMap
 
 ### tsconfig
@@ -493,9 +513,9 @@ CI: install Foundry with `foundry-rs/foundry-toolchain@v1` (inputs: `version: v1
   "compilerOptions": {
     "target": "ES2022",
     "lib": ["ES2023"],
-    "module": "NodeNext",            // implies moduleResolution: NodeNext
+    "module": "NodeNext", // implies moduleResolution: NodeNext
     "moduleDetection": "force",
-    "verbatimModuleSyntax": true,    // TS 5.0+; forces `import type`, no import elision surprises
+    "verbatimModuleSyntax": true, // TS 5.0+; forces `import type`, no import elision surprises
     "isolatedModules": true,
     // "isolatedDeclarations": true, // TS 5.5+; see tradeoff above
     "strict": true,
@@ -503,9 +523,9 @@ CI: install Foundry with `foundry-rs/foundry-toolchain@v1` (inputs: `version: v1
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
     "resolveJsonModule": true,
-    "noEmit": true
+    "noEmit": true,
   },
-  "include": ["src", "test"]
+  "include": ["src", "test"],
 }
 ```
 
@@ -520,15 +540,16 @@ CI: install Foundry with `foundry-rs/foundry-toolchain@v1` (inputs: `version: v1
     "outDir": "dist",
     "declaration": true,
     "declarationMap": true,
-    "sourceMap": true
+    "sourceMap": true,
   },
   "include": ["src"],
-  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts"]
+  "exclude": ["src/**/*.test.ts", "src/**/*.test-d.ts"],
 }
 ```
 
 Notes:
-- `module: "NodeNext"` is the correct choice for a *library consumed by Node-resolution and bundlers alike*; it forces explicit `.js` extensions on relative imports in source (`import { x } from './ir.js'`) — required for the emitted ESM to actually run on Node. `moduleResolution: "bundler"` never requires extensions but then `tsc`'s emitted JS would be broken on bare Node; don't use it for emitting a library. (https://www.typescriptlang.org/tsconfig/#module , https://www.typescriptlang.org/docs/handbook/modules/reference.html)
+
+- `module: "NodeNext"` is the correct choice for a _library consumed by Node-resolution and bundlers alike_; it forces explicit `.js` extensions on relative imports in source (`import { x } from './ir.js'`) — required for the emitted ESM to actually run on Node. `moduleResolution: "bundler"` never requires extensions but then `tsc`'s emitted JS would be broken on bare Node; don't use it for emitting a library. (https://www.typescriptlang.org/tsconfig/#module , https://www.typescriptlang.org/docs/handbook/modules/reference.html)
 - viem (the main dependency) requires TS >= 5.0.4 and recommends `"strict": true`; declare it a **peerDependency** so consumers' viem instance is the one whose types flow through `readContract` inference.
 
 ### `packages/evs/package.json` — recommended exact contents
@@ -539,7 +560,11 @@ Notes:
   "version": "0.1.0",
   "description": "Typed EVM read-script builder: compile typed call graphs to runtime bytecode executed via eth_call",
   "license": "MIT",
-  "repository": { "type": "git", "url": "git+https://github.com/maxencerb/evs.git", "directory": "packages/evs" },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/maxencerb/evs.git",
+    "directory": "packages/evs"
+  },
   "type": "module",
   "sideEffects": false,
   "engines": { "node": ">=20.19" },
@@ -578,6 +603,7 @@ Notes:
 ```
 
 Rationale / exact-field notes:
+
 - **ESM-only**: `"type": "module"`, no `require` condition, no CJS build. Node >=20.19 can even `require()` ESM now, so CJS consumers are not fully locked out.
 - **Exports map**: the `"types"` condition MUST come before `"default"` within each entry (conditions are order-sensitive). Keep top-level `"main"`/`"types"` as fallback for old tooling. `"./package.json": "./package.json"` keeps tooling (bundlers, attw) happy.
 - **`sideEffects: false`** — the package is pure (builder + compiler functions); enables tree-shaking in bundlers.
@@ -606,8 +632,8 @@ jobs:
       - uses: oven-sh/setup-bun@v2
         with: { bun-version: latest }
       - uses: actions/setup-node@v4
-        with: { node-version: 24, registry-url: "https://registry.npmjs.org" }
-      - run: npm install -g npm@latest   # ensure npm >= 11.5.1 for OIDC
+        with: { node-version: 24, registry-url: 'https://registry.npmjs.org' }
+      - run: npm install -g npm@latest # ensure npm >= 11.5.1 for OIDC
       - run: bun install --frozen-lockfile
       - run: bun run --filter '@maxencerb/evs' build
       - run: cd packages/evs && bun pm pack
