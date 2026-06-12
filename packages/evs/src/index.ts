@@ -1,6 +1,12 @@
 /**
  * `@maxencerb/evs` — the complete public surface per docs/design/module-interfaces.md §M9.
  * Nothing else is exported from the package; single entry point, no subpath exports in v0.
+ *
+ * Additions to the frozen §M9 list (recorded in docs/design/amendments.md):
+ * - `InterpEnvOverrides` — the `interpret` opts.env extension (frame-dependent env modeling);
+ * - `AsmNode`, `LabelId`, `EvmVersion` (type-only) — referenced by the public `CompileOptions`
+ *   but previously unreachable through the single entry point (the exports map blocks deep
+ *   imports).
  */
 
 // core
@@ -39,15 +45,17 @@ export type {
 export { deserializeIr, serializeIr } from './ir/nodes.js';
 export type { ScriptIr } from './ir/nodes.js';
 export { interpret } from './ir/interp.js';
-export type { InterpResult, MockChain } from './ir/interp.js';
+export type { InterpEnvOverrides, InterpResult, MockChain } from './ir/interp.js';
 
 // abi
 export { EVS_ERROR_ABI } from './abi/artifact.js';
 export type { ScriptAbi } from './abi/artifact.js';
 
 // asm
+export type { AsmNode, LabelId } from './asm/assembler.js';
 export { disassemble } from './asm/disasm.js';
 export type { Disassembly } from './asm/disasm.js';
+export type { EvmVersion } from './asm/ops.js';
 export { lookupPc } from './asm/sourcemap.js';
 export type { SourceMap } from './asm/sourcemap.js';
 

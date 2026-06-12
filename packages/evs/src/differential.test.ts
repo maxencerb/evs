@@ -24,7 +24,15 @@ import {
 import { describe, expect, test } from 'vitest';
 
 import { Reverter } from '../test/generated/index.js';
-import { execRuntime, hexToBytes, type EvmFixture } from '../test/harness/evm.js';
+import {
+  CALLER_ADDRESS,
+  DEPLOYLESS_WRAPPER_ADDRESS,
+  execRuntime,
+  execRuntimeDeployless,
+  hexToBytes,
+  SCRIPT_ADDRESS,
+  type EvmFixture,
+} from '../test/harness/evm.js';
 import { concatHex, returner, reverter, RUNTIME_ECHO, word } from '../test/harness/fixtures.js';
 import { assemble, AsmWriter, type LabelId } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
@@ -505,6 +513,46 @@ describe('env ops', () => {
       }),
     );
     await expectAgreement(script, [[]]);
+  });
+
+  // The default `toViem()` mode is deployless: viem CREATE2-deploys the initBytecode and
+  // CALLs the fresh contract from its wrapper, so env('caller')/env('address') observe
+  // DIFFERENT, uncontrollable values than in the state-override frame the interp defaults
+  // (and `expectAgreement` above) pin. This case closes that oracle blind spot: the
+  // deployless-shaped harness exposes the divergence and `interpret`'s env overrides
+  // reproduce it byte-exactly.
+  test('deployless frame: caller/address diverge from the state-override constants; interp env overrides model it', async () => {
+    const script = evscript({ name: 'whoami', args: [] }, (s) =>
+      s.return({ who: s.env('caller'), me: s.env('address') }),
+    );
+    const compiled = compile(script);
+    const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'whoami' });
+
+    const res = await execRuntimeDeployless(compiled.initBytecode, calldata);
+    expect(res.success).toBe(true);
+    const decoded = decodeFunctionResult({
+      abi: compiled.abi,
+      functionName: 'whoami',
+      data: res.data,
+    });
+    // the deployless frame: caller = the wrapper contract, address = the created address —
+    // and NEITHER equals the state-override-frame constants every other env test pins
+    expect(decoded.who.toLowerCase()).toBe(DEPLOYLESS_WRAPPER_ADDRESS.toLowerCase());
+    expect(decoded.me.toLowerCase()).toBe(res.scriptAddress.toLowerCase());
+    expect(decoded.who.toLowerCase()).not.toBe(CALLER_ADDRESS.toLowerCase());
+    expect(decoded.me.toLowerCase()).not.toBe(SCRIPT_ADDRESS.toLowerCase());
+
+    // interpret with matching env overrides byte-agrees with the deployless execution …
+    const overridden = interpret(script.ir, [], chainOf({}), {
+      env: { caller: res.callerAddress, address: res.scriptAddress },
+    }).outcome;
+    expect(overridden.kind).toBe('return');
+    expect(overridden.data).toBe(res.data);
+
+    // … while the default interp env (state-override frame) does NOT match this frame
+    const dflt = interpret(script.ir, [], chainOf({})).outcome;
+    expect(dflt.kind).toBe('return');
+    expect(dflt.data).not.toBe(res.data);
   });
 });
 

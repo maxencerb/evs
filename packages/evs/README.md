@@ -79,6 +79,16 @@ await client.readContract({
 Both modes are just `eth_call`: historical reads via `blockNumber` work, nothing is ever
 deployed, and gas is bounded only by the node's `eth_call` cap.
 
+> [!WARNING]
+> **`s.env('caller')` / `s.env('address')` are execution-frame-dependent.** In the default
+> deployless mode the script runs inside viem's wrapper: `s.env('caller')` is the wrapper
+> contract (never your `account`) and `s.env('address')` is a per-script counterfactual
+> CREATE2 address — neither is controllable, and a read like `balanceOf(s.env('caller'))`
+> silently returns the wrapper's (zero) balance. Caller-relative reads require
+> `toViem({ mode: 'stateOverride' })` with the `account` call parameter; there is no
+> deployless workaround. `compile()` warns (`ENV_FRAME_DEPENDENT` via `onDiagnostic`) when a
+> script uses these env ops. `timestamp`/`blocknumber`/`chainid` are identical in both modes.
+
 ## The one rule to remember
 
 > [!WARNING]

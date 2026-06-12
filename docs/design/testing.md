@@ -227,8 +227,11 @@ revert decodes through viem and `explainRevert` names the originating `s.call` l
 
 ## 8. CI wiring (full YAML in repo-layout.md)
 
-PR pipeline: `bun install --frozen-lockfile` → `forge build` → `bun run build` (tsc; needed by
+PR pipeline: `bun install --frozen-lockfile` → `forge build && forge test` (the Solidity
+oracle-contract suite guards the differential fixtures) → `bun run build` (tsc; needed by
 type-aware lint) → `oxfmt --check` → `oxlint --deny-warnings` → `vitest run --project unit
 --project types` → `vitest run --project integration` (foundry toolchain installed; no fork) →
-`publint` + `attw --pack`. Scheduled job adds the fork-mode suite. Release runs the full PR
-pipeline before publishing.
+`publint` + `attw --pack`. Scheduled job adds the fork-mode suite (after regenerating the
+gitignored `test/generated/` artifacts via `forge build && bun run codegen`). Release runs the
+full PR pipeline before publishing, then additionally runs `publint` against the exact packed
+tarball (`bunx publint <tarball>`) between pack and publish.

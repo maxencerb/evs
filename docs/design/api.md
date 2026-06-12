@@ -207,6 +207,14 @@ export interface ScriptBuilder<args extends readonly ArgSpec[]> {
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>
   // EnvKind = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
+  // ⚠ FRAME-DEPENDENT: 'caller'/'address' lower to bare CALLER/ADDRESS, whose values depend
+  // on the execution frame the chosen toViem() mode produces. In the DEFAULT deployless mode
+  // caller = viem's internal wrapper contract (0xBd770416a3345F91E4B34576cb804a576fa48EB1
+  // when no `account` is passed) and address = a per-script counterfactual CREATE2 address —
+  // neither controllable (research/viem-integration.md §3.1). Caller-relative reads (e.g.
+  // balanceOf(s.env('caller'))) REQUIRE toViem({ mode: 'stateOverride' }) + `account`; there
+  // is no deployless workaround. compile() emits ENV_FRAME_DEPENDENT via onDiagnostic for
+  // these two ops. timestamp/blocknumber/chainid are block context — identical across modes.
 
   // ops (free-function mirrors of the Expr methods; same checked semantics)
   add<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>     // ≥1 operand an Expr
@@ -417,10 +425,14 @@ export interface CompiledEvsScript<name, args, ret> {
 - **`toViem()` default = deployless** (`{ abi, code }` with `code` = init bytecode): plain
   2-param `eth_call`, works on every provider. Never pass `runtimeBytecode` to viem's `code` —
   it fails _silently_ (the artifact never exposes a field named `code`/`bytecode` for this
-  reason).
+  reason). ⚠ In this mode `s.env('caller')` = viem's internal wrapper contract and
+  `s.env('address')` = a per-script counterfactual CREATE2 address — neither controllable;
+  see the §4 env warning.
 - **`stateOverride` mode**: deterministic `address(this)` (default
   `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`), controllable `msg.sender` via `account`,
   composable with extra overrides. Requires a provider supporting the 3rd `eth_call` param.
+  This is the ONLY mode where `s.env('caller')`/`s.env('address')` are meaningful and
+  controllable — caller-relative reads must use it.
 - peer dependency: `viem >= 2.14.1`.
 
 ## 11. Examples

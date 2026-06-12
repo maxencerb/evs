@@ -9,8 +9,8 @@ import type { Abi, Address } from 'abitype';
 import type { PublicClient, ReadContractParameters, StateOverride } from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
-import { evscript } from './builder/script.js';
-import { compile } from './compile.js';
+import { evscript, type EvsScript } from './builder/script.js';
+import { compile, type CompiledEvsScript } from './compile.js';
 import { arg, t, type Hex } from './core/types.js';
 import { toCreationBytecode, toViemDeployless, toViemStateOverride } from './viem.js';
 
@@ -161,4 +161,19 @@ test('toViemStateOverride yields { abi, address, stateOverride: StateOverride }'
     address: Address;
     stateOverride: StateOverride;
   }>();
+});
+
+// ---------------------------------------------------------------------------
+// default instantiations are proper supertypes — the ScriptAbi default no longer
+// collapses Record<string, Expr> components to a UnionToTuple 1-tuple (abi/artifact.ts)
+// ---------------------------------------------------------------------------
+
+test('a concrete multi-return script is assignable to default-instantiated EvsScript / CompiledEvsScript', () => {
+  // poolMeta returns FOUR components — exactly the case the 1-tuple collapse used to reject
+  const script = poolMeta satisfies EvsScript;
+  void script;
+  const artifact = compiled satisfies CompiledEvsScript;
+  void artifact;
+  expectTypeOf(poolMeta).toMatchTypeOf<EvsScript>();
+  expectTypeOf(compiled).toMatchTypeOf<CompiledEvsScript>();
 });

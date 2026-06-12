@@ -125,6 +125,12 @@ class IrB {
     return out;
   }
 
+  env(op: 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'): ValueId {
+    const out = this.val(op === 'address' || op === 'caller' ? 'address' : 'uint256');
+    this.emit({ k: 'env', op, out });
+    return out;
+  }
+
   index(arr: ValueId, i: ValueId): ValueId {
     const t = this.typeOf(arr);
     const elem = t.endsWith('[]') ? t.slice(0, -2) : '';
@@ -1105,6 +1111,87 @@ describe('diagnostics', () => {
     });
     expect(frameEnd).toBeGreaterThan(0x8000);
     expect(diagnostics.some((d) => d.code === 'LARGE_FRAME')).toBe(true);
+  });
+
+  test('LOOP_ALLOCATION: a fncall in a loop whose callee (transitively) allocates is flagged', () => {
+    const b = new IrB('fnloop', [['n', 'uint256']]);
+    // leaf fn allocates (arrnew); middle fn only calls leaf — both transitively allocate
+    const leaf = b.fn('leaf', ['uint256'], (p) => {
+      const arr = b.arrnew('uint256', p ?? 0);
+      return [b.bin('add', b.index(arr, b.word('uint256', 0n)), p ?? 0)];
+    });
+    const mid = b.fn('mid', ['uint256'], (p) => [...b.fncall(leaf, [p ?? 0])]);
+    // a pure fn must NOT be flagged
+    const pure = b.fn('pure', ['uint256'], (p) => [b.bin('add', p ?? 0, b.word('uint256', 1n))]);
+    const zero = b.word('uint256', 0n);
+    const i = b.cell('uint256', zero);
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        b.fncall(mid, [b.cellGet(i)]); // flagged: callee transitively allocates
+        b.fncall(pure, [b.cellGet(i)]); // NOT flagged
+        b.cellSet(i, b.bin('add', b.cellGet(i), b.word('uint256', 1n)));
+      },
+    );
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
+    expect(loopAllocs.some((d) => d.message.includes('fn "mid"'))).toBe(true);
+    expect(loopAllocs.some((d) => d.message.includes('fn "pure"'))).toBe(false);
+  });
+
+  test('fncall to an allocating fn outside any loop is not flagged', () => {
+    const b = new IrB('fnflat', [['n', 'uint256']]);
+    const leaf = b.fn('leaf', ['uint256'], (p) => {
+      b.arrnew('uint256', p ?? 0);
+      return [p ?? 0];
+    });
+    b.fncall(leaf, [0]);
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    expect(diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION')).toHaveLength(0);
+  });
+
+  test('ENV_FRAME_DEPENDENT: env caller/address are flagged; block-context env ops are not', () => {
+    const b = new IrB('envy', [['n', 'uint256']]);
+    const caller = b.env('caller');
+    const self = b.env('address');
+    b.env('timestamp');
+    b.env('blocknumber');
+    b.env('chainid');
+    void caller;
+    void self;
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    expect(envDiags).toHaveLength(2);
+    expect(envDiags.some((d) => d.message.includes("s.env('caller')"))).toBe(true);
+    expect(envDiags.some((d) => d.message.includes("s.env('address')"))).toBe(true);
+    expect(envDiags.every((d) => d.severity === 'warning')).toBe(true);
+    expect(envDiags.every((d) => d.message.includes('deployless'))).toBe(true);
+
+    const blockCtx = new IrB('blocky', [['n', 'uint256']]);
+    blockCtx.env('timestamp');
+    blockCtx.env('chainid');
+    blockCtx.ret('n', 0);
+    const blockDiags = lowerProgram(blockCtx.build(), {
+      evmVersion: 'cancun',
+      locations: true,
+    }).diagnostics;
+    expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+
+  test('ENV_FRAME_DEPENDENT: flagged inside emitted fn bodies, not in dropped fns', () => {
+    const b = new IrB('envfn', [['n', 'uint256']]);
+    const called = b.fn('whoami', ['uint256'], () => [b.env('caller')]);
+    const dropped = b.fn('ghost', ['uint256'], () => [b.env('address')]);
+    void dropped;
+    b.fncall(called, [0]);
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    expect(envDiags).toHaveLength(1);
+    expect(envDiags[0]?.message).toContain("s.env('caller')");
   });
 });
 

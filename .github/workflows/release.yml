@@ -42,13 +42,23 @@ jobs:
         id: version
         env:
           TAG: ${{ github.event.release.tag_name }} # env indirection: no script injection
+          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
         run: |
           SEMVER_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
           if [[ ! "$TAG" =~ $SEMVER_RE ]]; then
             echo "::error::Release tag '$TAG' must look like v1.2.3 or v1.2.3-beta.1"
             exit 1
           fi
+          # the dist-tag follows the tag's semver prerelease component (BASH_REMATCH[4]),
+          # not the GitHub release checkbox — hard-fail when the two disagree
+          PRERELEASE=false
+          if [[ -n "${BASH_REMATCH[4]}" ]]; then PRERELEASE=true; fi
+          if [[ "$PRERELEASE" != "$RELEASE_PRERELEASE" ]]; then
+            echo "::error::Tag '$TAG' (prerelease=$PRERELEASE per semver) disagrees with the GitHub release prerelease checkbox ($RELEASE_PRERELEASE) — fix the release and retry"
+            exit 1
+          fi
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
       # Install BEFORE the version bump (bun's frozen-lockfile hashes workspace manifests),
       # and bun pm pack requires a completed install.
@@ -61,7 +71,7 @@ jobs:
 
       - name: Full test gate
         run: |
-          (cd packages/contracts && forge build && bun run codegen)
+          (cd packages/contracts && forge build && forge test && bun run codegen)
           bun run build
           bun run check
           bun run test
@@ -80,6 +90,12 @@ jobs:
         working-directory: packages/evs
         run: echo "tarball=$(bun pm pack --quiet)" >> "$GITHUB_OUTPUT"
 
+      # validate the EXACT tarball being published (testing.md §8) — publint accepts a
+      # tarball path and checks the rewritten manifest, not the workspace source
+      - name: Package health on the packed tarball (publint)
+        working-directory: packages/evs
+        run: bunx publint "${{ steps.pack.outputs.tarball }}"
+
       - name: Publish to npm via OIDC
         working-directory: packages/evs
         env:
@@ -89,7 +105,7 @@ jobs:
           # and append --provenance below.
         run: |
           TAG_FLAG=latest
-          if [ "${{ github.event.release.prerelease }}" = "true" ]; then TAG_FLAG=next; fi
+          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then TAG_FLAG=next; fi
           npm publish "${{ steps.pack.outputs.tarball }}" \
             --access public \
             --tag "$TAG_FLAG"

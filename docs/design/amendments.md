@@ -594,6 +594,103 @@ from `docs/design/`.
 
 ---
 
+## 14. Post-integration fix pass (env-frame divergence + release hardening)
+
+### 14.1 `EvsDiagnostic.code` extended with `ENV_FRAME_DEPENDENT`
+
+- Law: §M1 / architecture §13.3 — `code: 'LOOP_ALLOCATION' | 'LARGE_FRAME'`.
+- Shipped: the union gains `'ENV_FRAME_DEPENDENT'`, emitted by `lowerProgram` once per
+  `env caller`/`env address` statement (body + emitted fn bodies; dropped fns excluded).
+- Rationale: `s.env('caller')`/`s.env('address')` lower to bare CALLER/ADDRESS — sound, but
+  frame-dependent: the DEFAULT deployless `toViem()` mode runs the script with caller =
+  viem's internal wrapper contract and address = a per-script counterfactual CREATE2 address
+  (research/viem-integration.md §3.1), so caller-relative reads silently return wrong data
+  unless stateOverride mode + `account` is used. Compile-time cannot know the mode the user
+  will pick, so the diagnostic is a warning, not an error. timestamp/blocknumber/chainid are
+  block context (mode-independent) and are NOT flagged.
+- Status: **accepted** (api.md §4/§10 and both READMEs carry the user-facing warning).
+
+### 14.2 `interpret` opts extended with `env` overrides; deployless-frame harness
+
+- Law: §M6 — `opts?: { trace?: boolean; maxSteps?: number }`; amendment 8.1 pins the env
+  constants to the state-override/unit-harness frame. §M10 freezes `execRuntime`.
+- Shipped: `opts.env?: InterpEnvOverrides` (`address`/`caller` as 0x addresses,
+  `timestamp`/`blocknumber`/`chainid` as bigints; malformed values → `EvsTypeError`,
+  host-side). Defaults unchanged (= amendment 8.1 constants), so all existing behavior is
+  identical; `MockChain` itself is untouched. `InterpEnvOverrides` is exported from
+  `index.ts`. The M10 harness additionally exports `execRuntimeDeployless` +
+  `DEPLOYLESS_WRAPPER_ADDRESS` (covered by amendment 4.3's extra-exports rule): it
+  CREATEs the initBytecode and CALLs the created contract from the wrapper address — the
+  deployless frame shape. The differential suite now pins that the deployless frame's
+  caller/address diverge from the pinned constants AND that `interpret` with matching env
+  overrides byte-agrees with the deployless execution, closing the oracle blind spot.
+- Status: **accepted**.
+
+### 14.3 `index.ts` type-only additions to the §M9 public surface
+
+- Law: §M9 — "nothing else is exported".
+- Shipped: `export type { AsmNode, LabelId }` (asm/assembler), `export type { EvmVersion }`
+  (asm/ops), `export type { InterpEnvOverrides }` (ir/interp).
+- Rationale: `CompileOptions.peephole` and `CompileOptions.evmVersion` reference `AsmNode`/
+  `EvmVersion`, which were unreachable through the single entry point (the exports map blocks
+  deep imports); `InterpEnvOverrides` appears in the public `interpret` signature (14.2).
+  Zero runtime cost (type-only).
+- Status: **accepted**.
+
+### 14.4 `ScriptAbi` default instantiation widened (`ReturnSpecToComponents`)
+
+- Law: §M3's literal `ScriptAbi` type (components via `UnionToTuple`).
+- Shipped: the non-literal case (`string extends keyof ret`) now yields
+  `readonly { name: string; type: EvsType }[]` instead of the degenerate
+  `UnionToTuple<string>` 1-tuple, making default-instantiated `ScriptAbi`/`EvsScript`/
+  `CompiledEvsScript` proper supertypes of every concrete script (pinned by type tests).
+  Literal instantiations are unchanged. `compile`'s structural constraint (amendment 12.1)
+  is retained — it is strictly looser and harmless — but its original motivation is now
+  fixed at the type level.
+- Status: **accepted**.
+
+### 14.5 `explainRevert` hedges adversarial reuse of the evs selectors
+
+- Law: architecture §13 message sketches.
+- Shipped: for scripts WITH sub-calls, the `EvsDecodeError`/`EvsInvalidCalldata` branches
+  append a hedge that a callee may have bubbled the selector verbatim (mirroring the Panic
+  branch's bubbled-from-callee wording); an `EvsDecodeError` site id is presented as
+  "recorded at file:line" ONLY when it resolves to a real 'decode'-kind site — any other id
+  is reported as not-attributable instead of echoing a forged site. Scripts without
+  sub-calls cannot bubble, so their messages stay unhedged.
+- Status: **accepted**.
+
+### 14.6 `LOOP_ALLOCATION` sees through `s.fn` bodies
+
+- Law: architecture §5 — flag allocations "inside a while body" (amendment 10.7 added
+  headers).
+- Shipped: a `fncall` reachable from a loop whose callee transitively allocates (arrnew /
+  call-with-outputs / dynamic literal; fn→fn calls followed, acyclic per §9 with a seen-set
+  guard) is flagged at the fncall site.
+- Status: **accepted**.
+
+### 14.7 CI workflows hardened (law updated in place)
+
+- repo-layout §9/§10 + the shipped workflows changed together: (a) the PR/release contract
+  step now runs `forge build && forge test && bun run codegen` — the 69-test Solidity oracle
+  suite was previously never exercised in CI; (b) the `fork-tests` job regenerates the
+  gitignored `test/generated/` artifacts (`forge build && bun run codegen`) before building —
+  it would have failed on import resolution when enabled; (c) the release workflow runs
+  `bunx publint <tarball>` on the exact packed tarball between pack and publish
+  (testing.md §8); (d) the npm dist-tag derives from the tag's semver prerelease component
+  and hard-fails when it disagrees with the GitHub release checkbox. testing.md §8 amended
+  accordingly.
+- Status: **accepted**.
+
+### 14.8 Package hygiene
+
+- `packages/evs/package.json` `files` excludes `src/**/__snapshots__` and `src/**/.gitkeep`
+  (a 31KB vitest snapshot and empty placeholders were shipping in the tarball); a LICENSE
+  file (MIT) now exists at the repo root and in `packages/evs/` so `npm pack` includes it.
+- Status: **accepted**.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

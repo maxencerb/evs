@@ -27,7 +27,7 @@ import {
   type SourceLoc,
 } from './core/errors.js';
 import type { ArgSpec, Expr, Hex } from './core/types.js';
-import type { ScriptIr, SiteId } from './ir/nodes.js';
+import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
 
@@ -302,6 +302,27 @@ function formatLoc(loc: SourceLoc | null): string {
   return loc === null ? '<unknown location>' : `${loc.file}:${loc.line}:${loc.column}`;
 }
 
+/**
+ * Whether the script performs any sub-calls. The evs error selectors (`EvsDecodeError`,
+ * `EvsInvalidCalldata`) are public constants — an adversarial callee can revert with them
+ * verbatim and the script bubbles the payload byte-exactly, so for scripts WITH sub-calls
+ * an attribution to a script site is a strong hint, never proof. Scripts without sub-calls
+ * cannot bubble anything, so there the attribution is authoritative.
+ */
+function scriptHasSubcalls(ir: ScriptIr): boolean {
+  let found = false;
+  const look = (s: { k: string }): void => {
+    if (s.k === 'call') found = true;
+  };
+  walkStmts(ir.body, look);
+  for (const fn of ir.fns) walkStmts(fn.body, look);
+  return found;
+}
+
+const CALLEE_FORGERY_HEDGE =
+  ' — note: the script performs sub-calls and a callee may have reverted with this evs ' +
+  'selector verbatim (bubbled byte-exactly), in which case the failure originated off-script';
+
 function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanation {
   const bytes = hexToBytes(data, 'explainRevert');
   const raw = bytesToHex(bytes);
@@ -351,29 +372,44 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
     const id = readWord(bytes, 4);
     const idNum = id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : -1;
     const site = idNum >= 0 ? siteById(map, idNum) : undefined;
-    if (site !== undefined) {
+    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
+    // only a 'decode'-kind site is a plausible script origin: the compiler emits
+    // EvsDecodeError(site) exclusively from strict-call decode-fail stubs. Any other site id
+    // (or an unknown one) cannot have been produced by this script's own code.
+    if (site !== undefined && site.kind === 'decode') {
       const ref = toSiteRef(site);
       return {
         kind: 'evs-decode',
-        message: `${ref.detail} failed (EvsDecodeError site ${ref.id}) — recorded at ${formatLoc(ref.loc)}`,
+        message: `${ref.detail} failed (EvsDecodeError site ${ref.id}) — recorded at ${formatLoc(ref.loc)}${hedge}`,
         site: ref,
+        raw,
+      };
+    }
+    if (site !== undefined) {
+      return {
+        kind: 'evs-decode',
+        message:
+          `returndata decode failed (EvsDecodeError site ${id}) — but site ${id} is not a ` +
+          `returndata-decode site in this script, so this script's own code cannot have ` +
+          `produced the payload${hedge}`,
         raw,
       };
     }
     return {
       kind: 'evs-decode',
-      message: `returndata decode failed (EvsDecodeError site ${id}) — the site id is unknown to this artifact's source map`,
+      message: `returndata decode failed (EvsDecodeError site ${id}) — the site id is unknown to this artifact's source map${hedge}`,
       raw,
     };
   }
 
   if (selector === INVALID_CALLDATA_SELECTOR && bytes.length === 4) {
     const signature = `${ir.name}(${ir.args.map((a) => a.type).join(',')})`;
+    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
     return {
       kind: 'evs-invalid-calldata',
       message:
         `calldata does not match ${signature} — the script reverted EvsInvalidCalldata() ` +
-        '(wrong selector, truncated calldata, or malformed dynamic arguments)',
+        `(wrong selector, truncated calldata, or malformed dynamic arguments)${hedge}`,
       raw,
     };
   }

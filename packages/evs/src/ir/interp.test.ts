@@ -750,6 +750,62 @@ test('env ops return the unit-harness environment', () => {
   });
 });
 
+describe('env overrides (opts.env — frame-dependent caller/address modeling)', () => {
+  const envScript = ir({
+    name: 'env',
+    values: [vi('address'), vi('address'), vi('uint256'), vi('uint256'), vi('uint256')],
+    body: [
+      mk({ k: 'env', op: 'address', out: 0 }),
+      mk({ k: 'env', op: 'caller', out: 1 }),
+      mk({ k: 'env', op: 'timestamp', out: 2 }),
+      mk({ k: 'env', op: 'blocknumber', out: 3 }),
+      mk({ k: 'env', op: 'chainid', out: 4 }),
+    ],
+    returns: [
+      { name: 'self', type: 'address', value: 0 },
+      { name: 'caller', type: 'address', value: 1 },
+      { name: 'ts', type: 'uint256', value: 2 },
+      { name: 'bn', type: 'uint256', value: 3 },
+      { name: 'chain', type: 'uint256', value: 4 },
+    ],
+  });
+
+  test('every env op is overridable; omitted fields keep the defaults', () => {
+    const out = retOf(
+      interpret(envScript, [], deadChain, {
+        env: {
+          address: '0x659b375d76a8e9a2c68da8818022d6561aa60845',
+          caller: '0x2222222222222222222222222222222222222222',
+          chainid: 31_337n,
+        },
+      }),
+    );
+    expect(out).toEqual({
+      self: '0x659B375D76a8E9a2c68Da8818022D6561aA60845',
+      caller: '0x2222222222222222222222222222222222222222',
+      ts: 0n, // default kept
+      bn: 0n, // default kept
+      chain: 31_337n,
+    });
+    const numeric = retOf(
+      interpret(envScript, [], deadChain, { env: { timestamp: 1_700_000_000n, blocknumber: 2n } }),
+    );
+    expect(numeric).toMatchObject({ ts: 1_700_000_000n, bn: 2n });
+  });
+
+  test('malformed overrides throw EvsTypeError (host-side, never a chain outcome)', () => {
+    expect(() => interpret(envScript, [], deadChain, { env: { caller: '0x1234' } })).toThrowError(
+      EvsTypeError,
+    );
+    expect(() => interpret(envScript, [], deadChain, { env: { chainid: -1n } })).toThrowError(
+      EvsTypeError,
+    );
+    expect(() =>
+      interpret(envScript, [], deadChain, { env: { timestamp: 1n << 256n } }),
+    ).toThrowError(EvsTypeError);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // select / index / len / arrnew / arrset / cells
 // ---------------------------------------------------------------------------

@@ -65,10 +65,14 @@ type MapComponents<keys, ret extends Record<string, Expr>> = keys extends readon
         : never;
     }
   : never;
-export type ReturnSpecToComponents<ret extends Record<string, Expr>> = MapComponents<
-  UnionToTuple<keyof ret>,
-  ret
->;
+// Non-literal `ret` (i.e. the default `Record<string, Expr>` instantiation) widens to a plain
+// readonly components array instead of collapsing to a `UnionToTuple<string>` 1-tuple — that
+// collapse made the default-instantiated `ScriptAbi`/`EvsScript`/`CompiledEvsScript` reject
+// every concrete multi-return script. A literal components tuple IS assignable to the readonly
+// array form, so the default instantiation is now a proper supertype (pinned by type tests).
+export type ReturnSpecToComponents<ret extends Record<string, Expr>> = string extends keyof ret
+  ? readonly { readonly name: string; readonly type: EvsType }[]
+  : MapComponents<UnionToTuple<keyof ret>, ret>;
 
 export type ScriptAbi<
   name extends string,

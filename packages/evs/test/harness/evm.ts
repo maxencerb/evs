@@ -37,6 +37,14 @@ export const SCRIPT_ADDRESS: Address = '0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f5
 /** Deterministic non-zero `msg.sender` / `tx.origin` of the top-level call. */
 export const CALLER_ADDRESS: Address = '0x1000000000000000000000000000000000000001';
 
+/**
+ * Stand-in for viem's deployless wrapper contract: `execRuntimeDeployless` CREATEs the
+ * initBytecode from this address and then CALLs the created contract from it — the same
+ * frame shape viem's `code` path produces (research/viem-integration.md §1.3/§3.1), where
+ * the script's `msg.sender` is the wrapper and `address(this)` is a created address.
+ */
+export const DEPLOYLESS_WRAPPER_ADDRESS: Address = '0x2222222222222222222222222222222222222222';
+
 /** Default gas limit: 30M — anvil's eth_call default, the parity worst case (evm §4). */
 export const DEFAULT_GAS_LIMIT = 30_000_000n;
 
@@ -77,6 +85,74 @@ export async function execRuntime(
     success: exceptionError === undefined,
     data: bytesToHex(returnValue),
     gasUsed: executionGasUsed,
+  };
+}
+
+/**
+ * Deployless-frame variant (NOT part of the frozen §M10 surface — see amendments): models
+ * viem's default `toViem()` mode, which CREATE2-deploys the initBytecode and CALLs the fresh
+ * contract from its wrapper. Here: CREATE(initBytecode) from `DEPLOYLESS_WRAPPER_ADDRESS`,
+ * then CALL the created contract from the same address. The script therefore observes
+ * `msg.sender` = the wrapper and `address(this)` = the created address — NEITHER equals the
+ * pinned `CALLER_ADDRESS`/`SCRIPT_ADDRESS` constants of the state-override frame, which is
+ * exactly the divergence `s.env('caller')`/`s.env('address')` users must account for.
+ */
+export async function execRuntimeDeployless(
+  initBytecode: Hex,
+  calldata: Hex,
+  fixture?: EvmFixture,
+): Promise<{
+  success: boolean;
+  data: Hex;
+  gasUsed: bigint;
+  scriptAddress: Address;
+  callerAddress: Address;
+}> {
+  const evm = await createEVM();
+
+  await Promise.all(
+    Object.entries(fixture?.contracts ?? {}).map(([address, code]) =>
+      evm.stateManager.putCode(toEthAddress(address), hexToBytes(code)),
+    ),
+  );
+
+  const wrapper = toEthAddress(DEPLOYLESS_WRAPPER_ADDRESS);
+  const gasLimit = fixture?.gasLimit ?? DEFAULT_GAS_LIMIT;
+
+  // creation frame: no `to` → CREATE; the init wrapper RETURNs the runtime as deployed code
+  const creation = await evm.runCall({
+    caller: wrapper,
+    origin: wrapper,
+    data: hexToBytes(initBytecode),
+    gasLimit,
+  });
+  const created = creation.createdAddress;
+  if (creation.execResult.exceptionError !== undefined || created === undefined) {
+    throw new Error(
+      `harness: deployless creation frame failed (${String(creation.execResult.exceptionError?.error)})`,
+    );
+  }
+
+  const result = await evm.runCall({
+    caller: wrapper,
+    origin: wrapper,
+    to: created,
+    data: hexToBytes(calldata),
+    gasLimit,
+  });
+
+  const { exceptionError, returnValue, executionGasUsed } = result.execResult;
+  const createdHex: unknown = created.toString();
+  if (typeof createdHex !== 'string' || !isAddressHex(createdHex)) {
+    throw new Error('harness: created address is not address-shaped');
+  }
+  const scriptAddress = createdHex;
+  return {
+    success: exceptionError === undefined,
+    data: bytesToHex(returnValue),
+    gasUsed: executionGasUsed,
+    scriptAddress,
+    callerAddress: DEPLOYLESS_WRAPPER_ADDRESS,
   };
 }
 

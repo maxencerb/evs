@@ -13,8 +13,8 @@
  *   INVALID     data segments (dataLabel-addressed blobs, content-deduplicated) — LAST
  *
  * tryCall zero blocks are emitted inline at their call sites (they rejoin the program —
- * codegen/call.ts). Diagnostics (`LOOP_ALLOCATION`, `LARGE_FRAME`) are returned for
- * compile.ts to forward via `onDiagnostic`; nothing is logged.
+ * codegen/call.ts). Diagnostics (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`)
+ * are returned for compile.ts to forward via `onDiagnostic`; nothing is logged.
  */
 
 import { selectorOf } from '../abi/artifact.js';
@@ -243,8 +243,38 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
 }
 
 // ---------------------------------------------------------------------------
-// diagnostics — LOOP_ALLOCATION (§5) + LARGE_FRAME
+// diagnostics — LOOP_ALLOCATION (§5) + LARGE_FRAME + ENV_FRAME_DEPENDENT
 // ---------------------------------------------------------------------------
+
+/** Statements that allocate memory at runtime (call-with-outputs snapshots returndata). */
+function stmtAllocates(s: Stmt): boolean {
+  return (
+    s.k === 'arrnew' ||
+    (s.k === 'call' && s.outs.length > 0) ||
+    (s.k === 'const' && s.data.kind === 'data')
+  );
+}
+
+/**
+ * `s.env('caller')` / `s.env('address')` lower to bare CALLER/ADDRESS — sound, but the value
+ * is execution-frame-dependent and the two `toViem()` modes run the script in different
+ * frames: in the DEFAULT deployless mode `caller` is viem's internal wrapper contract and
+ * `address` is a per-script counterfactual CREATE2 address (neither controllable), while in
+ * stateOverride mode `caller` is the `account` call parameter and `address` is the chosen
+ * override address. timestamp/blocknumber/chainid are block context — identical across modes —
+ * so the warning is scoped to caller+address.
+ */
+const ENV_FRAME_MESSAGES: Partial<Record<string, string>> = {
+  caller:
+    `s.env('caller') is execution-frame-dependent: in the default deployless toViem() mode ` +
+    `msg.sender is viem's internal wrapper contract — NOT the eth_call \`account\`; ` +
+    `caller-relative reads require toViem({ mode: 'stateOverride' }) plus the \`account\` ` +
+    `call parameter`,
+  address:
+    `s.env('address') is execution-frame-dependent: in the default deployless toViem() mode ` +
+    `address(this) is a per-script counterfactual CREATE2 address; use ` +
+    `toViem({ mode: 'stateOverride' }) for a stable, controllable script address`,
+};
 
 function collectDiagnostics(
   ir: ScriptIr,
@@ -253,19 +283,39 @@ function collectDiagnostics(
   locations: boolean,
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
+
+  // fn bodies allocating transitively (the call graph is acyclic per §9; the seen-set keeps
+  // the walk finite even on malformed input).
+  const fnAllocMemo = new Map<FnId, boolean>();
+  const fnAllocates = (f: FnId, seen: ReadonlySet<FnId>): boolean => {
+    const memo = fnAllocMemo.get(f);
+    if (memo !== undefined) return memo;
+    if (seen.has(f)) return false;
+    const fn = ir.fns[f];
+    let result = false;
+    if (fn !== undefined) {
+      const nested = new Set(seen).add(f);
+      walkStmts(fn.body, (s) => {
+        if (stmtAllocates(s) || (s.k === 'fncall' && fnAllocates(s.fn, nested))) result = true;
+      });
+    }
+    fnAllocMemo.set(f, result);
+    return result;
+  };
+
   const visit = (stmts: readonly Stmt[], inLoop: boolean): void => {
     for (const s of stmts) {
-      const allocates =
-        s.k === 'arrnew' ||
-        (s.k === 'call' && s.outs.length > 0) ||
-        (s.k === 'const' && s.data.kind === 'data');
-      if (inLoop && allocates) {
+      // a fncall whose callee transitively allocates is itself a per-iteration allocation
+      const callsAllocatingFn = s.k === 'fncall' && fnAllocates(s.fn, new Set());
+      if (inLoop && (stmtAllocates(s) || callsAllocatingFn)) {
         const what =
           s.k === 'arrnew'
             ? `s.newArray(${s.elem}, …)`
             : s.k === 'call'
               ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
-              : 'a dynamic literal materialization';
+              : s.k === 'fncall'
+                ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
+                : 'a dynamic literal materialization';
         diagnostics.push({
           severity: 'warning',
           code: 'LOOP_ALLOCATION',
@@ -274,6 +324,17 @@ function collectDiagnostics(
             `pointer, so memory grows monotonically for the lifetime of the call`,
           loc: locations ? s.loc : null,
         });
+      }
+      if (s.k === 'env') {
+        const message = ENV_FRAME_MESSAGES[s.op];
+        if (message !== undefined) {
+          diagnostics.push({
+            severity: 'warning',
+            code: 'ENV_FRAME_DEPENDENT',
+            message,
+            loc: locations ? s.loc : null,
+          });
+        }
       }
       if (s.k === 'if') {
         visit(s.then, inLoop);

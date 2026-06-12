@@ -207,6 +207,28 @@ describe('pipeline hooks', () => {
     // without a callback the same compile is silent and pure
     expect(() => compile(loopy)).not.toThrow();
   });
+
+  test('env caller/address emit ENV_FRAME_DEPENDENT (frame differs between toViem() modes)', () => {
+    const whoami = evscript({ name: 'whoami', args: [] }, (s) =>
+      s.return({ who: s.env('caller'), me: s.env('address') }),
+    );
+    const diags: EvsDiagnostic[] = [];
+    compile(whoami, { onDiagnostic: (d) => diags.push(d) });
+    const envDiags = diags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    expect(envDiags).toHaveLength(2);
+    expect(envDiags.some((d) => d.message.includes("s.env('caller')"))).toBe(true);
+    expect(envDiags.some((d) => d.message.includes("s.env('address')"))).toBe(true);
+    expect(envDiags.every((d) => d.message.includes('deployless'))).toBe(true);
+    expect(envDiags.every((d) => d.message.includes('stateOverride'))).toBe(true);
+
+    // block-context env ops are mode-independent — no warning
+    const blocky = evscript({ name: 'blocky', args: [] }, (s) =>
+      s.return({ ts: s.env('timestamp'), chain: s.env('chainid') }),
+    );
+    const blockDiags: EvsDiagnostic[] = [];
+    compile(blocky, { onDiagnostic: (d) => blockDiags.push(d) });
+    expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -365,6 +387,56 @@ describe('explainRevert', () => {
     expect(explained.kind).toBe('evs-decode');
     expect(explained.site).toBeUndefined();
     expect(explained.message).toMatch(/site id is unknown/);
+  });
+
+  test('evs-decode: adversarial callee selector reuse is hedged, forged sites never authoritative', async () => {
+    const compiled = compile(symbolScript());
+    // (a) a genuine decode failure on a script WITH sub-calls carries the off-script hedge
+    const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'sym' });
+    const res = await execRuntime(compiled.runtimeBytecode, calldata, {
+      contracts: { [TOKEN]: ATTACKER_RETURNERS.empty },
+    });
+    const genuine = compiled.explainRevert(res.data);
+    expect(genuine.message).toMatch(/callee may have reverted with this evs selector/);
+    // (b) a forged payload pointing at a NON-decode site is not presented as 'recorded at'
+    const forgedSite = compiled.sourceMap.sites.find((s) => s.kind !== 'decode');
+    expect(forgedSite).toBeDefined();
+    const forged = compiled.explainRevert(
+      encodeErrorResult({
+        abi: [
+          { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
+        ],
+        errorName: 'EvsDecodeError',
+        args: [BigInt(forgedSite?.id ?? 0)],
+      }),
+    );
+    expect(forged.kind).toBe('evs-decode');
+    expect(forged.site).toBeUndefined();
+    expect(forged.message).toMatch(/not a returndata-decode site/);
+    expect(forged.message).not.toMatch(/recorded at/);
+    // (c) a script WITHOUT sub-calls cannot bubble — its messages carry no hedge
+    const pure = compile(sumScript());
+    const decodePayload = encodeErrorResult({
+      abi: [{ type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] }],
+      errorName: 'EvsDecodeError',
+      args: [999_999n],
+    });
+    expect(pure.explainRevert(decodePayload).message).not.toMatch(/callee may have reverted/);
+  });
+
+  test('evs-invalid-calldata: hedged only for scripts with sub-calls', async () => {
+    // sumScript performs no sub-calls — the attribution is authoritative, no hedge
+    const pure = compile(sumScript());
+    const resPure = await execRuntime(pure.runtimeBytecode, '0x');
+    const explainedPure = pure.explainRevert(resPure.data);
+    expect(explainedPure.kind).toBe('evs-invalid-calldata');
+    expect(explainedPure.message).not.toMatch(/callee may have reverted/);
+    // symbolScript sub-calls — a callee could bubble EvsInvalidCalldata() verbatim
+    const withCalls = compile(symbolScript());
+    const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x');
+    const explainedCalls = withCalls.explainRevert(resCalls.data);
+    expect(explainedCalls.kind).toBe('evs-invalid-calldata');
+    expect(explainedCalls.message).toMatch(/callee may have reverted with this evs selector/);
   });
 
   test('evs-invalid-calldata: short calldata end to end', async () => {

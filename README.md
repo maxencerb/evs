@@ -145,6 +145,20 @@ matrix). The artifact deliberately exposes `runtimeBytecode` / `initBytecode` an
 named `code`: passing runtime bytecode as viem's `code` fails _silently_, and `toViem()` always
 hands viem the right flavor.
 
+> [!WARNING]
+> **`s.env('caller')` / `s.env('address')` are execution-frame-dependent — and the default
+> deployless mode gives you values you cannot control.** Deployless `eth_call` runs the script
+> inside viem's wrapper: `s.env('caller')` is the wrapper contract
+> (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed — never your
+> account), and `s.env('address')` is a per-script counterfactual CREATE2 address. A
+> caller-relative read like `balanceOf(s.env('caller'))` therefore silently returns the
+> wrapper's (zero) balance. Caller-relative reads **require**
+> `toViem({ mode: 'stateOverride' })` plus the `account` call parameter — there is no
+> deployless workaround. `compile()` emits an `ENV_FRAME_DEPENDENT` warning (via
+> `onDiagnostic`) whenever a script uses these two env ops; `timestamp`/`blocknumber`/
+> `chainid` are block context and identical in both modes. To model a non-default frame in
+> tests, pass `interpret(ir, args, chain, { env: { caller, address } })`.
+
 ## Key concepts
 
 ### Build time vs run time

@@ -27,11 +27,15 @@
  *   copy pointers, exactly like the slot-copying codegen.
  *
  * Environment ops: `MockChain` deliberately has no environment surface, so `env` statements
- * return the constants the unit-tier harness (`test/harness/evm.ts` on `@ethereumjs/evm`
+ * default to the constants the unit-tier harness (`test/harness/evm.ts` on `@ethereumjs/evm`
  * defaults) exposes to the compiled bytecode: `address` = the fixed SCRIPT address
  * (`0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`), `caller` =
  * `0x1000000000000000000000000000000000000001`, `timestamp` = 0, `blocknumber` = 0,
- * `chainid` = 1 (Mainnet default common).
+ * `chainid` = 1 (Mainnet default common). Those defaults match the stateOverride `toViem()`
+ * frame shape; `opts.env` overrides them per call so other frames — notably the DEFAULT
+ * deployless mode, where `caller` is viem's internal wrapper contract and `address` is a
+ * per-script counterfactual CREATE2 address — can be modeled and differential-tested
+ * (extension of the frozen §M6 opts, recorded in docs/design/amendments.md).
  *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
@@ -71,11 +75,24 @@ export interface InterpResult {
   trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[];
 }
 
+/**
+ * Per-call overrides for the `env` op values (defaults = the stateOverride/unit-harness frame,
+ * see the module doc). `s.env('caller')`/`s.env('address')` are execution-frame-dependent —
+ * pass the frame's values here to model e.g. the default deployless `toViem()` mode.
+ */
+export interface InterpEnvOverrides {
+  address?: Hex; // 20-byte 0x address — address(this) of the script frame
+  caller?: Hex; // 20-byte 0x address — msg.sender of the script frame
+  timestamp?: bigint;
+  blocknumber?: bigint;
+  chainid?: bigint;
+}
+
 export function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number },
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides },
 ): InterpResult {
   validateIr(ir);
   const maxSteps = opts?.maxSteps ?? DEFAULT_MAX_STEPS;
@@ -85,7 +102,7 @@ export function interpret(
       `interpret: maxSteps must be a positive safe integer, got ${String(maxSteps)}`,
     );
   }
-  return new Interp(ir, chain, maxSteps, opts?.trace === true).run(args);
+  return new Interp(ir, chain, maxSteps, opts?.trace === true, resolveEnv(opts?.env)).run(args);
 }
 
 // ---------------------------------------------------------------------------
@@ -106,6 +123,53 @@ const ENV_CALLER = 0x1000000000000000000000000000000000000001n;
 const ENV_TIMESTAMP = 0n;
 const ENV_BLOCKNUMBER = 0n;
 const ENV_CHAINID = 1n;
+
+/** resolved env table — every op carries its canonical word value. */
+interface ResolvedEnv {
+  readonly address: bigint;
+  readonly caller: bigint;
+  readonly timestamp: bigint;
+  readonly blocknumber: bigint;
+  readonly chainid: bigint;
+}
+
+const ADDRESS_HEX_RE = /^0x[0-9a-fA-F]{40}$/;
+
+function envAddress(field: 'address' | 'caller', value: Hex | undefined, dflt: bigint): bigint {
+  if (value === undefined) return dflt;
+  if (typeof value !== 'string' || !ADDRESS_HEX_RE.test(value)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `interpret: opts.env.${field} must be a 20-byte 0x address, got ${JSON.stringify(value)}`,
+    );
+  }
+  return BigInt(value);
+}
+
+function envWord(
+  field: 'timestamp' | 'blocknumber' | 'chainid',
+  value: bigint | undefined,
+  dflt: bigint,
+): bigint {
+  if (value === undefined) return dflt;
+  if (typeof value !== 'bigint' || value < 0n || value > MASK256) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `interpret: opts.env.${field} must be a bigint in [0, 2^256), got ${String(value)}`,
+    );
+  }
+  return value;
+}
+
+function resolveEnv(env: InterpEnvOverrides | undefined): ResolvedEnv {
+  return {
+    address: envAddress('address', env?.address, ENV_SCRIPT_ADDRESS),
+    caller: envAddress('caller', env?.caller, ENV_CALLER),
+    timestamp: envWord('timestamp', env?.timestamp, ENV_TIMESTAMP),
+    blocknumber: envWord('blocknumber', env?.blocknumber, ENV_BLOCKNUMBER),
+    chainid: envWord('chainid', env?.chainid, ENV_CHAINID),
+  };
+}
 
 /** `Panic(uint256)` selector bytes — evm-target §5. */
 const PANIC_SELECTOR = Uint8Array.of(0x4e, 0x48, 0x7b, 0x71);
@@ -169,6 +233,7 @@ class Interp {
   private readonly chain: MockChain;
   private readonly maxSteps: number;
   private readonly tracing: boolean;
+  private readonly env: ResolvedEnv;
   private readonly trace: { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[] =
     [];
   private readonly values = new Map<ValueId, Value>();
@@ -177,11 +242,18 @@ class Interp {
   /** fn-name stack for trace-note prefixes (fn-body paths are relative to the fn body). */
   private readonly fnStack: string[] = [];
 
-  constructor(ir: ScriptIr, chain: MockChain, maxSteps: number, tracing: boolean) {
+  constructor(
+    ir: ScriptIr,
+    chain: MockChain,
+    maxSteps: number,
+    tracing: boolean,
+    env: ResolvedEnv,
+  ) {
     this.ir = ir;
     this.chain = chain;
     this.maxSteps = maxSteps;
     this.tracing = tracing;
+    this.env = env;
   }
 
   run(args: readonly unknown[]): InterpResult {
@@ -301,7 +373,7 @@ class Interp {
         return;
       }
       case 'env': {
-        this.values.set(s.out, envValue(s.op));
+        this.values.set(s.out, envValue(s.op, this.env));
         return;
       }
       case 'convert': {
@@ -739,18 +811,18 @@ function constValue(type: EvsType, data: { kind: 'word' | 'data'; hex: Hex }): V
   return { kind: 'array', elem, words };
 }
 
-function envValue(op: string): bigint {
+function envValue(op: string, env: ResolvedEnv): bigint {
   switch (op) {
     case 'address':
-      return ENV_SCRIPT_ADDRESS;
+      return env.address;
     case 'caller':
-      return ENV_CALLER;
+      return env.caller;
     case 'timestamp':
-      return ENV_TIMESTAMP;
+      return env.timestamp;
     case 'blocknumber':
-      return ENV_BLOCKNUMBER;
+      return env.blocknumber;
     case 'chainid':
-      return ENV_CHAINID;
+      return env.chainid;
     default:
       throw new EvsInternalError('INTERNAL', `interpret: unknown env op '${op}'`);
   }
