@@ -465,12 +465,14 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       );
     }
     if (layout.elem.kind !== 'word') {
-      // composite-element array LITERALS (`tuple[]`, `T[][]`, `string[]`) require the encode
-      // milestone (§12.7). The decode/read path un-gated the layout, so this guard now genuinely
-      // fires for a composite-array literal (rather than being unreachable).
+      // composite-element array literals (`tuple[]`, `T[][]`, `string[]`) have no FLAT data-segment
+      // form — they are an array of pointers (§12.1). The recorder builds them at record time via
+      // `arrnew` + per-element construction (`coerceToId`/`s.lit`/`s.newArray`), so this flat-literal
+      // path is never the construction route; only a hand-cast caller (e.g. an eager s.select branch
+      // validation) reaches here.
       throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${type} literal: composite-element arrays are not supported yet (encode pending §12.7)`,
+        'TYPE_MISMATCH',
+        `${type} literal: a composite-element array has no flat memref literal — build it via the recorder (s.newArray / an array literal arg or return)`,
         { loc: captureLoc() },
       );
     }

@@ -24,6 +24,7 @@ import type {
   LitOf,
   NamedType,
   NumericType,
+  StringType,
   TupleType,
   WordType,
 } from '../core/types.js';
@@ -173,12 +174,34 @@ export interface Cell<t extends EvsType> {
   set(value: IntoExpr<t>): void;
 }
 
-export interface MutArray<e extends WordType> {
+/** The `T[]` value type of a `MutArray<e>` element `e`: a string element → `${e}[]` (pinned to the
+ *  depth-bounded {@link EvsType} array vocabulary); a `tuple` element → a `tuple[]` {@link TupleType}
+ *  with the SAME components (§12.8 — a `MutArray` element is always a plain `tuple`, so the array tag
+ *  is exactly `'tuple[]'`). One-level-deeper only — deeper string arrays are rejected at record time. */
+export type MutArrayValueOf<e extends EvsType> = e extends TupleType
+  ? { readonly type: 'tuple[]'; readonly components: e['components'] }
+  : e extends StringType
+    ? Extract<`${e}[]`, EvsType>
+    : never;
+
+/** The element handle of a `MutArray<e>`: a `tuple` element → a {@link Tuple} handle; otherwise an
+ *  {@link Expr} of the element type. */
+export type MutArrayElem<e extends EvsType> = e extends TupleType
+  ? Tuple<e>
+  : Expr<Extract<e, EvsType>>;
+
+/**
+ * A mutable array (`s.newArray`) over element type `e` (§5; widened to composite elements in §12.8).
+ * `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a `tuple`. `set`
+ * accepts the element's `IntoMember` (a `Tuple` handle / literal for a tuple element, an `IntoExpr`
+ * otherwise); `get` yields the element handle; `expr()` is the raw memref of the SAME buffer.
+ */
+export interface MutArray<e extends EvsType> {
   readonly elemType: e;
   readonly length: Expr<'uint256'>;
-  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
-  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
-  expr(): Expr<`${e}[]`>; // memref handle to the SAME buffer (reference semantics, documented)
+  set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // bounds-checked → Panic 0x32
+  get(i: IntoExpr<'uint256'>): MutArrayElem<e>; // bounds-checked → Panic 0x32
+  expr(): Expr<MutArrayValueOf<e>>; // memref handle to the SAME buffer (reference semantics)
 }
 
 export interface LoopCtl {
@@ -241,6 +264,23 @@ export type Tuple<C extends TupleType> = {
   // `C` from `expr()` instead. Type-only — the runtime `TupleHandle` carries no such property.
   readonly [tupleBrand]: TupleType;
 };
+
+/** The element `tuple` descriptor of a `tuple[]` {@link TupleType} (same components, `type: 'tuple'`). */
+export type TupleArrayElem<C extends TupleType> = {
+  readonly type: 'tuple';
+  readonly components: C['components'];
+};
+
+// `.at(i)` on a `tuple[]` Expr yields a typed {@link Tuple} element (the runtime `atOp` returns a
+// Tuple handle bound to the `index` out ValueId — §12.8). The base `Expr.at` overload in
+// `core/types.ts` only matches string-element arrays; this augmentation adds the tuple-array case
+// where `Tuple`/`Field`/`ComponentToType` are in scope. Overload resolution picks the `this`-matching
+// signature, so a `string[]`/`uint256[][]` Expr keeps returning an `Expr` element.
+declare module '../core/types.js' {
+  interface Expr<t extends EvsType = EvsType> {
+    at<C extends TupleType>(this: Expr<C>, i: IntoExpr<'uint256'>): Tuple<TupleArrayElem<C>>;
+  }
+}
 
 /** @internal phantom brand keying {@link Tuple}; never present at runtime. */
 export declare const tupleBrand: unique symbol;
@@ -337,14 +377,20 @@ type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
     : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
 
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
-// a struct, a positional array for an unnamed tuple) OR an `Expr` of that type OR — for a tuple
-// param — a `Tuple` handle / `s.tuple(...)` result.
+// a struct, a positional array for an unnamed tuple, a `readonly Struct[]` for a `tuple[]`) OR an
+// `Expr`/handle of that type. For a `tuple` param: a `Tuple` handle / `s.tuple(...)` result. For a
+// `tuple[]` param (§12.8): an `Expr` of the `tuple[]` descriptor (a decoded/constructed array handle)
+// or the `readonly Struct[]` literal. `uint256[][]`/`string[]` are `EvsType` strings → `Expr<that>`.
 type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
       | AbiParameterToPrimitiveType<p, 'inputs'>
       | Tuple<ParamToTupleType<p>>
       | Expr<ParamToTupleType<p>>
-  : AbiParameterToPrimitiveType<p, 'inputs'> | Expr<p['type'] extends EvsType ? p['type'] : never>;
+  : p['type'] extends 'tuple[]'
+    ? AbiParameterToPrimitiveType<p, 'inputs'> | Expr<ParamToTupleArrayType<p>>
+    :
+        | AbiParameterToPrimitiveType<p, 'inputs'>
+        | Expr<p['type'] extends EvsType ? p['type'] : never>;
 
 export type SubcallInputs<abi extends Abi | readonly unknown[], name extends string> = [
   ViewFnOf<abi, name>,
@@ -407,7 +453,9 @@ export interface ScriptBuilder {
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
   let<t extends EvsType>(init: Expr<t>): Cell<t>;
-  newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+  // §12.8: `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a
+  // `tuple` (deferred shapes — `tuple[]` element, deeper nesting, `T[N]` — throw at record time).
+  newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
   // tuple/struct allocator (spec §5): `init` is a partial, name-keyed (struct) or positional
   // (t.tuple) record of members; omitted members default to zero. Returns a `Tuple` handle.
   tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;

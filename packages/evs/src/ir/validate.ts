@@ -33,6 +33,7 @@ import {
   typesEqual,
   type ArrayType,
   type EvsType,
+  type TupleType,
   type WordType,
 } from '../core/types.js';
 import type {
@@ -758,16 +759,39 @@ class IrValidator {
     }
   }
 
-  /** Element type of an `arrnew`. Word elements only for now (composite-element arrays are a
-   *  follow-up); the IR node admits any {@link EvsType} for forward-compatibility. */
-  private checkElemType(elem: EvsType, what: string, loc: SourceLoc | null): WordType {
-    if (!isWordType(elem)) {
-      this.fail(
-        `${what}: array element type must be a word type, got ${JSON.stringify(elem)}`,
-        loc,
-      );
+  /**
+   * Element type of an `arrnew` (§12.4). Admits one level of array nesting over a composite/dynamic
+   * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
+   * or a plain `tuple`. STILL deferred (`UNSUPPORTED_V0`): `tuple[]` element (→ `tuple[][]`), a
+   * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
+   */
+  private checkElemType(elem: EvsType, what: string, loc: SourceLoc | null): EvsType {
+    if (isWordType(elem) || elem === 'string' || elem === 'bytes') return elem;
+    if (isTupleType(elem)) {
+      if (elem.type !== 'tuple') {
+        this.fail(
+          `${what}: array element ${stringifyType(elem)} (a composite array element) is not supported (only one array nesting level over a tuple/dynamic element)`,
+          loc,
+        );
+      }
+      return elem;
     }
-    return elem;
+    if (typeof elem === 'string' && elem.endsWith('[]')) {
+      // a one-level string array element (`uint256[]`) → the array node is `uint256[][]` (supported);
+      // a deeper element (`uint256[][]`) → `uint256[][][]` is still deferred.
+      const inner = elem.slice(0, -2);
+      if (inner.endsWith('[]')) {
+        this.fail(
+          `${what}: array element '${elem}' nests deeper than one level — not supported`,
+          loc,
+        );
+      }
+      return elem;
+    }
+    return this.fail(
+      `${what}: array element type is not supported, got ${stringifyType(elem)}`,
+      loc,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -854,9 +878,14 @@ function isArrayType(s: EvsType): s is ArrayType {
   return typeof s === 'string' && s.endsWith('[]');
 }
 
-/** `${WordType}[]` for an `arrnew` whose element validated as a word type. */
-function arrayOf(elem: WordType): ArrayType {
-  return `${elem}[]`;
+/** The array type whose element is `elem` (validated by `checkElemType`): a string element yields
+ *  `${elem}[]`; a plain `tuple` yields a `tuple[]` {@link TupleType}. */
+function arrayOf(elem: EvsType): ArrayType | TupleType {
+  if (typeof elem === 'string') {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `elem` was validated as a one-level-or-shallower string/word/array element, so `${elem}[]` is a valid ArrayType.
+    return `${elem}[]` as ArrayType;
+  }
+  return Object.freeze({ type: 'tuple[]', components: elem.components });
 }
 
 /** Human-readable rendering of a value type for error messages (tuples → their components). */

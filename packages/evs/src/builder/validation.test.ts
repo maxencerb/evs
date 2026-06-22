@@ -262,15 +262,14 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
     );
   });
 
-  test('a composite-array literal in s.lit → UNSUPPORTED_V0 (encode pending §12.7)', () => {
-    // `uint256[][]` is now a valid array type (decode un-gated), but a composite-array LITERAL needs
-    // the encode milestone — s.lit still rejects it, now with the encode-pending message.
-    expectEvs(
-      () => rec((s) => s.lit('uint256[][]' as never, [] as never)),
-      EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported yet \(encode pending/,
-    );
+  test('a composite-array literal in s.lit now BUILDS at record time (§12.8)', () => {
+    // `uint256[][]` is a valid composite-element array; s.lit builds it via arrnew + per-element
+    // construction (no flat data segment) and returns a usable Expr.
+    expect(() =>
+      evscript({ name: 'lit2d' }, (s) =>
+        s.return({ m: s.lit('uint256[][]' as never, [[1n, 2n], [3n]] as never) }),
+      ),
+    ).not.toThrow();
   });
 
   test('a string-array nested deeper than [][] in s.lit → UNSUPPORTED_V0 (still deferred)', () => {
@@ -404,12 +403,27 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
-  test('newArray with a non-word element type', () => {
+  test('newArray now admits a composite element (string), but NOT a fixed-size element (T[N])', () => {
+    // string is a valid composite element (§12.8) — s.newArray('string', n) builds a string[] now.
+    expect(() =>
+      evscript({ name: 'mkStrings' }, (s) => {
+        const xs = s.newArray('string' as never, 2n);
+        return s.return({ xs: xs.expr() });
+      }),
+    ).not.toThrow();
+    // a fixed-size element is still deferred.
     expectEvs(
-      () => rec((s) => s.newArray('string' as never, 1n)),
+      () => rec((s) => s.newArray('uint256[2]' as never, 1n)),
       EvsTypeError,
-      'TYPE_MISMATCH',
-      /word type/,
+      'UNSUPPORTED_V0',
+      /not supported/,
+    );
+    // a tuple[] element (→ tuple[][]) is still deferred.
+    expectEvs(
+      () => rec((s) => s.newArray(t.array(t.struct({ a: t.uint256 })) as never, 1n)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /deferred|not supported/,
     );
   });
 

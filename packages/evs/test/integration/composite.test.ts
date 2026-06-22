@@ -495,6 +495,96 @@ describe('composite arrays (return path) against real solc getters', () => {
   });
 });
 
+// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc (§12.7/§12.8 M4) -------
+//
+// (1) CONSTRUCT a Position[] inside the evs script (s.newArray + s.tuple + arrset), pass it as a
+//     CALL ARG to sumLiquidity(Position[]) on the real deployment, and assert the returned sum
+//     matches solc's own computation. (2) CONSTRUCT a uint256[][] and RETURN it, deep-equal expected.
+
+// the Position tuple descriptor, byte-identical to Composite.abi's Position (carries internalType so
+// the s.tuple/s.newArray handle matches the abi's `tuple[]` arg input type exactly).
+const PositionStruct = {
+  type: 'tuple',
+  components: [
+    { type: 'uint96', name: 'nonce', internalType: 'uint96' },
+    { type: 'address', name: 'operator', internalType: 'address' },
+    { type: 'uint128', name: 'liquidity', internalType: 'uint128' },
+    { type: 'uint256', name: 'feeGrowthInside0', internalType: 'uint256' },
+    { type: 'uint256', name: 'feeGrowthInside1', internalType: 'uint256' },
+  ],
+} as const;
+
+describe('composite arrays CALL-ARG encode + construct against real solc (M4)', () => {
+  test('construct a Position[] in the evs script and call sumLiquidity → sum matches solc', async () => {
+    // three positions derived exactly like Composite.positionsBatch (i = 0,1,2): liquidity = i*1000+7.
+    const POSITIONS = [0n, 1n, 2n].map((i) => derivePosition(i));
+    const expectedSum = POSITIONS.reduce((acc, p) => acc + p.liquidity, 0n);
+
+    const script = evscript({ name: 'mkAndSum', args: t.address }, (s, target) => {
+      const arr = s.newArray(PositionStruct, BigInt(POSITIONS.length));
+      POSITIONS.forEach((p, i) => {
+        const tup = s.tuple(PositionStruct, {
+          nonce: p.nonce,
+          operator: p.operator,
+          liquidity: p.liquidity,
+          feeGrowthInside0: p.feeGrowthInside0,
+          feeGrowthInside1: p.feeGrowthInside1,
+        });
+        arr.set(BigInt(i), tup);
+      });
+      const sum = s.call({
+        address: target,
+        abi: Composite.abi,
+        functionName: 'sumLiquidity',
+        args: [arr.expr()],
+      });
+      return s.return({ sum });
+    });
+    const compiled = script.compile();
+
+    // ground truth: solc computes the same sum over the same Position[] (encoded by viem).
+    const solcSum = await publicClient.readContract({
+      address: composite,
+      abi: Composite.abi,
+      functionName: 'sumLiquidity',
+      args: [POSITIONS],
+    });
+    expect(solcSum).toBe(expectedSum);
+
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'mkAndSum',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({ sum: expectedSum });
+    expectTypeOf(out).toEqualTypeOf<{ sum: bigint }>();
+
+    // and via stateOverride + anvil_setCode (the other two toViem paths).
+    const override = await publicClient.readContract({
+      ...compiled.toViem({ mode: 'stateOverride' }),
+      functionName: 'mkAndSum',
+      args: [composite],
+    });
+    expect(override).toStrictEqual({ sum: expectedSum });
+  });
+
+  test('construct a uint256[][] in the evs script and return it → deep-equals expected', async () => {
+    const MATRIX = [[1n], [2n, 3n], [], [4n, 5n, 6n, 7n]] as const;
+    const script = evscript({ name: 'mkMatrix' }, (s) => {
+      const arr = s.newArray('uint256[]', BigInt(MATRIX.length));
+      MATRIX.forEach((row, i) => arr.set(BigInt(i), row));
+      return s.return({ m: arr.expr() });
+    });
+    const compiled = script.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'mkMatrix',
+      args: [],
+    });
+    expect(out).toStrictEqual({ m: MATRIX });
+  });
+});
+
 // --- failure path: positions at an EOA → bubbled EvsDecodeError ----------------------------
 
 describe('failure path: positions at an EOA → EvsDecodeError', () => {

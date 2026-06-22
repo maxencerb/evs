@@ -326,8 +326,13 @@ describe('encodeLiteralData', () => {
     expect(catchEvs(() => encodeLiteralData('uint8[]', '0x01')).code).toBe('TYPE_MISMATCH');
     // word types must go through encodeLiteralWord
     expect(catchEvs(() => encodeLiteralData('uint256' as DynType, 1n)).code).toBe('TYPE_MISMATCH');
-    // non-v0 dynamic shapes
+    // a composite-element array has no flat data-segment literal — the recorder builds it (§12.8),
+    // so this direct call rejects with TYPE_MISMATCH (it is not the construction route).
     expect(catchEvs(() => encodeLiteralData('string[]' as ArrayType, ['a'])).code).toBe(
+      'TYPE_MISMATCH',
+    );
+    // a still-deferred array shape (nested deeper than [][]) is classified UNSUPPORTED_V0 by layout.
+    expect(catchEvs(() => encodeLiteralData('uint256[][][]' as ArrayType, [])).code).toBe(
       'UNSUPPORTED_V0',
     );
   });

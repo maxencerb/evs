@@ -31,8 +31,7 @@
 import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError, EvsTypeError } from '../core/errors.js';
-import { captureLoc } from '../core/loc.js';
+import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
   isDynamicType,
@@ -52,6 +51,7 @@ import {
   emitNormalizeWord,
   encodeFramesOf,
   headOffsetsOf,
+  reserveEncodeFrames,
   needsMemorySnapshot,
   wordNeedsNormalize,
   type PushBase,
@@ -252,15 +252,13 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       }
       return;
     }
-    // dynamic arg. ENCODE of a composite-element array call arg (`tuple[]`/`T[][]`/`string[]`) is
-    // the next milestone (§12.7); the decode/read path un-gated the layout, so guard here against a
-    // silently-wrong word-array encode. (`tuple[]` args already route to the tuple encoder, which
-    // guards in `emitEncodeBlock`; this catches `uint256[][]`/`string[]` args.)
+    // dynamic arg. A composite-element array call arg (`tuple[]`/`T[][]`/`string[]`) is routed to the
+    // recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s `needsRecursiveEncode`
+    // dispatch and never reaches the template path — this backstop catches a routing regression that
+    // would otherwise silently mis-encode a composite array as a word-array memref tail.
     if (l.kind === 'array' && l.elem.kind !== 'word') {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${what}: encoding a composite-element array call argument is not yet implemented (§12.7)`,
-        { loc: captureLoc() },
+      throw internal(
+        `${what}: composite-element array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
       );
     }
     if (isLiteralRef(ref)) {
@@ -557,20 +555,18 @@ function emitCalldataBuildTuples(
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
 
   // Composite-element array CALL ARGS (`tuple[]` directly, or a tuple arg whose member is a
-  // `tuple[]`/`T[][]`/`string[]`) need the §12.7 scratch-frame encode loop, which reserves loop
-  // frames in memory. The return encoder reserves those frames below its output buffer; the
-  // call-arg buffer is transient (the free pointer is not bumped), so there is nowhere safe to put
-  // them — call-arg composite-array encode is the M4 milestone. Gate it here so an un-gated layout
-  // can never silently mis-encode through `emitEncodeArrayTail` with an unreserved frame region.
-  inputs.forEach((p, i) => {
-    if (encodeFramesOf(layoutOfType(abiParamToType(p))) > 0) {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `arg #${i} of ${fnAbi.name}: encoding a composite-element array call argument (\`tuple[]\`/\`T[][]\`/\`string[]\`, here or inside a tuple member) is not yet implemented (§12.7 call-arg milestone)`,
-        { loc: captureLoc() },
-      );
-    }
-  });
+  // `tuple[]`/`T[][]`/`string[]`) encode through the §12.7 scratch-frame loop, which keeps its loop
+  // state in a reserved in-memory frame region rather than on the stack. The return encoder reserves
+  // those frames below its output buffer; here the call-arg buffer is transient (the free pointer is
+  // NOT bumped for it), so we reserve the frames just below the buffer base by bumping the free
+  // pointer once — AFTER the data-literal staging block, and BEFORE `MLOAD(0x40)` (the buffer base)
+  // is read for the selector/heads/encode. FRAMES = the max concurrent array-nesting depth across all
+  // args (`tuple[]` = 1; a `tuple[]` whose member is `T[][]` = 2; …). `pushFrameSlot` then resolves
+  // each frame relative to `MLOAD(0x40)`, exactly as in the return encoder.
+  const frames = inputs.reduce(
+    (n, p) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(p)))),
+    0,
+  );
 
   // -- data-literal staging layout (compile-time): each data-literal arg gets a padded image at a
   //    cumulative offset within the staging block.
@@ -615,6 +611,12 @@ function emitCalldataBuildTuples(
     });
     w.op('POP'); // []
   }
+
+  // -- reserve the composite-array encode loop frames just below the (transient) buffer base ----
+  // (§12.7). After this bump, `MLOAD(0x40)` is the buffer base and frame f sits at
+  // `[base − 32·FRAME_SLOTS·(f+1), base − 32·FRAME_SLOTS·f)`; the encode below never bumps the free
+  // pointer again (tails are written at TAIL_CURSOR), so the buffer base stays fixed throughout.
+  reserveEncodeFrames(w, frames, `reserve ${frames} call-arg array-encode frame(s)`);
 
   // -- selector at buf[0..4): MSTORE(buf, selector << 224) (heads at buf+4 overwrite [4,36)) ----
   let selWord = 0n;
@@ -726,10 +728,13 @@ export function emitStaticCall(
   };
 
   // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
-  // tuple args force the recursive encoder (no const-folding); argsSize then comes from the
-  // tail cursor like the dynamic regime.
-  const hasTupleArg = fnAbi.inputs.some((p) => p.type.startsWith('tuple'));
-  const template = hasTupleArg ? null : buildTemplate(plan);
+  // tuple args AND composite-element array args (`tuple[]`/`T[][]`/`string[]`, here or inside a
+  // tuple member) force the recursive encoder (no const-folding); argsSize then comes from the
+  // tail cursor like the dynamic regime. Word/word-array/string/bytes args stay on the template path.
+  const needsRecursiveEncode = fnAbi.inputs.some(
+    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
+  );
+  const template = needsRecursiveEncode ? null : buildTemplate(plan);
   if (template === null) {
     emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
   } else {

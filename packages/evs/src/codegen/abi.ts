@@ -466,6 +466,24 @@ export function encodeFramesOf(l: TypeLayout): number {
 }
 
 /**
+ * Reserves `frames` composite-array encode loop frames immediately BELOW the upcoming output/calldata
+ * buffer by bumping the free pointer by `32·FRAME_SLOTS·frames` (§12.7). The CALLER must read the
+ * buffer base as `MLOAD(0x40)` AFTER this so the buffer sits just above frame 0 and {@link pushFrameSlot}
+ * (which addresses each frame relative to `MLOAD(0x40)`) resolves correctly. The free pointer must not
+ * be bumped again between this reservation and the encode (tails are written at the cursor, never via
+ * the free pointer). No-op when `frames === 0`. Net stack 0.
+ */
+export function reserveEncodeFrames(w: AsmWriter, frames: number, note?: string): void {
+  if (frames <= 0) return;
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [old]
+  w.push(32 * FRAME_SLOTS * frames);
+  w.op('ADD'); // [old + framesBytes]
+  w.push(FREE_PTR);
+  w.op('MSTORE', { note: note ?? `reserve ${frames} array-encode frame(s)` }); // []
+}
+
+/**
  * Pushes the absolute memory address of word `k` of composite-array loop frame `frameDepth`. The
  * frames live in a region reserved BELOW the output buffer at encode entry (the free pointer is
  * bumped by `32·FRAME_SLOTS·FRAMES` before `out = MLOAD(0x40)` is read, so `out` — which never
@@ -1628,14 +1646,7 @@ export function emitReturnEncode(
     (n, c) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(c)))),
     0,
   );
-  if (frames > 0) {
-    w.push(FREE_PTR);
-    w.op('MLOAD'); // [old]
-    w.push(32 * FRAME_SLOTS * frames);
-    w.op('ADD'); // [old + framesBytes]
-    w.push(FREE_PTR);
-    w.op('MSTORE', { note: `reserve ${frames} array-encode frame(s)` }); // []
-  }
+  reserveEncodeFrames(w, frames);
 
   // out := MLOAD(0x40); optional top-level tuple offset; tail cursor := out + dynOff + heads
   w.push(FREE_PTR);

@@ -15,7 +15,7 @@ import { siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile } from './compile.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
-import { t, type Expr, type Hex } from './core/types.js';
+import { t, type Hex } from './core/types.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -506,10 +506,11 @@ describe('end-to-end smoke', () => {
 });
 
 // ---------------------------------------------------------------------------
-// composite-array call args stay gated (the M4 milestone un-gates these)
+// composite-array call args — M4 un-gated these (forwarding a decoded tuple[] as an arg compiles);
+// the still-deferred shapes (`tuple[][]`) STILL throw UNSUPPORTED_V0.
 // ---------------------------------------------------------------------------
 
-describe('composite-array CALL ARG encode is still gated (M4)', () => {
+describe('composite-array CALL ARG encode (M4)', () => {
   const posComponents = [
     { name: 'nonce', type: 'uint96' },
     { name: 'liquidity', type: 'uint128' },
@@ -532,21 +533,47 @@ describe('composite-array CALL ARG encode is still gated (M4)', () => {
   ] as const;
   const POOL = '0xc000000000000000000000000000000000000003' as const;
 
-  test('passing a decoded tuple[] as a call arg → UNSUPPORTED_V0 (call-arg encode is the §12.7 M4 milestone)', () => {
-    const script = evscript({ name: 'sumPositions', args: [] }, (s) => {
+  test('forwarding a decoded tuple[] as a call arg now COMPILES (§12.7 M4)', () => {
+    const script = evscript({ name: 'sumPositions' }, (s) => {
       const ps = s.call({ address: POOL, abi, functionName: 'positionsBatch', args: [2n] });
-      // a tuple[] call ARG has no precise input type yet (M4 surface); the loose casts let the
-      // recorder build the call so the codegen-level gate is what fires.
       const sum = s.call({
         address: POOL,
         abi,
         functionName: 'sumLiquidity',
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose M4 call-arg surface
-        args: [ps as Expr] as never,
+        args: [ps],
       });
       return s.return({ sum });
     });
-    expect(() => compile(script, { evmVersion: 'cancun' })).toThrowError(EvsTypeError);
-    expect(() => compile(script, { evmVersion: 'cancun' })).toThrow(/composite-element array call/);
+    expect(() => compile(script, { evmVersion: 'cancun' })).not.toThrow();
+    const compiled = compile(script, { evmVersion: 'cancun' });
+    expect(compiled.runtimeBytecode).toMatch(/^0x[0-9a-f]+$/);
+  });
+
+  test('STILL deferred: a `tuple[][]` call arg → UNSUPPORTED_V0', () => {
+    const abi2 = [
+      {
+        type: 'function',
+        name: 'twoLevels',
+        stateMutability: 'view',
+        inputs: [{ name: 'x', type: 'tuple[][]', components: posComponents }],
+        outputs: [{ name: '', type: 'uint256' }],
+      },
+    ] as const;
+    // the `tuple[][]` input is rejected at s.call ABI-parse time (before compile) — either way, the
+    // deferred shape STILL throws UNSUPPORTED_V0.
+    const err = captureError(() => {
+      const script = evscript({ name: 'badTwoLevel' }, (s) => {
+        const out = s.call({
+          address: POOL,
+          abi: abi2,
+          functionName: 'twoLevels',
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deferred shape, force the gate
+          args: [[] as never] as never,
+        });
+        return s.return({ out });
+      });
+      compile(script, { evmVersion: 'cancun' });
+    }, EvsTypeError);
+    expect(err.code).toBe('UNSUPPORTED_V0');
   });
 });
