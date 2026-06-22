@@ -15,6 +15,11 @@ pragma solidity 0.8.30;
 ///             OUTPUT, outputs derived deterministically from the input.
 ///           * `echoStruct(Position)` — an identity echo (composite in, same composite out).
 ///           * `getWithBytes()` — a struct with a DYNAMIC `bytes` member (dynamic tuple tail).
+///           * `positionsBatch(n)` — a `tuple[]` of STATIC elements (Position[]).
+///           * `withBytesBatch(n)` — a `tuple[]` whose element has a DYNAMIC member (WithBytes[]).
+///           * `matrix(rows)` — a ragged nested dynamic array (uint256[][]).
+///           * `names(n)` — a `string[]` of varying-length strings.
+///           * `sumLiquidity(Position[])` — a `tuple[]` CALL ARG (sum of a field).
 contract Composite {
     // ---------------------------------------------------------------- Position (static struct)
     /// @dev Mirrors Uniswap V3 INonfungiblePositionManager.positions return shape (subset).
@@ -135,5 +140,111 @@ contract Composite {
     /// @dev id = 0xC0FFEE, data = the 5 bytes "evs!" + 0x00 sentinel, deterministic.
     function getWithBytes() external pure returns (WithBytes memory) {
         return WithBytes({id: 0xC0FFEE, data: hex"6576732100"});
+    }
+
+    // ---------------------------------------------------------------- arrays of composites
+
+    /// @notice `n` deterministic `Position` structs (a `tuple[]` with STATIC elements).
+    /// @dev Element `i` is `positions(i)` reproduced inline: nonce = uint96(i),
+    ///      operator = address(uint160(i * 3 + 1)), liquidity = uint128(i * 1000 + 7),
+    ///      feeGrowthInside0 = keccak256(abi.encodePacked("fee0", i)),
+    ///      feeGrowthInside1 = keccak256(abi.encodePacked("fee1", i)). Deterministic in `n`.
+    function positionsBatch(uint256 n) external pure returns (Position[] memory) {
+        Position[] memory out = new Position[](n);
+        for (uint256 i = 0; i < n; i++) {
+            // Truncating casts ARE the deterministic derivation (wrap into the field width).
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint96 nonce = uint96(i);
+            // forge-lint: disable-next-line(unsafe-typecast)
+            address operator = address(uint160(i * 3 + 1));
+            // forge-lint: disable-next-line(unsafe-typecast)
+            uint128 liquidity = uint128(i * 1000 + 7);
+            out[i] = Position({
+                nonce: nonce,
+                operator: operator,
+                liquidity: liquidity,
+                feeGrowthInside0: uint256(keccak256(abi.encodePacked("fee0", i))),
+                feeGrowthInside1: uint256(keccak256(abi.encodePacked("fee1", i)))
+            });
+        }
+        return out;
+    }
+
+    /// @notice `n` deterministic `WithBytes` structs (a `tuple[]` whose element has a
+    ///         DYNAMIC `bytes` member — exercises offsets to dynamic tuples inside an array).
+    /// @dev Element `i`: id = i + 0xC0FFEE, data = the `i`-length keccak-derived byte stream
+    ///      `keccak256(abi.encodePacked("withBytes", i))[0..i]` (varying length per element).
+    ///      For i >= 32 the keccak is re-seeded per 32-byte chunk (j = byte index):
+    ///      data[j] = keccak256(abi.encodePacked("withBytes", i, j / 32))[j % 32]. Deterministic in `n`.
+    function withBytesBatch(uint256 n) external pure returns (WithBytes[] memory) {
+        WithBytes[] memory out = new WithBytes[](n);
+        for (uint256 i = 0; i < n; i++) {
+            bytes memory data = new bytes(i);
+            for (uint256 j = 0; j < i; j++) {
+                bytes32 chunk = keccak256(abi.encodePacked("withBytes", i, j / 32));
+                data[j] = chunk[j % 32];
+            }
+            out[i] = WithBytes({id: i + 0xC0FFEE, data: data});
+        }
+        return out;
+    }
+
+    /// @notice A ragged nested dynamic array `uint256[][]` (varying inner lengths exercise
+    ///         per-element offsets in both the outer and inner arrays).
+    /// @dev Row `r` has length `(r % 4) + 1` (so lengths cycle 1,2,3,4,1,2,3,4,…). Cell
+    ///      `[r][k]` = uint256(keccak256(abi.encodePacked("matrix", r, k))). Deterministic in `rows`.
+    function matrix(uint256 rows) external pure returns (uint256[][] memory) {
+        uint256[][] memory out = new uint256[][](rows);
+        for (uint256 r = 0; r < rows; r++) {
+            uint256 len = (r % 4) + 1;
+            uint256[] memory row = new uint256[](len);
+            for (uint256 k = 0; k < len; k++) {
+                row[k] = uint256(keccak256(abi.encodePacked("matrix", r, k)));
+            }
+            out[r] = row;
+        }
+        return out;
+    }
+
+    /// @notice `n` deterministic varying-length strings (a `string[]` — each element is a
+    ///         dynamic `string`, so this exercises per-element offsets to dynamic data).
+    /// @dev Element `i` is the ASCII decimal of `i` (`_toString(i)`) repeated `i + 1` times,
+    ///      joined by '-' (e.g. i=0 -> "0", i=1 -> "1-1", i=2 -> "2-2-2"). Deterministic in `n`.
+    function names(uint256 n) external pure returns (string[] memory) {
+        string[] memory out = new string[](n);
+        for (uint256 i = 0; i < n; i++) {
+            string memory token = _toString(i);
+            string memory s = token;
+            for (uint256 k = 0; k < i; k++) {
+                s = string.concat(s, "-", token);
+            }
+            out[i] = s;
+        }
+        return out;
+    }
+
+    /// @dev Minimal base-10 uint -> ASCII decimal string (self-contained; no library dep).
+    function _toString(uint256 value) internal pure returns (string memory) {
+        if (value == 0) return "0";
+        uint256 digits;
+        for (uint256 t = value; t != 0; t /= 10) digits++;
+        bytes memory buf = new bytes(digits);
+        for (uint256 v = value; v != 0; v /= 10) {
+            digits--;
+            // forge-lint: disable-next-line(unsafe-typecast)
+            buf[digits] = bytes1(uint8(48 + (v % 10)));
+        }
+        return string(buf);
+    }
+
+    /// @notice Sum of the `liquidity` field over a `tuple[]` calldata arg (exercises encoding
+    ///         a `tuple[]` as a CALL ARGUMENT). Deterministic in the input.
+    /// @dev Returns `sum(ps[i].liquidity)` as a uint256 (widened, so no overflow on the sum).
+    function sumLiquidity(Position[] calldata ps) external pure returns (uint256) {
+        uint256 sum = 0;
+        for (uint256 i = 0; i < ps.length; i++) {
+            sum += uint256(ps[i].liquidity);
+        }
+        return sum;
     }
 }

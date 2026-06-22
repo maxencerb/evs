@@ -25,15 +25,20 @@
 6. **Tuples flow out** — `s.return({ x: tupleHandle })` returns a tuple, abitype-typed (the handle
    is returnable directly; `tupleHandle.expr()` is the equivalent bare-memref form).
 
-**Deferred to a follow-up (represented in the type vocabulary, but builder/codegen restricted —
-emit a clear `UNSUPPORTED_V0` if reached, and note in the amendment):**
+**Delivered by the §12 follow-up (same PR, issue #2's "arrays of tuples" + `T[][]`):**
 
-- Arrays of tuples (`tuple[]`) and nested string arrays (`uint256[][]`, `string[]`). `s.newArray`
-  stays word-element-only; `at()` on a tuple-element array is the follow-up. The `TupleType`
-  vocabulary already represents `tuple[]`/`tuple[][]` and `ArrayType` represents nested string
-  arrays, so the follow-up is additive (codegen `case` + builder wiring), not a rewrite.
+- Arrays of tuples (`tuple[]`, static-element AND dynamic-member element) and one-level nested
+  arrays (`uint256[][]`, `string[]`) — decode/read, construct/mutate, return, and call-arg encode.
+  See **§12** for the binding byte-exact spec.
 
-If a deferred shape is reached at runtime, throw `EvsTypeError('UNSUPPORTED_V0', …)` naming it.
+**Still deferred (represented in the type vocabulary, builder/codegen restricted — emit a clear
+`UNSUPPORTED_V0` if reached, and note in the amendment):**
+
+- Two-level arrays of tuples (`tuple[][]`), fixed-size arrays (`T[N]`), and string-array nesting
+  deeper than `[][]`. The vocabulary already represents them; closing them is additive on top of
+  §12 (one more nesting level / a separate `T[N]` codepath).
+
+If a still-deferred shape is reached at runtime, throw `EvsTypeError('UNSUPPORTED_V0', …)` naming it.
 
 ## 1. Type model (IMPLEMENTED in `core/types.ts` — do not change, only consume)
 
@@ -286,3 +291,164 @@ paris/shanghai/cancun. This is the acceptance gate (testing.md §4.2).
 - Commit identity `dev@maxencerb.com`. Do not run keep-awake processes. Catalog-pinned deps; run
   `bun install` only if deps change (they should not).
 - Lint is `oxlint --deny-warnings` (no unused imports/vars). Format with `oxfmt` (`bun run fmt`).
+
+## 12. Arrays of composite (`tuple[]`, `T[][]`, `string[]`) — byte-exact spec
+
+> BINDING for the in-PR follow-up. Closes issue #2's "arrays of tuples" + `T[][]`. Builds additively
+> on §3 (flat-pointer tuples). Scope: ONE level of array nesting over a composite/dynamic element —
+> `tuple[]` (static-element e.g. `Position[]` AND dynamic-member element e.g. `WithBytes[]`),
+> `uint256[][]`, `string[]`/`bytes[]`. OUT (still `UNSUPPORTED_V0`): `tuple[][]`, `T[N]`, string
+> arrays nested deeper than `[][]`.
+
+### 12.1 Memory representation — array of pointers (reuses the word-array layout verbatim)
+
+A composite-element array is a memref to **`[len:32][p0:32][p1:32]…[p_{len-1}:32]`** — IDENTICAL to
+the word-array block (§ word-array: `[len][w0]…`, element addr `ptr + 32 + 32·i`), except each slot
+`pᵢ` holds a **memref pointer** to element `i`'s own block rather than an inline value word:
+
+- `tuple[]` → `pᵢ` points to a flat tuple block (`32·k` words, §3).
+- `T[][]` → `pᵢ` points to an inner array block (`[len_i][…]`).
+- `string[]`/`bytes[]` → `pᵢ` points to a bytes block (`[len_i][payload]`).
+
+Consequence: `lowerArrnew`/`lowerIndex`/`lowerArrset` address arithmetic (`ptr + 32 + (i<<5)`, len
+at `ptr`, bounds `i<len`→Panic 0x32, alloc cap `2^32-1`→Panic 0x41, CALLDATACOPY-past-end zero-fill)
+is **element-type-agnostic and reused unchanged**. Only the _leaf semantics_ differ: `index` yields
+the pointer as the out-value (its out-type is the element tuple/array/bytes, so downstream
+`field`/`at` dereference it); `arrset` stores a memref pointer; `arrnew` zero-fills pointer slots
+(null until `arrset` — a user dereferencing an unset slot is UB exactly like Solidity).
+
+### 12.2 ABI wire format (what viem/solc produce — the differential bar)
+
+For an array `E[]` written at a position whose **data start** `D` = first word after `len`:
+
+- **Static element** `E` (e.g. a static tuple `Position`, or a word): `[len]` then each element
+  inlined contiguously, `len · staticSize(E)` bytes, NO offset words. `staticSize` = `headBytes(E.components)`
+  for a static tuple, `32` for a word.
+- **Dynamic element** `E` (dynamic tuple, inner array, string/bytes): `[len]` then `len` offset
+  words at `[D, D+32·len)`, **each `offᵢ` relative to `D`** (NOT the enclosing block base — arrays
+  rebase to their own data start), then the element tails appended from `D+32·len` onward.
+
+Note the offset-base difference from §3 tuples: a **tuple** member's dynamic offset is relative to
+the tuple **block base**; an **array** element's offset is relative to the array **data start `D`**
+(the word after `len`). Both are "relative to the start of the enclosing head/offset region." Get
+this exactly right — a one-word base error silently mis-encodes.
+
+### 12.3 `abi/layout.ts` — widen `array.elem`
+
+`TypeLayout` array variant: `elem: WordLayout` → **`elem: TypeLayout`**. `layoutOf` (string path)
+returns an array layout for `s.endsWith('[]')` when the element is a word OR `string`/`bytes` OR a
+one-level `T[]` (narrow the `badTypeError` to still reject `T[N]` and `[][][]+`). `layoutOfType`
+(tuple path): a `TupleType` with `.type === 'tuple[]'` → `{ kind:'array', abi:'tuple[]', elem:
+tupleLayoutOf(elemTuple) }`; keep `'tuple[][]'` throwing `UNSUPPORTED_V0`. An array is always
+`isDynamic` (existing `l.kind !== 'word'`). `headBytes`: an array param is always one 32-byte offset
+slot (unchanged — arrays are dynamic). `staticSize(elem)` helper = `isDynamic(elem) ? error : (elem.kind==='tuple' ? headBytes(elem.components) : 32)`.
+
+### 12.4 `ir/validate.ts` — admit composite elements
+
+`checkElemType` (arrnew/array element gate): accept `word | string | bytes | one-level T[] | tuple`
+elements; still reject `T[N]`, `tuple[][]`, and `[][]`-deeper string arrays with `UNSUPPORTED_V0`.
+`index`/`arrset`/`len` already use `isArrayValueType` + `elemTypeOf` — structurally ready. `checkAbiParam`
+already accepts `tuple[]`. Add a focused backstop: a `tuple[][]` IR node still fails validation.
+
+### 12.5 Interp oracle (`ir/interp.ts`) — widen `ArrayVal`, mirror the loops
+
+`ArrayVal` becomes **`{ kind:'array'; elem: EvsType; items: Value[] }`** (was `elem:WordType;
+words:bigint[]`). A word-element array's `items` are `bigint`s; a composite-element array's `items`
+are memref `Value`s (TupleVal/ArrayVal/BytesVal). Reference semantics preserved (`items` mutated in
+place by `arrset`). Touch points: `arrnew` (zero-fill = `zeroValue(elemType)` per slot, NOT `0n`
+for composite — but a null/zero pointer is fine; use `zeroValue` so reads are well-typed); `index`
+(returns `items[i]`); `arrset` (stores the element `Value`); `encodeTail`/`encodeStatic` (the `T[]`
+arm: static element → inline each `encodeStatic(elem,itemᵢ)`; dynamic element → `[len]` + per-element
+offsets relative to data start + appended `encodeTail(elem,itemᵢ)`); `decodeDynamic` (the `T[]`
+arm: read `len`, bounds; static element → `decodeStatic` each at `D+i·staticSize`; dynamic element →
+per-element offset word at `D+32·i` relative to `D`, recurse `decodeDynamic(elem, …)`); `zeroValue`/
+`constValue`/`coerceValue`/`jsValueOf` array branches carry the element `Value`. This is the
+REFERENCE the codegen is diffed against — implement it first and exactly.
+
+### 12.6 ABI decode codegen (`codegen/abi.ts` + `call.ts`) — on-stack element loop (no memcpy)
+
+Add `emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowFlat)`: decode reads `len`
+at `base`, bounds `len ≤ 2^64-1`; allocates the pointer array `[len][p0…]` (`32 + 32·len` bytes,
+bump `FREE_PTR`); `D = base + 32`; then a loop `i = 0..len-1`:
+
+- static element: elementBase = `D + i·staticSize`; bounds `elementBase + staticSize ≤ end`;
+  recurse `emitDecodeTupleToMem`(static tuple) / inline-word read; store the element block pointer
+  (tuple) or value (word) into `arr + 32 + 32·i`.
+- dynamic element: read `offᵢ` at `D + 32·i`, bounds `offᵢ ≤ 2^64-1`; `elemPtr = D + offᵢ`, bounds
+  `elemPtr + 32 ≤ end`; recurse the matching decoder (`emitDecodeTupleToMem` for dynamic tuple, a
+  nested `emitDecodeArrayToMem` for `T[][]`, the leaf string/bytes alias for `string[]`); store the
+  returned block pointer into `arr + 32 + 32·i`.
+
+Decode uses **no `emitMemCopy`** (it aliases leaf bytes and freshly allocates tuple/array blocks) →
+the loop counter MAY live on the stack. Keep loop state as `[i, len, D, arr, …below]`; checked loop
+labels at absolute height `belowFlat + (loop-state size)`, mirroring `emitNormalizeElemsLoop`. Wire
+into `emitCalldataDecode` (args path) and `call.ts` return-decode (snapshot base/end from scratch
+`SNAP_SLOT`, exactly as the tuple output path does). The free-ptr churn from per-element allocation
+is fine — base/end are read from scratch, never the stack.
+
+### 12.7 ABI encode codegen (`codegen/abi.ts` + `call.ts`) — scratch-frame element loop
+
+Add `emitEncodeArrayTail(w, elemLayout, pushArrPtr, tails, opts)`, written at the shared tail cursor
+(`TAIL_CURSOR = 0x00`, §3):
+
+1. `MSTORE(cursor, len)` (`len = MLOAD(arrPtr)`); `D = cursor + 32`.
+2. **static element**: advance `cursor` to `D + len·staticSize` (reserve the body), then loop
+   `i`: `emitEncodeBlock`(static tuple) with `base = D + i·staticSize`, member source words from
+   `MLOAD(elemPtrᵢ + 32·j)` where `elemPtrᵢ = MLOAD(arrPtr + 32 + 32·i)` (a static tuple has no
+   tail, so this writes inline only; for a word element just `MSTORE`). No memcpy.
+3. **dynamic element**: advance `cursor` to `D + 32·len` (reserve the offset words); loop `i`:
+   record `tailPos = cursor`, `MSTORE(D + 32·i, tailPos − D)` (offset relative to `D`), then encode
+   element `i`'s tail at `cursor` — for a dynamic tuple reserve `headBytes` then `emitEncodeBlock`;
+   for `T[][]` recurse `emitEncodeArrayTail`; for `string[]`/`bytes[]` `emitLeafDynTail`. Each
+   element extends the shared monotone `cursor`, exactly like a dynamic tuple member (§3).
+
+**Scratch-frame discipline (the load-bearing risk).** `emitLeafDynTail`/`emitMemCopy` require the
+operand stack to be EXACTLY `[dst,src,len]` (height 3) at the pre-cancun `@memcpy` subroutine entry.
+A dynamic-element encode loop that holds `[i,len,D,arrPtr]` on the stack would violate that. So the
+dynamic-element loop keeps its state in a **reserved scratch frame**, not on the stack: at
+`emitReturnEncode`/call-arg-encode entry, before computing `out`, bump `FREE_PTR` by `32·FRAMES·SLOTS`
+to reserve `FRAMES` loop frames BELOW the output buffer (so `out = MLOAD(0x40)` sits above them and
+`RETURN(out,…)` never returns scratch). `FRAMES` = the max concurrent array-nesting depth along any
+path of the encoded type (statically known; `tuple[]`=1, a `tuple[]` whose member is `T[][]`=2…).
+Each frame holds `{arrPtr, D, len, i}` (4 words) at a fixed offset; the loop reads/writes `i` and
+recomputes `elemPtrᵢ` from `arrPtr` so nothing but the live `[dst,src,len]` is on the stack when
+`emitMemCopy` runs. Static-element loops use no memcpy, so they may keep counter state on the stack.
+
+### 12.8 Builder handles (`builder/{script,expr}.ts`)
+
+- `index`/`at(i)` on an array whose element is composite returns the element handle: `tuple[]`→a
+  `Tuple<elem>` handle bound to the `index` out ValueId; `T[][]`→an array (Mut/read) handle;
+  `string[]`→`Expr<'string'>`. `atOp`/`MutArrayImpl` widen `elem` from `WordType` to `EvsType`; the
+  read handle for a tuple element installs the same `TUPLE_INTERNALS` as a decoded tuple (one
+  unified tuple handle, §3/§4).
+- `s.newArray(elem, len)`: widen off word-only to admit `tuple`/`string`/`bytes`/one-level `T[]`
+  elements (keep `T[N]`/`tuple[][]` gated, still `UNSUPPORTED_V0`/`TYPE_MISMATCH`). `arrset` accepts
+  a `Tuple` handle / array handle / `Expr` per element type.
+- `s.call` tuple-array OUTPUT → an array-of-`Tuple` read handle; `SubcallInputs` tuple-array arg
+  accepts an array handle or a literal `readonly T[]`. abitype: `t.array(t.struct(...))` infers
+  `readonly Struct[]`; `s.call` output `'tuple[]'` infers `readonly Struct[]`; `uint256[][]`→
+  `readonly (readonly bigint[])[]`; `string[]`→`readonly string[]`.
+
+### 12.9 Un-gate (narrow, do not delete)
+
+`abi/artifact.ts:~261` (accept `tuple[]` ABI params), `abi/layout.ts:80-108` (array-of-composite
+layout), `builder/expr.ts` `coerceTupleToId`/`s.tuple`/`s.newArray`, `core/types.ts` `arrayTypeRT`
+(allow `t.array(struct)`→`tuple[]`). Each guard NARROWS to the still-deferred shapes
+(`tuple[][]`, `T[N]`, deeper nesting) rather than disappearing.
+
+### 12.10 Tests + acceptance
+
+- LOCK migration: `validation.test.ts` (`uint256[][]` arg) and `abi/artifact.test.ts` (`tuple[]`
+  output) flip from "throws `UNSUPPORTED_V0`" to "succeeds"; ADD new lock tests that `tuple[][]` and
+  `T[N]` STILL throw.
+- Differential (`src/differential.test.ts`, all of paris/shanghai/cancun): read+return a
+  `Position[]` (static-element), a `WithBytes[]` (dynamic-member), a `uint256[][]` (ragged), a
+  `string[]`; encode a `Position[]` call arg. **interp == compiled bytecode == viem
+  `encodeAbiParameters`** byte-exact is the acceptance gate.
+- Integration (`test/integration/`, real solc `Composite.sol` getters added in prep —
+  `positionsBatch`, `withBytesBatch`, `matrix`, `names`, `sumLiquidity`): `eth_call` each through a
+  compiled evs script on anvil; assert exact returndata + fully-typed result.
+- Implementation ORDER (each verified before the next): layout+IR widen → interp oracle → decode
+  codegen (verify read via returning a derived word) → static-element encode (verify `Position[]`
+  return/arg) → dynamic-element encode + scratch frames (verify `string[]`/`uint256[][]`/
+  `WithBytes[]` return) → builder handles + un-gate → tests/docs.

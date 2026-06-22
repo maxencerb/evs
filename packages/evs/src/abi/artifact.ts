@@ -463,7 +463,18 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
         { loc: captureLoc() },
       );
     }
-    coerced = value.map((el, i) => coerceWordLiteral(layout.elem.abi, el, `${type}[${i}]: `));
+    if (layout.elem.kind !== 'word') {
+      // composite-element arrays (`tuple[]`, `T[][]`, `string[]`) are §12 codegen — not yet
+      // emitted. UNREACHABLE today: `layoutOf`/`layoutOfType` never produce a composite-element
+      // array (they throw UNSUPPORTED_V0 first), so this plumbing guard is behavior-preserving.
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `${type} literal: composite-element arrays are not supported yet (codegen pending §12.6/§12.7)`,
+        { loc: captureLoc() },
+      );
+    }
+    const elemAbi = layout.elem.abi;
+    coerced = value.map((el, i) => coerceWordLiteral(elemAbi, el, `${type}[${i}]: `));
   } else {
     // tuple: composite literals are built in the recorder (`tuplenew`), never here — the public
     // `encodeLiteralData` signature (`DynType | ArrayType`) already excludes tuples; this is the

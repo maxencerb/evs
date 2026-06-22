@@ -190,11 +190,17 @@ interface BytesVal {
   readonly bytes: Uint8Array;
 }
 
-/** memref payload of a `T[]` value — `words` is mutated in place by `arrset`. */
+/**
+ * memref payload of a `T[]` value — the `[len][p0]…[p_{len-1}]` block (§12.1). `items` is the
+ * element list, mutated in place by `arrset` (reference semantics, like {@link TupleVal}'s
+ * `fields`). For a **word** element each item is a canonical `bigint`; for a **composite** element
+ * (`tuple[]`, `T[][]`, `string[]`/`bytes[]`) each item is the element's own memref `Value`
+ * (TupleVal / ArrayVal / BytesVal) — the slot's pointer in the compiled layout.
+ */
 interface ArrayVal {
   readonly kind: 'array';
-  readonly elem: WordType;
-  readonly words: bigint[];
+  readonly elem: EvsType;
+  readonly items: Value[];
 }
 
 /**
@@ -411,8 +417,13 @@ class Interp {
       case 'index': {
         const arr = this.asArray(s.arr);
         const i = this.word(s.i);
-        if (i >= BigInt(arr.words.length)) throw panicSignal(0x32);
-        this.values.set(s.out, arr.words[Number(i)] ?? 0n);
+        if (i >= BigInt(arr.items.length)) throw panicSignal(0x32);
+        const item = arr.items[Number(i)];
+        if (item === undefined) {
+          throw new EvsInternalError('INTERNAL', `interpret: array index ${Number(i)} is missing`);
+        }
+        // reference semantics for composite elements: yields the element's word or memref Value.
+        this.values.set(s.out, item);
         return;
       }
       case 'len': {
@@ -422,21 +433,27 @@ class Interp {
         }
         this.values.set(
           s.out,
-          m.kind === 'bytes' ? BigInt(m.bytes.length) : BigInt(m.words.length),
+          m.kind === 'bytes' ? BigInt(m.bytes.length) : BigInt(m.items.length),
         );
         return;
       }
       case 'arrnew': {
         const len = this.word(s.length);
         if (len >= 1n << 32n) throw panicSignal(0x41);
-        const words = Array.from({ length: Number(len) }, () => 0n);
-        this.values.set(s.out, { kind: 'array', elem: asWordElem(s.elem), words });
+        // zero-fill each slot with the typed zero (0n for a word element — preserves the
+        // pre-composite behavior; a typed memref zero for a composite/dynamic element, §12.5).
+        const elem = s.elem;
+        const items = Array.from({ length: Number(len) }, () => zeroValue(elem));
+        this.values.set(s.out, { kind: 'array', elem, items });
         return;
       }
       case 'tuplenew': {
         const tt = this.typeOf(s.out);
-        if (!isTupleType(tt)) {
-          throw new EvsInternalError('INTERNAL', `interpret: tuplenew out is not a tuple type`);
+        if (!isPlainTuple(tt)) {
+          throw new EvsInternalError(
+            'INTERNAL',
+            `interpret: tuplenew out is not a plain tuple type`,
+          );
         }
         // zero-filled flat block, then overwrite each provided member (reference semantics)
         const fields: Value[] = tt.components.map((c) => zeroValue(abiParamToType(c)));
@@ -466,8 +483,10 @@ class Interp {
       case 'arrset': {
         const arr = this.asArray(s.arr);
         const i = this.word(s.i);
-        if (i >= BigInt(arr.words.length)) throw panicSignal(0x32);
-        arr.words[Number(i)] = this.word(s.value);
+        if (i >= BigInt(arr.items.length)) throw panicSignal(0x32);
+        // word element → store the canonical word (preserves canonicalization); composite element
+        // → store the element's memref Value by reference (§12.5).
+        arr.items[Number(i)] = isWordType(arr.elem) ? this.word(s.value) : this.getValue(s.value);
         return;
       }
       case 'cellnew': {
@@ -871,9 +890,11 @@ function constValue(type: EvsType, data: { kind: 'word' | 'data'; hex: Hex }): V
     }
     return { kind: 'bytes', bytes: bytes.slice(32, 32 + len) };
   }
+  // a `data` const array literal is always a word-element block (`[len][w0]…`, CODECOPY-materialized);
+  // composite-element arrays are built at runtime (arrnew + arrset), never a data const.
   const elem = asWordElem(elemTypeOf(asArrayType(type)));
-  const words = Array.from({ length: len }, (_, i) => readWord(bytes, 32 + 32 * i));
-  return { kind: 'array', elem, words };
+  const items = Array.from({ length: len }, (_, i) => readWord(bytes, 32 + 32 * i));
+  return { kind: 'array', elem, items };
 }
 
 function envValue(op: string, env: ResolvedEnv): bigint {
@@ -894,29 +915,37 @@ function envValue(op: string, env: ResolvedEnv): bigint {
 }
 
 function zeroValue(type: EvsType): Value {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
+    // a plain tuple zeroes to a flat block of zeroed fields (a tuple[] is an array — falls through).
     return { kind: 'tuple', fields: type.components.map((c) => zeroValue(abiParamToType(c))) };
   }
   if (isWordType(type)) return 0n;
   if (type === 'string' || type === 'bytes') return { kind: 'bytes', bytes: new Uint8Array(0) };
-  return { kind: 'array', elem: asWordElem(elemTypeOf(asArrayType(type))), words: [] };
+  // an array (string array OR tuple[]) zeroes to an empty array carrying its element type.
+  return { kind: 'array', elem: elemTypeOf(asArrayType(type)), items: [] };
 }
 
 // ---------------------------------------------------------------------------
 // ABI encode (standard head/tail over raw bytes — §7.1 / §8.2 shapes, tuple-aware)
 // ---------------------------------------------------------------------------
 
-/** ABI-dynamic iff a memref: string/bytes/T[] always, a tuple iff any component is dynamic. */
+/**
+ * ABI-dynamic iff a memref: string/bytes/`T[]` (incl. `tuple[]`) always; a plain `tuple` iff any
+ * component is dynamic; a word is static. A tuple-array descriptor (`type === 'tuple[]'`) is an
+ * array, NOT a flat tuple, so it is unconditionally dynamic.
+ */
 function abiIsDynamic(type: EvsType): boolean {
   if (isTupleType(type)) {
+    if (type.type !== 'tuple') return true; // tuple[]/tuple[][] are arrays — always dynamic
     return type.components.some((c) => abiIsDynamic(abiParamToType(c)));
   }
   return !isWordType(type);
 }
 
-/** ABI head word count of a type: a static tuple inlines its components' heads; else one word. */
+/** ABI head word count of a type: a static (plain) tuple inlines its components' heads; an array
+ *  or any dynamic type is one offset word. */
 function headWords(type: EvsType): number {
-  if (isTupleType(type) && !abiIsDynamic(type)) {
+  if (isTupleType(type) && type.type === 'tuple' && !abiIsDynamic(type)) {
     return type.components.reduce((n, c) => n + headWords(abiParamToType(c)), 0);
   }
   return 1;
@@ -946,10 +975,15 @@ function encodeParamsBlock(items: readonly { type: EvsType; value: Value }[]): U
   return concatBytes([...heads, ...tails]);
 }
 
+/** True for a **plain** tuple descriptor (`{type:'tuple'}`) — NOT a tuple array (`tuple[]`). */
+function isPlainTuple(type: EvsType): type is TupleType {
+  return isTupleType(type) && type.type === 'tuple';
+}
+
 /** Encodes an ABI-static value into its inline head bytes: a word (one word) or a static tuple
- *  (its components' heads concatenated, recursively). */
+ *  (its components' heads concatenated, recursively). Arrays are never static, so never reach here. */
 function encodeStatic(type: EvsType, value: Value): Uint8Array {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
     if (typeof value === 'bigint' || value.kind !== 'tuple') {
       throw new EvsInternalError('INTERNAL', `interpret: tuple value expected for a static tuple`);
     }
@@ -961,17 +995,20 @@ function encodeStatic(type: EvsType, value: Value): Uint8Array {
     );
   }
   if (typeof value !== 'bigint') {
-    throw new EvsInternalError('INTERNAL', `interpret: word value expected for ${type}`);
+    throw new EvsInternalError(
+      'INTERNAL',
+      `interpret: word value expected for ${stringifyType(type)}`,
+    );
   }
   return wordToBytes(value);
 }
 
 /**
- * Encodes a dynamic member's tail: `[len][padded payload]` (bytes/string), `[len][words]` (T[]),
- * or a recursive head/tail block (a dynamic tuple).
+ * Encodes a dynamic member's tail: a recursive head/tail block (a dynamic plain tuple),
+ * `[len][padded payload]` (bytes/string), or a `T[]` array tail (incl. `tuple[]`/`T[][]`).
  */
 function encodeTail(type: EvsType, value: Value): Uint8Array {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
     if (typeof value === 'bigint' || value.kind !== 'tuple') {
       throw new EvsInternalError('INTERNAL', `interpret: tuple value expected for a dynamic tuple`);
     }
@@ -985,15 +1022,43 @@ function encodeTail(type: EvsType, value: Value): Uint8Array {
   if (typeof value === 'bigint') {
     throw new EvsInternalError('INTERNAL', 'interpret: memref value expected for a dynamic type');
   }
-  if (value.kind === 'tuple') {
-    throw new EvsInternalError('INTERNAL', 'interpret: tuple value with a non-tuple type');
-  }
+  // string/bytes payload tail
   if (value.kind === 'bytes') {
     const padded = new Uint8Array(Math.ceil(value.bytes.length / 32) * 32);
     padded.set(value.bytes, 0);
     return concatBytes([wordToBytes(BigInt(value.bytes.length)), padded]);
   }
-  return concatBytes([wordToBytes(BigInt(value.words.length)), ...value.words.map(wordToBytes)]);
+  if (value.kind !== 'array') {
+    throw new EvsInternalError('INTERNAL', 'interpret: array value expected for an array type');
+  }
+  return encodeArrayTail(value.elem, value.items);
+}
+
+/**
+ * Encodes a `T[]` tail (§12.2): `[len]` then, for a **static** element, each element inlined
+ * contiguously (`len · staticSize(E)` bytes, NO offset words); for a **dynamic** element, `len`
+ * offset words each relative to the array DATA START `D` (the word after `len`), then the element
+ * tails appended from `D + 32·len`. Word-array encode (every item a word, static element) reduces
+ * to `[len]` + one `wordToBytes` per item — byte-identical to the pre-composite path.
+ */
+function encodeArrayTail(elem: EvsType, items: readonly Value[]): Uint8Array {
+  const len = wordToBytes(BigInt(items.length));
+  if (!abiIsDynamic(elem)) {
+    // static element: [len] then each element's inline head bytes, contiguous.
+    return concatBytes([len, ...items.map((it) => encodeStatic(elem, it))]);
+  }
+  // dynamic element: [len][off0]…[off_{len-1}] (each relative to D = the word after len) then tails.
+  const offsetWordsBytes = 32 * items.length;
+  const offsets: Uint8Array[] = [];
+  const tails: Uint8Array[] = [];
+  let tailLen = 0;
+  for (const it of items) {
+    offsets.push(wordToBytes(BigInt(offsetWordsBytes + tailLen)));
+    const tail = encodeTail(elem, it);
+    tails.push(tail);
+    tailLen += tail.length;
+  }
+  return concatBytes([len, ...offsets, ...tails]);
 }
 
 /** Member `i` of a {@link TupleVal} (validateIr guarantees the index is in range). */
@@ -1062,21 +1127,26 @@ function decodeBlock(
   return decoded;
 }
 
-/** Decodes a static member (word → normalized canonical; static tuple → inlined recurse). */
+/** Decodes a static member (word → normalized canonical; static plain tuple → inlined recurse).
+ *  An array is never static, so it never reaches here. */
 function decodeStatic(type: EvsType, data: Uint8Array, at: number, end: number): Value | null {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
     const fields = decodeBlock(type.components, data, at, end);
     return fields === null ? null : { kind: 'tuple', fields: [...fields] };
   }
   if (!isWordType(type)) {
-    throw new EvsInternalError('INTERNAL', `interpret: decodeStatic over non-word '${type}'`);
+    throw new EvsInternalError(
+      'INTERNAL',
+      `interpret: decodeStatic over non-word '${stringifyType(type)}'`,
+    );
   }
   return canonWord(type, readWord(data, at));
 }
 
-/** Decodes a dynamic member at `ptr` (string/bytes/T[] → fresh buffer; dynamic tuple → recurse). */
+/** Decodes a dynamic member at `ptr` (dynamic plain tuple → recurse; string/bytes → fresh buffer;
+ *  `T[]`/`tuple[]`/`T[][]` → element loop). */
 function decodeDynamic(type: EvsType, data: Uint8Array, ptr: number, end: number): Value | null {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
     // a dynamic tuple's block starts at ptr; its offsets are relative to ptr
     const fields = decodeBlock(type.components, data, ptr, end);
     return fields === null ? null : { kind: 'tuple', fields: [...fields] };
@@ -1088,14 +1158,37 @@ function decodeDynamic(type: EvsType, data: Uint8Array, ptr: number, end: number
     const start = ptr + 32;
     return { kind: 'bytes', bytes: data.slice(start, start + Number(len)) };
   }
-  // T[]: ptr + 32 + 32·len ≤ end; elements normalized eagerly (§7.2 step 5)
-  if (BigInt(ptr) + 32n + 32n * len > BigInt(end)) return null;
-  const elem = asWordElem(elemTypeOf(asArrayType(type)));
-  const wbase = ptr + 32;
-  const words = Array.from({ length: Number(len) }, (_, j) =>
-    canonWord(elem, readWord(data, wbase + 32 * j)),
-  );
-  return { kind: 'array', elem, words };
+  // T[] (§12.2 decode): D = data start (word after len). A static element is inlined at
+  // D + i·staticSize; a dynamic element is reached via a per-element offset word at D + 32·i,
+  // each offset relative to D. Each element is a fresh Value (no aliasing across elements).
+  const elem = elemTypeOf(asArrayType(type));
+  const D = ptr + 32; // array data start
+  const n = Number(len);
+  if (!abiIsDynamic(elem)) {
+    // static element: the whole body must fit — D + len·staticSize ≤ end.
+    const staticSize = 32 * headWords(elem);
+    if (BigInt(D) + BigInt(n) * BigInt(staticSize) > BigInt(end)) return null;
+    const items: Value[] = [];
+    for (let i = 0; i < n; i++) {
+      const v = decodeStatic(elem, data, D + i * staticSize, end);
+      if (v === null) return null;
+      items.push(v);
+    }
+    return { kind: 'array', elem, items };
+  }
+  // dynamic element: the offset word region (len words at [D, D+32·len)) must fit first.
+  if (BigInt(D) + 32n * len > BigInt(end)) return null;
+  const items: Value[] = [];
+  for (let i = 0; i < n; i++) {
+    const off = readWord(data, D + 32 * i);
+    if (off > U64_MAX) return null;
+    const elemPtr = BigInt(D) + off; // offset relative to D (the array data start)
+    if (elemPtr + 32n > BigInt(end)) return null;
+    const v = decodeDynamic(elem, data, Number(elemPtr), end);
+    if (v === null) return null;
+    items.push(v);
+  }
+  return { kind: 'array', elem, items };
 }
 
 // ---------------------------------------------------------------------------
@@ -1110,7 +1203,7 @@ function coerceArg(name: string, type: EvsType, value: unknown, loc: SourceLoc |
 /** Coerces a host literal to a {@link Value} of `type` (the JS mirror of the §8.1 trust boundary,
  *  recursing through tuple components — named object when all members named, positional otherwise). */
 function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLoc | null): Value {
-  if (isTupleType(type)) return coerceTuple(type, value, where, loc);
+  if (isPlainTuple(type)) return coerceTuple(type, value, where, loc); // a tuple[] falls through to the array arm
   if (isWordType(type)) return coerceWordArg(type, value, where, loc);
   if (type === 'string') {
     if (typeof value !== 'string') {
@@ -1121,15 +1214,17 @@ function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLo
   if (type === 'bytes') {
     return { kind: 'bytes', bytes: coerceHexArg(value, null, where, loc) };
   }
-  const elem = asWordElem(elemTypeOf(asArrayType(type)));
+  const elem = elemTypeOf(asArrayType(type));
   if (!Array.isArray(value)) {
     throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected an array`, { loc });
   }
-  const items: readonly unknown[] = value;
+  const raw: readonly unknown[] = value;
+  // recurse per element: a word element coerces to a canonical word, a composite/dynamic element
+  // (tuple/string/bytes/T[]) coerces to its own memref Value (§12.5).
   return {
     kind: 'array',
     elem,
-    words: items.map((el, i) => coerceWordArg(elem, el, `${where}[${i}]`, loc)),
+    items: raw.map((el, i) => coerceValue(elem, el, `${where}[${i}]`, loc)),
   };
 }
 
@@ -1237,7 +1332,7 @@ function coerceHexArg(
 // ---------------------------------------------------------------------------
 
 function jsValueOf(type: EvsType, value: Value): unknown {
-  if (isTupleType(type)) {
+  if (isPlainTuple(type)) {
     if (typeof value === 'bigint' || value.kind !== 'tuple') {
       throw new EvsInternalError('INTERNAL', `interpret: tuple value expected for a tuple type`);
     }
@@ -1249,14 +1344,20 @@ function jsValueOf(type: EvsType, value: Value): unknown {
     }
     return jsWord(type, value);
   }
+  // string/bytes/array (incl. tuple[]) — all memref-valued
   if (typeof value === 'bigint' || value.kind === 'tuple') {
-    throw new EvsInternalError('INTERNAL', `interpret: memref value expected for ${type}`);
+    throw new EvsInternalError(
+      'INTERNAL',
+      `interpret: memref value expected for ${stringifyType(type)}`,
+    );
   }
   if (value.kind === 'bytes') {
     return type === 'string' ? new TextDecoder().decode(value.bytes) : bytesToHex(value.bytes);
   }
-  const elem = asWordElem(elemTypeOf(asArrayType(type)));
-  return value.words.map((w) => jsWord(elem, w));
+  // an array projects to items.map(jsValueOf) — a flat number/bigint list for word elements, a
+  // nested array/object list for composite elements (matching abitype/viem decode shape, §12.5).
+  const elem = elemTypeOf(asArrayType(type));
+  return value.items.map((item) => jsValueOf(elem, item));
 }
 
 /** abitype's tuple projection: an object keyed by component names when ALL members are named,
@@ -1358,17 +1459,36 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
 // misc type helpers
 // ---------------------------------------------------------------------------
 
-function isV0ArrayType(s: EvsType): s is ArrayType {
-  return typeof s === 'string' && s.endsWith('[]') && isWordType(s.slice(0, -2));
+/**
+ * The array types this interp handles (§12): a string array `T[]` whose element is a word,
+ * `string`/`bytes`, or a one-level word `T[]` (`uint256[]`, `string[]`, `uint256[][]`), OR a
+ * `tuple[]`. Still rejected (still `UNSUPPORTED_V0` at validation): `tuple[][]` and string arrays
+ * nested deeper than `[][]`. `T[N]` is not representable as a string array.
+ */
+function isSupportedArrayType(s: EvsType): s is ArrayType | TupleType {
+  if (typeof s !== 'string') return s.type === 'tuple[]';
+  if (!s.endsWith('[]')) return false;
+  const elem = s.slice(0, -2);
+  // element must be a word, string/bytes, or a one-level word array (uint256[] etc.).
+  return (
+    isWordType(elem) ||
+    elem === 'string' ||
+    elem === 'bytes' ||
+    (elem.endsWith('[]') && isWordType(elem.slice(0, -2)))
+  );
 }
 
-function asArrayType(s: EvsType): ArrayType {
-  if (isV0ArrayType(s)) return s;
-  throw new EvsInternalError('INTERNAL', `interpret: '${stringifyType(s)}' is not a v0 array type`);
+/** Narrows an array value type (string `T[]` or `tuple[]`) for {@link elemTypeOf}. */
+function asArrayType(s: EvsType): ArrayType | TupleType {
+  if (isSupportedArrayType(s)) return s;
+  throw new EvsInternalError(
+    'INTERNAL',
+    `interpret: '${stringifyType(s)}' is not a supported array type`,
+  );
 }
 
-/** Narrows a value type guaranteed (by validateIr) to be a word — array elements / arrnew elems
- *  are word-only in v0, but {@link elemTypeOf} is typed for the composite follow-up. */
+/** Narrows a value type guaranteed (by validateIr) to be a word — used where a word element is
+ *  required (data-const array literals, word-array JS projection). */
 function asWordElem(t: EvsType): WordType {
   if (!isWordType(t)) {
     throw new EvsInternalError(

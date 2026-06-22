@@ -7,7 +7,7 @@
  * union has room for a future `tuple` member without reshaping the existing ones.
  */
 
-import { EvsTypeError } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
@@ -32,7 +32,13 @@ export type WordLayout = {
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  | { kind: 'array'; abi: string; elem: WordLayout } // dynamic arrays of words only in v0
+  // a dynamic array `E[]`: `[len][p0]…[p_{len-1}]` where each slot is an inline word (word
+  // element) OR a memref pointer to the element's block (composite/dynamic element, §12.1).
+  // `elem` is widened to {@link TypeLayout} so the type ADMITS composite-element arrays for the
+  // §12.6/§12.7 codegen milestone; today `layoutOf`/`layoutOfType` still only ever PRODUCE a
+  // word-element array (composite elements throw `UNSUPPORTED_V0`), so every codegen consumer that
+  // assumes `elem.kind === 'word'` is still correct at runtime.
+  | { kind: 'array'; abi: string; elem: TypeLayout }
   // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is
   // (architecture.md §5). `components` are the member layouts in declaration order; `abi` carries
   // the tuple tag (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`,
@@ -115,6 +121,30 @@ function tupleLayoutOf(t: TupleType): Extract<TypeLayout, { kind: 'tuple' }> {
 export function isDynamic(l: TypeLayout): boolean {
   if (l.kind === 'tuple') return l.dynamic;
   return l.kind !== 'word';
+}
+
+/**
+ * Static (head-inlined) byte size of `l`: `32` for a word, `headBytes(components)` for a STATIC
+ * tuple. Used by the array encode/decode element loops (§12.2: a static element `E` inlines
+ * `staticSize(E)` bytes per slot). A dynamic layout has no fixed head size — calling this on one
+ * is an internal error (the caller must take the dynamic-element path instead).
+ */
+export function staticSize(l: TypeLayout): number {
+  if (l.kind === 'word') return 32;
+  if (l.kind === 'tuple' && !l.dynamic) return headBytes(l.components.map(layoutToParam));
+  throw new EvsInternalError(
+    'INTERNAL',
+    `staticSize: ${JSON.stringify(l.abi)} is dynamic — no fixed head size`,
+    { loc: captureLoc() },
+  );
+}
+
+/** Reconstructs the `PlainAbiParam` for a tuple component layout, so `staticSize` can reuse
+ *  {@link headBytes} (which walks `PlainAbiParam` trees). Name is irrelevant to head sizing. */
+function layoutToParam(l: TypeLayout): PlainAbiParam {
+  if (l.kind === 'tuple')
+    return { name: '', type: l.abi, components: l.components.map(layoutToParam) };
+  return { name: '', type: l.abi };
 }
 
 /**

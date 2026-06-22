@@ -105,4 +105,95 @@ contract CompositeTest is Test {
         assertEq(w.data, hex"6576732100");
         assertEq(w.data.length, 5);
     }
+
+    // ---------------------------------------------------------------- arrays of composites
+
+    function testPositionsBatchStaticElements() public view {
+        uint256 n = 4;
+        Composite.Position[] memory ps = c.positionsBatch(n);
+        assertEq(ps.length, n);
+        for (uint256 i = 0; i < n; i++) {
+            // Mirrors Composite.positionsBatch element-derivation field-for-field.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assertEq(ps[i].nonce, uint96(i));
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assertEq(ps[i].operator, address(uint160(i * 3 + 1)));
+            // forge-lint: disable-next-line(unsafe-typecast)
+            assertEq(ps[i].liquidity, uint128(i * 1000 + 7));
+            assertEq(ps[i].feeGrowthInside0, uint256(keccak256(abi.encodePacked("fee0", i))));
+            assertEq(ps[i].feeGrowthInside1, uint256(keccak256(abi.encodePacked("fee1", i))));
+        }
+    }
+
+    function testPositionsBatchEmpty() public view {
+        Composite.Position[] memory ps = c.positionsBatch(0);
+        assertEq(ps.length, 0);
+    }
+
+    function testWithBytesBatchDynamicElements() public view {
+        uint256 n = 35; // crosses the 32-byte keccak-chunk boundary (i = 32..34)
+        Composite.WithBytes[] memory ws = c.withBytesBatch(n);
+        assertEq(ws.length, n);
+        for (uint256 i = 0; i < n; i++) {
+            assertEq(ws[i].id, i + 0xC0FFEE);
+            assertEq(ws[i].data.length, i);
+            for (uint256 j = 0; j < i; j++) {
+                bytes32 chunk = keccak256(abi.encodePacked("withBytes", i, j / 32));
+                assertEq(ws[i].data[j], chunk[j % 32]);
+            }
+        }
+    }
+
+    function testMatrixRagged() public view {
+        uint256 rows = 10;
+        uint256[][] memory m = c.matrix(rows);
+        assertEq(m.length, rows);
+        for (uint256 r = 0; r < rows; r++) {
+            uint256 len = (r % 4) + 1;
+            assertEq(m[r].length, len);
+            for (uint256 k = 0; k < len; k++) {
+                assertEq(m[r][k], uint256(keccak256(abi.encodePacked("matrix", r, k))));
+            }
+        }
+    }
+
+    function testMatrixEmpty() public view {
+        uint256[][] memory m = c.matrix(0);
+        assertEq(m.length, 0);
+    }
+
+    function testNamesVaryingLength() public view {
+        uint256 n = 12; // crosses single->double digit (i = 10, 11) so token width varies
+        string[] memory ns = c.names(n);
+        assertEq(ns.length, n);
+        for (uint256 i = 0; i < n; i++) {
+            string memory token = vm.toString(i);
+            string memory expected = token;
+            for (uint256 k = 0; k < i; k++) {
+                expected = string.concat(expected, "-", token);
+            }
+            assertEq(ns[i], expected);
+        }
+        // Spot-check the documented examples.
+        assertEq(ns[0], "0");
+        assertEq(ns[1], "1-1");
+        assertEq(ns[2], "2-2-2");
+        assertEq(ns[11], "11-11-11-11-11-11-11-11-11-11-11-11");
+    }
+
+    function testSumLiquidityTupleArrayArg() public view {
+        // Build a tuple[] arg and encode it as calldata via the external call.
+        uint256 n = 5;
+        Composite.Position[] memory ps = c.positionsBatch(n);
+        uint256 expected = 0;
+        for (uint256 i = 0; i < n; i++) {
+            expected += uint256(ps[i].liquidity);
+        }
+        assertEq(c.sumLiquidity(ps), expected);
+    }
+
+    function testSumLiquidityEmpty() public view {
+        Composite.Position[] memory ps = new Composite.Position[](0);
+        assertEq(c.sumLiquidity(ps), 0);
+    }
 }

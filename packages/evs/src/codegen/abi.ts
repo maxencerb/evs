@@ -80,6 +80,20 @@ function wordLayoutOf(type: WordType): Extract<TypeLayout, { kind: 'word' }> {
 }
 
 /**
+ * The element word abi of a word-element array layout. Composite-element arrays (`tuple[]`,
+ * `T[][]`, `string[]` — `elem.kind !== 'word'`) are §12.6/§12.7 codegen and not yet emitted;
+ * this throws an internal error for them. UNREACHABLE today: `layoutOfType` never produces a
+ * composite-element array (it throws UNSUPPORTED_V0 first), so this is a behavior-preserving
+ * plumbing guard the array-element codegen milestone replaces with real handling.
+ */
+function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): WordType {
+  if (layout.elem.kind !== 'word') {
+    throw internal('composite-element array codegen pending (§12.6/§12.7)');
+  }
+  return layout.elem.abi;
+}
+
+/**
  * @internal Shared by `codegen/call.ts`. True when a decoded word of `type` can carry dirty
  * bits that normalization must clean — false only for the three full-word types.
  */
@@ -502,6 +516,11 @@ export function emitDecodeTupleToMem(
 
     // leaf dynamic (string/bytes/T[]): bounds on len + payload, normalize array elems, alias ptr
     const isArray = layout.kind === 'array';
+    // composite-element arrays (`tuple[]`, `T[][]`, `string[]`) are §12.6 decode codegen — not yet
+    // emitted. UNREACHABLE today: `layoutOfType` never yields a composite-element array (it throws
+    // UNSUPPORTED_V0 first), so this plumbing guard is behavior-preserving. Narrowing `elem` to a
+    // word here also keeps `layout.elem.abi` typed as `WordType` for the normalize call below.
+    const elemAbi = isArray ? wordElemAbi(layout) : null;
     w.op('DUP1');
     w.op('MLOAD'); // [len, ptr, flat, …]
     w.op('DUP1');
@@ -521,7 +540,7 @@ export function emitDecodeTupleToMem(
     w.op('LT'); // [end < tailEnd, ptr, flat, …]
     fail(belowFlat + 2); // [ptr, flat, …]
 
-    if (isArray && wordNeedsNormalize(layout.elem.abi)) {
+    if (elemAbi !== null && wordNeedsNormalize(elemAbi)) {
       // eager element normalization over the aliased region
       w.op('DUP1');
       w.op('MLOAD');
@@ -534,7 +553,7 @@ export function emitDecodeTupleToMem(
       w.op('DUP2');
       w.push(32);
       w.op('ADD'); // [cur, end, ptr, flat, …]
-      emitNormalizeElemsLoop(w, layout.elem.abi, belowFlat + 2);
+      emitNormalizeElemsLoop(w, elemAbi, belowFlat + 2);
       w.op('POP');
       w.op('POP'); // [ptr, flat, …]
     }
@@ -827,21 +846,26 @@ function emitDynCalldataArg(
     w.push(32);
     w.op('ADD'); // [pad, 0, ptr, len, src]
     w.op('MSTORE'); // [ptr, len, src]
-  } else if (wordNeedsNormalize(layout.elem.abi)) {
-    // eager element normalization (skipped for full-word element types)
-    w.op('DUP2');
-    w.push(5);
-    w.op('SHL'); // [32·len, ptr, len, src]
-    w.op('DUP2');
-    w.op('ADD');
-    w.push(32);
-    w.op('ADD'); // [end, ptr, len, src]
-    w.op('DUP2');
-    w.push(32);
-    w.op('ADD'); // [cur, end, ptr, len, src]
-    emitNormalizeElemsLoop(w, layout.elem.abi, 3);
-    w.op('POP');
-    w.op('POP'); // [ptr, len, src]
+  } else {
+    // array: `wordElemAbi` guards composite-element arrays (§12.6/§12.7 codegen pending) —
+    // UNREACHABLE today (layoutOfType never yields one), so this is behavior-preserving.
+    const elemAbi = wordElemAbi(layout);
+    if (wordNeedsNormalize(elemAbi)) {
+      // eager element normalization (skipped for full-word element types)
+      w.op('DUP2');
+      w.push(5);
+      w.op('SHL'); // [32·len, ptr, len, src]
+      w.op('DUP2');
+      w.op('ADD');
+      w.push(32);
+      w.op('ADD'); // [end, ptr, len, src]
+      w.op('DUP2');
+      w.push(32);
+      w.op('ADD'); // [cur, end, ptr, len, src]
+      emitNormalizeElemsLoop(w, elemAbi, 3);
+      w.op('POP');
+      w.op('POP'); // [ptr, len, src]
+    }
   }
 
   // slot := ptr; cleanup

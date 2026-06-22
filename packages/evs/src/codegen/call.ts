@@ -914,22 +914,32 @@ export function emitStaticCall(
       w.op('LT'); // [buf+rds < end, ptr, buf]
       emitDecodeFail(2); // [ptr, buf]
 
-      if (layout.kind === 'array' && wordNeedsNormalize(layout.elem.abi)) {
-        // eager element normalization over the aliased snapshot
-        w.op('DUP1');
-        w.op('MLOAD');
-        w.push(5);
-        w.op('SHL'); // [nbytes, ptr, buf]
-        w.op('DUP2');
-        w.op('ADD');
-        w.push(32);
-        w.op('ADD'); // [end, ptr, buf]
-        w.op('DUP2');
-        w.push(32);
-        w.op('ADD'); // [cur, end, ptr, buf]
-        emitNormalizeElemsLoop(w, layout.elem.abi, 2);
-        w.op('POP');
-        w.op('POP'); // [ptr, buf]
+      if (layout.kind === 'array') {
+        // composite-element arrays (`tuple[]`, `T[][]`, `string[]` — `elem.kind !== 'word'`) are
+        // §12.6 decode codegen, not yet emitted. UNREACHABLE today: `layoutOfType` never yields a
+        // composite-element array (it throws UNSUPPORTED_V0 first), so this plumbing guard is
+        // behavior-preserving and keeps `layout.elem.abi` typed as `WordType` below.
+        if (layout.elem.kind !== 'word') {
+          throw internal('composite-element array decode: codegen pending §12.6');
+        }
+        const elemAbi = layout.elem.abi;
+        if (wordNeedsNormalize(elemAbi)) {
+          // eager element normalization over the aliased snapshot
+          w.op('DUP1');
+          w.op('MLOAD');
+          w.push(5);
+          w.op('SHL'); // [nbytes, ptr, buf]
+          w.op('DUP2');
+          w.op('ADD');
+          w.push(32);
+          w.op('ADD'); // [end, ptr, buf]
+          w.op('DUP2');
+          w.push(32);
+          w.op('ADD'); // [cur, end, ptr, buf]
+          emitNormalizeElemsLoop(w, elemAbi, 2);
+          w.op('POP');
+          w.op('POP'); // [ptr, buf]
+        }
       }
 
       w.push(ref.slot);
