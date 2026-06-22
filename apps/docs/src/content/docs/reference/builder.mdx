@@ -87,17 +87,22 @@ pointer assignment — reference semantics, not a copy.
 ## s.newArray
 
 ```ts nocheck
-newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
 ```
 
-Allocates a zero-filled mutable array of word-type elements with a runtime (or literal) length.
-This is the building block for "loop over inputs, collect outputs" — the multicall replacement
-pattern (see [token balances](/examples/token-balances/)).
+Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
+type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple[]`). This is
+the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
+(see [token balances](/examples/token-balances/)).
 
 - Runtime lengths of `2^32` or more revert with Panic `0x41` (allocation too large).
 - A *literal* length of `2^32` or more throws at recording time (`CERTAIN_PANIC`).
 - Allocating inside a loop allocates fresh memory every iteration — `compile` warns with
   `LOOP_ALLOCATION`.
+- A **composite element** (`tuple`, `string`/`bytes`, `T[]`) makes the array an array of
+  pointers; `get(i)` returns the element handle (a [`Tuple`](#tuple) for a tuple element), a
+  reference into slot `i`, and `set(i, v)` takes the element's `IntoMember` (a `Tuple`/literal for
+  a tuple element).
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -108,6 +113,24 @@ const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
     out.set(i, i.mul(i));
   });
   return s.return({ squares: out.expr() });
+});
+```
+
+A `tuple[]` array — `get(i)` returns the element `Tuple`, filled in place:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const positions = evscript({ name: 'positions', args: [t.address, t.uint256] }, (s, owner, n) => {
+  const out = s.newArray(Position, n); // zero-filled tuple[n] (array of pointers)
+  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+    const el = out.get(i); // Tuple handle into slot i
+    el.liquidity.set(i.toUint(t.uint128));
+    el.owner.set(owner);
+  });
+  return s.return({ positions: out.expr() }); // readonly { liquidity; owner }[]
 });
 ```
 
@@ -325,7 +348,7 @@ A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallIn
 - Only `view`/`pure` functions are offered; nonpayable/payable names are TypeScript errors.
 - A `'tuple'` output decodes into a [`Tuple` handle](#tuple) (named/positional field access); a
   `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
-  object. See [calls — struct arguments and outputs](/guides/calls/#struct-arguments-and-outputs).
+  object. See [calls — struct arguments and outputs](/guides/calls/#struct-and-array-arguments-and-outputs).
 - Callee reverts bubble **verbatim** (Error/Panic/custom alike).
 - Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the
   site back to your source line.
@@ -460,21 +483,24 @@ defining scope is on the recording stack; touching it elsewhere throws `EvsScope
 
 ## MutArray
 
-```ts
-import type { Expr, IntoExpr, WordType } from '@maxencerb/evs';
-
-interface MutArray<e extends WordType> {
+```ts nocheck
+interface MutArray<e extends EvsType> {
   readonly elemType: e;
   readonly length: Expr<'uint256'>;
-  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
-  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
-  expr(): Expr<`${e}[]`>; // handle to the SAME buffer (reference semantics)
+  set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // bounds-checked → Panic 0x32
+  get(i: IntoExpr<'uint256'>): MutArrayElem<e>; // bounds-checked → Panic 0x32
+  expr(): Expr<MutArrayValueOf<e>>; // handle to the SAME buffer (reference semantics)
 }
 ```
 
 Returned by [`s.newArray`](#snewarray). All indexed access is bounds-checked (Panic `0x32`).
 `expr()` returns a plain `Expr` array handle aliasing the same buffer — later `set()` calls are
-visible through it. `length` is recorded once, at construction.
+visible through it. `length` is recorded once, at construction. For a **word element** the slots
+are inline values: `set`/`get` take/return an `Expr<e>` and `expr()` is the array `Expr` (the
+`e[]` handle). For a
+**composite element** (`tuple`/`string`/`bytes`/`T[]`) the array is an array of pointers: `get(i)`
+returns the element handle (a [`Tuple`](#tuple) for a tuple element) — a reference into slot `i` —
+and `set(i, v)` takes the element's `IntoMember` (a `Tuple` handle / literal for a tuple element).
 
 ## Tuple
 

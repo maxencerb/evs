@@ -70,6 +70,7 @@ call fail. The script as a whole can never write state or deploy anything.
 | none                       | `void`                                                             |
 | exactly one (scalar)       | `Expr` of that type (unwrapped)                                    |
 | exactly one (`tuple`)      | a [`Tuple` handle](/reference/builder/#tuple) (unwrapped)         |
+| exactly one (`tuple[]`)    | an array `Expr` — `.at(i)` returns a [`Tuple`](/reference/builder/#tuple) element |
 | several                    | readonly tuple of `Expr`/`Tuple` handles, in ABI order            |
 
 ```ts
@@ -103,7 +104,7 @@ const poolPrice = evscript({ name: 'poolPrice', args: [t.address] }, (s, pool) =
 Here `slot0` returns **seven flat outputs**, so it unwraps to a readonly tuple of `Expr`s
 accessed positionally. A getter that returns a single Solidity *struct* (one `'tuple'` output)
 instead unwraps to a `Tuple` handle with named field access — see
-[struct arguments and outputs](#struct-arguments-and-outputs) below.
+[struct arguments and outputs](#struct-and-array-arguments-and-outputs) below.
 
 A few typing behaviors carried over from viem, all enforced at recording time rather than as
 hard type errors where viem is also permissive:
@@ -112,11 +113,13 @@ hard type errors where viem is also permissive:
   `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
 - **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
   the overload you want.
-- **Restricted shapes** — `tuple[]` (arrays of structs), nested string arrays, and fixed `T[N]`
-  in an argument or output throw `EvsTypeError` at recording, naming the parameter. Plain
-  structs/tuples are fully supported.
+- **Restricted shapes** — two-level tuple arrays (`tuple[][]`), arrays nested deeper than
+  `[][]`, and fixed `T[N]` in an argument or output throw `EvsTypeError` at recording, naming the
+  parameter. Plain structs/tuples, arrays of structs (`tuple[]`), one-level nested arrays
+  (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
+  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs).
 
-## Struct arguments and outputs
+## Struct and array arguments and outputs
 
 When a `view` function takes or returns a Solidity struct (an ABI `'tuple'` parameter), evs
 handles it as a composite value — see [composite types](/guides/values-and-types/#composite-types-structs-and-tuples)
@@ -198,6 +201,51 @@ const quote = evscript(
 
 A `TupleType` script argument arrives the same way as a decoded output — as a `Tuple` handle —
 so a struct can flow straight from calldata into a sub-call.
+
+**Arrays of structs (`tuple[]`) work the same way.** A `'tuple[]'` output is an array handle —
+`.at(i)` returns the i-th element as a `Tuple` you read by field name; a `'tuple[]'` argument
+accepts an array handle (`arr.expr()`) or a plain `readonly Struct[]` literal. One-level nested
+arrays (`uint256[][]`) and dynamic-leaf arrays (`string[]`/`bytes[]`) are supported in the same
+positions. See [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string)
+for read/build/pass examples.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const registryAbi = [
+  {
+    type: 'function',
+    name: 'positionsOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple[]',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'tickLower', type: 'int24' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const firstPosition = evscript(
+  { name: 'firstPosition', args: [t.address, t.address] },
+  (s, registry, owner) => {
+    const positions = s.call({
+      address: registry,
+      abi: registryAbi,
+      functionName: 'positionsOf',
+      args: [owner],
+    });
+    //    ^? Expr<'tuple[]'> — the array handle
+    const first = positions.at(0n); // Tuple element — Panic(0x32) if empty
+    return s.return({ liquidity: first.liquidity.get(), positions });
+  },
+);
+```
 
 ## Revert behavior: verbatim bubbling
 

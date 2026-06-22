@@ -46,7 +46,7 @@ Three parts matter:
 
 - `name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
 - `args` is a single `t.*` type or a `readonly` list of them (a lone type is sugar for a one-element list). It is optional. Declaration order is binding: it is the type-level order, the runtime encode order, and the ABI `inputs` order all at once. Call sites stay positional, viem style — `args: [token, owner]`. Each arg is auto-named `arg{i}` in the ABI (positional labels; viem infers `args` positionally).
-- Valid argument types: any word type, `string`, `bytes`, a string array, or a struct/tuple (`t.struct`/`t.tuple`). Unsupported shapes (`tuple[]`, nested string arrays, fixed `T[N]`) throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
+- Valid argument types: any word type, `string`, `bytes`, an array (including `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]`), or a struct/tuple (`t.struct`/`t.tuple`). Still-unsupported shapes — two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed `T[N]` — throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
 - Header validation is immediate: invalid identifiers and unknown type shapes throw `EvsTypeError` before anything records.
 
 ## Reading arguments: positional params

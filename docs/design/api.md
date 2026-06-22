@@ -91,11 +91,12 @@ compiles to a single NAMED ABI `tuple`, which abitype infers as an **order-insen
 **ordered declarators** and never reach `UnionToTuple`. Call sites stay viem-native positional:
 `args: [pool, fee]` typed as `readonly [arg0: \`0x${string}\`, arg1: number]`.
 
-Argument types: word types, `string`, `bytes`, `T[]`, and `t.struct`/`t.tuple` types are valid
-script args. Fixed arrays `T[N]`, arrays of tuples (`tuple[]`), and nested string arrays
-(`uint256[][]`, `string[]`) remain recording-time errors (`EvsTypeError('UNSUPPORTED_V0', …)`);
-the `TupleType`/`ArrayType` vocabulary already represents them, so they are an additive
-follow-up (codegen `case` + builder wiring), not a rewrite.
+Argument types: word types, `string`, `bytes`, `T[]`, `t.struct`/`t.tuple` types, and — added by
+the #2 follow-up — one-level arrays of composite/dynamic elements (`tuple[]`, `uint256[][]`,
+`string[]`/`bytes[]`) are valid script args. Fixed arrays `T[N]`, two-level arrays of tuples
+(`tuple[][]`), and string arrays nested deeper than `[][]` remain recording-time errors
+(`EvsTypeError('UNSUPPORTED_V0', …)`); the `TupleType`/`ArrayType` vocabulary already represents
+them, so they are an additive follow-up (one more nesting level + builder wiring), not a rewrite.
 
 ## 3. Types, `Expr`, and literal coercion
 
@@ -171,12 +172,14 @@ export interface Expr<t extends EvsType = EvsType> {
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
   // amended by #2: `elem` broadened to StringType (nested string arrays in the vocabulary); the
   // `& ArrayType` pins `${elem}[]` to the depth-bounded array set (an unbounded `${StringType}[]`
-  // could reach depth 4, which is not an EvsType). tuple-element arrays use the Tuple/array
-  // handles, not `at()`.
+  // could reach depth 4, which is not an EvsType).
   at<elem extends StringType>(
     this: Expr<`${elem}[]` & ArrayType>,
     i: IntoExpr<'uint256'>,
   ): Expr<elem>;
+  // amended by the #2 follow-up: a tuple-array Expr's `.at(i)` returns a typed Tuple element handle
+  // (the same unified Tuple — `.at(i).field.get()`).
+  at<C extends TupleType>(this: Expr<C & { type: 'tuple[]' }>, i: IntoExpr<'uint256'>): Tuple</* elem */>;
   // bounds-checked → Panic 0x32
 }
 ```
@@ -228,9 +231,15 @@ Validated **at recording time** with the call-site loc (`EvsTypeError` on violat
 | JS array for `T[]`                    | element-wise rules of `T`                                 |
 | object/tuple for `t.struct`/`t.tuple` | member-wise rules per component (omitted → zero)          |
 
-Word literals canonicalize at recording. Dynamic literals (and literal arrays) become bytecode
-**data segments** materialized by CODECOPY on first use. Explicit constructor when inference
-needs help: `s.lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>`.
+Word literals canonicalize at recording. Dynamic literals (`string`/`bytes`) and **word-array**
+literals become bytecode **data segments** materialized by CODECOPY on first use. A
+**composite-array literal** (a JS array for `tuple[]`/`uint256[][]`/`string[]`/`bytes[]`, added by
+the #2 follow-up) is the exception: it has no flat data-segment blob (its elements are pointers into
+freshly-allocated blocks), so the recorder BUILDS it at record time as `arrnew` + per-element
+(`tuplenew`/`arrset`) with reference semantics and a fresh `[len][p0…]` block — constructible
+anywhere its value type is expected (a call arg, `s.return`, a cell, `s.newArray` element).
+Explicit constructor when inference needs help: `s.lit<const t extends EvsType>(type: t, value:
+LitOf<t>): Expr<t>`.
 
 **All-literal pure ops fold at recording.** If the fold would certainly Panic
 (`s.add(2n**256n - 1n, 1n)`, `x.div(0n)` with literal x, out-of-range `toUint`), recording
@@ -321,18 +330,28 @@ value" is visible at every use. For dynamic types the cell holds a memref pointe
 pointer assignment (reference semantics — documented).
 
 ```ts
-export interface MutArray<e extends WordType> {
+// amended by #2 follow-up: `e` widens from WordType to EvsType — a composite-element array
+// (tuple[], T[][], string[]/bytes[]) is an array OF POINTERS, [len][p0][p1]… (architecture §5).
+export interface MutArray<e extends EvsType> {
   readonly elemType: e;
   readonly length: Expr<'uint256'>;
-  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
-  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
-  expr(): Expr<`${e}[]`>; // memref handle to the SAME buffer (later set() calls are visible
-} //  through it — reference semantics, documented)
+  set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // a word→IntoExpr; a tuple→Tuple/literal;
+  //                                                       a sub-array→an array handle. Panic 0x32
+  get(i: IntoExpr<'uint256'>): e extends TupleType ? Tuple<e> : Expr<e>; // tuple→Tuple; else Expr
+  expr(): Expr<TypeOfArray<e>>; // memref handle to the SAME buffer (later set() calls are visible
+} //  through it — reference semantics, documented). TypeOfArray<e> is `${e}[]` / a tuple[] type.
 ```
 
-`s.newArray(elem, length)` allocates `[len][len × 32 bytes]`, **zero-filled**; runtime lengths
-≥ 2^32 → Panic `0x41`. This is the building block for "loop over inputs, collect outputs" —
-the multicall-replacement pattern (example E2).
+`s.newArray(elem, length)` allocates a zero-filled array; runtime lengths ≥ 2^32 → Panic `0x41`.
+For a word element this is `[len][len × 32 bytes]`. For a **composite/dynamic element** (amended by
+#2 follow-up — `tuple`, `string`, `bytes`, or a one-level `T[]`) it is an **array of pointers**
+`[len][p0][p1]…`: each slot holds a memref pointer to that element's own block (a flat tuple block
+for `tuple[]`, an inner array for `T[][]`, a bytes block for `string[]`), exactly Solidity
+`Struct[]`/`T[][]`/`string[]` memory (architecture §5). `arr.get(i)` on a `tuple[]` returns a
+`Tuple` element handle (the same unified handle as a decoded tuple — `arr.get(i).field.get()`);
+`arr.set(i, v)` stores the element pointer. This is the building block for "loop over inputs,
+collect outputs" — the multicall-replacement pattern (example E2). Fixed-size `T[N]`, two-level
+`tuple[][]`, and deeper-than-`[][]` arrays are still recording-time `EvsTypeError('UNSUPPORTED_V0', …)`.
 
 ### Tuples / structs (`Tuple`, `Field`, `s.tuple`) — added by #2
 
@@ -406,8 +425,10 @@ export interface SubcallParams<
   readonly gas?: IntoExpr<'uint256'>            // optional cap; default forward-all
 }
 // per-parameter union (amended by #2): the abitype Register-resolved primitive (a literal object
-// for a struct, a positional array for an unnamed tuple) OR an Expr of that type OR — for a tuple
-// param — a Tuple handle / s.tuple(...) result.
+// for a struct, a positional array for an unnamed tuple, a readonly Struct[] for a tuple[]) OR an
+// Expr of that type OR — for a tuple param — a Tuple handle / s.tuple(...) result. A tuple[] param
+// (added by the #2 follow-up) accepts the readonly Struct[] literal, an Expr<tuple[]>, or an array
+// handle (its .expr()).
 export type SubcallInputs<abi, name> = {
   readonly [i in keyof inputs]: inputs[i]['type'] extends 'tuple'
     ? AbiParameterToPrimitiveType<inputs[i], 'inputs'> | Tuple</* inputs[i] */> | Expr</* inputs[i] */>
@@ -420,7 +441,8 @@ call<const abi extends Abi | readonly unknown[],
   p: SubcallParams<abi, name>,
 ): UnwrapSingle<SubcallOutputs<abi, name>>
 // outputs []  → void;  [one] → Expr<one> | Tuple<one> (Tuple if the single output is a tuple);
-// [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem)
+// [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem). A tuple[] output → a
+// readonly Struct[] Expr whose .at(i) yields a typed Tuple element (added by the #2 follow-up).
 
 tryCall<const abi extends Abi | readonly unknown[],
         name extends ContractFunctionName<abi, ViewMutability>>(
@@ -441,8 +463,13 @@ Semantics and permissiveness:
   may be a `Tuple` handle, an `s.tuple(...)` result, or a plain literal object (the recorder builds
   the tuple from the object, members literal-or-`Expr`, omitted → 0). Amended by #2 — the previous
   "`tuple` → recording-time `EvsTypeError`" deferral is dropped.
-- Arg/output types still outside the surface (`T[N]`, arrays of tuples `tuple[]`, nested string
-  arrays `uint256[][]`/`string[]`) → recording-time `EvsTypeError('UNSUPPORTED_V0', …)` naming the
+- **Composite-element array outputs/args** (`tuple[]`, `T[][]`, `string[]`/`bytes[]`, added by the
+  #2 follow-up): a `tuple[]` output decodes to a `readonly Struct[]` (an array of `Tuple` element
+  handles — `out.at(i).field.get()`); `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` →
+  `readonly string[]`. A `tuple[]` arg accepts an `Expr<tuple[]>` / an array handle / a
+  `readonly Struct[]` literal (the recorder builds the array-of-pointers block — §5).
+- Arg/output types still outside the surface (`T[N]`, two-level arrays of tuples `tuple[][]`, string
+  arrays nested deeper than `[][]`) → recording-time `EvsTypeError('UNSUPPORTED_V0', …)` naming the
   parameter; these remain a follow-up (the vocabulary already represents them — §2).
 - **Strict mode**: callee revert bubbles **verbatim** (Error/Panic/custom alike). Structural
   returndata decode failure reverts `EvsDecodeError(site)` — viem names it, `explainRevert`
@@ -767,6 +794,33 @@ const composite = evscript(
   },
 );
 // readContract returns { tick: number; amountOut: bigint; position: { nonce: bigint; … } }
+```
+
+A one-level array of composite/dynamic elements (added by the #2 follow-up) reads, constructs,
+returns, and passes the same way — `tuple[]` outputs are `readonly Struct[]`, `.at(i)` yields a
+typed `Tuple` element:
+
+```ts nocheck
+const positions = evscript(
+  { name: 'positions', args: [t.address, t.array(t.uint256)] }, // manager, tokenIds
+  (s, manager, tokenIds) => {
+    // a tuple[] output decodes to an array of Tuple element handles (readonly Struct[] to viem)
+    const all = s.call({
+      address: manager,
+      abi: managerAbi,
+      functionName: 'positionsBatch',
+      args: [tokenIds],
+    });
+    const first = all.at(0n); //   ^? Tuple<{ liquidity: uint128; tickLower: int24; … }>
+    const liq = first.liquidity.get(); // Expr<'uint128'>
+
+    // build a tuple[] / uint256[][] from JS literals OR with s.newArray + arrset (reference block)
+    const echoed = s.newArray(t.struct({ a: t.uint256, b: t.uint256 }), 2n);
+    echoed.set(0n, { a: 1n, b: 2n }); // a Tuple handle, s.tuple(...) result, or a literal object
+    return s.return({ all: all.expr(), first, liq, echoed: echoed.expr() });
+  },
+);
+// readContract returns { all: readonly {liquidity; tickLower; …}[]; first: {…}; liq: bigint; echoed: readonly {a; b}[] }
 ```
 
 ### E7 — State-override mode, block pinning, and `explainRevert`

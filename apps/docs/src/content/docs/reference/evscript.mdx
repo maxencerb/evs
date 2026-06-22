@@ -62,8 +62,10 @@ Recording-time validation (each violation throws `EvsTypeError` with the call-si
 - `def.args`, when present, must be a single `EvsType` or a `readonly` list of them. Each
   normalized arg is auto-named `arg{i}` in the generated ABI (the names are positional labels;
   viem infers `args` positionally regardless).
-- Every arg type must be a valid `EvsType` — a word/dynamic type, a string array, or a
-  `TupleType` (struct/tuple). Shapes outside the supported set throw with code `UNSUPPORTED_V0`.
+- Every arg type must be a valid `EvsType` — a word/dynamic type, an array (a scalar array, a
+  one-level nested array `T[][]`, or a `tuple[]`), or a `TupleType` (struct/tuple). Shapes
+  outside the supported set — `tuple[][]`, deeper-than-`[][]` nesting, fixed `T[N]` — throw with
+  code `UNSUPPORTED_V0`.
 - `body` must be a function.
 
 Everything the builder itself can throw during recording is catalogued in

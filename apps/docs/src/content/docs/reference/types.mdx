@@ -33,7 +33,7 @@ autocomplete sugar — plus three functions that build composite types. Raw type
 | `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
 | `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
 | `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
-| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a string element, or a `tuple[]` of a tuple element |
+| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]`), or a `tuple[]` of a tuple element |
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
 
@@ -144,6 +144,17 @@ tuple an array, recursing through nested components. `TupleType` flows everywher
 does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#stuple)), as a
 `s.call` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
 `s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
+
+`t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`). A
+composite-element array — `tuple[]`, a one-level nested array (`uint256[][]`), or a dynamic-leaf
+array (`string[]`/`bytes[]`) — is an **array of pointers** in memory: the `[length]` prefix is
+followed by one pointer word per element, each pointing at the element's own block (a tuple
+block, an inner array, or a bytes block). It shares the word-array handle surface — `.length()`,
+`.at(i)`, `s.newArray` — and the same reference semantics; an `s.call` `tuple[]` output is an
+array handle whose `.at(i)` yields a typed [`Tuple`](/reference/builder/#tuple) element. The
+build/read/pass examples live in [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string).
+Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays
+nested deeper than `[][]`, and fixed-size `T[N]`.
 
 Several type-level helpers are exported for advanced inference: `StructTypeOf`, `TupleTypeOf`,
 `TupleArrayOf`, `TypeToComponent`, `TupleLitOf`, and `TupleAsParam`. You rarely name them — they

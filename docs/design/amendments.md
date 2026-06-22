@@ -967,8 +967,87 @@ ret>` and `CompiledEvsScript<name, args, ret>` parameterized by `readonly ArgSpe
   follow-up; reaching a deferred shape throws `EvsTypeError('UNSUPPORTED_V0', …)` naming it. The
   follow-up is additive (a codegen `case` per emitter + builder wiring), NOT a rewrite, because the
   emitters are already recursive over `NamedType`/`PlainAbiParam` trees.
-- Status: **accepted** (the deferral is the shipped state; the named follow-up is the remaining
-  work).
+- Status: **accepted** — PARTLY REVERSED by **16.11**: one-level arrays of composite —
+  `tuple[]`, `T[][]`, `string[]`/`bytes[]` — are now DELIVERED (decode/read, construct/mutate,
+  return, call-arg encode; byte-exact vs viem + real solc on paris/shanghai/cancun). `s.newArray`
+  and `at()` no longer reject them. Only `tuple[][]` (two-level tuple array), fixed-size `T[N]`, and
+  string arrays nested deeper than `[][]` remain `UNSUPPORTED_V0` (lock-tested).
+
+### 16.11 Arrays of composite (`tuple[]`, `T[][]`, `string[]`)
+
+> Closes issue #2's "arrays of tuples" + `T[][]` follow-up; PARTLY REVERSES 16.10. Delivered in
+> PR #3 milestones M1–M4 — one level of array nesting over a composite/dynamic element (`tuple[]`
+> static-element AND dynamic-member element, `uint256[][]`, `string[]`/`bytes[]`), byte-exact vs
+> viem `encodeAbiParameters` + real solc on paris/shanghai/cancun. The binding byte-exact spec is
+> `docs/design/proposals/composite-types-impl-plan.md` §12; architecture §2.1/§5/§8/§18, api.md
+> §5/§6, and module-interfaces §M1–M3/§M5 are amended in place.
+
+- Law: architecture §5 / module-interfaces §M3 `abi/layout.ts` — the `TypeLayout` array variant
+  was `elem: WordLayout` ("dynamic arrays of words only in v0"); §M2 `arrnew.elem` was widened to
+  `EvsType` but `validateIr` "still restricts to word — composite arrays deferred"; §M5
+  `MutArray<e extends WordType>` and `s.newArray(elem: WordType, …)`; api.md §3 — "Dynamic
+  literals (and literal arrays) become bytecode **data segments** materialized by CODECOPY".
+- Shipped:
+  - **Memory model (architecture §5).** A composite-element array (`tuple[]`, `T[][]`,
+    `string[]`/`bytes[]`) is an ARRAY OF POINTERS: a memref to `[len:32][p0:32][p1:32]…` — IDENTICAL
+    to the word-array block (`ptr + 32 + 32·i` addressing, len at `ptr`), except each slot `pᵢ`
+    holds a memref POINTER to element `i`'s own block rather than an inline value word (`tuple[]` →
+    a flat tuple block §3; `T[][]` → an inner array; `string[]`/`bytes[]` → a bytes block). This is
+    exactly Solidity `Struct[]`/`T[][]`/`string[]` memory. `lowerArrnew`/`lowerIndex`/`lowerArrset`
+    address arithmetic + bounds (`i<len`→Panic 0x32) + alloc cap (`2^32-1`→Panic 0x41) are
+    element-type-agnostic and reused UNCHANGED; only the leaf semantics differ (the slot holds a
+    pointer; `index` yields it as the element handle; an unset slot is UB exactly like Solidity).
+  - **Layout (`abi/layout.ts`).** The array variant is widened `elem: WordLayout` →
+    **`elem: TypeLayout`**; `layoutOf`/`layoutOfType` return an array-of-composite layout for a
+    one-level `tuple[]`/`T[][]`/`string[]`/`bytes[]` element (the `badTypeError` narrows to still
+    reject `T[N]`/`tuple[][]`/`[][][]+`). A `staticSize(elem)` helper = `headBytes(components)` for a
+    static tuple element, `32` for a word.
+  - **Validate (`ir/validate.ts`).** `checkElemType` (the arrnew/array-element gate) is widened to
+    accept `word | string | bytes | one-level T[] | tuple` elements; it still rejects `T[N]`,
+    `tuple[][]`, and `[][]`-deeper string arrays with `UNSUPPORTED_V0` (a `tuple[][]` IR node still
+    fails validation). `index`/`arrset`/`len` were already element-agnostic.
+  - **Decode codegen (`codegen/abi.ts` + `call.ts`).** New `emitDecodeArrayToMem` — an ON-STACK
+    element loop (NO `emitMemCopy`: it freshly allocates each tuple/array element block and aliases
+    leaf bytes into the returndata snapshot). Per-element source base lives in a fixed scratch slot
+    (`ELEM_BASE = 0x20`) so the recursive element decoders' `pushBase` is stack-depth-independent.
+    Dynamic-element offsets are read relative to the array DATA START `D` (the word after `len`);
+    static-element arrays have no offset words (`len·staticSize` contiguous). Wired into the args
+    decoder (§8.1) and the call-output decoder (§7.2).
+  - **Encode codegen (`codegen/abi.ts` + `call.ts`).** New `emitEncodeArrayTail` on the shared
+    monotone tail cursor (`TAIL_CURSOR = 0x00`): a static element inlines `len·staticSize`; a
+    dynamic element writes `len` offset words relative to `D` then appends each element's tail. The
+    dynamic-element loop keeps ALL of its state `{arrPtr, D, len, i}` in a reserved 4-word memory
+    FRAME BELOW the output/call buffer (`reserveEncodeFrames` bumps `FREE_PTR` by `32·FRAMES·4`
+    before `out = MLOAD(0x40)` is read, so `RETURN` never returns scratch), keeping the operand
+    stack at baseline 0 so every `@memcpy` runs at EXACTLY `[dst, src, len]` (the pre-cancun
+    height-4 checked-entry contract, amendment 9.4). `FRAMES` = the max concurrent array-nesting
+    depth along any path of the encoded type (statically known; `tuple[]`=1; a `tuple[]` whose
+    member is a `string[]`=2). Static-element loops use no memcpy, so they keep counter state on the
+    stack.
+  - **Builder (`builder/{script,expr}.ts`).** `s.newArray` is widened off word-only to admit
+    `word | string | bytes | one-level T[] | tuple` elements (`T[N]`/`tuple[][]` still gated). The
+    `MutArray<e>` generic widens from `WordType` to `EvsType`: `get`/`at` on a `tuple[]` return a
+    `Tuple` element handle (the SAME unified tuple handle as a decoded tuple, §3/16.7), `set` accepts
+    an `IntoMember<e>` (a `Tuple` handle / array handle / `Expr` per element type), `expr()` types as
+    `Expr<tuple[]>`; `arrset` stores the element pointer. A `tuple[]`/`uint256[][]`/`string[]`/
+    `bytes[]` LITERAL (a JS array) is constructible anywhere its value type is expected — but, unlike
+    a word/string/bytes literal, it is BUILT AT RECORD TIME as `arrnew` + per-element
+    (`tuplenew`/`arrset`), with reference semantics and a fresh `[len][p0…]` block. This changes
+    `encodeLiteralData`'s contract: a composite-array literal has **NO flat data-segment literal**
+    (it cannot — the elements are pointers into freshly-allocated blocks), so the recorder
+    materializes it structurally rather than emitting a CODECOPY'd `[len][payload]` blob.
+  - **Types.** `s.call` `tuple[]` output → `readonly Struct[]`; `uint256[][]` →
+    `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`. A tuple-array `Expr`'s
+    `.at(i)` returns a typed `Tuple` element. `SubcallInputs` accepts `Expr<tupleArrayType>`, an
+    array handle, or a `readonly Struct[]` literal for a `tuple[]` arg.
+- Rationale: the array-of-pointers layout makes the change ADDITIVE on the flat-pointer tuple model
+  (§3 / architecture §5) — the existing word-array addressing is element-agnostic, so only the leaf
+  decode/encode/construct semantics are new. The scratch-frame encode discipline is the load-bearing
+  detail: it preserves the pre-cancun `@memcpy` `[dst,src,len]` height invariant through an
+  arbitrarily nested dynamic-element loop. The recorder-builds-the-literal change is forced because a
+  composite array's elements are pointers, not inline bytes — there is no flat blob to CODECOPY.
+- Status: **accepted**. Still deferred (throw `UNSUPPORTED_V0`, lock-tested): `tuple[][]` (two-level
+  tuple array), fixed-size `T[N]`, and string arrays nested deeper than `[][]`.
 
 ---
 

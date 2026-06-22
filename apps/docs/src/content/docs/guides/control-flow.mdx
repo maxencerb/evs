@@ -219,8 +219,11 @@ outer loop's handle inside an inner loop in place of the inner loop's own — th
 
 ## Mutable arrays: s.newArray
 
-`s.newArray(elem, length)` allocates a zero-filled runtime array of word-typed elements — the
-building block for "loop over inputs, collect outputs":
+`s.newArray(elem, length)` allocates a zero-filled runtime array — the building block for "loop
+over inputs, collect outputs". The element may be a word type, `string`/`bytes`, a one-level
+array, or a struct/tuple (a `tuple[]`); a composite element makes the array an array of pointers
+whose `get(i)` returns the element handle (a `Tuple` for a tuple element). See
+[composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string):
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -236,7 +239,7 @@ const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
 
 | Member          | Meaning                                                          |
 | --------------- | ---------------------------------------------------------------- |
-| `arr.elemType`  | The element `WordType`                                           |
+| `arr.elemType`  | The element type (a word type, `string`/`bytes`, `T[]`, or a `tuple`) |
 | `arr.length`    | `Expr<'uint256'>`                                                |
 | `arr.get(i)`    | Element read, bounds-checked (Panic `0x32`)                      |
 | `arr.set(i, v)` | Element write, bounds-checked (Panic `0x32`)                     |

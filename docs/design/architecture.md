@@ -82,11 +82,15 @@ type ArgType   = EvsType                                // dynamic + composite s
 
 `t.struct({...})`/`t.tuple(...)` build a `TupleType`; a raw `readonly AbiParameter[]` is accepted
 wherever a tuple type is expected. Tuple/struct args, outputs, returns, and `s.tuple` construction
-are in scope (issue #2). Fixed-size arrays `T[N]`, arrays of tuples (`tuple[]`), and nested string
-arrays (`uint256[][]`, `string[]`) remain **out of v0** (recording-time
-`EvsTypeError('UNSUPPORTED_V0', …)`); the `TupleType`/`ArrayType` vocabulary already represents
-them and the ABI emitters are recursive over `PlainAbiParam`/`NamedType` trees, so they are an
-additive follow-up (codegen `case` + builder wiring), not a rewrite — §8.
+are in scope (issue #2), as are **one-level arrays of composite/dynamic elements** — arrays of
+tuples (`tuple[]`, static-element and dynamic-member element), one-level nested arrays
+(`uint256[][]`), and string/bytes arrays (`string[]`/`bytes[]`): decode/read, construct/mutate,
+return, and call-arg encode (issue #2 follow-up — amendments.md §16.11; layout in §5, codegen in
+§8). Two-level arrays of tuples (`tuple[][]`), fixed-size arrays `T[N]`, and string arrays nested
+deeper than `[][]` remain **out of v0** (recording-time `EvsTypeError('UNSUPPORTED_V0', …)`); the
+`TupleType`/`ArrayType` vocabulary already represents them and the ABI emitters are recursive over
+`PlainAbiParam`/`NamedType` trees, so they are an additive follow-up (one more nesting level / a
+separate `T[N]` codepath), not a rewrite — §8.
 
 ### 2.1 Args declaration (decision 1 — amended by #2)
 
@@ -247,7 +251,7 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
   returndata decode — by normalization, §8) and preserved by every op (sub-word results masked /
   sign-extended where an op can denormalize: `bitnot`, `shl`, unchecked-by-construction ops).
 - **Dynamic values are memrefs**: a slot holds a pointer to `[len:32][payload…]` (strings/bytes:
-  raw bytes zero-padded; arrays: one canonical word per element).
+  raw bytes zero-padded; word arrays: one canonical word per element at `ptr + 32 + 32·i`).
 - **Tuples are FLAT-POINTER memrefs (added by #2)**: a tuple value occupies ONE frame slot holding
   a pointer to a packed `[w0][w1]…[w_{n-1}]` block of `n` words (`n = components.length`, **no
   length prefix**). Each `wᵢ` is a canonical word if member `i` is static, or a memref pointer if
@@ -263,6 +267,20 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
   components decode into a memref aliasing the returndata snapshot and store its pointer into `wᵢ`
   (§7.2). Reference semantics: a tuple handle is the pointer, so a later `field.set()` is visible
   through every alias (api.md §5).
+- **Composite-element arrays are ARRAYS OF POINTERS (added by #2 follow-up)**: a `tuple[]`,
+  `T[][]`, or `string[]`/`bytes[]` is a memref to `[len:32][p0:32][p1:32]…[p_{len-1}:32]` —
+  IDENTICAL to the word-array block above (`ptr + 32 + 32·i` addressing, `len` at `ptr`), except
+  each slot `pᵢ` holds a memref POINTER to element `i`'s own block instead of an inline value word:
+  `tuple[]` → a flat tuple block (the bullet above); `T[][]` → an inner array block (`[len_i][…]`);
+  `string[]`/`bytes[]` → a bytes block (`[len_i][payload]`). This is exactly Solidity
+  `Struct[]`/`T[][]`/`string[]` memory. The word-array address arithmetic, bounds check
+  (`i < len` → Panic 0x32), allocation cap (`2^32-1` → Panic 0x41), and `CALLDATACOPY`-past-end
+  zero-fill are **element-type-agnostic and reused unchanged** (`arrnew`/`index`/`arrset`); only the
+  leaf semantics differ — the slot holds a pointer, `index` yields it as the element handle
+  (downstream `field`/`at` dereference it), `arrset` stores a member pointer, and an unset slot is
+  UB exactly like Solidity. A decoded composite array freshly allocates each element block (tuples)
+  or aliases the returndata snapshot (leaf bytes) — §8. Reference semantics: the array handle is the
+  pointer (api.md §5).
 - **Transient scratch**: sub-call calldata is built at `MLOAD(0x40)` **without bumping** (dead
   after the call). Consequence: memory above the free pointer is **not** guaranteed zero — the
   return encoder zero-pads dynamic tails explicitly, and `arrnew` zero-fills via
@@ -374,6 +392,16 @@ scratch `MLOAD(0x40)`, not bumped.
      dynamic component decodes into a memref aliasing the snapshot and stores its pointer into `wᵢ`.
      The `staticMinSize`/`headOffset = 32·j` guards count **cumulative** head words for static inner
      tuples (a static tuple output occupies `headBytes(components)` head words, not 1).
+   - **Composite-element array outputs (added by #2 follow-up)**: a `tuple[]`/`T[][]`/`string[]`
+     output decodes into a freshly-allocated array-of-pointers block (§5) via `emitDecodeArrayToMem`
+     — an ON-STACK element loop (no `emitMemCopy`): read `len`, allocate `[len][p0…]`, then for each
+     element store its block pointer at `arr + 32 + 32·i` (a static-tuple element recurses into a
+     fresh flat block; a dynamic element — dynamic tuple, inner array, string/bytes — decodes into a
+     memref and stores its pointer). Dynamic-element offsets are read relative to the array DATA
+     START `D` (the word after `len`), NOT the enclosing block base; static-element arrays have no
+     offset words (`len·staticSize` contiguous). The per-element source base lives in a fixed scratch
+     slot (`ELEM_BASE = 0x20`) so the recursive element decoders' base push is stack-depth-independent
+     (§8).
 6. **Decode-fail target**: strict mode → per-site stub
    `@dfail_<site>: JUMPDEST PUSH<k> site PUSH2 @decode_revert JUMP`; shared tail reverts
    `EvsDecodeError(uint256 site)` (declared in the generated ABI; `explainRevert`/`sourceMap.sites`
@@ -402,8 +430,11 @@ the components — static members inline in the head, dynamic members get a head
 `emitMemCopy` happens at stack height exactly `[dst, src, len]` (the pre-cancun `@memcpy` ABI
 contract); a tuple is ABI-DYNAMIC iff any component is dynamic, and the `headSize`/`dynOff` math
 counts a STATIC inner tuple as `headBytes(components)` head words (NOT 1) via a cumulative
-head-offset walk — the "one head word per component" assumption is broken. `tuple[]`/nested
-string arrays stay a new `case` per emitter (the recording-time guard for them remains).
+head-offset walk — the "one head word per component" assumption is broken.
+
+**Added by the #2 follow-up (arrays of composite)**: one-level `tuple[]`/`T[][]`/`string[]`
+elements are delivered by two dedicated array emitters (§8.3); the recording-time guard now only
+fences `tuple[][]`, `T[N]`, and string arrays deeper than `[][]`.
 
 ### 8.1 Dispatch-time script-arg decode (dynamic args INCLUDED — A graft)
 
@@ -424,6 +455,9 @@ string arrays stay a new `case` per emitter (the recording-time guard for them r
   flat-pointer block (§5): static members copy the head word into `wᵢ`; dynamic members decode into
   a memref and store its pointer into `wᵢ`. The same `case 'tuple'` recursion as the call-output
   decoder (§7.2 / `codegen/call.ts`); cumulative head-offset arithmetic for static inner tuples.
+- **Composite-element array arg (added by #2 follow-up)**: a `tuple[]`/`T[][]`/`string[]` arg is
+  decoded into a freshly-allocated array-of-pointers block (§5) via `emitDecodeArrayToMem` (§8.3),
+  the same emitter as the call-output decoder (snapshot base read from scratch).
 
 ### 8.2 Return-tuple encode (single named tuple; dynamic + composite members supported)
 
@@ -440,11 +474,61 @@ straight-line code from the compile-time component walk:
 3. Tails in component order: `MSTORE(tail, len)`; payload via `MCOPY` (pre-Cancun: shared
    `@memcpy` word-loop subroutine); **explicit zero-pad** `MSTORE(tail + 32 + len, 0)` before
    the copy bookkeeping (memory above the free pointer is not guaranteed zero — §5). A dynamic
-   tuple component's tail is the inner head/tail block (the member's flat-pointer block re-encoded).
+   tuple component's tail is the inner head/tail block (the member's flat-pointer block re-encoded);
+   a **composite-element-array component** (`tuple[]`/`T[][]`/`string[]`, added by #2 follow-up) is
+   always dynamic — its tail is emitted by `emitEncodeArrayTail` (§8.3).
 4. `RETURN(out, total)`.
 
 Differential anchor: emitted encoder/decoder vs viem `encodeAbiParameters` /
 `decodeFunctionResult` byte-equality on a fuzzed matrix (testing.md §4).
+
+### 8.3 Arrays of composite elements — `emitDecodeArrayToMem` / `emitEncodeArrayTail` (added by #2 follow-up)
+
+One-level `tuple[]`/`T[][]`/`string[]`/`bytes[]` are encoded/decoded by two dedicated emitters,
+reachable from the args path (§8.1), the call-output path (§7.2), and as a return/tuple component
+(§8.2). The wire format (the differential bar): for an array `E[]` at data start `D` (the word
+after `len`) — a **static element** `E` inlines `len·staticSize(E)` bytes contiguously, no offset
+words (`staticSize` = `headBytes(E.components)` for a static tuple, `32` for a word); a **dynamic
+element** `E` (dynamic tuple, inner array, string/bytes) writes `len` offset words at `[D, D+32·len)`
+**each relative to `D`** (NOT the enclosing block base — an array rebases to its own data start, the
+one-word base difference from a tuple member's offset), then the element tails appended from
+`D+32·len`.
+
+**`emitDecodeArrayToMem`** — an ON-STACK element loop (NO `emitMemCopy`: it freshly allocates each
+tuple/array element block and aliases leaf bytes into the snapshot, so the loop counter may live on
+the stack). Read `len`, bounds `len ≤ 2^64−1`; allocate `[len][p0…]` (`32 + 32·len` bytes, bump
+`FREE_PTR`); `D = base + 32`; loop `i = 0..len−1`: a static element computes `D + i·staticSize`,
+bounds-checks, recurses the element decoder and stores its block pointer (or the word value) at
+`arr + 32 + 32·i`; a dynamic element reads `offᵢ` at `D + 32·i` (bounds `offᵢ ≤ 2^64−1`), computes
+`D + offᵢ` (bounds `+32 ≤ end`), recurses the matching decoder (tuple block / nested
+`emitDecodeArrayToMem` for `T[][]` / leaf string-bytes alias for `string[]`), and stores the
+returned pointer. The per-element source base lives in a fixed scratch slot (`ELEM_BASE = 0x20`) so
+the recursive decoders' base push is stack-depth-independent; checked loop labels sit at the
+absolute height `belowFlat + loopStateSize`, mirroring `emitNormalizeElemsLoop`. Base/end are read
+from scratch (`SNAP_SLOT` on the return path), so per-element free-ptr churn never disturbs them.
+
+**`emitEncodeArrayTail`** — written at the shared monotone tail cursor (`TAIL_CURSOR = 0x00`).
+`MSTORE(cursor, len)`; `D = cursor + 32`. A **static element** advances `cursor` to
+`D + len·staticSize` (reserving the body), then loops, encoding each element inline (a static tuple
+writes its head words from `MLOAD(elemPtrᵢ + 32·j)`; a word element `MSTORE`s) — no memcpy, so the
+counter may stay on the stack. A **dynamic element** advances `cursor` to `D + 32·len` (reserving
+the offset words), then loops: record `tailPos = cursor`, `MSTORE(D + 32·i, tailPos − D)` (offset
+relative to `D`), and encode element `i`'s tail at `cursor` (a dynamic tuple → reserve `headBytes`
+then `emitEncodeBlock`; `T[][]` → recurse `emitEncodeArrayTail`; `string[]`/`bytes[]` → the leaf
+dynamic tail), each extending the shared monotone cursor exactly like a dynamic tuple member.
+
+**Scratch-frame encode discipline (the load-bearing invariant).** `emitMemCopy` requires the
+operand stack to be EXACTLY `[dst, src, len]` (the pre-cancun `@memcpy` height-4 checked-entry
+contract, §9.4). A dynamic-element loop that held `[i, len, D, arrPtr]` on the stack would violate
+that. So the dynamic-element encode loop keeps ALL of its state `{arrPtr, D, len, i}` (4 words) in a
+reserved memory FRAME, not on the stack: at `emitReturnEncode`/call-arg-encode entry,
+`reserveEncodeFrames` bumps `FREE_PTR` by `32·FRAMES·4` BEFORE `out = MLOAD(0x40)` is read — so the
+output/call buffer (and `RETURN(out, …)`) always sits ABOVE the frames and never returns scratch.
+`FRAMES` = the max concurrent array-nesting depth along any path of the encoded type (statically
+known: `tuple[]`=1; a `tuple[]` whose member is a `string[]`=2). The loop reads/writes `i` from its
+frame and recomputes `elemPtrᵢ = MLOAD(arrPtr + 32 + 32·i)`, so nothing but the live `[dst,src,len]`
+is on the stack when `emitMemCopy` runs. Static-element loops use no memcpy and keep counter state
+on the stack.
 
 ## 9. User-defined functions (decision 5)
 
@@ -1181,11 +1265,14 @@ retSize pushed first, retOffset above it, gas on top at STATICCALL). 36. *Bare`r
   (weiroll-proven), constant-pool dedup, loop free-pointer reset (legal under the scope rule).
 - **Tuples / structs**: SHIPPED by #2 (the `case 'tuple'` per emitter landed) — see §2.1, §5,
   §7.2, §8, and amendments.md §16.
-- **Arrays of tuples (`tuple[]`), nested string arrays (`uint256[][]`, `string[]`), fixed arrays
-  (`T[N]`)**: still deferred — add the `case` per emitter + the builder wiring (`s.newArray` stays
-  word-element-only; `at()` on a tuple-element array is the follow-up). The `TupleType`/`ArrayType`
-  vocabulary already represents them, so it is additive; the recording-time
-  `EvsTypeError('UNSUPPORTED_V0', …)` guard names the reached shape.
+- **One-level arrays of composite (`tuple[]`, `T[][]`, `string[]`/`bytes[]`)**: SHIPPED by the #2
+  follow-up (the array-of-pointers layout + `emitDecodeArrayToMem`/`emitEncodeArrayTail` landed;
+  `s.newArray`/`at()` admit them) — see §2.1, §5, §7.2, §8.3, and amendments.md §16.11.
+- **Two-level arrays of tuples (`tuple[][]`), string arrays deeper than `[][]`, fixed arrays
+  (`T[N]`)**: still deferred — one more nesting level on §8.3 / a separate `T[N]` codepath plus the
+  builder wiring (`s.newArray` still gates them). The `TupleType`/`ArrayType` vocabulary already
+  represents them, so it is additive; the recording-time `EvsTypeError('UNSUPPORTED_V0', …)` guard
+  names the reached shape.
 - **Overload disambiguation** (`ExtractAbiFunctionForArgs`), **dynamic-length stack of args >
   word count**, **`s.rawCall({to, data})`** typed escape hatch, **recursion** (FP-relative
   slots confined to codegen), **single named-tuple input option** for many-arg scripts,

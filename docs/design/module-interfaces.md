@@ -63,7 +63,9 @@ export type BitsType = UintType | BytesNType
 
 export declare const exprBrand: unique symbol
 export interface Expr<t extends EvsType = EvsType> { /* exactly api.md §3 — `at<elem extends
-  StringType>(this: Expr<`${elem}[]` & ArrayType>, …)` (amended by #2) */ }
+  StringType>(this: Expr<`${elem}[]` & ArrayType>, …): Expr<elem>` plus a tuple-array overload
+  `at<C extends TupleType>(this: Expr<C & {type:'tuple[]'}>, …): Tuple<elem>` (amended by #2 +
+  the #2 follow-up: a tuple-array element handle) */ }
 export type LitOf<t extends EvsType> = /* exactly api.md §3 — TupleType → TupleLitOf (amended #2) */
 export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<TupleAsParam<t>, 'inputs'>
 export type TupleAsParam<t extends TupleType> = { readonly name: ''; readonly type: t['type']
@@ -349,16 +351,20 @@ export type WordLayout = {
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  | { kind: 'array'; abi: string; elem: WordLayout } // dynamic arrays of words only in v0
+  // amended by the #2 follow-up: `elem` widened WordLayout → TypeLayout — a one-level array of
+  // composite/dynamic elements (tuple[], T[][], string[]/bytes[]) is an array of pointers:
+  | { kind: 'array'; abi: string; elem: TypeLayout }
   // amended by #2: a tuple layout (a flat-pointer block of component layouts):
   | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
-export function layoutOf(abiType: string): TypeLayout; // throws EvsTypeError(UNSUPPORTED_V0) on tuple/T[N]/nested
+export function layoutOf(abiType: string): TypeLayout; // narrowed to reject T[N]/tuple[][]/[][][]+
 // amended by #2: layoutOfType handles TupleType OBJECTS (and nested string arrays), delegating to
-// layoutOf for type strings; a tuple is `dynamic` iff any component layout isDynamic:
+// layoutOf for type strings; a tuple is `dynamic` iff any component layout isDynamic. The #2
+// follow-up admits a one-level tuple[]/T[][]/string[] element here.
 export function layoutOfType(t: EvsType): TypeLayout;
-export function isDynamic(l: TypeLayout): boolean; // tuple → its `dynamic` flag
+export function isDynamic(l: TypeLayout): boolean; // tuple → its `dynamic` flag; array → always true
 export function headBytes(params: readonly PlainAbiParam[]): number; // walks the PlainAbiParam tree
-// (a STATIC inner tuple counts headBytes(components), NOT 32; amended by #2)
+// (a STATIC inner tuple counts headBytes(components), NOT 32; amended by #2). staticSize(elem) =
+// headBytes(components) for a static tuple element, 32 for a word (the #2 follow-up).
 ```
 
 ### `abi/artifact.ts`
@@ -411,6 +417,10 @@ export function selectorOf(name: string, argTypes: readonly string[]): Hex; // v
 export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction; // + selector; validates v0 types
 export function encodeLiteralWord(type: WordType, value: unknown): Hex; // canonical 32-byte word
 export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex; // [len][payload] memref bytes
+// amended by the #2 follow-up: only flat memrefs (string/bytes, word arrays) get a data-segment
+// blob. A composite-element array (tuple[]/T[][]/string[]/bytes[]) literal has NO flat blob — the
+// recorder builds it structurally (arrnew + per-element tuplenew/arrset), so encodeLiteralData is
+// NOT called for those types.
 ```
 
 Invariants: `buildScriptAbi` output and the `ScriptAbi` type agree (type test with
@@ -611,8 +621,11 @@ export interface ScriptBuilder {
 export interface Cell<t extends EvsType> {
   /* api.md §5 */
 }
-export interface MutArray<e extends WordType> {
-  /* api.md §5 */
+export interface MutArray<e extends EvsType> {
+  /* api.md §5 — amended by the #2 follow-up: `e` widened WordType → EvsType (composite-element
+     arrays of pointers); `get`/`at` on a tuple[] return a Tuple element handle, `set` takes
+     IntoMember<e>, `expr()` types as the array type. `s.newArray` admits word|string|bytes|
+     one-level T[]|tuple; T[N]/tuple[][]/deeper still UNSUPPORTED_V0. */
 }
 export interface LoopCtl {
   break(): void;
@@ -663,7 +676,14 @@ Implementation invariants (binding):
    is usable iff its defining scope is on the current stack. `while` body scope is pushed as a
    **child of the header scope**. `s.fn` bodies push an isolated stack (params only).
 4. **MutArray**: `set/get/length/expr` record `arrset`/`index`/`len` stmts against the arrnew
-   value; `expr()` returns a plain `Expr` handle aliasing the same ValueId.
+   value; `expr()` returns a plain `Expr` handle aliasing the same ValueId. Amended by the #2
+   follow-up: `s.newArray` admits composite elements (`word|string|bytes|one-level T[]|tuple`);
+   `get`/`at` on a `tuple[]` return a `Tuple` element handle (same `TUPLE_INTERNALS` as a decoded
+   tuple), `arrset` stores the element pointer. A composite-array LITERAL (a JS array for
+   `tuple[]`/`uint256[][]`/`string[]`/`bytes[]`) is BUILT at record time as `arrnew` + per-element
+   (`tuplenew`/`arrset`) — a fresh `[len][p0…]` block with reference semantics, NOT an
+   `encodeLiteralData` data-segment blob (composite arrays have no flat literal — the elements are
+   pointers).
 5. **Recording-time validation checklist** (each throws with loc + relatedLocs):
    duplicate/empty/invalid arg names · literal out of range / wrong hex length / unsafe number ·
    operand type mismatch (message suggests `toUint`/`toInt`) · all-literal certain-panic fold
