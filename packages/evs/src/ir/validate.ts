@@ -24,7 +24,6 @@ import {
   bitsOf,
   elemTypeOf,
   isArrayValueType,
-  isDynamicType,
   isEvsType,
   isEvsValueType,
   isNumeric,
@@ -424,7 +423,9 @@ class IrValidator {
       case 'len': {
         const what = `${path} (len)`;
         const ta = this.use(s.a, null, what, s.loc);
-        if (!isDynamicType(ta) || isTupleType(ta)) {
+        // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
+        const isArrayLike = isArrayValueType(ta) || ta === 'string' || ta === 'bytes';
+        if (!isArrayLike) {
           this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`, s.loc);
         }
         this.define(s.out, 'uint256', what, s.loc);

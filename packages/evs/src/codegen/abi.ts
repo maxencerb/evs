@@ -21,10 +21,18 @@
  * honor that by keeping their loop state in scratch memory instead of deep on the stack.
  */
 
-import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
+import {
+  headBytes,
+  isDynamic,
+  layoutOf,
+  layoutOfType,
+  staticSize,
+  type TypeLayout,
+} from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
+import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   isTupleType,
@@ -67,8 +75,27 @@ const FREE_PTR = 0x40;
 /** Scratch slot for running tail cursors (intra-template temporary, architecture §5). */
 const TAIL_CURSOR = 0x00;
 
+/**
+ * Scratch slot holding the current composite-array element's SOURCE base during
+ * {@link emitDecodeArrayToMem} (architecture §5). The recursive element decoders re-derive their
+ * base from `MLOAD(ELEM_BASE)` so the base is stack-depth-independent across their internal churn.
+ * Each `emitDecodeArrayToMem` brackets this slot with save/restore, so nested array decodes never
+ * clobber a parent's base. It is `0x20` — free during *decode* (the snapshot/calldata base lives in
+ * `0x00`, `STAGING_SLOT 0x20` is only live during tuple-arg *encode*, which never overlaps a decode).
+ */
+const ELEM_BASE = 0x20;
+
 function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. True when decoding `l` needs a memory snapshot of the
+ * source bytes: a tuple, or a composite-element array (`tuple[]`/`T[][]`/`string[]`) — both decode
+ * through the recursive memory decoders, which read from memory (not calldata/returndata directly).
+ */
+export function needsMemorySnapshot(l: TypeLayout): boolean {
+  return l.kind === 'tuple' || (l.kind === 'array' && l.elem.kind !== 'word');
 }
 
 function wordLayoutOf(type: WordType): Extract<TypeLayout, { kind: 'word' }> {
@@ -278,7 +305,18 @@ export function emitEncodeBlock(
       return;
     }
 
-    // leaf dynamic (string / bytes / T[]): copy [len][payload] to the cursor, advance
+    // composite-element array member (`tuple[]`/`T[][]`/`string[]`): ENCODE is the next milestone
+    // (§12.7 scratch-frame element loop). The decode/read path un-gated the layout, so guard here so
+    // an un-gated layout can never silently mis-encode a composite array via the word-array tail.
+    if (layout.kind === 'array' && layout.elem.kind !== 'word') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        'codegen/abi: returning/encoding a composite-element array is not yet implemented (§12.7)',
+        { loc: captureLoc() },
+      );
+    }
+
+    // leaf dynamic (string / bytes / word-array): copy [len][payload] to the cursor, advance
     emitLeafDynTail(w, () => pushSrc(i), layout.kind === 'array', tails, opts);
   });
 }
@@ -514,12 +552,31 @@ export function emitDecodeTupleToMem(
       return;
     }
 
-    // leaf dynamic (string/bytes/T[]): bounds on len + payload, normalize array elems, alias ptr
+    // composite-element array member (`tuple[]`, `T[][]`, `string[]`): recurse the array decoder,
+    // which freshly allocates a `[len][p0…]` pointer block (its elements alias/recurse). stack here
+    // is `[ptr, flat, …below]`; ptr is the array `[len][…]` block start, re-derivable as
+    // `parentBase + MLOAD(parentBase+ho)` so nothing live has to ride through the array decoder.
+    if (layout.kind === 'array' && layout.elem.kind !== 'word') {
+      w.op('POP'); // [flat, …below]   (ptr re-derived by the thunk below)
+      emitDecodeArrayToMem(
+        w,
+        layout.elem,
+        () => emitSubTupleBaseFromOffset(w, pushBase, ho),
+        pushEnd,
+        fail,
+        belowFlat + 1,
+      ); // [arr, flat, …]
+      w.op('DUP2'); // [flat, arr, flat, …]
+      if (j !== 0) {
+        w.push(32 * j);
+        w.op('ADD');
+      }
+      w.op('MSTORE'); // [flat, …]
+      return;
+    }
+
+    // leaf dynamic (string/bytes/word-array): bounds on len + payload, normalize array elems, alias ptr
     const isArray = layout.kind === 'array';
-    // composite-element arrays (`tuple[]`, `T[][]`, `string[]`) are §12.6 decode codegen — not yet
-    // emitted. UNREACHABLE today: `layoutOfType` never yields a composite-element array (it throws
-    // UNSUPPORTED_V0 first), so this plumbing guard is behavior-preserving. Narrowing `elem` to a
-    // word here also keeps `layout.elem.abi` typed as `WordType` for the normalize call below.
     const elemAbi = isArray ? wordElemAbi(layout) : null;
     w.op('DUP1');
     w.op('MLOAD'); // [len, ptr, flat, …]
@@ -581,6 +638,256 @@ function emitSubTupleBaseFromOffset(w: AsmWriter, pushBase: PushBase, ho: number
   w.op('ADD'); // [subBase]
 }
 
+/**
+ * Decodes a composite-element array `E[]` located in memory at `pushBase()` (the `[len:32][…]`
+ * block start) into a freshly-allocated pointer block `[len:32][p0:32]…[p_{len-1}:32]`, and leaves
+ * that block pointer on the stack (net stack +1). Mirrors the interpreter's `decodeDynamic` `T[]`
+ * arm byte-for-byte (§12.6):
+ *
+ * - read `len` at `base`, bound `len ≤ 2^64−1`; bump-alloc `32 + 32·len`; `D = base + 32`.
+ * - static element `E` (a STATIC tuple, or a word — `string[]`/`bytes[]` are dynamic): the body is
+ *   contiguous, bound `D + len·staticSize ≤ end` up front, then each element decodes at
+ *   `D + i·staticSize`. A static tuple element decodes to a fresh flat block (its pointer stored
+ *   into `arr + 32 + 32·i`); a word element is normalized inline and stored as the slot value.
+ * - dynamic element (dynamic tuple, inner `T[]`, `string`/`bytes`): the offset-word region
+ *   (`len` words at `[D, D+32·len)`) must fit first; then each `offᵢ` at `D+32·i` (relative to `D`,
+ *   bound `offᵢ ≤ 2^64−1`), `elemPtr = D + offᵢ` (bound `elemPtr + 32 ≤ end`), recurse the matching
+ *   decoder, store the returned block pointer into `arr + 32 + 32·i`.
+ *
+ * No `emitMemCopy` (the array aliases leaf bytes and freshly allocates tuple/array blocks), so the
+ * loop counter rides on the stack. Loop state is `[i, len, D, arr, …below]`; the loop labels are
+ * checked at absolute height `belowFlat + 4`, mirroring {@link emitNormalizeElemsLoop}'s convention.
+ */
+export function emitDecodeArrayToMem(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  pushBase: PushBase,
+  pushEnd: () => void,
+  fail: DecodeFail,
+  belowFlat: number,
+): void {
+  const elemDynamic = isDynamic(elemLayout);
+  // D = base + 32, re-derivable from `pushBase()` so nothing has to ride the stack.
+  const pushD = (): void => {
+    pushBase();
+    w.push(32);
+    w.op('ADD');
+  };
+
+  // -- len at base; len ≤ 2^64−1 ------------------------------------------------------------
+  pushBase();
+  w.op('MLOAD'); // [len, …below]
+  w.op('DUP1');
+  w.push(MAX_U64);
+  w.op('LT'); // [len > max, len, …]
+  fail(belowFlat + 1); // [len, …]
+
+  // -- allocate the pointer block [len][p0…]: 32 + 32·len bytes, bump FREE_PTR --------------
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [arr, len, …]
+  w.op('DUP2'); // [len, arr, len, …]
+  w.push(5);
+  w.op('SHL'); // [32·len, arr, len, …]
+  w.push(32);
+  w.op('ADD'); // [size, arr, len, …]
+  w.op('DUP2'); // [arr, size, arr, len, …]
+  w.op('ADD'); // [arr+size, arr, len, …]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [arr, len, …]      freePtr bumped
+  // store len into arr[0]
+  w.op('DUP2'); // [len, arr, len, …]
+  w.op('DUP2'); // [arr, len, arr, len, …]
+  w.op('MSTORE'); // [arr, len, …]
+
+  // -- up-front element-body bounds (mirrors the interp) -----------------------------------
+  if (elemDynamic) {
+    // offset-word region: D + 32·len ≤ end  ⇔  ¬(end < D + 32·len)
+    pushD(); // [D, arr, len, …]
+    w.op('DUP3'); // [len, D, arr, len, …]
+    w.push(5);
+    w.op('SHL'); // [32·len, D, arr, len, …]
+    w.op('ADD'); // [D+32·len, arr, len, …]
+    pushEnd();
+    w.op('LT'); // [end < D+32·len, arr, len, …]
+    fail(belowFlat + 2); // [arr, len, …]
+  } else {
+    // static body: D + len·staticSize ≤ end  ⇔  ¬(end < D + len·ss)
+    const ss = staticSize(elemLayout);
+    pushD(); // [D, arr, len, …]
+    w.op('DUP3'); // [len, D, arr, len, …]
+    if (ss !== 1) {
+      w.push(ss);
+      w.op('MUL'); // [len·ss, D, arr, len, …]
+    }
+    w.op('ADD'); // [D+len·ss, arr, len, …]
+    pushEnd();
+    w.op('LT'); // [end < D+len·ss, arr, len, …]
+    fail(belowFlat + 2); // [arr, len, …]
+  }
+
+  // -- element loop: state [i, D, arr, len, saved, …below] --------------------------------
+  //  i counts up; D is the array data start (captured on the stack so the loop never re-invokes
+  //  `pushBase` — which may itself read `ELEM_BASE`); arr is the destination pointer block; len is
+  //  the bound; `saved` is the caller's prior `ELEM_BASE` scratch value, restored after the loop
+  //  (so a nested array decode cannot clobber a parent's base). Each iteration computes the element
+  //  source base from `D` + `i`, writes it to `ELEM_BASE`, then recurses the element decoder (which
+  //  re-derives its base via `MLOAD(ELEM_BASE)`). Loop labels at height `belowFlat + 5`.
+  // currently [arr, len, …below]; build [i, D, arr, len, saved, …below].
+  w.push(ELEM_BASE);
+  w.op('MLOAD'); // [saved, arr, len, …]
+  w.op('SWAP2'); // [len, arr, saved, …]
+  w.op('SWAP1'); // [arr, len, saved, …]
+  pushD(); // [D, arr, len, saved, …]   (last pushBase call — ELEM_BASE still = parent base)
+  w.push(0); // [i=0, D, arr, len, saved, …]
+
+  const height = belowFlat + 5;
+  const head = w.newLabel('arrdec');
+  const done = w.newLabel('arrdec_done');
+  w.label(head, height);
+  // continue while i < len
+  w.op('DUP4'); // [len, i, D, arr, len, saved, …]
+  w.op('DUP2'); // [i, len, i, D, arr, len, saved, …]
+  w.op('LT'); // [i < len, i, D, arr, len, saved, …]
+  w.op('ISZERO');
+  w.pushLabel(done);
+  w.op('JUMPI'); // [i, D, arr, len, saved, …]
+
+  // element source base from D and i:
+  if (elemDynamic) {
+    // offᵢ at D + 32·i (relative to D); offᵢ ≤ 2^64−1; elemPtr = D + offᵢ; elemPtr+32 ≤ end
+    w.op('DUP1'); // [i, i, D, arr, len, saved, …]
+    w.push(5);
+    w.op('SHL'); // [32·i, i, D, arr, len, saved, …]
+    w.op('DUP3'); // [D, 32·i, i, D, arr, len, saved, …]
+    w.op('ADD'); // [D+32·i, i, D, arr, len, saved, …]
+    w.op('MLOAD'); // [off, i, D, arr, len, saved, …]
+    w.op('DUP1');
+    w.push(MAX_U64);
+    w.op('LT'); // [off > max, off, i, D, arr, len, saved, …]
+    fail(belowFlat + 6); // [off, i, D, arr, len, saved, …]
+    w.op('DUP3'); // [D, off, i, D, arr, len, saved, …]
+    w.op('ADD'); // [elemPtr, i, D, arr, len, saved, …]
+    w.op('DUP1');
+    w.push(32);
+    w.op('ADD'); // [elemPtr+32, elemPtr, i, D, arr, len, saved, …]
+    pushEnd();
+    w.op('LT'); // [end < elemPtr+32, elemPtr, i, D, arr, len, saved, …]
+    fail(belowFlat + 7); // [elemPtr, i, D, arr, len, saved, …]
+  } else {
+    // static element source base = D + i·staticSize
+    const ss = staticSize(elemLayout);
+    w.op('DUP1'); // [i, i, D, arr, len, saved, …]
+    if (ss !== 1) {
+      w.push(ss);
+      w.op('MUL'); // [i·ss, i, D, arr, len, saved, …]
+    }
+    w.op('DUP3'); // [D, i·ss, i, D, arr, len, saved, …]
+    w.op('ADD'); // [elemBase, i, D, arr, len, saved, …]
+  }
+
+  // ELEM_BASE := elemBase; decode the element (recursive decoders read it back).
+  w.push(ELEM_BASE);
+  w.op('MSTORE'); // [i, D, arr, len, saved, …]
+  emitDecodeElement(w, elemLayout, pushEnd, fail, belowFlat + 5); // [elemVal, i, D, arr, len, saved, …]
+
+  // store elemVal into arr + 32 + 32·i: stack [elemVal, i, D, arr, len, saved, …]
+  w.op('DUP2'); // [i, elemVal, i, D, arr, len, saved, …]
+  w.push(5);
+  w.op('SHL'); // [32·i, elemVal, i, D, arr, len, saved, …]
+  w.op('DUP5'); // [arr, 32·i, elemVal, i, D, arr, len, saved, …]
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [slotAddr, elemVal, i, D, arr, len, saved, …]
+  w.op('MSTORE'); // [i, D, arr, len, saved, …]
+
+  // i += 1
+  w.push(1);
+  w.op('ADD'); // [i+1, D, arr, len, saved, …]
+  w.pushLabel(head);
+  w.op('JUMP');
+  w.label(done, height); // [i, D, arr, len, saved, …]
+  w.op('POP'); // [D, arr, len, saved, …]
+  w.op('POP'); // [arr, len, saved, …]
+  w.op('SWAP2'); // [saved, len, arr, …]
+  w.push(ELEM_BASE);
+  w.op('MSTORE'); // [len, arr, …]   ELEM_BASE restored
+  w.op('POP'); // [arr, …below]    net +1
+}
+
+/**
+ * Decodes one composite-array element whose source block starts at `MLOAD(ELEM_BASE)` (the array
+ * loop wrote the element base there), pushing the decoded element value (a normalized word for a
+ * word element, otherwise a fresh block pointer / aliased bytes pointer). Net stack +1. The caller
+ * already validated the per-element bounds (dynamic) / body bounds (static). `belowElem` is the
+ * number of live items on the stack on entry (the array loop state).
+ *
+ * The recursive tuple/array decoders re-derive their base through `pushBase = MLOAD(ELEM_BASE)`,
+ * which is stack-depth-independent (so the decoders' internal stack churn never loses the base).
+ * A nested array decode brackets `ELEM_BASE` with save/restore, so it cannot clobber this base.
+ */
+function emitDecodeElement(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  pushEnd: () => void,
+  fail: DecodeFail,
+  belowElem: number,
+): void {
+  const pushBase: PushBase = () => {
+    w.push(ELEM_BASE);
+    w.op('MLOAD');
+  };
+
+  if (elemLayout.kind === 'word') {
+    // word element: base points at the inline word; normalize and push it.
+    pushBase();
+    w.op('MLOAD'); // [raw, …]
+    emitNormalizeWord(w, elemLayout.abi); // [word, …]
+    return;
+  }
+
+  if (elemLayout.kind === 'tuple') {
+    // tuple element (static or dynamic): decode into a flat block; offsets relative to base.
+    emitDecodeTupleToMem(w, tupleComponents(elemLayout), pushBase, pushEnd, fail, belowElem); // [flat, …]
+    return;
+  }
+
+  if (elemLayout.kind === 'array') {
+    // nested array element (`T[][]`): recurse — it brackets ELEM_BASE save/restore itself.
+    emitDecodeArrayToMem(w, elemLayout.elem, pushBase, pushEnd, fail, belowElem); // [arr, …]
+    return;
+  }
+
+  // bytes/string element (`string[]`/`bytes[]`): base points at `[len][payload]`; bounds + alias.
+  // len ≤ 2^64−1; ptr + 32 + len ≤ end. The decoded value IS base (we alias in place).
+  pushBase(); // [base, …]
+  w.op('DUP1');
+  w.op('MLOAD'); // [len, base, …]
+  w.op('DUP1');
+  w.push(MAX_U64);
+  w.op('LT'); // [len > max, len, base, …]
+  fail(belowElem + 2); // [len, base, …]
+  w.op('DUP2');
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [base+32+len, base, …]
+  pushEnd();
+  w.op('LT'); // [end < base+32+len, base, …]
+  fail(belowElem + 1); // [base, …]   (base is the aliased bytes block = the elem value)
+}
+
+/** A tuple layout's components as `NamedType[]` (reconstructed for the recursive decoders). */
+function tupleComponents(l: Extract<TypeLayout, { kind: 'tuple' }>): readonly NamedType[] {
+  return l.components.map((c, i) => layoutToNamed(c, i));
+}
+
+function layoutToNamed(l: TypeLayout, i: number): NamedType {
+  if (l.kind === 'tuple') {
+    return { name: '', type: l.abi, components: l.components.map((c, k) => layoutToNamed(c, k)) };
+  }
+  void i;
+  return { name: '', type: l.abi };
+}
+
 // ---------------------------------------------------------------------------
 // emitCalldataDecode — architecture §8.1
 // ---------------------------------------------------------------------------
@@ -612,7 +919,9 @@ export function emitCalldataDecode(
 ): void {
   const params = args.map((ref) => typeToAbiParam('', ref.type));
   const headOffs = headOffsets(params); // cumulative head byte offsets within the args region
-  const hasTuple = params.some((p) => p.type.startsWith('tuple'));
+  // tuple args AND composite-element array args (`tuple[]`/`T[][]`/`string[]`) decode from a memory
+  // snapshot of the calldata (the recursive decoders read source bytes from memory, not calldata).
+  const hasTuple = args.some((ref) => needsMemorySnapshot(layoutOfType(ref.type)));
 
   // -- size guard: cds < 4 + headBytes(args) → EvsInvalidCalldata ----------------------
   const minSize = 4 + headBytes(params);
@@ -731,6 +1040,57 @@ export function emitCalldataDecode(
       }
       if (!isTupleType(ref.type)) throw internal(`arg #${i} layout is tuple but type is not`);
       emitDecodeTupleToMem(w, ref.type.components, pushTupleBase, pushEnd, failCalldata, 0); // [flat]
+      w.push(ref.slot);
+      w.op('MSTORE'); // []
+      return;
+    }
+
+    if (layout.kind === 'array' && layout.elem.kind !== 'word') {
+      // composite-element array arg (`tuple[]`/`T[][]`/`string[]`): decode from the snapshot. The
+      // head word at snap+4+headOff is an offset relative to the args region (snap+4); the array
+      // block starts at (snap+4)+off.
+      const pushArgsBase = (): void => {
+        w.push(snapSlot);
+        w.op('MLOAD'); // [snap]
+        w.push(4);
+        w.op('ADD'); // [snap+4]
+      };
+      const pushEnd = (): void => {
+        w.push(snapSlot);
+        w.op('MLOAD');
+        w.op('CALLDATASIZE');
+        w.op('ADD'); // [snap + cds]
+      };
+      const within = headOff - 4;
+      // bounds the offset word: off ≤ 2^64−1, region+off+32 ≤ end
+      pushArgsBase();
+      if (within !== 0) {
+        w.push(within);
+        w.op('ADD');
+      }
+      w.op('MLOAD'); // [off]
+      w.op('DUP1');
+      w.push(MAX_U64);
+      w.op('LT'); // [off > max, off]
+      failCalldata(1); // [off]
+      pushArgsBase();
+      w.op('ADD'); // [base]
+      w.push(32);
+      w.op('ADD'); // [base+32]
+      pushEnd();
+      w.op('LT'); // [end < base+32]
+      failCalldata(0); // []
+      const pushArrBase: PushBase = () => {
+        pushArgsBase();
+        w.op('DUP1'); // [argsBase, argsBase]
+        if (within !== 0) {
+          w.push(within);
+          w.op('ADD');
+        }
+        w.op('MLOAD'); // [off, argsBase]
+        w.op('ADD'); // [base]
+      };
+      emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, failCalldata, 0); // [arr]
       w.push(ref.slot);
       w.op('MSTORE'); // []
       return;

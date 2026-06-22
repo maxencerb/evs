@@ -259,11 +259,12 @@ export function canonicalTypeSignature(ty: EvsType): string {
  */
 function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
   if (p.type.startsWith('tuple')) {
-    // tuple *arrays* are valid Solidity but a v0 follow-up — reject with UNSUPPORTED_V0.
-    if (p.type !== 'tuple') {
+    // one level of tuple-array nesting (`tuple[]`) is supported (§12); `tuple[][]` (and deeper)
+    // stays a v0 follow-up — reject with UNSUPPORTED_V0.
+    if (p.type !== 'tuple' && p.type !== 'tuple[]') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${where}: type ${JSON.stringify(p.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        `${where}: type ${JSON.stringify(p.type)} is not supported in evs v0 (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is deferred)`,
         { loc: captureLoc() },
       );
     }
@@ -464,12 +465,12 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       );
     }
     if (layout.elem.kind !== 'word') {
-      // composite-element arrays (`tuple[]`, `T[][]`, `string[]`) are §12 codegen — not yet
-      // emitted. UNREACHABLE today: `layoutOf`/`layoutOfType` never produce a composite-element
-      // array (they throw UNSUPPORTED_V0 first), so this plumbing guard is behavior-preserving.
+      // composite-element array LITERALS (`tuple[]`, `T[][]`, `string[]`) require the encode
+      // milestone (§12.7). The decode/read path un-gated the layout, so this guard now genuinely
+      // fires for a composite-array literal (rather than being unreachable).
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${type} literal: composite-element arrays are not supported yet (codegen pending §12.6/§12.7)`,
+        `${type} literal: composite-element arrays are not supported yet (encode pending §12.7)`,
         { loc: captureLoc() },
       );
     }

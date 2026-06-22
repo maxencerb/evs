@@ -80,6 +80,40 @@ const poolFixture = [
   },
 ] as const satisfies Abi;
 
+// composite-array OUTPUT fixtures (§12 read path)
+const arraysFixture = [
+  {
+    type: 'function',
+    name: 'positionsBatch',
+    stateMutability: 'view',
+    inputs: [{ name: 'n', type: 'uint256' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple[]',
+        components: [
+          { name: 'nonce', type: 'uint96' },
+          { name: 'liquidity', type: 'uint128' },
+        ],
+      },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'matrix',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256[][]' }],
+  },
+  {
+    type: 'function',
+    name: 'names',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'string[]' }],
+  },
+] as const satisfies Abi;
+
 // ---------------------------------------------------------------------------
 // args arrive as positional handles after `s` (a lone type ≡ a one-element list)
 // ---------------------------------------------------------------------------
@@ -178,6 +212,25 @@ test('s.call unwraps outputs: [] → void, [one] → Expr, [many] → labeled tu
     expectTypeOf(nothing).toBeVoid();
 
     return s.return({ sym, tick: slot0[1] });
+  });
+});
+
+test('composite-array outputs: nested word arrays and string arrays index to typed Exprs (§12)', () => {
+  evscript({ name: 'rdArrays', args: [t.address] }, (s, target) => {
+    // uint256[][] → an array Expr; .at(i) peels one [] (Expr<'uint256[]'>), .at(i).at(j) → word.
+    const m = s.call({ address: target, abi: arraysFixture, functionName: 'matrix' });
+    expectTypeOf(m).toEqualTypeOf<Expr<'uint256[][]'>>();
+    expectTypeOf(m.at(0n)).toEqualTypeOf<Expr<'uint256[]'>>();
+    expectTypeOf(m.at(0n).at(0n)).toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf(m.length()).toEqualTypeOf<Expr<'uint256'>>();
+
+    // string[] → an array Expr; .at(i) → Expr<'string'>, .at(i).length() → a word.
+    const ns = s.call({ address: target, abi: arraysFixture, functionName: 'names' });
+    expectTypeOf(ns).toEqualTypeOf<Expr<'string[]'>>();
+    expectTypeOf(ns.at(1n)).toEqualTypeOf<Expr<'string'>>();
+    expectTypeOf(ns.at(1n).length()).toEqualTypeOf<Expr<'uint256'>>();
+
+    return s.return({ rows: m.length(), first: m.at(0n).at(0n), n2len: ns.at(2n).length() });
   });
 });
 
@@ -368,6 +421,22 @@ test('ScriptReturn flows through evscript into EvsScript / ScriptAbi / viem retu
     bal: bigint;
     tick: number; // int24 → number (abitype)
   }>();
+});
+
+test('abitype infers composite-array outputs: tuple[] → readonly Struct[], uint256[][], string[]', () => {
+  // The callee ABI's composite-array outputs infer the shapes evs decodes into (§12.8): a
+  // `tuple[]` → `readonly Struct[]`, `uint256[][]` → `readonly (readonly bigint[])[]`,
+  // `string[]` → `readonly string[]`. (The runtime decode is proven byte-exact in the differential
+  // + integration tiers; this pins the type-level shape evs targets.)
+  expectTypeOf<ReadContractReturnType<typeof arraysFixture, 'positionsBatch'>>().toEqualTypeOf<
+    readonly { nonce: bigint; liquidity: bigint }[]
+  >();
+  expectTypeOf<ReadContractReturnType<typeof arraysFixture, 'matrix'>>().toEqualTypeOf<
+    readonly (readonly bigint[])[]
+  >();
+  expectTypeOf<ReadContractReturnType<typeof arraysFixture, 'names'>>().toEqualTypeOf<
+    readonly string[]
+  >();
 });
 
 test('the body callback must return a ScriptReturn (not a bare record)', () => {

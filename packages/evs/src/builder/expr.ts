@@ -33,6 +33,7 @@ import {
   bitsOf,
   elemTypeOf,
   installStagingTraps,
+  isArrayValueType,
   isDynamicType,
   isEvsValueType,
   isNumeric,
@@ -175,10 +176,6 @@ function isEnvOp(s: string): s is EnvOp {
 /** bitwise/shift operand domain (matches ir/validate's `isBitsOperand`): uintN, intN, bytesN. */
 function isBitsOperand(s: EvsType): s is WordType {
   return isWordType(s) && s !== 'address' && s !== 'bool';
-}
-
-function isArrayType(s: EvsType): s is ArrayType {
-  return typeof s === 'string' && s.endsWith('[]');
 }
 
 /** logical-value range of a word type (intN signed; bytesN as its 8N-bit content). */
@@ -490,7 +487,9 @@ class ExprHandle {
     return internalsOf(this).owner.lenOp(this, '.length()');
   }
   at(i: unknown): Expr {
-    return internalsOf(this).owner.atOp(this, i, '.at()');
+    // the runtime handle is element-typed (a composite element yields a `Tuple`/array handle); the
+    // public `Expr.at` overloads narrow it per element type, so the cast is sound.
+    return unsafeCast<Expr>(internalsOf(this).owner.atOp(this, i, '.at()'));
   }
 }
 
@@ -747,11 +746,13 @@ export class Recorder {
     this.argsList = args;
     this.mainScope = newScope('main');
     this.stack = [this.mainScope];
-    // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple arg
-    // yields a Tuple handle over its arg ValueId, every scalar arg an Expr.
+    // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple (NOT
+    // a tuple ARRAY) arg yields a Tuple handle, a composite array / scalar an Expr.
     const handles: (Expr | object)[] = args.map((a) => {
       const id = this.newValue(a.type, scriptLoc, `args.${a.name}`);
-      return isTupleType(a.type) ? makeTuple(this, id, a.type) : makeExpr(this, id);
+      return isTupleType(a.type) && !isArrayValueType(a.type)
+        ? makeTuple(this, id, a.type)
+        : makeExpr(this, id);
     });
     this.argHandleList = Object.freeze(handles);
   }
@@ -1019,9 +1020,12 @@ export class Recorder {
 
   /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal rules of api.md §3). */
   private coerceToId(v: unknown, type: EvsType, what: string, loc: SourceLoc | null): ValueId {
-    // a tuple target: a Tuple handle (reuse its ValueId — reference) or a literal struct object
-    // (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field handles.
-    if (isTupleType(type)) return this.coerceTupleToId(v, type, what, loc);
+    // a tuple (NOT tuple-array) target: a Tuple handle (reuse its ValueId — reference) or a literal
+    // struct object (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field
+    // handles. A tuple ARRAY (`tuple[]`) is a memref Expr like any other array — it falls through to
+    // the Expr path (where the encode milestone's guard fires for a returned/passed composite array).
+    if (isTupleType(type) && !isArrayValueType(type))
+      return this.coerceTupleToId(v, type, what, loc);
     const c = this.classify(v, what, loc);
     if (c.kind === 'expr') {
       if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type, loc);
@@ -1030,6 +1034,15 @@ export class Recorder {
     if (isWordType(type)) {
       const { hex, logical } = this.wordLiteral(type, c.value);
       return this.wordConst(type, logical, loc, hex);
+    }
+    if (isTupleType(type)) {
+      // a `tuple[]` LITERAL (the only TupleType reaching here — `tuple` returned above) needs the
+      // composite-array encode milestone; reject with a clear UNSUPPORTED_V0 (§12.7).
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `${what}: a \`tuple[]\` literal is not yet supported (composite-array encode pending §12.7) — pass a value flowing from s.call`,
+        { loc },
+      );
     }
     return this.dataConst(type, c.value, loc);
   }
@@ -1204,7 +1217,10 @@ export class Recorder {
     this.checkVisible(tupleId, what, loc);
     const out = this.newValue(memberType, loc);
     this.appendStmt({ k: 'field', tuple: tupleId, index, out }, loc);
-    return isTupleType(memberType) ? makeTuple(this, out, memberType) : makeExpr(this, out);
+    // a tuple (NOT tuple-array) member → a Tuple handle; a composite array / scalar member → an Expr.
+    return isTupleType(memberType) && !isArrayValueType(memberType)
+      ? makeTuple(this, out, memberType)
+      : makeExpr(this, out);
   }
 
   /** `Field.set(v)`: write a member — `tupleset` stmt (`v` coerced to the member type). */
@@ -1662,11 +1678,11 @@ export class Recorder {
     return makeExpr(this, out);
   }
 
-  atOp(a: unknown, i: unknown, what: string): Expr {
+  atOp(a: unknown, i: unknown, what: string): Expr | object {
     const loc = captureLoc();
     this.assertOpen(what, loc);
     const c = this.classify(a, what, loc);
-    if (c.kind !== 'expr' || !isArrayType(c.type)) {
+    if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(a)}`,
@@ -1674,9 +1690,13 @@ export class Recorder {
       );
     }
     const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    const out = this.newValue(elemTypeOf(c.type), loc);
+    const elem = elemTypeOf(c.type);
+    const out = this.newValue(elem, loc);
     this.appendStmt({ k: 'index', arr: c.id, i: iId, out }, loc);
-    return makeExpr(this, out);
+    // a composite element yields its handle: a `tuple[]` element → a `Tuple` handle bound to the
+    // `index` out ValueId (same `TUPLE_INTERNALS` as a decoded tuple); a `T[][]`/`string[]` element
+    // → an Expr (whose `.at`/`.length` keep working recursively); a word element → an Expr.
+    return isTupleType(elem) ? makeTuple(this, out, elem) : makeExpr(this, out);
   }
 
   // -- control flow ---------------------------------------------------------------------
@@ -2034,9 +2054,11 @@ export class Recorder {
       },
       loc,
     );
-    // unwrap a tuple-typed out ValueId to a Tuple handle, every scalar/array to an Expr.
+    // unwrap a tuple (NOT a tuple ARRAY) out ValueId to a Tuple handle; a composite array
+    // (`tuple[]`/`T[][]`/`string[]`) or any scalar/word-array → an Expr (its `.at(i)`/`.length()`
+    // yield the element/length handles — a `tuple[]` element `.at(i)` is a `Tuple` handle).
     const handleFor = (id: ValueId, oty: EvsType): Expr | object =>
-      isTupleType(oty) ? makeTuple(this, id, oty) : makeExpr(this, id);
+      isTupleType(oty) && !isArrayValueType(oty) ? makeTuple(this, id, oty) : makeExpr(this, id);
     const first = outIds[0];
     const firstType = outTypes[0];
     const value: unknown =

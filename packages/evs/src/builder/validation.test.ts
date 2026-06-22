@@ -79,8 +79,9 @@ const tupleAbi = [
     inputs: [],
     outputs: [
       {
+        // `tuple[][]` (two levels) is STILL deferred — `tuple[]` is now supported (§12 un-gate).
         name: 'data',
-        type: 'tuple[]',
+        type: 'tuple[][]',
         components: [{ name: 'a', type: 'uint256' }],
       },
     ],
@@ -155,10 +156,20 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
     );
   });
 
-  test('deferred nested-array arg type → UNSUPPORTED_V0 (builder/codegen restrict it)', () => {
+  test('one-level nested-array arg type is now accepted (§12 un-gate), read via .length()', () => {
+    // `uint256[][]` arg decodes (read path). Return a derived WORD (composite-array encode is the
+    // next milestone), so recording + the script build succeed.
+    const script = evscript({ name: 'd', args: ['uint256[][]' as never] }, ((
+      s: AnyBuilder,
+      x: { length(): unknown },
+    ) => s.return({ rows: x.length() } as never)) as never);
+    expect(script).toBeDefined();
+  });
+
+  test('STILL deferred: an array nested deeper than [][] → UNSUPPORTED_V0', () => {
     expectEvs(
       () =>
-        evscript({ name: 'd', args: ['uint256[][]' as never] }, ((s: AnyBuilder, x: unknown) =>
+        evscript({ name: 'd', args: ['uint256[][][]' as never] }, ((s: AnyBuilder, x: unknown) =>
           s.return({ x } as never)) as never),
       EvsTypeError,
       'UNSUPPORTED_V0',
@@ -251,9 +262,20 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
     );
   });
 
-  test('deferred type in s.lit → UNSUPPORTED_V0', () => {
+  test('a composite-array literal in s.lit → UNSUPPORTED_V0 (encode pending §12.7)', () => {
+    // `uint256[][]` is now a valid array type (decode un-gated), but a composite-array LITERAL needs
+    // the encode milestone — s.lit still rejects it, now with the encode-pending message.
     expectEvs(
       () => rec((s) => s.lit('uint256[][]' as never, [] as never)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /not supported yet \(encode pending/,
+    );
+  });
+
+  test('a string-array nested deeper than [][] in s.lit → UNSUPPORTED_V0 (still deferred)', () => {
+    expectEvs(
+      () => rec((s) => s.lit('uint256[][][]' as never, [] as never)),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,

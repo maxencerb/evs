@@ -155,7 +155,7 @@ describe('toPlainAbiFunction', () => {
     });
   });
 
-  test('rejects a tuple ARRAY output (deferred), naming the unnamed parameter by index', () => {
+  test('accepts a one-level tuple ARRAY output (§12 un-gate)', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'positions',
@@ -165,9 +165,24 @@ describe('toPlainAbiFunction', () => {
         { name: '', type: 'tuple[]', components: [{ name: 'liquidity', type: 'uint128' }] },
       ],
     };
+    const plain = toPlainAbiFunction(fn);
+    expect(plain.outputs[0]?.type).toBe('tuple[]');
+    expect(plain.outputs[0]?.components?.[0]?.type).toBe('uint128');
+  });
+
+  test('STILL rejects a two-level tuple ARRAY output (`tuple[][]` deferred)', () => {
+    const fn: AbiFunction = {
+      type: 'function',
+      name: 'matrixOfStructs',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: '', type: 'tuple[][]', components: [{ name: 'liquidity', type: 'uint128' }] },
+      ],
+    };
     const err = catchEvs(() => toPlainAbiFunction(fn));
     expect(err.code).toBe('UNSUPPORTED_V0');
-    expect(err.message).toContain('positions');
+    expect(err.message).toContain('matrixOfStructs');
     expect(err.message).toContain('#0');
     expect(err.message).toContain('output');
   });

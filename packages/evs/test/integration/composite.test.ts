@@ -249,6 +249,131 @@ describe('quote(QuoteParams): composite input encode + (uint256, Position) outpu
   });
 });
 
+// --- composite arrays READ PATH: real-solc getters → derived words ------------------------
+//
+// Each compiled evs script eth_calls a composite-array getter on the REAL deployment and returns
+// a DERIVED WORD (len / an element field / an element length) — composite-array encode is the next
+// milestone, so we never return a whole composite array. Expected values mirror Composite.sol.
+
+// loose handle shapes for the composite-array read corpus: composite-array call outputs are decoded
+// into array/tuple read handles; the read calls (`.length()`/`.at()`/`.field.get()`) flow derived
+// words back out. (The precise abitype inference of these handles is pinned by the type tests.)
+interface FieldLike {
+  get(): { length(): unknown } & Record<string, FieldLike>;
+}
+interface ArrLike {
+  length(): unknown;
+  at(i: bigint): ArrLike & Record<string, FieldLike> & { length(): unknown };
+}
+const asArr = (v: unknown): ArrLike => v as ArrLike;
+/** A named tuple field of an element handle (Tuple handles expose fields as own properties). */
+const fld = (el: unknown, name: string): FieldLike => (el as Record<string, FieldLike>)[name]!;
+/** Tags a resolved read value as a returnable Expr for the loose corpus scripts. */
+const ret = (v: unknown): never => v as never;
+
+describe('composite arrays (read path) against real solc getters', () => {
+  test('positionsBatch(3)[1].liquidity + nonce + len (static-element tuple[])', async () => {
+    const script = evscript({ name: 'rdPositions', args: t.address }, (s, target) => {
+      const ps = asArr(
+        s.call({ address: target, abi: Composite.abi, functionName: 'positionsBatch', args: [3n] }),
+      );
+      const p1 = ps.at(1n);
+      return s.return({
+        len: ret(ps.length()),
+        liquidity1: ret(fld(p1, 'liquidity').get()),
+        nonce1: ret(fld(p1, 'nonce').get()),
+      });
+    });
+    const compiled = script.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'rdPositions',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({
+      len: 3n,
+      liquidity1: 1n * 1000n + 7n, // uint128(i*1000+7), i=1
+      nonce1: 1n, // uint96(i), i=1
+    });
+  });
+
+  test('withBytesBatch(3)[2].id + blob length (dynamic-member tuple[])', async () => {
+    const script = evscript({ name: 'rdWithBytes', args: t.address }, (s, target) => {
+      const xs = asArr(
+        s.call({ address: target, abi: Composite.abi, functionName: 'withBytesBatch', args: [3n] }),
+      );
+      const e2 = xs.at(2n);
+      return s.return({
+        len: ret(xs.length()),
+        id2: ret(fld(e2, 'id').get()),
+        blob2len: ret(fld(e2, 'data').get().length()),
+      });
+    });
+    const compiled = script.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'rdWithBytes',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({
+      len: 3n,
+      id2: 2n + 0xc0ffeen, // id = i + 0xC0FFEE, i=2
+      blob2len: 2n, // data = new bytes(i), i=2
+    });
+  });
+
+  test('matrix(5): outer row count + a nested cell (uint256[][])', async () => {
+    const script = evscript({ name: 'rdMatrix', args: t.address }, (s, target) => {
+      const m = asArr(
+        s.call({ address: target, abi: Composite.abi, functionName: 'matrix', args: [5n] }),
+      );
+      const row3 = m.at(3n); // row 3 length = (3 % 4) + 1 = 4
+      return s.return({
+        rows: ret(m.length()),
+        row3len: ret(row3.length()),
+        row3at2: ret(row3.at(2n)),
+      });
+    });
+    const compiled = script.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'rdMatrix',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({
+      rows: 5n,
+      row3len: 4n,
+      row3at2: BigInt(
+        keccak256(encodePacked(['string', 'uint256', 'uint256'], ['matrix', 3n, 2n])),
+      ),
+    });
+  });
+
+  test('names(4)[2] length + outer count (string[])', async () => {
+    const script = evscript({ name: 'rdNames', args: t.address }, (s, target) => {
+      const ns = asArr(
+        s.call({ address: target, abi: Composite.abi, functionName: 'names', args: [4n] }),
+      );
+      return s.return({
+        count: ret(ns.length()),
+        name2len: ret(ns.at(2n).length()), // "2-2-2" = 5 bytes
+        name0len: ret(ns.at(0n).length()), // "0" = 1 byte
+      });
+    });
+    const compiled = script.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'rdNames',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({
+      count: 4n,
+      name2len: 5n,
+      name0len: 1n,
+    });
+  });
+});
+
 // --- failure path: positions at an EOA → bubbled EvsDecodeError ----------------------------
 
 describe('failure path: positions at an EOA → EvsDecodeError', () => {

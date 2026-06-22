@@ -31,7 +31,8 @@
 import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
+import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   isDynamicType,
@@ -43,12 +44,14 @@ import {
 } from '../core/types.js';
 import type { ConstData, SiteId, Stmt } from '../ir/nodes.js';
 import {
+  emitDecodeArrayToMem,
   emitDecodeTupleToMem,
   emitEncodeBlock,
   emitMemCopy,
   emitNormalizeElemsLoop,
   emitNormalizeWord,
   headOffsetsOf,
+  needsMemorySnapshot,
   wordNeedsNormalize,
   type PushBase,
   type PushWord,
@@ -248,7 +251,17 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       }
       return;
     }
-    // dynamic arg
+    // dynamic arg. ENCODE of a composite-element array call arg (`tuple[]`/`T[][]`/`string[]`) is
+    // the next milestone (§12.7); the decode/read path un-gated the layout, so guard here against a
+    // silently-wrong word-array encode. (`tuple[]` args already route to the tuple encoder, which
+    // guards in `emitEncodeBlock`; this catches `uint256[][]`/`string[]` args.)
+    if (l.kind === 'array' && l.elem.kind !== 'word') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `${what}: encoding a composite-element array call argument is not yet implemented (§12.7)`,
+        { loc: captureLoc() },
+      );
+    }
     if (isLiteralRef(ref)) {
       const bytes = literalDataBytes(ref.literal, what);
       if (hasRuntimeDyn) {
@@ -762,7 +775,10 @@ export function emitStaticCall(
   if (outputs.length > 0) {
     const headOffsets = headOffsetsOf(outputs); // cumulative (static tuple outputs inline)
     const minSize = headBytes(outputs);
-    const hasTupleOut = outputs.some((p) => p.type.startsWith('tuple'));
+    // tuple outputs AND composite-element array outputs (`tuple[]`/`T[][]`/`string[]`) decode from
+    // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
+    // base/end (the decoders churn the free ptr, so a stack-resident base would drift).
+    const hasTupleOut = outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))));
 
     // staticMinSize guard: rds ≥ headBytes(outputs)
     w.op('RETURNDATASIZE');
@@ -872,6 +888,55 @@ export function emitStaticCall(
         return;
       }
 
+      if (layout.kind === 'array' && layout.elem.kind !== 'word') {
+        // composite-element array output (`tuple[]`/`T[][]`/`string[]`): decode from the snapshot
+        // into a fresh `[len][p0…]` pointer block (its elements alias/recurse). base/end come from
+        // SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would drift),
+        // exactly like the tuple-output path above. The head word at buf+headOffset is an offset
+        // relative to buf; bounds it, then base = buf+off.
+        const pushSnap = (): void => {
+          w.push(SNAP_SLOT);
+          w.op('MLOAD'); // [buf]
+        };
+        const pushEnd = (): void => {
+          pushSnap();
+          w.op('RETURNDATASIZE');
+          w.op('ADD'); // [buf + rds]
+        };
+        // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
+        pushSnap();
+        if (headOffset !== 0) {
+          w.push(headOffset);
+          w.op('ADD');
+        }
+        w.op('MLOAD'); // [off, buf]
+        w.op('DUP1');
+        w.push(MAX_U64);
+        w.op('LT'); // [off > max, off, buf]
+        emitDecodeFail(2); // [off, buf]
+        w.op('DUP1');
+        w.push(32);
+        w.op('ADD'); // [off+32, off, buf]
+        w.op('RETURNDATASIZE');
+        w.op('LT'); // [rds < off+32, off, buf]
+        emitDecodeFail(2); // [off, buf]
+        w.op('POP'); // [buf]   (base re-derived inside the thunk)
+        const pushArrBase: PushBase = () => {
+          pushSnap(); // [buf]
+          w.op('DUP1');
+          if (headOffset !== 0) {
+            w.push(headOffset);
+            w.op('ADD');
+          }
+          w.op('MLOAD'); // [off, buf]
+          w.op('ADD'); // [base]
+        };
+        emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
+        w.push(ref.slot);
+        w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
+        return;
+      }
+
       const isArray = layout.kind === 'array';
       // off := snapshot[headOffset]; off ≤ 2^64−1; off + 32 ≤ rds
       w.op('DUP1');
@@ -915,12 +980,10 @@ export function emitStaticCall(
       emitDecodeFail(2); // [ptr, buf]
 
       if (layout.kind === 'array') {
-        // composite-element arrays (`tuple[]`, `T[][]`, `string[]` — `elem.kind !== 'word'`) are
-        // §12.6 decode codegen, not yet emitted. UNREACHABLE today: `layoutOfType` never yields a
-        // composite-element array (it throws UNSUPPORTED_V0 first), so this plumbing guard is
-        // behavior-preserving and keeps `layout.elem.abi` typed as `WordType` below.
+        // word-element array (composite-element arrays were handled above): eager element
+        // normalization over the aliased snapshot region.
         if (layout.elem.kind !== 'word') {
-          throw internal('composite-element array decode: codegen pending §12.6');
+          throw internal('composite-element array reached the word-array decode path');
         }
         const elemAbi = layout.elem.abi;
         if (wordNeedsNormalize(elemAbi)) {

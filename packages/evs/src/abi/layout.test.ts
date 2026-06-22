@@ -100,15 +100,14 @@ describe('layoutOf golden table', () => {
 describe('layoutOf rejections', () => {
   const DEFERRED = [
     'tuple',
-    'tuple[]',
+    'tuple[]', // tuple-array STRING form (the object form goes through layoutOfType)
     'tuple(uint256,address)',
     'uint256[2]',
     'address[3]',
-    'uint256[][]',
-    'address[][]',
-    'string[]', // arrays of dynamic types are not v0
-    'bytes[]',
+    'uint256[][][]', // string arrays nested deeper than [][] stay deferred
   ];
+  // §12.3 un-gate: one level of array nesting over a composite/dynamic element now PRODUCES a layout.
+  const NOW_SUPPORTED = ['uint256[][]', 'address[][]', 'string[]', 'bytes[]'];
   const UNKNOWN = [
     '',
     'uint',
@@ -132,6 +131,13 @@ describe('layoutOf rejections', () => {
     expect(caught).toBeInstanceOf(EvsTypeError);
     expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
     expect((caught as EvsTypeError).message).toContain(JSON.stringify(s));
+  });
+
+  test.each(NOW_SUPPORTED)('%j → array-of-composite layout (§12.3 un-gate)', (s) => {
+    const l = layoutOf(s);
+    expect(l.kind).toBe('array');
+    const elemKind = l.kind === 'array' ? l.elem.kind : 'word';
+    expect(elemKind).not.toBe('word');
   });
 
   test.each(UNKNOWN)('%j → EvsTypeError(TYPE_MISMATCH)', (s) => {

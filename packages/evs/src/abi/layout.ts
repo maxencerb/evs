@@ -82,13 +82,31 @@ function badTypeError(abiType: string): EvsTypeError {
   );
 }
 
-/** Throws `EvsTypeError` (`UNSUPPORTED_V0` on tuple/`T[N]`/nested, `TYPE_MISMATCH` otherwise). */
+/** Throws `EvsTypeError` (`UNSUPPORTED_V0` on tuple/`T[N]`/deeper nesting, `TYPE_MISMATCH`
+ *  otherwise). One level of array nesting over a composite/dynamic element is supported (§12.3):
+ *  `string[]`/`bytes[]` and one-level `T[][]` produce an array-of-composite layout; `T[N]` and
+ *  string arrays nested deeper than `[][]` stay deferred. */
 export function layoutOf(abiType: string): TypeLayout {
   if (isWordType(abiType)) return wordLayoutOf(abiType);
   if (abiType === 'bytes' || abiType === 'string') return { kind: 'bytes', abi: abiType };
-  if (abiType.endsWith('[]')) {
+  if (abiType.endsWith('[]') && !/\[\d+\]$/.test(abiType)) {
     const elem = abiType.slice(0, -2);
     if (isWordType(elem)) return { kind: 'array', abi: abiType, elem: wordLayoutOf(elem) };
+    // one level over a composite/dynamic element: `string[]`/`bytes[]`, or one-level `T[][]`.
+    // `elem` must be a leaf-dynamic (`string`/`bytes`) or a single word-element array (`T[]`).
+    if (elem === 'bytes' || elem === 'string') {
+      return { kind: 'array', abi: abiType, elem: { kind: 'bytes', abi: elem } };
+    }
+    if (elem.endsWith('[]') && !/\[\d+\]$/.test(elem)) {
+      const inner = elem.slice(0, -2);
+      if (isWordType(inner)) {
+        return {
+          kind: 'array',
+          abi: abiType,
+          elem: { kind: 'array', abi: elem, elem: wordLayoutOf(inner) },
+        };
+      }
+    }
   }
   throw badTypeError(abiType);
 }
@@ -103,14 +121,17 @@ export function layoutOf(abiType: string): TypeLayout {
  */
 export function layoutOfType(t: EvsType): TypeLayout {
   if (!isTupleType(t)) return layoutOf(t);
-  if (t.type !== 'tuple') {
-    throw new EvsTypeError(
-      'UNSUPPORTED_V0',
-      `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
-      { loc: captureLoc() },
-    );
+  if (t.type === 'tuple') return tupleLayoutOf(t);
+  // one level of tuple-array nesting (§12.3): `tuple[]` → an array whose element is the tuple
+  // layout. `tuple[][]` (two levels) stays deferred.
+  if (t.type === 'tuple[]') {
+    return { kind: 'array', abi: 'tuple[]', elem: tupleLayoutOf({ ...t, type: 'tuple' }) };
   }
-  return tupleLayoutOf(t);
+  throw new EvsTypeError(
+    'UNSUPPORTED_V0',
+    `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported in evs v0 (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is deferred)`,
+    { loc: captureLoc() },
+  );
 }
 
 function tupleLayoutOf(t: TupleType): Extract<TypeLayout, { kind: 'tuple' }> {
