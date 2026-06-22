@@ -109,6 +109,8 @@ function outsOf(s: Stmt): readonly ValueId[] {
     case 'arrnew':
     case 'cellget':
     case 'bin':
+    case 'tuplenew': // one frame slot — the tuple pointer
+    case 'field': // one frame slot — the member word or nested pointer
       return [s.out];
     case 'call':
       return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];

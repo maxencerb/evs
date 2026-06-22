@@ -14,6 +14,7 @@ import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc, setLocCapture } from '../core/loc.js';
+import { isEvsValueType } from '../core/types.js';
 import type {
   ArgSpec,
   BitsType,
@@ -21,7 +22,9 @@ import type {
   Expr,
   IntoExpr,
   LitOf,
+  NamedType,
   NumericType,
+  TupleType,
   WordType,
 } from '../core/types.js';
 import type { ScriptIr } from '../ir/nodes.js';
@@ -33,7 +36,7 @@ import { assertV0Type, Recorder } from './expr.js';
 
 export interface EvsScript<
   name extends string = string,
-  args extends readonly ArgSpec[] = readonly ArgSpec[],
+  args extends readonly EvsType[] = readonly EvsType[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
   readonly name: name;
@@ -42,20 +45,43 @@ export interface EvsScript<
   compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>; // sugar for compile()
 }
 
+/**
+ * Script-args input (api.md §2): a single `t.*` type, or a `readonly` list of them. A lone type
+ * is sugar for a one-element list (`args: t.uint256` ≡ `args: [t.uint256]`).
+ */
+export type ArgsInput = EvsType | readonly EvsType[];
+
+/** Normalizes {@link ArgsInput} to the canonical `readonly EvsType[]` (lone type → one-tuple). */
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+
+/**
+ * The body-callback handle for one normalized arg type: a tuple/struct arg arrives as a
+ * {@link Tuple} handle, every scalar arg as an {@link Expr}.
+ */
+export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+
+/**
+ * The positional handle tuple spread into the body after `s`: homomorphic over the normalized arg
+ * type list (order/labels preserved structurally — no `UnionToTuple`).
+ */
+export type ArgHandles<types extends readonly EvsType[]> = {
+  readonly [i in keyof types]: ArgHandle<types[i]>;
+};
+
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
 export function evscript<
   const name extends string,
-  const args extends readonly ArgSpec[],
-  ret extends Record<string, Expr>,
+  const args extends ArgsInput = readonly [],
+  ret extends Record<string, Expr> = Record<string, Expr>,
 >(
-  def: { name: name; args: args },
-  body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+  def: { name: name; args?: args },
+  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
   opts?: { locations?: boolean }, // default true: capture source locations
-): EvsScript<name, args, ret> {
+): EvsScript<name, NormalizeArgs<args>, ret> {
   const entryLoc = captureLoc();
   if (typeof def !== 'object' || def === null) {
-    throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args }`, {
+    throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args? }`, {
       loc: entryLoc,
     });
   }
@@ -66,41 +92,26 @@ export function evscript<
       { loc: entryLoc },
     );
   }
-  if (!Array.isArray(def.args)) {
-    throw new EvsTypeError(
-      'TYPE_MISMATCH',
-      `evscript "${def.name}": args must be a readonly ArgSpec[] tuple (use arg(name, type))`,
-      { loc: entryLoc },
-    );
+  // `args` is optional (a zero-arg script omits it); a lone type normalizes to a one-element list.
+  let argTypesIn: readonly unknown[];
+  if (def.args === undefined) {
+    argTypesIn = [];
+  } else if (Array.isArray(def.args)) {
+    argTypesIn = def.args;
+  } else {
+    argTypesIn = [def.args];
   }
   if (typeof body !== 'function') {
     throw new EvsTypeError('TYPE_MISMATCH', `evscript "${def.name}": body must be a callback`, {
       loc: entryLoc,
     });
   }
-  const seen = new Set<string>();
-  const argSpecs = def.args.map((spec, i): { name: string; type: EvsType } => {
-    const sp = (typeof spec === 'object' && spec !== null ? spec : {}) as {
-      name?: unknown;
-      type?: unknown;
-    };
-    if (typeof sp.name !== 'string' || sp.name === '' || !IDENT_RE.test(sp.name)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `evscript "${def.name}" arg #${i}: invalid argument name ${JSON.stringify(sp.name)} (must be a non-empty identifier)`,
-        { loc: entryLoc },
-      );
+  const argSpecs = argTypesIn.map((ty, i): { name: string; type: EvsType } => {
+    if (!isEvsValueType(ty)) {
+      assertV0Type(ty, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
     }
-    if (seen.has(sp.name)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `evscript "${def.name}" arg #${i}: duplicate argument name "${sp.name}"`,
-        { loc: entryLoc },
-      );
-    }
-    seen.add(sp.name);
-    assertV0Type(sp.type, `evscript "${def.name}" arg "${sp.name}"`, entryLoc);
-    return { name: sp.name, type: sp.type };
+    // each normalized arg is auto-named `arg{i}` (positional labels; viem infers args positionally)
+    return { name: `arg${i}`, type: ty };
   });
 
   const locations = opts?.locations ?? true;
@@ -109,20 +120,28 @@ export function evscript<
   let callbackResult: unknown;
   try {
     recorder = new Recorder(def.name, argSpecs, locations ? entryLoc : null);
-    const s = makeBuilder<args>(recorder);
-    callbackResult = body(s);
+    const s = makeBuilder(recorder);
+    // the engine yields Expr|Tuple handles positionally; the typed surface (ArgHandles) is
+    // enforced at the call site (`as unknown as` — the recorder is intentionally untyped).
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- recorder is dynamically typed; ArgHandles is enforced at the public surface
+    const handles = recorder.argHandles() as unknown as ArgHandles<NormalizeArgs<args>>;
+    callbackResult = body(s, ...handles);
   } finally {
     if (!locations) setLocCapture(true);
   }
   const { ir, returns } = recorder.finish(callbackResult);
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement is pinned by M3 tests
-  const abi = buildScriptAbi(def.name, ir.args, returns) as unknown as ScriptAbi<name, args, ret>;
-  const script: EvsScript<name, args, ret> = {
+  const abi = buildScriptAbi(
+    def.name,
+    ir.args.map((a) => a.type),
+    returns,
+  ) as unknown as ScriptAbi<name, NormalizeArgs<args>, ret>;
+  const script: EvsScript<name, NormalizeArgs<args>, ret> = {
     name: def.name,
     ir,
     abi,
-    compile(options?: CompileOptions): CompiledEvsScript<name, args, ret> {
+    compile(options?: CompileOptions): CompiledEvsScript<name, NormalizeArgs<args>, ret> {
       // namespace access keeps this tolerant of the M9 module landing separately
       const compileFn: unknown = (compileModule as Record<string, unknown>)['compile'];
       if (typeof compileFn !== 'function') {
@@ -131,11 +150,14 @@ export function evscript<
           'compile() is not available — the evs compile module failed to load',
         );
       }
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- M9 frozen signature
-      return (compileFn as (sc: unknown, o?: CompileOptions) => CompiledEvsScript<name, args, ret>)(
-        script,
-        options,
-      );
+      // M9 frozen signature; the namespace-loaded compile is intentionally typed `unknown`.
+      const typedCompile =
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+        compileFn as (
+          sc: unknown,
+          o?: CompileOptions,
+        ) => CompiledEvsScript<name, NormalizeArgs<args>, ret>;
+      return typedCompile(script, options);
     },
   };
   return Object.freeze(script);
@@ -164,6 +186,73 @@ export interface LoopCtl {
   continue(): void;
 }
 
+// ---------------------------------------------------------------------------
+// tuple / struct handles (api.md §5; spec §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A {@link NamedType} component (an abitype `AbiParameter`) → its {@link EvsType}: a string for a
+ * scalar/array member, a {@link TupleType} descriptor for a composite member (the type-level
+ * mirror of core's `abiParamToType`). Keyed off the `tuple…` type tag — a non-tuple member's
+ * `components` is structurally absent, so testing the tag avoids a distributive `components` check.
+ */
+export type ComponentToType<c extends NamedType> = c['type'] extends `tuple${string}`
+  ? c['components'] extends readonly NamedType[]
+    ? { readonly type: c['type'] & TupleType['type']; readonly components: c['components'] }
+    : never
+  : Extract<c['type'], EvsType>;
+
+/** The value a composite member accepts on write/init: a {@link Tuple} handle or a host literal. */
+export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
+
+/** What `Field.set(v)` / a `s.tuple(...)` init slot accepts for a member of type `t`. */
+export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+
+/**
+ * A field handle over one tuple member (Cell-like). A composite member's `.get()` follows the
+ * pointer and yields a {@link Tuple} handle; a scalar member's `.get()` yields an {@link Expr}.
+ */
+export interface Field<t extends EvsType> {
+  readonly type: t;
+  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  set(value: IntoMember<t>): void;
+}
+
+/**
+ * A tuple / struct memref handle (spec §5). For each NAMED component, a property keyed by the
+ * component name yields a {@link Field} over that member; `at(i)` is the positional accessor; and
+ * `expr()` is the raw memref {@link Expr} (for returning the tuple or passing it as a call arg).
+ * Typed via abitype over `C['components']`. Reference semantics: the handle is the pointer, so a
+ * later `field.set()` is visible through every alias (api.md §5).
+ */
+export type Tuple<C extends TupleType> = {
+  readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]: Field<
+    ComponentToType<c>
+  >;
+} & {
+  at(i: number): Field<ComponentToType<C['components'][number]>>;
+  expr(): Expr<C>;
+};
+
+/**
+ * The partial member record accepted by `s.tuple(type, init?)`. A fully-named struct takes a
+ * name-keyed object; a positional `t.tuple` takes a positional record. Every member is optional
+ * (omitted → zero) and accepts a literal, an {@link Expr}, or a {@link Tuple} (per member type).
+ */
+export type TupleInit<C extends TupleType> = C['components'][number]['name'] extends ''
+  ? PositionalInit<C['components']>
+  : {
+      readonly [c in C['components'][number] as c['name'] extends ''
+        ? never
+        : c['name']]?: IntoMember<ComponentToType<c>>;
+    };
+
+/** The partial positional init record for a `t.tuple` (homomorphic over the components tuple, so
+ *  a tuple literal — e.g. `[42n, addr]` — stays assignable). */
+type PositionalInit<comps extends readonly NamedType[]> = {
+  readonly [i in keyof comps]?: IntoMember<ComponentToType<comps[i]>>;
+};
+
 export declare const returnBrand: unique symbol;
 export interface ScriptReturn<ret extends Record<string, Expr>> {
   readonly [returnBrand]: ret;
@@ -189,32 +278,47 @@ type ViewFnOf<abi, name> = abi extends Abi
     >
   : never;
 
-// per-parameter union: literal (abitype Register-resolved primitive) OR Expr of that type
+/** An abitype `AbiParameter` for a `'tuple'` member → the matching {@link TupleType} descriptor. */
+type ParamToTupleType<p extends AbiParameter> = p extends {
+  readonly type: 'tuple';
+  readonly components: infer comps extends readonly NamedType[];
+}
+  ? { readonly type: 'tuple'; readonly components: comps }
+  : never;
+
+// the staged handle of one OUTPUT parameter: a tuple param → a `Tuple` handle (decoded into a
+// flat block), every scalar/array param → an `Expr` of its type.
+type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
+  ? Tuple<ParamToTupleType<p>>
+  : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
+
+// what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
+// a struct, a positional array for an unnamed tuple) OR an `Expr` of that type OR — for a tuple
+// param — a `Tuple` handle / `s.tuple(...)` result.
+type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
+  ?
+      | AbiParameterToPrimitiveType<p, 'inputs'>
+      | Tuple<ParamToTupleType<p>>
+      | Expr<ParamToTupleType<p>>
+  : AbiParameterToPrimitiveType<p, 'inputs'> | Expr<p['type'] extends EvsType ? p['type'] : never>;
+
 export type SubcallInputs<abi extends Abi | readonly unknown[], name extends string> = [
   ViewFnOf<abi, name>,
 ] extends [never]
   ? readonly unknown[]
   : ViewFnOf<abi, name> extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
-    ? {
-        readonly [i in keyof inputs]:
-          | AbiParameterToPrimitiveType<inputs[i], 'inputs'>
-          | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>;
-      }
+    ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
     : readonly unknown[];
 
 export type SubcallOutputs<abi extends Abi | readonly unknown[], name extends string> = [
   ViewFnOf<abi, name>,
 ] extends [never]
-  ? readonly Expr[]
+  ? readonly (Expr | Tuple<TupleType>)[]
   : ViewFnOf<abi, name> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
-    ? {
-        readonly [i in keyof outs]: Expr<
-          outs[i]['type'] extends EvsType ? outs[i]['type'] : EvsType
-        >;
-      }
-    : readonly Expr[];
+    ? { readonly [i in keyof outs]: OutputHandle<outs[i]> }
+    : readonly (Expr | Tuple<TupleType>)[];
 
-// outputs []  → void;  [one] → Expr<one>;  [many] → readonly tuple of Exprs (mirrors viem)
+// outputs []  → void;  [one] → Expr<one> | Tuple<one>;  [many] → readonly tuple of handles (viem)
 export type UnwrapSingle<outs> = outs extends readonly []
   ? void
   : outs extends readonly [infer one]
@@ -254,14 +358,15 @@ export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> = (
 // the builder (api.md §4 — full surface)
 // ---------------------------------------------------------------------------
 
-export interface ScriptBuilder<args extends readonly ArgSpec[]> {
-  readonly args: { readonly [a in args[number] as a['name']]: Expr<a['type']> };
-
+export interface ScriptBuilder {
   // values & state
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
   let<t extends EvsType>(init: Expr<t>): Cell<t>;
   newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+  // tuple/struct allocator (spec §5): `init` is a partial, name-keyed (struct) or positional
+  // (t.tuple) record of members; omitted members default to zero. Returns a `Tuple` handle.
+  tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>;
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
 
@@ -325,13 +430,12 @@ export interface ScriptBuilder<args extends readonly ArgSpec[]> {
 // the facade (typed surface over the untyped Recorder engine)
 // ---------------------------------------------------------------------------
 
-function makeBuilder<args extends readonly ArgSpec[]>(r: Recorder): ScriptBuilder<args> {
+function makeBuilder(r: Recorder): ScriptBuilder {
   const builder = {
-    args: r.argRecord(),
-
     lit: (type: unknown, value: unknown) => r.lit(type, value),
     let: (a: unknown, b?: unknown) => r.letCell(a, b),
     newArray: (elem: unknown, length: unknown) => r.newArray(elem, length),
+    tuple: (type: unknown, init?: unknown) => r.tuple(type, init),
     env: (kind: unknown) => r.env(kind),
 
     add: (a: unknown, b: unknown) => r.bin('add', a, b, 's.add()'),
@@ -379,5 +483,5 @@ function makeBuilder<args extends readonly ArgSpec[]>(r: Recorder): ScriptBuilde
   // the facade implements the frozen api.md §4 surface; types are enforced at the surface,
   // the engine is dynamic
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
-  return builder as unknown as ScriptBuilder<args>;
+  return builder as unknown as ScriptBuilder;
 }

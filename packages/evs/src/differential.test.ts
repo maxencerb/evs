@@ -19,6 +19,7 @@ import {
   encodeAbiParameters,
   encodeErrorResult,
   encodeFunctionData,
+  getAddress,
   toFunctionSelector,
 } from 'viem';
 import { describe, expect, test } from 'vitest';
@@ -326,9 +327,7 @@ const WIDTHS: readonly NumericType[] = [
 ];
 
 function binScript(type: NumericType, op: BinOpName) {
-  return evscript({ name: `bin_${op}`, args: [arg('a', type), arg('b', type)] }, (s) => {
-    const a = s.args.a;
-    const b = s.args.b;
+  return evscript({ name: `bin_${op}`, args: [type, type] }, (s, a, b) => {
     const r =
       op === 'add'
         ? s.add(a, b)
@@ -414,39 +413,30 @@ describe('word ops', () => {
     const script = evscript(
       {
         name: 'words',
-        args: [
-          arg('a', t.uint64),
-          arg('b', t.uint64),
-          arg('x', t.int32),
-          arg('y', t.int32),
-          arg('p', t.bool),
-          arg('q', t.bool),
-          arg('c', t.bytes4),
-          arg('d', t.bytes4),
-        ],
+        args: [t.uint64, t.uint64, t.int32, t.int32, t.bool, t.bool, t.bytes4, t.bytes4],
       },
-      (s) => {
+      (s, a, b, x, y, p, q, c, d) => {
         return s.return({
-          lt: s.lt(s.args.a, s.args.b),
-          gt: s.gt(s.args.a, s.args.b),
-          lte: s.lte(s.args.a, s.args.b),
-          gte: s.gte(s.args.a, s.args.b),
-          eq: s.eq(s.args.a, s.args.b),
-          neq: s.neq(s.args.a, s.args.b),
-          slt: s.args.x.lt(s.args.y), // SLT from the static type
-          sgt: s.args.x.gt(s.args.y),
-          beq: s.eq(s.args.c, s.args.d),
-          and: s.and(s.args.p, s.args.q),
-          or: s.or(s.args.p, s.args.q),
-          not: s.not(s.args.p),
-          band: s.bitAnd(s.args.a, s.args.b),
-          bor: s.bitOr(s.args.a, s.args.b),
-          bxor: s.bitXor(s.args.a, s.args.b),
-          bnot: s.bitNot(s.args.a), // re-masked to 64 bits
-          shl: s.shl(s.args.a, 5n),
-          shr: s.shr(s.args.a, 5n),
-          cnot: s.args.c.bitNot(),
-          cshl: s.args.c.shl(8n),
+          lt: s.lt(a, b),
+          gt: s.gt(a, b),
+          lte: s.lte(a, b),
+          gte: s.gte(a, b),
+          eq: s.eq(a, b),
+          neq: s.neq(a, b),
+          slt: x.lt(y), // SLT from the static type
+          sgt: x.gt(y),
+          beq: s.eq(c, d),
+          and: s.and(p, q),
+          or: s.or(p, q),
+          not: s.not(p),
+          band: s.bitAnd(a, b),
+          bor: s.bitOr(a, b),
+          bxor: s.bitXor(a, b),
+          bnot: s.bitNot(a), // re-masked to 64 bits
+          shl: s.shl(a, 5n),
+          shr: s.shr(a, 5n),
+          cnot: c.bitNot(),
+          cshl: c.shl(8n),
         });
       },
     );
@@ -459,18 +449,15 @@ describe('word ops', () => {
   });
 
   test('conversions: free widening, checked narrowing, reinterprets', async () => {
-    const script = evscript(
-      { name: 'conv', args: [arg('a', t.uint256), arg('x', t.int16)] },
-      (s) => {
-        return s.return({
-          widened: s.args.x.toInt('int128'),
-          narrowed: s.args.a.toUint('uint32'), // Panic 0x11 when a ≥ 2^32
-          addr: s.args.a.asAddress(), // Panic when high 96 bits set
-          asb: s.args.a.asBytes32(),
-          back: s.args.a.asBytes32().asUint256(),
-        });
-      },
-    );
+    const script = evscript({ name: 'conv', args: [t.uint256, t.int16] }, (s, a, x) => {
+      return s.return({
+        widened: x.toInt('int128'),
+        narrowed: a.toUint('uint32'), // Panic 0x11 when a ≥ 2^32
+        addr: a.asAddress(), // Panic when high 96 bits set
+        asb: a.asBytes32(),
+        back: a.asBytes32().asUint256(),
+      });
+    });
     const outcomes = await expectAgreement(script, [
       [1234n, -42n],
       [0n, -(1n << 15n)],
@@ -482,14 +469,11 @@ describe('word ops', () => {
   });
 
   test('select is eager on both sides (words and memrefs)', async () => {
-    const script = evscript(
-      { name: 'sel', args: [arg('c', t.bool), arg('a', t.uint256), arg('b', t.uint256)] },
-      (s) => {
-        const w = s.select(s.args.c, s.args.a, s.args.b);
-        const str = s.select(s.args.c, s.lit(t.string, 'yes'), s.lit(t.string, 'no'));
-        return s.return({ w, str });
-      },
-    );
+    const script = evscript({ name: 'sel', args: [t.bool, t.uint256, t.uint256] }, (s, c, a, b) => {
+      const w = s.select(c, a, b);
+      const str = s.select(c, s.lit(t.string, 'yes'), s.lit(t.string, 'no'));
+      return s.return({ w, str });
+    });
     await expectAgreement(script, [
       [true, 1n, 2n],
       [false, 1n, 2n],
@@ -562,18 +546,15 @@ describe('env ops', () => {
 
 describe('control flow', () => {
   test('if/else with cells (checked mul/div inside branches)', async () => {
-    const script = evscript(
-      { name: 'health', args: [arg('debt', t.uint256), arg('coll', t.uint256)] },
-      (s) => {
-        const ratio = s.let(t.uint256, 0n);
-        s.if(
-          s.args.debt.gt(0n),
-          () => ratio.set(s.args.coll.mul(10_000n).div(s.args.debt)),
-          () => ratio.set(s.lit(t.uint256, 2n ** 255n)),
-        );
-        return s.return({ ratio: ratio.get(), healthy: ratio.get().gte(15_000n) });
-      },
-    );
+    const script = evscript({ name: 'health', args: [t.uint256, t.uint256] }, (s, debt, coll) => {
+      const ratio = s.let(t.uint256, 0n);
+      s.if(
+        debt.gt(0n),
+        () => ratio.set(coll.mul(10_000n).div(debt)),
+        () => ratio.set(s.lit(t.uint256, 2n ** 255n)),
+      );
+      return s.return({ ratio: ratio.get(), healthy: ratio.get().gte(15_000n) });
+    });
     await expectAgreement(script, [
       [0n, 5n],
       [100n, 200n],
@@ -583,11 +564,11 @@ describe('control flow', () => {
   });
 
   test('while with break + continue + cells', async () => {
-    const script = evscript({ name: 'loopy', args: [arg('n', t.uint256)] }, (s) => {
+    const script = evscript({ name: 'loopy', args: [t.uint256] }, (s, n) => {
       const acc = s.let(t.uint256, 0n);
       const i = s.let(t.uint256, 0n);
       s.while(
-        () => i.get().lt(s.args.n),
+        () => i.get().lt(n),
         (loop) => {
           const cur = i.get();
           i.set(cur.add(1n));
@@ -602,11 +583,11 @@ describe('control flow', () => {
   });
 
   test('for over a runtime array arg, collecting into a MutArray', async () => {
-    const script = evscript({ name: 'doubleAll', args: [arg('xs', t.array(t.uint64))] }, (s) => {
-      const n = s.args.xs.length();
+    const script = evscript({ name: 'doubleAll', args: [t.array(t.uint64)] }, (s, xs) => {
+      const n = xs.length();
       const out = s.newArray(t.uint256, n);
       s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-        out.set(i, s.args.xs.at(i).toUint('uint256').mul(2n));
+        out.set(i, xs.at(i).toUint('uint256').mul(2n));
       });
       return s.return({ out: out.expr(), n });
     });
@@ -621,24 +602,16 @@ describe('control flow', () => {
 
 const echoScript = () =>
   evscript(
-    {
-      name: 'echoArgs',
-      args: [
-        arg('s', t.string),
-        arg('b', t.bytes),
-        arg('xs', t.array(t.int32)),
-        arg('i', t.uint256),
-      ],
-    },
-    (sb) =>
+    { name: 'echoArgs', args: [t.string, t.bytes, t.array(t.int32), t.uint256] },
+    (sb, s, b, xs, i) =>
       sb.return({
-        s: sb.args.s,
-        b: sb.args.b,
-        xs: sb.args.xs,
-        slen: sb.args.s.length(),
-        blen: sb.args.b.length(),
-        n: sb.args.xs.length(),
-        at: sb.args.xs.at(sb.args.i), // Panic 0x32 when out of bounds
+        s,
+        b,
+        xs,
+        slen: s.length(),
+        blen: b.length(),
+        n: xs.length(),
+        at: xs.at(i), // Panic 0x32 when out of bounds
       }),
   );
 
@@ -747,18 +720,15 @@ describe('calls', () => {
     // the callee returns abi.encode(bytes(calldata)) — ANY divergence between the
     // interpreter's and the compiler's sub-call calldata (selector, heads, dynamic tail,
     // padding) shows up as a byte mismatch of the final returndata.
-    const script = evscript(
-      { name: 'mixer', args: [arg('v', t.uint256), arg('payload', t.bytes)] },
-      (s) => {
-        const out = s.call({
-          address: ECHO,
-          abi: erc20ishAbi,
-          functionName: 'mix',
-          args: [s.args.v, TOKA, s.args.payload], // Expr + literal + dynamic Expr
-        });
-        return s.return({ out, len: out.length() });
-      },
-    );
+    const script = evscript({ name: 'mixer', args: [t.uint256, t.bytes] }, (s, v, payload) => {
+      const out = s.call({
+        address: ECHO,
+        abi: erc20ishAbi,
+        functionName: 'mix',
+        args: [v, TOKA, payload], // Expr + literal + dynamic Expr
+      });
+      return s.return({ out, len: out.length() });
+    });
     const table: CalleeTable = {
       [ECHO]: {
         kind: 'bytecode',
@@ -780,12 +750,12 @@ describe('calls', () => {
   });
 
   test('plain word call with an arg through the raw echo mock', async () => {
-    const script = evscript({ name: 'echoCall', args: [arg('who', t.address)] }, (s) => {
+    const script = evscript({ name: 'echoCall', args: [t.address] }, (s, who) => {
       const r = s.call({
         address: ECHO,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
-        args: [s.args.who],
+        args: [who],
       });
       return s.return({ r });
     });
@@ -966,21 +936,18 @@ describe('tryCall', () => {
 
 describe('user functions', () => {
   test('fn called twice + multi-result fn (no aliasing); panics propagate through fns', async () => {
-    const script = evscript(
-      { name: 'fns', args: [arg('a', t.uint256), arg('b', t.uint256)] },
-      (s) => {
-        const double = s.fn('double', [arg('x', t.uint256)] as const, (x) => x.add(x));
-        const da = double(s.args.a);
-        const db = double(s.args.b);
-        const pair = s.fn(
-          'pair',
-          [arg('x', t.uint256), arg('y', t.uint256)] as const,
-          (x, y) => [x.add(y), x.mul(y)] as const,
-        );
-        const [sum, prod] = pair(da, db);
-        return s.return({ da, db, sum, prod });
-      },
-    );
+    const script = evscript({ name: 'fns', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const double = s.fn('double', [arg('x', t.uint256)] as const, (x) => x.add(x));
+      const da = double(a);
+      const db = double(b);
+      const pair = s.fn(
+        'pair',
+        [arg('x', t.uint256), arg('y', t.uint256)] as const,
+        (x, y) => [x.add(y), x.mul(y)] as const,
+      );
+      const [sum, prod] = pair(da, db);
+      return s.return({ da, db, sum, prod });
+    });
     await expectAgreement(script, [
       [2n, 3n],
       [0n, 0n],
@@ -990,18 +957,18 @@ describe('user functions', () => {
 
   test('fn body records sub-calls (E5 portfolio shape)', async () => {
     const script = evscript(
-      { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
-      (s) => {
+      { name: 'portfolio', args: [t.address, t.array(t.address)] },
+      (s, owner, tokens) => {
         const balOf = s.fn(
           'balOf',
           [arg('token', t.address), arg('who', t.address)] as const,
           (token, who) =>
             s.call({ address: token, abi: erc20ishAbi, functionName: 'balanceOf', args: [who] }),
         );
-        const n = s.args.tokens.length();
+        const n = tokens.length();
         const out = s.newArray(t.uint256, n);
         s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-          out.set(i, balOf(s.args.tokens.at(i), s.args.owner));
+          out.set(i, balOf(tokens.at(i), owner));
         });
         return s.return({ balances: out.expr() });
       },
@@ -1068,10 +1035,10 @@ describe('flagship', () => {
   };
 
   const poolMeta = () =>
-    evscript({ name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] }, (s) => {
-      const token0 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'token0' });
-      const token1 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'token1' });
-      const slot0 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'slot0' });
+    evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
+      const token0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token0' });
+      const token1 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token1' });
+      const slot0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'slot0' });
       const symbol0 = s.call({ address: token0, abi: erc20ishAbi, functionName: 'symbol' });
       const symbol1 = s.call({ address: token1, abi: erc20ishAbi, functionName: 'symbol' });
       const dec = s.tryCall({ address: token0, abi: erc20ishAbi, functionName: 'decimals' });
@@ -1080,7 +1047,7 @@ describe('flagship', () => {
         address: token0,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
-        args: [s.args.user],
+        args: [user],
       });
       return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
     });
@@ -1107,17 +1074,17 @@ describe('flagship', () => {
   for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
     test(`E2 balances — loop + tryCall + MutArray output [${evmVersion}]`, async () => {
       const script = evscript(
-        { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
-        (s) => {
-          const n = s.args.tokens.length();
+        { name: 'balances', args: [t.array(t.address), t.address] },
+        (s, tokens, owner) => {
+          const n = tokens.length();
           const out = s.newArray(t.uint256, n);
           s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-            const token = s.args.tokens.at(i);
+            const token = tokens.at(i);
             const r = s.tryCall({
               address: token,
               abi: erc20ishAbi,
               functionName: 'balanceOf',
-              args: [s.args.owner],
+              args: [owner],
             });
             out.set(i, s.select(r.success, r.value, 0n));
           });
@@ -1136,6 +1103,133 @@ describe('flagship', () => {
         data: o?.data ?? '0x',
       });
       expect(decoded).toEqual({ balances: [11n, 0n, 22n] });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. composite types — tuple decode (struct output) + tuple construct/encode (issue #2)
+// ---------------------------------------------------------------------------
+
+describe('composite types', () => {
+  // a five-field static struct, the Composite.Position shape (mirrors UniV3 positions()).
+  const positionComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+    { name: 'feeGrowthInside0', type: 'uint256' },
+    { name: 'feeGrowthInside1', type: 'uint256' },
+  ] as const;
+  const positionAbi = [
+    {
+      type: 'function',
+      name: 'positions',
+      stateMutability: 'view',
+      inputs: [{ name: 'tokenId', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple', components: positionComponents }],
+    },
+  ] as const satisfies Abi;
+  const Position = t.struct({
+    nonce: t.uint96,
+    operator: t.address,
+    liquidity: t.uint128,
+    feeGrowthInside0: t.uint256,
+    feeGrowthInside1: t.uint256,
+  });
+  const OPERATOR = getAddress('0x00000000000000000000000000000000000000aa');
+  const POSITION = {
+    nonce: 7n,
+    operator: OPERATOR,
+    liquidity: 123_456n,
+    feeGrowthInside0: 1n << 200n,
+    feeGrowthInside1: (1n << 255n) | 9n,
+  } as const;
+  // the mock callee returns viem's canonical tuple encoding — the differential oracle.
+  const positionReturndata = encodeAbiParameters(
+    [{ type: 'tuple', components: positionComponents }],
+    [POSITION],
+  );
+
+  for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+    test(`decode a struct output and return a field [${evmVersion}]`, async () => {
+      // (a) decode the Position output, read a static field after the head/tail decode.
+      const script = evscript({ name: 'getLiq', args: [t.uint256] }, (s, tokenId) => {
+        const pos = s.call({
+          address: POOL,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ liquidity: pos.liquidity.get(), operator: pos.operator.get() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[1n]],
+        { [POOL]: { kind: 'return', data: positionReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'getLiq',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ liquidity: POSITION.liquidity, operator: POSITION.operator });
+    });
+
+    test(`decode a struct output and return the whole tuple [${evmVersion}]`, async () => {
+      // (a′) re-encode the decoded tuple as a tuple OUTPUT — flat-block → ABI head/tail must
+      // round-trip byte-exactly against viem's tuple codec.
+      const script = evscript({ name: 'echoPos', args: [t.uint256] }, (s, tokenId) => {
+        const pos = s.call({
+          address: POOL,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ pos: pos.expr() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[1n]],
+        { [POOL]: { kind: 'return', data: positionReturndata } },
+        evmVersion,
+      );
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'echoPos',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ pos: POSITION });
+    });
+
+    test(`construct a tuple and return it [${evmVersion}]`, async () => {
+      // (b) build a Position from scratch (alloc + zero-fill + MSTORE provided members), mutate
+      // one field, then return the tuple — encode bytes must equal viem's.
+      const script = evscript({ name: 'mkPos', args: [t.address, t.uint128] }, (s, owner, liq) => {
+        const pos = s.tuple(Position, {
+          nonce: 7n,
+          operator: owner,
+          liquidity: liq,
+          feeGrowthInside0: 1n << 200n,
+          // feeGrowthInside1 omitted → zero-filled
+        });
+        pos.feeGrowthInside1.set((1n << 255n) | 9n);
+        return s.return({ pos: pos.expr() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[POSITION.operator, POSITION.liquidity]],
+        {},
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkPos',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ pos: POSITION });
     });
   }
 });

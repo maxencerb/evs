@@ -15,7 +15,7 @@ import { siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile } from './compile.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
-import { arg, t, type Hex } from './core/types.js';
+import { t, type Hex } from './core/types.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -42,8 +42,8 @@ const erc20Abi = [
 const TOKEN = '0xa000000000000000000000000000000000000001' as const;
 
 function sumScript() {
-  return evscript({ name: 'sum', args: [arg('a', t.uint256), arg('b', t.uint256)] }, (s) =>
-    s.return({ total: s.add(s.args.a, s.args.b) }),
+  return evscript({ name: 'sum', args: [t.uint256, t.uint256] }, (s, a, b) =>
+    s.return({ total: s.add(a, b) }),
   );
 }
 
@@ -190,9 +190,9 @@ describe('pipeline hooks', () => {
   });
 
   test('diagnostics are forwarded to onDiagnostic (LOOP_ALLOCATION), never logged', () => {
-    const loopy = evscript({ name: 'loopy', args: [arg('n', t.uint256)] }, (s) => {
+    const loopy = evscript({ name: 'loopy', args: [t.uint256] }, (s, n) => {
       const acc = s.let(t.uint256, 0n);
-      s.for({ type: t.uint256, from: 0n, until: s.args.n }, (i) => {
+      s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
         const scratch = s.newArray(t.uint256, 1n);
         scratch.set(0n, i);
         acc.set(acc.get().add(scratch.get(0n)));
@@ -482,14 +482,11 @@ describe('explainRevert', () => {
 
 describe('end-to-end smoke', () => {
   test('evscript → compile → harness → viem decode', async () => {
-    const script = evscript(
-      { name: 'meta', args: [arg('who', t.address), arg('n', t.uint256)] },
-      (s) => {
-        const doubled = s.mul(s.args.n, 2n);
-        const isBig = doubled.gt(100n);
-        return s.return({ who: s.args.who, doubled, isBig, label: s.lit(t.string, 'evs') });
-      },
-    );
+    const script = evscript({ name: 'meta', args: [t.address, t.uint256] }, (s, who, n) => {
+      const doubled = s.mul(n, 2n);
+      const isBig = doubled.gt(100n);
+      return s.return({ who, doubled, isBig, label: s.lit(t.string, 'evs') });
+    });
     const compiled = compile(script);
     const who = '0x1000000000000000000000000000000000000001' as const;
     const calldata = encodeFunctionData({

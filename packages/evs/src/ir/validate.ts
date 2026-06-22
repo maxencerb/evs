@@ -367,7 +367,7 @@ class IrValidator {
         if (s.op === 'iszero') {
           const ta = this.use(s.a, null, what, s.loc);
           if (!isWordType(ta)) {
-            this.fail(`${what}: operand must be a word type, got '${ta}'`, s.loc);
+            this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`, s.loc);
           }
           this.define(s.out, 'bool', what, s.loc);
           return;
@@ -375,7 +375,10 @@ class IrValidator {
         // bitnot
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: operand must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.define(s.out, ta, what, s.loc);
         return;
@@ -393,7 +396,7 @@ class IrValidator {
         if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
         if (!convertOk(from, outInfo.type)) {
           this.fail(
-            `${what}: no v0 conversion from '${from}' to '${outInfo.type}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
+            `${what}: no v0 conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
             s.loc,
           );
         }
@@ -598,7 +601,10 @@ class IrValidator {
       case 'mod': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isNumeric(ta)) {
-          this.fail(`${what}: operands must be numeric (uintN/intN), got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -610,7 +616,10 @@ class IrValidator {
       case 'gte': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isNumeric(ta)) {
-          this.fail(`${what}: operands must be numeric (uintN/intN), got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, 'bool', what, s.loc);
@@ -621,7 +630,7 @@ class IrValidator {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isWordType(ta)) {
           this.fail(
-            `${what}: eq/neq are word-type-only (memref equality is undefined), got '${ta}'`,
+            `${what}: eq/neq are word-type-only (memref equality is undefined), got '${stringifyType(ta)}'`,
             s.loc,
           );
         }
@@ -641,7 +650,10 @@ class IrValidator {
       case 'bitxor': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: operands must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -651,7 +663,10 @@ class IrValidator {
       case 'shr': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: shifted operand must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: shifted operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, 'uint256', `${what} shift amount`, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -766,20 +781,26 @@ class IrValidator {
   ): void {
     if (isWordType(type)) {
       if (data.kind !== 'word') {
-        this.fail(`${what}: const of word type '${type}' must carry kind 'word'`, loc);
+        this.fail(
+          `${what}: const of word type '${stringifyType(type)}' must carry kind 'word'`,
+          loc,
+        );
       }
       if (!WORD_HEX_RE.test(data.hex)) {
         this.fail(`${what}: word const hex must be exactly 32 bytes`, loc);
       }
       const x = BigInt(data.hex);
       if (!isCanonicalWord(type, x)) {
-        this.fail(`${what}: ${data.hex} is not a canonical '${type}' word`, loc);
+        this.fail(`${what}: ${data.hex} is not a canonical '${stringifyType(type)}' word`, loc);
       }
       return;
     }
     // dynamic type — pre-encoded memref payload [len:32][payload…]
     if (data.kind !== 'data') {
-      this.fail(`${what}: const of dynamic type '${type}' must carry kind 'data'`, loc);
+      this.fail(
+        `${what}: const of dynamic type '${stringifyType(type)}' must carry kind 'data'`,
+        loc,
+      );
     }
     if (!DATA_HEX_RE.test(data.hex)) {
       this.fail(`${what}: data const hex is malformed`, loc);
@@ -799,7 +820,10 @@ class IrValidator {
       }
       const elem = elemTypeOf(type);
       if (!isWordType(elem)) {
-        this.fail(`${what}: only word-element array consts are supported, got '${type}'`, loc);
+        this.fail(
+          `${what}: only word-element array consts are supported, got '${stringifyType(type)}'`,
+          loc,
+        );
       }
       const count = Number(len);
       for (let i = 0; i < count; i++) {

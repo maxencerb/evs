@@ -349,7 +349,7 @@ describe('validateIr — table rules', () => {
 
   test('rejects a non-v0 arg type', () => {
     expectInvalid(
-      ir({ args: [{ name: 'a', type: 'string[]' as EvsType }], values: [vi('uint256')] }),
+      ir({ args: [{ name: 'a', type: 'uint7' as EvsType }], values: [vi('uint256')] }),
       /args\[0\].*non-v0/,
     );
   });
@@ -645,7 +645,7 @@ describe('validateIr — bin/un/env op table', () => {
 describe('validateIr — convert table', () => {
   function convertIr(from: EvsType, to: EvsType): ScriptIr {
     const def: Stmt =
-      from === 'string' || from === 'bytes' || from.endsWith('[]')
+      typeof from !== 'string' || from === 'string' || from === 'bytes' || from.endsWith('[]')
         ? mk({ k: 'const', out: 0, data: { kind: 'data', hex: wordHex(0n) }, type: from })
         : mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(0n) }, type: from });
     return ir({ values: [vi(from), vi(to)], body: [def, mk({ k: 'convert', a: 0, out: 1 })] });
@@ -968,24 +968,46 @@ describe('validateIr — call rules', () => {
     expectInvalid(callIr({ fnAbi: { ...ABI, name: '' } }), /fnAbi\.name must be non-empty/);
   });
 
-  test('rejects fnAbi params outside v0 EvsType', () => {
-    expectInvalid(
-      callIr({ fnAbi: { ...ABI, inputs: [{ name: 'owner', type: 'tuple' }] } }),
-      /outside v0 EvsType/,
-    );
+  test('rejects fnAbi params outside the supported type set', () => {
+    // a fixed-size array is outside the supported EvsType set
     expectInvalid(
       callIr({ fnAbi: { ...ABI, outputs: [{ name: '', type: 'uint256[2]' }] } }),
-      /outside v0 EvsType/,
+      /type outside the supported set/,
     );
   });
 
-  test('rejects fnAbi params carrying tuple components', () => {
+  test('rejects a tuple param with no components, and a non-tuple param carrying components', () => {
+    // a 'tuple' type MUST carry components (composite types are supported now)
+    expectInvalid(
+      callIr({ fnAbi: { ...ABI, inputs: [{ name: 'owner', type: 'tuple' }] } }),
+      /tuple type carries no components/,
+    );
+    // a non-tuple param must NOT carry components
     expectInvalid(
       callIr({
         fnAbi: { ...ABI, inputs: [{ name: 'o', type: 'address', components: [] }] },
       }),
-      /tuples are not supported in v0/,
+      /must not carry components/,
     );
+  });
+
+  test('accepts fnAbi params carrying a valid tuple type', () => {
+    // a tuple OUTPUT decoded into a tuple-typed out value (the arg stays the default address)
+    const tupleType = {
+      type: 'tuple',
+      components: [{ name: 'x', type: 'uint256' }],
+    } as const;
+    expect(() =>
+      validateIr(
+        callIr(
+          {
+            fnAbi: { ...ABI, outputs: [{ name: 'data', ...tupleType }] },
+            outs: [3],
+          },
+          [vi(tupleType)],
+        ),
+      ),
+    ).not.toThrow();
   });
 
   test('rejects args/outs arity mismatches', () => {

@@ -10,33 +10,30 @@
 import { encodeFunctionData, erc20Abi, parseEther } from 'viem';
 import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
 
-import { arg, evscript, t } from '../../src/index.js';
+import { evscript, t } from '../../src/index.js';
 import { Malformed, MockERC20, MockUniV3Pool } from '../generated/index.js';
 import { publicClient, testClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 
 // --- E1: flagship pool metadata script (api.md §11 E1, verbatim semantics) ---------------
 
-const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
-    const token1 = s.call({ address: s.args.pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
-    const fee = s.call({ address: s.args.pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
-    const slot0 = s.call({ address: s.args.pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
-    const decimals0 = s.select(dec.success, dec.value, 18);
-    const bal0 = s.call({
-      address: token0,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [s.args.user],
-    });
-    return s.return({ token0, token1, fee, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
-  },
-);
+const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
+  const token0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
+  const token1 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
+  const fee = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
+  const slot0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
+  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const decimals0 = s.select(dec.success, dec.value, 18);
+  const bal0 = s.call({
+    address: token0,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [user],
+  });
+  return s.return({ token0, token1, fee, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
+});
 
 const compiledPoolMeta = poolMeta.compile();
 
@@ -126,17 +123,17 @@ describe('E1 poolMeta through all three paths', () => {
 // --- E2: batch balances over 50 tokens (api.md §11 E2) -----------------------------------
 
 const balances = evscript(
-  { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
-  (s) => {
-    const n = s.args.tokens.length();
+  { name: 'balances', args: [t.array(t.address), t.address] },
+  (s, tokens, owner) => {
+    const n = tokens.length();
     const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = s.args.tokens.at(i);
+      const token = tokens.at(i);
       const r = s.tryCall({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
-        args: [s.args.owner],
+        args: [owner],
       });
       out.set(i, s.select(r.success, r.value, 0n));
     });
@@ -210,8 +207,8 @@ describe('failure half: explainRevert names the originating call', () => {
   test('Malformed callee → EvsDecodeError with the right site', async () => {
     // Malformed.emptyReturn() is declared `returns (string)` but returns ZERO bytes —
     // the strict call must revert EvsDecodeError(site), never decode garbage.
-    const script = evscript({ name: 'readMalformed', args: [arg('target', t.address)] }, (s) => {
-      const v = s.call({ address: s.args.target, abi: Malformed.abi, functionName: 'emptyReturn' });
+    const script = evscript({ name: 'readMalformed', args: [t.address] }, (s, target) => {
+      const v = s.call({ address: target, abi: Malformed.abi, functionName: 'emptyReturn' });
       return s.return({ v });
     });
     const compiled = script.compile();

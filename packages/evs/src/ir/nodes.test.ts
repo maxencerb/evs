@@ -8,7 +8,7 @@
 import { describe, expect, test } from 'vitest';
 
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import type { EvsType, Hex, WordType } from '../core/types.js';
+import { typeToAbiParam, type EvsType, type Hex, type WordType } from '../core/types.js';
 import {
   deserializeIr,
   serializeIr,
@@ -372,6 +372,14 @@ const GEN_TYPES: readonly EvsType[] = [
   'bytes',
   'address[]',
   'uint128[]',
+  // a tuple descriptor — exercises serialize/deserialize round-trip through composite types
+  {
+    type: 'tuple',
+    components: [
+      { name: 'a', type: 'uint256' },
+      { name: 'b', type: 'address' },
+    ],
+  },
 ];
 const GEN_WORDS: readonly WordType[] = ['uint256', 'int128', 'address', 'bool', 'bytes32'];
 
@@ -476,14 +484,12 @@ function genStmt(g: Gen, depth: number): Stmt {
           fnAbi: {
             name: `fn${g.int(10)}`,
             selector: genHex(g, 4),
-            inputs: Array.from({ length: nIn }, (_, i) => ({
-              name: `p${i}`,
-              type: g.pick(GEN_TYPES),
-            })),
-            outputs: Array.from({ length: nOut }, (_, i) => ({
-              name: `o${i}`,
-              type: g.pick(GEN_TYPES),
-            })),
+            inputs: Array.from({ length: nIn }, (_, i) =>
+              typeToAbiParam(`p${i}`, g.pick(GEN_TYPES)),
+            ),
+            outputs: Array.from({ length: nOut }, (_, i) =>
+              typeToAbiParam(`o${i}`, g.pick(GEN_TYPES)),
+            ),
           },
           args: Array.from({ length: nIn }, id),
           outs: Array.from({ length: nOut }, id),
@@ -624,9 +630,9 @@ describe('deserializeIr rejections', () => {
   test('rejects malformed value/cell infos', () => {
     reject((r) => (r['values'][0] = { loc: null }), /values\[0\]\.type/);
     reject((r) => (r['values'][0]['type'] = 'uint7'), /values\[0\]\.type/);
-    reject((r) => (r['values'][0]['type'] = 'tuple'), /values\[0\]\.type/);
+    reject((r) => (r['values'][0]['type'] = 'tuple'), /values\[0\]\.type/); // bare 'tuple' string (needs the object form)
     reject((r) => (r['values'][0]['debugName'] = 4), /debugName/);
-    reject((r) => (r['cells'][0]['type'] = 'uint256[][]'), /cells\[0\]\.type/);
+    reject((r) => (r['cells'][0]['type'] = 'uint8[5]'), /cells\[0\]\.type/); // fixed-size array still invalid
   });
 
   test('rejects malformed args and returns', () => {
@@ -658,7 +664,7 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['body'][0]['data'] = { kind: 'words', hex: '0x00' }), /data\.kind/);
     reject((r) => (r['body'][0]['data']['hex'] = '0x123'), /hex/); // odd length
     reject((r) => (r['body'][0]['data']['hex'] = '0xzz'), /hex/);
-    reject((r) => (r['body'][8]['elem'] = 'string'), /elem/); // arrnew elem must be a word type
+    reject((r) => (r['body'][8]['elem'] = 'uint7'), /elem/); // arrnew elem must be a valid type
     reject((r) => (r['body'][13]['mode'] = 'maybe'), /mode/);
     reject((r) => (r['body'][13]['fnAbi']['selector'] = 5), /selector/);
     reject((r) => (r['body'][13]['args'] = [0, 'x']), /args\[1\]/);

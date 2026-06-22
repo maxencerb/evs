@@ -31,7 +31,14 @@ declare const Bun: {
   write(path: string, content: string): Promise<number>;
 };
 
-const CONTRACTS = ['EvsReference', 'Malformed', 'MockERC20', 'MockUniV3Pool', 'Reverter'];
+const CONTRACTS = [
+  'Composite',
+  'EvsReference',
+  'Malformed',
+  'MockERC20',
+  'MockUniV3Pool',
+  'Reverter',
+];
 
 const contractsDir = fileURLToPath(new URL('..', import.meta.url));
 const generatedDir = fileURLToPath(new URL('../../evs/test/generated/', import.meta.url));

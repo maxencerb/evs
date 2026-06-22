@@ -15,7 +15,7 @@ import type { Abi } from 'abitype';
 import type { ReadContractParameters, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
-import type { ArgSpec, Expr } from '../core/types.js';
+import type { Expr } from '../core/types.js';
 import {
   buildScriptAbi,
   EVS_ERROR_ABI,
@@ -62,7 +62,7 @@ type PoolMetaRet = {
   symbol0: Expr<'string'>;
   tick: Expr<'int24'>;
 };
-type PoolMetaAbi = ScriptAbi<'poolMeta', readonly [ArgSpec<'pool', 'address'>], PoolMetaRet>;
+type PoolMetaAbi = ScriptAbi<'poolMeta', readonly ['address'], PoolMetaRet>;
 
 test('ScriptAbi satisfies Abi (declaration-emit safe, no widening)', () => {
   expectTypeOf<PoolMetaAbi>().toMatchTypeOf<Abi>();
@@ -71,9 +71,9 @@ test('ScriptAbi satisfies Abi (declaration-emit safe, no widening)', () => {
   expectTypeOf<PoolMetaAbi[0]['stateMutability']>().toEqualTypeOf<'view'>();
 });
 
-test('inputs are the exact ArgSpec tuple mapping (order-preserving by construction)', () => {
+test('inputs are the exact arg-TYPE tuple mapping (auto-named arg0…, order-preserving)', () => {
   expectTypeOf<PoolMetaAbi[0]['inputs']>().toEqualTypeOf<
-    readonly [{ readonly name: 'pool'; readonly type: 'address' }]
+    readonly [{ readonly name: 'arg0'; readonly type: 'address' }]
   >();
 });
 
@@ -113,16 +113,16 @@ test('errors ride along as the literal EVS_ERROR_ABI items', () => {
 // readContract parameter inference — declaration order of the ArgSpec tuple
 // ---------------------------------------------------------------------------
 
-test('args is the labeled positional tuple in DECLARATION order (3 pre-interned names)', () => {
-  // 'owner' and 'fee' were interned above in the opposite order to this tuple; inputs map
-  // over the ArgSpec tuple, so type-level order cannot diverge from runtime encode order.
+test('args is the labeled positional tuple in DECLARATION order (3 args)', () => {
+  // inputs map over the arg-TYPE tuple, so type-level order cannot diverge from runtime encode
+  // order; the auto-names arg0/arg1/arg2 surface as the positional labels.
   type ThreeArgAbi = ScriptAbi<
     'threeArg',
-    readonly [ArgSpec<'pool', 'address'>, ArgSpec<'fee', 'uint24'>, ArgSpec<'owner', 'address'>],
+    readonly ['address', 'uint24', 'address'],
     { ok: Expr<'bool'> }
   >;
   expectTypeOf<ReadContractParameters<ThreeArgAbi, 'threeArg'>['args']>().toEqualTypeOf<
-    readonly [pool: `0x${string}`, fee: number, owner: `0x${string}`]
+    readonly [arg0: `0x${string}`, arg1: number, arg2: `0x${string}`]
   >();
   expectTypeOf<
     ReadContractParameters<ThreeArgAbi, 'threeArg'>['functionName']
@@ -140,7 +140,7 @@ test('zero-arg script: args is the (optional) empty tuple', () => {
 test('dynamic returns flow through viem: string / bytes / T[]', () => {
   type DynAbi = ScriptAbi<
     'dyn',
-    readonly [ArgSpec<'who', 'address'>],
+    readonly ['address'],
     { name: Expr<'string'>; raw: Expr<'bytes'>; balances: Expr<'uint256[]'> }
   >;
   expectTypeOf<ReadContractReturnType<DynAbi, 'dyn'>>().toEqualTypeOf<{
@@ -148,6 +148,25 @@ test('dynamic returns flow through viem: string / bytes / T[]', () => {
     raw: `0x${string}`;
     balances: readonly bigint[];
   }>();
+});
+
+test('a struct return flows through viem as a named object; a struct arg as a labeled tuple', () => {
+  type PositionType = {
+    readonly type: 'tuple';
+    readonly components: readonly [
+      { readonly name: 'liquidity'; readonly type: 'uint128' },
+      { readonly name: 'owner'; readonly type: 'address' },
+    ];
+  };
+  type CompositeAbi = ScriptAbi<'comp', readonly [PositionType], { pos: Expr<PositionType> }>;
+  // the struct OUTPUT is an object keyed by the (named) struct fields
+  expectTypeOf<ReadContractReturnType<CompositeAbi, 'comp'>>().toMatchTypeOf<{
+    pos: { liquidity: bigint; owner: `0x${string}` };
+  }>();
+  // the struct ARG is a labeled tuple object (abitype infers the named components)
+  expectTypeOf<ReadContractParameters<CompositeAbi, 'comp'>['args']>().toMatchTypeOf<
+    readonly [{ liquidity: bigint; owner: `0x${string}` }]
+  >();
 });
 
 // ---------------------------------------------------------------------------

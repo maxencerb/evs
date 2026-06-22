@@ -280,7 +280,10 @@ function asEvsType(v: unknown, path: string): EvsType {
       ),
     };
   }
-  return fail(`${path}.type`, `expected a tuple tag ('tuple'|'tuple[]'|'tuple[][]'), got ${describe(type)}`);
+  return fail(
+    `${path}.type`,
+    `expected a tuple tag ('tuple'|'tuple[]'|'tuple[][]'), got ${describe(type)}`,
+  );
 }
 
 function describe(v: unknown): string {

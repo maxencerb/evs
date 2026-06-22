@@ -29,19 +29,25 @@ import { layoutOf } from '../abi/layout.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError, type SourceLoc } from '../core/errors.js';
 import { captureLoc } from '../core/loc.js';
 import {
+  abiParamToType,
   bitsOf,
   elemTypeOf,
   installStagingTraps,
   isDynamicType,
-  isEvsType,
+  isEvsValueType,
   isNumeric,
   isSigned,
+  isTupleType,
   isWordType,
+  typesEqual,
   type ArrayType,
   type DynType,
   type EvsType,
   type Expr,
   type Hex,
+  type NamedType,
+  type StringType,
+  type TupleType,
   type WordType,
 } from '../core/types.js';
 import type {
@@ -74,10 +80,23 @@ interface ArrInternals {
   readonly id: ValueId;
   readonly elem: WordType;
 }
+interface TupleInternals {
+  readonly owner: Recorder;
+  readonly id: ValueId;
+  readonly tt: TupleType; // the static descriptor (carries the component types)
+}
+interface FieldInternals {
+  readonly owner: Recorder;
+  readonly tuple: ValueId;
+  readonly index: number;
+  readonly type: EvsType; // the member type (abiParamToType of the component)
+}
 
 const EXPR_INTERNALS = new WeakMap<object, ExprInternals>();
 const CELL_INTERNALS = new WeakMap<object, CellInternals>();
 const ARR_INTERNALS = new WeakMap<object, ArrInternals>();
+const TUPLE_INTERNALS = new WeakMap<object, TupleInternals>();
+const FIELD_INTERNALS = new WeakMap<object, FieldInternals>();
 
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
 export const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
@@ -159,7 +178,7 @@ function isBitsOperand(s: EvsType): s is WordType {
 }
 
 function isArrayType(s: EvsType): s is ArrayType {
-  return s.endsWith('[]');
+  return typeof s === 'string' && s.endsWith('[]');
 }
 
 /** logical-value range of a word type (intN signed; bytesN as its 8N-bit content). */
@@ -213,7 +232,7 @@ export function assertV0Type(
   type: unknown,
   what: string,
   loc: SourceLoc | null,
-): asserts type is EvsType {
+): asserts type is StringType {
   if (typeof type !== 'string') {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
@@ -238,6 +257,49 @@ function describeHost(v: unknown): string {
   if (Array.isArray(v)) return 'an array';
   if (typeof v === 'object' && v !== null) return 'an object';
   return String(v);
+}
+
+/** A tuple member's human-facing name (its struct field name, or `[i]` for a positional member). */
+function memberName(comp: NamedType, index: number): string {
+  return comp.name === '' ? `[${index}]` : comp.name;
+}
+
+/** Human-readable rendering of a value type for error messages (a tuple → its JSON descriptor). */
+function stringifyEvsType(t: EvsType): string {
+  return typeof t === 'string' ? t : JSON.stringify(t);
+}
+
+/** A short debug tag for a tuple value's `debugName` (field names, or the positional arity). */
+function tupleDebugTag(t: TupleType): string {
+  const named = t.components.filter((c) => c.name !== '');
+  return named.length === t.components.length
+    ? named.map((c) => c.name).join(', ')
+    : `${t.components.length} members`;
+}
+
+/** A recording-time literal member index for `Tuple.at(i)` (the flat layout has no runtime member
+ *  indexing — `i` must be a host number/bigint in `[0, n)`). */
+function asLiteralIndex(i: unknown, n: number, what: string, loc: SourceLoc | null): number {
+  let idx: number;
+  if (typeof i === 'number' && Number.isSafeInteger(i)) {
+    idx = i;
+  } else if (typeof i === 'bigint' && i >= 0n && i < BigInt(n)) {
+    idx = Number(i);
+  } else {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: the member index must be a literal number/bigint in [0, ${n}), got ${describeHost(i)}`,
+      { loc },
+    );
+  }
+  if (idx < 0 || idx >= n) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: member index ${idx} is out of range for a ${n}-member tuple`,
+      { loc },
+    );
+  }
+  return idx;
 }
 
 /** Deep-freezes plain data; accessor properties (lazy SourceLocs) are frozen but not resolved. */
@@ -511,6 +573,90 @@ function arrInternalsOf(h: object): ArrInternals {
   return i;
 }
 
+// ---------------------------------------------------------------------------
+// Tuple / Field handles (composite memrefs — architecture §5; api.md §5)
+// ---------------------------------------------------------------------------
+
+/**
+ * A tuple/struct memref handle. It is the pointer to the flat `[w0…w_{n-1}]` block (reference
+ * semantics — aliasing the handle shares the block). Named struct fields are installed as own
+ * accessor properties; positional members go through `.at(i)`; `.expr()` yields the raw memref.
+ * Staging traps are installed (like `Expr`) so a stray coercion explodes with a useful message.
+ */
+class TupleHandle {
+  constructor(owner: Recorder, id: ValueId, tt: TupleType) {
+    TUPLE_INTERNALS.set(this, { owner, id, tt });
+    installStagingTraps(this, {
+      describe: () => owner.describeValue(id),
+      recordedAt: () => owner.valueLoc(id),
+    });
+    // expose each NAMED component as an own accessor → a fresh Field handle on read.
+    const fieldProps: PropertyDescriptorMap = {};
+    tt.components.forEach((comp, index) => {
+      if (comp.name === '') return; // positional members are reached via .at(i)
+      fieldProps[comp.name] = {
+        enumerable: true,
+        get: () => owner.makeField(id, index, abiParamToType(comp)),
+      };
+    });
+    Object.defineProperties(this, fieldProps);
+  }
+
+  at(i: unknown): FieldHandle {
+    const t = tupleInternalsOf(this);
+    return t.owner.tupleAt(t.id, t.tt, i, 'Tuple.at()');
+  }
+
+  expr(): Expr {
+    const t = tupleInternalsOf(this);
+    return t.owner.tupleExpr(t.id, 'Tuple.expr()');
+  }
+}
+
+function tupleInternalsOf(h: object): TupleInternals {
+  const i = TUPLE_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Tuple handle lost its internals');
+  }
+  return i;
+}
+
+function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {
+  return new TupleHandle(owner, id, tt);
+}
+
+/**
+ * A field handle over one tuple member (Cell-like): `.get()` reads the member (`field` stmt — a
+ * composite member follows the pointer to a fresh `Tuple` handle), `.set(v)` writes it (`tupleset`
+ * stmt). Module-private like `Cell`.
+ */
+class FieldHandle {
+  readonly type: EvsType;
+
+  constructor(owner: Recorder, tuple: ValueId, index: number, type: EvsType) {
+    FIELD_INTERNALS.set(this, { owner, tuple, index, type });
+    this.type = type;
+  }
+
+  get(): Expr | object {
+    const f = fieldInternalsOf(this);
+    return f.owner.fieldGet(f.tuple, f.index, f.type, 'Field.get()');
+  }
+
+  set(value: unknown): void {
+    const f = fieldInternalsOf(this);
+    f.owner.fieldSet(f.tuple, f.index, f.type, value, 'Field.set()');
+  }
+}
+
+function fieldInternalsOf(h: object): FieldInternals {
+  const i = FIELD_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Field handle lost its internals');
+  }
+  return i;
+}
+
 export class LoopCtlImpl {
   private readonly owner: Recorder;
   private readonly bodyScope: Scope;
@@ -588,7 +734,8 @@ export class Recorder {
   private sealed = false;
   private returnsList: { name: string; type: EvsType; value: ValueId }[] | null = null;
   private returnToken: object | null = null;
-  private readonly argRecordObj: Readonly<Record<string, Expr>>;
+  /** positional arg handles, spread into the body callback after `s` (a tuple arg → a Tuple). */
+  private readonly argHandleList: readonly (Expr | object)[];
 
   constructor(
     name: string,
@@ -600,18 +747,19 @@ export class Recorder {
     this.argsList = args;
     this.mainScope = newScope('main');
     this.stack = [this.mainScope];
-    const rec: Record<string, Expr> = {};
-    for (const a of args) {
+    // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple arg
+    // yields a Tuple handle over its arg ValueId, every scalar arg an Expr.
+    const handles: (Expr | object)[] = args.map((a) => {
       const id = this.newValue(a.type, scriptLoc, `args.${a.name}`);
-      rec[a.name] = makeExpr(this, id);
-    }
-    this.argRecordObj = Object.freeze(rec);
+      return isTupleType(a.type) ? makeTuple(this, id, a.type) : makeExpr(this, id);
+    });
+    this.argHandleList = Object.freeze(handles);
   }
 
   // -- handle support ---------------------------------------------------------------------
 
-  argRecord(): Readonly<Record<string, Expr>> {
-    return this.argRecordObj;
+  argHandles(): readonly (Expr | object)[] {
+    return this.argHandleList;
   }
 
   typeOfValue(id: ValueId): EvsType {
@@ -639,7 +787,7 @@ export class Recorder {
     const info = this.values[id];
     if (info === undefined) return `Expr<?> #${id}`;
     const name = info.debugName !== undefined ? ` ← ${info.debugName}` : '';
-    return `Expr<${info.type}> #${id}${name} at ${shortLoc(info.loc)}`;
+    return `Expr<${stringifyEvsType(info.type)}> #${id}${name} at ${shortLoc(info.loc)}`;
   }
 
   assertOpen(what: string, loc: SourceLoc | null): void {
@@ -730,6 +878,20 @@ export class Recorder {
           { loc },
         );
       }
+      if (TUPLE_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Tuple is not an Expr — use .expr() for its memref, or pass it where a tuple is expected`,
+          { loc },
+        );
+      }
+      if (FIELD_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Field is not an Expr — read a snapshot with .get()`,
+          { loc },
+        );
+      }
       if (!Array.isArray(v)) {
         const tag = (v as { type?: unknown }).type;
         if (typeof tag === 'string' && isWordType(tag)) {
@@ -815,7 +977,7 @@ export class Recorder {
     }
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `${what}: expected '${expected}', got Expr<'${got}'>${suggest}`,
+      `${what}: expected '${stringifyEvsType(expected)}', got Expr<'${stringifyEvsType(got)}'>${suggest}`,
       { loc },
     );
   }
@@ -857,9 +1019,12 @@ export class Recorder {
 
   /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal rules of api.md §3). */
   private coerceToId(v: unknown, type: EvsType, what: string, loc: SourceLoc | null): ValueId {
+    // a tuple target: a Tuple handle (reuse its ValueId — reference) or a literal struct object
+    // (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field handles.
+    if (isTupleType(type)) return this.coerceTupleToId(v, type, what, loc);
     const c = this.classify(v, what, loc);
     if (c.kind === 'expr') {
-      if (c.type !== type) this.typeMismatch(what, type, c.type, loc);
+      if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type, loc);
       return c.id;
     }
     if (isWordType(type)) {
@@ -867,6 +1032,194 @@ export class Recorder {
       return this.wordConst(type, logical, loc, hex);
     }
     return this.dataConst(type, c.value, loc);
+  }
+
+  /** Tuple branch of {@link coerceToId} (spec §5): reuse a Tuple handle's ValueId, or build a
+   *  `tuplenew` from a literal struct/positional object. */
+  private coerceTupleToId(
+    v: unknown,
+    type: TupleType,
+    what: string,
+    loc: SourceLoc | null,
+  ): ValueId {
+    if (type.type !== 'tuple') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `${what}: tuple-array type ${JSON.stringify(type.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        { loc },
+      );
+    }
+    if (typeof v === 'object' && v !== null) {
+      const ti = TUPLE_INTERNALS.get(v);
+      if (ti !== undefined) {
+        if (ti.owner !== this) {
+          throw new EvsScopeError(
+            'FOREIGN_HANDLE',
+            `${what}: this Tuple belongs to script "${ti.owner.name}" (defined at ${fmtLoc(ti.owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
+            {
+              loc,
+              relatedLocs: [
+                { label: `script "${ti.owner.name}" defined at`, loc: ti.owner.scriptLoc },
+                { label: 'handle recorded at', loc: ti.owner.valueLoc(ti.id) },
+              ],
+            },
+          );
+        }
+        this.checkVisible(ti.id, what, loc);
+        if (!typesEqual(ti.tt, type)) this.typeMismatch(what, type, ti.tt, loc);
+        return ti.id; // reference: aliases the SAME flat block
+      }
+      // an Expr memref of the SAME tuple type (e.g. another tuple's `.expr()`) is also accepted.
+      const ei = EXPR_INTERNALS.get(v);
+      if (ei !== undefined) {
+        this.classify(v, what, loc); // ownership + visibility check (rethrows FOREIGN_HANDLE)
+        const et = this.typeOfValue(ei.id);
+        if (!typesEqual(et, type)) this.typeMismatch(what, type, et, loc);
+        return ei.id;
+      }
+      if (FIELD_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Field is not a tuple — read it with .get()`,
+          { loc },
+        );
+      }
+    }
+    // a plain object/array literal → build the tuple from its members.
+    return this.buildTupleNew(type, v, what, loc);
+  }
+
+  // -- tuples / structs ---------------------------------------------------------------------
+
+  /** `s.tuple(type, init?)`: allocate a flat block, MSTORE provided members (omitted/literal-0 →
+   *  no init), return a Tuple handle. */
+  tuple(type: unknown, init: unknown): object {
+    const loc = captureLoc();
+    this.assertOpen('s.tuple()', loc);
+    if (!isTupleType(type) || !isEvsValueType(type)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.tuple(): type must be a t.struct/t.tuple descriptor (or readonly AbiParameter[]), got ${describeHost(type)}`,
+        { loc },
+      );
+    }
+    if (type.type !== 'tuple') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `s.tuple(): tuple-array type ${JSON.stringify(type.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        { loc },
+      );
+    }
+    const id = this.buildTupleNew(type, init, 's.tuple()', loc);
+    return makeTuple(this, id, type);
+  }
+
+  /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),
+   *  returning the new tuple ValueId. Members are name-keyed (struct) or positional (t.tuple);
+   *  an omitted or literal-zero member is left to the zero-fill (no MSTORE). */
+  private buildTupleNew(
+    type: TupleType,
+    init: unknown,
+    what: string,
+    loc: SourceLoc | null,
+  ): ValueId {
+    const isPositional = type.components.every((c) => c.name === '');
+    let lookup: (comp: NamedType, index: number) => unknown;
+    if (init === undefined) {
+      lookup = () => undefined;
+    } else if (Array.isArray(init)) {
+      if (!isPositional) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: this struct expects a name-keyed init record, not a positional array`,
+          { loc },
+        );
+      }
+      lookup = (_comp, index) => init[index];
+    } else if (typeof init === 'object' && init !== null) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- guarded: init is a non-null object here
+      const rec = init as Record<string, unknown>;
+      lookup = isPositional ? (_comp, index) => rec[index] : (comp) => rec[comp.name];
+    } else {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: init must be a record of members (or a positional array for a t.tuple), got ${describeHost(init)}`,
+        { loc },
+      );
+    }
+
+    const inits: { index: number; value: ValueId }[] = [];
+    type.components.forEach((comp, index) => {
+      const memberVal = lookup(comp, index);
+      if (memberVal === undefined) return; // omitted → left zeroed by the block's zero-fill
+      const memberType = abiParamToType(comp);
+      const valId = this.coerceToId(
+        memberVal,
+        memberType,
+        `${what} member "${memberName(comp, index)}"`,
+        loc,
+      );
+      // a literal-zero word member is already covered by the zero-fill — skip its MSTORE.
+      if (this.litValues.get(valId) === 0n) return;
+      inits.push({ index, value: valId });
+    });
+
+    const out = this.newValue(type, loc, `s.tuple(${tupleDebugTag(type)})`);
+    this.appendStmt({ k: 'tuplenew', inits, out }, loc);
+    return out;
+  }
+
+  /** Builds a fresh Field handle over member `index` of a tuple ValueId. */
+  makeField(tupleId: ValueId, index: number, memberType: EvsType): object {
+    return new FieldHandle(this, tupleId, index, memberType);
+  }
+
+  /** `Tuple.at(i)`: a positional Field handle. The index must be a recording-time literal (the
+   *  flat layout has no runtime member indexing). */
+  tupleAt(tupleId: ValueId, tt: TupleType, i: unknown, what: string): FieldHandle {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    this.checkVisible(tupleId, what, loc);
+    const index = asLiteralIndex(i, tt.components.length, what, loc);
+    const comp = tt.components[index];
+    if (comp === undefined) {
+      throw new EvsInternalError('INTERNAL', `tupleAt: component ${index} missing`);
+    }
+    return new FieldHandle(this, tupleId, index, abiParamToType(comp));
+  }
+
+  /** `Tuple.expr()`: the raw memref Expr (reference semantics — aliases the SAME ValueId). */
+  tupleExpr(tupleId: ValueId, what: string): Expr {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    this.checkVisible(tupleId, what, loc);
+    return makeExpr(this, tupleId);
+  }
+
+  /** `Field.get()`: read a member — `field` stmt. A composite member follows the pointer to a
+   *  fresh Tuple handle; a scalar member yields an Expr. */
+  fieldGet(tupleId: ValueId, index: number, memberType: EvsType, what: string): Expr | object {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    this.checkVisible(tupleId, what, loc);
+    const out = this.newValue(memberType, loc);
+    this.appendStmt({ k: 'field', tuple: tupleId, index, out }, loc);
+    return isTupleType(memberType) ? makeTuple(this, out, memberType) : makeExpr(this, out);
+  }
+
+  /** `Field.set(v)`: write a member — `tupleset` stmt (`v` coerced to the member type). */
+  fieldSet(
+    tupleId: ValueId,
+    index: number,
+    memberType: EvsType,
+    value: unknown,
+    what: string,
+  ): void {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    this.checkVisible(tupleId, what, loc);
+    const valId = this.coerceToId(value, memberType, what, loc);
+    this.appendStmt({ k: 'tupleset', tuple: tupleId, index, value: valId }, loc);
   }
 
   private certainPanic(what: string, reason: string, panic: number, loc: SourceLoc | null): never {
@@ -1036,14 +1389,14 @@ export class Recorder {
       }
       ty = ca.type;
     } else if (ca.kind === 'expr' && cb.kind === 'expr') {
-      if (ca.type !== cb.type) {
+      if (!typesEqual(ca.type, cb.type)) {
         let suggest = '';
         if (isNumeric(ca.type) && isNumeric(cb.type)) {
           suggest = ` — make the widths match explicitly with .toUint('…') / .toInt('…')`;
         }
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operand types differ (Expr<'${ca.type}'> vs Expr<'${cb.type}'>)${suggest}`,
+          `${what}: operand types differ (Expr<'${stringifyEvsType(ca.type)}'> vs Expr<'${stringifyEvsType(cb.type)}'>)${suggest}`,
           { loc },
         );
       }
@@ -1088,7 +1441,10 @@ export class Recorder {
     loc: SourceLoc | null,
   ): ValueId {
     if (r.logical === null || !isWordType(ty)) {
-      throw new EvsInternalError('INTERNAL', `cannot materialize operand of type '${ty}'`);
+      throw new EvsInternalError(
+        'INTERNAL',
+        `cannot materialize operand of type '${stringifyEvsType(ty)}'`,
+      );
     }
     return this.wordConst(ty, r.logical, loc, r.hex ?? undefined);
   }
@@ -1100,12 +1456,16 @@ export class Recorder {
     loc: SourceLoc | null,
   ): { id: ValueId | null; logical: bigint | null; hex: Hex | null } {
     if (c.kind === 'expr') {
-      if (c.type !== ty) this.typeMismatch(what, ty, c.type, loc);
+      if (!typesEqual(c.type, ty)) this.typeMismatch(what, ty, c.type, loc);
       return { id: c.id, logical: this.litValues.get(c.id) ?? null, hex: null };
     }
     if (!isWordType(ty)) {
       // unreachable through bin (domains are word types); defensive
-      throw new EvsTypeError('TYPE_MISMATCH', `${what}: '${ty}' operands must be Exprs`, { loc });
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: '${stringifyEvsType(ty)}' operands must be Exprs`,
+        { loc },
+      );
     }
     const { hex, logical } = this.wordLiteral(ty, c.value);
     return { id: null, logical, hex };
@@ -1116,7 +1476,7 @@ export class Recorder {
       if (!isNumeric(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be numeric (uintN/intN), got '${ty}'`,
+          `${what}: operands must be numeric (uintN/intN), got '${stringifyEvsType(ty)}'`,
           { loc },
         );
       }
@@ -1126,7 +1486,7 @@ export class Recorder {
       if (!isWordType(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: eq/neq compare word types only — memref ('${ty}') equality is not defined in v0`,
+          `${what}: eq/neq compare word types only — memref ('${stringifyEvsType(ty)}') equality is not defined in v0`,
           { loc },
         );
       }
@@ -1136,7 +1496,7 @@ export class Recorder {
       if (ty !== 'bool') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be Expr<'bool'>, got '${ty}'`,
+          `${what}: operands must be Expr<'bool'>, got '${stringifyEvsType(ty)}'`,
           { loc },
         );
       }
@@ -1146,7 +1506,7 @@ export class Recorder {
       if (!isBitsOperand(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be uintN/bytesN (bit-width types), got '${ty}'`,
+          `${what}: operands must be uintN/bytesN (bit-width types), got '${stringifyEvsType(ty)}'`,
           { loc },
         );
       }
@@ -1166,7 +1526,7 @@ export class Recorder {
     if (c.type !== 'bool') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: operand must be Expr<'bool'>, got '${c.type}'`,
+        `${what}: operand must be Expr<'bool'>, got '${stringifyEvsType(c.type)}'`,
         { loc },
       );
     }
@@ -1191,7 +1551,7 @@ export class Recorder {
     if (!isBitsOperand(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: operand must be uintN/bytesN (bit-width types), got '${c.type}'`,
+        `${what}: operand must be uintN/bytesN (bit-width types), got '${stringifyEvsType(c.type)}'`,
         { loc },
       );
     }
@@ -1240,7 +1600,7 @@ export class Recorder {
       if (!isNumeric(from)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: cannot convert from '${from}' — the source must be numeric (uintN/intN)`,
+          `${what}: cannot convert from '${stringifyEvsType(from)}' — the source must be numeric (uintN/intN)`,
           { loc },
         );
       }
@@ -1249,7 +1609,7 @@ export class Recorder {
       if (from !== 'uint256' && from !== 'bytes32') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${from}'`,
+          `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${stringifyEvsType(from)}'`,
           { loc },
         );
       }
@@ -1258,7 +1618,7 @@ export class Recorder {
       if (from !== 'bytes32') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${from}'`,
+          `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${stringifyEvsType(from)}'`,
           { loc },
         );
       }
@@ -1267,7 +1627,7 @@ export class Recorder {
       if (from !== 'uint256') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${from}'`,
+          `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${stringifyEvsType(from)}'`,
           { loc },
         );
       }
@@ -1293,7 +1653,7 @@ export class Recorder {
     if (c.kind !== 'expr' || !isDynamicType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${c.type}'` : describeHost(a)}`,
+        `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(a)}`,
         { loc },
       );
     }
@@ -1309,7 +1669,7 @@ export class Recorder {
     if (c.kind !== 'expr' || !isArrayType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${c.type}'` : describeHost(a)}`,
+        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(a)}`,
         { loc },
       );
     }
@@ -1418,7 +1778,7 @@ export class Recorder {
     if (!isNumeric(ty)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.for(): range.type must be numeric (uintN/intN), got '${ty}'`,
+        `s.for(): range.type must be numeric (uintN/intN), got '${stringifyEvsType(ty)}'`,
         { loc },
       );
     }
@@ -1475,10 +1835,10 @@ export class Recorder {
     const cb = this.classify(b, 's.select() second branch', loc);
     let ty: EvsType;
     if (ca.kind === 'expr' && cb.kind === 'expr') {
-      if (ca.type !== cb.type) {
+      if (!typesEqual(ca.type, cb.type)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `s.select(): branch types differ (Expr<'${ca.type}'> vs Expr<'${cb.type}'>)`,
+          `s.select(): branch types differ (Expr<'${stringifyEvsType(ca.type)}'> vs Expr<'${stringifyEvsType(cb.type)}'>)`,
           { loc },
         );
       }
@@ -1525,6 +1885,14 @@ export class Recorder {
     if (isWordType(ty)) {
       this.wordLiteral(ty, value);
       return;
+    }
+    if (isTupleType(ty)) {
+      // a tuple branch in s.select() is not a host literal — it must already be a built handle.
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.select(): a tuple branch must be a built tuple (s.tuple / a decoded Tuple), not a literal`,
+        { loc: captureLoc() },
+      );
     }
     encodeLiteralData(ty, value);
   }
@@ -1622,8 +1990,10 @@ export class Recorder {
       );
     }
     const argIds = plain.inputs.map((inp, i) => {
-      const ity = inp.type;
-      if (!isEvsType(ity)) {
+      // abiParamToType turns a `'tuple'` input (carrying components) into a TupleType — coerceToId
+      // then routes through its tuple branch (a Tuple handle or a literal struct object).
+      const ity = abiParamToType(inp);
+      if (!isEvsValueType(ity)) {
         throw new EvsInternalError('INTERNAL', `${label}: non-v0 input survived validation`);
       }
       const argLabel = inp.name === '' ? `args[${i}]` : `args[${i}] ("${inp.name}")`;
@@ -1634,13 +2004,19 @@ export class Recorder {
         ? undefined
         : this.coerceToId(params.gas, 'uint256', `${label} gas`, loc);
     const callerName = mode === 'try' ? 's.tryCall' : 's.call';
-    const outIds = plain.outputs.map((o, i) => {
-      const oty = o.type;
-      if (!isEvsType(oty)) {
+    // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
+    // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
+    // Tuple handle on unwrap; scalars/arrays yield an Expr.
+    const outTypes = plain.outputs.map((o): EvsType => {
+      const oty = abiParamToType(o);
+      if (!isEvsValueType(oty)) {
         throw new EvsInternalError('INTERNAL', `${label}: non-v0 output survived validation`);
       }
+      return oty;
+    });
+    const outIds = outTypes.map((oty, i) => {
       const tag =
-        plain.outputs.length === 1 ? `${callerName}(${fname})` : `${callerName}(${fname})[${i}]`;
+        outTypes.length === 1 ? `${callerName}(${fname})` : `${callerName}(${fname})[${i}]`;
       return this.newValue(oty, loc, tag);
     });
     const successId =
@@ -1658,13 +2034,18 @@ export class Recorder {
       },
       loc,
     );
+    // unwrap a tuple-typed out ValueId to a Tuple handle, every scalar/array to an Expr.
+    const handleFor = (id: ValueId, oty: EvsType): Expr | object =>
+      isTupleType(oty) ? makeTuple(this, id, oty) : makeExpr(this, id);
     const first = outIds[0];
+    const firstType = outTypes[0];
     const value: unknown =
       outIds.length === 0
         ? undefined
-        : outIds.length === 1 && first !== undefined
-          ? makeExpr(this, first)
-          : Object.freeze(outIds.map((id) => makeExpr(this, id)));
+        : outIds.length === 1 && first !== undefined && firstType !== undefined
+          ? handleFor(first, firstType)
+          : // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- outTypes is parallel to outIds (same length); the index is always in range
+            Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
     return { success: successId !== undefined ? makeExpr(this, successId) : null, value };
   }
 

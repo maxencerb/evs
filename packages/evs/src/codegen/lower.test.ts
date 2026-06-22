@@ -13,6 +13,7 @@
  * - env ops; fork smoke (paris/shanghai pushes + @memcpy return path).
  */
 
+import type { AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vitest';
 
@@ -24,10 +25,18 @@ import {
   type EvmFixture,
 } from '../../test/harness/evm.js';
 import { concatHex, returner, word } from '../../test/harness/fixtures.js';
-import { selectorOf } from '../abi/artifact.js';
+import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { isEvsType, isWordType, type EvsType, type Hex, type WordType } from '../core/types.js';
+import {
+  isEvsType,
+  isWordType,
+  typeToAbiParam,
+  type EvsType,
+  type Hex,
+  type NumericType,
+  type WordType,
+} from '../core/types.js';
 import type {
   BinOp,
   CellId,
@@ -138,8 +147,8 @@ class IrB {
 
   index(arr: ValueId, i: ValueId): ValueId {
     const t = this.typeOf(arr);
-    const elem = t.endsWith('[]') ? t.slice(0, -2) : '';
-    if (!isWordType(elem)) throw new Error(`IrB: index over non-array '${t}'`);
+    const elem = typeof t === 'string' && t.endsWith('[]') ? t.slice(0, -2) : '';
+    if (!isWordType(elem)) throw new Error(`IrB: index over non-array '${JSON.stringify(t)}'`);
     const out = this.val(elem);
     this.emit({ k: 'index', arr, i, out });
     return out;
@@ -301,9 +310,9 @@ function compileIr(ir: ScriptIr, evmVersion: EvmVersion = 'cancun'): Hex {
 
 function calldataFor(ir: ScriptIr, args: readonly unknown[]): Hex {
   const types = ir.args.map((a) => a.type);
-  const selector = selectorOf(ir.name, types);
+  const selector = selectorOf(ir.name, types.map(canonicalTypeSignature));
   if (types.length === 0) return selector;
-  const params: { type: string }[] = types.map((type) => ({ type }));
+  const params: AbiParameter[] = types.map((ty, i) => typeToAbiParam(`arg${i}`, ty));
   return concatHex(selector, encodeAbiParameters(params, args));
 }
 
@@ -316,7 +325,8 @@ async function run(
   return execRuntime(compileIr(ir, evmVersion), calldataFor(ir, args), fixture);
 }
 
-/** Expected returndata: the §8.2 single named tuple (byte-identical to viem's encoder). */
+/** Expected returndata: the §8.2 single named tuple (byte-identical to viem's encoder). Each
+ *  component type is a plain ABI type string (these tests are word/string/array only). */
 function tupleHex(
   components: readonly { name: string; type: string }[],
   values: Record<string, unknown>,
@@ -335,9 +345,9 @@ function fnAbi(
 ): PlainAbiFunction {
   return {
     name,
-    selector: selectorOf(name, inputs),
-    inputs: inputs.map((type, i) => ({ name: `i${i}`, type })),
-    outputs: outputs.map((type, i) => ({ name: `o${i}`, type })),
+    selector: selectorOf(name, inputs.map(canonicalTypeSignature)),
+    inputs: inputs.map((type, i) => typeToAbiParam(`i${i}`, type)),
+    outputs: outputs.map((type, i) => typeToAbiParam(`o${i}`, type)),
   };
 }
 
@@ -348,7 +358,7 @@ const TARGET = '0x00000000000000000000000000000000000000aa' as const;
 // ---------------------------------------------------------------------------
 
 interface WidthClass {
-  type: EvsType;
+  type: NumericType;
   bits: number;
   signed: boolean;
 }
@@ -399,7 +409,7 @@ function refArith(op: ArithOp, c: WidthClass, a: bigint, b: bigint): bigint | nu
   }
 }
 
-function binScript(type: EvsType, op: ArithOp): ScriptIr {
+function binScript(type: NumericType, op: ArithOp): ScriptIr {
   const b = new IrB('f', [
     ['a', type],
     ['b', type],
@@ -636,7 +646,7 @@ describe('convert', () => {
   }
 
   function ok(to: EvsType, y: unknown): Hex {
-    return tupleHex([{ name: 'y', type: to }], { y });
+    return tupleHex([{ name: 'y', type: canonicalTypeSignature(to) }], { y });
   }
 
   test('checked unsigned narrowing (uint256 → uint8)', async () => {

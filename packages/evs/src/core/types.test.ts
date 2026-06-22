@@ -11,12 +11,16 @@ import {
   installStagingTraps,
   isDynamicType,
   isEvsType,
+  isEvsValueType,
   isNumeric,
   isSigned,
+  isTupleType,
   isWordType,
   t,
+  typesEqual,
   type ArrayType,
   type EvsType,
+  type TupleType,
   type WordType,
 } from './types.js';
 
@@ -35,6 +39,10 @@ const DYN_TYPES = ['string', 'bytes'];
 const ARRAY_TYPES = WORD_TYPES.map((w) => `${w}[]`);
 const ALL_EVS_TYPES = [...WORD_TYPES, ...DYN_TYPES, ...ARRAY_TYPES];
 
+// Nested arrays (`uint256[][]`, `string[]`, …) are now in the string-encoded vocabulary
+// (`isEvsType` accepts them — represented for the deferred composite-array follow-up; the
+// builder/codegen still restrict them). `tuple`/`tuple[]` are NOT string-encoded (they are
+// TupleType objects), so `isEvsType` rejects those strings.
 const REJECTED = [
   '',
   'uint',
@@ -47,14 +55,10 @@ const REJECTED = [
   'int512',
   'bytes0',
   'bytes33',
-  'uint256[][]',
-  'address[][]',
   'tuple',
   'tuple[]',
   'uint256[2]',
   'address[3]',
-  'string[]', // arrays of dynamic types are not v0
-  'bytes[]',
   'function',
   'Uint256',
   ' uint256',
@@ -120,7 +124,11 @@ describe('predicates', () => {
 
   test('elemTypeOf round-trips every array type', () => {
     for (const w of WORD_TYPES) expect(elemTypeOf(`${w}[]` as ArrayType)).toBe(w);
-    for (const s of ['string', 'uint256', 'string[]', 'uint256[][]', 'tuple[]']) {
+    // nested string arrays peel one [] (now in the vocabulary)
+    expect(elemTypeOf('string[]' as ArrayType)).toBe('string');
+    expect(elemTypeOf('uint256[][]' as ArrayType)).toBe('uint256[]');
+    // non-array strings (and the non-string `tuple[]` tag) have no string element type
+    for (const s of ['string', 'uint256', 'tuple[]']) {
       expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsTypeError);
     }
   });
@@ -172,8 +180,10 @@ describe('arg()', () => {
     }
   });
 
-  test('rejects deferred-but-valid-Solidity types with UNSUPPORTED_V0', () => {
-    for (const type of ['tuple', 'uint256[][]', 'address[3]', 'string[]', 'tuple[]']) {
+  test('rejects deferred fixed-size-array Solidity types with UNSUPPORTED_V0', () => {
+    // fixed-size arrays `T[N]` stay deferred (nested dynamic arrays + tuples are now in the
+    // string/tuple vocabulary, so they are no longer rejected by arg()).
+    for (const type of ['address[3]', 'uint256[2]', 'address[3][]']) {
       let caught: unknown;
       try {
         arg('x', type as never);
@@ -183,7 +193,7 @@ describe('arg()', () => {
       expect(caught).toBeInstanceOf(EvsTypeError);
       const err = caught as EvsTypeError;
       expect(err.code).toBe('UNSUPPORTED_V0');
-      expect(err.message).toContain('v0');
+      expect(err.message).toContain('not supported');
       expect(err.loc?.file).toMatch(/types\.test\.ts/);
     }
   });
@@ -194,19 +204,93 @@ describe('t namespace', () => {
     for (const s of [...WORD_TYPES, ...DYN_TYPES]) {
       expect((t as Record<string, unknown>)[s]).toBe(s);
     }
-    // 98 word types + string + bytes + array() = 101 keys
-    expect(Object.keys(t)).toHaveLength(101);
+    // 98 word types + string + bytes + array() + struct() + tuple() = 103 keys
+    expect(Object.keys(t)).toHaveLength(103);
   });
 
   test('is frozen', () => {
     expect(Object.isFrozen(t)).toBe(true);
   });
 
-  test('t.array builds word-element array types and validates eagerly', () => {
+  test('t.array builds array types and validates eagerly', () => {
     expect(t.array(t.address)).toBe('address[]');
     expect(t.array('uint24')).toBe('uint24[]');
-    expect(() => t.array('string' as WordType)).toThrow(EvsTypeError);
+    // dynamic/array element types are now in the vocabulary (the deferred follow-up)
+    expect(t.array('string' as WordType)).toBe('string[]');
+    expect(t.array('uint24[]' as WordType)).toBe('uint24[][]');
+    // genuinely-invalid element types still throw eagerly
     expect(() => t.array('uint7' as WordType)).toThrow(EvsTypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// composite types (t.struct / t.tuple / t.array of tuples) — issue #2
+// ---------------------------------------------------------------------------
+
+describe('t.struct / t.tuple (composite types)', () => {
+  test('t.struct builds a named-component tuple in insertion order, frozen', () => {
+    const pos = t.struct({ liquidity: t.uint128, owner: t.address });
+    expect(pos).toEqual({
+      type: 'tuple',
+      components: [
+        { name: 'liquidity', type: 'uint128' },
+        { name: 'owner', type: 'address' },
+      ],
+    });
+    expect(Object.isFrozen(pos)).toBe(true);
+    expect(Object.isFrozen(pos.components)).toBe(true);
+    expect(isTupleType(pos)).toBe(true);
+    expect(isEvsValueType(pos)).toBe(true);
+  });
+
+  test('t.tuple builds positional (unnamed) components', () => {
+    const tup = t.tuple(t.uint256, t.bool);
+    expect(tup).toEqual({
+      type: 'tuple',
+      components: [
+        { name: '', type: 'uint256' },
+        { name: '', type: 'bool' },
+      ],
+    });
+  });
+
+  test('nested struct + dynamic and array members are accepted', () => {
+    const nested: TupleType = t.struct({
+      inner: t.struct({ a: t.bool, b: t.bytes32 }),
+      ids: t.array(t.uint256),
+      blob: t.bytes,
+    });
+    expect(nested.components.map((c) => c.type)).toEqual(['tuple', 'uint256[]', 'bytes']);
+    expect(nested.components[0]?.components).toEqual([
+      { name: 'a', type: 'bool' },
+      { name: 'b', type: 'bytes32' },
+    ]);
+  });
+
+  test('t.array(struct) builds a tuple[] type; elemTypeOf peels one []', () => {
+    const arr = t.array(t.struct({ x: t.uint256 }));
+    expect(arr).toMatchObject({ type: 'tuple[]' });
+    const elem = elemTypeOf(arr);
+    expect(elem).toMatchObject({ type: 'tuple' });
+  });
+
+  test('t.struct rejects empty records and non-identifier field names', () => {
+    expect(() => t.struct({})).toThrow(EvsTypeError);
+    expect(() => t.struct({ '1bad': t.uint256 } as never)).toThrow(EvsTypeError);
+  });
+
+  test('typesEqual is structural for tuples (fresh objects never === )', () => {
+    const a = t.struct({ x: t.uint256, y: t.address });
+    const b = t.struct({ x: t.uint256, y: t.address });
+    expect(a).not.toBe(b);
+    expect(typesEqual(a, b)).toBe(true);
+    expect(typesEqual(a, t.struct({ x: t.uint256, y: t.bool }))).toBe(false);
+    expect(typesEqual(a, t.struct({ z: t.uint256, y: t.address }))).toBe(false); // name differs
+    expect(typesEqual('uint256', a)).toBe(false);
+  });
+
+  test('isDynamicType: a tuple is always memref-valued', () => {
+    expect(isDynamicType(t.struct({ x: t.uint256 }))).toBe(true);
   });
 });
 

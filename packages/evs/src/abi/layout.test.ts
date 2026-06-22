@@ -190,13 +190,26 @@ describe('headBytes', () => {
     ).toBe(96);
   });
 
-  test('non-v0 param types fail loudly instead of mis-sizing the head', () => {
-    expect(() =>
+  test('static tuple params inline their whole head (cumulative walk); non-v0 types fail loudly', () => {
+    // a STATIC inner tuple occupies headBytes(components) head words, NOT one offset word
+    expect(
       headBytes([
         { name: 'a', type: 'uint256' },
-        { name: 'b', type: 'tuple', components: [{ name: 'x', type: 'uint256' }] },
+        {
+          name: 'b',
+          type: 'tuple',
+          components: [
+            { name: 'x', type: 'uint256' },
+            { name: 'y', type: 'uint8' },
+          ],
+        },
       ]),
-    ).toThrowError(EvsTypeError);
+    ).toBe(32 + 64);
+    // a DYNAMIC tuple is a single offset-pointer head word
+    expect(
+      headBytes([{ name: 'b', type: 'tuple', components: [{ name: 'x', type: 'string' }] }]),
+    ).toBe(32);
+    // genuinely-unsupported shapes still throw
     expect(() => headBytes([{ name: 'a', type: 'uint256[2]' }])).toThrowError(EvsTypeError);
   });
 });

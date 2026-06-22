@@ -11,7 +11,7 @@ import { expectTypeOf, test } from 'vitest';
 
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
-import { arg, t, type Hex } from './core/types.js';
+import { t, type Hex } from './core/types.js';
 import { toCreationBytecode, toViemDeployless, toViemStateOverride } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -52,22 +52,19 @@ const erc20Abi = [
   },
 ] as const satisfies Abi;
 
-const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: poolAbi, functionName: 'token0' });
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
-    const decimals0 = s.select(dec.success, dec.value, 18);
-    const bal0 = s.call({
-      address: token0,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [s.args.user],
-    });
-    return s.return({ token0, symbol0, decimals0, bal0 });
-  },
-);
+const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
+  const token0 = s.call({ address: pool, abi: poolAbi, functionName: 'token0' });
+  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const decimals0 = s.select(dec.success, dec.value, 18);
+  const bal0 = s.call({
+    address: token0,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [user],
+  });
+  return s.return({ token0, symbol0, decimals0, bal0 });
+});
 const compiled = compile(poolMeta);
 
 declare const client: PublicClient;
@@ -133,9 +130,9 @@ test('omitting both address and code is a type error', () => {
   expectTypeOf(compiled.abi).toMatchTypeOf<Abi>();
 });
 
-test('args is the labeled positional tuple in declaration order', () => {
+test('args is the labeled positional tuple in declaration order (auto-named arg0/arg1)', () => {
   type P = ReadContractParameters<typeof compiled.abi, 'poolMeta'>;
-  expectTypeOf<P['args']>().toEqualTypeOf<readonly [pool: `0x${string}`, user: `0x${string}`]>();
+  expectTypeOf<P['args']>().toEqualTypeOf<readonly [arg0: `0x${string}`, arg1: `0x${string}`]>();
   expectTypeOf<P['functionName']>().toEqualTypeOf<'poolMeta'>();
 });
 

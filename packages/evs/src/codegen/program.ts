@@ -17,7 +17,7 @@
  * are returned for compile.ts to forward via `onDiagnostic`; nothing is logged.
  */
 
-import { selectorOf } from '../abi/artifact.js';
+import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, type AsmNode, type LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
@@ -96,7 +96,9 @@ export function lowerProgram(
   w.op('MSTORE', { note: 'free-ptr init' });
 
   // -- dispatcher (§11): size floor, selector match, fallback EvsInvalidCalldata --------
-  const argTypes = ir.args.map((a) => a.type);
+  // tuple args expand to their canonical `(t1,t2,…)` signature so the dispatcher selector is
+  // byte-identical to viem's over the tuple-expanded ScriptAbi inputs.
+  const argTypes = ir.args.map((a) => canonicalTypeSignature(a.type));
   const selector = selectorOf(ir.name, argTypes);
   const main = w.newLabel('main');
   w.push(4);
@@ -246,10 +248,12 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
 // diagnostics — LOOP_ALLOCATION (§5) + LARGE_FRAME + ENV_FRAME_DEPENDENT
 // ---------------------------------------------------------------------------
 
-/** Statements that allocate memory at runtime (call-with-outputs snapshots returndata). */
+/** Statements that allocate memory at runtime (call-with-outputs snapshots returndata; a
+ *  `tuplenew` bump-allocates its flat block). */
 function stmtAllocates(s: Stmt): boolean {
   return (
     s.k === 'arrnew' ||
+    s.k === 'tuplenew' ||
     (s.k === 'call' && s.outs.length > 0) ||
     (s.k === 'const' && s.data.kind === 'data')
   );
@@ -310,12 +314,14 @@ function collectDiagnostics(
       if (inLoop && (stmtAllocates(s) || callsAllocatingFn)) {
         const what =
           s.k === 'arrnew'
-            ? `s.newArray(${s.elem}, …)`
-            : s.k === 'call'
-              ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
-              : s.k === 'fncall'
-                ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
-                : 'a dynamic literal materialization';
+            ? `s.newArray(${typeof s.elem === 'string' ? s.elem : JSON.stringify(s.elem)}, …)`
+            : s.k === 'tuplenew'
+              ? 's.tuple(…) (flat-block allocation)'
+              : s.k === 'call'
+                ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
+                : s.k === 'fncall'
+                  ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
+                  : 'a dynamic literal materialization';
         diagnostics.push({
           severity: 'warning',
           code: 'LOOP_ALLOCATION',

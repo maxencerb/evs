@@ -8,8 +8,9 @@
  *
  * Type-level design per docs/research/abitype-typing.md: the return record becomes ONE output
  * of type `'tuple'` with fully-named components, so viem infers an *object* — immune to the
- * §4.2 `UnionToTuple` interning-order instability. Script inputs map over the `ArgSpec` tuple
- * (order-preserving by construction).
+ * §4.2 `UnionToTuple` interning-order instability. Script inputs map over the normalized arg
+ * TYPE tuple (`readonly EvsType[]`, order-preserving by construction), auto-naming each input
+ * `arg0`, `arg1`, … — the labels are positional, so they never touch `UnionToTuple`.
  */
 
 import type { Abi, AbiFunction, AbiParameter } from 'abitype';
@@ -18,19 +19,22 @@ import { encodeAbiParameters, toFunctionSelector } from 'viem';
 import { EvsTypeError } from '../core/errors.js';
 import { captureLoc } from '../core/loc.js';
 import {
+  abiParamToType,
   bitsOf,
   isSigned,
   isWordType,
-  type ArgSpec,
+  typeToAbiParam,
   type ArrayType,
   type DynType,
   type EvsType,
   type Expr,
   type Hex,
+  type TupleType,
+  type TypeToComponent,
   type WordType,
 } from '../core/types.js';
 import type { PlainAbiFunction, PlainAbiParam } from '../ir/nodes.js';
-import { layoutOf } from './layout.js';
+import { layoutOf, layoutOfType } from './layout.js';
 
 // ---------------------------------------------------------------------------
 // error ABI (architecture §11)
@@ -58,10 +62,13 @@ type LastOf<u> =
 type UnionToTuple<u> = [u] extends [never]
   ? []
   : [...UnionToTuple<Exclude<u, LastOf<u>>>, LastOf<u>];
+// Each return key → an abitype component via {@link TypeToComponent}: a scalar/array member to
+// `{ name, type }`, a tuple/struct member to `{ name, type: 'tuple'|…, components }` (so a tuple
+// flows out as a named ABI tuple, not a raw {@link TupleType} object — composite types, §6/§8).
 type MapComponents<keys, ret extends Record<string, Expr>> = keys extends readonly unknown[]
   ? {
       readonly [i in keyof keys]: keys[i] extends keyof ret & string
-        ? { readonly name: keys[i]; readonly type: ret[keys[i]]['type'] }
+        ? TypeToComponent<keys[i], ret[keys[i]]['type']>
         : never;
     }
   : never;
@@ -74,21 +81,33 @@ export type ReturnSpecToComponents<ret extends Record<string, Expr>> = string ex
   ? readonly { readonly name: string; readonly type: EvsType }[]
   : MapComponents<UnionToTuple<keyof ret>, ret>;
 
+// The auto-name for arg position `i`: `arg{i}` for a concrete tuple index (a numeric-string key),
+// but a plain `string` for the open `number` index of the default `readonly EvsType[]`
+// instantiation — so `arg0`/`arg1` literals stay assignable to it (vs. collapsing to `never`,
+// which would reject every concrete script).
+export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+
+// inputs are auto-named `arg0`, `arg1`, … (positional labels; viem infers `args` positionally
+// regardless). A tuple arg expands to `{ name, type: 'tuple', components }` via {@link
+// TypeToComponent}; a scalar arg to `{ name, type }`. A purely HOMOMORPHIC mapped type over the
+// arg TYPE tuple — order/labels preserved structurally (no `UnionToTuple`), and no conditional
+// over `args` itself, so `args` stays a COVARIANT type parameter (a concrete tuple-arg
+// `ScriptAbi`/`EvsScript`/`CompiledEvsScript` is assignable to the default-instantiated one, just
+// like the `ret` relaxation — pinned by compile.test-d).
+export type ArgsToInputs<args extends readonly EvsType[]> = {
+  readonly [i in keyof args]: TypeToComponent<ArgName<i>, args[i]>;
+};
+
 export type ScriptAbi<
   name extends string,
-  args extends readonly ArgSpec[],
+  args extends readonly EvsType[],
   ret extends Record<string, Expr>,
 > = readonly [
   {
     readonly type: 'function';
     readonly name: name;
     readonly stateMutability: 'view';
-    readonly inputs: {
-      readonly [i in keyof args]: {
-        readonly name: args[i]['name'];
-        readonly type: args[i]['type'];
-      };
-    };
+    readonly inputs: ArgsToInputs<args>;
     readonly outputs: readonly [
       {
         readonly name: 'result';
@@ -107,10 +126,14 @@ export type ScriptAbi<
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
-/** Re-throws a `layoutOf` failure with `where` prepended, preserving the code. */
-function validateV0Type(type: string, where: string): void {
+/** Re-throws a `layout*` failure with `where` prepended, preserving the code. Tuple-aware: a
+ *  {@link TupleType} descriptor validates through its component layouts (`layoutOfType`); a raw
+ *  type string (which may be an arbitrary, possibly-invalid ABI string from an `AbiParameter`)
+ *  stays on the existing string `layoutOf` path. */
+function validateV0Type(type: TupleType | string, where: string): void {
   try {
-    layoutOf(type);
+    if (typeof type === 'string') layoutOf(type);
+    else layoutOfType(type);
   } catch (e) {
     if (e instanceof EvsTypeError) {
       throw new EvsTypeError(e.code, `${where}: ${e.message}`, { loc: captureLoc() });
@@ -120,13 +143,41 @@ function validateV0Type(type: string, where: string): void {
 }
 
 /**
+ * A tuple type's struct fields must carry non-empty identifier names (an empty/odd name collapses
+ * viem's object inference to a positional array — abitype-typing §4.3). Positional `t.tuple`
+ * members (`name: ''`) are fine. Recurses through nested tuple components. `t.struct` already
+ * enforces this at construction; `buildScriptAbi` re-checks so a hand-built (deserialized) type
+ * cannot smuggle a degenerate struct through.
+ */
+function assertStructFieldNames(type: EvsType, where: string): void {
+  if (typeof type === 'string') return;
+  type.components.forEach((c, i) => {
+    if (c.name !== '' && !IDENT_RE.test(c.name)) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `${where}: tuple field #${i} has an invalid name ${JSON.stringify(c.name)} (every named struct field must be a non-empty identifier or viem degrades the result to a positional array)`,
+        { loc: captureLoc() },
+      );
+    }
+    if (c.components !== undefined) {
+      assertStructFieldNames(abiParamToType(c), `${where} field "${c.name}"`);
+    }
+  });
+}
+
+/**
  * Runtime mirror of `ScriptAbi`: `[function, EvsInvalidCalldata, EvsDecodeError]`.
- * inputs order = `args` tuple order; components order = `returns` insertion order (the
- * runtime ABI array is the encode/decode source of truth — abitype-typing §4.2).
+ *
+ * `args` is the NORMALIZED arg TYPE list (a `readonly EvsType[]` — script args are positional
+ * after the rewrite, so they carry no names): each input is auto-named `arg0`, `arg1`, … and
+ * expanded via {@link typeToAbiParam} (a tuple type → `{ name, type: 'tuple', components }`).
+ * `inputs` order = `args` order; `components` order = `returns` insertion order (the runtime ABI
+ * array is the encode/decode source of truth — abitype-typing §4.2). Every arg/return type is
+ * validated through the tuple-aware layout, and struct field names are re-checked.
  */
 export function buildScriptAbi(
   name: string,
-  args: readonly ArgSpec[],
+  args: readonly EvsType[],
   returns: readonly { name: string; type: EvsType }[],
 ): Abi {
   if (!IDENT_RE.test(name)) {
@@ -136,25 +187,11 @@ export function buildScriptAbi(
       { loc: captureLoc() },
     );
   }
-  const seenArgs = new Set<string>();
-  const inputs = args.map((a, i) => {
-    if (!IDENT_RE.test(a.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)}`,
-        { loc: captureLoc() },
-      );
-    }
-    if (seenArgs.has(a.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `buildScriptAbi: duplicate argument name ${JSON.stringify(a.name)}`,
-        { loc: captureLoc() },
-      );
-    }
-    seenArgs.add(a.name);
-    validateV0Type(a.type, `argument "${a.name}"`);
-    return Object.freeze({ name: a.name, type: a.type });
+  const inputs = args.map((ty, i) => {
+    const argName = `arg${i}`;
+    validateV0Type(ty, `argument #${i} ("${argName}")`);
+    assertStructFieldNames(ty, `argument #${i} ("${argName}")`);
+    return Object.freeze(typeToAbiParam(argName, ty));
   });
   const seenReturns = new Set<string>();
   const components = returns.map((r, i) => {
@@ -176,7 +213,8 @@ export function buildScriptAbi(
     }
     seenReturns.add(r.name);
     validateV0Type(r.type, `return component "${r.name}"`);
-    return Object.freeze({ name: r.name, type: r.type });
+    assertStructFieldNames(r.type, `return component "${r.name}"`);
+    return Object.freeze(typeToAbiParam(r.name, r.type));
   });
   const fn: AbiFunction = Object.freeze({
     type: 'function',
@@ -200,26 +238,77 @@ export function selectorOf(name: string, argTypes: readonly string[]): Hex {
 }
 
 /**
- * `AbiFunction` → `PlainAbiFunction` (+ selector via `selectorOf`). Validates every
- * input/output type against the v0 set, naming the offending parameter.
+ * Canonical Solidity signature fragment of an {@link EvsType} (the form selectors are computed
+ * over): a string type verbatim; a tuple → `(c1,c2,…)` with any array suffix, recursing through
+ * components. Lets the dispatcher (`codegen/program.ts`) compute the script selector from the
+ * normalized {@link EvsType} arg list, byte-identical to viem's selector over the tuple-expanded
+ * `ScriptAbi` inputs.
+ */
+export function canonicalTypeSignature(ty: EvsType): string {
+  if (typeof ty === 'string') return ty;
+  const suffix = ty.type.slice('tuple'.length); // '' | '[]' | '[][]'
+  const inner = ty.components.map((c) => canonicalTypeSignature(abiParamToType(c))).join(',');
+  return `(${inner})${suffix}`;
+}
+
+/**
+ * One `AbiParameter` → `PlainAbiParam`, recursing through tuple components so `s.call` accepts
+ * struct/tuple inputs and outputs. Each (leaf or component) type is validated against the v0 set;
+ * a tuple param carries its frozen, recursively-converted `components`.
+ */
+function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
+  if (p.type.startsWith('tuple')) {
+    // tuple *arrays* are valid Solidity but a v0 follow-up — reject with UNSUPPORTED_V0.
+    if (p.type !== 'tuple') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `${where}: type ${JSON.stringify(p.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        { loc: captureLoc() },
+      );
+    }
+    const components = 'components' in p ? p.components : undefined;
+    if (components === undefined || components.length === 0) {
+      throw new EvsTypeError('ABI_SHAPE', `${where}: tuple type carries no \`components\``, {
+        loc: captureLoc(),
+      });
+    }
+    // recurse: each component validates its own (leaf or nested-tuple) type.
+    return Object.freeze({
+      name: p.name ?? '',
+      type: p.type,
+      components: Object.freeze(
+        components.map((c, j) =>
+          abiParamToPlain(
+            c,
+            `${where}.components[${j}] (${c.name !== undefined && c.name !== '' ? `"${c.name}"` : `#${j} unnamed`})`,
+          ),
+        ),
+      ),
+    });
+  }
+  validateV0Type(p.type, where);
+  return Object.freeze({ name: p.name ?? '', type: p.type });
+}
+
+/**
+ * `AbiFunction` → `PlainAbiFunction` (+ selector). Validates every input/output type against the
+ * v0 set (recursing into tuple components), naming the offending parameter. The selector is
+ * computed by viem from the whole `item` so tuple inputs expand to their canonical
+ * `(t1,t2,…)` signature.
  */
 export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction {
   const toPlain = (params: readonly AbiParameter[], kind: 'input' | 'output') =>
     Object.freeze(
       params.map((p, i): PlainAbiParam => {
         const label = p.name !== undefined && p.name !== '' ? `"${p.name}"` : `#${i} (unnamed)`;
-        validateV0Type(p.type, `function "${item.name}": ${kind} parameter ${label}`);
-        return Object.freeze({ name: p.name ?? '', type: p.type });
+        return abiParamToPlain(p, `function "${item.name}": ${kind} parameter ${label}`);
       }),
     );
   const inputs = toPlain(item.inputs, 'input');
   const outputs = toPlain(item.outputs, 'output');
   return Object.freeze({
     name: item.name,
-    selector: selectorOf(
-      item.name,
-      item.inputs.map((p) => p.type),
-    ),
+    selector: toFunctionSelector(item),
     inputs,
     outputs,
   });
@@ -365,7 +454,7 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
     } else {
       coerced = coerceHexLiteral('bytes', value, null);
     }
-  } else {
+  } else if (layout.kind === 'array') {
     if (!Array.isArray(value)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -374,6 +463,15 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       );
     }
     coerced = value.map((el, i) => coerceWordLiteral(layout.elem.abi, el, `${type}[${i}]: `));
+  } else {
+    // tuple: composite literals are built in the recorder (`tuplenew`), never here — the public
+    // `encodeLiteralData` signature (`DynType | ArrayType`) already excludes tuples; this is the
+    // runtime-defensive arm for a hand-cast caller.
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `encodeLiteralData: tuple type ${JSON.stringify(type)} has no flat memref literal — build it via the recorder`,
+      { loc: captureLoc() },
+    );
   }
   const params: readonly AbiParameter[] = [{ type }];
   const full = encodeAbiParameters(params, [coerced]);

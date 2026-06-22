@@ -30,7 +30,14 @@
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
-import { bitsOf, isSigned, isWordType, type EvsType, type WordType } from '../core/types.js';
+import {
+  bitsOf,
+  isSigned,
+  isTupleType,
+  isWordType,
+  type EvsType,
+  type WordType,
+} from '../core/types.js';
 import {
   walkStmts,
   type ConstData,
@@ -148,6 +155,12 @@ function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/lower: ${message}`);
 }
 
+/** Renders a value type for a debug note / error message (tuples → their JSON descriptor). The
+ *  ops below operate on word types, but {@link EvsType} now also admits tuple objects. */
+function fmtType(t: EvsType): string {
+  return typeof t === 'string' ? t : JSON.stringify(t);
+}
+
 interface NodeMeta {
   loc?: SourceLoc | null;
   note?: string;
@@ -202,7 +215,7 @@ interface NumClass {
 
 /** Narrows an operand type that the op table guarantees to be a word type. */
 function asWordType(type: EvsType): WordType {
-  if (!isWordType(type)) throw internal(`expected a word type, got '${type}'`);
+  if (!isWordType(type)) throw internal(`expected a word type, got '${fmtType(type)}'`);
   return type;
 }
 
@@ -279,6 +292,15 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
     case 'arrset':
       lowerArrset(w, s, ctx);
       return;
+    case 'tuplenew':
+      lowerTupleNew(w, s, ctx);
+      return;
+    case 'field':
+      lowerField(w, s, ctx);
+      return;
+    case 'tupleset':
+      lowerTupleSet(w, s, ctx);
+      return;
     case 'cellnew':
     case 'cellset':
       loadOperand(w, ctx, s.k === 'cellnew' ? s.init : s.value, meta(ctx, s, `cell ${s.cell} ←`));
@@ -325,7 +347,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
     const slot = ctx.frame.slotOfValue(s.out);
     if (slot === null) return; // folded — operands PUSH it directly
     // returned consts keep a slot (the return encoder reads memory): materialize it
-    w.push(wordConstValue(s.data, `const #${s.out}`), meta(ctx, s, `const ${s.type}`));
+    w.push(wordConstValue(s.data, `const #${s.out}`), meta(ctx, s, `const ${fmtType(s.type)}`));
     w.push(slot);
     w.op('MSTORE');
     return;
@@ -337,7 +359,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   const padded = new Uint8Array(Math.ceil(bytes.length / 32) * 32);
   padded.set(bytes);
   const label = ctx.dataSeg(padded);
-  w.push(0x40, meta(ctx, s, `literal ${s.type} (${bytes.length}B)`));
+  w.push(0x40, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
   w.op('MLOAD'); // [ptr]
   w.push(padded.length); // [size, ptr]
   w.pushLabel(label); // [src, size, ptr]
@@ -384,7 +406,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     case 'lte':
     case 'gte': {
       const signed = isSigned(type);
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${type}`));
+      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a); // [a, b]
       if (s.op === 'lt' || s.op === 'gte') w.op(signed ? 'SLT' : 'LT');
       else w.op(signed ? 'SGT' : 'GT');
@@ -394,7 +416,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     }
     case 'eq':
     case 'neq':
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${type}`));
+      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a);
       w.op('EQ');
       if (s.op === 'neq') w.op('ISZERO');
@@ -412,7 +434,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     case 'bitor':
     case 'bitxor':
       // canonical-preserving on canonical operands (no post-masking needed)
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${type}`));
+      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a);
       w.op(s.op === 'bitand' ? 'AND' : s.op === 'bitor' ? 'OR' : 'XOR');
       storeOut(w, ctx, s.out);
@@ -436,7 +458,7 @@ function lowerCheckedArith(
   type: EvsType,
 ): void {
   const { bits, signed } = numClass(type);
-  const m = meta(ctx, s, `checked ${s.op} ${type}`);
+  const m = meta(ctx, s, `checked ${s.op} ${fmtType(type)}`);
   loadOperand(w, ctx, s.b, m); // [b]
   loadOperand(w, ctx, s.a); // [a, b]
 
@@ -455,7 +477,7 @@ function lowerCheckedArith(
     }
     // canonical operands ⇒ true sum < 2^257 never wraps: range check alone
     w.op('ADD'); // [r]
-    emitMaxCheck(w, ctx, maxUint(bits), `max ${type}`);
+    emitMaxCheck(w, ctx, maxUint(bits), `max ${fmtType(type)}`);
     storeOut(w, ctx, s.out);
     return;
   }
@@ -476,7 +498,7 @@ function lowerCheckedArith(
     if (bits <= 128) {
       // true product < 2^256 for canonical operands ⇒ range check alone is sound
       w.op('MUL'); // [r]
-      emitMaxCheck(w, ctx, maxUint(bits), `max ${type}`);
+      emitMaxCheck(w, ctx, maxUint(bits), `max ${fmtType(type)}`);
       storeOut(w, ctx, s.out);
       return;
     }
@@ -485,7 +507,7 @@ function lowerCheckedArith(
     w.op('DUP2'); // [a, b, a, b]
     w.op('MUL'); // [r, a, b]
     emitUnsignedDivBack(w, ctx); // [r, a, b] (or Panic 0x11)
-    if (bits < 256) emitMaxCheck(w, ctx, maxUint(bits), `max ${type}`);
+    if (bits < 256) emitMaxCheck(w, ctx, maxUint(bits), `max ${fmtType(type)}`);
     storeOut(w, ctx, s.out); // [a, b]
     w.op('POP');
     w.op('POP');
@@ -610,7 +632,7 @@ function lowerDivMod(
   type: EvsType,
 ): void {
   const { bits, signed } = numClass(type);
-  loadOperand(w, ctx, s.b, meta(ctx, s, `checked ${s.op} ${type}`)); // [b]
+  loadOperand(w, ctx, s.b, meta(ctx, s, `checked ${s.op} ${fmtType(type)}`)); // [b]
   w.op('DUP1');
   w.op('ISZERO'); // [b == 0, b]
   w.pushLabel(ctx.tails.panicDivZero);
@@ -656,7 +678,7 @@ function lowerShift(
 ): void {
   const wt = asWordType(type);
   const signed = isSigned(type);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${type}`)); // [value]
+  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${fmtType(type)}`)); // [value]
   loadOperand(w, ctx, s.b); // [shift, value]
   if (s.op === 'shl') {
     w.op('SHL'); // [value << shift]
@@ -680,7 +702,7 @@ function lowerShift(
 
 function lowerUn(w: AsmWriter, s: Extract<Stmt, { k: 'un' }>, ctx: LowerCtx): void {
   const type = typeOf(ctx, s.a);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${type}`));
+  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${fmtType(type)}`));
   if (s.op === 'not' || s.op === 'iszero') {
     w.op('ISZERO'); // canonical 0/1 bool
   } else {
@@ -728,7 +750,7 @@ function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: LowerCtx): 
 function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: LowerCtx): void {
   const from = typeOf(ctx, s.a);
   const to = typeOf(ctx, s.out);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `convert ${from} → ${to}`)); // [v]
+  loadOperand(w, ctx, s.a, meta(ctx, s, `convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
 
   const reinterpret =
     from === to ||
@@ -755,11 +777,11 @@ function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: Low
     if (t.bits < f.bits) {
       // checked narrowing
       if (t.signed) emitFixpointCheck(w, ctx, t.bits);
-      else emitMaxCheck(w, ctx, maxUint(t.bits), `max ${to}`);
+      else emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
     } // else free widening
   } else if (!f.signed && t.signed) {
     // uintN → intM: free iff N < M (the value range fits the sign bit), else checked
-    if (f.bits >= t.bits) emitMaxCheck(w, ctx, maxInt(t.bits), `max ${to}`);
+    if (f.bits >= t.bits) emitMaxCheck(w, ctx, maxInt(t.bits), `max ${fmtType(to)}`);
   } else if (t.bits === 256) {
     // intN → uint256: only negativity can fail (sign-extended negatives are ≥ 2^255)
     w.op('DUP1'); // [v, v]
@@ -769,7 +791,7 @@ function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: Low
     w.op('JUMPI'); // [v]
   } else {
     // intN → uintM (M < 256): negatives are huge unsigned ⇒ one upper-bound check covers both
-    emitMaxCheck(w, ctx, maxUint(t.bits), `max ${to}`);
+    emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
   }
   storeOut(w, ctx, s.out);
 }
@@ -816,7 +838,7 @@ function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCt
 }
 
 function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.length, meta(ctx, s, `arrnew ${s.elem}[]`)); // [n]
+  loadOperand(w, ctx, s.length, meta(ctx, s, `arrnew ${fmtType(s.elem)}[]`)); // [n]
   w.op('DUP1');
   w.push(0xffffffffn, { note: 'alloc cap 2^32−1' }); // [cap, n, n]
   w.op('LT'); // [cap < n, n]
@@ -869,6 +891,73 @@ function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: Lower
   w.push(32);
   w.op('ADD'); // [addr, v]
   w.op('MSTORE'); // []                  value is canonical (operand types validated)
+}
+
+// ---------------------------------------------------------------------------
+// tuples / structs — FLAT-POINTER layout (architecture §5, spec §3): a tuple is a memref to a
+// packed `[w0][w1]…[w_{n-1}]` block of `n` words (NO length prefix). A static member's word is
+// canonical; a dynamic/composite member's word is a memref pointer.
+// ---------------------------------------------------------------------------
+
+/** The component count of the tuple-typed out value (the flat block has exactly this many words). */
+function tupleArity(ctx: LowerCtx, v: ValueId): number {
+  const ty = typeOf(ctx, v);
+  if (!isTupleType(ty)) throw internal(`tuple op over a non-tuple value (ValueId ${v})`);
+  return ty.components.length;
+}
+
+/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end, §5), MSTORE each
+ *  provided member at `ptr + 32·i`. Omitted/literal-0 members need no MSTORE (the block is zero). */
+function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
+  const n = tupleArity(ctx, s.out);
+  const size = 32 * n;
+  w.push(0x40, meta(ctx, s, `tuplenew ${n} words`));
+  w.op('MLOAD'); // [ptr]
+  // freePtr += size
+  w.op('DUP1'); // [ptr, ptr]
+  w.push(size);
+  w.op('ADD'); // [ptr+size, ptr]
+  w.push(0x40);
+  w.op('MSTORE'); // [ptr]
+  // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros (§5). At stack
+  // height exactly [ptr] here; the @memcpy contract is not used (no memref copy).
+  w.push(size); // [size, ptr]
+  w.op('CALLDATASIZE'); // [cds, size, ptr]
+  w.op('DUP3'); // [ptr, cds, size, ptr]
+  w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
+  // MSTORE each provided member at ptr + 32·index
+  for (const init of s.inits) {
+    loadOperand(w, ctx, init.value, meta(ctx, s, `member [${init.index}] ←`)); // [v, ptr]
+    w.op('DUP2'); // [ptr, v, ptr]
+    if (init.index > 0) {
+      w.push(32 * init.index);
+      w.op('ADD'); // [ptr+32·i, v, ptr]
+    }
+    w.op('MSTORE'); // [ptr]
+  }
+  storeOut(w, ctx, s.out); // []
+}
+
+/** `field i` read = `MLOAD(tuplePtr + 32·i)` → the canonical word or the member pointer. */
+function lowerField(w: AsmWriter, s: Extract<Stmt, { k: 'field' }>, ctx: LowerCtx): void {
+  loadOperand(w, ctx, s.tuple, meta(ctx, s, `field [${s.index}]`)); // [ptr]
+  if (s.index > 0) {
+    w.push(32 * s.index);
+    w.op('ADD'); // [ptr+32·i]
+  }
+  w.op('MLOAD'); // [word]
+  storeOut(w, ctx, s.out);
+}
+
+/** `field i` write = `MSTORE(tuplePtr + 32·i, value)`. */
+function lowerTupleSet(w: AsmWriter, s: Extract<Stmt, { k: 'tupleset' }>, ctx: LowerCtx): void {
+  loadOperand(w, ctx, s.value, meta(ctx, s, `tupleset [${s.index}] ←`)); // [v]
+  loadOperand(w, ctx, s.tuple); // [ptr, v]
+  if (s.index > 0) {
+    w.push(32 * s.index);
+    w.op('ADD'); // [ptr+32·i, v]
+  }
+  w.op('MSTORE'); // []
 }
 
 // ---------------------------------------------------------------------------

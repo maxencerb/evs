@@ -13,7 +13,7 @@
 
 import type { Address } from 'abitype';
 
-import { selectorOf, type ScriptAbi } from './abi/artifact.js';
+import { canonicalTypeSignature, selectorOf, type ScriptAbi } from './abi/artifact.js';
 import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
 import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
@@ -26,7 +26,7 @@ import {
   type EvsDiagnostic,
   type SourceLoc,
 } from './core/errors.js';
-import type { ArgSpec, Expr, Hex } from './core/types.js';
+import type { EvsType, Expr, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
@@ -44,7 +44,7 @@ export interface CompileOptions {
 
 export interface CompiledEvsScript<
   name extends string = string,
-  args extends readonly ArgSpec[] = readonly ArgSpec[],
+  args extends readonly EvsType[] = readonly EvsType[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
   readonly abi: ScriptAbi<name, args, ret>; // literal-typed: [function, EvsInvalidCalldata, EvsDecodeError]
@@ -78,7 +78,7 @@ export interface RevertExplanation {
 export type CompiledOf<s> =
   s extends EvsScript<
     infer n extends string,
-    infer a extends readonly ArgSpec[],
+    infer a extends readonly EvsType[],
     infer r extends Record<string, Expr>
   >
     ? CompiledEvsScript<n, a, r>
@@ -403,7 +403,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
   }
 
   if (selector === INVALID_CALLDATA_SELECTOR && bytes.length === 4) {
-    const signature = `${ir.name}(${ir.args.map((a) => a.type).join(',')})`;
+    const signature = `${ir.name}(${ir.args.map((a) => canonicalTypeSignature(a.type)).join(',')})`;
     const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
     return {
       kind: 'evs-invalid-calldata',

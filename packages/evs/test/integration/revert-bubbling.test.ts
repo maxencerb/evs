@@ -11,7 +11,7 @@
 import { encodeFunctionData } from 'viem';
 import { beforeAll, describe, expect, test } from 'vitest';
 
-import { arg, evscript, t } from '../../src/index.js';
+import { evscript, t } from '../../src/index.js';
 import { Malformed, Reverter } from '../generated/index.js';
 import { callExpectRevert, deploy } from './helpers.js';
 
@@ -37,8 +37,8 @@ beforeAll(async () => {
 
 describe('revert bubbling through viem (byte-exact vs direct call)', () => {
   test.each(FLAVORS)('%s', async (flavor) => {
-    const script = evscript({ name: 'bubble', args: [arg('target', t.address)] }, (s) => {
-      const v = s.call({ address: s.args.target, abi: Reverter.abi, functionName: flavor });
+    const script = evscript({ name: 'bubble', args: [t.address] }, (s, target) => {
+      const v = s.call({ address: target, abi: Reverter.abi, functionName: flavor });
       return s.return({ v });
     });
     const compiled = script.compile();
@@ -71,8 +71,8 @@ describe('revert bubbling through viem (byte-exact vs direct call)', () => {
 
 describe('explainRevert round-trip on EvsDecodeError', () => {
   test('malformed string return → evs-decode with the originating call site', async () => {
-    const script = evscript({ name: 'decodeFail', args: [arg('target', t.address)] }, (s) => {
-      const v = s.call({ address: s.args.target, abi: Malformed.abi, functionName: 'hugeOffset' });
+    const script = evscript({ name: 'decodeFail', args: [t.address] }, (s, target) => {
+      const v = s.call({ address: target, abi: Malformed.abi, functionName: 'hugeOffset' });
       return s.return({ v });
     });
     const compiled = script.compile();

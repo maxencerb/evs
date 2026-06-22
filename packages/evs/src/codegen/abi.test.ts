@@ -13,10 +13,10 @@ import { decodeFunctionResult, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vitest';
 
 import { bytesToHex, execRuntime, DEFAULT_GAS_LIMIT } from '../../test/harness/evm.js';
-import { buildScriptAbi, selectorOf } from '../abi/artifact.js';
+import { buildScriptAbi, canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import type { EvsType, Hex } from '../core/types.js';
+import { isDynamicType, typeToAbiParam, type EvsType, type Hex } from '../core/types.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { createSharedTails, emitSharedTails } from './tails.js';
 
@@ -34,7 +34,7 @@ const word = (v: bigint): Hex => `0x${(v & U256_MASK).toString(16).padStart(64, 
 const concat = (...parts: readonly Hex[]): Hex => `0x${parts.map((p) => p.slice(2)).join('')}`;
 
 function isDyn(type: EvsType): boolean {
-  return type === 'string' || type === 'bytes' || type.endsWith('[]');
+  return isDynamicType(type);
 }
 
 /** prologue → decode(args) → return-encode(args) → tails. */
@@ -61,7 +61,7 @@ function callDataFor(types: readonly EvsType[], values: readonly unknown[]): Hex
   return concat(
     SELECTOR,
     encodeAbiParameters(
-      types.map((type) => ({ type })),
+      types.map((type, i) => typeToAbiParam(`a${i}`, type)),
       values,
     ),
   );
@@ -145,7 +145,7 @@ describe('calldata decode → return encode echo, differential vs viem (cancun)'
     expect(res.success).toBe(true);
     const abi = buildScriptAbi(
       'echo',
-      types.map((type, i) => ({ name: `a${i}`, type })),
+      [...types],
       types.map((type, i) => ({ name: `v${i}`, type })),
     );
     const decoded = decodeFunctionResult({ abi, functionName: 'echo', data: res.data });
@@ -234,7 +234,7 @@ describe('fuzzed echo matrix (seeded, differential vs viem)', () => {
       return g;
     });
     return {
-      name: picks.map((p) => p.type).join(','),
+      name: picks.map((p) => canonicalTypeSignature(p.type)).join(','),
       types: picks.map((p) => p.type),
       values: picks.map((p) => p.gen(rng)),
     };

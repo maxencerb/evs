@@ -118,7 +118,12 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  at<elem extends StringType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>;
+  // `& ArrayType` pins `${elem}[]` to the depth-bounded array vocabulary (an unbounded
+  // `${StringType}[]` could reach depth 4, which is not an `EvsType`).
+  at<elem extends StringType>(
+    this: Expr<`${elem}[]` & ArrayType>,
+    i: IntoExpr<'uint256'>,
+  ): Expr<elem>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
 
@@ -146,7 +151,10 @@ export type LitOf<t extends EvsType> = t extends NumericType
  * tuple) and recurses through nested components / array suffixes. A {@link TupleType} is
  * abitype-`AbiParameter`-shaped, so it plugs straight in.
  */
-export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<TupleAsParam<t>, 'inputs'>;
+export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<
+  TupleAsParam<t>,
+  'inputs'
+>;
 
 /** A {@link TupleType} viewed as an unnamed abitype `AbiParameter` (for inference). */
 export type TupleAsParam<t extends TupleType> = {
@@ -189,12 +197,13 @@ export function arg<const name extends string, const type extends StringType>(
 // compiles to a single NAMED ABI `tuple` which abitype infers as an ORDER-INSENSITIVE object;
 // runtime encode order is `Object.keys()` insertion order (the only source of truth). Positional
 // `t.tuple(...)` and script args use ordered declarators and never touch `UnionToTuple`.
-type UnionToIntersection<u> = (u extends unknown ? (k: u) => void : never) extends (k: infer i) => void
+type UnionToIntersection<u> = (u extends unknown ? (k: u) => void : never) extends (
+  k: infer i,
+) => void
   ? i
   : never;
-type LastOf<u> = UnionToIntersection<u extends unknown ? () => u : never> extends () => infer r
-  ? r
-  : never;
+type LastOf<u> =
+  UnionToIntersection<u extends unknown ? () => u : never> extends () => infer r ? r : never;
 type UnionToTuple<u, acc extends readonly unknown[] = []> = [u] extends [never]
   ? acc
   : UnionToTuple<Exclude<u, LastOf<u>>, [LastOf<u>, ...acc]>;
@@ -264,6 +273,9 @@ function buildWordTypeSets(): {
 
 const SETS = buildWordTypeSets();
 
+// frozen namespace: the overloaded method types are the authority; the impls are intentionally
+// `unknown`-typed and validate at runtime (double-cast through `unknown`).
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion
 export const t: TypeNamespace = Object.freeze({
   address: 'address',
   bool: 'bool',
@@ -374,8 +386,6 @@ export const t: TypeNamespace = Object.freeze({
   tuple(...items: unknown[]): unknown {
     return tupleTypeRT(items);
   },
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- frozen namespace: the
-  // overloaded method types above are the authority; the impls validate at runtime.
 } as const) as unknown as TypeNamespace;
 
 // ---------------------------------------------------------------------------
@@ -400,7 +410,9 @@ export function isTupleType(v: unknown): v is TupleType {
 
 /** Any valid {@link EvsType} value (string-encoded or a tuple descriptor). */
 export function isEvsValueType(v: unknown): v is EvsType {
-  return (typeof v === 'string' && isStringType(v)) || (isTupleType(v) && componentsValid(v.components));
+  return (
+    (typeof v === 'string' && isStringType(v)) || (isTupleType(v) && componentsValid(v.components))
+  );
 }
 
 function componentsValid(components: readonly unknown[]): boolean {
@@ -408,7 +420,8 @@ function componentsValid(components: readonly unknown[]): boolean {
     if (typeof c !== 'object' || c === null) return false;
     const o = c as { name?: unknown; type?: unknown; components?: unknown };
     if (typeof o.name !== 'string' || typeof o.type !== 'string') return false;
-    if (o.type.startsWith('tuple')) return Array.isArray(o.components) && componentsValid(o.components);
+    if (o.type.startsWith('tuple'))
+      return Array.isArray(o.components) && componentsValid(o.components);
     return isStringType(o.type) && o.components === undefined;
   });
 }
@@ -471,6 +484,7 @@ export function elemTypeOf(s: ArrayType | TupleType): EvsType {
     });
   }
   const innerTag = s.type.slice(0, -2); // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]'
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- peeling one [] off a tuple-array tag yields a valid TupleType tag
   return Object.freeze({ type: innerTag as TupleType['type'], components: s.components });
 }
 
@@ -491,8 +505,10 @@ export function typesEqual(a: EvsType, b: EvsType): boolean {
  *  the param carries `components`). */
 export function abiParamToType(p: { type: string; components?: readonly NamedType[] }): EvsType {
   if (p.type.startsWith('tuple') && p.components !== undefined) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- guarded by startsWith('tuple') + components present
     return { type: p.type as TupleType['type'], components: p.components };
   }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- non-tuple PlainAbiParam types are string-encoded EvsTypes
   return p.type as EvsType;
 }
 
@@ -515,7 +531,11 @@ function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
     return Object.freeze({ name, type: ty });
   }
   if (isTupleType(ty)) {
-    return Object.freeze({ name, type: ty.type, components: normalizeComponents(ty.components, ctx) });
+    return Object.freeze({
+      name,
+      type: ty.type,
+      components: normalizeComponents(ty.components, ctx),
+    });
   }
   if (Array.isArray(ty)) {
     return Object.freeze({ name, type: 'tuple', components: componentsFromAbi(ty, ctx) });
@@ -539,7 +559,11 @@ function normalizeComponents(components: readonly NamedType[], ctx: string): rea
     components.map((c) =>
       c.components === undefined
         ? toComponentRT(c.name, c.type, ctx)
-        : Object.freeze({ name: c.name, type: c.type, components: normalizeComponents(c.components, ctx) }),
+        : Object.freeze({
+            name: c.name,
+            type: c.type,
+            components: normalizeComponents(c.components, ctx),
+          }),
     ),
   );
 }
@@ -573,7 +597,11 @@ function componentsFromAbi(params: readonly unknown[], ctx: string): readonly Na
             { loc: captureLoc() },
           );
         }
-        return Object.freeze({ name, type: o.type, components: componentsFromAbi(o.components, ctx) });
+        return Object.freeze({
+          name,
+          type: o.type,
+          components: componentsFromAbi(o.components, ctx),
+        });
       }
       assertEvsType(o.type, `${ctx} component #${i}`);
       return Object.freeze({ name, type: o.type });
@@ -622,16 +650,24 @@ function arrayTypeRT(elem: unknown): EvsType {
   if (typeof elem === 'string') {
     assertEvsType(elem, 't.array() element');
     arrayDepthGuard(`${elem}[]`);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType, so `${elem}[]` is a valid ArrayType (depth-guarded)
     return `${elem}[]` as ArrayType;
   }
   if (isTupleType(elem)) {
     const tag = `${elem.type}[]`;
     if (tag !== 'tuple[]' && tag !== 'tuple[][]') {
-      throw new EvsTypeError('UNSUPPORTED_V0', `t.array(): tuple array nesting deeper than [][] is not supported`, {
-        loc: captureLoc(),
-      });
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `t.array(): tuple array nesting deeper than [][] is not supported`,
+        {
+          loc: captureLoc(),
+        },
+      );
     }
-    return Object.freeze({ type: tag, components: normalizeComponents(elem.components, 't.array()') });
+    return Object.freeze({
+      type: tag,
+      components: normalizeComponents(elem.components, 't.array()'),
+    });
   }
   if (Array.isArray(elem)) {
     return Object.freeze({ type: 'tuple[]', components: componentsFromAbi(elem, 't.array()') });
@@ -647,9 +683,13 @@ function arrayDepthGuard(s: string): void {
   // depth-3 ceiling matches the ArrayType template type; deeper string arrays are rejected so
   // the runtime and type-level vocabularies agree.
   if (/\[\]\[\]\[\]\[\]/.test(s)) {
-    throw new EvsTypeError('UNSUPPORTED_V0', `t.array(): array nesting deeper than [][][] is not supported`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError(
+      'UNSUPPORTED_V0',
+      `t.array(): array nesting deeper than [][][] is not supported`,
+      {
+        loc: captureLoc(),
+      },
+    );
   }
 }
 

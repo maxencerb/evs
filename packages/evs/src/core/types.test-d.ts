@@ -3,7 +3,7 @@
 import { expectTypeOf, test } from 'vitest';
 
 import { arg, t } from './types.js';
-import type { ArgSpec, Expr, IntoExpr, LitOf } from './types.js';
+import type { ArgSpec, Expr, IntoExpr, LitOf, TupleType } from './types.js';
 
 const takeU8 = (_x: IntoExpr<'uint8'>): void => undefined;
 const takeExprU8 = (_x: Expr<'uint8'>): void => undefined;
@@ -68,4 +68,36 @@ test('Expr this-parameter constraints', () => {
   str.eq('x');
   // @ts-expect-error — arithmetic on a non-numeric type
   arr.add(1);
+});
+
+// ---------------------------------------------------------------------------
+// composite types (t.struct / t.tuple) — issue #2
+// ---------------------------------------------------------------------------
+
+test('t.struct infers a named-component TupleType; t.tuple a positional one', () => {
+  const pos = t.struct({ liquidity: t.uint128, owner: t.address });
+  expectTypeOf(pos).toMatchTypeOf<TupleType>();
+  expectTypeOf(pos.type).toEqualTypeOf<'tuple'>();
+  expectTypeOf(pos.components).toMatchTypeOf<
+    readonly [
+      { readonly name: 'liquidity'; readonly type: 'uint128' },
+      { readonly name: 'owner'; readonly type: 'address' },
+    ]
+  >();
+
+  const tup = t.tuple(t.uint256, t.bool);
+  expectTypeOf(tup.components).toMatchTypeOf<
+    readonly [
+      { readonly name: ''; readonly type: 'uint256' },
+      { readonly name: ''; readonly type: 'bool' },
+    ]
+  >();
+});
+
+test('LitOf of a fully-named struct is the named object; positional tuple is a tuple', () => {
+  const pos = t.struct({ liquidity: t.uint128, owner: t.address });
+  expectTypeOf<LitOf<typeof pos>>().toEqualTypeOf<{ liquidity: bigint; owner: `0x${string}` }>();
+
+  const tup = t.tuple(t.uint256, t.bool);
+  expectTypeOf<LitOf<typeof tup>>().toMatchTypeOf<readonly [bigint, boolean]>();
 });

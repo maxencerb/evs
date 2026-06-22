@@ -5,6 +5,7 @@ import { encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vitest';
 
 import { EvsTypeError } from '../core/errors.js';
+import { t } from '../core/types.js';
 import type { ArrayType, DynType, WordType } from '../core/types.js';
 import {
   buildScriptAbi,
@@ -126,13 +127,43 @@ describe('toPlainAbiFunction', () => {
     expect(err.message).toContain('input');
   });
 
-  test('rejects non-v0 output types (tuple), naming the unnamed parameter by index', () => {
+  test('accepts a tuple output, recursing into its components', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'positions',
       stateMutability: 'view',
       inputs: [],
-      outputs: [{ name: '', type: 'tuple', components: [{ name: 'liquidity', type: 'uint128' }] }],
+      outputs: [
+        {
+          name: '',
+          type: 'tuple',
+          components: [
+            { name: 'liquidity', type: 'uint128' },
+            { name: 'operator', type: 'address' },
+          ],
+        },
+      ],
+    };
+    const plain = toPlainAbiFunction(fn);
+    expect(plain.outputs[0]).toEqual({
+      name: '',
+      type: 'tuple',
+      components: [
+        { name: 'liquidity', type: 'uint128' },
+        { name: 'operator', type: 'address' },
+      ],
+    });
+  });
+
+  test('rejects a tuple ARRAY output (deferred), naming the unnamed parameter by index', () => {
+    const fn: AbiFunction = {
+      type: 'function',
+      name: 'positions',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: '', type: 'tuple[]', components: [{ name: 'liquidity', type: 'uint128' }] },
+      ],
     };
     const err = catchEvs(() => toPlainAbiFunction(fn));
     expect(err.code).toBe('UNSUPPORTED_V0');
@@ -301,10 +332,9 @@ describe('encodeLiteralData', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildScriptAbi', () => {
-  const args = [
-    { name: 'pool', type: 'address' },
-    { name: 'fee', type: 'uint24' },
-  ] as const;
+  // args are now a positional EvsType list (auto-named arg0, arg1, … — script args carry no
+  // names after the composite-types rewrite; viem infers `args` positionally regardless).
+  const args = ['address', 'uint24'] as const;
   const returns = [
     { name: 'token0', type: 'address' },
     { name: 'symbol0', type: 'string' },
@@ -319,8 +349,8 @@ describe('buildScriptAbi', () => {
         name: 'poolMeta',
         stateMutability: 'view',
         inputs: [
-          { name: 'pool', type: 'address' }, // = args tuple order
-          { name: 'fee', type: 'uint24' },
+          { name: 'arg0', type: 'address' }, // = args list order, auto-named
+          { name: 'arg1', type: 'uint24' },
         ],
         outputs: [
           {
@@ -365,21 +395,6 @@ describe('buildScriptAbi', () => {
 
   test('validation: names and v0 types', () => {
     expect(catchEvs(() => buildScriptAbi('not a name', args, returns)).code).toBe('ABI_SHAPE');
-    expect(catchEvs(() => buildScriptAbi('s', [{ name: '', type: 'address' }], returns)).code).toBe(
-      'ABI_SHAPE',
-    );
-    expect(
-      catchEvs(() =>
-        buildScriptAbi(
-          's',
-          [
-            { name: 'a', type: 'address' },
-            { name: 'a', type: 'uint8' },
-          ],
-          returns,
-        ),
-      ).code,
-    ).toBe('ABI_SHAPE');
     // empty return keys would break viem's object inference (abitype §4.3) — hard error
     expect(catchEvs(() => buildScriptAbi('s', args, [{ name: '', type: 'address' }])).code).toBe(
       'ABI_SHAPE',
@@ -392,10 +407,37 @@ describe('buildScriptAbi', () => {
         ]),
       ).code,
     ).toBe('ABI_SHAPE');
-    const badType = catchEvs(() =>
-      buildScriptAbi('s', [{ name: 'a', type: 'uint256[2]' as 'uint256' }], returns),
-    );
+    // an invalid arg TYPE is reported against its auto-name (arg0), not a user-supplied name
+    const badType = catchEvs(() => buildScriptAbi('s', ['uint256[2]' as 'uint256'], returns));
     expect(badType.code).toBe('UNSUPPORTED_V0');
-    expect(badType.message).toContain('"a"');
+    expect(badType.message).toContain('"arg0"');
+  });
+
+  test('tuple arg + tuple return expand to named-component tuple ABI params', () => {
+    const params = t.struct({ tokenIn: t.address, fee: t.uint24 });
+    const pos = t.struct({ liquidity: t.uint128, owner: t.address });
+    const abi = buildScriptAbi('quote', [params], [{ name: 'pos', type: pos }]);
+    const fn = abi[0] as Extract<(typeof abi)[number], { type: 'function' }>;
+    expect(fn.inputs).toEqual([
+      {
+        name: 'arg0',
+        type: 'tuple',
+        components: [
+          { name: 'tokenIn', type: 'address' },
+          { name: 'fee', type: 'uint24' },
+        ],
+      },
+    ]);
+    const resultTuple = fn.outputs[0] as { components: readonly AbiParameter[] };
+    expect(resultTuple.components).toEqual([
+      {
+        name: 'pos',
+        type: 'tuple',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ]);
   });
 });

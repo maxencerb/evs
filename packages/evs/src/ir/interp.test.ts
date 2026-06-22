@@ -11,8 +11,15 @@
 import { encodeAbiParameters, encodeFunctionData, toFunctionSelector } from 'viem';
 import { describe, expect, test } from 'vitest';
 
+import { canonicalTypeSignature } from '../abi/artifact.js';
 import { EvsCompileError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import type { EvsType, Hex, NumericType, WordType } from '../core/types.js';
+import {
+  typeToAbiParam,
+  type EvsType,
+  type Hex,
+  type NumericType,
+  type WordType,
+} from '../core/types.js';
 import { interpret, type InterpResult, type MockChain } from './interp.js';
 import type { BinOp, PlainAbiFunction, ScriptIr, Stmt, UnOp, ValueInfo } from './nodes.js';
 
@@ -68,14 +75,16 @@ function arrayDataHex(words: readonly bigint[]): Hex {
 
 function fnAbi(
   name: string,
-  inputs: readonly { name: string; type: string }[],
-  outputs: readonly { name: string; type: string }[],
+  inputs: readonly { name: string; type: EvsType }[],
+  outputs: readonly { name: string; type: EvsType }[],
 ): PlainAbiFunction {
   return {
     name,
-    selector: toFunctionSelector(`${name}(${inputs.map((i) => i.type).join(',')})`),
-    inputs,
-    outputs,
+    selector: toFunctionSelector(
+      `${name}(${inputs.map((i) => canonicalTypeSignature(i.type)).join(',')})`,
+    ),
+    inputs: inputs.map((i) => typeToAbiParam(i.name, i.type)),
+    outputs: outputs.map((o) => typeToAbiParam(o.name, o.type)),
   };
 }
 

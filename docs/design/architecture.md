@@ -528,10 +528,10 @@ then run `bun run fmt` twice. Drift fails CI via packages/evs/src/docsync.test.t
 0x0035  5f          PUSH0
 0x0036  52          MSTORE
 0x0037  6080        PUSH1 0x80
-0x0039  51          MLOAD  ; head x
+0x0039  51          MLOAD
 0x003a  6040        PUSH1 0x40
 0x003c  51          MLOAD
-0x003d  52          MSTORE
+0x003d  52          MSTORE  ; head x
 0x003e  5f          PUSH0
 0x003f  51          MLOAD
 0x0040  6040        PUSH1 0x40
@@ -807,7 +807,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x0021  6024        PUSH1 0x24  ; calldata floor 36
 0x0023  36          CALLDATASIZE
 0x0024  10          LT
-0x0025  610164      PUSH2 0x0164 → @badcd
+0x0025  610161      PUSH2 0x0161 → @badcd
 0x0028  57          JUMPI
 0x0029  6004        PUSH1 0x04  ; arg #0 head
 0x002b  35          CALLDATALOAD
@@ -845,7 +845,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x006a  3d          RETURNDATASIZE
 0x006b  6020        PUSH1 0x20 → @main  ; staticMinSize 32
 0x006d  11          GT
-0x006e  61011e      PUSH2 0x011e → @dfail_0
+0x006e  61011b      PUSH2 0x011b → @dfail_0
 0x0071  57          JUMPI
 0x0072  3d          RETURNDATASIZE
 0x0073  5f          PUSH0
@@ -866,14 +866,14 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x0085  67ffffffffffffffff  PUSH8 0xffffffffffffffff
 0x008e  81          DUP2
 0x008f  11          GT
-0x0090  61011e      PUSH2 0x011e → @dfail_0
+0x0090  61011b      PUSH2 0x011b → @dfail_0
 0x0093  57          JUMPI
 0x0094  80          DUP1
 0x0095  6020        PUSH1 0x20 → @main
 0x0097  01          ADD
 0x0098  3d          RETURNDATASIZE
 0x0099  10          LT
-0x009a  61011e      PUSH2 0x011e → @dfail_0
+0x009a  61011b      PUSH2 0x011b → @dfail_0
 0x009d  57          JUMPI
 0x009e  81          DUP2
 0x009f  01          ADD
@@ -882,7 +882,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x00a2  67ffffffffffffffff  PUSH8 0xffffffffffffffff
 0x00ab  81          DUP2
 0x00ac  11          GT
-0x00ad  61011e      PUSH2 0x011e → @dfail_0
+0x00ad  61011b      PUSH2 0x011b → @dfail_0
 0x00b0  57          JUMPI
 0x00b1  81          DUP2
 0x00b2  6020        PUSH1 0x20 → @main
@@ -892,7 +892,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x00b7  83          DUP4
 0x00b8  01          ADD
 0x00b9  10          LT
-0x00ba  61011e      PUSH2 0x011e → @dfail_0
+0x00ba  61011b      PUSH2 0x011b → @dfail_0
 0x00bd  57          JUMPI
 0x00be  60a0        PUSH1 0xa0
 0x00c0  52          MSTORE  ; out #0 string (memref aliases snapshot)
@@ -908,10 +908,10 @@ shared `@decode_revert` tail (§15.0 shape):
 
 ```
 @dfail_0:
-0x011e  5b          JUMPDEST  ; @dfail_0
-0x011f  5f          PUSH0  ; site 0
-0x0120  610152      PUSH2 0x0152 → @decode_revert
-0x0123  56          JUMP
+0x011b  5b          JUMPDEST  ; @dfail_0
+0x011c  5f          PUSH0  ; site 0
+0x011d  61014f      PUSH2 0x014f → @decode_revert
+0x0120  56          JUMP
 ```
 
 <!-- docsync:end -->

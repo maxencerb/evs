@@ -11,21 +11,21 @@
 import { encodeFunctionData, erc20Abi, getAddress, parseEther } from 'viem';
 import { beforeAll, describe, expect, test } from 'vitest';
 
-import { arg, evscript, t } from '../../src/index.js';
+import { evscript, t } from '../../src/index.js';
 import { MockERC20 } from '../generated/index.js';
 import { publicClient, testClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 
 const tokenMeta = evscript(
-  { name: 'tokenMeta', args: [arg('token', t.address), arg('holder', t.address)] },
-  (s) => {
-    const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  { name: 'tokenMeta', args: [t.address, t.address] },
+  (s, token, holder) => {
+    const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
     const bal = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.holder],
+      args: [holder],
     });
     const doubled = s.mul(bal, 2n);
     return s.return({ symbol, decimals, bal, doubled });
