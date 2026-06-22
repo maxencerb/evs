@@ -13,14 +13,7 @@
  * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
 
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import {
-  isEvsType,
-  isWordType,
-  type ArgType,
-  type EvsType,
-  type Hex,
-  type WordType,
-} from '../core/types.js';
+import { isEvsType, type ArgType, type EvsType, type Hex } from '../core/types.js';
 
 export type ValueId = number;
 export type CellId = number;
@@ -108,8 +101,15 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }
   | { k: 'len'; a: ValueId; out: ValueId }
-  | { k: 'arrnew'; elem: WordType; length: ValueId; out: ValueId }
+  | { k: 'arrnew'; elem: EvsType; length: ValueId; out: ValueId }
   | { k: 'arrset'; arr: ValueId; i: ValueId; value: ValueId }
+  // composite (tuple/struct) construction + member access. The out/tuple ValueId's
+  // `values[id].type` carries the {@link TupleType} (with components); these nodes hold only the
+  // member index. A tuple is a memref to a packed `[field0…fieldN]` block (one word per member,
+  // a nested pointer for dynamic/composite members) — architecture.md §5.
+  | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
+  | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
+  | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
@@ -266,17 +266,21 @@ function asHex(v: unknown, path: string): Hex {
 }
 
 function asEvsType(v: unknown, path: string): EvsType {
-  if (typeof v !== 'string' || !isEvsType(v)) {
-    fail(path, `expected a v0 EvsType string, got ${describe(v)}`);
+  if (typeof v === 'string') {
+    if (!isEvsType(v)) fail(path, `expected a valid EvsType string, got ${describe(v)}`);
+    return v;
   }
-  return v;
-}
-
-function asWordType(v: unknown, path: string): WordType {
-  if (typeof v !== 'string' || !isWordType(v)) {
-    fail(path, `expected a word type string (uintN/intN/address/bool/bytesN), got ${describe(v)}`);
+  const o = asRecord(v, path);
+  const type = asString(o['type'], `${path}.type`);
+  if (type === 'tuple' || type === 'tuple[]' || type === 'tuple[][]') {
+    return {
+      type,
+      components: asArray(o['components'], `${path}.components`).map((c, i) =>
+        decodeAbiParam(c, `${path}.components[${i}]`),
+      ),
+    };
   }
-  return v;
+  return fail(`${path}.type`, `expected a tuple tag ('tuple'|'tuple[]'|'tuple[][]'), got ${describe(type)}`);
 }
 
 function describe(v: unknown): string {
@@ -509,7 +513,7 @@ function decodeStmt(v: unknown, path: string): Stmt {
         loc,
         site,
         k,
-        elem: asWordType(o['elem'], `${path}.elem`),
+        elem: asEvsType(o['elem'], `${path}.elem`),
         length: asId(o['length'], `${path}.length`),
         out: asId(o['out'], `${path}.out`),
       };
@@ -520,6 +524,38 @@ function decodeStmt(v: unknown, path: string): Stmt {
         k,
         arr: asId(o['arr'], `${path}.arr`),
         i: asId(o['i'], `${path}.i`),
+        value: asId(o['value'], `${path}.value`),
+      };
+    case 'tuplenew':
+      return {
+        loc,
+        site,
+        k,
+        inits: asArray(o['inits'], `${path}.inits`).map((it, j) => {
+          const io = asRecord(it, `${path}.inits[${j}]`);
+          return {
+            index: asId(io['index'], `${path}.inits[${j}].index`),
+            value: asId(io['value'], `${path}.inits[${j}].value`),
+          };
+        }),
+        out: asId(o['out'], `${path}.out`),
+      };
+    case 'field':
+      return {
+        loc,
+        site,
+        k,
+        tuple: asId(o['tuple'], `${path}.tuple`),
+        index: asId(o['index'], `${path}.index`),
+        out: asId(o['out'], `${path}.out`),
+      };
+    case 'tupleset':
+      return {
+        loc,
+        site,
+        k,
+        tuple: asId(o['tuple'], `${path}.tuple`),
+        index: asId(o['index'], `${path}.index`),
         value: asId(o['value'], `${path}.value`),
       };
     case 'cellnew':
