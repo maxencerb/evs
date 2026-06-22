@@ -125,13 +125,14 @@ const poolSlot0 = evscript({ name: 'poolSlot0', args: [t.address] }, (s, pool) =
     sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>
     tick: slot0.tick.get(), // Expr<'int24'> — read by name
     unlocked: slot0.unlocked.get(), // Expr<'bool'>
-    slot0: slot0.expr(), // the whole struct flows out, abitype-typed
+    slot0, // a Tuple handle is returnable directly — the whole struct flows out, abitype-typed
   });
 });
 ```
 
-`slot0.tick.get()` is fully typed `Expr<'int24'>`, and `slot0.expr()` returns the struct as one
-abitype-typed object. See [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
+`slot0.tick.get()` is fully typed `Expr<'int24'>`, and returning the `slot0` handle directly hands
+the whole struct back as one abitype-typed object (use `slot0.expr()` if you want the bare memref
+`Expr`). See [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
 
 ## The dependency chain multicall cannot express
 

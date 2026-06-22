@@ -22,7 +22,8 @@
    SAME handle type as a decoded tuple (one unified tuple type).
 5. **Composite call args (encode)** — `s.call({…, args: [structHandleOrLiteral]})` for
    struct-taking view functions; `SubcallInputs` accepts a tuple handle OR a literal struct.
-6. **Tuples flow out** — `s.return({ x: tupleHandle.expr() })` returns a tuple, abitype-typed.
+6. **Tuples flow out** — `s.return({ x: tupleHandle })` returns a tuple, abitype-typed (the handle
+   is returnable directly; `tupleHandle.expr()` is the equivalent bare-memref form).
 
 **Deferred to a follow-up (represented in the type vocabulary, but builder/codegen restricted —
 emit a clear `UNSUPPORTED_V0` if reached, and note in the amendment):**

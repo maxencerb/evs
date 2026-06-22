@@ -18,7 +18,7 @@ import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
 import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
-import type { EvsScript } from './builder/script.js';
+import type { EvsScript, ReturnValue } from './builder/script.js';
 import { lowerProgram } from './codegen/program.js';
 import {
   EvsCompileError,
@@ -26,7 +26,7 @@ import {
   type EvsDiagnostic,
   type SourceLoc,
 } from './core/errors.js';
-import type { EvsType, Expr, Hex } from './core/types.js';
+import type { EvsType, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
@@ -45,7 +45,7 @@ export interface CompileOptions {
 export interface CompiledEvsScript<
   name extends string = string,
   args extends readonly EvsType[] = readonly EvsType[],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly abi: ScriptAbi<name, args, ret>; // literal-typed: [function, EvsInvalidCalldata, EvsDecodeError]
   readonly runtimeBytecode: Hex; // ≤ 24,576 bytes (EIP-170), enforced
@@ -79,7 +79,7 @@ export type CompiledOf<s> =
   s extends EvsScript<
     infer n extends string,
     infer a extends readonly EvsType[],
-    infer r extends Record<string, Expr>
+    infer r extends Record<string, ReturnValue>
   >
     ? CompiledEvsScript<n, a, r>
     : never;

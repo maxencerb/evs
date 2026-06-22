@@ -380,7 +380,7 @@ export type ArgsToInputs<args extends readonly EvsType[]> = {
 export type ScriptAbi<
   name extends string,
   args extends readonly EvsType[],
-  ret extends Record<string, Expr>,
+  ret extends Record<string, ReturnValue>, // amended: a return value is an Expr OR a Tuple handle
 > = readonly [
   {
     readonly type: 'function';
@@ -595,7 +595,7 @@ export type ArgHandles<types extends readonly EvsType[]> = {
 export function evscript<
   const name extends string,
   const args extends ArgsInput = readonly [],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>, // amended: Expr | Tuple
 >(
   def: { name: name; args?: args },
   body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
@@ -624,17 +624,29 @@ export interface Field<t extends EvsType> {
   get(): t extends TupleType ? Tuple<t> : Expr<t>;
   set(value: IntoMember<t>): void;
 }
+export declare const tupleBrand: unique symbol; // phantom (amended): marks a Tuple in a return bound
 export type Tuple<C extends TupleType> = {
   readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]:
     Field</* ComponentToType<c> */>;
-} & { at(i: number): Field</* element type */>; expr(): Expr<C> };
+} & { at(i: number): Field</* element type */>; expr(): Expr<C> } & {
+  readonly [tupleBrand]: TupleType; // erased (order-insensitive) so Tuple↔Tuple assignability holds
+};
 export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
 export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
 export type TupleInit<C extends TupleType> = /* named object | positional record, all members optional */;
 // (s.tuple is a method on ScriptBuilder: `tuple<const c extends TupleType>(type: c, init?:
 //  TupleInit<c>): Tuple<c>`.)
+// amended by #2 (composite types): a return value is an Expr OR a Tuple handle returned directly.
+// `TypeOfReturn` recovers an Expr's `t` or a Tuple's `C` (from its `expr()` signature) for ScriptAbi.
+export type AnyTuple = { readonly [tupleBrand]: TupleType };
+export type ReturnValue = Expr | AnyTuple;
+export type TypeOfReturn<v> = v extends Expr<infer t>
+  ? t
+  : v extends { expr(): Expr<infer c extends TupleType> }
+    ? c
+    : never;
 export declare const returnBrand: unique symbol;
-export interface ScriptReturn<ret extends Record<string, Expr>> {
+export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
 ```

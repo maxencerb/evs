@@ -37,7 +37,7 @@ import { assertV0Type, Recorder } from './expr.js';
 export interface EvsScript<
   name extends string = string,
   args extends readonly EvsType[] = readonly EvsType[],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly name: name;
   readonly ir: ScriptIr; // frozen, JSON-serializable
@@ -73,7 +73,7 @@ const IDENT_RE = /^[A-Za-z_]\w*$/;
 export function evscript<
   const name extends string,
   const args extends ArgsInput = readonly [],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 >(
   def: { name: name; args?: args },
   body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
@@ -232,7 +232,37 @@ export type Tuple<C extends TupleType> = {
 } & {
   at(i: number): Field<ComponentToType<C['components'][number]>>;
   expr(): Expr<C>;
+} & {
+  // phantom brand: lets `s.return` / a return bound accept a `Tuple` DIRECTLY (no `.expr()`)
+  // while staying distinguishable from an `Expr` even when a struct field is literally named
+  // "type"/"expr". The brand is ERASED to `TupleType` (not `C`) so it is order-insensitive —
+  // a `Tuple<A>` stays assignable to a `Tuple<B>` whenever their named members match (the
+  // `s.call(...)` tuple-input boundary relies on this), and `TypeOfReturn` recovers the precise
+  // `C` from `expr()` instead. Type-only — the runtime `TupleHandle` carries no such property.
+  readonly [tupleBrand]: TupleType;
 };
+
+/** @internal phantom brand keying {@link Tuple}; never present at runtime. */
+export declare const tupleBrand: unique symbol;
+
+/** A {@link Tuple} of unknown component shape — the erased brand carrier (return-bound widening). */
+export type AnyTuple = { readonly [tupleBrand]: TupleType };
+
+/**
+ * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),
+ * or a {@link Tuple} handle DIRECTLY (no `.expr()` needed — composite types §6/§8). `.expr()`
+ * stays valid: it just yields the equivalent `Expr<C>`, which this union also covers.
+ */
+export type ReturnValue = Expr | AnyTuple;
+
+/**
+ * The {@link EvsType} a {@link ReturnValue} contributes: an `Expr`'s `t`, or — for a bare `Tuple`
+ * handle — the `C` recovered from its `expr()` signature (a `Tuple` carries no `exprBrand`, so it
+ * never matches the `Expr` arm; the erased {@link tupleBrand} only marks it as a tuple). The
+ * recovered `C` is exactly what `tuple.expr()` would have yielded, so both forms infer identically.
+ */
+export type TypeOfReturn<v> =
+  v extends Expr<infer t> ? t : v extends { expr(): Expr<infer c extends TupleType> } ? c : never;
 
 /**
  * The partial member record accepted by `s.tuple(type, init?)`. A fully-named struct takes a
@@ -254,7 +284,7 @@ type PositionalInit<comps extends readonly NamedType[]> = {
 };
 
 export declare const returnBrand: unique symbol;
-export interface ScriptReturn<ret extends Record<string, Expr>> {
+export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
 
@@ -422,8 +452,9 @@ export interface ScriptBuilder {
     body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
   ): EvsFn<params, r>;
 
-  // return (api.md §9)
-  return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>;
+  // return (api.md §9) — accepts an `Expr` OR a `Tuple` handle directly per component (the
+  // `.expr()` on a tuple is optional; the bare handle returns the same memref).
+  return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>;
 }
 
 // ---------------------------------------------------------------------------

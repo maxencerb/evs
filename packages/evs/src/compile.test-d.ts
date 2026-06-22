@@ -6,7 +6,12 @@
  */
 
 import type { Abi, Address } from 'abitype';
-import type { PublicClient, ReadContractParameters, StateOverride } from 'viem';
+import type {
+  PublicClient,
+  ReadContractParameters,
+  ReadContractReturnType,
+  StateOverride,
+} from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
 import { evscript, type EvsScript } from './builder/script.js';
@@ -173,4 +178,56 @@ test('a concrete multi-return script is assignable to default-instantiated EvsSc
   void artifact;
   expectTypeOf(poolMeta).toMatchTypeOf<EvsScript>();
   expectTypeOf(compiled).toMatchTypeOf<CompiledEvsScript>();
+});
+
+// ---------------------------------------------------------------------------
+// returning a Tuple handle DIRECTLY (no .expr()) — the struct component still resolves
+// to the named object, identical to the `.expr()` form (composite types §6/§8)
+// ---------------------------------------------------------------------------
+
+const slot0Abi = [
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'sqrtPriceX96', type: 'uint160' },
+          { name: 'tick', type: 'int24' },
+          { name: 'unlocked', type: 'bool' },
+        ],
+      },
+    ],
+  },
+] as const satisfies Abi;
+
+// the struct object viem must infer for the `slot0` component (uint160 → bigint, int24 → number)
+type Slot0Struct = {
+  sqrtPriceX96: bigint;
+  tick: number;
+  unlocked: boolean;
+};
+
+// bare handle: `slot0` is the Tuple itself (no `.expr()`)
+const poolSlot0Direct = evscript({ name: 'poolSlot0', args: t.address }, (s, poolAddr) => {
+  const slot0 = s.call({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
+  return s.return({ tick: slot0.tick.get(), slot0 });
+});
+// the legacy `.expr()` form — must remain valid and infer identically
+const poolSlot0Expr = evscript({ name: 'poolSlot0', args: t.address }, (s, poolAddr) => {
+  const slot0 = s.call({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
+  return s.return({ tick: slot0.tick.get(), slot0: slot0.expr() });
+});
+
+test('a Tuple handle returned directly infers the struct object (not unknown), same as .expr()', () => {
+  type Direct = ReadContractReturnType<typeof poolSlot0Direct.abi, 'poolSlot0'>;
+  type ViaExpr = ReadContractReturnType<typeof poolSlot0Expr.abi, 'poolSlot0'>;
+  // the `slot0` component is the fully-decoded struct OBJECT, never `unknown`
+  expectTypeOf<Direct>().toEqualTypeOf<{ tick: number; slot0: Slot0Struct }>();
+  // the direct form and the `.expr()` form infer the SAME return type
+  expectTypeOf<Direct>().toEqualTypeOf<ViaExpr>();
 });

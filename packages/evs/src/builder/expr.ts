@@ -2243,6 +2243,30 @@ export class Recorder {
           { loc },
         );
       }
+      // a Tuple handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS the
+      // memref, so we return its ValueId verbatim — byte-identical to `tuple.expr()`. classify()
+      // (below) still rejects tuples on the arithmetic paths with the "use .expr()" message.
+      if (typeof v === 'object' && v !== null) {
+        const ti = TUPLE_INTERNALS.get(v);
+        if (ti !== undefined) {
+          if (ti.owner !== this) {
+            throw new EvsScopeError(
+              'FOREIGN_HANDLE',
+              `s.return() value "${key}": this Tuple belongs to script "${ti.owner.name}" (defined at ${fmtLoc(ti.owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
+              {
+                loc,
+                relatedLocs: [
+                  { label: `script "${ti.owner.name}" defined at`, loc: ti.owner.scriptLoc },
+                  { label: 'handle recorded at', loc: ti.owner.valueLoc(ti.id) },
+                ],
+              },
+            );
+          }
+          this.checkVisible(ti.id, `s.return() value "${key}"`, loc);
+          returns.push({ name: key, type: this.typeOfValue(ti.id), value: ti.id });
+          continue;
+        }
+      }
       const c = this.classify(v, `s.return() value "${key}"`, loc);
       if (c.kind !== 'expr') {
         throw new EvsTypeError(

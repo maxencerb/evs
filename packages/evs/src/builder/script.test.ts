@@ -12,7 +12,7 @@ import { describe, expect, test } from 'vitest';
 import { arg, t, type Expr } from '../core/types.js';
 import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
-import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
+import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
 
 const NO_LOC = { locations: false } as const;
 
@@ -493,6 +493,80 @@ describe('Tuple (s.tuple + field get/set)', () => {
     // the single tuple output yields a Tuple handle whose field read is uint128-typed
     expect(script.ir.returns.find((r) => r.name === 'liquidity')?.type).toBe('uint128');
     expect(script.ir.returns.find((r) => r.name === 'pos')?.type).toMatchObject({ type: 'tuple' });
+  });
+
+  test('s.return accepts a Tuple handle DIRECTLY (no .expr()) — identical IR to the .expr() form', () => {
+    // a decoded tuple-output handle returned bare …
+    const direct = evscript(
+      { name: 'getPos', args: [t.address, t.uint256] },
+      (s, manager, tokenId) => {
+        const pos = s.call({
+          address: manager,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ liquidity: pos.liquidity.get(), pos });
+      },
+      NO_LOC,
+    );
+    // … vs. the explicit `.expr()` form.
+    const viaExpr = evscript(
+      { name: 'getPos', args: [t.address, t.uint256] },
+      (s, manager, tokenId) => {
+        const pos = s.call({
+          address: manager,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ liquidity: pos.liquidity.get(), pos: pos.expr() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(direct.ir)).not.toThrow();
+    // byte-identical IR: the bare handle is the same memref ValueId the `.expr()` would re-wrap.
+    expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
+    // the bare `pos` flows out as a named tuple return component.
+    expect(direct.ir.returns.find((r) => r.name === 'pos')?.type).toMatchObject({ type: 'tuple' });
+    expect(direct.ir.returns.find((r) => r.name === 'liquidity')?.type).toBe('uint128');
+  });
+
+  test('an s.tuple(...) result is returnable directly too (same IR as .expr())', () => {
+    const direct = evscript(
+      { name: 'mkPos', args: [t.address] },
+      (s, owner) => {
+        const pos = s.tuple(Position, { liquidity: 42n, owner });
+        return s.return({ pos });
+      },
+      NO_LOC,
+    );
+    const viaExpr = evscript(
+      { name: 'mkPos', args: [t.address] },
+      (s, owner) => {
+        const pos = s.tuple(Position, { liquidity: 42n, owner });
+        return s.return({ pos: pos.expr() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(direct.ir)).not.toThrow();
+    expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
+    expect(direct.ir.returns.find((r) => r.name === 'pos')?.type).toMatchObject({ type: 'tuple' });
+  });
+
+  test('a foreign Tuple handle returned directly throws FOREIGN_HANDLE naming both scripts', () => {
+    let foreign: Tuple<typeof Position> | undefined;
+    evscript(
+      { name: 'donor', args: [t.address] },
+      (s, owner) => {
+        foreign = s.tuple(Position, { liquidity: 1n, owner });
+        return s.return({ ok: owner });
+      },
+      NO_LOC,
+    );
+    expect(() =>
+      evscript({ name: 'thief', args: [t.address] }, (s) => s.return({ stolen: foreign! }), NO_LOC),
+    ).toThrow(/Tuple belongs to script "donor".*cannot be used in script "thief"/s);
   });
 });
 

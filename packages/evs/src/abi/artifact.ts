@@ -16,6 +16,7 @@
 import type { Abi, AbiFunction, AbiParameter } from 'abitype';
 import { encodeAbiParameters, toFunctionSelector } from 'viem';
 
+import type { ReturnValue, TypeOfReturn } from '../builder/script.js';
 import { EvsTypeError } from '../core/errors.js';
 import { captureLoc } from '../core/loc.js';
 import {
@@ -27,7 +28,6 @@ import {
   type ArrayType,
   type DynType,
   type EvsType,
-  type Expr,
   type Hex,
   type TupleType,
   type TypeToComponent,
@@ -65,21 +65,22 @@ type UnionToTuple<u> = [u] extends [never]
 // Each return key → an abitype component via {@link TypeToComponent}: a scalar/array member to
 // `{ name, type }`, a tuple/struct member to `{ name, type: 'tuple'|…, components }` (so a tuple
 // flows out as a named ABI tuple, not a raw {@link TupleType} object — composite types, §6/§8).
-type MapComponents<keys, ret extends Record<string, Expr>> = keys extends readonly unknown[]
+type MapComponents<keys, ret extends Record<string, ReturnValue>> = keys extends readonly unknown[]
   ? {
       readonly [i in keyof keys]: keys[i] extends keyof ret & string
-        ? TypeToComponent<keys[i], ret[keys[i]]['type']>
+        ? TypeToComponent<keys[i], TypeOfReturn<ret[keys[i]]>>
         : never;
     }
   : never;
-// Non-literal `ret` (i.e. the default `Record<string, Expr>` instantiation) widens to a plain
+// Non-literal `ret` (i.e. the default `Record<string, ReturnValue>` instantiation) widens to a plain
 // readonly components array instead of collapsing to a `UnionToTuple<string>` 1-tuple — that
 // collapse made the default-instantiated `ScriptAbi`/`EvsScript`/`CompiledEvsScript` reject
 // every concrete multi-return script. A literal components tuple IS assignable to the readonly
 // array form, so the default instantiation is now a proper supertype (pinned by type tests).
-export type ReturnSpecToComponents<ret extends Record<string, Expr>> = string extends keyof ret
-  ? readonly { readonly name: string; readonly type: EvsType }[]
-  : MapComponents<UnionToTuple<keyof ret>, ret>;
+export type ReturnSpecToComponents<ret extends Record<string, ReturnValue>> =
+  string extends keyof ret
+    ? readonly { readonly name: string; readonly type: EvsType }[]
+    : MapComponents<UnionToTuple<keyof ret>, ret>;
 
 // The auto-name for arg position `i`: `arg{i}` for a concrete tuple index (a numeric-string key),
 // but a plain `string` for the open `number` index of the default `readonly EvsType[]`
@@ -101,7 +102,7 @@ export type ArgsToInputs<args extends readonly EvsType[]> = {
 export type ScriptAbi<
   name extends string,
   args extends readonly EvsType[],
-  ret extends Record<string, Expr>,
+  ret extends Record<string, ReturnValue>,
 > = readonly [
   {
     readonly type: 'function';

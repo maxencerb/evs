@@ -132,7 +132,7 @@ const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 const mkPos = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
   const pos = s.tuple(Position, { liquidity: 42n, owner }); // alloc + zero-fill + set members
   pos.liquidity.set(pos.liquidity.get().add(1n)); // read-modify-write a field
-  return s.return({ liq: pos.liquidity.get(), pos: pos.expr() }); // a field, and the whole struct
+  return s.return({ liq: pos.liquidity.get(), pos }); // a field, and the whole struct (returned directly)
 });
 ```
 
@@ -426,7 +426,8 @@ const pairBalances = evscript(
 ## s.return
 
 ```ts nocheck
-return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>;
+// each value is an Expr OR a Tuple handle directly:
+return<const ret extends Record<string, Expr | Tuple<TupleType>>>(values: ret): ScriptReturn<ret>;
 ```
 
 Declares the script's outputs and seals the recorder. Must be called exactly once,
@@ -436,8 +437,9 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 - Record keys become the named components of the single tuple output; viem consumers receive an
   **object**. Keys must be identifiers; empty keys are rejected (`ABI_SHAPE`) because an
   unnamed component silently degrades viem's result to a positional array.
-- Every value must be an `Expr` — a struct/tuple value is passed as its `Tuple` handle's
-  `.expr()`, which nests as a `'tuple'` component. Type bare literals with `s.lit` first.
+- Each value is an `Expr`, or a `Tuple` handle **directly** — a struct/tuple flows out as a
+  `'tuple'` component, abitype-typed. (`tupleHandle.expr()` is equivalent and still valid, for
+  the bare memref `Expr`.) Type bare literals with `s.lit` first.
 - After sealing, any builder call throws `EvsScopeError` (`RECORDING_CLOSED`).
 
 ## Cell
@@ -488,7 +490,9 @@ type Tuple<C extends TupleType> = {
 A tuple/struct memref handle. Produced by [`s.tuple`](#stuple), by a `TupleType` script arg, and
 by a `'tuple'` output of [`s.call`](#scall). For each **named** component it exposes a property
 keyed by the component name returning a [`Field`](#field); `at(i)` is the positional accessor
-(literal `number` index); and `expr()` is the raw `Expr<C>` memref — what you return or pass on.
+(literal `number` index); and `expr()` is the raw `Expr<C>` memref. The handle is itself
+returnable from `s.return` and passable as a `'tuple'` call argument **directly** — `expr()` is
+only needed when you want the bare `Expr<C>`.
 A tuple handle is a pointer with **reference semantics** (passing it shares the block).
 
 ```ts
@@ -520,7 +524,7 @@ const readSlot0 = evscript({ name: 'readSlot0', args: [t.address] }, (s, pool) =
   return s.return({
     tick: slot0.tick.get(), // Expr<'int24'> by name
     unlocked: slot0.at(2).get(), // Expr<'bool'> by position
-    slot0: slot0.expr(), // the whole struct flows out, abitype-typed
+    slot0, // a Tuple handle is returnable directly — the whole struct flows out, abitype-typed
   });
 });
 ```

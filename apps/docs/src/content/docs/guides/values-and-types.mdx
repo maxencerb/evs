@@ -92,11 +92,13 @@ const readPosition = evscript(
     return s.return({
       operator: pos.operator.get(), // Expr<'address'>, read by name
       liquidity: pos.liquidity.get(), // Expr<'uint128'>
-      position: pos.expr(), // the whole struct flows out, typed as an object
+      position: pos, // a Tuple handle is returnable directly — the whole struct flows out as an object
     });
   },
 );
 ```
+
+A `Tuple` handle is returnable **directly** — `s.return({ position: pos })` hands the whole struct back, abitype-typed. `pos.expr()` does the same thing and is still valid when you want the bare memref `Expr` (to pass on as a call argument, say).
 
 **Construct a tuple with `s.tuple`.** Allocate a struct/tuple in memory and fill members — by an init record, or by `Field.set` afterwards:
 
@@ -108,7 +110,7 @@ const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 const buildPosition = evscript({ name: 'buildPosition', args: [t.address] }, (s, owner) => {
   const pos = s.tuple(Position, { liquidity: 1000n, owner }); // alloc + zero-fill + set members
   pos.liquidity.set(pos.liquidity.get().add(7n)); // read-modify-write a field
-  return s.return({ position: pos.expr() }); // returns { liquidity, owner }
+  return s.return({ position: pos }); // a Tuple is returnable directly → returns { liquidity, owner }
 });
 ```
 

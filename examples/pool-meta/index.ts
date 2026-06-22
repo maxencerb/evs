@@ -47,7 +47,7 @@ const poolSlot0 = evscript({ name: 'poolSlot0', args: [t.address] }, (s, composi
     sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>
     tick: slot0.tick.get(), // Expr<'int24'>
     unlocked: slot0.unlocked.get(), // Expr<'bool'>
-    slot0: slot0.expr(), // the whole struct flows out, abitype-typed
+    slot0, // a Tuple handle is returnable directly — the whole struct flows out, abitype-typed
   });
 });
 

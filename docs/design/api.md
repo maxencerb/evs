@@ -492,15 +492,18 @@ export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> =
 
 ```ts
 declare const returnBrand: unique symbol
-export interface ScriptReturn<ret extends Record<string, Expr>> { readonly [returnBrand]: ret }
+// a return value is an Expr OR a Tuple handle (ReturnValue = Expr | AnyTuple)
+export interface ScriptReturn<ret extends Record<string, ReturnValue>> { readonly [returnBrand]: ret }
 
-return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>
+return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>
 ```
 
 - Must be called exactly once, unconditionally (not inside `if`/`while`), as the value returned
   from the builder callback. Violations → `EvsScopeError`/`EvsTypeError` at recording.
 - Record keys become the named components of the **single tuple output**; empty-string keys
   rejected. viem consumers receive an **object** (`{ token0: '0x…', symbol0: 'WETH', … }`).
+- Each value is an `Expr`, or a `Tuple` handle **directly** (no `.expr()` — it flows out as a
+  `'tuple'` component, abitype-typed; `tupleHandle.expr()` remains equivalent).
 - `s.return` seals the recorder; any later builder call → `EvsScopeError(RECORDING_CLOSED)`.
 
 ## 10. `compile()` and the artifact
@@ -758,8 +761,9 @@ const composite = evscript(
     });
     //    ^? [Expr<'uint256'>, Tuple<{ nonce; operator; liquidity; … }>]
 
-    // a Tuple flows out of s.return abitype-typed (viem decodes it to a named object)
-    return s.return({ tick, amountOut, position: position.expr() });
+    // a Tuple handle flows out of s.return DIRECTLY, abitype-typed (viem decodes it to a named
+    // object); `position.expr()` is equivalent, for the bare memref Expr.
+    return s.return({ tick, amountOut, position });
   },
 );
 // readContract returns { tick: number; amountOut: bigint; position: { nonce: bigint; … } }

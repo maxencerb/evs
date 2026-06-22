@@ -123,7 +123,8 @@ handles it as a composite value — see [composite types](/guides/values-and-typ
 for the full model. Two cases:
 
 **A struct output decodes into a [`Tuple` handle](/reference/builder/#tuple)** — read members by
-name with `.field.get()`, or pass the whole struct on with `.expr()`:
+name with `.field.get()`, or return the whole struct by handing the handle back directly (`.expr()`
+also works, for the bare memref `Expr`):
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -153,7 +154,7 @@ const positionInfo = evscript(
   (s, manager, tokenId) => {
     const pos = s.call({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
     //    ^? Tuple<…>
-    return s.return({ operator: pos.operator.get(), liquidity: pos.liquidity.get(), position: pos.expr() });
+    return s.return({ operator: pos.operator.get(), liquidity: pos.liquidity.get(), position: pos });
   },
 );
 ```
