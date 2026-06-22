@@ -38,12 +38,11 @@ If a deferred shape is reached at runtime, throw `EvsTypeError('UNSUPPORTED_V0',
 
 - `EvsType = WordType | DynType | ArrayType | TupleType`.
   - `WordType`, `DynType` — unchanged strings.
-  - `ScalarType = WordType | DynType`; `ArrayType = `${ScalarType}[]` | `…[][]` | `…[][][]``
-    (string-encoded nested arrays). `StringType = ScalarType | ArrayType`.
+  - `ScalarType = WordType | DynType`; `ArrayType = `${ScalarType}[]`|`…[][]`|`…[][][]``(string-encoded nested arrays).`StringType = ScalarType | ArrayType`.
   - `TupleType = { readonly type: 'tuple'|'tuple[]'|'tuple[][]'; readonly components: readonly
-    NamedType[] }` — an abitype-`AbiParameter`-shaped object (so abitype infers it directly).
+NamedType[] }` — an abitype-`AbiParameter`-shaped object (so abitype infers it directly).
   - `NamedType = { readonly name: string; readonly type: string; readonly components?: readonly
-    NamedType[] }` — structurally identical to the IR `PlainAbiParam`. A struct member has a
+NamedType[] }` — structurally identical to the IR `PlainAbiParam`. A struct member has a
     non-empty `name`; a positional `t.tuple` member has `name: ''`.
 - **Runtime helpers** (all exported, already implemented):
   - `isWordType(s: string | TupleType): s is WordType` — typeof-guarded; `false` for tuples.
@@ -71,6 +70,7 @@ If a deferred shape is reached at runtime, throw `EvsTypeError('UNSUPPORTED_V0',
 ## 2. IR (IMPLEMENTED in `ir/nodes.ts` + `ir/validate.ts`)
 
 New `Stmt` variants (decode + validate done):
+
 - `{ k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }` — the
   out value's `values[out].type` is the `TupleType` (carries components). Allocates a tuple block,
   zero-fills, MSTOREs each provided member.
@@ -87,11 +87,13 @@ recurses through tuple components. `validate.ts` uses `typesEqual` for all type 
 
 A tuple is a **memref to a packed `[w0][w1]…[w_{n-1}]` block of `n` words** (`n` = component
 count, NO length prefix; `n = components.length`). Each `wᵢ` is:
+
 - a **canonical word** if member `i` is static (word type), or
 - a **memref pointer** if member `i` is dynamic/composite (string/bytes/array/tuple) — the field
   slot holds the pointer to that member's memref.
 
 Operations:
+
 - `field i` read = `MLOAD(tuplePtr + 32*i)` → the canonical word or the pointer.
 - `field i` write = `MSTORE(tuplePtr + 32*i, v)`.
 - `s.tuple(type, init)` = bump-alloc `32*n` bytes, **zero-fill** the whole block (via the
@@ -120,6 +122,7 @@ inline `n` head words.
 ## 4. Args rewrite (`builder/script.ts`, `abi/artifact.ts`, `builder/expr.ts`)
 
 ### evscript signature (new)
+
 ```ts
 export function evscript<
   const name extends string,
@@ -131,8 +134,9 @@ export function evscript<
   opts?: { locations?: boolean },
 ): EvsScript<name, NormalizeArgs<args>, ret>;
 ```
+
 - `ArgsInput = EvsType | readonly EvsType[]` (a lone type or a list). `NormalizeArgs<a> =
-  a extends readonly EvsType[] ? a : readonly [a]` (lone → one-element tuple). `args` is OPTIONAL
+a extends readonly EvsType[] ? a : readonly [a]` (lone → one-element tuple). `args` is OPTIONAL
   (a zero-arg script omits it).
 - `ArgHandles<types extends readonly EvsType[]> = { readonly [i in keyof types]: ArgHandle<types[i]> }`
   — homomorphic mapped tuple (preserves order/labels; NO `UnionToTuple` — order is structural).
@@ -141,7 +145,7 @@ export function evscript<
 - `ScriptBuilder` loses its `args` type param and its `s.args` member. It is now non-generic.
 - **ABI inputs**: each normalized arg `i` → `{ name: 'arg{i}', type }` (auto-named; names are just
   labels — viem infers `args` positionally regardless). Tuple args → `{ name, type:'tuple',
-  components }`. `ScriptAbi<name, args extends readonly EvsType[], ret>` is reparameterized from
+components }`. `ScriptAbi<name, args extends readonly EvsType[], ret>` is reparameterized from
   `args extends readonly ArgSpec[]` to `args extends readonly EvsType[]`; `inputs` maps
   `typeToAbiParam('arg{i}', args[i])`-shaped entries. The labeled-positional-tuple CI type test
   must still pass (`ReadContractParameters<abi,name>['args']`).
@@ -150,6 +154,7 @@ export function evscript<
   args-as-record `s.args` getter is removed from `ScriptBuilder`/`Recorder`.
 
 ### Recorder (`builder/expr.ts`)
+
 - Constructor still receives `args: readonly { name; type: EvsType }[]`. It already builds an arg
   Expr per arg. Replace `argRecord()` with `argHandles(): readonly (Expr|Tuple)[]` — a positional
   list of handles (a tuple-typed arg → a `Tuple` handle over its arg ValueId). `script.ts` spreads
@@ -171,7 +176,7 @@ export function evscript<
   single output is a tuple; `[many]`→ `readonly [...]` of (Expr|Tuple) per output. The decode lowers
   to a tuple-decode (call.ts) for tuple outputs.
 - `SubcallInputs` per-parameter union extends to: `AbiParameterToPrimitiveType<input,'inputs'> |
-  Expr<input.type> | (input is tuple ? Tuple<input> : never)`. A tuple arg may be a `Tuple` handle,
+Expr<input.type> | (input is tuple ? Tuple<input> : never)`. A tuple arg may be a `Tuple` handle,
   a `s.tuple(...)` result, or a plain literal object (the recorder builds the tuple from the object
   via `tuplenew`, fields literal-or-Expr, omitted → 0).
 - The recorder's `coerceToId` must gain a tuple branch: if the target type is a tuple and the value
@@ -183,6 +188,7 @@ export function evscript<
   see §3 decode).
 
 ## 6. Codegen (`codegen/{layout? no — abi/layout.ts}`, `codegen/lower.ts`, `codegen/frame.ts`,
+
 `codegen/abi.ts`, `codegen/call.ts`)
 
 - `abi/layout.ts`: add `{ kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean }`
@@ -194,7 +200,7 @@ export function evscript<
   one `out`). A tuple value occupies ONE frame slot (a pointer). No multi-slot values.
 - `codegen/lower.ts`: add `lowerTupleNew` (model on `lowerArrnew`: bump-alloc `32*n`, zero-fill via
   CALLDATACOPY-past-end, MSTORE provided members at `ptr + 32*i`), `lowerField` (`MLOAD(ptr+32*i)
-  → slot`), `lowerTupleSet` (`MSTORE(ptr+32*i, value)`). `refOf` already folds `data` consts; a
+→ slot`), `lowerTupleSet` (`MSTORE(ptr+32*i, value)`). `refOf` already folds `data` consts; a
   fully-constant tuple may stay a runtime `tuplenew` (simplest) — do NOT need a const fold.
 - `codegen/abi.ts` (`emitReturnEncode` + `emitCalldataDecode`/`emitDynCalldataArg`): add a
   `case 'tuple'` per emitter that recurses head/tail over components (static inline, dynamic
@@ -275,7 +281,7 @@ paris/shanghai/cancun. This is the acceptance gate (testing.md §4.2).
 ## 11. Process rules (CLAUDE.md)
 
 - NEVER `bun test`. Use `bun run build`, `bun run test` (unit+types), `bunx vitest run <file>
-  --project unit`, `bun run test:integration`, `bun run check` (fmt:check+lint:ci+typecheck).
+--project unit`, `bun run test:integration`, `bun run check` (fmt:check+lint:ci+typecheck).
 - Commit identity `dev@maxencerb.com`. Do not run keep-awake processes. Catalog-pinned deps; run
   `bun install` only if deps change (they should not).
 - Lint is `oxlint --deny-warnings` (no unused imports/vars). Format with `oxfmt` (`bun run fmt`).
