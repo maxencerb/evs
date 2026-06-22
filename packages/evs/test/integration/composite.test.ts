@@ -374,6 +374,127 @@ describe('composite arrays (read path) against real solc getters', () => {
   });
 });
 
+// --- composite arrays RETURN PATH: real-solc getters → return the WHOLE array -------------
+//
+// Each compiled evs script eth_calls a composite-array getter on the REAL deployment and returns
+// the WHOLE decoded array (§12.7 encode). The solc-derived ground truth is the SAME getter read
+// directly through viem; the evs-script result must deep-equal it across all three toViem paths.
+
+/** Loose returnable handle: a composite-array call output is an Expr at runtime (precise inference
+ *  is pinned by the type tests). */
+const whole = (v: unknown): never => v as never;
+
+describe('composite arrays (return path) against real solc getters', () => {
+  test('return whole positionsBatch(4) (static-element tuple[]) — all three toViem paths', async () => {
+    const script = evscript({ name: 'retPositions', args: t.address }, (s, target) => {
+      const ps = s.call({
+        address: target,
+        abi: Composite.abi,
+        functionName: 'positionsBatch',
+        args: [4n],
+      });
+      return s.return({ ps: whole(ps) });
+    });
+    const compiled = script.compile();
+    // solc-derived ground truth: the same getter read directly.
+    const expected = await publicClient.readContract({
+      address: composite,
+      abi: Composite.abi,
+      functionName: 'positionsBatch',
+      args: [4n],
+    });
+
+    const deployless = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'retPositions',
+      args: [composite],
+    });
+    expect(deployless).toStrictEqual({ ps: expected });
+
+    const override = await publicClient.readContract({
+      ...compiled.toViem({ mode: 'stateOverride' }),
+      functionName: 'retPositions',
+      args: [composite],
+    });
+    expect(override).toStrictEqual({ ps: expected });
+
+    const at = '0x00000000000000000000000000000000000c0002' as const;
+    await testClient.setCode({ address: at, bytecode: compiled.runtimeBytecode });
+    const setCode = await publicClient.readContract({
+      address: at,
+      abi: compiled.abi,
+      functionName: 'retPositions',
+      args: [composite],
+    });
+    expect(setCode).toStrictEqual({ ps: expected });
+  });
+
+  test('return whole withBytesBatch(4) (dynamic-member tuple[])', async () => {
+    const script = evscript({ name: 'retWithBytes', args: t.address }, (s, target) => {
+      const xs = s.call({
+        address: target,
+        abi: Composite.abi,
+        functionName: 'withBytesBatch',
+        args: [4n],
+      });
+      return s.return({ xs: whole(xs) });
+    });
+    const compiled = script.compile();
+    const expected = await publicClient.readContract({
+      address: composite,
+      abi: Composite.abi,
+      functionName: 'withBytesBatch',
+      args: [4n],
+    });
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'retWithBytes',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({ xs: expected });
+  });
+
+  test('return whole matrix(6) (ragged uint256[][])', async () => {
+    const script = evscript({ name: 'retMatrix', args: t.address }, (s, target) => {
+      const m = s.call({ address: target, abi: Composite.abi, functionName: 'matrix', args: [6n] });
+      return s.return({ m: whole(m) });
+    });
+    const compiled = script.compile();
+    const expected = await publicClient.readContract({
+      address: composite,
+      abi: Composite.abi,
+      functionName: 'matrix',
+      args: [6n],
+    });
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'retMatrix',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({ m: expected });
+  });
+
+  test('return whole names(5) (string[])', async () => {
+    const script = evscript({ name: 'retNames', args: t.address }, (s, target) => {
+      const ns = s.call({ address: target, abi: Composite.abi, functionName: 'names', args: [5n] });
+      return s.return({ ns: whole(ns) });
+    });
+    const compiled = script.compile();
+    const expected = await publicClient.readContract({
+      address: composite,
+      abi: Composite.abi,
+      functionName: 'names',
+      args: [5n],
+    });
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'retNames',
+      args: [composite],
+    });
+    expect(out).toStrictEqual({ ns: expected });
+  });
+});
+
 // --- failure path: positions at an EOA → bubbled EvsDecodeError ----------------------------
 
 describe('failure path: positions at an EOA → EvsDecodeError', () => {

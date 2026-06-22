@@ -50,6 +50,7 @@ import {
   emitMemCopy,
   emitNormalizeElemsLoop,
   emitNormalizeWord,
+  encodeFramesOf,
   headOffsetsOf,
   needsMemorySnapshot,
   wordNeedsNormalize,
@@ -554,6 +555,22 @@ function emitCalldataBuildTuples(
   }
   const selector = hexToBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
+
+  // Composite-element array CALL ARGS (`tuple[]` directly, or a tuple arg whose member is a
+  // `tuple[]`/`T[][]`/`string[]`) need the §12.7 scratch-frame encode loop, which reserves loop
+  // frames in memory. The return encoder reserves those frames below its output buffer; the
+  // call-arg buffer is transient (the free pointer is not bumped), so there is nowhere safe to put
+  // them — call-arg composite-array encode is the M4 milestone. Gate it here so an un-gated layout
+  // can never silently mis-encode through `emitEncodeArrayTail` with an unreserved frame region.
+  inputs.forEach((p, i) => {
+    if (encodeFramesOf(layoutOfType(abiParamToType(p))) > 0) {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `arg #${i} of ${fnAbi.name}: encoding a composite-element array call argument (\`tuple[]\`/\`T[][]\`/\`string[]\`, here or inside a tuple member) is not yet implemented (§12.7 call-arg milestone)`,
+        { loc: captureLoc() },
+      );
+    }
+  });
 
   // -- data-literal staging layout (compile-time): each data-literal arg gets a padded image at a
   //    cumulative offset within the staging block.

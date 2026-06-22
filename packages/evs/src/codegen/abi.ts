@@ -31,8 +31,7 @@ import {
 } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError, EvsTypeError } from '../core/errors.js';
-import { captureLoc } from '../core/loc.js';
+import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
   isTupleType,
@@ -74,6 +73,24 @@ const FREE_PTR = 0x40;
 
 /** Scratch slot for running tail cursors (intra-template temporary, architecture §5). */
 const TAIL_CURSOR = 0x00;
+
+/** Words per reserved encode loop frame: `{arrPtr, D, len, i}` (§12.7). */
+const FRAME_SLOTS = 4;
+const FRAME_ARRPTR = 0;
+const FRAME_D = 1;
+const FRAME_LEN = 2;
+const FRAME_I = 3;
+
+/**
+ * Encode-time options threaded through {@link emitEncodeBlock}/{@link emitEncodeArrayTail}. The
+ * `evmVersion` selects the memcpy lowering; `frameDepth` is the next free composite-array loop
+ * frame index (each `emitEncodeArrayTail` consumes one frame and threads `frameDepth + 1` into the
+ * encode of its elements, so concurrently-live array loops never share a frame). Default 0.
+ */
+export interface EncodeOpts {
+  evmVersion: EvmVersion;
+  frameDepth?: number;
+}
 
 /**
  * Scratch slot holding the current composite-array element's SOURCE base during
@@ -238,7 +255,7 @@ export function emitEncodeBlock(
   pushSrc: PushWord,
   pushBase: PushBase,
   tails: SharedTails,
-  opts: { evmVersion: EvmVersion },
+  opts: EncodeOpts,
 ): void {
   const offs = headOffsets(components);
   components.forEach((comp, i) => {
@@ -305,15 +322,14 @@ export function emitEncodeBlock(
       return;
     }
 
-    // composite-element array member (`tuple[]`/`T[][]`/`string[]`): ENCODE is the next milestone
-    // (§12.7 scratch-frame element loop). The decode/read path un-gated the layout, so guard here so
-    // an un-gated layout can never silently mis-encode a composite array via the word-array tail.
+    // composite-element array member (`tuple[]`/`T[][]`/`string[]`): the §12.7 scratch-frame
+    // element loop. The member head already stored its offset (cursor − base) above; the array's
+    // own `[len][…]` block is appended at the cursor by `emitEncodeArrayTail`, which keeps all of
+    // its loop state in a reserved memory frame so the stack stays at the template baseline (no
+    // spectators across the per-element `emitMemCopy`). The member memref pointer is `pushSrc(i)`.
     if (layout.kind === 'array' && layout.elem.kind !== 'word') {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        'codegen/abi: returning/encoding a composite-element array is not yet implemented (§12.7)',
-        { loc: captureLoc() },
-      );
+      emitEncodeArrayTail(w, layout.elem, () => pushSrc(i), tails, opts);
+      return;
     }
 
     // leaf dynamic (string / bytes / word-array): copy [len][payload] to the cursor, advance
@@ -421,6 +437,342 @@ function emitLeafDynTail(
   w.op('ADD'); // [cursor']
   w.push(TAIL_CURSOR);
   w.op('MSTORE'); // []
+}
+
+// ---------------------------------------------------------------------------
+// composite-element array encode (the scratch-frame element loop) — architecture §12.7
+// ---------------------------------------------------------------------------
+
+/**
+ * @internal The number of composite-array loop frames concurrently live while ENCODING a value of
+ * `l` (§12.7). A leaf (`word`/`bytes`/`string`/a word-element array — all emitted via the inline
+ * head write or {@link emitLeafDynTail}) needs none; a tuple needs the max its members need; a
+ * composite-element array ({@link emitEncodeArrayTail}) needs one frame for its own loop plus
+ * whatever encoding ONE element concurrently needs. The return encoder reserves `max` over the
+ * return record (its components encode sequentially into the same frame region). Mirrors the
+ * dispatch in {@link emitEncodeBlock}/{@link emitEncodeArrayTail} branch-for-branch so the reserved
+ * region is always large enough and never overlaps the output buffer.
+ */
+export function encodeFramesOf(l: TypeLayout): number {
+  if (l.kind === 'word' || l.kind === 'bytes') return 0;
+  if (l.kind === 'array') {
+    // a word-element array is a leaf (emitLeafDynTail), never emitEncodeArrayTail.
+    if (l.elem.kind === 'word') return 0;
+    // composite-element array: one own frame + the frames its element encode concurrently needs.
+    return 1 + encodeFramesOf(l.elem);
+  }
+  // tuple: members encode into the parent's space; the deepest member governs.
+  return l.components.reduce((n, c) => Math.max(n, encodeFramesOf(c)), 0);
+}
+
+/**
+ * Pushes the absolute memory address of word `k` of composite-array loop frame `frameDepth`. The
+ * frames live in a region reserved BELOW the output buffer at encode entry (the free pointer is
+ * bumped by `32·FRAME_SLOTS·FRAMES` before `out = MLOAD(0x40)` is read, so `out` — which never
+ * moves during the in-place encode — sits just above frame 0). Frame `f` occupies
+ * `[out − 32·FRAME_SLOTS·(f+1), out − 32·FRAME_SLOTS·f)`; word `k` is `frameBase + 32·k`. Reading
+ * the address off `MLOAD(0x40)` makes every frame access stack-depth-independent (the §12.7 / decode
+ * `ELEM_BASE` lesson), so loop state never has to ride the stack across an `emitMemCopy`.
+ */
+function pushFrameSlot(w: AsmWriter, frameDepth: number, k: number): void {
+  const off = 32 * FRAME_SLOTS * (frameDepth + 1) - 32 * k;
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [out]
+  w.push(off); // [off, out]
+  w.op('SWAP1');
+  w.op('SUB'); // [out − off = frameBase + 32·k]
+}
+
+/** Loads word `k` of frame `frameDepth` onto the stack. */
+function pushFrameLoad(w: AsmWriter, frameDepth: number, k: number): void {
+  pushFrameSlot(w, frameDepth, k);
+  w.op('MLOAD');
+}
+
+/** Stores the top-of-stack value into word `k` of frame `frameDepth` (consumes the value). */
+function emitFrameStore(w: AsmWriter, frameDepth: number, k: number): void {
+  pushFrameSlot(w, frameDepth, k); // [addr, v]
+  w.op('MSTORE'); // []
+}
+
+/**
+ * Encodes a composite-element array `E[]` (`tuple[]` / `T[][]` / `string[]`/`bytes[]`) as an ABI
+ * `T[]` tail written at the shared tail cursor (`TAIL_CURSOR`), exactly mirroring the interpreter's
+ * `encodeArrayTail` (§12.2/§12.7). `pushArrPtr` pushes the source array memref pointer
+ * (`[len:32][p0:32]…[p_{len-1}:32]`, §12.1). On entry the cursor already points at this array's
+ * `len` word; on exit the cursor has advanced past the whole tail. Net stack 0.
+ *
+ *  1. `MSTORE(cursor, len)` (`len = MLOAD(arrPtr)`); `D = cursor + 32`.
+ *  2. STATIC element (a static tuple or a word — no per-element tail, no memcpy): advance the cursor
+ *     to `D + len·staticSize`, then loop `i`: encode element `i` inline at `base = D + i·staticSize`
+ *     (a word → `MSTORE`; a static tuple → `emitEncodeBlock` over its all-word head). NO offset
+ *     words.
+ *  3. DYNAMIC element (dynamic tuple / inner array / `string`/`bytes`): advance the cursor to
+ *     `D + 32·len` (reserve the offset words), then loop `i`: `MSTORE(D + 32·i, cursor − D)` (offset
+ *     relative to `D`), then append element `i`'s tail at the cursor — a dynamic tuple reserves
+ *     `headBytes` then `emitEncodeBlock`; a word-element inner array / `string`/`bytes` →
+ *     `emitLeafDynTail`; a composite inner array → recurse `emitEncodeArrayTail`. Each element
+ *     extends the same monotone cursor.
+ *
+ * All loop state (`arrPtr, D, len, i`) lives in a reserved memory frame (`opts.frameDepth`), so the
+ * operand stack stays at the template baseline throughout — every `emitMemCopy` runs at exactly
+ * `[dst, src, len]` (the pre-cancun `@memcpy` height contract), even when this array nests inside a
+ * tuple member at arbitrary tuple-encode depth.
+ */
+export function emitEncodeArrayTail(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  pushArrPtr: PushBase,
+  tails: SharedTails,
+  opts: EncodeOpts,
+): void {
+  const f = opts.frameDepth ?? 0;
+  const elemDynamic = isDynamic(elemLayout);
+
+  // -- frame.arrPtr := arrPtr ----------------------------------------------------------------
+  pushArrPtr(); // [arrPtr]
+  emitFrameStore(w, f, FRAME_ARRPTR); // []
+
+  // -- MSTORE(cursor, len); frame.len := len; frame.D := cursor + 32; advance cursor ---------
+  pushFrameLoad(w, f, FRAME_ARRPTR);
+  w.op('MLOAD'); // [len]
+  w.op('DUP1'); // [len, len]
+  emitFrameStore(w, f, FRAME_LEN); // [len]
+  w.op('DUP1'); // [len, len]
+  w.push(TAIL_CURSOR);
+  w.op('MLOAD'); // [cursor, len, len]
+  w.op('MSTORE'); // [len]            mem[cursor] = len
+  // D = cursor + 32
+  w.push(TAIL_CURSOR);
+  w.op('MLOAD');
+  w.push(32);
+  w.op('ADD'); // [D, len]
+  w.op('DUP1'); // [D, D, len]
+  emitFrameStore(w, f, FRAME_D); // [D, len]
+  // advance cursor to D + (dynamic ? 32·len : len·staticSize)  (reserve offset words / static body)
+  w.op('SWAP1'); // [len, D]
+  if (elemDynamic) {
+    w.push(5);
+    w.op('SHL'); // [32·len, D]
+  } else {
+    const ss = staticSize(elemLayout);
+    if (ss !== 1) {
+      w.push(ss);
+      w.op('MUL'); // [len·ss, D]
+    }
+  }
+  w.op('ADD'); // [cursor' = D + body]
+  w.push(TAIL_CURSOR);
+  w.op('MSTORE'); // []
+
+  // -- element loop: all state in the frame; stack stays at the template baseline ------------
+  w.push(0);
+  emitFrameStore(w, f, FRAME_I); // frame.i := 0
+
+  const head = w.newLabel('arrenc');
+  const done = w.newLabel('arrenc_done');
+  w.label(head, 0);
+  // continue while i < len
+  pushFrameLoad(w, f, FRAME_I); // [i]
+  pushFrameLoad(w, f, FRAME_LEN); // [len, i]
+  w.op('GT'); // [len > i, ...]  i.e. i < len  → but GT is len>i which is i<len
+  w.op('ISZERO'); // [¬(i < len)]
+  w.pushLabel(done);
+  w.op('JUMPI'); // []
+
+  if (elemDynamic) {
+    // MSTORE(D + 32·i, cursor − D)  (offset relative to D)
+    pushFrameLoad(w, f, FRAME_I);
+    w.push(5);
+    w.op('SHL'); // [32·i]
+    pushFrameLoad(w, f, FRAME_D); // [D, 32·i]
+    w.op('ADD'); // [D+32·i]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [cursor, D+32·i]
+    pushFrameLoad(w, f, FRAME_D); // [D, cursor, D+32·i]
+    w.op('SWAP1'); // [cursor, D, D+32·i]
+    w.op('SUB'); // [cursor−D, D+32·i]
+    w.op('SWAP1'); // [D+32·i, rel]
+    w.op('MSTORE'); // []
+
+    // append element i's tail at the cursor
+    emitEncodeArrayElementTail(w, elemLayout, f, tails, opts);
+  } else {
+    // static element: write inline at base = D + i·staticSize
+    emitEncodeArrayElementStatic(w, elemLayout, f, tails, opts);
+  }
+
+  // i += 1
+  pushFrameLoad(w, f, FRAME_I);
+  w.push(1);
+  w.op('ADD'); // [i+1]
+  emitFrameStore(w, f, FRAME_I); // []
+  w.pushLabel(head);
+  w.op('JUMP');
+  w.label(done, 0); // []
+}
+
+/** Pushes element `i`'s source memref pointer / inline word: `MLOAD(arrPtr + 32 + 32·i)`. Reads
+ *  `arrPtr` and `i` from the loop frame, so it is stack-depth-independent. */
+function pushElemSlot(w: AsmWriter, frameDepth: number): void {
+  pushFrameLoad(w, frameDepth, FRAME_I);
+  w.push(5);
+  w.op('SHL'); // [32·i]
+  pushFrameLoad(w, frameDepth, FRAME_ARRPTR);
+  w.push(32);
+  w.op('ADD'); // [arrPtr+32, 32·i]
+  w.op('ADD'); // [arrPtr+32+32·i]   (address of slot pᵢ)
+}
+
+/** Encodes one STATIC element `i` inline at `base = D + i·staticSize` (no tail, no memcpy). A word
+ *  element is `MSTORE`d directly; a static tuple element inlines its all-word head via
+ *  {@link emitEncodeBlock}. All bases/sources are read from the frame (stack-depth-independent). */
+function emitEncodeArrayElementStatic(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  frameDepth: number,
+  tails: SharedTails,
+  opts: EncodeOpts,
+): void {
+  // base = D + i·staticSize
+  const pushBase: PushBase = () => {
+    pushFrameLoad(w, frameDepth, FRAME_I);
+    const ss = staticSize(elemLayout);
+    if (ss !== 1) {
+      w.push(ss);
+      w.op('MUL'); // [i·ss]
+    }
+    pushFrameLoad(w, frameDepth, FRAME_D);
+    w.op('ADD'); // [D + i·ss = base]
+  };
+
+  if (elemLayout.kind === 'word') {
+    // MSTORE(base, elemᵢ) where elemᵢ = MLOAD(arrPtr+32+32·i) (the inline word slot)
+    pushElemSlot(w, frameDepth);
+    w.op('MLOAD'); // [elemᵢ]
+    pushBase(); // [base, elemᵢ]
+    w.op('MSTORE'); // []
+    return;
+  }
+  if (elemLayout.kind !== 'tuple') {
+    throw internal(`static array element of unexpected kind '${elemLayout.kind}'`);
+  }
+  // static tuple element: member words come from MLOAD(elemPtrᵢ + 32·j) where elemPtrᵢ is the
+  // pointer stored in slot pᵢ. emitEncodeBlock writes the inline head at base (no tail since the
+  // tuple is static), at frameDepth + 1 (an inner composite-array member would take the next frame,
+  // though a static tuple has none — kept for uniformity).
+  const components = tupleComponents(elemLayout);
+  const pushSrc: PushWord = (j) => {
+    pushElemSlot(w, frameDepth);
+    w.op('MLOAD'); // [elemPtrᵢ]
+    if (j !== 0) {
+      w.push(32 * j);
+      w.op('ADD');
+    }
+    w.op('MLOAD'); // [member word]
+  };
+  emitEncodeBlock(w, components, pushSrc, pushBase, tails, {
+    ...opts,
+    frameDepth: frameDepth + 1,
+  });
+}
+
+/** Appends one DYNAMIC element `i`'s tail at the cursor: a dynamic tuple → reserve `headBytes` then
+ *  `emitEncodeBlock`; a `string`/`bytes` or word-element inner array → `emitLeafDynTail`; a
+ *  composite inner array → recurse `emitEncodeArrayTail` (next frame). */
+function emitEncodeArrayElementTail(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  frameDepth: number,
+  tails: SharedTails,
+  opts: EncodeOpts,
+): void {
+  // bytes/string element: leaf dynamic tail at the cursor.
+  if (elemLayout.kind === 'bytes') {
+    emitLeafDynTail(
+      w,
+      () => {
+        pushElemSlot(w, frameDepth);
+        w.op('MLOAD');
+      },
+      false,
+      tails,
+      opts,
+    );
+    return;
+  }
+
+  if (elemLayout.kind === 'array') {
+    // word-element inner array (`uint256[]` inside `uint256[][]`) → leaf word-array tail.
+    if (elemLayout.elem.kind === 'word') {
+      emitLeafDynTail(
+        w,
+        () => {
+          pushElemSlot(w, frameDepth);
+          w.op('MLOAD');
+        },
+        true,
+        tails,
+        opts,
+      );
+      return;
+    }
+    // composite inner array → recurse with the NEXT frame (concurrent with this loop's frame).
+    emitEncodeArrayTail(
+      w,
+      elemLayout.elem,
+      () => {
+        pushElemSlot(w, frameDepth);
+        w.op('MLOAD');
+      },
+      tails,
+      { ...opts, frameDepth: frameDepth + 1 },
+    );
+    return;
+  }
+
+  if (elemLayout.kind !== 'tuple') {
+    throw internal(`dynamic array element of unexpected kind '${elemLayout.kind}'`);
+  }
+  // dynamic tuple element: reserve its head region at the cursor, then encode its head/tail. Its
+  // base IS the cursor value here; re-derivable as parentBase + (the offset we just stored) — but
+  // simpler and stack-depth-independent: read it back from where we leave it. We capture the
+  // sub-block base = current cursor, advance the cursor past the sub-head, then emitEncodeBlock with
+  // base = that captured value re-read from the frame's spare? No spare slot — instead recompute the
+  // base from D + the offset we stored: base = D + MLOAD(D + 32·i).
+  const components = tupleComponents(elemLayout);
+  const headSize = headBytes(components);
+  // advance cursor past the sub-head (reserve headBytes): cursor += headSize
+  w.push(TAIL_CURSOR);
+  w.op('MLOAD');
+  w.push(headSize);
+  w.op('ADD'); // [cursor + headSize]
+  w.push(TAIL_CURSOR);
+  w.op('MSTORE'); // []   cursor advanced past the sub-head
+  // base of this element = D + offset(i) = D + MLOAD(D + 32·i)
+  const pushBase: PushBase = () => {
+    pushFrameLoad(w, frameDepth, FRAME_I);
+    w.push(5);
+    w.op('SHL'); // [32·i]
+    pushFrameLoad(w, frameDepth, FRAME_D); // [D, 32·i]
+    w.op('ADD'); // [D+32·i]
+    w.op('MLOAD'); // [off]
+    pushFrameLoad(w, frameDepth, FRAME_D); // [D, off]
+    w.op('ADD'); // [base = D + off]
+  };
+  const pushSrc: PushWord = (j) => {
+    pushElemSlot(w, frameDepth);
+    w.op('MLOAD'); // [elemPtrᵢ]
+    if (j !== 0) {
+      w.push(32 * j);
+      w.op('ADD');
+    }
+    w.op('MLOAD'); // [member word / pointer]
+  };
+  emitEncodeBlock(w, components, pushSrc, pushBase, tails, {
+    ...opts,
+    frameDepth: frameDepth + 1,
+  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1267,6 +1619,23 @@ export function emitReturnEncode(
   const anyDyn = named.some((c) => isDynamic(layoutOfType(abiParamToType(c))));
   const dynOff = anyDyn ? 32 : 0;
   const headSize = headBytes(named);
+
+  // Reserve the composite-array encode loop frames BELOW the output buffer (§12.7): bump the free
+  // pointer by 32·FRAME_SLOTS·FRAMES BEFORE reading `out`, so `out = MLOAD(0x40)` sits above frame 0
+  // and `RETURN(out, cursor − out)` never returns scratch. FRAMES = the max concurrent array-nesting
+  // depth of the return type (0 for a record with no composite-element array — no bump at all).
+  const frames = named.reduce(
+    (n, c) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(c)))),
+    0,
+  );
+  if (frames > 0) {
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [old]
+    w.push(32 * FRAME_SLOTS * frames);
+    w.op('ADD'); // [old + framesBytes]
+    w.push(FREE_PTR);
+    w.op('MSTORE', { note: `reserve ${frames} array-encode frame(s)` }); // []
+  }
 
   // out := MLOAD(0x40); optional top-level tuple offset; tail cursor := out + dynOff + heads
   w.push(FREE_PTR);

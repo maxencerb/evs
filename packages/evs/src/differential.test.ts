@@ -1837,6 +1837,198 @@ describe('composite arrays (read path)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 12d. composite arrays — RETURN PATH (encode) byte-exactness (§12 milestone 3).
+//
+// Each shape: s.call a composite-element array and s.return THE WHOLE ARRAY. `expectAgreement`
+// asserts interp == compiled EVM byte-for-byte (the interp's `encodeArrayTail` is proven == viem),
+// and each case additionally decodes the returned bytes through viem `decodeAbiParameters` and
+// asserts a round-trip to the original value. Every shape runs across paris/shanghai/cancun (the
+// pre-cancun `@memcpy` height contract is the load-bearing risk). (impl-plan §12.2/§12.7/§12.10.)
+// ---------------------------------------------------------------------------
+
+/** Loose returnable handle: a composite-array call output is an `Expr` at runtime (precise
+ *  inference is pinned by the type tests). Shared by the composite-array return-path corpus. */
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose returnable corpus handle
+const asExpr = (v: unknown): Expr => v as Expr;
+
+describe('composite arrays (return path)', () => {
+  const posComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+  ] as const;
+  const positionsBatchAbi = [
+    {
+      type: 'function',
+      name: 'positionsBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: posComponents }],
+    },
+  ] as const satisfies Abi;
+  const POSITIONS = [
+    {
+      nonce: 1n,
+      operator: getAddress('0x00000000000000000000000000000000000000a1'),
+      liquidity: 111n,
+    },
+    {
+      nonce: 2n,
+      operator: getAddress('0x00000000000000000000000000000000000000a2'),
+      liquidity: 222n,
+    },
+    {
+      nonce: 3n,
+      operator: getAddress('0x00000000000000000000000000000000000000a3'),
+      liquidity: 333n,
+    },
+  ] as const;
+  const positionsReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: posComponents }],
+    [POSITIONS],
+  );
+
+  const withBytesComponents = [
+    { name: 'id', type: 'uint256' },
+    { name: 'blob', type: 'bytes' },
+  ] as const;
+  const withBytesBatchAbi = [
+    {
+      type: 'function',
+      name: 'withBytesBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: withBytesComponents }],
+    },
+  ] as const satisfies Abi;
+  const WITH_BYTES = [
+    { id: 10n, blob: '0xdeadbeef' },
+    { id: 20n, blob: `0x${'cd'.repeat(40)}` },
+    { id: 30n, blob: '0x' },
+  ] as const;
+  const withBytesReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: withBytesComponents }],
+    [WITH_BYTES],
+  );
+
+  const matrixAbi = [
+    {
+      type: 'function',
+      name: 'matrix',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'uint256[][]' }],
+    },
+  ] as const satisfies Abi;
+  const MATRIX = [[1n], [2n, 3n], [], [4n, 5n, 6n, 7n]] as const;
+  const matrixReturndata = encodeAbiParameters([{ type: 'uint256[][]' }], [MATRIX]);
+
+  const namesAbi = [
+    {
+      type: 'function',
+      name: 'names',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'string[]' }],
+    },
+  ] as const satisfies Abi;
+  const NAMES = ['alpha', '', 'a-much-longer-string-spanning-two-words!!', 'z'] as const;
+  const namesReturndata = encodeAbiParameters([{ type: 'string[]' }], [NAMES]);
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(A) return whole Position[] (static-elem) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retPositions', args: [t.uint256] }, (s, n) => {
+        const ps = s.call({
+          address: POOL,
+          abi: positionsBatchAbi,
+          functionName: 'positionsBatch',
+          args: [n],
+        });
+        return s.return({ ps: asExpr(ps) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: positionsReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retPositions',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ps: POSITIONS });
+    });
+
+    test(`(B) return whole WithBytes[] (dynamic-member elem) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retWithBytes', args: [t.uint256] }, (s, n) => {
+        const xs = s.call({
+          address: POOL,
+          abi: withBytesBatchAbi,
+          functionName: 'withBytesBatch',
+          args: [n],
+        });
+        return s.return({ xs: asExpr(xs) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: withBytesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ xs: WITH_BYTES });
+    });
+
+    test(`(C) return whole uint256[][] (ragged) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retMatrix', args: [t.uint256] }, (s, n) => {
+        const m = s.call({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] });
+        return s.return({ m: asExpr(m) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: matrixReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ m: MATRIX });
+    });
+
+    test(`(D) return whole string[] [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retNames', args: [t.uint256] }, (s, n) => {
+        const ns = s.call({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] });
+        return s.return({ ns: asExpr(ns) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: namesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retNames',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ns: NAMES });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // helper mocks
 // ---------------------------------------------------------------------------
 

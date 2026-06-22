@@ -439,6 +439,36 @@ test('abitype infers composite-array outputs: tuple[] → readonly Struct[], uin
   >();
 });
 
+test('returning a whole composite array infers an abitype-typed script output (§12.8 return side)', () => {
+  // s.return of a decoded composite array widens the script's own ScriptAbi output so a viem read
+  // of the compiled script infers the precise shape: `tuple[]` → `readonly Struct[]`, `uint256[][]`
+  // → `readonly (readonly bigint[])[]`, `string[]` → `readonly string[]`.
+  const script = evscript({ name: 'arrs', args: [t.uint256] }, (s, n) => {
+    const ps = s.call({
+      address: '0x0000000000000000000000000000000000000001',
+      abi: arraysFixture,
+      functionName: 'positionsBatch',
+      args: [n],
+    });
+    const m = s.call({
+      address: '0x0000000000000000000000000000000000000001',
+      abi: arraysFixture,
+      functionName: 'matrix',
+    });
+    const ns = s.call({
+      address: '0x0000000000000000000000000000000000000001',
+      abi: arraysFixture,
+      functionName: 'names',
+    });
+    return s.return({ ps, m, ns });
+  });
+  expectTypeOf<ReadContractReturnType<typeof script.abi, 'arrs'>>().toEqualTypeOf<{
+    ps: readonly { nonce: bigint; liquidity: bigint }[];
+    m: readonly (readonly bigint[])[];
+    ns: readonly string[];
+  }>();
+});
+
 test('the body callback must return a ScriptReturn (not a bare record)', () => {
   // @ts-expect-error — returning the record directly is not a ScriptReturn
   evscript({ name: 'bad', args: [] }, (s) => ({ x: s.lit(t.uint256, 1n) }));

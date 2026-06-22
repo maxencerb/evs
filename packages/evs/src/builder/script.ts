@@ -316,11 +316,25 @@ type ParamToTupleType<p extends AbiParameter> = p extends {
   ? { readonly type: 'tuple'; readonly components: comps }
   : never;
 
-// the staged handle of one OUTPUT parameter: a tuple param → a `Tuple` handle (decoded into a
-// flat block), every scalar/array param → an `Expr` of its type.
+/** An abitype `AbiParameter` for a `'tuple[]'` member → the matching `tuple[]` {@link TupleType}
+ *  descriptor (an array value type whose `.type` is `'tuple[]'`). */
+type ParamToTupleArrayType<p extends AbiParameter> = p extends {
+  readonly type: 'tuple[]';
+  readonly components: infer comps extends readonly NamedType[];
+}
+  ? { readonly type: 'tuple[]'; readonly components: comps }
+  : never;
+
+// the staged handle of one OUTPUT parameter (§12.8 return side): a `tuple` param → a `Tuple` handle
+// (decoded into a flat block); a `tuple[]` param → an `Expr` of the `tuple[]` descriptor (so a
+// returned array is abitype-typed as `readonly Struct[]` and `.at(i)` is a typed Tuple element); a
+// nested word array (`uint256[][]`) / `string[]` → an `Expr` of its string type (abitype infers
+// `readonly (readonly bigint[])[]` / `readonly string[]`); every other scalar/array → an `Expr`.
 type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
   ? Tuple<ParamToTupleType<p>>
-  : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
+  : p['type'] extends 'tuple[]'
+    ? Expr<ParamToTupleArrayType<p>>
+    : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
 
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
 // a struct, a positional array for an unnamed tuple) OR an `Expr` of that type OR — for a tuple
