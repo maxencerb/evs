@@ -5,25 +5,30 @@ law). Everything here is the public surface of `@maxencerb/evs`. TS floor: **≥
 mode** (viem requires ≥ 5.0.4 strict). ESM only.
 
 ```ts
-import { evscript, compile, arg, t } from '@maxencerb/evs';
+import { evscript, compile, t } from '@maxencerb/evs';
 ```
+
+> **Amended by #2 (composite types).** Script args are now a single `t.*` type or a `readonly`
+> list of them, arriving as **positional callback params after `s`**; `arg()`/`s.args`/`ArgSpec`
+> are no longer the script-args surface. `arg()`/`ArgSpec` are RETAINED for `s.fn` param
+> declarations only (§8). See amendments.md §16. The pre-change forms are quoted there as `Law:`.
 
 ## 1. `evscript` — entry point
 
 ```ts
 export function evscript<
   const name extends string,
-  const args extends readonly ArgSpec[],
-  ret extends Record<string, Expr>,
+  const args extends ArgsInput = readonly [],
+  ret extends Record<string, Expr> = Record<string, Expr>,
 >(
-  def: { name: name; args: args },
-  body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+  def: { name: name; args?: args },
+  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
   opts?: { locations?: boolean }, // default true: capture source locations
-): EvsScript<name, args, ret>;
+): EvsScript<name, NormalizeArgs<args>, ret>;
 
 export interface EvsScript<
   name extends string = string,
-  args extends readonly ArgSpec[] = readonly ArgSpec[],
+  args extends readonly EvsType[] = readonly EvsType[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
   readonly name: name;
@@ -33,22 +38,21 @@ export interface EvsScript<
 }
 ```
 
-`const` type params mean inline `args` tuples and inline ABIs need no `as const`. Standalone
+`const` type params mean inline `args` lists and inline ABIs need no `as const`. Standalone
 ABIs: declare `as const satisfies Abi`.
 
-## 2. Args: `arg()` and the `t` type namespace (decision 1 — final)
+## 2. Args: positional callback params and the `t` type namespace (decision 1 — amended by #2)
 
 ```ts
-export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
-  readonly name: name;
-  readonly type: type;
-}
-export function arg<const name extends string, const type extends ArgType>(
-  name: name,
-  type: type,
-): ArgSpec<name, type>;
-// runtime: validates non-empty identifier name (/^[A-Za-z_]\w*$/) and known type string;
-// throws EvsTypeError with the call-site loc; returns Object.freeze({ name, type }).
+export type ArgsInput = EvsType | readonly EvsType[]; // a lone type or a list
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+
+// the body-callback handle for one normalized arg type
+export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+// the positional handle tuple spread into the body after `s` (homomorphic — order preserved)
+export type ArgHandles<types extends readonly EvsType[]> = {
+  readonly [i in keyof types]: ArgHandle<types[i]>;
+};
 
 export const t: {
   readonly address: 'address';
@@ -61,21 +65,37 @@ export const t: {
   /* … */ readonly bytes32: 'bytes32';
   readonly string: 'string';
   readonly bytes: 'bytes';
-  array<const e extends WordType>(elem: e): `${e}[]`; // t.array(t.address) -> 'address[]'
+  array<const e extends StringType>(elem: e): `${e}[]`; // t.array(t.address) -> 'address[]'
+  array<const e extends TupleType>(elem: e): TupleArrayOf<e>; // t.array(t.struct({…})) -> tuple[]
+  struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>; // named tuple
+  tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>; // positional
 };
 ```
 
-Raw type strings are accepted everywhere `t.*` is (the `t` namespace is autocomplete sugar).
+`args` is a single `t.*` type or a `readonly` list of them; a lone type is sugar for a
+one-element list (`args: t.uint256` ≡ `args: [t.uint256]`), and a zero-arg script omits `args`
+entirely. Args arrive as **positional callback params after `s`**:
+`(s, token, amount) => {…}`. A scalar/string/array arg arrives as an `Expr`; a `t.struct`/
+`t.tuple` arg arrives as a `Tuple` handle (§5/§6). Raw type strings are accepted everywhere
+`t.*` is (the `t` namespace is autocomplete sugar); a raw `readonly AbiParameter[]` is accepted
+wherever a tuple type is expected.
 
-**Why ordered declarators (option c)**: a readonly tuple of `ArgSpec`s makes declaration order,
-type-level order, runtime encode order, and ABI `inputs` order the same object — the
-`UnionToTuple` reordering hazard (abitype research §4.2) cannot arise. `s.args` derives
-tuple→record (safe direction). Call sites stay viem-native positional:
-`args: [pool, fee]` typed as `readonly [pool: \`0x${string}\`, fee: number]`.
+`t.struct({...})` builds a **named** tuple type (its runtime member order is `Object.keys`
+insertion order — the only encode-order source of truth); `t.tuple(...)` builds a **positional**
+tuple type (members `name: ''`); `t.array(elem)` is extended to tuple elements (`tuple` →
+`tuple[]`). See §3 for `EvsType`/`TupleType`.
 
-Argument types (`ArgType = EvsType`): word types, `string`, `bytes`, and `T[]` of word types
-are all valid script args in v0. Fixed arrays `T[N]` and tuples are recording-time errors
-(deferred).
+**No `UnionToTuple` hazard.** A `t.struct` record is unordered at the type level, but it
+compiles to a single NAMED ABI `tuple`, which abitype infers as an **order-insensitive object**
+(abitype research §4.2). Positional `t.tuple(...)` and the positional script-arg list both use
+**ordered declarators** and never reach `UnionToTuple`. Call sites stay viem-native positional:
+`args: [pool, fee]` typed as `readonly [arg0: \`0x${string}\`, arg1: number]`.
+
+Argument types: word types, `string`, `bytes`, `T[]`, and `t.struct`/`t.tuple` types are valid
+script args. Fixed arrays `T[N]`, arrays of tuples (`tuple[]`), and nested string arrays
+(`uint256[][]`, `string[]`) remain recording-time errors (`EvsTypeError('UNSUPPORTED_V0', …)`);
+the `TupleType`/`ArrayType` vocabulary already represents them, so they are an additive
+follow-up (codegen `case` + builder wiring), not a rewrite.
 
 ## 3. Types, `Expr`, and literal coercion
 
@@ -87,8 +107,23 @@ export type WordType =
   | 'bool'
   | `bytes${BytesSize}`;
 export type DynType = 'string' | 'bytes';
-export type ArrayType = `${WordType}[]`;
-export type EvsType = WordType | DynType | ArrayType;
+// amended by #2: a scalar leaf is a word or a dyn byte-blob; arrays are string-encoded and
+// nestable to a bounded depth; tuples are descriptor OBJECTS (named members can't live in a
+// string).
+export type ScalarType = WordType | DynType;
+export type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+export type StringType = ScalarType | ArrayType; // every string-encoded type
+export interface TupleType {
+  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly components: readonly NamedType[];
+}
+export interface NamedType {
+  // a TupleType member: structurally an abitype `AbiParameter` (and the IR `PlainAbiParam`)
+  readonly name: string; // non-empty for a struct field; '' for a positional t.tuple member
+  readonly type: string; // canonical Solidity string ('uint256', 'tuple', 'tuple[]', …)
+  readonly components?: readonly NamedType[]; // present iff type starts with 'tuple'
+}
+export type EvsType = WordType | DynType | ArrayType | TupleType; // string OR tuple object
 export type NumericType = `uint${UintBits}` | `int${UintBits}`;
 export type BitsType = `uint${UintBits}` | `bytes${BytesSize}`;
 
@@ -134,7 +169,14 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  at<elem extends WordType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>;
+  // amended by #2: `elem` broadened to StringType (nested string arrays in the vocabulary); the
+  // `& ArrayType` pins `${elem}[]` to the depth-bounded array set (an unbounded `${StringType}[]`
+  // could reach depth 4, which is not an EvsType). tuple-element arrays use the Tuple/array
+  // handles, not `at()`.
+  at<elem extends StringType>(
+    this: Expr<`${elem}[]` & ArrayType>,
+    i: IntoExpr<'uint256'>,
+  ): Expr<elem>;
   // bounds-checked → Panic 0x32
 }
 ```
@@ -157,24 +199,34 @@ export type LitOf<t extends EvsType> = t extends NumericType
           ? string
           : t extends 'bytes'
             ? `0x${string}`
-            : t extends `${infer e extends WordType}[]`
-              ? readonly LitOf<e>[]
-              : never;
+            : t extends TupleType // amended by #2: tuple literal via abitype (object/positional)
+              ? TupleLitOf<t>
+              : t extends `${infer e extends StringType}[]`
+                ? readonly LitOf<e>[]
+                : never;
+// A TupleType viewed as an unnamed abitype AbiParameter and run through abitype's
+// AbiParameterToPrimitiveType: every member named → an object keyed by names; any member unnamed
+// → a positional tuple; recurses through nested components / array suffixes.
+export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<
+  TupleAsParam<t>,
+  'inputs'
+>;
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
 
 Validated **at recording time** with the call-site loc (`EvsTypeError` on violation):
 
-| Literal                     | Rule                                                      |
-| --------------------------- | --------------------------------------------------------- |
-| `number` for `uintN`/`intN` | must be a safe integer; range-checked against N           |
-| `bigint` for `uintN`/`intN` | range-checked; negatives two's-complemented for `intN`    |
-| `boolean`                   | only for `'bool'`                                         |
-| `0x` string for `address`   | exactly 20 bytes; checksum NOT enforced (viem-permissive) |
-| `0x` string for `bytesN`    | exactly N bytes                                           |
-| `0x` string for `bytes`     | any even-length hex                                       |
-| `string` for `'string'`     | UTF-8 encoded                                             |
-| JS array for `T[]`          | element-wise rules of `T`                                 |
+| Literal                               | Rule                                                      |
+| ------------------------------------- | --------------------------------------------------------- |
+| `number` for `uintN`/`intN`           | must be a safe integer; range-checked against N           |
+| `bigint` for `uintN`/`intN`           | range-checked; negatives two's-complemented for `intN`    |
+| `boolean`                             | only for `'bool'`                                         |
+| `0x` string for `address`             | exactly 20 bytes; checksum NOT enforced (viem-permissive) |
+| `0x` string for `bytesN`              | exactly N bytes                                           |
+| `0x` string for `bytes`               | any even-length hex                                       |
+| `string` for `'string'`               | UTF-8 encoded                                             |
+| JS array for `T[]`                    | element-wise rules of `T`                                 |
+| object/tuple for `t.struct`/`t.tuple` | member-wise rules per component (omitted → zero)          |
 
 Word literals canonicalize at recording. Dynamic literals (and literal arrays) become bytecode
 **data segments** materialized by CODECOPY on first use. Explicit constructor when inference
@@ -196,14 +248,15 @@ front-page docs warning; enable `typescript/strict-boolean-expressions` (oxlint 
 ## 4. `ScriptBuilder` — full surface
 
 ```ts
-export interface ScriptBuilder<args extends readonly ArgSpec[]> {
-  readonly args: { readonly [a in args[number] as a['name']]: Expr<a['type']> }
-
+// amended by #2: ScriptBuilder is now NON-GENERIC — it lost its `args` type param and its
+// `s.args` member; script args arrive as positional callback params (§2). It gained `s.tuple`.
+export interface ScriptBuilder {
   // values & state
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>
   let<t extends EvsType>(init: Expr<t>): Cell<t>
   newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>
+  tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>  // §5 — allocator
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>
   // EnvKind = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
@@ -281,6 +334,53 @@ export interface MutArray<e extends WordType> {
 ≥ 2^32 → Panic `0x41`. This is the building block for "loop over inputs, collect outputs" —
 the multicall-replacement pattern (example E2).
 
+### Tuples / structs (`Tuple`, `Field`, `s.tuple`) — added by #2
+
+```ts
+// the value a composite member accepts on write/init: a Tuple handle or a host literal
+export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
+export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+
+// a field handle over one tuple member (Cell-like). A composite member's `.get()` follows the
+// pointer and yields a Tuple handle; a scalar member's `.get()` yields an Expr.
+export interface Field<t extends EvsType> {
+  readonly type: t;
+  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  set(value: IntoMember<t>): void;
+}
+
+// a tuple / struct memref handle. For each NAMED component, a property keyed by the component
+// name yields a Field over that member; `at(i)` is the positional accessor (literal index); and
+// `expr()` is the raw memref Expr (for returning the tuple or passing it as a call arg). Typed via
+// abitype over `C['components']`.
+export type Tuple<C extends TupleType> = {
+  readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]: Field</* member type */>;
+} & {
+  at(i: number): Field</* element member type */>;
+  expr(): Expr<C>;
+};
+
+// the partial member record accepted by `s.tuple(type, init?)`: a fully-named struct takes a
+// name-keyed object; a positional t.tuple takes a positional record. Every member is optional
+// (omitted → zero) and accepts a literal, an Expr, or a Tuple (per member type).
+export type TupleInit<C extends TupleType> = /* named object | positional record */;
+
+// the allocator (on ScriptBuilder, §4):
+tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>
+```
+
+`s.tuple(type, init?)` bump-allocates a packed `[w0][w1]…[w_{n-1}]` block (`n` = component
+count, **no length prefix**), **zero-fills** it, then `MSTORE`s each provided member; an
+omitted or literal-`0` member needs no write since the block is already zeroed. Each `wᵢ` is a
+canonical word for a static member, or a memref pointer for a dynamic/composite member
+(string/bytes/array/tuple). `field.get()` reads `wᵢ`; `field.set(v)` writes it.
+
+**Reference semantics** (documented, like `MutArray.expr()` and dynamic cells): a `Tuple` handle
+**is** the pointer. Passing it (to a call arg, `s.return`, a cell, or another field) copies the
+pointer, not the block — so a later `field.set()` is visible through every alias. The SAME handle
+type is produced by `s.tuple(...)`, by a decoded `'tuple'` call output (§6), and by a
+struct/tuple script arg (§2) — one unified tuple type.
+
 ```ts
 export interface LoopCtl {
   break(): void; // jump past the owning loop
@@ -305,17 +405,22 @@ export interface SubcallParams<
   readonly args?: SubcallInputs<abi, name>
   readonly gas?: IntoExpr<'uint256'>            // optional cap; default forward-all
 }
-// per-parameter union: literal (abitype Register-resolved primitive) OR Expr of that type
+// per-parameter union (amended by #2): the abitype Register-resolved primitive (a literal object
+// for a struct, a positional array for an unnamed tuple) OR an Expr of that type OR — for a tuple
+// param — a Tuple handle / s.tuple(...) result.
 export type SubcallInputs<abi, name> = {
-  readonly [i in keyof inputs]: AbiParameterToPrimitiveType<inputs[i], 'inputs'>
-    | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>
+  readonly [i in keyof inputs]: inputs[i]['type'] extends 'tuple'
+    ? AbiParameterToPrimitiveType<inputs[i], 'inputs'> | Tuple</* inputs[i] */> | Expr</* inputs[i] */>
+    : AbiParameterToPrimitiveType<inputs[i], 'inputs'>
+        | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>
 } // where inputs = ExtractAbiFunction<abi, name, ViewMutability>['inputs']
 
 call<const abi extends Abi | readonly unknown[],
      name extends ContractFunctionName<abi, ViewMutability>>(
   p: SubcallParams<abi, name>,
 ): UnwrapSingle<SubcallOutputs<abi, name>>
-// outputs []  → void;  [one] → Expr<one>;  [many] → readonly tuple of Exprs (mirrors viem)
+// outputs []  → void;  [one] → Expr<one> | Tuple<one> (Tuple if the single output is a tuple);
+// [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem)
 
 tryCall<const abi extends Abi | readonly unknown[],
         name extends ContractFunctionName<abi, ViewMutability>>(
@@ -331,8 +436,14 @@ Semantics and permissiveness:
 - Mutability filtered at the name level: nonpayable/payable functions are compile errors.
 - Overloaded names → recording-time `EvsTypeError` (disambiguation via a pruned ABI; viem's
   `ExtractAbiFunctionForArgs` is the documented later fix).
-- Output/arg types outside v0 (`tuple`, `T[N]`, nested arrays) → recording-time `EvsTypeError`
-  naming the parameter and the deferral.
+- **Tuple/struct outputs** (`'tuple'`) decode to a `Tuple` handle (§5); a single tuple output
+  unwraps to `Tuple<one>`, a tuple among many to its slot in the handle list. **Tuple/struct args**
+  may be a `Tuple` handle, an `s.tuple(...)` result, or a plain literal object (the recorder builds
+  the tuple from the object, members literal-or-`Expr`, omitted → 0). Amended by #2 — the previous
+  "`tuple` → recording-time `EvsTypeError`" deferral is dropped.
+- Arg/output types still outside the surface (`T[N]`, arrays of tuples `tuple[]`, nested string
+  arrays `uint256[][]`/`string[]`) → recording-time `EvsTypeError('UNSUPPORTED_V0', …)` naming the
+  parameter; these remain a follow-up (the vocabulary already represents them — §2).
 - **Strict mode**: callee revert bubbles **verbatim** (Error/Panic/custom alike). Structural
   returndata decode failure reverts `EvsDecodeError(site)` — viem names it, `explainRevert`
   maps the site to your source line.
@@ -440,17 +551,17 @@ export interface CompiledEvsScript<name, args, ret> {
 ### E1 — Flagship: Uniswap V3 pool metadata in one round trip
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 import { uniswapV3PoolAbi } from './abis'; // as const satisfies Abi
 
 const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  { name: 'poolMeta', args: [t.address, t.address] }, // pool, user — positional
+  (s, pool, user) => {
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>
-    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, …]
     const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     //    ^? Expr<'string'>   — data flows BETWEEN calls; multicall cannot do this
@@ -461,7 +572,7 @@ const poolMeta = evscript(
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.user],
+      args: [user],
     });
     return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
   },
@@ -481,17 +592,17 @@ const out = await client.readContract({
 
 ```ts
 const balances = evscript(
-  { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
-  (s) => {
-    const n = s.args.tokens.length();
+  { name: 'balances', args: [t.array(t.address), t.address] }, // tokens, owner
+  (s, tokens, owner) => {
+    const n = tokens.length();
     const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = s.args.tokens.at(i); // bounds-checked
+      const token = tokens.at(i); // bounds-checked
       const r = s.tryCall({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
-        args: [s.args.owner],
+        args: [owner],
       });
       out.set(i, s.select(r.success, r.value, 0n)); // non-token addresses → 0, no revert
     });
@@ -510,8 +621,8 @@ const res = await client.readContract({
 ### E3 — tryCall with a default (no boilerplate)
 
 ```ts
-const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
-  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: t.address }, (s, token) => {
+  const d = s.tryCall({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ decimals: s.select(d.success, d.value, 18) });
 });
 ```
@@ -520,8 +631,8 @@ const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.ad
 
 ```ts
 const firstPool = evscript(
-  { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
-  (s) => {
+  { name: 'firstPool', args: [t.address, t.address] }, // a, b
+  (s, a, b) => {
     const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
     const found = s.let(t.address, '0x0000000000000000000000000000000000000000');
     const feeOut = s.let(t.uint24, 0n);
@@ -534,7 +645,7 @@ const firstPool = evscript(
           address: FACTORY,
           abi: uniswapV3FactoryAbi,
           functionName: 'getPool',
-          args: [s.args.a, s.args.b, fee],
+          args: [a, b, fee],
         });
         s.if(pool.neq('0x0000000000000000000000000000000000000000'), () => {
           found.set(pool);
@@ -551,17 +662,22 @@ const firstPool = evscript(
 
 ### E5 — `s.fn`: reusable typed subroutine
 
+`arg()`/`ArgSpec` are RETAINED for `s.fn` param declarations (only the script-args surface
+moved to positional callback params):
+
 ```ts
+import { evscript, arg, t } from '@maxencerb/evs'; // `arg` is still needed for s.fn params
+
 const portfolio = evscript(
-  { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
-  (s) => {
+  { name: 'portfolio', args: [t.address, t.array(t.address)] }, // owner, tokens
+  (s, owner, tokens) => {
     const meta = s.fn('meta', [arg('token', t.address)] as const, (token) => {
       const bal = s.call({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
-        args: [s.args.owner],
-      }); // ✗ EvsScopeError: no outer capture!
+        args: [owner],
+      }); // ✗ EvsScopeError: no outer capture! (`owner` is an outer arg handle)
       return bal;
     });
     // correct version: pass everything as params
@@ -571,36 +687,36 @@ const portfolio = evscript(
       (token, who) =>
         s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );
-    const n = s.args.tokens.length();
+    const n = tokens.length();
     const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      out.set(i, balOf(s.args.tokens.at(i), s.args.owner)); // fncall — fresh Expr per call
+      out.set(i, balOf(tokens.at(i), owner)); // fncall — fresh Expr per call
     });
     return s.return({ balances: out.expr() });
   },
 );
 ```
 
-(The first `meta` definition is shown to document the no-capture rule: touching `s.args.owner`
-inside an `s.fn` body throws `EvsScopeError` at recording, naming both locations.)
+(The first `meta` definition is shown to document the no-capture rule: touching the outer arg
+handle `owner` inside an `s.fn` body throws `EvsScopeError` at recording, naming both locations.)
 
 ### E6 — Conditional logic with `s.if` + cells; checked math
 
 ```ts
 const healthCheck = evscript(
-  { name: 'healthCheck', args: [arg('vault', t.address), arg('user', t.address)] },
-  (s) => {
+  { name: 'healthCheck', args: [t.address, t.address] }, // vault, user
+  (s, vault, user) => {
     const debt = s.call({
-      address: s.args.vault,
+      address: vault,
       abi: vaultAbi,
       functionName: 'debtOf',
-      args: [s.args.user],
+      args: [user],
     });
     const coll = s.call({
-      address: s.args.vault,
+      address: vault,
       abi: vaultAbi,
       functionName: 'collateralOf',
-      args: [s.args.user],
+      args: [user],
     });
     const ratioBps = s.let(t.uint256, 0n);
     s.if(
@@ -612,6 +728,41 @@ const healthCheck = evscript(
     return s.return({ debt, coll, ratioBps: ratioBps.get(), healthy });
   },
 );
+```
+
+### E6b — Composite types: struct output, field access, struct arg (added by #2)
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { poolManagerAbi } from './abis'; // as const satisfies Abi — has slot0() -> (tuple) and
+//                                          quote((address,address,uint24,uint256)) -> (uint256,tuple)
+
+const composite = evscript(
+  { name: 'composite', args: [t.address, t.address] }, // pool, tokenIn
+  (s, pool, tokenIn) => {
+    // a 'tuple' output decodes to a Tuple handle; `.field.get()` follows the flat-pointer block
+    const slot0 = s.call({ address: pool, abi: poolManagerAbi, functionName: 'slot0Struct' });
+    //    ^? Tuple<{ sqrtPriceX96: uint160; tick: int24; … }>
+    const tick = slot0.tick.get(); // Expr<'int24'>
+
+    // build a struct arg with s.tuple (omitted members default to zero) and pass it to a call
+    const params = s.tuple(
+      t.struct({ tokenIn: t.address, tokenOut: t.address, fee: t.uint24, amountIn: t.uint256 }),
+      { tokenIn, fee: 3000n, amountIn: 1_000_000n }, // tokenOut omitted → zero address
+    );
+    const [amountOut, position] = s.call({
+      address: pool,
+      abi: poolManagerAbi,
+      functionName: 'quote',
+      args: [params], // a Tuple handle, an s.tuple(...) result, or a plain literal object
+    });
+    //    ^? [Expr<'uint256'>, Tuple<{ nonce; operator; liquidity; … }>]
+
+    // a Tuple flows out of s.return abitype-typed (viem decodes it to a named object)
+    return s.return({ tick, amountOut, position: position.expr() });
+  },
+);
+// readContract returns { tick: number; amountOut: bigint; position: { nonce: bigint; … } }
 ```
 
 ### E7 — State-override mode, block pinning, and `explainRevert`

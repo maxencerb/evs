@@ -29,7 +29,12 @@ Supersedes the three proposals in `docs/design/proposals/`. Companion documents:
   from viem); a small **mutable array** (`s.newArray`) is added so the flagship
   multicall-replacement works end to end (judges 1 and 3 flagged C's scope trim against the
   locked v0 list).
-- **Args decision (unanimous)**: option (c) ordered `arg()` declarator tuple. See §2.1.
+- **Args decision (amended by #2)**: script args are a single `t.*` type or a `readonly` list of
+  them, arriving as **positional callback params after `s`**; `arg()`/`s.args`/`ArgSpec` are no
+  longer the script-args surface (they are retained for `s.fn` params). The original unanimous
+  "option (c) ordered `arg()` declarator tuple" decision is superseded — the ordered-declarator
+  guarantee it bought (no `UnionToTuple` hazard) is preserved by the ordered positional arg list.
+  See §2.1 and amendments.md §16.
 
 ## 1. Pipeline overview
 
@@ -66,27 +71,46 @@ type UintBits  = 8 | 16 | 24 | … | 248 | 256          // every multiple of 8
 type BytesSize = 1 | 2 | … | 32
 type WordType  = `uint${UintBits}` | `int${UintBits}` | 'address' | 'bool' | `bytes${BytesSize}`
 type DynType   = 'string' | 'bytes'
-type ArrayType = `${WordType}[]`
-type EvsType   = WordType | DynType | ArrayType
-type ArgType   = EvsType                                // dynamic script args ARE in v0 (§8.1)
+type ScalarType = WordType | DynType                                          // amended by #2
+type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`  // string-encoded
+type StringType = ScalarType | ArrayType
+type TupleType = { type: 'tuple'|'tuple[]'|'tuple[][]'; components: readonly NamedType[] }  // OBJECT
+type NamedType = { name: string; type: string; components?: readonly NamedType[] }  // = PlainAbiParam
+type EvsType   = WordType | DynType | ArrayType | TupleType  // amended by #2: string OR tuple object
+type ArgType   = EvsType                                // dynamic + composite script args (§8.1, §2.1)
 ```
 
-Fixed-size arrays `T[N]` and nested tuples are **out of v0** (recording-time `EvsTypeError`
-with the deferral spelled out; the ABI emitters are recursive over `PlainAbiParam` trees so
-adding them later is a capability unlock, not a rewrite — §8).
+`t.struct({...})`/`t.tuple(...)` build a `TupleType`; a raw `readonly AbiParameter[]` is accepted
+wherever a tuple type is expected. Tuple/struct args, outputs, returns, and `s.tuple` construction
+are in scope (issue #2). Fixed-size arrays `T[N]`, arrays of tuples (`tuple[]`), and nested string
+arrays (`uint256[][]`, `string[]`) remain **out of v0** (recording-time
+`EvsTypeError('UNSUPPORTED_V0', …)`); the `TupleType`/`ArrayType` vocabulary already represents
+them and the ABI emitters are recursive over `PlainAbiParam`/`NamedType` trees, so they are an
+additive follow-up (codegen `case` + builder wiring), not a rewrite — §8.
 
-### 2.1 Args declaration (decision 1 — final)
+### 2.1 Args declaration (decision 1 — amended by #2)
 
-**Option (c): ordered `arg()` declarators.** `args` is a readonly tuple of `ArgSpec`s, so
-declaration order, type-level order, runtime encode order, and ABI `inputs` order are the same
-object. The `UnionToTuple` interning hazard [abitype §4.2] is structurally impossible: no
-record→tuple conversion exists on the input path. `s.args` is derived tuple→record (the safe
-direction). Output side (settled): one output `{ name: 'result', type: 'tuple', components }`
-from the `s.return({...})` record keys; type-level component order may differ from runtime
-insertion order, harmlessly, because viem infers an **object** from a fully-named single tuple
-output [abitype §4.2 row 1, §4.3 rule 4]. Empty-string return keys are rejected at recording.
-A CI type test pins `ReadContractParameters<abi,n>['args']` and `ReadContractReturnType<abi,n>`
-for representative scripts, including the §4.2 interning-regression scenario.
+**Positional callback params over an ordered arg-type list.** `args` is a single `t.*` type or a
+`readonly` list of them, normalized to `readonly EvsType[]`; each arg arrives as a positional
+callback param after `s` (`(s, token, amount) => {…}`) — an `Expr` for scalars/strings/arrays, a
+`Tuple` handle for `t.struct`/`t.tuple` args. `arg()`/`s.args`/`ArgSpec` are no longer the
+script-args surface (they remain for `s.fn` params).
+
+This **avoids** the `UnionToTuple` interning hazard [abitype §4.2] for the arg path exactly as the
+old ordered-`ArgSpec`-tuple did: the arg-type list is an ordered tuple, so declaration order,
+type-level order, runtime encode order, and ABI `inputs` order (`arg0`, `arg1`, … — auto-named
+positional labels) are the same object; no record→tuple conversion exists on the input path. A
+`t.struct` record IS unordered at the type level — recovering an order needs `UnionToTuple`, whose
+order is TS-internal-id order, NOT declaration order — but that is **SAFE** because a struct
+compiles to a single NAMED ABI `tuple`, which abitype infers as an **order-insensitive object**;
+the runtime member encode order is `Object.keys()` insertion order (the only source of truth).
+Positional `t.tuple(...)` uses ordered declarators and never touches `UnionToTuple`. Output side
+(unchanged): one output `{ name: 'result', type: 'tuple', components }` from the `s.return({...})`
+record keys; viem infers an **object** from the fully-named single tuple output [abitype §4.2 row
+1, §4.3 rule 4]. Empty-string return keys are rejected at recording. A CI type test pins
+`ReadContractParameters<abi,n>['args']` (the labeled positional tuple) and
+`ReadContractReturnType<abi,n>` for representative scripts, including the §4.2
+interning-regression scenario and a struct-output object.
 
 ## 3. Builder semantics (decision 2 — VALUE semantics)
 
@@ -154,8 +178,15 @@ Stmt = { loc, site: SiteId } & (
   | select    { cond, a, b, out }
   | index     { arr, i, out }                   // bounds-checked → Panic 0x32
   | len       { a, out }
-  | arrnew    { elem: WordType, length: ValueId, out }   // zero-filled; Panic 0x41 on len ≥ 2^32
+  | arrnew    { elem: EvsType, length: ValueId, out }   // zero-filled; Panic 0x41 on len ≥ 2^32
+  |                                             //   (elem widened to EvsType by #2; validate still
+  |                                             //    restricts to word — composite arrays deferred)
   | arrset    { arr, i, value }                 // bounds-checked → Panic 0x32
+  | tuplenew  { inits: { index, value }[], out } // alloc 32·n, zero-fill, MSTORE provided members
+  | field     { tuple, index, out }             // member read = MLOAD(tuplePtr + 32·index)
+  | tupleset  { tuple, index, value }           // member write = MSTORE(tuplePtr + 32·index, v)
+  |                                             //   (tuple IR nodes added by #2 — §5; out/tuple
+  |                                             //    ValueId's `values[id].type` carries TupleType)
   | cellnew   { cell, init } | cellget { cell, out } | cellset { cell, value }
   | call      { target, fnAbi: PlainAbiFunction, args[], outs[], mode:'strict'|'try', successOut? }
   | fncall    { fn: FnId, args[], outs[] }
@@ -168,6 +199,12 @@ Stmt = { loc, site: SiteId } & (
 - **Why a tree, not basic blocks**: the builder can only produce structured control flow; a CFG
   buys nothing without an optimizer. Tree→CFG lowering is the self-contained v1 pass (§1).
 - **Operands are always `ValueId`s**; literals are deduplicated `const` stmts per `(type, hex)`.
+- **Tuple-carrying types (added by #2)**: `ValueInfo.type`/`args`/`returns`/fn param+result types
+  are `EvsType` — a string OR a `TupleType` descriptor object (which carries the `components`).
+  `serialize`/`deserialize` handle the descriptor objects (`asEvsType` reconstructs them); a tuple
+  value occupies ONE frame slot (a pointer — §5). Because tuple descriptors are fresh objects
+  (never `===`), EVERY type comparison in the recorder and `ir/validate.ts` uses the STRUCTURAL
+  `typesEqual`, not `===`/`!==`. `checkAbiParams` recurses through tuple components.
 - **`site: SiteId`** on every stmt links into `sourceMap.sites` and is the id embedded in
   `EvsDecodeError(uint256 site)` reverts.
 - **Source locations**: every builder entry calls `captureLoc()` (raw `new Error().stack`,
@@ -211,6 +248,21 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
   sign-extended where an op can denormalize: `bitnot`, `shl`, unchecked-by-construction ops).
 - **Dynamic values are memrefs**: a slot holds a pointer to `[len:32][payload…]` (strings/bytes:
   raw bytes zero-padded; arrays: one canonical word per element).
+- **Tuples are FLAT-POINTER memrefs (added by #2)**: a tuple value occupies ONE frame slot holding
+  a pointer to a packed `[w0][w1]…[w_{n-1}]` block of `n` words (`n = components.length`, **no
+  length prefix**). Each `wᵢ` is a canonical word if member `i` is static, or a memref pointer if
+  member `i` is dynamic/composite (string/bytes/array/tuple — `wᵢ` holds the pointer to that
+  member's memref). `field i` read = `MLOAD(tuplePtr + 32·i)`; write = `MSTORE(tuplePtr + 32·i, v)`.
+  `s.tuple(type, init)` bump-allocs `32·n`, **zero-fills** the block via the
+  `CALLDATACOPY(dst, CALLDATASIZE, size)` past-end idiom (memory above the free ptr is NOT zero —
+  see Transient scratch), then MSTOREs each provided member. **Skip-zero-write soundness**: an
+  omitted or literal-`0` member needs no MSTORE because the block is already zeroed — the
+  zero-fill-then-write order is what makes that sound (the skip-the-write-of-known-zeros
+  optimization is deferred; zero-fill-then-write-all-provided is correct and simple). A decoded
+  tuple output is a NEW flat block: static components copy the head word into `wᵢ`; dynamic
+  components decode into a memref aliasing the returndata snapshot and store its pointer into `wᵢ`
+  (§7.2). Reference semantics: a tuple handle is the pointer, so a later `field.set()` is visible
+  through every alias (api.md §5).
 - **Transient scratch**: sub-call calldata is built at `MLOAD(0x40)` **without bumping** (dead
   after the call). Consequence: memory above the free pointer is **not** guaranteed zero — the
   return encoder zero-pads dynamic tails explicitly, and `arrnew` zero-fills via
@@ -317,6 +369,11 @@ scratch `MLOAD(0x40)`, not bumped.
    make the bounds arithmetic overflow-free). Structural failure → decode-fail. Array elements
    are normalized **eagerly** with a small emitted loop after validation (skipped for
    `uint256`/`int256`/`bytes32`), so `index` stays a plain bounds-checked MLOAD.
+   - **Tuple outputs (added by #2)**: a `'tuple'` output decodes into a freshly-allocated
+     flat-pointer block (§5) — for each component, a static word copies the head word into `wᵢ`; a
+     dynamic component decodes into a memref aliasing the snapshot and stores its pointer into `wᵢ`.
+     The `staticMinSize`/`headOffset = 32·j` guards count **cumulative** head words for static inner
+     tuples (a static tuple output occupies `headBytes(components)` head words, not 1).
 6. **Decode-fail target**: strict mode → per-site stub
    `@dfail_<site>: JUMPDEST PUSH<k> site PUSH2 @decode_revert JUMP`; shared tail reverts
    `EvsDecodeError(uint256 site)` (declared in the generated ABI; `explainRevert`/`sourceMap.sites`
@@ -338,8 +395,15 @@ dedup in v0.
 ## 8. ABI encode/decode codegen (decision 7)
 
 One module (`codegen/abi.ts`) owns all four directions, written recursively over
-`PlainAbiParam` trees so nested tuples later are a new `case 'tuple':` per emitter plus removal
-of the recording-time guard — no other module changes.
+`PlainAbiParam` trees. **Added by #2**: each emitter (`emitReturnEncode`,
+`emitCalldataDecode`/`emitDynCalldataArg`) gained a `case 'tuple'` that recurses head/tail over
+the components — static members inline in the head, dynamic members get a head offset + a tail
+(recursively encode/decode the member's memref). The cursor is kept in scratch (`0x00`) so every
+`emitMemCopy` happens at stack height exactly `[dst, src, len]` (the pre-cancun `@memcpy` ABI
+contract); a tuple is ABI-DYNAMIC iff any component is dynamic, and the `headSize`/`dynOff` math
+counts a STATIC inner tuple as `headBytes(components)` head words (NOT 1) via a cumulative
+head-offset walk — the "one head word per component" assumption is broken. `tuple[]`/nested
+string arrays stay a new `case` per emitter (the recording-time guard for them remains).
 
 ### 8.1 Dispatch-time script-arg decode (dynamic args INCLUDED — A graft)
 
@@ -356,8 +420,12 @@ of the recording-time guard — no other module changes.
   `32 + 32·len`), `CALLDATACOPY` the `[len][data]` segment, store the ptr. Array elements
   normalized eagerly (skip for full-word element types). CALLDATACOPY zero-pads — the checks
   guard correctness, not halts.
+- **Tuple/struct arg (added by #2)**: the ABI head/tail tuple is decoded into a freshly-allocated
+  flat-pointer block (§5): static members copy the head word into `wᵢ`; dynamic members decode into
+  a memref and store its pointer into `wᵢ`. The same `case 'tuple'` recursion as the call-output
+  decoder (§7.2 / `codegen/call.ts`); cumulative head-offset arithmetic for static inner tuples.
 
-### 8.2 Return-tuple encode (single named tuple; dynamic members supported)
+### 8.2 Return-tuple encode (single named tuple; dynamic + composite members supported)
 
 Outputs are `[{ name:'result', type:'tuple', components }]`. Two-pass head/tail emitted as
 straight-line code from the compile-time component walk:
@@ -366,10 +434,13 @@ straight-line code from the compile-time component walk:
    `base = out + 0x20`; else components encode inline at `base = out` (both shapes decode
    identically in viem).
 2. Heads at `base`: word components stored verbatim (slots are canonical); dynamic components
-   get the running tail offset (relative to `base`).
+   get the running tail offset (relative to `base`). Added by #2: a **tuple component** recurses
+   via `case 'tuple'` — a static inner tuple occupies `headBytes(components)` head words inline (a
+   cumulative head-offset walk, NOT one word), a dynamic inner tuple takes an offset + a tail.
 3. Tails in component order: `MSTORE(tail, len)`; payload via `MCOPY` (pre-Cancun: shared
    `@memcpy` word-loop subroutine); **explicit zero-pad** `MSTORE(tail + 32 + len, 0)` before
-   the copy bookkeeping (memory above the free pointer is not guaranteed zero — §5).
+   the copy bookkeeping (memory above the free pointer is not guaranteed zero — §5). A dynamic
+   tuple component's tail is the inner head/tail block (the member's flat-pointer block re-encoded).
 4. `RETURN(out, total)`.
 
 Differential anchor: emitted encoder/decoder vs viem `encodeAbiParameters` /
@@ -480,7 +551,7 @@ unreachable bytes (amendment 10.2) — and the dispatcher reaches `@badcd` throu
 
 The sketch above is the map; the listing below is the territory — the complete annotated
 disassembly of the minimal script `echo(uint256)`
-(`evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) => s.return({ x: s.args.x }))`),
+(`evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }))`),
 compiled with defaults (cancun). Like every marked listing in this document it is generated
 from the real compiler and machine-checked against it (see §15 conventions).
 
@@ -925,11 +996,11 @@ per-site join label (amendment 9.6).
 ### 15.3 While loop with `s.let` cells — sum 0..n−1
 
 ```ts
-const sum = evscript({ name: 'sum', args: [arg('n', t.uint256)] }, (s) => {
+const sum = evscript({ name: 'sum', args: [t.uint256] }, (s, n) => {
   const total = s.let(t.uint256, 0n);
   const i = s.let(t.uint256, 0n);
   s.while(
-    () => i.get().lt(s.args.n),
+    () => i.get().lt(n),
     () => {
       total.set(total.get().add(i.get()));
       i.set(i.get().add(1n));
@@ -1050,7 +1121,7 @@ eth_call budgets [evm §4]) and the first documented peephole candidate, not v0.
 | Panic encoding `0x4e487b71` + 36-byte payload [evm §5]                    | shared tails (§15.0), golden-tested byte-exact                                                                                                  |
 | `−2^255 / −1` SDIV silent wrap [evm §5]                                   | explicit check → Panic 0x11 (§6)                                                                                                                |
 | sub-word MUL 256-bit wrap-back (N>128)                                    | div-back + range check (§6); boundary-matrix tests incl. wrap-past-2^256 cases                                                                  |
-| UnionToTuple order instability [abitype §4.2]                             | ordered ArgSpec tuple inputs; single named-tuple output → object; CI type regression                                                            |
+| UnionToTuple order instability [abitype §4.2]                             | ordered positional arg-type list inputs; t.struct → single named tuple → object; CI type regression (amended by #2)                             |
 | empty component name degrades object→array [abitype §4.3]                 | recording-time rejection of empty return keys (builder)                                                                                         |
 | viem ≥ 2.14.1 floor; type-volatile patches [viem §1.2, abitype §0]        | peerDeps floor; CI pins exact viem for type tests                                                                                               |
 | anvil deployless constructor-return history [stack §3]                    | permanent pinned integration test on the `code` path                                                                                            |
@@ -1108,8 +1179,13 @@ retSize pushed first, retOffset above it, gas on top at STATICCALL). 36. *Bare`r
   `lowerProgram`; pass contract: reverting ops never dead, never reordered across
   calls/reverting ops. Cheap early wins: store-forward peephole, liveness slot reuse
   (weiroll-proven), constant-pool dedup, loop free-pointer reset (legal under the scope rule).
-- **Nested tuples / fixed arrays**: delete the recording-time guards; add `case 'tuple'` /
-  fixed-array cases to the recursive emitters; `PlainAbiParam` is already a tree.
+- **Tuples / structs**: SHIPPED by #2 (the `case 'tuple'` per emitter landed) — see §2.1, §5,
+  §7.2, §8, and amendments.md §16.
+- **Arrays of tuples (`tuple[]`), nested string arrays (`uint256[][]`, `string[]`), fixed arrays
+  (`T[N]`)**: still deferred — add the `case` per emitter + the builder wiring (`s.newArray` stays
+  word-element-only; `at()` on a tuple-element array is the follow-up). The `TupleType`/`ArrayType`
+  vocabulary already represents them, so it is additive; the recording-time
+  `EvsTypeError('UNSUPPORTED_V0', …)` guard names the reached shape.
 - **Overload disambiguation** (`ExtractAbiFunctionForArgs`), **dynamic-length stack of args >
   word count**, **`s.rawCall({to, data})`** typed escape hatch, **recursion** (FP-relative
   slots confined to codegen), **single named-tuple input option** for many-arg scripts,

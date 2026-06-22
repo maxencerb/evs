@@ -1235,6 +1235,351 @@ describe('composite types', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 12b. composite regression — adversarial byte-exactness of the tuple codec/interp.
+//
+// Each shape compiles an evs script whose mock callee returndata is viem's canonical tuple
+// encoding (encodeAbiParameters([{type:'tuple',components}],[obj])). `expectAgreement` already
+// asserts interp == in-process EVM runtime BYTE-FOR-BYTE; we then decode the agreed returndata
+// with viem to close the third leg (interp == EVM == viem). Every shape runs across
+// paris/shanghai/cancun. (testing.md §4.2 differential bar; impl-plan §6.)
+// ---------------------------------------------------------------------------
+
+const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
+
+describe('composite regression', () => {
+  // (1) ALL-STATIC struct — slot0Struct shape: uint160,int24,uint16,uint8,bool. A static tuple
+  //     inlines headBytes(components) head words (no offset). Decode + return several fields.
+  const slot0Components = [
+    { name: 'sqrtPriceX96', type: 'uint160' },
+    { name: 'tick', type: 'int24' },
+    { name: 'observationIndex', type: 'uint16' },
+    { name: 'feeProtocol', type: 'uint8' },
+    { name: 'unlocked', type: 'bool' },
+  ] as const;
+  const slot0Abi = [
+    {
+      type: 'function',
+      name: 'slot0Struct',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: slot0Components }],
+    },
+  ] as const satisfies Abi;
+  const SLOT0 = {
+    sqrtPriceX96: 1n << 96n,
+    tick: -887272,
+    observationIndex: 3,
+    feeProtocol: 4,
+    unlocked: true,
+  } as const;
+  const slot0Returndata = encodeAbiParameters(
+    [{ type: 'tuple', components: slot0Components }],
+    [SLOT0],
+  );
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(1) all-static struct: decode + return several fields [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdSlot0', args: [] }, (s) => {
+        const slot0 = s.call({ address: POOL, abi: slot0Abi, functionName: 'slot0Struct' });
+        return s.return({
+          price: slot0.sqrtPriceX96.get(),
+          tick: slot0.tick.get(),
+          obs: slot0.observationIndex.get(),
+          locked: s.not(slot0.unlocked.get()),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: slot0Returndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdSlot0',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        price: SLOT0.sqrtPriceX96,
+        tick: SLOT0.tick,
+        obs: SLOT0.observationIndex,
+        locked: !SLOT0.unlocked,
+      });
+    });
+  }
+
+  // (2) struct with a DYNAMIC member — WithBytes{uint256 id, bytes data}. The tuple itself is
+  //     ABI-dynamic; decode aliases the bytes member into the snapshot. Return both fields.
+  const withBytesComponents = [
+    { name: 'id', type: 'uint256' },
+    { name: 'data', type: 'bytes' },
+  ] as const;
+  const withBytesAbi = [
+    {
+      type: 'function',
+      name: 'getWithBytes',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: withBytesComponents }],
+    },
+  ] as const satisfies Abi;
+  const WITH_BYTES = { id: 0xc0ffeen, data: '0x6576732100' } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(2) struct with a dynamic member: return both fields [${evmVersion}]`, async () => {
+      const withBytesReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: withBytesComponents }],
+        [WITH_BYTES],
+      );
+      const script = evscript({ name: 'rdWithBytes', args: [] }, (s) => {
+        const wb = s.call({ address: POOL, abi: withBytesAbi, functionName: 'getWithBytes' });
+        const data = wb.data.get();
+        return s.return({ id: wb.id.get(), data, len: data.length() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: withBytesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ id: WITH_BYTES.id, data: WITH_BYTES.data, len: 5n });
+    });
+  }
+
+  // (3) NESTED struct — Outer{Inner{bool a, bytes32 b}, uint256 x}. All-static nested tuple:
+  //     the inner tuple inlines into the outer head. Read a DEEP field (outer.inner.b).
+  const innerComponents = [
+    { name: 'a', type: 'bool' },
+    { name: 'b', type: 'bytes32' },
+  ] as const;
+  const outerComponents = [
+    { name: 'inner', type: 'tuple', components: innerComponents },
+    { name: 'x', type: 'uint256' },
+  ] as const;
+  const outerAbi = [
+    {
+      type: 'function',
+      name: 'getOuter',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: outerComponents }],
+    },
+  ] as const satisfies Abi;
+  const INNER_B = `0x${'5e'.repeat(32)}` as const;
+  const OUTER = { inner: { a: true, b: INNER_B }, x: 0xdeadbeefn } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(3) nested struct: read a deep field [${evmVersion}]`, async () => {
+      const outerReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: outerComponents }],
+        [OUTER],
+      );
+      const script = evscript({ name: 'rdOuter', args: [] }, (s) => {
+        const outer = s.call({ address: POOL, abi: outerAbi, functionName: 'getOuter' });
+        const inner = outer.inner.get(); // follows the pointer to the inner Tuple handle
+        return s.return({ a: inner.a.get(), b: inner.b.get(), x: outer.x.get() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: outerReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdOuter',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ a: OUTER.inner.a, b: OUTER.inner.b, x: OUTER.x });
+    });
+  }
+
+  // (4) CONSTRUCT a tuple via s.tuple with some fields omitted (default-zero) and some set, mutate
+  //     one with .set(), then return it. Bytes must equal viem encode of the expected object.
+  const WB_TYPE = t.struct({ id: t.uint256, data: t.bytes });
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(4) construct via s.tuple (omitted→zero) + .set(), return it [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'mkWithBytes', args: [t.bytes] }, (s, payload) => {
+        const wb = s.tuple(WB_TYPE, {
+          // id omitted → zero-filled
+          data: payload,
+        });
+        wb.id.set(0xc0ffeen);
+        return s.return({ wb: wb.expr() });
+      });
+      const [o] = await expectAgreement(script, [[WITH_BYTES.data]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ wb: { id: WITH_BYTES.id, data: WITH_BYTES.data } });
+    });
+  }
+
+  // (5) ENCODE a struct as a CALL ARGUMENT — quote(QuoteParams). Assert the sub-call calldata
+  //     bytes == viem encodeFunctionData('quote',[paramsObj]). A mock callee records calldata by
+  //     echoing it back ABI-wrapped as bytes; the script returns it verbatim.
+  const quoteParamsComponents = [
+    { name: 'tokenIn', type: 'address' },
+    { name: 'tokenOut', type: 'address' },
+    { name: 'fee', type: 'uint24' },
+    { name: 'amountIn', type: 'uint256' },
+  ] as const;
+  const quoteAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'view',
+      inputs: [{ name: 'p', type: 'tuple', components: quoteParamsComponents }],
+      outputs: [{ name: '', type: 'bytes' }],
+    },
+  ] as const satisfies Abi;
+  const QuoteParams = t.struct({
+    tokenIn: t.address,
+    tokenOut: t.address,
+    fee: t.uint24,
+    amountIn: t.uint256,
+  });
+  const QPARAMS = {
+    tokenIn: getAddress(TOKA),
+    tokenOut: getAddress(TOKB),
+    fee: 3000,
+    amountIn: 1_000_000_000_000_000_000n,
+  } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(5) encode struct as a call ARGUMENT: calldata == viem [${evmVersion}]`, async () => {
+      const script = evscript(
+        { name: 'callQuote', args: [t.address, t.uint256] },
+        (s, tin, amt) => {
+          const params = s.tuple(QuoteParams, {
+            tokenIn: tin,
+            tokenOut: TOKB,
+            fee: 3000n,
+            amountIn: amt,
+          });
+          const out = s.call({
+            address: ECHO,
+            abi: quoteAbi,
+            functionName: 'quote',
+            args: [params],
+          });
+          return s.return({ calldata: out });
+        },
+      );
+      const [o] = await expectAgreement(
+        script,
+        [[QPARAMS.tokenIn, QPARAMS.amountIn]],
+        {
+          [ECHO]: {
+            kind: 'bytecode',
+            runtime: abiEchoMock(),
+            respond: (calldata) => ({
+              success: true,
+              data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+            }),
+          },
+        },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'callQuote',
+        data: o?.data ?? '0x',
+      });
+      // the recorded sub-call calldata must be byte-identical to viem's encoding of quote(params)
+      const expectedCalldata = encodeFunctionData({
+        abi: quoteAbi,
+        functionName: 'quote',
+        args: [QPARAMS],
+      });
+      expect(decoded).toEqual({ calldata: expectedCalldata });
+    });
+  }
+
+  // (6) a tuple whose members MIX static + dynamic so the head has both inline words AND offsets.
+  //     Mixed{uint256 a, bytes b, address c, uint256[] d}: head = [word a][off b][word c][off d].
+  //     Decode and return every field — exercises a non-trivial head/tail interleave on decode.
+  const mixedComponents = [
+    { name: 'a', type: 'uint256' },
+    { name: 'b', type: 'bytes' },
+    { name: 'c', type: 'address' },
+    { name: 'd', type: 'uint256[]' },
+  ] as const;
+  const mixedAbi = [
+    {
+      type: 'function',
+      name: 'getMixed',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: mixedComponents }],
+    },
+  ] as const satisfies Abi;
+  const MIXED = {
+    a: (1n << 200n) | 7n,
+    b: `0x${'ab'.repeat(40)}`,
+    c: getAddress(USER),
+    d: [11n, 22n, 33n],
+  } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(6) mixed static+dynamic members (head has words and offsets) [${evmVersion}]`, async () => {
+      const mixedReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: mixedComponents }],
+        [MIXED],
+      );
+      const script = evscript({ name: 'rdMixed', args: [] }, (s) => {
+        const m = s.call({ address: POOL, abi: mixedAbi, functionName: 'getMixed' });
+        const b = m.b.get();
+        const d = m.d.get();
+        return s.return({
+          a: m.a.get(),
+          b,
+          c: m.c.get(),
+          d,
+          blen: b.length(),
+          dlen: d.length(),
+          d1: d.at(1n),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: mixedReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdMixed',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        a: MIXED.a,
+        b: MIXED.b,
+        c: MIXED.c,
+        d: MIXED.d,
+        blen: BigInt((MIXED.b.length - 2) / 2),
+        dlen: BigInt(MIXED.d.length),
+        d1: MIXED.d[1],
+      });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // helper mocks
 // ---------------------------------------------------------------------------
 

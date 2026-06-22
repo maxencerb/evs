@@ -11,7 +11,7 @@ whole point: outputs of one call feed the next call on-chain, in a single `eth_c
 ## s.call
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const uniswapV3PoolAbi = [
@@ -25,16 +25,16 @@ const uniswapV3PoolAbi = [
 ] as const;
 
 const tokenInfo = evscript(
-  { name: 'tokenInfo', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  { name: 'tokenInfo', args: [t.address, t.address] },
+  (s, pool, user) => {
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'> — feeds the next two calls on-chain
     const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     const balance = s.call({
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.user],
+      args: [user],
     });
     return s.return({ token0, symbol, balance });
   },
@@ -65,14 +65,15 @@ call fail. The script as a whole can never write state or deploy anything.
 
 `s.call` mirrors viem's output unwrapping:
 
-| ABI outputs | Recorded result                              |
-| ----------- | -------------------------------------------- |
-| none        | `void`                                       |
-| exactly one | `Expr` of that type (unwrapped)              |
-| several     | readonly tuple of `Expr`s, in ABI order      |
+| ABI outputs                | Recorded result                                                    |
+| -------------------------- | ------------------------------------------------------------------ |
+| none                       | `void`                                                             |
+| exactly one (scalar)       | `Expr` of that type (unwrapped)                                    |
+| exactly one (`tuple`)      | a [`Tuple` handle](/reference/builder/#tuple) (unwrapped)         |
+| several                    | readonly tuple of `Expr`/`Tuple` handles, in ABI order            |
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const uniswapV3PoolAbi = [
   {
@@ -92,22 +93,110 @@ const uniswapV3PoolAbi = [
   },
 ] as const;
 
-const poolPrice = evscript({ name: 'poolPrice', args: [arg('pool', t.address)] }, (s) => {
-  const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+const poolPrice = evscript({ name: 'poolPrice', args: [t.address] }, (s, pool) => {
+  const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
   //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'uint16'>, ...]
   return s.return({ sqrtPriceX96: slot0[0], tick: slot0[1], unlocked: slot0[6] });
 });
 ```
 
+Here `slot0` returns **seven flat outputs**, so it unwraps to a readonly tuple of `Expr`s
+accessed positionally. A getter that returns a single Solidity *struct* (one `'tuple'` output)
+instead unwraps to a `Tuple` handle with named field access — see
+[struct arguments and outputs](#struct-arguments-and-outputs) below.
+
 A few typing behaviors carried over from viem, all enforced at recording time rather than as
 hard type errors where viem is also permissive:
 
 - **Graceful widening** — an ABI without `as const` degrades to `functionName: string`,
-  `args: readonly unknown[]`, and `Expr<EvsType>` outputs instead of erroring.
+  `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
 - **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
   the overload you want.
-- **Types outside v0** (`tuple`, fixed `T[N]`, nested arrays) in an argument or output throw
-  `EvsTypeError` at recording, naming the parameter.
+- **Restricted shapes** — `tuple[]` (arrays of structs), nested string arrays, and fixed `T[N]`
+  in an argument or output throw `EvsTypeError` at recording, naming the parameter. Plain
+  structs/tuples are fully supported.
+
+## Struct arguments and outputs
+
+When a `view` function takes or returns a Solidity struct (an ABI `'tuple'` parameter), evs
+handles it as a composite value — see [composite types](/guides/values-and-types/#composite-types-structs-and-tuples)
+for the full model. Two cases:
+
+**A struct output decodes into a [`Tuple` handle](/reference/builder/#tuple)** — read members by
+name with `.field.get()`, or pass the whole struct on with `.expr()`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const positionsAbi = [
+  {
+    type: 'function',
+    name: 'positions',
+    stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'nonce', type: 'uint96' },
+          { name: 'operator', type: 'address' },
+          { name: 'liquidity', type: 'uint128' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const positionInfo = evscript(
+  { name: 'positionInfo', args: [t.address, t.uint256] },
+  (s, manager, tokenId) => {
+    const pos = s.call({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
+    //    ^? Tuple<…>
+    return s.return({ operator: pos.operator.get(), liquidity: pos.liquidity.get(), position: pos.expr() });
+  },
+);
+```
+
+**A struct argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
+object** — build it with [`s.tuple`](/reference/builder/#stuple) and pass it in `args`:
+
+```ts
+import { evscript } from '@maxencerb/evs';
+
+// Declaring the tuple type as a raw `as const` descriptor matches the ABI's component order
+// exactly — `s.tuple` and a raw `readonly AbiParameter[]` are accepted anywhere a tuple type is.
+const QuoteParams = {
+  type: 'tuple',
+  components: [
+    { name: 'tokenIn', type: 'address' },
+    { name: 'fee', type: 'uint24' },
+    { name: 'amountIn', type: 'uint256' },
+  ],
+} as const;
+
+const quoteAbi = [
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'view',
+    inputs: [{ name: 'p', ...QuoteParams }],
+    outputs: [{ name: 'amountOut', type: 'uint256' }],
+  },
+] as const;
+
+const quote = evscript(
+  { name: 'quote', args: ['address', 'address', 'uint24', 'uint256'] },
+  (s, quoter, tokenIn, fee, amountIn) => {
+    const params = s.tuple(QuoteParams, { tokenIn, fee, amountIn });
+    const amountOut = s.call({ address: quoter, abi: quoteAbi, functionName: 'quote', args: [params] });
+    return s.return({ amountOut });
+  },
+);
+```
+
+A `TupleType` script argument arrives the same way as a decoded output — as a `Tuple` handle —
+so a struct can flow straight from calldata into a sub-call.
 
 ## Revert behavior: verbatim bubbling
 
@@ -133,11 +222,11 @@ Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-len
 failure. It records `{ success, value }`:
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
-  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s, token) => {
+  const d = s.tryCall({ address: token, abi: erc20Abi, functionName: 'decimals' });
   // d.success: Expr<'bool'>   d.value: Expr<'uint8'> — 0 when the call failed
   return s.return({ decimals: s.select(d.success, d.value, 18) });
 });
@@ -157,12 +246,12 @@ This is deliberately stronger than Solidity's `try`/`catch`: malformed returndat
 :::
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const cappedSymbol = evscript({ name: 'cappedSymbol', args: [arg('token', t.address)] }, (s) => {
+const cappedSymbol = evscript({ name: 'cappedSymbol', args: [t.address] }, (s, token) => {
   const r = s.tryCall({
-    address: s.args.token,
+    address: token,
     abi: erc20Abi,
     functionName: 'symbol',
     gas: 200_000n, // cap; without it the sub-call forwards all available gas

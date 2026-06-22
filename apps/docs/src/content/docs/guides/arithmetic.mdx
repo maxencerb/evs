@@ -43,13 +43,13 @@ Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized
 `lt`/`gt`/`lte`/`gte` compile to the EVM's unsigned `LT`/`GT` for `uintN` and to signed `SLT`/`SGT` for `intN`, chosen from the **static type** of the operands (`lte`/`gte` are `ISZERO` of the opposite strict comparison). You never pick an opcode; declaring the right type is enough:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const tickSide = evscript({ name: 'tickSide', args: [arg('tick', t.int24)] }, (s) => {
-  const isNegative = s.args.tick.lt(0n); // int24 → SLT: −100 < 0 is true
+const tickSide = evscript({ name: 'tickSide', args: [t.int24] }, (s, tick) => {
+  const isNegative = tick.lt(0n); // int24 → SLT: −100 < 0 is true
   // literal-left subtraction via the free function; checked, so negating the
   // int24 minimum value would revert with Panic(0x11)
-  const magnitude = s.select(isNegative, s.sub(0n, s.args.tick), s.args.tick);
+  const magnitude = s.select(isNegative, s.sub(0n, tick), tick);
   return s.return({ isNegative, magnitude });
 });
 ```
@@ -63,23 +63,23 @@ Both operands must have the **same** evs type. The TS surface enforces it (the r
 This does not compile:
 
 ```ts nocheck
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const mix = evscript(
-  { name: 'mix', args: [arg('a', t.uint128), arg('b', t.uint256)] },
+  { name: 'mix', args: [t.uint128, t.uint256] },
   // TS error: Expr<'uint256'> is not assignable to IntoExpr<'uint128'>
-  (s) => s.return({ sum: s.args.a.add(s.args.b) }),
+  (s, a, b) => s.return({ sum: a.add(b) }),
 );
 ```
 
 Convert explicitly instead:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const mix = evscript(
-  { name: 'mix', args: [arg('a', t.uint128), arg('b', t.uint256)] },
-  (s) => s.return({ sum: s.args.a.toUint(t.uint256).add(s.args.b) }),
+  { name: 'mix', args: [t.uint128, t.uint256] },
+  (s, a, b) => s.return({ sum: a.toUint(t.uint256).add(b) }),
 );
 ```
 
@@ -90,16 +90,16 @@ const mix = evscript(
 - **`asUint256()` / `asBytes32()`** — free reinterpretation between `bytes32` and `uint256` (both occupy the full word; no check, no cost).
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const casts = evscript(
-  { name: 'casts', args: [arg('x', t.uint256), arg('w', t.bytes32)] },
-  (s) => {
-    const small = s.args.x.toUint(t.uint64); // checked narrowing: Panic(0x11) if x ≥ 2^64
+  { name: 'casts', args: [t.uint256, t.bytes32] },
+  (s, x, w) => {
+    const small = x.toUint(t.uint64); // checked narrowing: Panic(0x11) if x ≥ 2^64
     const wide = small.toUint(t.uint256); // widening: free
-    const signed = s.args.x.toInt(t.int256); // checked: Panic(0x11) if x ≥ 2^255
-    const addr = s.args.w.asAddress(); // checked: high 96 bits must be zero
-    const word = s.args.w.asUint256(); // free reinterpret
+    const signed = x.toInt(t.int256); // checked: Panic(0x11) if x ≥ 2^255
+    const addr = w.asAddress(); // checked: high 96 bits must be zero
+    const word = w.asUint256(); // free reinterpret
     return s.return({ small, wide, signed, addr, word });
   },
 );
@@ -110,12 +110,12 @@ const casts = evscript(
 Pure operations whose operands are all statically known fold at recording — no bytecode is emitted for them:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const fees = evscript({ name: 'fees', args: [arg('amount', t.uint256)] }, (s) => {
+const fees = evscript({ name: 'fees', args: [t.uint256] }, (s, amount) => {
   // all operands statically known → folds at recording into the constant 60
   const feeBps = s.lit(t.uint256, 30n).mul(2n);
-  const fee = s.args.amount.mul(feeBps).div(10_000n);
+  const fee = amount.mul(feeBps).div(10_000n);
   return s.return({ fee });
 });
 ```
@@ -125,19 +125,19 @@ If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a litera
 ## Worked example: share of supply in basis points
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const shareOfSupply = evscript(
-  { name: 'shareOfSupply', args: [arg('token', t.address), arg('owner', t.address)] },
-  (s) => {
+  { name: 'shareOfSupply', args: [t.address, t.address] },
+  (s, token, owner) => {
     const bal = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.owner],
+      args: [owner],
     });
-    const supply = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'totalSupply' });
+    const supply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
     // bal * 10_000 / supply — mul reverts with Panic(0x11) on overflow,
     // div with Panic(0x12) if totalSupply() returns zero
     const bps = bal.mul(10_000n).div(supply);

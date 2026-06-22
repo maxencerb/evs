@@ -39,23 +39,23 @@ recording time — they record both branches into the script — and exactly one
 executes on-chain. Branches produce values through cells:
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const holderRatio = evscript(
-  { name: 'holderRatio', args: [arg('token', t.address), arg('a', t.address), arg('b', t.address)] },
-  (s) => {
+  { name: 'holderRatio', args: [t.address, t.address, t.address] },
+  (s, token, a, b) => {
     const balA = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.a],
+      args: [a],
     });
     const balB = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.b],
+      args: [b],
     });
     const ratioBps = s.let(t.uint256, 0n);
     s.if(
@@ -129,7 +129,7 @@ lets `i.get()` observe the updated counter each time around. Values recorded in 
 visible in the body; nothing recorded inside the loop is visible after it (use cells).
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const uniswapV3FactoryAbi = [
   {
@@ -149,8 +149,8 @@ const UNISWAP_V3_FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 const firstPool = evscript(
-  { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
-  (s) => {
+  { name: 'firstPool', args: [t.address, t.address] },
+  (s, a, b) => {
     const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
     const found = s.let(t.address, ZERO);
     const feeOut = s.let(t.uint24, 0n);
@@ -163,7 +163,7 @@ const firstPool = evscript(
           address: UNISWAP_V3_FACTORY,
           abi: uniswapV3FactoryAbi,
           functionName: 'getPool',
-          args: [s.args.a, s.args.b, fee],
+          args: [a, b, fee],
         });
         s.if(pool.neq(ZERO), () => {
           found.set(pool);
@@ -188,12 +188,12 @@ cell, generic over any numeric word type. It iterates while `i < until`; `step` 
 the counter arithmetic is checked like all evs arithmetic.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const sum = evscript({ name: 'sum', args: [arg('xs', t.array(t.uint256))] }, (s) => {
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
   const total = s.let(t.uint256, 0n);
-  s.for({ type: t.uint256, from: 0n, until: s.args.xs.length() }, (i) => {
-    total.set(total.get().add(s.args.xs.at(i))); // add is checked: Panic 0x11 on overflow
+  s.for({ type: t.uint256, from: 0n, until: xs.length() }, (i) => {
+    total.set(total.get().add(xs.at(i))); // add is checked: Panic 0x11 on overflow
   });
   return s.return({ total: total.get() });
 });
@@ -223,11 +223,11 @@ outer loop's handle inside an inner loop in place of the inner loop's own — th
 building block for "loop over inputs, collect outputs":
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const squares = evscript({ name: 'squares', args: [arg('n', t.uint256)] }, (s) => {
-  const out = s.newArray(t.uint256, s.args.n); // zero-filled uint256[n]
-  s.for({ type: t.uint256, from: 0n, until: s.args.n }, (i) => {
+const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
+  const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
+  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
     out.set(i, i.mul(i)); // bounds-checked → Panic 0x32 if out of range
   });
   return s.return({ squares: out.expr() });

@@ -13,18 +13,16 @@ import { arg, compile, evscript, t } from '@maxencerb/evs';
 
 ## evscript()
 
-```ts
-import type { ArgSpec, EvsScript, Expr, ScriptBuilder, ScriptReturn } from '@maxencerb/evs';
-
+```ts nocheck
 declare function evscript<
   const name extends string,
-  const args extends readonly ArgSpec[],
+  const args extends ArgsInput, // EvsType | readonly EvsType[]
   ret extends Record<string, Expr>,
 >(
-  def: { name: name; args: args },
-  body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+  def: { name: name; args?: args },
+  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
   opts?: { locations?: boolean }, // default true: capture source locations
-): EvsScript<name, args, ret>;
+): EvsScript<name, NormalizeArgs<args>, ret>;
 ```
 
 `evscript` records a script: it runs `body` exactly once, at recording time, against a
@@ -32,26 +30,40 @@ declare function evscript<
 callback must return the value produced by `s.return(...)` — returning anything else (or not
 calling `s.return` at all) throws `EvsTypeError`.
 
-The `const` type parameters mean inline `args` tuples need no `as const`; the literal arg names
-and types flow into `s.args` and into the generated ABI.
+Args are declared as `t.*` types — a single type or a `readonly` list — and arrive as
+**positional parameters after `s`**. A scalar arg arrives as an `Expr`, a `TupleType` arg as a
+[`Tuple` handle](/reference/builder/#tuple). `args` is optional; a zero-arg script omits it. A
+lone type is sugar for a one-element list (`args: t.uint256` ≡ `args: [t.uint256]`). The `const`
+type parameters mean inline `args` need no `as const`.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const double = evscript(
-  { name: 'double', args: [arg('x', t.uint256)] },
-  (s) => s.return({ doubled: s.args.x.mul(2n) }),
+  { name: 'double', args: [t.uint256] },
+  (s, x) => s.return({ doubled: x.mul(2n) }),
 );
 
 const compiled = double.compile(); // sugar for compile(double)
 ```
 
+The relevant type helpers (all exported):
+
+| Type                  | Meaning                                                                            |
+| --------------------- | ---------------------------------------------------------------------------------- |
+| `ArgsInput`           | `EvsType \| readonly EvsType[]` — the accepted `args` input.                        |
+| `NormalizeArgs<a>`    | Normalizes to `readonly EvsType[]` (a lone type → a one-element list).              |
+| `ArgHandle<t>`        | `t extends TupleType ? Tuple<t> : Expr<t>` — one arg's body handle.                 |
+| `ArgHandles<types>`   | The positional handle tuple spread into the body after `s` (order preserved).      |
+
 Recording-time validation (each violation throws `EvsTypeError` with the call-site location):
 
 - `def.name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
-- `def.args` must be an array of `ArgSpec`s; names must be valid identifiers with no duplicates.
-- Every arg type must be a v0 `EvsType` — tuples, fixed-size arrays `T[N]`, and nested arrays
-  throw with code `UNSUPPORTED_V0`.
+- `def.args`, when present, must be a single `EvsType` or a `readonly` list of them. Each
+  normalized arg is auto-named `arg{i}` in the generated ABI (the names are positional labels;
+  viem infers `args` positionally regardless).
+- Every arg type must be a valid `EvsType` — a word/dynamic type, a string array, or a
+  `TupleType` (struct/tuple). Shapes outside the supported set throw with code `UNSUPPORTED_V0`.
 - `body` must be a function.
 
 Everything the builder itself can throw during recording is catalogued in
@@ -66,11 +78,11 @@ skip the per-statement stack capture (faster recording; locations in errors and 
 become `null`):
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const fast = evscript(
-  { name: 'fast', args: [arg('x', t.uint256)] },
-  (s) => s.return({ x: s.args.x }),
+  { name: 'fast', args: [t.uint256] },
+  (s, x) => s.return({ x }),
   { locations: false },
 );
 ```
@@ -82,11 +94,18 @@ const fast = evscript(
 The value returned by `evscript`. It is frozen; `ir` is deep-frozen.
 
 ```ts
-import type { ArgSpec, CompiledEvsScript, CompileOptions, Expr, ScriptAbi, ScriptIr } from '@maxencerb/evs';
+import type {
+  CompiledEvsScript,
+  CompileOptions,
+  EvsType,
+  Expr,
+  ScriptAbi,
+  ScriptIr,
+} from '@maxencerb/evs';
 
 interface EvsScript<
   name extends string = string,
-  args extends readonly ArgSpec[] = readonly ArgSpec[],
+  args extends readonly EvsType[] = readonly EvsType[],
   ret extends Record<string, Expr> = Record<string, Expr>,
 > {
   readonly name: name;
@@ -97,6 +116,8 @@ interface EvsScript<
 ```
 
 - `name` — the literal script name; becomes the ABI function name.
+- `args` — the normalized `readonly EvsType[]` of argument types (the type param, not a runtime
+  field).
 - `ir` — the recorded program. Serialize it with `serializeIr` or run it with the `interpret`
   oracle without compiling; see [testing scripts](/guides/testing-scripts/).
 - `abi` — the literal-typed `ScriptAbi` (one `view` function plus the two evs error entries).
@@ -104,7 +125,7 @@ interface EvsScript<
   [the artifact reference](/reference/artifact/) for its shape.
 - `compile(options?)` — identical to the free-standing `compile(script, options)`.
 
-## arg() and ArgSpec
+## arg() and ArgSpec (for s.fn)
 
 ```ts
 import type { ArgType } from '@maxencerb/evs';
@@ -120,29 +141,34 @@ declare function arg<const name extends string, const type extends ArgType>(
 ): ArgSpec<name, type>;
 ```
 
-`arg` declares one script argument. It validates at the call site and returns a frozen object:
+`arg` declares one **`s.fn` parameter** (see [user functions](/guides/functions/)). The
+script-header `args` surface no longer uses `arg()` — those are bare `t.*` types — but `arg` and
+`ArgSpec` are retained for `s.fn` param declarations. `arg` validates at the call site and
+returns a frozen object:
 
 - `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
-- `type` must be a v0 type: any word type, `string`, `bytes`, or `T[]` of a word type
-  (`ArgType` is an alias of `EvsType`). Tuples and `T[N]` throw `EvsTypeError` with code
-  `UNSUPPORTED_V0`.
+- `type` must be an `ArgType`: any word type, `string`, `bytes`, or a string array
+  (`ArgType` excludes tuples — `s.fn` params are string-encoded). Shapes outside that throw
+  `EvsTypeError` with code `UNSUPPORTED_V0`.
 
 ```ts
 import { arg, t } from '@maxencerb/evs';
 
-const pool = arg('pool', t.address); // ArgSpec<'pool', 'address'>
+const token = arg('token', t.address); // ArgSpec<'token', 'address'>
 const fees = arg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
 const amount = arg('amount', 'uint128'); // raw type strings work everywhere t.* does
+void [token, fees, amount];
 ```
 
-Declaration order is load-bearing: the args tuple order is the type-level order, the runtime
-encode order, and the ABI `inputs` order — call sites stay viem-native positional
-(`args: [pool, fee]`). The full type vocabulary lives in [the types reference](/reference/types/).
+For **script** arguments, declaration order is still load-bearing: the args list order is the
+type-level order, the runtime encode order, and the ABI `inputs` order — call sites stay
+viem-native positional (`args: [pool, fee]`). The full type vocabulary lives in
+[the types reference](/reference/types/).
 
 ## compile()
 
 ```ts
-import type { ArgSpec, CompiledEvsScript, CompileOptions, EvsScript, Expr, ScriptIr } from '@maxencerb/evs';
+import type { CompiledEvsScript, CompileOptions, EvsScript, EvsType, Expr, ScriptIr } from '@maxencerb/evs';
 
 declare function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
@@ -151,7 +177,7 @@ declare function compile<
   options?: CompileOptions,
 ): s extends EvsScript<
   infer n extends string,
-  infer a extends readonly ArgSpec[],
+  infer a extends readonly EvsType[],
   infer r extends Record<string, Expr>
 >
   ? CompiledEvsScript<n, a, r>

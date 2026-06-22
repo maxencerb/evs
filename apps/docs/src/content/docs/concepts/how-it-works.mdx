@@ -25,10 +25,10 @@ CompiledEvsScript   runtimeBytecode, initBytecode, literal-typed abi, sourceMap,
 ```
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 
-const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
-  s.return({ x: s.args.x }),
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
+  s.return({ x }),
 );
 
 const compiled = compile(echo);
@@ -167,8 +167,9 @@ evs v0 optimizes for *auditable correctness* over gas:
   in the design docs costs roughly 1.4M gas for 10,000 iterations, far inside any node's cap).
 - **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
   100; evs does not dedupe repeated calls.
-- **No fixed-size arrays (`uint256[3]`) or nested tuples** in script args, returns, or call
-  ABIs — rejected with a recording-time error.
+- **Structs and tuples are supported** (including nested structs) in script args, returns, and
+  call ABIs. **Arrays of tuples (`tuple[]`), nested string arrays (`string[]`), and fixed-size
+  arrays (`uint256[3]`)** are still rejected with a recording-time error.
 - **Read-only by construction.** No state writes, no logs, no deployment — enforced by the
   shape lints above.
 

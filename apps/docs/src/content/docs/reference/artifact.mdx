@@ -9,7 +9,7 @@ artifact against a chain, see [execution](/guides/execution/); for the debugging
 [errors and debugging](/guides/errors-and-debugging/).
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, http } from 'viem';
 
 const erc20 = [
@@ -22,8 +22,8 @@ const erc20 = [
   },
 ] as const;
 
-const script = evscript({ name: 'totalSupplyOf', args: [arg('token', t.address)] }, (s) => {
-  const supply = s.call({ address: s.args.token, abi: erc20, functionName: 'totalSupply' });
+const script = evscript({ name: 'totalSupplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.call({ address: token, abi: erc20, functionName: 'totalSupply' });
   return s.return({ supply });
 });
 
@@ -72,7 +72,7 @@ const abi = [
     type: 'function',
     name: 'totalSupplyOf',
     stateMutability: 'view',
-    inputs: [{ name: 'token', type: 'address' }],
+    inputs: [{ name: 'arg0', type: 'address' }], // args are auto-named arg{i} — positional labels
     outputs: [
       {
         name: 'result',
@@ -288,10 +288,10 @@ Decodes a raw revert payload (the hex data from a failed `eth_call`) against thi
 and source map:
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 
-const script = evscript({ name: 'addOne', args: [arg('x', t.uint256)] }, (s) => {
-  return s.return({ y: s.add(s.args.x, 1n) });
+const script = evscript({ name: 'addOne', args: [t.uint256] }, (s, x) => {
+  return s.return({ y: s.add(x, 1n) });
 });
 const compiled = compile(script);
 

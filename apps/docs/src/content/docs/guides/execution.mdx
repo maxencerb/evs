@@ -18,12 +18,12 @@ full inference on `args` and the result either way.
 ## Deployless mode (default)
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 
-const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
-  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
+  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
 
@@ -70,12 +70,12 @@ runtime executes unchanged. On the `paris` target the two `PUSH0` bytes become
 ## State-override mode
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 
-const myBalance = evscript({ name: 'myBalance', args: [arg('token', t.address)] }, (s) => {
+const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
   const balance = s.call({
-    address: s.args.token,
+    address: token,
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: [s.env('caller')], // msg.sender — controllable only in this mode
@@ -154,12 +154,12 @@ Because compile time cannot know which mode you will pick, `compile()` flags eve
 `onDiagnostic` channel (never logged):
 
 ```ts
-import { arg, compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const myBalance = evscript({ name: 'myBalance', args: [arg('token', t.address)] }, (s) => {
+const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
   const balance = s.call({
-    address: s.args.token,
+    address: token,
     abi: erc20Abi,
     functionName: 'balanceOf',
     args: [s.env('caller')],

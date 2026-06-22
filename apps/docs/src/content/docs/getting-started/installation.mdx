@@ -54,10 +54,10 @@ This compiles a one-argument script to bytecode without touching a network — i
 typechecks and runs, you are set:
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 
-const ping = evscript({ name: 'ping', args: [arg('x', t.uint256)] }, (s) => {
-  return s.return({ doubled: s.args.x.mul(2n) });
+const ping = evscript({ name: 'ping', args: [t.uint256] }, (s, x) => {
+  return s.return({ doubled: x.mul(2n) });
 });
 
 export const artifact = compile(ping);

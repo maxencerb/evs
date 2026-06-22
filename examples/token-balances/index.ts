@@ -8,23 +8,24 @@
 
 import { erc20Abi, parseEther, type Address } from 'viem';
 
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { startAnvil } from '@maxencerb/evs-examples-shared/run-anvil';
 
 import { MockERC20 } from '../../packages/evs/test/generated/index.js';
 
+// `args: [t.array(t.address), t.address]` → the callback receives `(s, tokens, owner)`.
 const balances = evscript(
-  { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
-  (s) => {
-    const n = s.args.tokens.length();
+  { name: 'balances', args: [t.array(t.address), t.address] },
+  (s, tokens, owner) => {
+    const n = tokens.length();
     const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = s.args.tokens.at(i); // bounds-checked
+      const token = tokens.at(i); // bounds-checked
       const r = s.tryCall({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
-        args: [s.args.owner],
+        args: [owner],
       });
       out.set(i, s.select(r.success, r.value, 0n)); // non-token addresses → 0, no revert
     });

@@ -10,15 +10,19 @@ narrative version (and the staging-misuse failure modes), see
 ## The t namespace
 
 ```ts
-import type { DynType, WordType } from '@maxencerb/evs';
+import type { EvsType, StringType, TupleType } from '@maxencerb/evs';
 
-declare const t: { readonly [k in WordType | DynType]: k } & {
-  array<const e extends WordType>(elem: e): `${e}[]`;
+declare const t: { readonly [k in Exclude<StringType, `${string}[]`>]: k } & {
+  array(elem: StringType | TupleType): StringType | TupleType;
+  struct(spec: Record<string, EvsType>): TupleType;
+  tuple(...items: readonly EvsType[]): TupleType;
 };
 ```
 
-`t` is a frozen object whose every property is its own literal type string — pure autocomplete
-sugar. Raw type strings are accepted everywhere `t.*` is.
+`t` is a frozen object whose every scalar property is its own literal type string — pure
+autocomplete sugar — plus three functions that build composite types. Raw type strings (and raw
+`readonly AbiParameter[]` arrays, anywhere a tuple type is expected) are accepted everywhere
+`t.*` is.
 
 | Members                          | Value                          | Notes                                                                       |
 | -------------------------------- | ------------------------------ | --------------------------------------------------------------------------- |
@@ -29,16 +33,22 @@ sugar. Raw type strings are accepted everywhere `t.*` is.
 | `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
 | `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
 | `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
-| `t.array(elem)`                  | `` `${elem}[]` ``              | function: builds a dynamic-array type; `elem` must be a word type           |
+| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a string element, or a `tuple[]` of a tuple element |
+| `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
+| `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
 
-`t.array` validates its element at the call site — a non-word element (so no `string[]`, no
-nested arrays) throws `EvsTypeError`.
+`t.array` validates its element at the call site. `t.struct`/`t.tuple` build a
+[`TupleType`](#composite-types-tupletype) descriptor — an abitype `AbiParameter`-shaped object
+viem infers directly.
 
 ```ts
-import { arg, t } from '@maxencerb/evs';
+import { t } from '@maxencerb/evs';
 
-const fees = arg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
-const amount = arg('amount', 'uint128'); // raw strings work identically
+const fees = t.array(t.uint24); // 'uint24[]'
+const Position = t.struct({ liquidity: t.uint128, owner: t.address }); // named struct → object
+const Pair = t.tuple(t.address, t.uint256); // positional tuple → [address, bigint]
+const amount = 'uint128'; // raw strings work identically
+void [fees, Position, Pair, amount];
 ```
 
 ## Type aliases
@@ -59,9 +69,20 @@ type IntType = `int${UintBits}`;
 type BytesNType = `bytes${BytesSize}`;
 type WordType = UintType | IntType | 'address' | 'bool' | BytesNType;
 type DynType = 'string' | 'bytes';
-type ArrayType = `${WordType}[]`;
-type EvsType = WordType | DynType | ArrayType;
-type ArgType = EvsType;
+type ScalarType = WordType | DynType;
+type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+type StringType = ScalarType | ArrayType; // every string-encoded type
+interface NamedType {
+  readonly name: string; // '' for a positional tuple member
+  readonly type: string; // 'uint256', 'tuple', 'tuple[]', 'uint256[]', …
+  readonly components?: readonly NamedType[]; // present iff type starts with 'tuple'
+}
+interface TupleType {
+  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly components: readonly NamedType[];
+}
+type EvsType = WordType | DynType | ArrayType | TupleType;
+type ArgType = WordType | DynType | ArrayType; // s.fn param types (string-encoded)
 type NumericType = UintType | IntType;
 type BitsType = UintType | BytesNType;
 ```
@@ -77,22 +98,63 @@ type BitsType = UintType | BytesNType;
 | `BytesNType`  | `bytes1` … `bytes32`.                                                                        |
 | `WordType`    | Every type that fits one EVM word: unsigned and signed integers, `address`, `bool`, `bytesN`.|
 | `DynType`     | The dynamic byte-string types: `string` and `bytes`.                                         |
-| `ArrayType`   | Dynamic arrays of word types — `uint256[]`, `address[]`, and so on. v0 has no nested arrays. |
-| `EvsType`     | Every v0 value type: word, dynamic, or array.                                                |
-| `ArgType`     | Alias of `EvsType` — the valid script-argument types.                                        |
+| `ScalarType`  | `WordType` or `DynType` — every non-array, non-tuple type.                                   |
+| `ArrayType`   | String-encoded arrays of a scalar element, up to three `[]` deep — `uint256[]`, `address[][]`. |
+| `StringType`  | Every string-encoded type: a scalar or a string array.                                       |
+| `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
+| `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
+| `EvsType`     | Every value type: word, dynamic, string array, or a `TupleType`.                              |
+| `ArgType`     | The valid `s.fn` parameter types (string-encoded — no tuples).                                |
 | `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
 | `IntoExpr<t>` | `Expr` of `t`, or a `LitOf<t>` literal.                                                      |
 | `Expr<t>`     | The branded staged-value handle (below).                                                     |
 
+## Composite types (TupleType)
+
+A `TupleType` is a struct or tuple type — an abitype `AbiParameter`-shaped descriptor that viem
+infers directly. Build one with `t.struct` (named members, inferred as an object) or `t.tuple`
+(positional members, inferred as an array); `t.array` lifts a tuple to a `tuple[]`. A raw
+`readonly AbiParameter[]` is accepted anywhere a `TupleType` is expected:
+
+```ts
+import { t } from '@maxencerb/evs';
+import type { TupleType } from '@maxencerb/evs';
+
+// t.struct → named components; runtime encode order is Object.keys insertion order.
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+//    ^? { type: 'tuple'; components: readonly [...] }  (LitOf → { liquidity: bigint; owner: `0x${string}` })
+
+// t.tuple → positional, unnamed components (LitOf → [bigint, `0x${string}`]).
+const Pair = t.tuple(t.uint128, t.address);
+
+// t.array of a tuple → a tuple[].
+const positions = t.array(Position);
+
+// nested struct: a member can itself be a TupleType.
+const Outer = t.struct({ pos: Position, x: t.uint256 });
+
+const types: readonly TupleType[] = [Position, Pair, positions, Outer];
+void types;
+```
+
+`LitOf<TupleType>` delegates to abitype: an all-named tuple becomes an object, a positional
+tuple an array, recursing through nested components. `TupleType` flows everywhere a value type
+does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#stuple)), as a
+`s.call` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
+`s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
+
+Several type-level helpers are exported for advanced inference: `StructTypeOf`, `TupleTypeOf`,
+`TupleArrayOf`, `TypeToComponent`, `TupleLitOf`, and `TupleAsParam`. You rarely name them — they
+power `t.struct`/`t.tuple` inference — but they are public for building your own type-level
+glue.
+
 ## Literal coercion: LitOf and IntoExpr
 
 Every builder position typed `IntoExpr` accepts either an `Expr` or a plain host literal:
 
-```ts
-import type { BytesNType, EvsType, Expr, NumericType, WordType } from '@maxencerb/evs';
-
+```ts nocheck
 type LitOf<t extends EvsType> = t extends NumericType
   ? bigint | number
   : t extends 'address'
@@ -105,9 +167,11 @@ type LitOf<t extends EvsType> = t extends NumericType
           ? string
           : t extends 'bytes'
             ? `0x${string}`
-            : t extends `${infer e extends WordType}[]`
+            : t extends `${infer e extends StringType}[]`
               ? readonly LitOf<e>[]
-              : never;
+              : t extends TupleType
+                ? TupleLitOf<t> // delegated to abitype: object (all-named) or array (positional)
+                : never;
 
 type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
@@ -213,13 +277,13 @@ Widening is free; **narrowing is checked** (Panic `0x11` on out-of-range values)
 | `asBytes32` | `asBytes32(): Expr<'bytes32'>`     | `Expr<'uint256'>`                       | free reinterpret                                        |
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const casts = evscript({ name: 'casts', args: [arg('raw', t.bytes32)] }, (s) => {
-  const word = s.args.raw.asUint256(); // free reinterpret
+const casts = evscript({ name: 'casts', args: [t.bytes32] }, (s, raw) => {
+  const word = raw.asUint256(); // free reinterpret
   const small = word.toUint(t.uint32); // checked narrowing — Panic 0x11 if out of range
   const wide = small.toUint(t.uint256); // widening is free
-  const addr = s.args.raw.asAddress(); // checked: top 96 bits must be zero
+  const addr = raw.asAddress(); // checked: top 96 bits must be zero
   return s.return({ small, wide, addr });
 });
 ```
@@ -234,15 +298,12 @@ const casts = evscript({ name: 'casts', args: [arg('raw', t.bytes32)] }, (s) => 
 ### Putting it together
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const flags = evscript(
-  { name: 'flags', args: [arg('mask', t.bytes4), arg('n', t.int128)] },
-  (s) => {
-    const isNeg = s.args.n.lt(0n); // SLT — signedness comes from the static type
-    const top = s.args.mask.shr(16n); // re-masked to the bytes4 lane
-    const both = isNeg.and(s.args.mask.neq('0x00000000')); // eager bool logic
-    return s.return({ isNeg, top, both });
-  },
-);
+const flags = evscript({ name: 'flags', args: [t.bytes4, t.int128] }, (s, mask, n) => {
+  const isNeg = n.lt(0n); // SLT — signedness comes from the static type
+  const top = mask.shr(16n); // re-masked to the bytes4 lane
+  const both = isNeg.and(mask.neq('0x00000000')); // eager bool logic
+  return s.return({ isNeg, top, both });
+});
 ```

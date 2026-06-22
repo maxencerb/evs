@@ -29,7 +29,7 @@ evs moves the data flow on-chain. You write a TypeScript callback against a smal
 API; evs compiles it to EVM bytecode and runs the whole thing through a single `eth_call`:
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const uniswapV3PoolAbi = [
@@ -43,9 +43,9 @@ const uniswapV3PoolAbi = [
 ] as const;
 
 export const poolToken0 = evscript(
-  { name: 'poolToken0', args: [arg('pool', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  { name: 'poolToken0', args: [t.address] },
+  (s, pool) => {
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     // token0 is Expr<'address'> — it feeds the next two calls ON-CHAIN
     const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     const decimals = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });

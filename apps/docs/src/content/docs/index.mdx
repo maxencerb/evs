@@ -20,11 +20,10 @@ hero:
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
 ```ts
-import { evscript, arg, t, compile } from '@maxencerb/evs';
+import { evscript, t, compile } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-  const { token } = s.args;
+const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
   const symbol = s.call({ abi: erc20Abi, address: token, functionName: 'symbol' });
   const decimals = s.call({ abi: erc20Abi, address: token, functionName: 'decimals' });
   return s.return({ symbol, decimals });

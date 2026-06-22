@@ -10,7 +10,7 @@ configuration (`token0`, `token1`, `fee`, current tick) **and** each token's `sy
 ## The script
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const uniswapV3PoolAbi = [
@@ -53,13 +53,13 @@ const uniswapV3PoolAbi = [
 ] as const;
 
 export const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  { name: 'poolMeta', args: [t.address] },
+  (s, pool) => {
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'> — a runtime value, usable as the address of the NEXT call
-    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-    const fee = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const fee = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly tuple of Exprs — one per slot0 output
 
     const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
@@ -81,13 +81,57 @@ export const poolMeta = evscript(
 );
 ```
 
-`s.call` types like viem's `readContract`: the inline `as const` pool ABI and viem's
-`erc20Abi` drive autocomplete for `functionName` and the output types. `token0` comes back as
-`Expr<'address'>` — a handle to a value that exists only at run time — and goes straight into
-the `address` field of the `symbol` and `decimals` calls. Multi-output functions like `slot0`
-return a readonly tuple of `Expr`s, so `slot0[1]` is the tick. See
-[calls](/guides/calls/) for the full `s.call` surface and
-[values and types](/guides/values-and-types/) for how `Expr` handles work.
+The single `pool` argument arrives as a positional callback param after `s`. `s.call` types
+like viem's `readContract`: the inline `as const` pool ABI and viem's `erc20Abi` drive
+autocomplete for `functionName` and the output types. `token0` comes back as `Expr<'address'>` —
+a handle to a value that exists only at run time — and goes straight into the `address` field of
+the `symbol` and `decimals` calls. This `slot0` returns seven flat outputs, so it is a readonly
+tuple of `Expr`s and `slot0[1]` is the tick. See [calls](/guides/calls/) for the full `s.call`
+surface and [values and types](/guides/values-and-types/) for how `Expr` handles work.
+
+### When the getter returns a struct
+
+Some getters return a single Solidity *struct* instead of flat outputs — for example a
+`slot0Struct()` whose one ABI output is a `'tuple'`. evs decodes that into a
+[`Tuple` handle](/reference/builder/#tuple) whose members you read by name:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const slot0StructAbi = [
+  {
+    type: 'function',
+    name: 'slot0Struct',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'sqrtPriceX96', type: 'uint160' },
+          { name: 'tick', type: 'int24' },
+          { name: 'unlocked', type: 'bool' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const poolSlot0 = evscript({ name: 'poolSlot0', args: [t.address] }, (s, pool) => {
+  const slot0 = s.call({ address: pool, abi: slot0StructAbi, functionName: 'slot0Struct' });
+  //    ^? Tuple<…> — the struct output, decoded
+  return s.return({
+    sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>
+    tick: slot0.tick.get(), // Expr<'int24'> — read by name
+    unlocked: slot0.unlocked.get(), // Expr<'bool'>
+    slot0: slot0.expr(), // the whole struct flows out, abitype-typed
+  });
+});
+```
+
+`slot0.tick.get()` is fully typed `Expr<'int24'>`, and `slot0.expr()` returns the struct as one
+abitype-typed object. See [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
 
 ## The dependency chain multicall cannot express
 
@@ -108,7 +152,7 @@ deployless: viem sends a two-parameter `eth_call` with the script's init bytecod
 so it works on every standard RPC provider and nothing is ever deployed.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 
 // --- the script from the previous section, unchanged ---
@@ -152,11 +196,11 @@ const uniswapV3PoolAbi = [
   },
 ] as const;
 
-const poolMeta = evscript({ name: 'poolMeta', args: [arg('pool', t.address)] }, (s) => {
-  const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-  const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-  const fee = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
-  const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+const poolMeta = evscript({ name: 'poolMeta', args: [t.address] }, (s, pool) => {
+  const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+  const fee = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+  const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
   const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
   const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
   const decimals0 = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
@@ -179,8 +223,8 @@ export const out = await client.readContract({
 ```
 
 No `as const`, no codegen step: the script value *is* its own literal-typed ABI, so `args` is
-typed ``readonly [pool: `0x${string}`]`` and `out` is fully inferred. For the state-override
-mode, block pinning, and the `s.env` caveats, see [execution](/guides/execution/).
+typed ``readonly [`0x${string}`]`` and `out` is fully inferred. For the state-override mode,
+block pinning, and the `s.env` caveats, see [execution](/guides/execution/).
 
 ## The result
 

@@ -9,13 +9,13 @@ it as-is.
 ## tryCall with a default
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 export const tokenDecimals = evscript(
-  { name: 'tokenDecimals', args: [arg('token', t.address)] },
-  (s) => {
-    const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  { name: 'tokenDecimals', args: [t.address] },
+  (s, token) => {
+    const d = s.tryCall({ address: token, abi: erc20Abi, functionName: 'decimals' });
     return s.return({ decimals: s.select(d.success, d.value, 18) });
   },
 );
@@ -30,7 +30,7 @@ values, so this is one expression, no branch needed. Full semantics in
 ## First match: while + cells + break
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const uniswapV3FactoryAbi = [
   {
@@ -50,8 +50,8 @@ const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984'; // Uniswap V3 fact
 const ZERO = '0x0000000000000000000000000000000000000000';
 
 export const firstPool = evscript(
-  { name: 'firstPool', args: [arg('a', t.address), arg('b', t.address)] },
-  (s) => {
+  { name: 'firstPool', args: [t.address, t.address] },
+  (s, a, b) => {
     const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
     const found = s.let(t.address, ZERO);
     const feeOut = s.let(t.uint24, 0n);
@@ -64,7 +64,7 @@ export const firstPool = evscript(
           address: FACTORY,
           abi: uniswapV3FactoryAbi,
           functionName: 'getPool',
-          args: [s.args.a, s.args.b, fee],
+          args: [a, b, fee],
         });
         s.if(pool.neq(ZERO), () => {
           found.set(pool);
@@ -92,18 +92,18 @@ import { arg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 export const portfolio = evscript(
-  { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
-  (s) => {
+  { name: 'portfolio', args: [t.address, t.array(t.address)] },
+  (s, owner, tokens) => {
     const balOf = s.fn(
       'balOf',
       [arg('token', t.address), arg('who', t.address)] as const,
       (token, who) =>
         s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );
-    const n = s.args.tokens.length();
+    const n = tokens.length();
     const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      out.set(i, balOf(s.args.tokens.at(i), s.args.owner)); // fresh Expr per call
+      out.set(i, balOf(tokens.at(i), owner)); // fresh Expr per call
     });
     return s.return({ balances: out.expr() });
   },
@@ -113,13 +113,13 @@ export const portfolio = evscript(
 `s.fn` defines a typed subroutine: the body records **once** at definition, and the compiled
 code is emitted once no matter how many call sites exist. The body runs in an isolated scope —
 it cannot capture outer `Expr`s or cells (that throws `EvsScopeError` at recording), which is
-why `owner` is passed as the `who` parameter instead of read from `s.args` inside the body.
-See [functions](/guides/functions/).
+why `owner` is passed as the `who` parameter instead of read from the outer scope inside the
+body. `s.fn` params are still declared with `arg(name, type)`. See [functions](/guides/functions/).
 
 ## Conditional checked math with s.if
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const vaultAbi = [
   {
@@ -139,19 +139,19 @@ const vaultAbi = [
 ] as const;
 
 export const healthCheck = evscript(
-  { name: 'healthCheck', args: [arg('vault', t.address), arg('user', t.address)] },
-  (s) => {
+  { name: 'healthCheck', args: [t.address, t.address] },
+  (s, vault, user) => {
     const debt = s.call({
-      address: s.args.vault,
+      address: vault,
       abi: vaultAbi,
       functionName: 'debtOf',
-      args: [s.args.user],
+      args: [user],
     });
     const coll = s.call({
-      address: s.args.vault,
+      address: vault,
       abi: vaultAbi,
       functionName: 'collateralOf',
-      args: [s.args.user],
+      args: [user],
     });
     const ratioBps = s.let(t.uint256, 0n);
     s.if(
@@ -174,7 +174,7 @@ wrapping. The cell carries whichever branch's result into the return. See
 ## State override, block pinning, and explainRevert
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -183,9 +183,9 @@ import {
   http,
 } from 'viem';
 
-const supply = evscript({ name: 'supply', args: [arg('token', t.address)] }, (s) => {
-  const totalSupply = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'totalSupply' });
-  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const supply = evscript({ name: 'supply', args: [t.address] }, (s, token) => {
+  const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ totalSupply, decimals });
 });
 
