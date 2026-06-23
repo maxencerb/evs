@@ -60,6 +60,15 @@ jobs:
           echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
           echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
 
+      # Warm the bun install cache (keyed on the lockfile) — the later re-sync install
+      # after the version bump reuses it too.
+      - uses: actions/cache@v4
+        with:
+          path: ~/.bun/install/cache
+          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+          restore-keys: |
+            bun-${{ runner.os }}-
+
       # Install BEFORE the version bump (bun's frozen-lockfile hashes workspace manifests),
       # and bun pm pack requires a completed install.
       - name: Install dependencies

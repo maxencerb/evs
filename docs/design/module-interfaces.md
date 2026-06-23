@@ -62,10 +62,12 @@ export type NumericType = UintType | IntType
 export type BitsType = UintType | BytesNType
 
 export declare const exprBrand: unique symbol
-export interface Expr<t extends EvsType = EvsType> { /* exactly api.md §3 — `at<elem extends
-  StringType>(this: Expr<`${elem}[]` & ArrayType>, …): Expr<elem>` plus a tuple-array overload
-  `at<C extends TupleType>(this: Expr<C & {type:'tuple[]'}>, …): Tuple<elem>` (amended by #2 +
-  the #2 follow-up: a tuple-array element handle) */ }
+export interface Expr<t extends EvsType = EvsType> { /* exactly api.md §3 — string-array `at` is
+  `at(this: Expr<t & ArrayType>, …): Expr<ArrayElemOf<t>>` (amendment 18.1 — forward `infer` on the
+  receiver's own `t`, type-equivalent to the prior `at<elem extends StringType>(this:
+  Expr<`${elem}[]` & ArrayType>): Expr<elem>`, reformulated for `tsc` perf) plus a tuple-array
+  overload `at<C extends TupleType>(this: Expr<C & {type:'tuple[]'}>, …): Tuple<elem>` (amended by
+  #2 + the #2 follow-up: a tuple-array element handle) */ }
 export type LitOf<t extends EvsType> = /* exactly api.md §3 — TupleType → TupleLitOf (amended #2) */
 export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<TupleAsParam<t>, 'inputs'>
 export type TupleAsParam<t extends TupleType> = { readonly name: ''; readonly type: t['type']

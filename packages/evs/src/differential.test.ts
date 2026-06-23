@@ -1594,14 +1594,21 @@ describe('composite arrays (read path)', () => {
   // The differential harness drives loosely-typed builder scripts (the precise abitype inference of
   // composite-array call outputs is covered by the type tests); this loose handle shape lets the
   // read-path builder calls (`.length()`/`.at()`/`.field.get()`) type-check in the test corpus.
-  // Every terminal read resolves to `Expr` (a returnable value); intermediate handles are the loose
-  // array/tuple/bytes shapes the runtime actually produces.
+  // Every terminal read in these shapes resolves to a WORD, so the loose word handle is pinned to
+  // `Expr<'uint256'>` (not the wide `Expr<EvsType>`): the `s.return({...})` struct that viem's
+  // `decodeFunctionResult` re-infers is then a struct of words, not a ~400-member union ("too
+  // complex to represent"). Intermediate handles are the loose array/tuple/bytes shapes the runtime
+  // produces; only the word part feeds a return slot.
+  // `ArrLike` (loose, no `this` constraints) is intersected BEFORE `Word` so its `length`/`at`
+  // signatures win method resolution — the real `Expr` ops carry array-only `this` params that a
+  // `uint256` word would fail (TS2684). The value is still an `Expr<'uint256'>` for return slots.
+  type Word = Expr<'uint256'>;
   interface FieldLike {
-    get(): Expr & ArrLike & { length(): Expr };
+    get(): ArrLike & Word;
   }
   interface ArrLike {
-    length(): Expr;
-    at(i: bigint): Expr & ArrLike;
+    length(): Word;
+    at(i: bigint): ArrLike & Word;
   }
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose builder handle for the corpus
   const asArr = (v: unknown): ArrLike => v as ArrLike;

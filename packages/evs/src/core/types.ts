@@ -67,6 +67,20 @@ export interface NamedType {
   readonly components?: readonly NamedType[];
 }
 export type EvsType = WordType | DynType | ArrayType | TupleType;
+
+/**
+ * One `[]` peeled off a string-array type via FORWARD inference: `uint256[][]` → `uint256[]`. The
+ * check type is tuple-wrapped so it does NOT distribute — a concrete (or small-union) array type
+ * infers its element, but a wide/non-array `t` (e.g. a loosely-typed `Expr<EvsType>`) collapses to
+ * `never` instead of materializing the whole ~400-member union ("too complex to represent").
+ *
+ * Perf (amendments.md §18.1): {@link Expr.at} computes its element via this instead of reverse-
+ * solving a generic `elem extends StringType` against `${elem}[]` — forward `infer` on the already-
+ * concrete receiver type is ~free; reverse-matching a template against the union dominated check time.
+ */
+export type ArrayElemOf<t extends EvsType> = [t] extends [`${infer e extends StringType}[]`]
+  ? e
+  : never;
 export type ArgType = EvsType;
 export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
@@ -118,12 +132,11 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  // `& ArrayType` pins `${elem}[]` to the depth-bounded array vocabulary (an unbounded
-  // `${StringType}[]` could reach depth 4, which is not an `EvsType`).
-  at<elem extends StringType>(
-    this: Expr<`${elem}[]` & ArrayType>,
-    i: IntoExpr<'uint256'>,
-  ): Expr<elem>;
+  // element via FORWARD inference on the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
+  // NOT a reverse-solved `elem extends StringType` against `${elem}[]` — same result type, but
+  // amendments.md §18.1 cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
+  // `t & ArrayType` still pins the receiver to the depth-bounded array vocabulary.
+  at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
 
