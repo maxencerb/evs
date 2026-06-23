@@ -71,20 +71,21 @@ export const uniswapV3PoolAbi = [
 ```
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { mainnet } from 'viem/chains';
 
 import { uniswapV3PoolAbi } from './abis';
 
 const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
+  { name: 'poolMeta', args: [t.address, t.address] },
+  // args arrive as positional params after `s`, in declaration order
+  (s, pool, user) => {
     // values flow BETWEEN calls on-chain — a multicall cannot do this
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>
-    const token1 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, …]
     const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
@@ -94,7 +95,7 @@ const poolMeta = evscript(
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.user],
+      args: [user],
     });
     return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
   },
@@ -194,7 +195,7 @@ explicit `.get()` so "snapshot vs current value" is visible at every use:
 
 ```ts
 const total = s.let(t.uint256, 0n); // Cell<'uint256'>
-total.set(total.get().add(s.args.amount)); // checked add — Panic 0x11 on overflow
+total.set(total.get().add(amount)); // `amount` is a positional arg; checked add — Panic 0x11 on overflow
 const snapshot = total.get(); // fixed at this program point
 ```
 

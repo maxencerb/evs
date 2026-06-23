@@ -100,15 +100,14 @@ describe('layoutOf golden table', () => {
 describe('layoutOf rejections', () => {
   const DEFERRED = [
     'tuple',
-    'tuple[]',
+    'tuple[]', // tuple-array STRING form (the object form goes through layoutOfType)
     'tuple(uint256,address)',
     'uint256[2]',
     'address[3]',
-    'uint256[][]',
-    'address[][]',
-    'string[]', // arrays of dynamic types are not v0
-    'bytes[]',
+    'uint256[][][]', // string arrays nested deeper than [][] stay deferred
   ];
+  // §12.3 un-gate: one level of array nesting over a composite/dynamic element now PRODUCES a layout.
+  const NOW_SUPPORTED = ['uint256[][]', 'address[][]', 'string[]', 'bytes[]'];
   const UNKNOWN = [
     '',
     'uint',
@@ -132,6 +131,13 @@ describe('layoutOf rejections', () => {
     expect(caught).toBeInstanceOf(EvsTypeError);
     expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
     expect((caught as EvsTypeError).message).toContain(JSON.stringify(s));
+  });
+
+  test.each(NOW_SUPPORTED)('%j → array-of-composite layout (§12.3 un-gate)', (s) => {
+    const l = layoutOf(s);
+    expect(l.kind).toBe('array');
+    const elemKind = l.kind === 'array' ? l.elem.kind : 'word';
+    expect(elemKind).not.toBe('word');
   });
 
   test.each(UNKNOWN)('%j → EvsTypeError(TYPE_MISMATCH)', (s) => {
@@ -190,13 +196,26 @@ describe('headBytes', () => {
     ).toBe(96);
   });
 
-  test('non-v0 param types fail loudly instead of mis-sizing the head', () => {
-    expect(() =>
+  test('static tuple params inline their whole head (cumulative walk); non-v0 types fail loudly', () => {
+    // a STATIC inner tuple occupies headBytes(components) head words, NOT one offset word
+    expect(
       headBytes([
         { name: 'a', type: 'uint256' },
-        { name: 'b', type: 'tuple', components: [{ name: 'x', type: 'uint256' }] },
+        {
+          name: 'b',
+          type: 'tuple',
+          components: [
+            { name: 'x', type: 'uint256' },
+            { name: 'y', type: 'uint8' },
+          ],
+        },
       ]),
-    ).toThrowError(EvsTypeError);
+    ).toBe(32 + 64);
+    // a DYNAMIC tuple is a single offset-pointer head word
+    expect(
+      headBytes([{ name: 'b', type: 'tuple', components: [{ name: 'x', type: 'string' }] }]),
+    ).toBe(32);
+    // genuinely-unsupported shapes still throw
     expect(() => headBytes([{ name: 'a', type: 'uint256[2]' }])).toThrowError(EvsTypeError);
   });
 });

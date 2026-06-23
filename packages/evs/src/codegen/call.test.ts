@@ -1,3 +1,6 @@
+/* oxlint-disable typescript/no-unsafe-type-assertion --
+ * these helpers narrow word-typed args (`a.type as WordType`) after an `isDyn` guard; the
+ * EvsType union now includes TupleType, but these fixtures are word/dyn/array only. */
 /**
  * M7 unit tests — `codegen/call.ts` (`emitStaticCall`, architecture §7/§15.2) against mock
  * callee bytecode on the M10 harness:
@@ -38,7 +41,14 @@ import {
 } from '../abi/artifact.js';
 import { AsmWriter, assemble, type LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import type { ArrayType, DynType, EvsType, Hex, WordType } from '../core/types.js';
+import {
+  typeToAbiParam,
+  type ArrayType,
+  type DynType,
+  type EvsType,
+  type Hex,
+  type WordType,
+} from '../core/types.js';
 import type { Stmt } from '../ir/nodes.js';
 import { emitReturnEncode, type SlotRef } from './abi.js';
 import { emitStaticCall, type CallSitePlan } from './call.js';
@@ -56,7 +66,7 @@ const DECODE_ERROR: Hex = concatHex(selectorOf('EvsDecodeError', ['uint256']), w
 const CALLDATA_REVERTER: Hex = '0x365f5f37365ffd';
 
 const isDyn = (type: EvsType): type is DynType | ArrayType =>
-  type === 'string' || type === 'bytes' || type.endsWith('[]');
+  typeof type === 'string' && (type === 'string' || type === 'bytes' || type.endsWith('[]'));
 
 interface ArgCfg {
   type: EvsType;
@@ -154,8 +164,8 @@ function buildCallRuntime(cfg: CallCfg): BuiltCall {
     type: 'function',
     name: cfg.fnName,
     stateMutability: 'view',
-    inputs: cfg.args.map((a, i) => ({ name: `a${i}`, type: a.type })),
-    outputs: cfg.outs.map((type, j) => ({ name: `o${j}`, type })),
+    inputs: cfg.args.map((a, i) => typeToAbiParam(`a${i}`, a.type)),
+    outputs: cfg.outs.map((type, j) => typeToAbiParam(`o${j}`, type)),
   };
   const fnAbi = toPlainAbiFunction(fnItem);
 
@@ -249,10 +259,10 @@ function tuple(
 function outComps(
   outs: readonly EvsType[],
   withSuccess: boolean,
-): { name: string; type: string }[] {
-  const comps: { name: string; type: string }[] = [];
+): { name: string; type: string; components?: readonly unknown[] }[] {
+  const comps: { name: string; type: string; components?: readonly unknown[] }[] = [];
   if (withSuccess) comps.push({ name: 'ok', type: 'bool' });
-  outs.forEach((type, j) => comps.push({ name: `o${j}`, type }));
+  outs.forEach((type, j) => comps.push(typeToAbiParam(`o${j}`, type)));
   return comps;
 }
 

@@ -72,7 +72,7 @@ try {
 | `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself | Recording |
 | `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
 | `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
-| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: tuples, fixed-size arrays `T[N]`, nested/non-word arrays, overloaded callee functions | Recording |
+| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: two-level tuple arrays `tuple[][]`, arrays nested deeper than `[][]`, fixed-size arrays `T[N]`, overloaded callee functions (tuples, `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]` are supported) | Recording |
 | `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid or duplicate identifiers in the script name, args, or return keys; a malformed ABI fragment passed to `s.call` | Recording |
 | `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget | Compile / interpret |
 | `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |

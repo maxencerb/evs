@@ -19,6 +19,7 @@ import {
   encodeAbiParameters,
   encodeErrorResult,
   encodeFunctionData,
+  getAddress,
   toFunctionSelector,
 } from 'viem';
 import { describe, expect, test } from 'vitest';
@@ -38,7 +39,7 @@ import { assemble, AsmWriter, type LabelId } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
-import { arg, t, type Hex, type NumericType } from './core/types.js';
+import { arg, t, type Expr, type Hex, type NumericType } from './core/types.js';
 import { interpret, type MockChain } from './ir/interp.js';
 import type { ScriptIr } from './ir/nodes.js';
 
@@ -215,6 +216,7 @@ const REVERTER = '0xd000000000000000000000000000000000000004';
 const ECHO = '0xe000000000000000000000000000000000000005';
 const DEAD = '0xdead00000000000000000000000000000000dead';
 const USER = '0x1000000000000000000000000000000000000001';
+const SINK = '0xf000000000000000000000000000000000000006';
 
 const erc20ishAbi = [
   {
@@ -326,9 +328,7 @@ const WIDTHS: readonly NumericType[] = [
 ];
 
 function binScript(type: NumericType, op: BinOpName) {
-  return evscript({ name: `bin_${op}`, args: [arg('a', type), arg('b', type)] }, (s) => {
-    const a = s.args.a;
-    const b = s.args.b;
+  return evscript({ name: `bin_${op}`, args: [type, type] }, (s, a, b) => {
     const r =
       op === 'add'
         ? s.add(a, b)
@@ -414,39 +414,30 @@ describe('word ops', () => {
     const script = evscript(
       {
         name: 'words',
-        args: [
-          arg('a', t.uint64),
-          arg('b', t.uint64),
-          arg('x', t.int32),
-          arg('y', t.int32),
-          arg('p', t.bool),
-          arg('q', t.bool),
-          arg('c', t.bytes4),
-          arg('d', t.bytes4),
-        ],
+        args: [t.uint64, t.uint64, t.int32, t.int32, t.bool, t.bool, t.bytes4, t.bytes4],
       },
-      (s) => {
+      (s, a, b, x, y, p, q, c, d) => {
         return s.return({
-          lt: s.lt(s.args.a, s.args.b),
-          gt: s.gt(s.args.a, s.args.b),
-          lte: s.lte(s.args.a, s.args.b),
-          gte: s.gte(s.args.a, s.args.b),
-          eq: s.eq(s.args.a, s.args.b),
-          neq: s.neq(s.args.a, s.args.b),
-          slt: s.args.x.lt(s.args.y), // SLT from the static type
-          sgt: s.args.x.gt(s.args.y),
-          beq: s.eq(s.args.c, s.args.d),
-          and: s.and(s.args.p, s.args.q),
-          or: s.or(s.args.p, s.args.q),
-          not: s.not(s.args.p),
-          band: s.bitAnd(s.args.a, s.args.b),
-          bor: s.bitOr(s.args.a, s.args.b),
-          bxor: s.bitXor(s.args.a, s.args.b),
-          bnot: s.bitNot(s.args.a), // re-masked to 64 bits
-          shl: s.shl(s.args.a, 5n),
-          shr: s.shr(s.args.a, 5n),
-          cnot: s.args.c.bitNot(),
-          cshl: s.args.c.shl(8n),
+          lt: s.lt(a, b),
+          gt: s.gt(a, b),
+          lte: s.lte(a, b),
+          gte: s.gte(a, b),
+          eq: s.eq(a, b),
+          neq: s.neq(a, b),
+          slt: x.lt(y), // SLT from the static type
+          sgt: x.gt(y),
+          beq: s.eq(c, d),
+          and: s.and(p, q),
+          or: s.or(p, q),
+          not: s.not(p),
+          band: s.bitAnd(a, b),
+          bor: s.bitOr(a, b),
+          bxor: s.bitXor(a, b),
+          bnot: s.bitNot(a), // re-masked to 64 bits
+          shl: s.shl(a, 5n),
+          shr: s.shr(a, 5n),
+          cnot: c.bitNot(),
+          cshl: c.shl(8n),
         });
       },
     );
@@ -459,18 +450,15 @@ describe('word ops', () => {
   });
 
   test('conversions: free widening, checked narrowing, reinterprets', async () => {
-    const script = evscript(
-      { name: 'conv', args: [arg('a', t.uint256), arg('x', t.int16)] },
-      (s) => {
-        return s.return({
-          widened: s.args.x.toInt('int128'),
-          narrowed: s.args.a.toUint('uint32'), // Panic 0x11 when a ≥ 2^32
-          addr: s.args.a.asAddress(), // Panic when high 96 bits set
-          asb: s.args.a.asBytes32(),
-          back: s.args.a.asBytes32().asUint256(),
-        });
-      },
-    );
+    const script = evscript({ name: 'conv', args: [t.uint256, t.int16] }, (s, a, x) => {
+      return s.return({
+        widened: x.toInt('int128'),
+        narrowed: a.toUint('uint32'), // Panic 0x11 when a ≥ 2^32
+        addr: a.asAddress(), // Panic when high 96 bits set
+        asb: a.asBytes32(),
+        back: a.asBytes32().asUint256(),
+      });
+    });
     const outcomes = await expectAgreement(script, [
       [1234n, -42n],
       [0n, -(1n << 15n)],
@@ -482,14 +470,11 @@ describe('word ops', () => {
   });
 
   test('select is eager on both sides (words and memrefs)', async () => {
-    const script = evscript(
-      { name: 'sel', args: [arg('c', t.bool), arg('a', t.uint256), arg('b', t.uint256)] },
-      (s) => {
-        const w = s.select(s.args.c, s.args.a, s.args.b);
-        const str = s.select(s.args.c, s.lit(t.string, 'yes'), s.lit(t.string, 'no'));
-        return s.return({ w, str });
-      },
-    );
+    const script = evscript({ name: 'sel', args: [t.bool, t.uint256, t.uint256] }, (s, c, a, b) => {
+      const w = s.select(c, a, b);
+      const str = s.select(c, s.lit(t.string, 'yes'), s.lit(t.string, 'no'));
+      return s.return({ w, str });
+    });
     await expectAgreement(script, [
       [true, 1n, 2n],
       [false, 1n, 2n],
@@ -562,18 +547,15 @@ describe('env ops', () => {
 
 describe('control flow', () => {
   test('if/else with cells (checked mul/div inside branches)', async () => {
-    const script = evscript(
-      { name: 'health', args: [arg('debt', t.uint256), arg('coll', t.uint256)] },
-      (s) => {
-        const ratio = s.let(t.uint256, 0n);
-        s.if(
-          s.args.debt.gt(0n),
-          () => ratio.set(s.args.coll.mul(10_000n).div(s.args.debt)),
-          () => ratio.set(s.lit(t.uint256, 2n ** 255n)),
-        );
-        return s.return({ ratio: ratio.get(), healthy: ratio.get().gte(15_000n) });
-      },
-    );
+    const script = evscript({ name: 'health', args: [t.uint256, t.uint256] }, (s, debt, coll) => {
+      const ratio = s.let(t.uint256, 0n);
+      s.if(
+        debt.gt(0n),
+        () => ratio.set(coll.mul(10_000n).div(debt)),
+        () => ratio.set(s.lit(t.uint256, 2n ** 255n)),
+      );
+      return s.return({ ratio: ratio.get(), healthy: ratio.get().gte(15_000n) });
+    });
     await expectAgreement(script, [
       [0n, 5n],
       [100n, 200n],
@@ -583,11 +565,11 @@ describe('control flow', () => {
   });
 
   test('while with break + continue + cells', async () => {
-    const script = evscript({ name: 'loopy', args: [arg('n', t.uint256)] }, (s) => {
+    const script = evscript({ name: 'loopy', args: [t.uint256] }, (s, n) => {
       const acc = s.let(t.uint256, 0n);
       const i = s.let(t.uint256, 0n);
       s.while(
-        () => i.get().lt(s.args.n),
+        () => i.get().lt(n),
         (loop) => {
           const cur = i.get();
           i.set(cur.add(1n));
@@ -602,11 +584,11 @@ describe('control flow', () => {
   });
 
   test('for over a runtime array arg, collecting into a MutArray', async () => {
-    const script = evscript({ name: 'doubleAll', args: [arg('xs', t.array(t.uint64))] }, (s) => {
-      const n = s.args.xs.length();
+    const script = evscript({ name: 'doubleAll', args: [t.array(t.uint64)] }, (s, xs) => {
+      const n = xs.length();
       const out = s.newArray(t.uint256, n);
       s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-        out.set(i, s.args.xs.at(i).toUint('uint256').mul(2n));
+        out.set(i, xs.at(i).toUint('uint256').mul(2n));
       });
       return s.return({ out: out.expr(), n });
     });
@@ -621,24 +603,16 @@ describe('control flow', () => {
 
 const echoScript = () =>
   evscript(
-    {
-      name: 'echoArgs',
-      args: [
-        arg('s', t.string),
-        arg('b', t.bytes),
-        arg('xs', t.array(t.int32)),
-        arg('i', t.uint256),
-      ],
-    },
-    (sb) =>
+    { name: 'echoArgs', args: [t.string, t.bytes, t.array(t.int32), t.uint256] },
+    (sb, s, b, xs, i) =>
       sb.return({
-        s: sb.args.s,
-        b: sb.args.b,
-        xs: sb.args.xs,
-        slen: sb.args.s.length(),
-        blen: sb.args.b.length(),
-        n: sb.args.xs.length(),
-        at: sb.args.xs.at(sb.args.i), // Panic 0x32 when out of bounds
+        s,
+        b,
+        xs,
+        slen: s.length(),
+        blen: b.length(),
+        n: xs.length(),
+        at: xs.at(i), // Panic 0x32 when out of bounds
       }),
   );
 
@@ -747,18 +721,15 @@ describe('calls', () => {
     // the callee returns abi.encode(bytes(calldata)) — ANY divergence between the
     // interpreter's and the compiler's sub-call calldata (selector, heads, dynamic tail,
     // padding) shows up as a byte mismatch of the final returndata.
-    const script = evscript(
-      { name: 'mixer', args: [arg('v', t.uint256), arg('payload', t.bytes)] },
-      (s) => {
-        const out = s.call({
-          address: ECHO,
-          abi: erc20ishAbi,
-          functionName: 'mix',
-          args: [s.args.v, TOKA, s.args.payload], // Expr + literal + dynamic Expr
-        });
-        return s.return({ out, len: out.length() });
-      },
-    );
+    const script = evscript({ name: 'mixer', args: [t.uint256, t.bytes] }, (s, v, payload) => {
+      const out = s.call({
+        address: ECHO,
+        abi: erc20ishAbi,
+        functionName: 'mix',
+        args: [v, TOKA, payload], // Expr + literal + dynamic Expr
+      });
+      return s.return({ out, len: out.length() });
+    });
     const table: CalleeTable = {
       [ECHO]: {
         kind: 'bytecode',
@@ -780,12 +751,12 @@ describe('calls', () => {
   });
 
   test('plain word call with an arg through the raw echo mock', async () => {
-    const script = evscript({ name: 'echoCall', args: [arg('who', t.address)] }, (s) => {
+    const script = evscript({ name: 'echoCall', args: [t.address] }, (s, who) => {
       const r = s.call({
         address: ECHO,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
-        args: [s.args.who],
+        args: [who],
       });
       return s.return({ r });
     });
@@ -966,21 +937,18 @@ describe('tryCall', () => {
 
 describe('user functions', () => {
   test('fn called twice + multi-result fn (no aliasing); panics propagate through fns', async () => {
-    const script = evscript(
-      { name: 'fns', args: [arg('a', t.uint256), arg('b', t.uint256)] },
-      (s) => {
-        const double = s.fn('double', [arg('x', t.uint256)] as const, (x) => x.add(x));
-        const da = double(s.args.a);
-        const db = double(s.args.b);
-        const pair = s.fn(
-          'pair',
-          [arg('x', t.uint256), arg('y', t.uint256)] as const,
-          (x, y) => [x.add(y), x.mul(y)] as const,
-        );
-        const [sum, prod] = pair(da, db);
-        return s.return({ da, db, sum, prod });
-      },
-    );
+    const script = evscript({ name: 'fns', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const double = s.fn('double', [arg('x', t.uint256)] as const, (x) => x.add(x));
+      const da = double(a);
+      const db = double(b);
+      const pair = s.fn(
+        'pair',
+        [arg('x', t.uint256), arg('y', t.uint256)] as const,
+        (x, y) => [x.add(y), x.mul(y)] as const,
+      );
+      const [sum, prod] = pair(da, db);
+      return s.return({ da, db, sum, prod });
+    });
     await expectAgreement(script, [
       [2n, 3n],
       [0n, 0n],
@@ -990,18 +958,18 @@ describe('user functions', () => {
 
   test('fn body records sub-calls (E5 portfolio shape)', async () => {
     const script = evscript(
-      { name: 'portfolio', args: [arg('owner', t.address), arg('tokens', t.array(t.address))] },
-      (s) => {
+      { name: 'portfolio', args: [t.address, t.array(t.address)] },
+      (s, owner, tokens) => {
         const balOf = s.fn(
           'balOf',
           [arg('token', t.address), arg('who', t.address)] as const,
           (token, who) =>
             s.call({ address: token, abi: erc20ishAbi, functionName: 'balanceOf', args: [who] }),
         );
-        const n = s.args.tokens.length();
+        const n = tokens.length();
         const out = s.newArray(t.uint256, n);
         s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-          out.set(i, balOf(s.args.tokens.at(i), s.args.owner));
+          out.set(i, balOf(tokens.at(i), owner));
         });
         return s.return({ balances: out.expr() });
       },
@@ -1068,10 +1036,10 @@ describe('flagship', () => {
   };
 
   const poolMeta = () =>
-    evscript({ name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] }, (s) => {
-      const token0 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'token0' });
-      const token1 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'token1' });
-      const slot0 = s.call({ address: s.args.pool, abi: erc20ishAbi, functionName: 'slot0' });
+    evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
+      const token0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token0' });
+      const token1 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token1' });
+      const slot0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'slot0' });
       const symbol0 = s.call({ address: token0, abi: erc20ishAbi, functionName: 'symbol' });
       const symbol1 = s.call({ address: token1, abi: erc20ishAbi, functionName: 'symbol' });
       const dec = s.tryCall({ address: token0, abi: erc20ishAbi, functionName: 'decimals' });
@@ -1080,7 +1048,7 @@ describe('flagship', () => {
         address: token0,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
-        args: [s.args.user],
+        args: [user],
       });
       return s.return({ token0, token1, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
     });
@@ -1107,17 +1075,17 @@ describe('flagship', () => {
   for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
     test(`E2 balances — loop + tryCall + MutArray output [${evmVersion}]`, async () => {
       const script = evscript(
-        { name: 'balances', args: [arg('tokens', t.array(t.address)), arg('owner', t.address)] },
-        (s) => {
-          const n = s.args.tokens.length();
+        { name: 'balances', args: [t.array(t.address), t.address] },
+        (s, tokens, owner) => {
+          const n = tokens.length();
           const out = s.newArray(t.uint256, n);
           s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-            const token = s.args.tokens.at(i);
+            const token = tokens.at(i);
             const r = s.tryCall({
               address: token,
               abi: erc20ishAbi,
               functionName: 'balanceOf',
-              args: [s.args.owner],
+              args: [owner],
             });
             out.set(i, s.select(r.success, r.value, 0n));
           });
@@ -1136,6 +1104,1258 @@ describe('flagship', () => {
         data: o?.data ?? '0x',
       });
       expect(decoded).toEqual({ balances: [11n, 0n, 22n] });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12. composite types — tuple decode (struct output) + tuple construct/encode (issue #2)
+// ---------------------------------------------------------------------------
+
+describe('composite types', () => {
+  // a five-field static struct, the Composite.Position shape (mirrors UniV3 positions()).
+  const positionComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+    { name: 'feeGrowthInside0', type: 'uint256' },
+    { name: 'feeGrowthInside1', type: 'uint256' },
+  ] as const;
+  const positionAbi = [
+    {
+      type: 'function',
+      name: 'positions',
+      stateMutability: 'view',
+      inputs: [{ name: 'tokenId', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple', components: positionComponents }],
+    },
+  ] as const satisfies Abi;
+  const Position = t.struct({
+    nonce: t.uint96,
+    operator: t.address,
+    liquidity: t.uint128,
+    feeGrowthInside0: t.uint256,
+    feeGrowthInside1: t.uint256,
+  });
+  const OPERATOR = getAddress('0x00000000000000000000000000000000000000aa');
+  const POSITION = {
+    nonce: 7n,
+    operator: OPERATOR,
+    liquidity: 123_456n,
+    feeGrowthInside0: 1n << 200n,
+    feeGrowthInside1: (1n << 255n) | 9n,
+  } as const;
+  // the mock callee returns viem's canonical tuple encoding — the differential oracle.
+  const positionReturndata = encodeAbiParameters(
+    [{ type: 'tuple', components: positionComponents }],
+    [POSITION],
+  );
+
+  for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+    test(`decode a struct output and return a field [${evmVersion}]`, async () => {
+      // (a) decode the Position output, read a static field after the head/tail decode.
+      const script = evscript({ name: 'getLiq', args: [t.uint256] }, (s, tokenId) => {
+        const pos = s.call({
+          address: POOL,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ liquidity: pos.liquidity.get(), operator: pos.operator.get() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[1n]],
+        { [POOL]: { kind: 'return', data: positionReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'getLiq',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ liquidity: POSITION.liquidity, operator: POSITION.operator });
+    });
+
+    test(`decode a struct output and return the whole tuple [${evmVersion}]`, async () => {
+      // (a′) re-encode the decoded tuple as a tuple OUTPUT — flat-block → ABI head/tail must
+      // round-trip byte-exactly against viem's tuple codec.
+      const script = evscript({ name: 'echoPos', args: [t.uint256] }, (s, tokenId) => {
+        const pos = s.call({
+          address: POOL,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        return s.return({ pos: pos.expr() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[1n]],
+        { [POOL]: { kind: 'return', data: positionReturndata } },
+        evmVersion,
+      );
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'echoPos',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ pos: POSITION });
+    });
+
+    test(`construct a tuple and return it [${evmVersion}]`, async () => {
+      // (b) build a Position from scratch (alloc + zero-fill + MSTORE provided members), mutate
+      // one field, then return the tuple — encode bytes must equal viem's.
+      const script = evscript({ name: 'mkPos', args: [t.address, t.uint128] }, (s, owner, liq) => {
+        const pos = s.tuple(Position, {
+          nonce: 7n,
+          operator: owner,
+          liquidity: liq,
+          feeGrowthInside0: 1n << 200n,
+          // feeGrowthInside1 omitted → zero-filled
+        });
+        pos.feeGrowthInside1.set((1n << 255n) | 9n);
+        return s.return({ pos: pos.expr() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[POSITION.operator, POSITION.liquidity]],
+        {},
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkPos',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ pos: POSITION });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12b. composite regression — adversarial byte-exactness of the tuple codec/interp.
+//
+// Each shape compiles an evs script whose mock callee returndata is viem's canonical tuple
+// encoding (encodeAbiParameters([{type:'tuple',components}],[obj])). `expectAgreement` already
+// asserts interp == in-process EVM runtime BYTE-FOR-BYTE; we then decode the agreed returndata
+// with viem to close the third leg (interp == EVM == viem). Every shape runs across
+// paris/shanghai/cancun. (testing.md §4.2 differential bar; impl-plan §6.)
+// ---------------------------------------------------------------------------
+
+const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
+
+describe('composite regression', () => {
+  // (1) ALL-STATIC struct — slot0Struct shape: uint160,int24,uint16,uint8,bool. A static tuple
+  //     inlines headBytes(components) head words (no offset). Decode + return several fields.
+  const slot0Components = [
+    { name: 'sqrtPriceX96', type: 'uint160' },
+    { name: 'tick', type: 'int24' },
+    { name: 'observationIndex', type: 'uint16' },
+    { name: 'feeProtocol', type: 'uint8' },
+    { name: 'unlocked', type: 'bool' },
+  ] as const;
+  const slot0Abi = [
+    {
+      type: 'function',
+      name: 'slot0Struct',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: slot0Components }],
+    },
+  ] as const satisfies Abi;
+  const SLOT0 = {
+    sqrtPriceX96: 1n << 96n,
+    tick: -887272,
+    observationIndex: 3,
+    feeProtocol: 4,
+    unlocked: true,
+  } as const;
+  const slot0Returndata = encodeAbiParameters(
+    [{ type: 'tuple', components: slot0Components }],
+    [SLOT0],
+  );
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(1) all-static struct: decode + return several fields [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdSlot0', args: [] }, (s) => {
+        const slot0 = s.call({ address: POOL, abi: slot0Abi, functionName: 'slot0Struct' });
+        return s.return({
+          price: slot0.sqrtPriceX96.get(),
+          tick: slot0.tick.get(),
+          obs: slot0.observationIndex.get(),
+          locked: s.not(slot0.unlocked.get()),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: slot0Returndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdSlot0',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        price: SLOT0.sqrtPriceX96,
+        tick: SLOT0.tick,
+        obs: SLOT0.observationIndex,
+        locked: !SLOT0.unlocked,
+      });
+    });
+  }
+
+  // (2) struct with a DYNAMIC member — WithBytes{uint256 id, bytes data}. The tuple itself is
+  //     ABI-dynamic; decode aliases the bytes member into the snapshot. Return both fields.
+  const withBytesComponents = [
+    { name: 'id', type: 'uint256' },
+    { name: 'data', type: 'bytes' },
+  ] as const;
+  const withBytesAbi = [
+    {
+      type: 'function',
+      name: 'getWithBytes',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: withBytesComponents }],
+    },
+  ] as const satisfies Abi;
+  const WITH_BYTES = { id: 0xc0ffeen, data: '0x6576732100' } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(2) struct with a dynamic member: return both fields [${evmVersion}]`, async () => {
+      const withBytesReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: withBytesComponents }],
+        [WITH_BYTES],
+      );
+      const script = evscript({ name: 'rdWithBytes', args: [] }, (s) => {
+        const wb = s.call({ address: POOL, abi: withBytesAbi, functionName: 'getWithBytes' });
+        const data = wb.data.get();
+        return s.return({ id: wb.id.get(), data, len: data.length() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: withBytesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ id: WITH_BYTES.id, data: WITH_BYTES.data, len: 5n });
+    });
+  }
+
+  // (3) NESTED struct — Outer{Inner{bool a, bytes32 b}, uint256 x}. All-static nested tuple:
+  //     the inner tuple inlines into the outer head. Read a DEEP field (outer.inner.b).
+  const innerComponents = [
+    { name: 'a', type: 'bool' },
+    { name: 'b', type: 'bytes32' },
+  ] as const;
+  const outerComponents = [
+    { name: 'inner', type: 'tuple', components: innerComponents },
+    { name: 'x', type: 'uint256' },
+  ] as const;
+  const outerAbi = [
+    {
+      type: 'function',
+      name: 'getOuter',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: outerComponents }],
+    },
+  ] as const satisfies Abi;
+  const INNER_B = `0x${'5e'.repeat(32)}` as const;
+  const OUTER = { inner: { a: true, b: INNER_B }, x: 0xdeadbeefn } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(3) nested struct: read a deep field [${evmVersion}]`, async () => {
+      const outerReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: outerComponents }],
+        [OUTER],
+      );
+      const script = evscript({ name: 'rdOuter', args: [] }, (s) => {
+        const outer = s.call({ address: POOL, abi: outerAbi, functionName: 'getOuter' });
+        const inner = outer.inner.get(); // follows the pointer to the inner Tuple handle
+        return s.return({ a: inner.a.get(), b: inner.b.get(), x: outer.x.get() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: outerReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdOuter',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ a: OUTER.inner.a, b: OUTER.inner.b, x: OUTER.x });
+    });
+  }
+
+  // (4) CONSTRUCT a tuple via s.tuple with some fields omitted (default-zero) and some set, mutate
+  //     one with .set(), then return it. Bytes must equal viem encode of the expected object.
+  const WB_TYPE = t.struct({ id: t.uint256, data: t.bytes });
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(4) construct via s.tuple (omitted→zero) + .set(), return it [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'mkWithBytes', args: [t.bytes] }, (s, payload) => {
+        const wb = s.tuple(WB_TYPE, {
+          // id omitted → zero-filled
+          data: payload,
+        });
+        wb.id.set(0xc0ffeen);
+        return s.return({ wb: wb.expr() });
+      });
+      const [o] = await expectAgreement(script, [[WITH_BYTES.data]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ wb: { id: WITH_BYTES.id, data: WITH_BYTES.data } });
+    });
+  }
+
+  // (5) ENCODE a struct as a CALL ARGUMENT — quote(QuoteParams). Assert the sub-call calldata
+  //     bytes == viem encodeFunctionData('quote',[paramsObj]). A mock callee records calldata by
+  //     echoing it back ABI-wrapped as bytes; the script returns it verbatim.
+  const quoteParamsComponents = [
+    { name: 'tokenIn', type: 'address' },
+    { name: 'tokenOut', type: 'address' },
+    { name: 'fee', type: 'uint24' },
+    { name: 'amountIn', type: 'uint256' },
+  ] as const;
+  const quoteAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'view',
+      inputs: [{ name: 'p', type: 'tuple', components: quoteParamsComponents }],
+      outputs: [{ name: '', type: 'bytes' }],
+    },
+  ] as const satisfies Abi;
+  const QuoteParams = t.struct({
+    tokenIn: t.address,
+    tokenOut: t.address,
+    fee: t.uint24,
+    amountIn: t.uint256,
+  });
+  const QPARAMS = {
+    tokenIn: getAddress(TOKA),
+    tokenOut: getAddress(TOKB),
+    fee: 3000,
+    amountIn: 1_000_000_000_000_000_000n,
+  } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(5) encode struct as a call ARGUMENT: calldata == viem [${evmVersion}]`, async () => {
+      const script = evscript(
+        { name: 'callQuote', args: [t.address, t.uint256] },
+        (s, tin, amt) => {
+          const params = s.tuple(QuoteParams, {
+            tokenIn: tin,
+            tokenOut: TOKB,
+            fee: 3000n,
+            amountIn: amt,
+          });
+          const out = s.call({
+            address: ECHO,
+            abi: quoteAbi,
+            functionName: 'quote',
+            args: [params],
+          });
+          return s.return({ calldata: out });
+        },
+      );
+      const [o] = await expectAgreement(
+        script,
+        [[QPARAMS.tokenIn, QPARAMS.amountIn]],
+        {
+          [ECHO]: {
+            kind: 'bytecode',
+            runtime: abiEchoMock(),
+            respond: (calldata) => ({
+              success: true,
+              data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+            }),
+          },
+        },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'callQuote',
+        data: o?.data ?? '0x',
+      });
+      // the recorded sub-call calldata must be byte-identical to viem's encoding of quote(params)
+      const expectedCalldata = encodeFunctionData({
+        abi: quoteAbi,
+        functionName: 'quote',
+        args: [QPARAMS],
+      });
+      expect(decoded).toEqual({ calldata: expectedCalldata });
+    });
+  }
+
+  // (6) a tuple whose members MIX static + dynamic so the head has both inline words AND offsets.
+  //     Mixed{uint256 a, bytes b, address c, uint256[] d}: head = [word a][off b][word c][off d].
+  //     Decode and return every field — exercises a non-trivial head/tail interleave on decode.
+  const mixedComponents = [
+    { name: 'a', type: 'uint256' },
+    { name: 'b', type: 'bytes' },
+    { name: 'c', type: 'address' },
+    { name: 'd', type: 'uint256[]' },
+  ] as const;
+  const mixedAbi = [
+    {
+      type: 'function',
+      name: 'getMixed',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: mixedComponents }],
+    },
+  ] as const satisfies Abi;
+  const MIXED = {
+    a: (1n << 200n) | 7n,
+    b: `0x${'ab'.repeat(40)}`,
+    c: getAddress(USER),
+    d: [11n, 22n, 33n],
+  } as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(6) mixed static+dynamic members (head has words and offsets) [${evmVersion}]`, async () => {
+      const mixedReturndata = encodeAbiParameters(
+        [{ type: 'tuple', components: mixedComponents }],
+        [MIXED],
+      );
+      const script = evscript({ name: 'rdMixed', args: [] }, (s) => {
+        const m = s.call({ address: POOL, abi: mixedAbi, functionName: 'getMixed' });
+        const b = m.b.get();
+        const d = m.d.get();
+        return s.return({
+          a: m.a.get(),
+          b,
+          c: m.c.get(),
+          d,
+          blen: b.length(),
+          dlen: d.length(),
+          d1: d.at(1n),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: mixedReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdMixed',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        a: MIXED.a,
+        b: MIXED.b,
+        c: MIXED.c,
+        d: MIXED.d,
+        blen: BigInt((MIXED.b.length - 2) / 2),
+        dlen: BigInt(MIXED.d.length),
+        d1: MIXED.d[1],
+      });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12c. composite arrays — READ PATH (decode) byte-exactness (§12 milestone 2).
+//
+// Each shape: s.call a composite-element array, read len + an element field (index/.at + .field),
+// and return a DERIVED WORD (no composite-array encode — that is the next milestone). The mock
+// callee returndata is viem's canonical encoding; `expectAgreement` asserts interp == in-process
+// EVM runtime byte-for-byte, closing interp == EVM; the interp itself is proven == viem. Every
+// shape runs across paris/shanghai/cancun. (impl-plan §12.6/§12.10.)
+// ---------------------------------------------------------------------------
+
+describe('composite arrays (read path)', () => {
+  // The differential harness drives loosely-typed builder scripts (the precise abitype inference of
+  // composite-array call outputs is covered by the type tests); this loose handle shape lets the
+  // read-path builder calls (`.length()`/`.at()`/`.field.get()`) type-check in the test corpus.
+  // Every terminal read resolves to `Expr` (a returnable value); intermediate handles are the loose
+  // array/tuple/bytes shapes the runtime actually produces.
+  interface FieldLike {
+    get(): Expr & ArrLike & { length(): Expr };
+  }
+  interface ArrLike {
+    length(): Expr;
+    at(i: bigint): Expr & ArrLike;
+  }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose builder handle for the corpus
+  const asArr = (v: unknown): ArrLike => v as ArrLike;
+  /** A named tuple field of an element handle (Tuple handles expose fields as own properties). */
+  const fld = (el: unknown, name: string): FieldLike =>
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime Tuple handle field access
+    (el as Record<string, FieldLike>)[name]!;
+
+  // (A) STATIC-element tuple array — Position[] (the static Position struct, no offsets).
+  const posComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+  ] as const;
+  const positionsBatchAbi = [
+    {
+      type: 'function',
+      name: 'positionsBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: posComponents }],
+    },
+  ] as const satisfies Abi;
+  const POSITIONS = [
+    {
+      nonce: 1n,
+      operator: getAddress('0x00000000000000000000000000000000000000a1'),
+      liquidity: 111n,
+    },
+    {
+      nonce: 2n,
+      operator: getAddress('0x00000000000000000000000000000000000000a2'),
+      liquidity: 222n,
+    },
+    {
+      nonce: 3n,
+      operator: getAddress('0x00000000000000000000000000000000000000a3'),
+      liquidity: 333n,
+    },
+  ] as const;
+  const positionsReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: posComponents }],
+    [POSITIONS],
+  );
+
+  // (B) DYNAMIC-member tuple array — WithBytes[] (each element a dynamic tuple: uint256 + bytes).
+  const withBytesComponents = [
+    { name: 'id', type: 'uint256' },
+    { name: 'blob', type: 'bytes' },
+  ] as const;
+  const withBytesBatchAbi = [
+    {
+      type: 'function',
+      name: 'withBytesBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: withBytesComponents }],
+    },
+  ] as const satisfies Abi;
+  const WITH_BYTES = [
+    { id: 10n, blob: '0xdeadbeef' },
+    { id: 20n, blob: `0x${'cd'.repeat(40)}` },
+    { id: 30n, blob: '0x' },
+  ] as const;
+  const withBytesReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: withBytesComponents }],
+    [WITH_BYTES],
+  );
+
+  // (C) ragged uint256[][] (nested word array).
+  const matrixAbi = [
+    {
+      type: 'function',
+      name: 'matrix',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'uint256[][]' }],
+    },
+  ] as const satisfies Abi;
+  const MATRIX = [[1n], [2n, 3n], [], [4n, 5n, 6n, 7n]] as const;
+  const matrixReturndata = encodeAbiParameters([{ type: 'uint256[][]' }], [MATRIX]);
+
+  // (D) string[].
+  const namesAbi = [
+    {
+      type: 'function',
+      name: 'names',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'string[]' }],
+    },
+  ] as const satisfies Abi;
+  const NAMES = ['alpha', '', 'a-much-longer-string-spanning-two-words!!', 'z'] as const;
+  const namesReturndata = encodeAbiParameters([{ type: 'string[]' }], [NAMES]);
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(A) Position[] (static-elem): len + element field [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdPositions', args: [t.uint256] }, (s, n) => {
+        const ps = asArr(
+          s.call({
+            address: POOL,
+            abi: positionsBatchAbi,
+            functionName: 'positionsBatch',
+            args: [n],
+          }),
+        );
+        // ps.at(1) → a Tuple handle (element); .liquidity.get() → a word.
+        const p1 = ps.at(1n);
+        return s.return({
+          len: ps.length(),
+          liq1: fld(p1, 'liquidity').get(),
+          nonce1: fld(p1, 'nonce').get(),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: positionsReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdPositions',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        len: 3n,
+        liq1: POSITIONS[1].liquidity,
+        nonce1: POSITIONS[1].nonce,
+      });
+    });
+
+    test(`(B) WithBytes[] (dynamic-member elem): len + blob length [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdWithBytes', args: [t.uint256] }, (s, n) => {
+        const xs = asArr(
+          s.call({
+            address: POOL,
+            abi: withBytesBatchAbi,
+            functionName: 'withBytesBatch',
+            args: [n],
+          }),
+        );
+        const e1 = xs.at(1n);
+        return s.return({
+          len: xs.length(),
+          id1: fld(e1, 'id').get(),
+          blob1len: fld(e1, 'blob').get().length(),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: withBytesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        len: 3n,
+        id1: WITH_BYTES[1].id,
+        blob1len: BigInt((WITH_BYTES[1].blob.length - 2) / 2),
+      });
+    });
+
+    test(`(C) uint256[][] (ragged): outer len + a nested element [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdMatrix', args: [t.uint256] }, (s, n) => {
+        const m = asArr(
+          s.call({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] }),
+        );
+        // m.at(3) → an inner uint256[] Expr; .length() and .at(2) read into it.
+        const row3 = m.at(3n);
+        return s.return({
+          rows: m.length(),
+          row3len: row3.length(),
+          row3at2: row3.at(2n),
+          row1at0: m.at(1n).at(0n),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: matrixReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        rows: BigInt(MATRIX.length),
+        row3len: BigInt(MATRIX[3].length),
+        row3at2: MATRIX[3][2],
+        row1at0: MATRIX[1][0],
+      });
+    });
+
+    test(`(D) string[]: outer len + an element length [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdNames', args: [t.uint256] }, (s, n) => {
+        const ns = asArr(
+          s.call({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] }),
+        );
+        return s.return({
+          count: ns.length(),
+          name2len: ns.at(2n).length(),
+          name0len: ns.at(0n).length(),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: namesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdNames',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        count: BigInt(NAMES.length),
+        name2len: BigInt(new TextEncoder().encode(NAMES[2]).length),
+        name0len: BigInt(new TextEncoder().encode(NAMES[0]).length),
+      });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12d. composite arrays — RETURN PATH (encode) byte-exactness (§12 milestone 3).
+//
+// Each shape: s.call a composite-element array and s.return THE WHOLE ARRAY. `expectAgreement`
+// asserts interp == compiled EVM byte-for-byte (the interp's `encodeArrayTail` is proven == viem),
+// and each case additionally decodes the returned bytes through viem `decodeAbiParameters` and
+// asserts a round-trip to the original value. Every shape runs across paris/shanghai/cancun (the
+// pre-cancun `@memcpy` height contract is the load-bearing risk). (impl-plan §12.2/§12.7/§12.10.)
+// ---------------------------------------------------------------------------
+
+/** Loose returnable handle: a composite-array call output is an `Expr` at runtime (precise
+ *  inference is pinned by the type tests). Shared by the composite-array return-path corpus. */
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose returnable corpus handle
+const asExpr = (v: unknown): Expr => v as Expr;
+
+describe('composite arrays (return path)', () => {
+  const posComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+  ] as const;
+  const positionsBatchAbi = [
+    {
+      type: 'function',
+      name: 'positionsBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: posComponents }],
+    },
+  ] as const satisfies Abi;
+  const POSITIONS = [
+    {
+      nonce: 1n,
+      operator: getAddress('0x00000000000000000000000000000000000000a1'),
+      liquidity: 111n,
+    },
+    {
+      nonce: 2n,
+      operator: getAddress('0x00000000000000000000000000000000000000a2'),
+      liquidity: 222n,
+    },
+    {
+      nonce: 3n,
+      operator: getAddress('0x00000000000000000000000000000000000000a3'),
+      liquidity: 333n,
+    },
+  ] as const;
+  const positionsReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: posComponents }],
+    [POSITIONS],
+  );
+
+  const withBytesComponents = [
+    { name: 'id', type: 'uint256' },
+    { name: 'blob', type: 'bytes' },
+  ] as const;
+  const withBytesBatchAbi = [
+    {
+      type: 'function',
+      name: 'withBytesBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: withBytesComponents }],
+    },
+  ] as const satisfies Abi;
+  const WITH_BYTES = [
+    { id: 10n, blob: '0xdeadbeef' },
+    { id: 20n, blob: `0x${'cd'.repeat(40)}` },
+    { id: 30n, blob: '0x' },
+  ] as const;
+  const withBytesReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: withBytesComponents }],
+    [WITH_BYTES],
+  );
+
+  const matrixAbi = [
+    {
+      type: 'function',
+      name: 'matrix',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'uint256[][]' }],
+    },
+  ] as const satisfies Abi;
+  const MATRIX = [[1n], [2n, 3n], [], [4n, 5n, 6n, 7n]] as const;
+  const matrixReturndata = encodeAbiParameters([{ type: 'uint256[][]' }], [MATRIX]);
+
+  const namesAbi = [
+    {
+      type: 'function',
+      name: 'names',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'string[]' }],
+    },
+  ] as const satisfies Abi;
+  const NAMES = ['alpha', '', 'a-much-longer-string-spanning-two-words!!', 'z'] as const;
+  const namesReturndata = encodeAbiParameters([{ type: 'string[]' }], [NAMES]);
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`(A) return whole Position[] (static-elem) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retPositions', args: [t.uint256] }, (s, n) => {
+        const ps = s.call({
+          address: POOL,
+          abi: positionsBatchAbi,
+          functionName: 'positionsBatch',
+          args: [n],
+        });
+        return s.return({ ps: asExpr(ps) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: positionsReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retPositions',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ps: POSITIONS });
+    });
+
+    test(`(B) return whole WithBytes[] (dynamic-member elem) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retWithBytes', args: [t.uint256] }, (s, n) => {
+        const xs = s.call({
+          address: POOL,
+          abi: withBytesBatchAbi,
+          functionName: 'withBytesBatch',
+          args: [n],
+        });
+        return s.return({ xs: asExpr(xs) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[3n]],
+        { [POOL]: { kind: 'return', data: withBytesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retWithBytes',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ xs: WITH_BYTES });
+    });
+
+    test(`(C) return whole uint256[][] (ragged) [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retMatrix', args: [t.uint256] }, (s, n) => {
+        const m = s.call({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] });
+        return s.return({ m: asExpr(m) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: matrixReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ m: MATRIX });
+    });
+
+    test(`(D) return whole string[] [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'retNames', args: [t.uint256] }, (s, n) => {
+        const ns = s.call({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] });
+        return s.return({ ns: asExpr(ns) });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[4n]],
+        { [POOL]: { kind: 'return', data: namesReturndata } },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'retNames',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ns: NAMES });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 12e. composite arrays — CALL-ARG encode + CONSTRUCT + LITERAL (§12 milestone 4).
+//
+// (a) CALL-ARG: forward a decoded/constructed composite array as a sub-call ARG; assert the recorded
+//     calldata is byte-identical to viem `encodeFunctionData` (interp == compiled EVM is the
+//     `expectAgreement` gate; the calldata == viem check pins the wire bytes).
+// (b) CONSTRUCT: `s.newArray` a tuple[]/uint256[][]/string[], `arrset` each element (Tuple handles /
+//     literals), RETURN the whole array; assert byte-exact vs viem `encodeAbiParameters`.
+// (c) LITERAL: a composite-array literal passed as an arg / returned.
+// Every shape runs across paris/shanghai/cancun (the scratch-frame `@memcpy` height contract is the
+// load-bearing risk for the dynamic-element encode loop). (impl-plan §12.2/§12.7/§12.8/§12.10.)
+// ---------------------------------------------------------------------------
+
+describe('composite arrays (call-arg encode + construct + literal)', () => {
+  // loose builder handles for the corpus (precise inference is pinned by the type tests); the
+  // returnable `asExpr` is the module-level helper shared with the return-path corpus.
+  interface MutLike {
+    set(i: bigint, v: unknown): void;
+    expr(): Expr;
+  }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- loose MutArray handle for the corpus
+  const asMut = (v: unknown): MutLike => v as MutLike;
+
+  const posComponents = [
+    { name: 'nonce', type: 'uint96' },
+    { name: 'operator', type: 'address' },
+    { name: 'liquidity', type: 'uint128' },
+  ] as const;
+  const Position = t.struct({
+    nonce: t.uint96,
+    operator: t.address,
+    liquidity: t.uint128,
+  });
+  const POSITIONS = [
+    {
+      nonce: 1n,
+      operator: getAddress('0x00000000000000000000000000000000000000a1'),
+      liquidity: 111n,
+    },
+    {
+      nonce: 2n,
+      operator: getAddress('0x00000000000000000000000000000000000000a2'),
+      liquidity: 222n,
+    },
+    {
+      nonce: 7n,
+      operator: getAddress('0x00000000000000000000000000000000000000a7'),
+      liquidity: 700n,
+    },
+  ] as const;
+  const positionsReturndata = encodeAbiParameters(
+    [{ type: 'tuple[]', components: posComponents }],
+    [POSITIONS],
+  );
+
+  // positionsBatch (source of a decoded tuple[]) + sumLiquidity (a tuple[]-taking view fn).
+  const poolAbi = [
+    {
+      type: 'function',
+      name: 'positionsBatch',
+      stateMutability: 'view',
+      inputs: [{ name: 'n', type: 'uint256' }],
+      outputs: [{ name: '', type: 'tuple[]', components: posComponents }],
+    },
+    {
+      type: 'function',
+      name: 'sumLiquidity',
+      stateMutability: 'view',
+      inputs: [{ name: 'ps', type: 'tuple[]', components: posComponents }],
+      outputs: [{ name: '', type: 'uint256' }],
+    },
+  ] as const satisfies Abi;
+
+  // a `sink(tuple[] ps) returns (bytes)` echo: lets the script return the recorded sub-call calldata
+  // (bytes), so interp's `respond` and the EVM `runtime` produce identical results (the §12.7
+  // call-arg encode is what we assert byte-exact vs viem). Numeric `sumLiquidity` semantics are
+  // covered by the real-solc integration test.
+  const sinkPositionsAbi = [
+    {
+      type: 'function',
+      name: 'sink',
+      stateMutability: 'view',
+      inputs: [{ name: 'ps', type: 'tuple[]', components: posComponents }],
+      outputs: [{ name: '', type: 'bytes' }],
+    },
+  ] as const satisfies Abi;
+
+  // echo-mock-taking ABIs for the word-array / string-array call args.
+  const sinkMatrixAbi = [
+    {
+      type: 'function',
+      name: 'sink',
+      stateMutability: 'view',
+      inputs: [{ name: 'm', type: 'uint256[][]' }],
+      outputs: [{ name: '', type: 'bytes' }],
+    },
+  ] as const satisfies Abi;
+  const sinkNamesAbi = [
+    {
+      type: 'function',
+      name: 'sink',
+      stateMutability: 'view',
+      inputs: [{ name: 'ns', type: 'string[]' }],
+      outputs: [{ name: '', type: 'bytes' }],
+    },
+  ] as const satisfies Abi;
+
+  const MATRIX = [[1n], [2n, 3n], [], [4n, 5n, 6n, 7n]] as const;
+  const NAMES = ['alpha', '', 'a-much-longer-string-spanning-two-words!!', 'z'] as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    // (a1) CALL-ARG: forward a DECODED Position[] into sink(tuple[] ps); the echo callee returns the
+    //      recorded calldata as bytes, which we assert == viem encodeFunctionData(sink, [POSITIONS]).
+    test(`(a1) forward decoded Position[] as a call arg → calldata == viem [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'fwdPositions' }, (s) => {
+        const ps = s.call({
+          address: POOL,
+          abi: poolAbi,
+          functionName: 'positionsBatch',
+          args: [3n],
+        });
+        const echoed = s.call({
+          address: SINK,
+          abi: sinkPositionsAbi,
+          functionName: 'sink',
+          args: [ps],
+        });
+        return s.return({ echoed: asExpr(echoed) });
+      });
+      const expectedCalldata = encodeFunctionData({
+        abi: sinkPositionsAbi,
+        functionName: 'sink',
+        args: [POSITIONS],
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        {
+          [POOL]: { kind: 'return', data: positionsReturndata },
+          [SINK]: {
+            kind: 'bytecode',
+            runtime: abiEchoMock(),
+            respond: (calldata) => ({
+              success: true,
+              data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+            }),
+          },
+        },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'fwdPositions',
+        data: o?.data ?? '0x',
+      });
+      // the recorded sub-call calldata is byte-identical to viem's sink(POSITIONS) encoding.
+      expect(decoded).toEqual({ echoed: expectedCalldata });
+    });
+
+    // (a2) CALL-ARG: forward a ragged uint256[][] literal to an echo sink; calldata == viem.
+    test(`(a2) forward a uint256[][] literal as a call arg → calldata == viem [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'fwdMatrix' }, (s) => {
+        const echoed = s.call({
+          address: SINK,
+          abi: sinkMatrixAbi,
+          functionName: 'sink',
+          args: [MATRIX],
+        });
+        return s.return({ echoed: asExpr(echoed) });
+      });
+      const expectedCalldata = encodeFunctionData({
+        abi: sinkMatrixAbi,
+        functionName: 'sink',
+        args: [MATRIX],
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        {
+          [SINK]: {
+            kind: 'bytecode',
+            runtime: abiEchoMock(),
+            respond: (calldata) => ({
+              success: true,
+              data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+            }),
+          },
+        },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'fwdMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ echoed: expectedCalldata });
+    });
+
+    // (a3) CALL-ARG: forward a string[] literal to an echo sink; calldata == viem.
+    test(`(a3) forward a string[] literal as a call arg → calldata == viem [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'fwdNames' }, (s) => {
+        const echoed = s.call({
+          address: SINK,
+          abi: sinkNamesAbi,
+          functionName: 'sink',
+          args: [NAMES],
+        });
+        return s.return({ echoed: asExpr(echoed) });
+      });
+      const expectedCalldata = encodeFunctionData({
+        abi: sinkNamesAbi,
+        functionName: 'sink',
+        args: [NAMES],
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        {
+          [SINK]: {
+            kind: 'bytecode',
+            runtime: abiEchoMock(),
+            respond: (calldata) => ({
+              success: true,
+              data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+            }),
+          },
+        },
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'fwdNames',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ echoed: expectedCalldata });
+    });
+
+    // (b1) CONSTRUCT: s.newArray a tuple[], arrset Tuple handles, RETURN it → byte-exact vs viem.
+    test(`(b1) construct a Position[] (s.newArray + arrset Tuple handles), return → byte-exact [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'mkPositions' }, (s) => {
+        const arr = asMut(s.newArray(Position, BigInt(POSITIONS.length)));
+        POSITIONS.forEach((p, i) => {
+          const tup = s.tuple(Position, {
+            nonce: p.nonce,
+            operator: p.operator,
+            liquidity: p.liquidity,
+          });
+          arr.set(BigInt(i), tup);
+        });
+        return s.return({ ps: arr.expr() });
+      });
+      const [o] = await expectAgreement(script, [[]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkPositions',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ps: POSITIONS });
+      // and the returned bytes are byte-identical to viem's encoding of the script-return tuple (the
+      // return record is encoded as a single top-level tuple `(tuple[] ps)` — §8.2 — so the wire form
+      // is `[tuple offset 0x20][ps offset 0x20][tuple[] payload]`).
+      expect(o?.data).toEqual(
+        encodeAbiParameters(
+          [
+            {
+              type: 'tuple',
+              components: [{ name: 'ps', type: 'tuple[]', components: posComponents }],
+            },
+          ],
+          [{ ps: POSITIONS }],
+        ),
+      );
+    });
+
+    // (b2) CONSTRUCT: s.newArray a uint256[][], arrset inner-array literals, return → byte-exact.
+    test(`(b2) construct a uint256[][] (arrset inner-array literals), return → byte-exact [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'mkMatrix' }, (s) => {
+        const arr = asMut(s.newArray('uint256[]', BigInt(MATRIX.length)));
+        MATRIX.forEach((row, i) => arr.set(BigInt(i), row));
+        return s.return({ m: arr.expr() });
+      });
+      const [o] = await expectAgreement(script, [[]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ m: MATRIX });
+    });
+
+    // (b3) CONSTRUCT: s.newArray a string[], arrset string literals, return → byte-exact.
+    test(`(b3) construct a string[] (arrset string literals), return → byte-exact [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'mkNames' }, (s) => {
+        const arr = asMut(s.newArray('string', BigInt(NAMES.length)));
+        NAMES.forEach((nm, i) => arr.set(BigInt(i), nm));
+        return s.return({ ns: arr.expr() });
+      });
+      const [o] = await expectAgreement(script, [[]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'mkNames',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ ns: NAMES });
+    });
+
+    // (c) LITERAL: a composite-array LITERAL (uint256[][]) built at record time and returned directly
+    //     → byte-exact vs viem.
+    test(`(c) return a uint256[][] composite-array LITERAL → byte-exact [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'litMatrix' }, (s) => {
+        const lit = s.lit('uint256[][]', MATRIX);
+        return s.return({ m: asExpr(lit) });
+      });
+      const [o] = await expectAgreement(script, [[]], {}, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'litMatrix',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ m: MATRIX });
     });
   }
 });

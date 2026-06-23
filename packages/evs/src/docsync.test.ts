@@ -19,7 +19,7 @@ import { describe, expect, test } from 'vitest';
 
 import { evscript } from './builder/script.js';
 import { compile } from './compile.js';
-import { arg, t } from './core/types.js';
+import { t } from './core/types.js';
 
 const DOC_PATH = fileURLToPath(new URL('../../../docs/design/architecture.md', import.meta.url));
 
@@ -39,25 +39,23 @@ const erc20SymbolAbi = [
 
 /** §11 — minimal dispatcher script: `echo(uint256)`. */
 function echoListing(): string {
-  const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
-    s.return({ x: s.args.x }),
-  );
+  const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
   return compile(echo).disassemble().format({ locs: false });
 }
 
 /** §15.1 — checked ADD (uint256): `const c = a.add(b)`. */
 function adduListing(): string {
-  const addu = evscript({ name: 'addu', args: [arg('a', t.uint256), arg('b', t.uint256)] }, (s) =>
-    s.return({ c: s.args.a.add(s.args.b) }),
+  const addu = evscript({ name: 'addu', args: [t.uint256, t.uint256] }, (s, a, b) =>
+    s.return({ c: a.add(b) }),
   );
   return compile(addu).disassemble().format({ locs: false });
 }
 
 /** §15.2 — STATICCALL `symbol()` → dynamic string. */
 function symListing(): string {
-  const sym = evscript({ name: 'sym', args: [arg('token0', t.address)] }, (s) => {
+  const sym = evscript({ name: 'sym', args: [t.address] }, (s, token0) => {
     const symbol0 = s.call({
-      address: s.args.token0,
+      address: token0,
       abi: erc20SymbolAbi,
       functionName: 'symbol',
     });
@@ -68,11 +66,11 @@ function symListing(): string {
 
 /** §15.3 — while loop with `s.let` cells: sum 0..n−1 (the documented snippet verbatim). */
 function sumListing(): string {
-  const sum = evscript({ name: 'sum', args: [arg('n', t.uint256)] }, (s) => {
+  const sum = evscript({ name: 'sum', args: [t.uint256] }, (s, n) => {
     const total = s.let(t.uint256, 0n);
     const i = s.let(t.uint256, 0n);
     s.while(
-      () => i.get().lt(s.args.n),
+      () => i.get().lt(n),
       () => {
         total.set(total.get().add(i.get()));
         i.set(i.get().add(1n));

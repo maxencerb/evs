@@ -15,6 +15,7 @@
  *   sourceMap segment coverage; uncalled fns dropped.
  */
 
+import type { AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vitest';
 
@@ -26,12 +27,19 @@ import {
   reverter,
   word,
 } from '../../test/harness/fixtures.js';
-import { selectorOf } from '../abi/artifact.js';
+import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble, type LabelId } from '../asm/assembler.js';
 import { disassemble } from '../asm/disasm.js';
 import type { EvmVersion } from '../asm/ops.js';
 import type { SourceLoc } from '../core/errors.js';
-import { isEvsType, isWordType, type EvsType, type Hex, type WordType } from '../core/types.js';
+import {
+  isEvsType,
+  isWordType,
+  typeToAbiParam,
+  type EvsType,
+  type Hex,
+  type WordType,
+} from '../core/types.js';
 import type {
   BinOp,
   CellId,
@@ -133,8 +141,8 @@ class IrB {
 
   index(arr: ValueId, i: ValueId): ValueId {
     const t = this.typeOf(arr);
-    const elem = t.endsWith('[]') ? t.slice(0, -2) : '';
-    if (!isWordType(elem)) throw new Error(`IrB: index over non-array '${t}'`);
+    const elem = typeof t === 'string' && t.endsWith('[]') ? t.slice(0, -2) : '';
+    if (!isWordType(elem)) throw new Error(`IrB: index over non-array '${JSON.stringify(t)}'`);
     const out = this.val(elem);
     this.emit({ k: 'index', arr, i, out });
     return out;
@@ -276,9 +284,9 @@ function compileIr(
 
 function calldataFor(ir: ScriptIr, args: readonly unknown[]): Hex {
   const types = ir.args.map((a) => a.type);
-  const selector = selectorOf(ir.name, types);
+  const selector = selectorOf(ir.name, types.map(canonicalTypeSignature));
   if (types.length === 0) return selector;
-  const params: { type: string }[] = types.map((type) => ({ type }));
+  const params: AbiParameter[] = types.map((ty, i) => typeToAbiParam(`arg${i}`, ty));
   return concatHex(selector, encodeAbiParameters(params, args));
 }
 
@@ -307,9 +315,9 @@ function fnAbi(
 ): PlainAbiFunction {
   return {
     name,
-    selector: selectorOf(name, inputs),
-    inputs: inputs.map((type, i) => ({ name: `i${i}`, type })),
-    outputs: outputs.map((type, i) => ({ name: `o${i}`, type })),
+    selector: selectorOf(name, inputs.map(canonicalTypeSignature)),
+    inputs: inputs.map((type, i) => typeToAbiParam(`i${i}`, type)),
+    outputs: outputs.map((type, i) => typeToAbiParam(`o${i}`, type)),
   };
 }
 
@@ -757,10 +765,10 @@ describe('dispatcher', () => {
       0x0035  5f          PUSH0
       0x0036  52          MSTORE
       0x0037  6080        PUSH1 0x80
-      0x0039  51          MLOAD  ; head x
+      0x0039  51          MLOAD
       0x003a  6040        PUSH1 0x40
       0x003c  51          MLOAD
-      0x003d  52          MSTORE
+      0x003d  52          MSTORE  ; head x
       0x003e  5f          PUSH0
       0x003f  51          MLOAD
       0x0040  6040        PUSH1 0x40

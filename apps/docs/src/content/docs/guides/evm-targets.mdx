@@ -13,10 +13,10 @@ not activated fails at run time — an unsupported opcode aborts the whole `eth_
 `'cancun'`. The union is exported as the type `EvmVersion`:
 
 ```ts
-import { arg, compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
+import { compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
 
-const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
-  s.return({ x: s.args.x }),
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
+  s.return({ x }),
 );
 
 const target: EvmVersion = 'paris';

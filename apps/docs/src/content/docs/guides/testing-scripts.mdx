@@ -49,12 +49,12 @@ ABI-encoded returndata (viem's `encodeFunctionResult` is the convenient way to b
 zeroes its outputs. This is a complete, runnable test with no test framework at all:
 
 ```ts
-import { arg, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
 import { encodeFunctionResult, erc20Abi, toFunctionSelector } from 'viem';
 
-const tokenInfo = evscript({ name: 'tokenInfo', args: [arg('token', t.address)] }, (s) => {
-  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
-  const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const tokenInfo = evscript({ name: 'tokenInfo', args: [t.address] }, (s, token) => {
+  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
 
@@ -123,10 +123,10 @@ produce — so you can assert on raw bytes, or feed them to `explainRevert` from
 artifact (see [Errors & debugging](/guides/errors-and-debugging/)):
 
 ```ts
-import { arg, compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
 
-const ratio = evscript({ name: 'ratio', args: [arg('x', t.uint256), arg('y', t.uint256)] }, (s) =>
-  s.return({ q: s.div(s.args.x, s.args.y) }),
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: s.div(x, y) }),
 );
 
 const noCalls: MockChain = {
@@ -211,7 +211,6 @@ IR semantically, so externally loaded IR is as trustworthy as freshly recorded I
 
 ```ts
 import {
-  arg,
   deserializeIr,
   evscript,
   interpret,
@@ -220,8 +219,8 @@ import {
   type MockChain,
 } from '@maxencerb/evs';
 
-const double = evscript({ name: 'double', args: [arg('x', t.uint256)] }, (s) =>
-  s.return({ y: s.mul(s.args.x, 2n) }),
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ y: s.mul(x, 2n) }),
 );
 
 const json = serializeIr(double.ir); // store it, snapshot it, send it to another process

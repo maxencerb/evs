@@ -48,37 +48,72 @@ export type IntType = `int${UintBits}`
 export type BytesNType = `bytes${BytesSize}`
 export type WordType = UintType | IntType | 'address' | 'bool' | BytesNType
 export type DynType = 'string' | 'bytes'
-export type ArrayType = `${WordType}[]`
-export type EvsType = WordType | DynType | ArrayType
+// amended by #2 — scalars vs string-encoded arrays vs tuple OBJECTS:
+export type ScalarType = WordType | DynType
+export type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`
+export type StringType = ScalarType | ArrayType                          // every string-encoded type
+export interface TupleType { readonly type: 'tuple' | 'tuple[]' | 'tuple[][]'
+  readonly components: readonly NamedType[] }
+export interface NamedType { readonly name: string; readonly type: string  // = PlainAbiParam shape
+  readonly components?: readonly NamedType[] }
+export type EvsType = WordType | DynType | ArrayType | TupleType          // string OR tuple object
 export type ArgType = EvsType
 export type NumericType = UintType | IntType
 export type BitsType = UintType | BytesNType
 
 export declare const exprBrand: unique symbol
-export interface Expr<t extends EvsType = EvsType> { /* exactly api.md §3 */ }
-export type LitOf<t extends EvsType> = /* exactly api.md §3 */
+export interface Expr<t extends EvsType = EvsType> { /* exactly api.md §3 — `at<elem extends
+  StringType>(this: Expr<`${elem}[]` & ArrayType>, …): Expr<elem>` plus a tuple-array overload
+  `at<C extends TupleType>(this: Expr<C & {type:'tuple[]'}>, …): Tuple<elem>` (amended by #2 +
+  the #2 follow-up: a tuple-array element handle) */ }
+export type LitOf<t extends EvsType> = /* exactly api.md §3 — TupleType → TupleLitOf (amended #2) */
+export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<TupleAsParam<t>, 'inputs'>
+export type TupleAsParam<t extends TupleType> = { readonly name: ''; readonly type: t['type']
+  readonly components: t['components'] } & AbiParameter
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>
 
+// arg()/ArgSpec are RETAINED for s.fn param declarations (NOT the script-args surface) — #2
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
   readonly name: name
   readonly type: type
 }
-export function arg<const name extends string, const type extends ArgType>(
-  name: name, type: type): ArgSpec<name, type>
-export const t: { /* exactly api.md §2 — every WordType key + string + bytes + array() */ }
+export function arg<const name extends string, const type extends StringType>(
+  name: name, type: type): ArgSpec<name, type>          // amended by #2: param type is StringType
+// the `t` namespace gains `struct`/`tuple` and a tuple `array` overload (amended by #2):
+export const t: { /* every WordType|DynType key */ } & {
+  array<const e extends StringType>(elem: e): `${e}[]`
+  array<const e extends TupleType>(elem: e): TupleArrayOf<e>
+  struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>
+  tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>
+}
+// the type-level namespace helpers (exported for the overloads + builder/abi):
+export type TypeToComponent<name extends string, ty extends EvsType> = /* see core/types.ts */
+export type StructTypeOf<spec extends Record<string, EvsType>>                // named-components tuple
+export type TupleTypeOf<items extends readonly EvsType[]>                     // positional tuple
+export type TupleArrayOf<e extends TupleType>                                 // one `[]` deeper
 
-// runtime type predicates / metadata (single source of truth for all modules)
-export function isEvsType(s: string): s is EvsType
-export function isWordType(s: string): s is WordType
+// runtime type predicates / metadata (single source of truth for all modules; amended by #2 —
+// the value-type guards accept `string | TupleType`, and tuple-aware helpers are added):
+export function isEvsType(s: string): s is StringType      // string-only validity
+export function isEvsValueType(v: unknown): v is EvsType    // string OR tuple, recursive validation
+export function isWordType(s: string | TupleType): s is WordType    // false for tuples
+export function isStringType(s: string): s is StringType
+export function isTupleType(v: unknown): v is TupleType
 export function isNumeric(s: EvsType): s is NumericType
 export function isSigned(s: EvsType): boolean              // intN → true
 export function bitsOf(s: WordType): number                // address→160, bool→8(canonical 0/1), bytesN→8N, u/intN→N
-export function isDynamicType(s: EvsType): boolean         // string|bytes|T[]
-export function elemTypeOf(s: ArrayType): WordType
+export function isDynamicType(s: EvsType): boolean         // string|bytes|T[]|tuple → true
+export function isArrayValueType(s: EvsType): s is ArrayType | TupleType    // T[] or tuple array
+export function elemTypeOf(s: ArrayType | TupleType): EvsType               // one `[]` peeled
+export function typesEqual(a: EvsType, b: EvsType): boolean // STRUCTURAL — tuple descriptors are
+  // fresh objects (never ===); ALL value-type comparisons in recorder/validate use this, not ===
+export function abiParamToType(p: { type: string; components?: readonly NamedType[] }): EvsType
+export function typeToAbiParam(name: string, ty: EvsType): NamedType        // inverse
 ```
 
-Invariants: `arg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `isEvsType`), throws
-`EvsTypeError` with `captureLoc()`, returns frozen object. `t` is frozen.
+Invariants: `arg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `assertEvsType`), throws
+`EvsTypeError` with `captureLoc()`, returns frozen object. `t.struct`/`t.tuple`/`t.array` validate
+and freeze their result; `t` is frozen.
 
 ### `core/errors.ts`
 
@@ -123,7 +158,7 @@ export class EvsInternalError extends EvsError {} // message MUST contain "bug i
 
 export interface EvsDiagnostic {
   severity: 'warning';
-  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME';
+  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT'; // ENV_FRAME_DEPENDENT amended §14.1
   message: string;
   loc: SourceLoc | null;
 }
@@ -140,11 +175,13 @@ export function setLocCapture(enabled: boolean): void; // used by evscript({loca
 ```
 
 **Unit tests (M1)**: `isEvsType`/`bitsOf` exhaustive table over every v0 type string; rejection
-of `uint7`, `bytes33`, `uint256[][]`, `tuple`; `arg()` validation matrix with loc assertions;
-error class construction; loc capture under bun- and node-format stack traces.
+of `uint7`, `bytes33`; the still-deferred string-array depths (`uint256[][]` as a script arg) and
+raw `'tuple'` strings; `t.struct`/`t.tuple`/`t.array`, the guards, and `typesEqual`
+structural-equality matrix (amended by #2); `arg()` validation matrix with loc assertions; error
+class construction; loc capture under bun- and node-format stack traces.
 **Type tests**: `ArgSpec` inference via `arg('pool', t.address)` is exactly
 `ArgSpec<'pool','address'>`; `IntoExpr<'uint8'>` accepts `5`, `5n`, `Expr<'uint8'>`, rejects
-`'0x'`/`Expr<'uint16'>`.
+`'0x'`/`Expr<'uint16'>`; `LitOf` of a `t.struct` is the named object (amended by #2).
 
 ---
 
@@ -238,8 +275,14 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }
   | { k: 'len'; a: ValueId; out: ValueId }
-  | { k: 'arrnew'; elem: WordType; length: ValueId; out: ValueId }
+  | { k: 'arrnew'; elem: EvsType; length: ValueId; out: ValueId } // amended by #2: elem widened to
+  //   EvsType (validate still restricts to word — composite arrays deferred)
   | { k: 'arrset'; arr: ValueId; i: ValueId; value: ValueId }
+  // composite (tuple/struct) nodes — added by #2. The out/tuple ValueId's `values[id].type`
+  // carries the TupleType (with components); these nodes hold only the member index.
+  | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
+  | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
+  | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
@@ -277,6 +320,10 @@ export function validateIr(ir: ScriptIr): void;
 // unknown ids, cell type mismatches, break/continue outside while, call-graph cycles,
 // empty/duplicate return names, fnAbi outputs/args outside v0 EvsType, successOut present iff
 // mode==='try'. deserialize→validate is the trust boundary for external IR.
+// Amended by #2: tuplenew/field/tupleset validated (out/tuple type is a TupleType; index in
+// range; field out type = abiParamToType(components[index])); ALL value-type comparisons use the
+// STRUCTURAL `typesEqual` (tuple descriptors are fresh objects, never ===); checkAbiParams
+// recurses through tuple components; arrnew.elem still restricted to word (composite arrays deferred).
 ```
 
 **Unit tests (M2)**: accept/reject hand-built IRs per Stmt kind; every validation rule has a
@@ -304,10 +351,20 @@ export type WordLayout = {
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  | { kind: 'array'; abi: string; elem: WordLayout }; // dynamic arrays of words only in v0
-export function layoutOf(abiType: string): TypeLayout; // throws EvsTypeError(UNSUPPORTED_V0) on tuple/T[N]/nested
-export function isDynamic(l: TypeLayout): boolean;
-export function headBytes(params: readonly PlainAbiParam[]): number; // 32 × params.length in v0
+  // amended by the #2 follow-up: `elem` widened WordLayout → TypeLayout — a one-level array of
+  // composite/dynamic elements (tuple[], T[][], string[]/bytes[]) is an array of pointers:
+  | { kind: 'array'; abi: string; elem: TypeLayout }
+  // amended by #2: a tuple layout (a flat-pointer block of component layouts):
+  | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
+export function layoutOf(abiType: string): TypeLayout; // narrowed to reject T[N]/tuple[][]/[][][]+
+// amended by #2: layoutOfType handles TupleType OBJECTS (and nested string arrays), delegating to
+// layoutOf for type strings; a tuple is `dynamic` iff any component layout isDynamic. The #2
+// follow-up admits a one-level tuple[]/T[][]/string[] element here.
+export function layoutOfType(t: EvsType): TypeLayout;
+export function isDynamic(l: TypeLayout): boolean; // tuple → its `dynamic` flag; array → always true
+export function headBytes(params: readonly PlainAbiParam[]): number; // walks the PlainAbiParam tree
+// (a STATIC inner tuple counts headBytes(components), NOT 32; amended by #2). staticSize(elem) =
+// headBytes(components) for a static tuple element, 32 for a word (the #2 follow-up).
 ```
 
 ### `abi/artifact.ts`
@@ -318,21 +375,24 @@ export const EVS_ERROR_ABI = [
   { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
 ] as const;
 
+// amended by #2: `args` is reparameterized from `readonly ArgSpec[]` to `readonly EvsType[]`
+// (positional, auto-named arg0/arg1/…); inputs expand via TypeToComponent (a tuple arg →
+// `{ name, type: 'tuple', components }`). ArgsToInputs is HOMOMORPHIC over the arg-type tuple (no
+// UnionToTuple — order/labels structural; `args` stays a covariant type param).
+export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+export type ArgsToInputs<args extends readonly EvsType[]> = {
+  readonly [i in keyof args]: TypeToComponent<ArgName<i>, args[i]>;
+};
 export type ScriptAbi<
   name extends string,
-  args extends readonly ArgSpec[],
-  ret extends Record<string, Expr>,
+  args extends readonly EvsType[],
+  ret extends Record<string, ReturnValue>, // amended: a return value is an Expr OR a Tuple handle
 > = readonly [
   {
     readonly type: 'function';
     readonly name: name;
     readonly stateMutability: 'view';
-    readonly inputs: {
-      readonly [i in keyof args]: {
-        readonly name: args[i]['name'];
-        readonly type: args[i]['type'];
-      };
-    };
+    readonly inputs: ArgsToInputs<args>;
     readonly outputs: readonly [
       {
         readonly name: 'result';
@@ -347,15 +407,20 @@ export type ScriptAbi<
 
 export function buildScriptAbi(
   name: string,
-  args: readonly ArgSpec[],
+  args: readonly EvsType[], // amended by #2: NORMALIZED arg TYPE list (positional, no names)
   returns: readonly { name: string; type: EvsType }[],
 ): Abi;
-// runtime mirror; inputs order = args tuple order; components order = returns insertion order
+// runtime mirror; inputs auto-named arg0/arg1/… (order = args order; a tuple arg →
+// typeToAbiParam); components order = returns insertion order
 
 export function selectorOf(name: string, argTypes: readonly string[]): Hex; // viem toFunctionSelector
 export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction; // + selector; validates v0 types
 export function encodeLiteralWord(type: WordType, value: unknown): Hex; // canonical 32-byte word
 export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex; // [len][payload] memref bytes
+// amended by the #2 follow-up: only flat memrefs (string/bytes, word arrays) get a data-segment
+// blob. A composite-element array (tuple[]/T[][]/string[]/bytes[]) literal has NO flat blob — the
+// recorder builds it structurally (arrnew + per-element tuplenew/arrset), so encodeLiteralData is
+// NOT called for those types.
 ```
 
 Invariants: `buildScriptAbi` output and the `ScriptAbi` type agree (type test with
@@ -528,35 +593,73 @@ buildScriptAbi), `compile.js` (the `compile` function — for the `.compile()` s
 `abitype` (types), `viem` (types only).
 
 ```ts
-// builder/script.ts
+// builder/script.ts — amended by #2: `evscript` takes `args?: ArgsInput` and spreads positional
+// arg handles after `s`; `ScriptBuilder` is non-generic (no `args` param, no `s.args`) and gains
+// `s.tuple`; `Tuple`/`Field`/`s.tuple` are the new composite surface.
+export type ArgsInput = EvsType | readonly EvsType[];
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+export type ArgHandles<types extends readonly EvsType[]> = {
+  readonly [i in keyof types]: ArgHandle<types[i]>;
+};
 export function evscript<
   const name extends string,
-  const args extends readonly ArgSpec[],
-  ret extends Record<string, Expr>,
+  const args extends ArgsInput = readonly [],
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>, // amended: Expr | Tuple
 >(
-  def: { name: name; args: args },
-  body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+  def: { name: name; args?: args },
+  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
   opts?: { locations?: boolean },
-): EvsScript<name, args, ret>;
+): EvsScript<name, NormalizeArgs<args>, ret>;
 
-export interface EvsScript<name, args, ret> {
-  /* exactly api.md §1 */
+export interface EvsScript<name, args extends readonly EvsType[], ret> {
+  /* exactly api.md §1 — `args` param is `readonly EvsType[]` (amended by #2) */
 }
-export interface ScriptBuilder<args extends readonly ArgSpec[]> {
-  /* exactly api.md §4 */
+export interface ScriptBuilder {
+  /* exactly api.md §4 — non-generic; no `args`/`s.args`; gained `s.tuple` (amended by #2) */
 }
 export interface Cell<t extends EvsType> {
   /* api.md §5 */
 }
-export interface MutArray<e extends WordType> {
-  /* api.md §5 */
+export interface MutArray<e extends EvsType> {
+  /* api.md §5 — amended by the #2 follow-up: `e` widened WordType → EvsType (composite-element
+     arrays of pointers); `get`/`at` on a tuple[] return a Tuple element handle, `set` takes
+     IntoMember<e>, `expr()` types as the array type. `s.newArray` admits word|string|bytes|
+     one-level T[]|tuple; T[N]/tuple[][]/deeper still UNSUPPORTED_V0. */
 }
 export interface LoopCtl {
   break(): void;
   continue(): void;
 }
+// tuple / struct handles — added by #2 (api.md §5):
+export interface Field<t extends EvsType> {
+  readonly type: t;
+  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  set(value: IntoMember<t>): void;
+}
+export declare const tupleBrand: unique symbol; // phantom (amended): marks a Tuple in a return bound
+export type Tuple<C extends TupleType> = {
+  readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]:
+    Field</* ComponentToType<c> */>;
+} & { at(i: number): Field</* element type */>; expr(): Expr<C> } & {
+  readonly [tupleBrand]: TupleType; // erased (order-insensitive) so Tuple↔Tuple assignability holds
+};
+export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
+export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+export type TupleInit<C extends TupleType> = /* named object | positional record, all members optional */;
+// (s.tuple is a method on ScriptBuilder: `tuple<const c extends TupleType>(type: c, init?:
+//  TupleInit<c>): Tuple<c>`.)
+// amended by #2 (composite types): a return value is an Expr OR a Tuple handle returned directly.
+// `TypeOfReturn` recovers an Expr's `t` or a Tuple's `C` (from its `expr()` signature) for ScriptAbi.
+export type AnyTuple = { readonly [tupleBrand]: TupleType };
+export type ReturnValue = Expr | AnyTuple;
+export type TypeOfReturn<v> = v extends Expr<infer t>
+  ? t
+  : v extends { expr(): Expr<infer c extends TupleType> }
+    ? c
+    : never;
 export declare const returnBrand: unique symbol;
-export interface ScriptReturn<ret extends Record<string, Expr>> {
+export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
 ```
@@ -573,7 +676,14 @@ Implementation invariants (binding):
    is usable iff its defining scope is on the current stack. `while` body scope is pushed as a
    **child of the header scope**. `s.fn` bodies push an isolated stack (params only).
 4. **MutArray**: `set/get/length/expr` record `arrset`/`index`/`len` stmts against the arrnew
-   value; `expr()` returns a plain `Expr` handle aliasing the same ValueId.
+   value; `expr()` returns a plain `Expr` handle aliasing the same ValueId. Amended by the #2
+   follow-up: `s.newArray` admits composite elements (`word|string|bytes|one-level T[]|tuple`);
+   `get`/`at` on a `tuple[]` return a `Tuple` element handle (same `TUPLE_INTERNALS` as a decoded
+   tuple), `arrset` stores the element pointer. A composite-array LITERAL (a JS array for
+   `tuple[]`/`uint256[][]`/`string[]`/`bytes[]`) is BUILT at record time as `arrnew` + per-element
+   (`tuplenew`/`arrset`) — a fresh `[len][p0…]` block with reference semantics, NOT an
+   `encodeLiteralData` data-segment blob (composite arrays have no flat literal — the elements are
+   pointers).
 5. **Recording-time validation checklist** (each throws with loc + relatedLocs):
    duplicate/empty/invalid arg names · literal out of range / wrong hex length / unsafe number ·
    operand type mismatch (message suggests `toUint`/`toInt`) · all-literal certain-panic fold
@@ -585,14 +695,26 @@ Implementation invariants (binding):
 6. **Constant folding**: all-literal `bin`/`un`/`convert`/`select(cond literal)` fold to
    `const` stmts; certain-panic folds throw (rule 5).
 7. After `s.return`, the recorder seals; `script.ir` is deep-frozen.
+8. **Args + tuples (added by #2)**: the Recorder ctor still takes
+   `args: readonly { name; type: EvsType }[]` (auto-named `arg0`, `arg1`, …) and exposes
+   `argHandles(): readonly (Expr | Tuple)[]` — a positional handle list (a tuple-typed arg → a
+   `Tuple` handle), which `evscript` spreads into the body after `s` (the old `argRecord()`/`s.args`
+   getter is removed). `Tuple` handles install staging traps like `Expr`; `Field` handles are
+   module-private (WeakMap). The Recorder records `tuplenew` (s.tuple / literal-object coercion),
+   `field` (Field.get), `tupleset` (Field.set), and tuple decode for tuple call outputs.
+   `coerceToId` gains a tuple branch: a `Tuple` handle of this recorder reuses its ValueId
+   (reference); a plain object builds a `tuplenew` (members coerced per component, omitted → 0).
 
 **Unit tests (M5)**: IR snapshot (`serializeIr`) per builder API; every checklist item has a
 test asserting error class, message substring, and loc; staging traps (`x+1`, template
 literal, `JSON.stringify`); cross-script and cross-scope handles; loop scoping (header value
-visible in body, body value invisible after); fold tests incl. certain-panic.
-**Type tests** (`builder.test-d.ts`): `s.args` record; `s.call` single-output unwrap / tuple /
-void; `@ts-expect-error` on nonpayable functionName, wrong literal types, `eq` on memref;
-graceful widening with a non-const ABI; `ScriptReturn` inference through `evscript`.
+visible in body, body value invisible after); fold tests incl. certain-panic; `s.tuple`/field
+get-set/tuple-output decode (amended by #2).
+**Type tests** (`builder.test-d.ts`): args-as-positional-callback-params inference; `t.struct`
+field-handle typing (`slot0.tick.get(): Expr<'int24'>`); a tuple call output → a `Tuple` handle;
+`s.call` single-output unwrap / tuple / void; `@ts-expect-error` on nonpayable functionName, wrong
+literal types, `eq` on memref; graceful widening with a non-const ABI; `ScriptReturn` inference
+through `evscript` (amended by #2 — `s.args` record test is gone).
 
 ---
 
@@ -614,7 +736,7 @@ export function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number },
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides }, // env amended §14.2
 ): InterpResult;
 ```
 
@@ -776,8 +898,8 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `asm/*`, `codegen/program.js`, `viem
 export interface CompileOptions {
   /* exactly api.md §10 */
 }
-export interface CompiledEvsScript<name, args, ret> {
-  /* exactly api.md §10 */
+export interface CompiledEvsScript<name, args extends readonly EvsType[], ret> {
+  /* exactly api.md §10 — `args` param is `readonly EvsType[]` (amended by #2, was readonly ArgSpec[]) */
 }
 export interface RevertExplanation {
   kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
@@ -814,6 +936,11 @@ export function toViemStateOverride<const abi extends Abi>(
 // (Expr, IntoExpr, EvsType…, ArgSpec, ScriptBuilder, Cell, MutArray, LoopCtl, ScriptReturn,
 // EvsScript, CompiledEvsScript, CompileOptions, EvsDiagnostic, ScriptAbi, SourceMap,
 // Disassembly, RevertExplanation, MockChain, InterpResult).
+// Added by #2 (composite types) — type-only additions to the public surface:
+//   TupleType, NamedType, ScalarType, StringType, Tuple, Field, ArgsInput, NormalizeArgs,
+//   ArgHandle, ArgHandles, ComponentToType, TupleInit, and the `t`-namespace helper types
+//   StructTypeOf / TupleTypeOf / TupleArrayOf / TypeToComponent / TupleLitOf / TupleAsParam.
+//   `arg`/`ArgSpec` remain exported (s.fn params). `ScriptBuilder` is non-generic.
 ```
 
 **Unit tests (M9)**: artifact shape; EIP-170 rejection on a synthetic huge script with region

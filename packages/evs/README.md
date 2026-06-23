@@ -21,18 +21,19 @@ ESM-only. TypeScript ≥ 5.5 (`strict`); peer dependency `viem >= 2.14.1`; Node 
 ## Example
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { mainnet } from 'viem/chains';
 
 import { uniswapV3PoolAbi } from './abis'; // any `as const` ABI fragment
 
 const poolMeta = evscript(
-  { name: 'poolMeta', args: [arg('pool', t.address), arg('user', t.address)] },
-  (s) => {
-    const token0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  { name: 'poolMeta', args: [t.address, t.address] },
+  // args arrive as positional params after `s`, in declaration order
+  (s, pool, user) => {
+    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>  — feeds the next call ON-CHAIN
-    const slot0 = s.call({ address: s.args.pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
     const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
     const decimals0 = s.select(dec.success, dec.value, 18); // default when the call fails
@@ -40,7 +41,7 @@ const poolMeta = evscript(
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.user],
+      args: [user],
     });
     return s.return({ token0, symbol0, tick: slot0[1], decimals0, bal0 });
   },

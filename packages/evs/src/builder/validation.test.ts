@@ -69,6 +69,8 @@ const overloadedAbi = [
   },
 ] as const satisfies Abi;
 
+// a tuple ARRAY output — composite scalars are supported now, but `tuple[]` is the deferred
+// follow-up and must still raise UNSUPPORTED_V0 naming the parameter.
 const tupleAbi = [
   {
     type: 'function',
@@ -77,39 +79,37 @@ const tupleAbi = [
     inputs: [],
     outputs: [
       {
+        // `tuple[][]` (two levels) is STILL deferred — `tuple[]` is now supported (§12 un-gate).
         name: 'data',
-        type: 'tuple',
+        type: 'tuple[][]',
         components: [{ name: 'a', type: 'uint256' }],
       },
     ],
   },
 ] as const satisfies Abi;
 
-type AnyBuilder = ScriptBuilder<
-  readonly [
-    { readonly name: 'x'; readonly type: 'uint256' },
-    { readonly name: 'who'; readonly type: 'address' },
-    { readonly name: 'flag'; readonly type: 'bool' },
-    { readonly name: 'xs'; readonly type: 'uint64[]' },
-    { readonly name: 's8'; readonly type: 'int8' },
-  ]
->;
+type AnyBuilder = ScriptBuilder;
 
-/** Records a throwaway script whose body is expected to throw. */
-function rec(body: (s: AnyBuilder) => unknown): void {
-  evscript(
-    {
-      name: 'tst',
-      args: [
-        arg('x', t.uint256),
-        arg('who', t.address),
-        arg('flag', t.bool),
-        arg('xs', t.array(t.uint64)),
-        arg('s8', t.int8),
-      ],
-    },
-    body as never,
-  );
+/** The positional script args, surfaced as a named record for the throwaway recorder below. */
+interface Args {
+  readonly x: Expr<'uint256'>;
+  readonly who: Expr<'address'>;
+  readonly flag: Expr<'bool'>;
+  readonly xs: Expr<'uint64[]'>;
+  readonly s8: Expr<'int8'>;
+}
+
+/** Records a throwaway script whose body is expected to throw. Args arrive positionally after
+ *  `s` and are repackaged into the legacy `s.args`-shaped `a` record for the seeded violations. */
+function rec(body: (s: AnyBuilder, a: Args) => unknown): void {
+  evscript({ name: 'tst', args: [t.uint256, t.address, t.bool, t.array(t.uint64), t.int8] }, ((
+    s: AnyBuilder,
+    x: Args['x'],
+    who: Args['who'],
+    flag: Args['flag'],
+    xs: Args['xs'],
+    s8: Args['s8'],
+  ) => body(s, { x, who, flag, xs, s8 })) as never);
 }
 
 function catchEvs(fn: () => unknown): EvsError {
@@ -143,61 +143,34 @@ function expectEvs(
 // arg declaration errors
 // ---------------------------------------------------------------------------
 
-describe('checklist: duplicate/empty/invalid arg names + types', () => {
-  test('duplicate arg names', () => {
-    expectEvs(
-      () =>
-        evscript({ name: 'd', args: [arg('a', t.uint256), arg('a', t.address)] }, (s) =>
-          s.return({ a: s.args.a }),
-        ),
-      EvsTypeError,
-      'TYPE_MISMATCH',
-      /duplicate argument name "a"/,
-    );
-  });
-
-  test('empty arg name (raw spec bypassing arg())', () => {
-    expectEvs(
-      () =>
-        evscript({ name: 'd', args: [{ name: '', type: 'uint256' }] as never }, () => {
-          throw new Error('unreachable');
-        }),
-      EvsTypeError,
-      'TYPE_MISMATCH',
-      /invalid argument name ""/,
-    );
-  });
-
-  test('non-identifier arg name', () => {
-    expectEvs(
-      () =>
-        evscript({ name: 'd', args: [{ name: '1x', type: 'uint256' }] as never }, () => {
-          throw new Error('unreachable');
-        }),
-      EvsTypeError,
-      'TYPE_MISMATCH',
-      /invalid argument name "1x"/,
-    );
-  });
-
+describe('checklist: arg types + script name (args are positional, auto-named)', () => {
   test('unknown arg type (uint7)', () => {
     expectEvs(
       () =>
-        evscript({ name: 'd', args: [{ name: 'a', type: 'uint7' }] as never }, () => {
+        evscript({ name: 'd', args: ['uint7' as never] }, () => {
           throw new Error('unreachable');
         }),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /unknown ABI type "uint7"/,
+      /uint7/,
     );
   });
 
-  test('deferred arg type (tuple) → UNSUPPORTED_V0', () => {
+  test('one-level nested-array arg type is now accepted (§12 un-gate), read via .length()', () => {
+    // `uint256[][]` arg decodes (read path). Return a derived WORD (composite-array encode is the
+    // next milestone), so recording + the script build succeed.
+    const script = evscript({ name: 'd', args: ['uint256[][]' as never] }, ((
+      s: AnyBuilder,
+      x: { length(): unknown },
+    ) => s.return({ rows: x.length() } as never)) as never);
+    expect(script).toBeDefined();
+  });
+
+  test('STILL deferred: an array nested deeper than [][] → UNSUPPORTED_V0', () => {
     expectEvs(
       () =>
-        evscript({ name: 'd', args: [{ name: 'a', type: 'tuple' }] as never }, () => {
-          throw new Error('unreachable');
-        }),
+        evscript({ name: 'd', args: ['uint256[][][]' as never] }, ((s: AnyBuilder, x: unknown) =>
+          s.return({ x } as never)) as never),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,
@@ -289,9 +262,19 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
     );
   });
 
-  test('deferred type in s.lit → UNSUPPORTED_V0', () => {
+  test('a composite-array literal in s.lit now BUILDS at record time (§12.8)', () => {
+    // `uint256[][]` is a valid composite-element array; s.lit builds it via arrnew + per-element
+    // construction (no flat data segment) and returns a usable Expr.
+    expect(() =>
+      evscript({ name: 'lit2d' }, (s) =>
+        s.return({ m: s.lit('uint256[][]' as never, [[1n, 2n], [3n]] as never) }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('a string-array nested deeper than [][] in s.lit → UNSUPPORTED_V0 (still deferred)', () => {
     expectEvs(
-      () => rec((s) => s.lit('uint256[][]' as never, [] as never)),
+      () => rec((s) => s.lit('uint256[][][]' as never, [] as never)),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,
@@ -306,7 +289,7 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
 describe('checklist: operand type mismatch (message suggests toUint/toInt)', () => {
   test('width mismatch between two numeric Exprs suggests an explicit conversion', () => {
     const e = expectEvs(
-      () => rec((s) => s.add(s.args.x, s.lit(t.uint8, 1) as never)),
+      () => rec((s, a) => s.add(a.x, s.lit(t.uint8, 1) as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /operand types differ/,
@@ -326,7 +309,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('arithmetic on a non-numeric type', () => {
     expectEvs(
-      () => rec((s) => s.add(s.args.who as never, s.args.who as never)),
+      () => rec((s, a) => s.add(a.who as never, a.who as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /must be numeric/,
@@ -335,7 +318,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('eq on a memref type', () => {
     expectEvs(
-      () => rec((s) => s.eq(s.args.xs as never, s.args.xs as never)),
+      () => rec((s, a) => s.eq(a.xs as never, a.xs as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /word types only/,
@@ -344,7 +327,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('bool logic on a non-bool', () => {
     expectEvs(
-      () => rec((s) => s.and(s.args.x as never, s.args.x as never)),
+      () => rec((s, a) => s.and(a.x as never, a.x as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /Expr<'bool'>/,
@@ -353,7 +336,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('bitwise on address', () => {
     expectEvs(
-      () => rec((s) => s.bitAnd(s.args.who as never, s.args.who as never)),
+      () => rec((s, a) => s.bitAnd(a.who as never, a.who as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /uintN\/bytesN/,
@@ -380,7 +363,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('conversion source must be numeric', () => {
     expectEvs(
-      () => rec((s) => (s.args.who as Expr<never>).toUint(t.uint256)),
+      () => rec((s, a) => (a.who as Expr<never>).toUint(t.uint256)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /source must be numeric/,
@@ -389,7 +372,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('asAddress only from uint256/bytes32', () => {
     expectEvs(
-      () => rec((s) => (s.args.s8 as never as Expr<'uint256'>).asAddress()),
+      () => rec((s, a) => (a.s8 as never as Expr<'uint256'>).asAddress()),
       EvsTypeError,
       'TYPE_MISMATCH',
       /uint256'.*bytes32'/,
@@ -398,13 +381,13 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('.length() on a word type / .at() on a non-array', () => {
     expectEvs(
-      () => rec((s) => (s.args.x as never as Expr<'bytes'>).length()),
+      () => rec((s, a) => (a.x as never as Expr<'bytes'>).length()),
       EvsTypeError,
       'TYPE_MISMATCH',
       /string\/bytes\/T\[\]/,
     );
     expectEvs(
-      () => rec((s) => (s.args.x as never as Expr<'uint64[]'>).at(0n)),
+      () => rec((s, a) => (a.x as never as Expr<'uint64[]'>).at(0n)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /T\[\] array/,
@@ -420,18 +403,33 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
-  test('newArray with a non-word element type', () => {
+  test('newArray now admits a composite element (string), but NOT a fixed-size element (T[N])', () => {
+    // string is a valid composite element (§12.8) — s.newArray('string', n) builds a string[] now.
+    expect(() =>
+      evscript({ name: 'mkStrings' }, (s) => {
+        const xs = s.newArray('string' as never, 2n);
+        return s.return({ xs: xs.expr() });
+      }),
+    ).not.toThrow();
+    // a fixed-size element is still deferred.
     expectEvs(
-      () => rec((s) => s.newArray('string' as never, 1n)),
+      () => rec((s) => s.newArray('uint256[2]' as never, 1n)),
       EvsTypeError,
-      'TYPE_MISMATCH',
-      /word type/,
+      'UNSUPPORTED_V0',
+      /not supported/,
+    );
+    // a tuple[] element (→ tuple[][]) is still deferred.
+    expectEvs(
+      () => rec((s) => s.newArray(t.array(t.struct({ a: t.uint256 })) as never, 1n)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /deferred|not supported/,
     );
   });
 
   test('select: both branches literal', () => {
     expectEvs(
-      () => rec((s) => s.select(s.args.flag, 1n, 2n)),
+      () => rec((s, a) => s.select(a.flag, 1n, 2n)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /at least one branch must be an Expr/,
@@ -440,7 +438,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('select: branch type mismatch', () => {
     expectEvs(
-      () => rec((s) => s.select(s.args.flag, s.args.x, s.args.who as never)),
+      () => rec((s, a) => s.select(a.flag, a.x, a.who as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /branch types differ/,
@@ -568,7 +566,7 @@ describe('checklist: call-site ABI validation', () => {
   test('abi has no function with that name', () => {
     expectEvs(
       () =>
-        rec((s) => s.call({ address: s.args.who, abi: erc20Abi, functionName: 'symbol' as never })),
+        rec((s, a) => s.call({ address: a.who, abi: erc20Abi, functionName: 'symbol' as never })),
       EvsTypeError,
       'ABI_SHAPE',
       /no function named "symbol"/,
@@ -578,12 +576,12 @@ describe('checklist: call-site ABI validation', () => {
   test('non view/pure function rejected with its mutability', () => {
     expectEvs(
       () =>
-        rec((s) =>
+        rec((s, a) =>
           s.call({
-            address: s.args.who,
+            address: a.who,
             abi: erc20Abi,
             functionName: 'transfer' as never,
-            args: [s.args.who, 1n] as never,
+            args: [a.who, 1n] as never,
           }),
         ),
       EvsTypeError,
@@ -594,7 +592,7 @@ describe('checklist: call-site ABI validation', () => {
 
   test('overloaded name → UNSUPPORTED_V0 with the pruned-ABI workaround', () => {
     const e = expectEvs(
-      () => rec((s) => s.call({ address: s.args.who, abi: overloadedAbi, functionName: 'get' })),
+      () => rec((s, a) => s.call({ address: a.who, abi: overloadedAbi, functionName: 'get' })),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /overloaded/,
@@ -604,7 +602,7 @@ describe('checklist: call-site ABI validation', () => {
 
   test('v0-unsupported output type names the parameter', () => {
     const e = expectEvs(
-      () => rec((s) => s.call({ address: s.args.who, abi: tupleAbi, functionName: 'observe' })),
+      () => rec((s, a) => s.call({ address: a.who, abi: tupleAbi, functionName: 'observe' })),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,
@@ -616,9 +614,9 @@ describe('checklist: call-site ABI validation', () => {
   test('argument arity mismatch', () => {
     expectEvs(
       () =>
-        rec((s) =>
+        rec((s, a) =>
           s.call({
-            address: s.args.who,
+            address: a.who,
             abi: erc20Abi,
             functionName: 'balanceOf',
             args: [] as never,
@@ -633,12 +631,12 @@ describe('checklist: call-site ABI validation', () => {
   test('argument Expr type mismatch names the parameter', () => {
     expectEvs(
       () =>
-        rec((s) =>
+        rec((s, a) =>
           s.call({
-            address: s.args.who,
+            address: a.who,
             abi: erc20Abi,
             functionName: 'balanceOf',
-            args: [s.args.x as never],
+            args: [a.x as never],
           }),
         ),
       EvsTypeError,
@@ -649,13 +647,13 @@ describe('checklist: call-site ABI validation', () => {
 
   test('missing functionName / abi not an array / missing address', () => {
     expectEvs(
-      () => rec((s) => s.call({ address: s.args.who, abi: erc20Abi } as never)),
+      () => rec((s, a) => s.call({ address: a.who, abi: erc20Abi } as never)),
       EvsTypeError,
       'ABI_SHAPE',
       /functionName/,
     );
     expectEvs(
-      () => rec((s) => s.call({ address: s.args.who, abi: {}, functionName: 'x' } as never)),
+      () => rec((s, a) => s.call({ address: a.who, abi: {}, functionName: 'x' } as never)),
       EvsTypeError,
       'ABI_SHAPE',
       /must be an ABI array/,
@@ -671,9 +669,7 @@ describe('checklist: call-site ABI validation', () => {
   test('tryCall shares the same checks', () => {
     expectEvs(
       () =>
-        rec((s) =>
-          s.tryCall({ address: s.args.who, abi: erc20Abi, functionName: 'nope' as never }),
-        ),
+        rec((s, a) => s.tryCall({ address: a.who, abi: erc20Abi, functionName: 'nope' as never })),
       EvsTypeError,
       'ABI_SHAPE',
       /no function named "nope"/,
@@ -688,15 +684,15 @@ describe('checklist: call-site ABI validation', () => {
 describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   test('cross-script Expr → FOREIGN_HANDLE naming both scripts', () => {
     let foreign: Expr<'uint256'> | undefined;
-    evscript({ name: 'donor', args: [arg('v', t.uint256)] }, (s) => {
-      foreign = s.args.v;
-      return s.return({ v: s.args.v });
+    evscript({ name: 'donor', args: [t.uint256] }, (s, v) => {
+      foreign = v;
+      return s.return({ v });
     });
     const e = expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           if (foreign === undefined) throw new Error('unreachable');
-          return s.add(s.args.x, foreign);
+          return s.add(a.x, foreign);
         }),
       EvsScopeError,
       'FOREIGN_HANDLE',
@@ -708,7 +704,7 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
 
   test('forged handle-shaped object → FOREIGN_HANDLE', () => {
     expectEvs(
-      () => rec((s) => s.add(s.args.x, { type: 'uint256' } as never)),
+      () => rec((s, a) => s.add(a.x, { type: 'uint256' } as never)),
       EvsScopeError,
       'FOREIGN_HANDLE',
       /not created by this copy of evs/,
@@ -718,10 +714,10 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   test('if-branch value used after the branch closes', () => {
     const e = expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           let leaked: Expr<'uint256'> | undefined;
-          s.if(s.args.flag, () => {
-            leaked = s.args.x.add(1n);
+          s.if(a.flag, () => {
+            leaked = a.x.add(1n);
           });
           if (leaked === undefined) throw new Error('unreachable');
           return s.return({ leaked });
@@ -738,14 +734,14 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   test('while-body value used after the loop closes', () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           let leaked: Expr<'uint256'> | undefined;
           const i = s.let(t.uint256, 0n);
           s.while(
-            () => i.get().lt(s.args.x),
+            () => i.get().lt(a.x),
             () => {
               leaked = i.get();
-              i.set(s.args.x);
+              i.set(a.x);
             },
           );
           if (leaked === undefined) throw new Error('unreachable');
@@ -760,9 +756,9 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   test('cell declared inside a branch used after it', () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           let leaked: { get(): Expr<'uint256'> } | undefined;
-          s.if(s.args.flag, () => {
+          s.if(a.flag, () => {
             leaked = s.let(t.uint256, 1n);
           });
           if (leaked === undefined) throw new Error('unreachable');
@@ -776,12 +772,14 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
 
   test('builder used after evscript returns → RECORDING_CLOSED', () => {
     let escaped: AnyBuilder | undefined;
-    rec((s) => {
+    let escapedArg: Expr<'uint256'> | undefined;
+    rec((s, a) => {
       escaped = s;
-      return s.return({ x: s.args.x });
+      escapedArg = a.x;
+      return s.return({ x: a.x });
     });
     expectEvs(
-      () => escaped?.add(escaped.args.x, 1n),
+      () => escaped?.add(escapedArg as Expr<'uint256'>, 1n),
       EvsScopeError,
       'RECORDING_CLOSED',
       /sealed — s\.return/,
@@ -790,9 +788,9 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
 
   test('Expr method after seal → RECORDING_CLOSED', () => {
     let x: Expr<'uint256'> | undefined;
-    rec((s) => {
-      x = s.args.x;
-      return s.return({ x: s.args.x });
+    rec((s, a) => {
+      x = a.x;
+      return s.return({ x: a.x });
     });
     expectEvs(() => x?.add(1n), EvsScopeError, 'RECORDING_CLOSED', /sealed/);
   });
@@ -800,8 +798,8 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   test('builder calls after s.return but inside the callback → RECORDING_CLOSED', () => {
     expectEvs(
       () =>
-        rec((s) => {
-          const token = s.return({ x: s.args.x });
+        rec((s, a) => {
+          const token = s.return({ x: a.x });
           s.lit(t.uint256, 1n); // sealed already
           return token;
         }),
@@ -829,11 +827,11 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
   test('s.return inside s.if → SCOPE_VIOLATION', () => {
     expectEvs(
       () =>
-        rec((s) => {
-          s.if(s.args.flag, () => {
-            s.return({ x: s.args.x });
+        rec((s, a) => {
+          s.if(a.flag, () => {
+            s.return({ x: a.x });
           });
-          return s.return({ x: s.args.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
@@ -844,14 +842,14 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
   test('s.return inside a while body → SCOPE_VIOLATION', () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           s.while(
-            () => s.args.flag,
+            () => a.flag,
             () => {
-              s.return({ x: s.args.x });
+              s.return({ x: a.x });
             },
           );
-          return s.return({ x: s.args.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
@@ -862,9 +860,9 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
   test('duplicated s.return → RECORDING_CLOSED', () => {
     expectEvs(
       () =>
-        rec((s) => {
-          s.return({ x: s.args.x });
-          return s.return({ x: s.args.x });
+        rec((s, a) => {
+          s.return({ x: a.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'RECORDING_CLOSED',
@@ -875,8 +873,8 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
   test('callback returning something other than its own s.return token', () => {
     expectEvs(
       () =>
-        rec((s) => {
-          s.return({ x: s.args.x });
+        rec((s, a) => {
+          s.return({ x: a.x });
           return {};
         }),
       EvsTypeError,
@@ -887,7 +885,7 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
 
   test('empty-string return key → ABI_SHAPE', () => {
     expectEvs(
-      () => rec((s) => s.return({ '': s.args.x })),
+      () => rec((s, a) => s.return({ '': a.x })),
       EvsTypeError,
       'ABI_SHAPE',
       /empty-string return keys/,
@@ -896,7 +894,7 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
 
   test('non-identifier return key → ABI_SHAPE', () => {
     expectEvs(
-      () => rec((s) => s.return({ 'a b': s.args.x })),
+      () => rec((s, a) => s.return({ 'a b': a.x })),
       EvsTypeError,
       'ABI_SHAPE',
       /invalid return key/,
@@ -921,18 +919,18 @@ describe('checklist: LoopCtl outside its loop', () => {
   test('escaped LoopCtl used after the loop → SCOPE_VIOLATION', () => {
     const e = expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           let escaped: LoopCtl | undefined;
           const i = s.let(t.uint256, 0n);
           s.while(
-            () => i.get().lt(s.args.x),
+            () => i.get().lt(a.x),
             (loop) => {
               escaped = loop;
-              i.set(s.args.x);
+              i.set(a.x);
             },
           );
           escaped?.break();
-          return s.return({ x: s.args.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
@@ -944,21 +942,21 @@ describe('checklist: LoopCtl outside its loop', () => {
   test("outer loop's LoopCtl used inside an inner loop → SCOPE_VIOLATION", () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           const i = s.let(t.uint256, 0n);
           s.while(
-            () => i.get().lt(s.args.x),
+            () => i.get().lt(a.x),
             (outer) => {
               s.while(
-                () => i.get().lt(s.args.x),
+                () => i.get().lt(a.x),
                 () => {
                   outer.break();
                 },
               );
-              i.set(s.args.x);
+              i.set(a.x);
             },
           );
-          return s.return({ x: s.args.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
@@ -969,18 +967,18 @@ describe('checklist: LoopCtl outside its loop', () => {
   test('LoopCtl inside an s.fn body (isolated stack) → SCOPE_VIOLATION', () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           const i = s.let(t.uint256, 0n);
           s.while(
-            () => i.get().lt(s.args.x),
+            () => i.get().lt(a.x),
             (loop) => {
               s.fn('f', [] as const, () => {
                 loop.continue();
               });
-              i.set(s.args.x);
+              i.set(a.x);
             },
           );
-          return s.return({ x: s.args.x });
+          return s.return({ x: a.x });
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
@@ -997,13 +995,13 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
   test('capturing an outer Expr → SCOPE_VIOLATION naming both locations', () => {
     const e = expectEvs(
       () =>
-        rec((s) =>
+        rec((s, a) =>
           s.fn('meta', [arg('token', t.address)] as const, (token) =>
             s.call({
               address: token,
               abi: erc20Abi,
               functionName: 'balanceOf',
-              args: [s.args.who], // outer capture!
+              args: [a.who], // outer capture!
             }),
           ),
         ),
@@ -1102,9 +1100,9 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
 
 describe('staging traps', () => {
   function withHandle(run: (x: Expr<'uint256'>) => void): void {
-    rec((s) => {
-      run(s.args.x);
-      return s.return({ x: s.args.x });
+    rec((s, a) => {
+      run(a.x);
+      return s.return({ x: a.x });
     });
   }
 
@@ -1159,25 +1157,25 @@ describe('staging traps', () => {
   });
 
   test('node inspect (console.log) is NON-throwing and shows type/id/name', () => {
-    rec((s) => {
-      const printed = inspect(s.args.x);
-      expect(printed).toMatch(/^Expr<uint256> #0 ← args\.x at /);
+    rec((s, a) => {
+      const printed = inspect(a.x);
+      expect(printed).toMatch(/^Expr<uint256> #0 ← args\.arg0 at /);
       const sym = s.call({
-        address: s.args.who,
+        address: a.who,
         abi: erc20Abi,
         functionName: 'decimals',
       });
       expect(inspect(sym)).toMatch(/^Expr<uint8> #\d+ ← s\.call\(decimals\) at /);
-      return s.return({ x: s.args.x });
+      return s.return({ x: a.x });
     });
   });
 
   test('a Cell or MutArray where an Expr is expected gets a targeted message', () => {
     expectEvs(
       () =>
-        rec((s) => {
+        rec((s, a) => {
           const c = s.let(t.uint256, 0n);
-          return s.add(s.args.x, c as never);
+          return s.add(a.x, c as never);
         }),
       EvsTypeError,
       'TYPE_MISMATCH',

@@ -35,7 +35,17 @@ export type {
   IntoExpr,
   IntType,
   LitOf,
+  NamedType,
   NumericType,
+  ScalarType,
+  StringType,
+  StructTypeOf,
+  TupleArrayOf,
+  TupleAsParam,
+  TupleLitOf,
+  TupleType,
+  TupleTypeOf,
+  TypeToComponent,
   UintBits,
   UintType,
   WordType,
@@ -62,12 +72,20 @@ export type { SourceMap } from './asm/sourcemap.js';
 // builder
 export { evscript } from './builder/script.js';
 export type {
+  ArgHandle,
+  ArgHandles,
+  ArgsInput,
   Cell,
+  ComponentToType,
   EvsScript,
+  Field,
   LoopCtl,
   MutArray,
+  NormalizeArgs,
   ScriptBuilder,
   ScriptReturn,
+  Tuple,
+  TupleInit,
 } from './builder/script.js';
 
 // compile + viem

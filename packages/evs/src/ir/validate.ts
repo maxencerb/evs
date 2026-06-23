@@ -20,15 +20,20 @@
 
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import {
+  abiParamToType,
   bitsOf,
   elemTypeOf,
-  isDynamicType,
+  isArrayValueType,
   isEvsType,
+  isEvsValueType,
   isNumeric,
   isSigned,
+  isTupleType,
   isWordType,
+  typesEqual,
   type ArrayType,
   type EvsType,
+  type TupleType,
   type WordType,
 } from '../core/types.js';
 import type {
@@ -111,12 +116,12 @@ class IrValidator {
   private checkTables(): void {
     const { ir } = this;
     ir.values.forEach((info, i) => {
-      if (!isEvsType(info.type)) {
+      if (!isEvsValueType(info.type)) {
         this.fail(`values[${i}] has a non-v0 type ${JSON.stringify(info.type)}`, info.loc);
       }
     });
     ir.cells.forEach((info, i) => {
-      if (!isEvsType(info.type)) {
+      if (!isEvsValueType(info.type)) {
         this.fail(`cells[${i}] has a non-v0 type ${JSON.stringify(info.type)}`, info.loc);
       }
     });
@@ -127,7 +132,7 @@ class IrValidator {
       }
       if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`, ir.loc);
       argNames.add(a.name);
-      if (!isEvsType(a.type)) {
+      if (!isEvsValueType(a.type)) {
         this.fail(`args[${i}] ("${a.name}") has a non-v0 type ${JSON.stringify(a.type)}`, ir.loc);
       }
       const backing = ir.values[i];
@@ -137,16 +142,16 @@ class IrValidator {
           ir.loc,
         );
       }
-      if (backing.type !== a.type) {
+      if (!typesEqual(backing.type, a.type)) {
         this.fail(
-          `args[${i}] ("${a.name}") is declared '${a.type}' but its backing values[${i}] is '${backing.type}'`,
+          `args[${i}] ("${a.name}") is declared '${stringifyType(a.type)}' but its backing values[${i}] is '${stringifyType(backing.type)}'`,
           backing.loc,
         );
       }
     });
     ir.fns.forEach((fn, f) => {
       fn.params.forEach((p, i) => {
-        if (!isEvsType(p.type)) {
+        if (!isEvsValueType(p.type)) {
           this.fail(
             `fns[${f}].params[${i}] ("${p.name}") has a non-v0 type ${JSON.stringify(p.type)}`,
             fn.loc,
@@ -154,7 +159,7 @@ class IrValidator {
         }
       });
       fn.results.forEach((r, i) => {
-        if (!isEvsType(r.type)) {
+        if (!isEvsValueType(r.type)) {
           this.fail(`fns[${f}].results[${i}] has a non-v0 type ${JSON.stringify(r.type)}`, fn.loc);
         }
       });
@@ -185,7 +190,7 @@ class IrValidator {
       if (r.name === '') this.fail(`returns[${i}] has an empty name`, ir.loc);
       if (names.has(r.name)) this.fail(`duplicate return name "${r.name}"`, ir.loc);
       names.add(r.name);
-      if (!isEvsType(r.type)) {
+      if (!isEvsValueType(r.type)) {
         this.fail(
           `returns[${i}] ("${r.name}") has a non-v0 type ${JSON.stringify(r.type)}`,
           ir.loc,
@@ -275,9 +280,9 @@ class IrValidator {
         { label: 'value recorded at', loc: info.loc },
       ]);
     }
-    if (producedType !== null && info.type !== producedType) {
+    if (producedType !== null && !typesEqual(info.type, producedType)) {
       this.fail(
-        `${what}: values[${id}] is declared '${info.type}' but the statement produces '${producedType}'`,
+        `${what}: values[${id}] is declared '${stringifyType(info.type)}' but the statement produces '${stringifyType(producedType)}'`,
         loc,
       );
     }
@@ -302,9 +307,9 @@ class IrValidator {
         { label: 'value recorded at', loc: info.loc },
       ]);
     }
-    if (expected !== null && info.type !== expected) {
+    if (expected !== null && !typesEqual(info.type, expected)) {
       this.fail(
-        `${what}: operand type mismatch — expected '${expected}', got values[${id}] of type '${info.type}'`,
+        `${what}: operand type mismatch — expected '${stringifyType(expected)}', got values[${id}] of type '${stringifyType(info.type)}'`,
         loc,
       );
     }
@@ -342,8 +347,8 @@ class IrValidator {
     switch (s.k) {
       case 'const': {
         const what = `${path} (const)`;
-        if (!isEvsType(s.type)) {
-          this.fail(`${what}: non-v0 type ${JSON.stringify(s.type)}`, s.loc);
+        if (!isEvsValueType(s.type) || isTupleType(s.type)) {
+          this.fail(`${what}: non-v0 / non-const type ${JSON.stringify(s.type)}`, s.loc);
         }
         this.checkConstData(s.type, s.data, what, s.loc);
         this.define(s.out, s.type, what, s.loc);
@@ -362,7 +367,7 @@ class IrValidator {
         if (s.op === 'iszero') {
           const ta = this.use(s.a, null, what, s.loc);
           if (!isWordType(ta)) {
-            this.fail(`${what}: operand must be a word type, got '${ta}'`, s.loc);
+            this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`, s.loc);
           }
           this.define(s.out, 'bool', what, s.loc);
           return;
@@ -370,7 +375,10 @@ class IrValidator {
         // bitnot
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: operand must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.define(s.out, ta, what, s.loc);
         return;
@@ -388,7 +396,7 @@ class IrValidator {
         if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
         if (!convertOk(from, outInfo.type)) {
           this.fail(
-            `${what}: no v0 conversion from '${from}' to '${outInfo.type}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
+            `${what}: no v0 conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
             s.loc,
           );
         }
@@ -406,8 +414,8 @@ class IrValidator {
       case 'index': {
         const what = `${path} (index)`;
         const ta = this.use(s.arr, null, what, s.loc);
-        if (!isArrayType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${ta}'`, s.loc);
+        if (!isArrayValueType(ta)) {
+          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`, s.loc);
         }
         this.use(s.i, 'uint256', what, s.loc);
         this.define(s.out, elemTypeOf(ta), what, s.loc);
@@ -416,32 +424,78 @@ class IrValidator {
       case 'len': {
         const what = `${path} (len)`;
         const ta = this.use(s.a, null, what, s.loc);
-        if (!isDynamicType(ta)) {
-          this.fail(`${what}: operand must be string/bytes/T[], got '${ta}'`, s.loc);
+        // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
+        const isArrayLike = isArrayValueType(ta) || ta === 'string' || ta === 'bytes';
+        if (!isArrayLike) {
+          this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`, s.loc);
         }
         this.define(s.out, 'uint256', what, s.loc);
         return;
       }
       case 'arrnew': {
         const what = `${path} (arrnew)`;
-        if (!isWordType(s.elem)) {
-          this.fail(
-            `${what}: element type must be a word type, got ${JSON.stringify(s.elem)}`,
-            s.loc,
-          );
-        }
+        const elem = this.checkElemType(s.elem, what, s.loc);
         this.use(s.length, 'uint256', what, s.loc);
-        this.define(s.out, `${s.elem}[]`, what, s.loc);
+        this.define(s.out, arrayOf(elem), what, s.loc);
         return;
       }
       case 'arrset': {
         const what = `${path} (arrset)`;
         const ta = this.use(s.arr, null, what, s.loc);
-        if (!isArrayType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${ta}'`, s.loc);
+        if (!isArrayValueType(ta)) {
+          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`, s.loc);
         }
         this.use(s.i, 'uint256', what, s.loc);
         this.use(s.value, elemTypeOf(ta), what, s.loc);
+        return;
+      }
+      case 'tuplenew': {
+        const what = `${path} (tuplenew)`;
+        const outInfo = this.ir.values[s.out];
+        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
+        const tt = outInfo.type;
+        if (!isTupleType(tt)) {
+          this.fail(`${what}: out value must be a tuple type, got '${stringifyType(tt)}'`, s.loc);
+        }
+        const seen = new Set<number>();
+        s.inits.forEach((init, j) => {
+          const comp = tt.components[init.index];
+          if (comp === undefined) {
+            this.fail(`${what}: init #${j} index ${init.index} out of range`, s.loc);
+          }
+          if (seen.has(init.index)) {
+            this.fail(`${what}: init #${j} writes member ${init.index} twice`, s.loc);
+          }
+          seen.add(init.index);
+          this.use(init.value, abiParamToType(comp), `${what} init #${j}`, s.loc);
+        });
+        this.define(s.out, tt, what, s.loc);
+        return;
+      }
+      case 'field': {
+        const what = `${path} (field)`;
+        const ta = this.use(s.tuple, null, what, s.loc);
+        if (!isTupleType(ta) || ta.type !== 'tuple') {
+          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`, s.loc);
+        }
+        const comp = ta.components[s.index];
+        if (comp === undefined) {
+          this.fail(`${what}: member index ${s.index} out of range`, s.loc);
+        }
+        this.define(s.out, abiParamToType(comp), what, s.loc);
+        return;
+      }
+      case 'tupleset': {
+        const what = `${path} (tupleset)`;
+        const ta = this.use(s.tuple, null, what, s.loc);
+        if (!isTupleType(ta) || ta.type !== 'tuple') {
+          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`, s.loc);
+        }
+        const comp = ta.components[s.index];
+        if (comp === undefined) {
+          this.fail(`${what}: member index ${s.index} out of range`, s.loc);
+        }
+        this.use(s.value, abiParamToType(comp), `${what} value`, s.loc);
         return;
       }
       case 'cellnew': {
@@ -549,7 +603,10 @@ class IrValidator {
       case 'mod': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isNumeric(ta)) {
-          this.fail(`${what}: operands must be numeric (uintN/intN), got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -561,7 +618,10 @@ class IrValidator {
       case 'gte': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isNumeric(ta)) {
-          this.fail(`${what}: operands must be numeric (uintN/intN), got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, 'bool', what, s.loc);
@@ -572,7 +632,7 @@ class IrValidator {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isWordType(ta)) {
           this.fail(
-            `${what}: eq/neq are word-type-only (memref equality is undefined), got '${ta}'`,
+            `${what}: eq/neq are word-type-only (memref equality is undefined), got '${stringifyType(ta)}'`,
             s.loc,
           );
         }
@@ -592,7 +652,10 @@ class IrValidator {
       case 'bitxor': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: operands must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: operands must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, ta, what, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -602,7 +665,10 @@ class IrValidator {
       case 'shr': {
         const ta = this.use(s.a, null, what, s.loc);
         if (!isBitsOperand(ta)) {
-          this.fail(`${what}: shifted operand must be uintN/intN/bytesN, got '${ta}'`, s.loc);
+          this.fail(
+            `${what}: shifted operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
+            s.loc,
+          );
         }
         this.use(s.b, 'uint256', `${what} shift amount`, s.loc);
         this.define(s.out, ta, what, s.loc);
@@ -628,8 +694,7 @@ class IrValidator {
     s.args.forEach((a, i) => {
       const p = s.fnAbi.inputs[i];
       if (p === undefined) return; // unreachable: lengths checked above
-      if (!isEvsType(p.type)) return; // already rejected by checkPlainAbi
-      this.use(a, p.type, `${what} arg ${i} ("${p.name}")`, s.loc);
+      this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`, s.loc);
     });
     if (s.outs.length !== s.fnAbi.outputs.length) {
       this.fail(
@@ -640,8 +705,7 @@ class IrValidator {
     s.outs.forEach((out, i) => {
       const p = s.fnAbi.outputs[i];
       if (p === undefined) return; // unreachable: lengths checked above
-      if (!isEvsType(p.type)) return; // already rejected by checkPlainAbi
-      this.define(out, p.type, `${what} out ${i} ("${p.name}")`, s.loc);
+      this.define(out, abiParamToType(p), `${what} out ${i} ("${p.name}")`, s.loc);
     });
     if (s.mode === 'try') {
       if (s.successOut === undefined) {
@@ -671,20 +735,63 @@ class IrValidator {
     what: string,
     loc: SourceLoc | null,
   ): void {
-    params.forEach((p, i) => {
-      if (p.components !== undefined) {
+    params.forEach((p, i) => this.checkAbiParam(p, `${what}[${i}] ("${p.name}")`, loc));
+  }
+
+  private checkAbiParam(p: PlainAbiParam, what: string, loc: SourceLoc | null): void {
+    if (p.type.startsWith('tuple')) {
+      if (p.type !== 'tuple' && p.type !== 'tuple[]' && p.type !== 'tuple[][]') {
+        this.fail(`${what}: unsupported tuple array depth ${JSON.stringify(p.type)}`, loc);
+      }
+      if (p.components === undefined || p.components.length === 0) {
+        this.fail(`${what}: tuple type carries no components`, loc);
+      }
+      p.components.forEach((c, j) =>
+        this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`, loc),
+      );
+      return;
+    }
+    if (p.components !== undefined) {
+      this.fail(`${what}: non-tuple type '${p.type}' must not carry components`, loc);
+    }
+    if (!isEvsType(p.type)) {
+      this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`, loc);
+    }
+  }
+
+  /**
+   * Element type of an `arrnew` (§12.4). Admits one level of array nesting over a composite/dynamic
+   * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
+   * or a plain `tuple`. STILL deferred (`UNSUPPORTED_V0`): `tuple[]` element (→ `tuple[][]`), a
+   * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
+   */
+  private checkElemType(elem: EvsType, what: string, loc: SourceLoc | null): EvsType {
+    if (isWordType(elem) || elem === 'string' || elem === 'bytes') return elem;
+    if (isTupleType(elem)) {
+      if (elem.type !== 'tuple') {
         this.fail(
-          `${what}[${i}] ("${p.name}") carries components — tuples are not supported in v0`,
+          `${what}: array element ${stringifyType(elem)} (a composite array element) is not supported (only one array nesting level over a tuple/dynamic element)`,
           loc,
         );
       }
-      if (!isEvsType(p.type)) {
+      return elem;
+    }
+    if (typeof elem === 'string' && elem.endsWith('[]')) {
+      // a one-level string array element (`uint256[]`) → the array node is `uint256[][]` (supported);
+      // a deeper element (`uint256[][]`) → `uint256[][][]` is still deferred.
+      const inner = elem.slice(0, -2);
+      if (inner.endsWith('[]')) {
         this.fail(
-          `${what}[${i}] ("${p.name}") has a type outside v0 EvsType: ${JSON.stringify(p.type)}`,
+          `${what}: array element '${elem}' nests deeper than one level — not supported`,
           loc,
         );
       }
-    });
+      return elem;
+    }
+    return this.fail(
+      `${what}: array element type is not supported, got ${stringifyType(elem)}`,
+      loc,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -699,20 +806,26 @@ class IrValidator {
   ): void {
     if (isWordType(type)) {
       if (data.kind !== 'word') {
-        this.fail(`${what}: const of word type '${type}' must carry kind 'word'`, loc);
+        this.fail(
+          `${what}: const of word type '${stringifyType(type)}' must carry kind 'word'`,
+          loc,
+        );
       }
       if (!WORD_HEX_RE.test(data.hex)) {
         this.fail(`${what}: word const hex must be exactly 32 bytes`, loc);
       }
       const x = BigInt(data.hex);
       if (!isCanonicalWord(type, x)) {
-        this.fail(`${what}: ${data.hex} is not a canonical '${type}' word`, loc);
+        this.fail(`${what}: ${data.hex} is not a canonical '${stringifyType(type)}' word`, loc);
       }
       return;
     }
     // dynamic type — pre-encoded memref payload [len:32][payload…]
     if (data.kind !== 'data') {
-      this.fail(`${what}: const of dynamic type '${type}' must carry kind 'data'`, loc);
+      this.fail(
+        `${what}: const of dynamic type '${stringifyType(type)}' must carry kind 'data'`,
+        loc,
+      );
     }
     if (!DATA_HEX_RE.test(data.hex)) {
       this.fail(`${what}: data const hex is malformed`, loc);
@@ -731,6 +844,12 @@ class IrValidator {
         );
       }
       const elem = elemTypeOf(type);
+      if (!isWordType(elem)) {
+        this.fail(
+          `${what}: only word-element array consts are supported, got '${stringifyType(type)}'`,
+          loc,
+        );
+      }
       const count = Number(len);
       for (let i = 0; i < count; i++) {
         const word = BigInt(`0x${data.hex.slice(66 + i * 64, 66 + (i + 1) * 64)}`);
@@ -756,7 +875,22 @@ class IrValidator {
 // ---------------------------------------------------------------------------
 
 function isArrayType(s: EvsType): s is ArrayType {
-  return s.endsWith('[]');
+  return typeof s === 'string' && s.endsWith('[]');
+}
+
+/** The array type whose element is `elem` (validated by `checkElemType`): a string element yields
+ *  `${elem}[]`; a plain `tuple` yields a `tuple[]` {@link TupleType}. */
+function arrayOf(elem: EvsType): ArrayType | TupleType {
+  if (typeof elem === 'string') {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `elem` was validated as a one-level-or-shallower string/word/array element, so `${elem}[]` is a valid ArrayType.
+    return `${elem}[]` as ArrayType;
+  }
+  return Object.freeze({ type: 'tuple[]', components: elem.components });
+}
+
+/** Human-readable rendering of a value type for error messages (tuples → their components). */
+function stringifyType(t: EvsType): string {
+  return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
 /** bitwise/shift operand domain per architecture §6: uintN, intN, bytesN. */

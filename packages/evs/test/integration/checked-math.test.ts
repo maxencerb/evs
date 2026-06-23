@@ -9,7 +9,7 @@
 import { decodeFunctionResult, encodeFunctionData, type Abi, type Hex } from 'viem';
 import { beforeAll, describe, expect, test } from 'vitest';
 
-import { arg, evscript, type EvsType } from '../../src/index.js';
+import { evscript, type EvsType } from '../../src/index.js';
 import { EvsReference } from '../generated/index.js';
 import { publicClient } from '../harness/anvil.js';
 import { deploy, extractRevertData, lcg } from './helpers.js';
@@ -93,9 +93,8 @@ describe('checked math: evs vs solc 0.8.30 (EvsReference)', () => {
     const ty = `${c.signed ? 'int' : 'uint'}${c.bits}` as EvsType;
     // Width is dynamic over the matrix, so the script is built with widened types on
     // purpose (graceful-widening path, api.md §3); runtime IR validation sees the real type.
-    const script = evscript(
-      { name: c.fn, args: [arg('a', ty as 'uint256'), arg('b', ty as 'uint256')] },
-      (s) => s.return({ r: s[c.op](s.args.a, s.args.b) }),
+    const script = evscript({ name: c.fn, args: [ty as 'uint256', ty as 'uint256'] }, (s, a, b) =>
+      s.return({ r: s[c.op](a, b) }),
     );
     const compiled = script.compile();
     const overrideParams = compiled.toViem({ mode: 'stateOverride' });

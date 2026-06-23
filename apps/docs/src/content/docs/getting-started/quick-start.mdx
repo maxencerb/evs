@@ -12,16 +12,15 @@ three reads, one `eth_call`, one fully typed result. You need
 <Steps>
 
 1. **Define the script.** `evscript` takes a header — `{ name, args }`, with each argument
-   declared via `arg(name, type)` from the `t` namespace — and a builder callback. The
-   callback receives the builder `s`, reads script arguments from `s.args`, records calls
+   declared as a `t.*` type from the `t` namespace — and a builder callback. The callback
+   receives the builder `s` followed by one positional handle per argument, records calls
    with `s.call`, and must return `s.return({ ... })` with the values you want back:
 
    ```ts
-   import { arg, evscript, t } from '@maxencerb/evs';
+   import { evscript, t } from '@maxencerb/evs';
    import { erc20Abi } from 'viem';
 
-   export const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-     const { token } = s.args;
+   export const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
      const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
      const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
      const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
@@ -38,11 +37,10 @@ three reads, one `eth_call`, one fully typed result. You need
    returns a frozen artifact (the `tokenMeta.compile()` method is sugar for the same call):
 
    ```ts
-   import { arg, compile, evscript, t } from '@maxencerb/evs';
+   import { compile, evscript, t } from '@maxencerb/evs';
    import { erc20Abi } from 'viem';
 
-   const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-     const { token } = s.args;
+   const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
      const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
      const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
      const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
@@ -60,11 +58,10 @@ three reads, one `eth_call`, one fully typed result. You need
    `args`:
 
    ```ts
-   import { arg, compile, evscript, t } from '@maxencerb/evs';
+   import { compile, evscript, t } from '@maxencerb/evs';
    import { createPublicClient, erc20Abi, http } from 'viem';
 
-   const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-     const { token } = s.args;
+   const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
      const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
      const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
      const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
@@ -77,7 +74,7 @@ three reads, one `eth_call`, one fully typed result. You need
    export const out = await client.readContract({
      ...compile(tokenMeta).toViem(), // { abi, code } — deployless eth_call
      functionName: 'tokenMeta',
-     args: [usdc], // typed: readonly [token: `0x${string}`]
+     args: [usdc], // typed: readonly [`0x${string}`]
    });
    // out: { symbol: string; decimals: number; totalSupply: bigint }
    ```
@@ -105,7 +102,7 @@ see [execution](/guides/execution/).
 ## Where next
 
 - [Why evs?](/getting-started/why-evs/) — the dependent-read problem and the comparison with multicall3
-- [Writing scripts](/guides/writing-scripts/) — the script header, `s.args`, and the recording-time vs run-time model
+- [Writing scripts](/guides/writing-scripts/) — the script header, positional args, and the recording-time vs run-time model
 - [Calls](/guides/calls/) — the full `s.call` / `s.tryCall` option surface and failure handling
 - [Execution](/guides/execution/) — deployless vs state override, block pinning, `s.env` caveats
 - [Pool metadata example](/examples/pool-metadata/) — the flagship: pool config plus token metadata in one call

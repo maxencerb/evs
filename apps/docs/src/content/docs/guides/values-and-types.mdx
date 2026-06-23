@@ -7,49 +7,46 @@ Every runtime value in a script has an evs type — a Solidity-style type string
 
 ## The type vocabulary
 
-| Kind          | Types                                                                                  | Runtime representation                            |
-| ------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------- |
-| Word types    | `uint8`…`uint256` and `int8`…`int256` (multiples of 8), `address`, `bool`, `bytes1`…`bytes32` | one canonical EVM word                            |
-| Dynamic types | `string`, `bytes`                                                                       | memref — a pointer to `[length][payload]`         |
-| Array types   | `T[]` where `T` is any word type                                                        | memref — a pointer to `[length][one word per element]` |
+| Kind           | Types                                                                                  | Runtime representation                            |
+| -------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------- |
+| Word types     | `uint8`…`uint256` and `int8`…`int256` (multiples of 8), `address`, `bool`, `bytes1`…`bytes32` | one canonical EVM word                            |
+| Dynamic types  | `string`, `bytes`                                                                       | memref — a pointer to `[length][payload]`         |
+| Array types    | `T[]` where `T` is a word type, a dynamic type, a one-level array (`T[][]`), or a struct/tuple (`tuple[]`) | memref — `[length]` then either one word per element (word element, inline) or one pointer per element (composite element) |
+| Composite types | structs and tuples (`t.struct`/`t.tuple`)                                              | memref — a pointer to a packed block, one word per member |
 
-The exported type aliases mirror this taxonomy: `EvsType` is the whole set, `WordType`, `DynType`, and `ArrayType` are the three kinds, and two cross-cutting unions matter for operations — `NumericType` (`uintN` and `intN`) and `BitsType` (`uintN` and `bytesN`). The full alias table is in the [types reference](/reference/types/).
+The exported type aliases mirror this taxonomy: `EvsType` is the whole set; `WordType`, `DynType`, `ArrayType`, and `TupleType` are the kinds; and two cross-cutting unions matter for operations — `NumericType` (`uintN` and `intN`) and `BitsType` (`uintN` and `bytesN`). The full alias table is in the [types reference](/reference/types/).
 
-Not in v0: tuples, fixed-size arrays `T[N]`, nested arrays, and arrays of dynamic element types (such as `string[]`). Using one anywhere — an `arg()` declaration, a sub-call parameter — throws a recording-time `EvsTypeError` with code `UNSUPPORTED_V0`.
+A **composite-element array** — `tuple[]`, a string array (`string[]`/`bytes[]`), or a one-level nested array (`uint256[][]`) — is an **array of pointers**: the `[length]` prefix is followed by one pointer word per element, each pointing at that element's own block (a tuple block for `tuple[]`, an inner array for `T[][]`, a bytes block for `string[]`). This is exactly Solidity's `Struct[]`/`T[][]`/`string[]` memory layout. You read and build it through the same array handle as a word array (`.at(i)`, `.length()`, `s.newArray`), and it carries the same reference semantics — see [composite arrays](#composite-arrays-tuple-t-string) below.
+
+Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size arrays `T[N]` (not modeled).
 
 ## The `t` namespace
 
-`t` is autocomplete sugar: every property is its own name as a literal string (`t.uint256` is exactly `'uint256'`), and `t.array(elem)` builds an array type string while validating that the element is a word type. Raw type strings are accepted everywhere `t.*` is:
+`t` is autocomplete sugar: every scalar property is its own name as a literal string (`t.uint256` is exactly `'uint256'`), `t.array(elem)` builds an array type, and `t.struct`/`t.tuple` build composite types. Raw type strings are accepted everywhere `t.*` is:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const ex = evscript(
-  {
-    name: 'ex',
-    args: [
-      arg('owner', t.address),
-      arg('amounts', t.array(t.uint256)), // 'uint256[]'
-      arg('note', 'string'), // raw type strings work everywhere t.* does
-    ],
-  },
-  (s) => s.return({ n: s.args.amounts.length() }),
+  { name: 'ex', args: [t.address, t.array(t.uint256), t.string] },
+  //                    owner     amounts ('uint256[]')  note (raw 'string' works too)
+  (s, owner, amounts, note) => s.return({ n: amounts.length() }),
 );
 ```
 
 ## `Expr`: branded handles for runtime values
 
-An `Expr<t>` is a phantom-typed handle to a value that will exist at run time. It is **not** the value: you cannot read a number out of it, and you cannot construct one yourself. Handles are produced by `s.args`, `s.lit`, `s.call`, `s.env`, cell reads, and every operation — and consumed by other operations, sub-call parameters, and `s.return`.
+An `Expr<t>` is a phantom-typed handle to a value that will exist at run time. It is **not** the value: you cannot read a number out of it, and you cannot construct one yourself. Handles are produced by the script's positional args, `s.lit`, `s.call`, `s.env`, cell reads, and every operation — and consumed by other operations, sub-call parameters, and `s.return`.
 
 The brand is nominal (a `unique symbol`), so nothing structurally fakes an `Expr`, and each handle carries a runtime-readable `.type` tag. Word-typed handles stand for single words; dynamic and array handles are **memrefs** — references to a memory buffer, with reference semantics where mutation is possible (see `MutArray` in [control flow](/guides/control-flow/)).
 
 Dynamic and array handles expose two accessors:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const inspect = evscript({ name: 'inspect', args: [arg('xs', t.array(t.uint128))] }, (s) => {
-  const xs = s.args.xs; // Expr<'uint128[]'>
+const inspect = evscript({ name: 'inspect', args: [t.array(t.uint128)] }, (s, xs) => {
+  // xs: Expr<'uint128[]'>
   const n = xs.length(); // Expr<'uint256'>
   const first = xs.at(0n); // Expr<'uint128'> — bounds-checked, Panic(0x32) if out of range
   return s.return({ n, first });
@@ -57,6 +54,217 @@ const inspect = evscript({ name: 'inspect', args: [arg('xs', t.array(t.uint128))
 ```
 
 The arithmetic, comparison, bitwise, and conversion methods on `Expr` are covered in [arithmetic](/guides/arithmetic/); the exhaustive method tables are in the [types reference](/reference/types/).
+
+## Composite types: structs and tuples
+
+Solidity structs and tuples are first-class. Build a composite type with `t.struct` (named members — inferred as an object) or `t.tuple` (positional members — inferred as an array); both produce a [`TupleType`](/reference/types/#composite-types-tupletype) descriptor that viem infers directly. A composite value is a memref to a packed block of one word per member (a static member inline, a dynamic/nested member as a pointer), and its handle is a [`Tuple`](/reference/builder/#tuple) — not an `Expr` — exposing a [`Field`](/reference/builder/#field) per member.
+
+Three things you do with composites:
+
+**Decode a struct return.** A `'tuple'` output of `s.call` becomes a `Tuple` handle; read members by name with `.field.get()`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const positionsAbi = [
+  {
+    type: 'function',
+    name: 'positions',
+    stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'nonce', type: 'uint96' },
+          { name: 'operator', type: 'address' },
+          { name: 'liquidity', type: 'uint128' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const readPosition = evscript(
+  { name: 'readPosition', args: [t.address, t.uint256] },
+  (s, manager, tokenId) => {
+    const pos = s.call({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
+    //    ^? Tuple<…> — the struct output, decoded
+    return s.return({
+      operator: pos.operator.get(), // Expr<'address'>, read by name
+      liquidity: pos.liquidity.get(), // Expr<'uint128'>
+      position: pos, // a Tuple handle is returnable directly — the whole struct flows out as an object
+    });
+  },
+);
+```
+
+A `Tuple` handle is returnable **directly** — `s.return({ position: pos })` hands the whole struct back, abitype-typed. `pos.expr()` does the same thing and is still valid when you want the bare memref `Expr` (to pass on as a call argument, say).
+
+**Construct a tuple with `s.tuple`.** Allocate a struct/tuple in memory and fill members — by an init record, or by `Field.set` afterwards:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const buildPosition = evscript({ name: 'buildPosition', args: [t.address] }, (s, owner) => {
+  const pos = s.tuple(Position, { liquidity: 1000n, owner }); // alloc + zero-fill + set members
+  pos.liquidity.set(pos.liquidity.get().add(7n)); // read-modify-write a field
+  return s.return({ position: pos }); // a Tuple is returnable directly → returns { liquidity, owner }
+});
+```
+
+**Pass a struct to a call.** A `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal object:
+
+```ts
+import { evscript } from '@maxencerb/evs';
+
+// A raw `as const` descriptor matches the ABI's component order exactly — `s.tuple` and a raw
+// `readonly AbiParameter[]` are accepted anywhere a tuple type is expected.
+const QuoteParams = {
+  type: 'tuple',
+  components: [
+    { name: 'tokenIn', type: 'address' },
+    { name: 'fee', type: 'uint24' },
+    { name: 'amountIn', type: 'uint256' },
+  ],
+} as const;
+
+const quoteAbi = [
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'view',
+    inputs: [{ name: 'p', ...QuoteParams }],
+    outputs: [{ name: 'amountOut', type: 'uint256' }],
+  },
+] as const;
+
+const getQuote = evscript(
+  { name: 'getQuote', args: ['address', 'address', 'uint24', 'uint256'] },
+  (s, quoter, tokenIn, fee, amountIn) => {
+    const params = s.tuple(QuoteParams, { tokenIn, fee, amountIn });
+    const amountOut = s.call({ address: quoter, abi: quoteAbi, functionName: 'quote', args: [params] });
+    return s.return({ amountOut });
+  },
+);
+```
+
+A `TupleType` arg works the same way: declare it on the header (`args: [QuoteParams]`) and the body receives a `Tuple` handle instead of an `Expr`. Reference semantics apply throughout — a `Tuple` handle is a pointer, so passing it (or aliasing it) shares the same block and a later `.set()` is visible everywhere. The full `Tuple`/`Field`/`s.tuple` surface is in the [builder reference](/reference/builder/#stuple).
+
+## Composite arrays: `tuple[]`, `T[][]`, `string[]`
+
+Arrays whose element is itself composite — `tuple[]` (arrays of structs), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays (`string[]`, `bytes[]`) — are first-class. They share the word-array handle surface (`.length()`, `.at(i)`, `s.newArray`); the only difference is in memory each slot holds a **pointer** to the element's own block instead of an inline value (an array-of-pointers, exactly Solidity `Struct[]`/`T[][]`/`string[]` memory). Reference semantics carry over: an array handle is a pointer, so the element handles you read from it alias the array's slots.
+
+**Read a `tuple[]` output.** A `'tuple[]'` output of `s.call` is an array handle; `.at(i)` returns the i-th element as a typed [`Tuple`](/reference/builder/#tuple) — read its fields by name:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const registryAbi = [
+  {
+    type: 'function',
+    name: 'allPositions',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple[]',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const readPositions = evscript({ name: 'readPositions', args: [t.address] }, (s, registry) => {
+  const positions = s.call({ address: registry, abi: registryAbi, functionName: 'allPositions' });
+  //    ^? Expr<'tuple[]'> — the array handle
+  const first = positions.at(0n); // Tuple element — bounds-checked, Panic(0x32) if out of range
+  return s.return({
+    firstOwner: first.owner.get(), // Expr<'address'>, by name
+    positions, // the whole tuple[] flows out, abitype-typed → readonly { liquidity; owner }[]
+  });
+});
+```
+
+A `tuple[]` output unwraps to `readonly Struct[]` at the viem call site; `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`.
+
+**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const buildPositions = evscript({ name: 'buildPositions', args: [t.address, t.uint256] }, (s, owner, n) => {
+  const arr = s.newArray(Position, n); // zero-filled tuple[n] — an array of fresh element blocks
+  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+    const el = arr.get(i); // Tuple handle into slot i
+    el.liquidity.set(i.toUint(t.uint128));
+    el.owner.set(owner);
+  });
+  return s.return({ positions: arr.expr() }); // returnable as readonly { liquidity; owner }[]
+});
+```
+
+A composite-array **literal** (a plain JS array of struct objects, of arrays, or of strings) is constructible anywhere the value type is expected — it is built at record time into a fresh `[length][p0…]` block with reference semantics (not a flat data segment):
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const literals = evscript({ name: 'literals', args: [] }, (s) => {
+  const positions = s.lit(t.array(t.struct({ liquidity: t.uint128, owner: t.address })), [
+    { liquidity: 100n, owner: '0x0000000000000000000000000000000000000001' },
+    { liquidity: 200n, owner: '0x0000000000000000000000000000000000000002' },
+  ]);
+  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]); // uint256[][]
+  const tags = s.lit(t.array(t.string), ['alpha', 'beta']); // string[]
+  return s.return({ positions, grid, tags });
+});
+```
+
+**Pass a `tuple[]` to a call.** A `'tuple[]'` argument accepts an array handle (`arr.expr()`) or a plain `readonly Struct[]` literal:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const sinkAbi = [
+  {
+    type: 'function',
+    name: 'totalLiquidity',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'ps',
+        type: 'tuple[]',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+const sumLiquidity = evscript({ name: 'sumLiquidity', args: [t.address] }, (s, sink) => {
+  const total = s.call({
+    address: sink,
+    abi: sinkAbi,
+    functionName: 'totalLiquidity',
+    args: [[{ liquidity: 1000n, owner: '0x0000000000000000000000000000000000000001' }]],
+  });
+  return s.return({ total });
+});
+```
+
+Still deferred (`UNSUPPORTED_V0` at recording): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size `T[N]`.
 
 ## Literal coercion: `IntoExpr`
 
@@ -71,15 +279,16 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `bytes`           | `0x` string                       | any even-length hex                                                    |
 | `string`          | `string`                          | UTF-8 encoded                                                          |
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
+| `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to zero |
 
-Word literals canonicalize at recording. Dynamic literals and literal arrays become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them.
+Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array.
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const coerce = evscript({ name: 'coerce', args: [arg('x', t.uint256)] }, (s) => {
-  const a = s.args.x.add(1n); // bigint → uint256 literal
-  const b = s.args.x.add(250); // number → uint256 (safe integer, range-checked)
+const coerce = evscript({ name: 'coerce', args: [t.uint256] }, (s, x) => {
+  const a = x.add(1n); // bigint → uint256 literal
+  const b = x.add(250); // number → uint256 (safe integer, range-checked)
   const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n]); // array literal → data segment
   const dai = s.lit(t.address, '0x6B175474E89094C44Da98b954EedeAC495271d0F');
   const greeting = s.lit(t.string, 'hello');
@@ -101,12 +310,12 @@ Because handles are plain objects at run time of *your* program, JS will happily
 The following does not compile (and the parts TS cannot reject throw at recording time):
 
 ```ts nocheck
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const bad = evscript({ name: 'bad', args: [arg('x', t.uint256)] }, (s) => {
-  const doubled = s.args.x * 2; // TS error — and EvsStagingError if it ever ran
-  const text = `x is ${s.args.x}`; // TS allows this — EvsStagingError at recording
-  return s.return({ x: s.args.x });
+const bad = evscript({ name: 'bad', args: [t.uint256] }, (s, x) => {
+  const doubled = x * 2; // TS error — and EvsStagingError if it ever ran
+  const text = `x is ${x}`; // TS allows this — EvsStagingError at recording
+  return s.return({ x });
 });
 ```
 
@@ -117,11 +326,11 @@ const bad = evscript({ name: 'bad', args: [arg('x', t.uint256)] }, (s) => {
 `if (x)` never calls a coercion hook, so it cannot throw. This script compiles and records without any error — and it is wrong:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const wrong = evscript({ name: 'wrong', args: [arg('flag', t.bool)] }, (s) => {
+const wrong = evscript({ name: 'wrong', args: [t.bool] }, (s, flag) => {
   let fee = 30n;
-  if (s.args.flag) {
+  if (flag) {
     // ALWAYS taken at recording time: an Expr handle is an object, and objects are truthy
     fee = 5n;
   }

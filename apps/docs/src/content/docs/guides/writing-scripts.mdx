@@ -8,21 +8,21 @@ An evs script is an ordinary TypeScript value. You build one with `evscript`, gi
 ## Anatomy of a script
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const tokenMeta = evscript(
-  // 1. header: the script name + an ordered tuple of argument declarations
-  { name: 'tokenMeta', args: [arg('token', t.address), arg('owner', t.address)] },
-  // 2. builder callback: records statements through `s`
-  (s) => {
-    const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+  // 1. header: the script name + an ordered list of argument types
+  { name: 'tokenMeta', args: [t.address, t.address] },
+  // 2. builder callback: args arrive as positional params after `s`
+  (s, token, owner) => {
+    const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
     const balance = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.owner],
+      args: [owner],
     });
     // 3. the callback must return s.return(...) — it defines the script's named outputs
     return s.return({ symbol, decimals, balance });
@@ -34,8 +34,8 @@ const compiled = tokenMeta.compile(); // bytecode + literal-typed ABI, ready for
 
 Three parts matter:
 
-- The **header** `{ name, args }` declares the script's ABI surface. `name` becomes the function name you pass to viem's `readContract`; `args` is an ordered tuple of `arg(name, type)` declarations.
-- The **builder callback** receives `s` (a `ScriptBuilder`) and records statements by calling its methods. It runs exactly once, on your machine — never on-chain.
+- The **header** `{ name, args }` declares the script's ABI surface. `name` becomes the function name you pass to viem's `readContract`; `args` is an ordered list of `t.*` types (a lone type or a `readonly` list). It is optional — a zero-arg script omits it.
+- The **builder callback** receives `s` (a `ScriptBuilder`) followed by one positional handle per declared argument. It runs exactly once, on your machine — never on-chain.
 - The callback **must return `s.return(...)`**; the record you pass defines the script's outputs.
 
 `evscript` returns an `EvsScript` value with four members: `name`, `ir` (frozen, JSON-serializable), `abi` (the literal-typed ABI — it exists before you compile), and `compile(options?)`, which is sugar for the standalone `compile(script, options?)`. Exact signatures are in the [evscript reference](/reference/evscript/).
@@ -45,13 +45,13 @@ Three parts matter:
 ## The header
 
 - `name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
-- `args` is a readonly tuple built with `arg(name, type)`. Declaration order is binding: it is the type-level order, the runtime encode order, and the ABI `inputs` order all at once. Call sites stay positional, viem style — `args: [token, owner]`, typed as a named readonly tuple.
-- Valid argument types in v0: any word type, `string`, `bytes`, or `T[]` of a word type. Tuples, fixed-size `T[N]` arrays, and nested arrays throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
-- Header validation is immediate: invalid identifiers, duplicate argument names, and unknown type strings all throw `EvsTypeError` before anything records.
+- `args` is a single `t.*` type or a `readonly` list of them (a lone type is sugar for a one-element list). It is optional. Declaration order is binding: it is the type-level order, the runtime encode order, and the ABI `inputs` order all at once. Call sites stay positional, viem style — `args: [token, owner]`. Each arg is auto-named `arg{i}` in the ABI (positional labels; viem infers `args` positionally).
+- Valid argument types: any word type, `string`, `bytes`, an array (including `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]`), or a struct/tuple (`t.struct`/`t.tuple`). Still-unsupported shapes — two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed `T[N]` — throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
+- Header validation is immediate: invalid identifiers and unknown type shapes throw `EvsTypeError` before anything records.
 
-## Reading arguments: `s.args`
+## Reading arguments: positional params
 
-`s.args` is a record keyed by argument name; each property is an `Expr` of the declared type. With the header above, `s.args.token` is `Expr<'address'>` and `s.args.owner` is `Expr<'address'>`. Destructuring works: `const { token, owner } = s.args;`.
+Arguments arrive as **positional parameters after `s`** — there is no `s.args`. With the header above, the callback is `(s, token, owner) => …` where `token` is `Expr<'address'>` and `owner` is `Expr<'address'>`. A scalar arg is an `Expr`; a struct/tuple arg is a [`Tuple` handle](/reference/builder/#tuple).
 
 These are not values — they are typed handles standing in for the values that calldata will carry at run time. [Values and types](/guides/values-and-types/) explains what you can and cannot do with a handle.
 
@@ -59,7 +59,7 @@ These are not values — they are typed handles standing in for the values that 
 
 - Call it **exactly once, unconditionally**, and return its result from the callback. Calling it inside `s.if`/`s.while`, twice, or not at all is a recording-time error (`EvsScopeError`/`EvsTypeError`).
 - The record's keys become the named components of the script's single tuple output. viem consumers receive a plain object with the same keys — `{ symbol: 'DAI', decimals: 18, balance: 123n }`-shaped, fully typed.
-- Every value in the record must be an `Expr`. Read a cell with `.get()`, convert a `MutArray` with `.expr()` (see [control flow](/guides/control-flow/)).
+- Every value is an `Expr` or a `Tuple` handle (returned directly — a struct flows out as an object). Read a cell with `.get()`, convert a `MutArray` with `.expr()` (see [control flow](/guides/control-flow/)).
 - `s.return` seals the recorder: any builder call after it throws `EvsScopeError` (`RECORDING_CLOSED`).
 
 :::tip
@@ -91,7 +91,7 @@ evscript(header, callback)
 The practical consequence: plain JS control flow is a **metaprogramming** tool. A JS loop over a host array runs at recording time and unrolls — the compiled script contains one copy of the body per iteration, and no loop:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const TOKENS = [
@@ -99,7 +99,7 @@ const TOKENS = [
   '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
 ] as const;
 
-const watchlist = evscript({ name: 'watchlist', args: [arg('owner', t.address)] }, (s) => {
+const watchlist = evscript({ name: 'watchlist', args: [t.address] }, (s, owner) => {
   const out = s.newArray(t.uint256, TOKENS.length);
   let i = 0n;
   // host loop over a host array: runs at recording time and unrolls —
@@ -109,7 +109,7 @@ const watchlist = evscript({ name: 'watchlist', args: [arg('owner', t.address)] 
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.owner],
+      args: [owner],
     });
     out.set(i, bal);
     i += 1n;
@@ -134,11 +134,11 @@ Native JS `if`/`for`/`&&` cannot branch on EVM values. An `Expr` is an object, a
 Pass `{ locations: false }` to skip capture — statements then carry no locations, and diagnostics lose their `file:line` attribution:
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const lean = evscript(
-  { name: 'lean', args: [arg('x', t.uint256)] },
-  (s) => s.return({ doubled: s.args.x.mul(2n) }),
+  { name: 'lean', args: [t.uint256] },
+  (s, x) => s.return({ doubled: x.mul(2n) }),
   { locations: false }, // recorded statements carry no source locations
 );
 ```

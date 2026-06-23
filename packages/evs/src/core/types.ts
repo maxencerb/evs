@@ -11,6 +11,7 @@ import { captureLoc } from './loc.js';
 // re-exported per the module-interfaces conventions block ("`Address` is re-exported from
 // `abitype`"); type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
+import type { AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
 
 // ---------------------------------------------------------------------------
 // type vocabulary
@@ -31,8 +32,41 @@ export type IntType = `int${UintBits}`;
 export type BytesNType = `bytes${BytesSize}`;
 export type WordType = UintType | IntType | 'address' | 'bool' | BytesNType;
 export type DynType = 'string' | 'bytes';
-export type ArrayType = `${WordType}[]`;
-export type EvsType = WordType | DynType | ArrayType;
+/**
+ * A type whose ABI layout is captured entirely by its type **string**: a word, a dynamic
+ * byte-blob, or an array (to any depth) of such. Tuples are NOT string-encoded — named members
+ * cannot live in a string — they are {@link TupleType} descriptor objects.
+ */
+export type ScalarType = WordType | DynType;
+/** Every string-encoded type (a {@link ScalarType} or an {@link ArrayType}). */
+export type StringType = ScalarType | ArrayType;
+/**
+ * Arrays of scalar leaves, string-encoded and nestable to a bounded depth (real ABIs rarely
+ * exceed two): `uint256[]`, `address[][]`, `string[]`, …
+ */
+export type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+/**
+ * A tuple / struct type — an abitype `AbiParameter`-shaped descriptor (recursive, JSON-safe).
+ * `type` carries any array suffix (`'tuple'`, `'tuple[]'`, `'tuple[][]'`) and `components`
+ * describe the (element) tuple's members. Built via {@link t.struct} / {@link t.tuple}; a raw
+ * `readonly AbiParameter[]` is also accepted wherever a tuple type is expected.
+ */
+export interface TupleType {
+  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly components: readonly NamedType[];
+}
+/**
+ * A member of a {@link TupleType}: structurally an abitype `AbiParameter` (and the IR
+ * `PlainAbiParam`). `type` is the canonical Solidity string (`'uint256'`, `'tuple'`,
+ * `'tuple[]'`, `'uint256[]'`, …); `components` is present iff `type` starts with `'tuple'`. A
+ * named struct field has a non-empty `name`; a positional tuple member has `name: ''`.
+ */
+export interface NamedType {
+  readonly name: string;
+  readonly type: string;
+  readonly components?: readonly NamedType[];
+}
+export type EvsType = WordType | DynType | ArrayType | TupleType;
 export type ArgType = EvsType;
 export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
@@ -84,8 +118,13 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  at<elem extends WordType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>;
-  // bounds-checked → Panic 0x32
+  // `& ArrayType` pins `${elem}[]` to the depth-bounded array vocabulary (an unbounded
+  // `${StringType}[]` could reach depth 4, which is not an `EvsType`).
+  at<elem extends StringType>(
+    this: Expr<`${elem}[]` & ArrayType>,
+    i: IntoExpr<'uint256'>,
+  ): Expr<elem>;
+  // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
 
 export type LitOf<t extends EvsType> = t extends NumericType
@@ -100,9 +139,29 @@ export type LitOf<t extends EvsType> = t extends NumericType
           ? string
           : t extends 'bytes'
             ? `0x${string}`
-            : t extends `${infer e extends WordType}[]`
-              ? readonly LitOf<e>[]
-              : never;
+            : t extends TupleType
+              ? TupleLitOf<t>
+              : t extends `${infer e extends StringType}[]`
+                ? readonly LitOf<e>[]
+                : never;
+
+/**
+ * Host literal of a tuple: delegated to abitype, which applies the exact named-vs-positional
+ * rule (every member named → an object keyed by names; any member unnamed → a positional
+ * tuple) and recurses through nested components / array suffixes. A {@link TupleType} is
+ * abitype-`AbiParameter`-shaped, so it plugs straight in.
+ */
+export type TupleLitOf<t extends TupleType> = AbiParameterToPrimitiveType<
+  TupleAsParam<t>,
+  'inputs'
+>;
+
+/** A {@link TupleType} viewed as an unnamed abitype `AbiParameter` (for inference). */
+export type TupleAsParam<t extends TupleType> = {
+  readonly name: '';
+  readonly type: t['type'];
+  readonly components: t['components'];
+} & AbiParameter;
 
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 
@@ -117,7 +176,7 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
-export function arg<const name extends string, const type extends ArgType>(
+export function arg<const name extends string, const type extends StringType>(
   name: name,
   type: type,
 ): ArgSpec<name, type> {
@@ -132,8 +191,54 @@ export function arg<const name extends string, const type extends ArgType>(
   return Object.freeze({ name, type });
 }
 
+// -- type-level record→ordered-components machinery (abitype §4.2) -----------------------------
+// A struct record is unordered at the type level; recovering an order needs `UnionToTuple`,
+// whose order is TS-internal-id order, NOT declaration order. That is SAFE here because a struct
+// compiles to a single NAMED ABI `tuple` which abitype infers as an ORDER-INSENSITIVE object;
+// runtime encode order is `Object.keys()` insertion order (the only source of truth). Positional
+// `t.tuple(...)` and script args use ordered declarators and never touch `UnionToTuple`.
+type UnionToIntersection<u> = (u extends unknown ? (k: u) => void : never) extends (
+  k: infer i,
+) => void
+  ? i
+  : never;
+type LastOf<u> =
+  UnionToIntersection<u extends unknown ? () => u : never> extends () => infer r ? r : never;
+type UnionToTuple<u, acc extends readonly unknown[] = []> = [u] extends [never]
+  ? acc
+  : UnionToTuple<Exclude<u, LastOf<u>>, [LastOf<u>, ...acc]>;
+
+/** A single `t.*` type → an abitype component descriptor (a {@link NamedType}). */
+export type TypeToComponent<name extends string, ty extends EvsType> = ty extends TupleType
+  ? { readonly name: name; readonly type: ty['type']; readonly components: ty['components'] }
+  : { readonly name: name; readonly type: ty };
+/** `t.struct({...})` → a named-components tuple type (key order irrelevant; see above). */
+export type StructTypeOf<spec extends Record<string, EvsType>> = {
+  readonly type: 'tuple';
+  readonly components: {
+    readonly [i in keyof UnionToTuple<keyof spec>]: UnionToTuple<keyof spec>[i] extends infer k
+      ? k extends keyof spec & string
+        ? TypeToComponent<k, spec[k]>
+        : never
+      : never;
+  };
+};
+/** `t.tuple(a, b, …)` → a positional (unnamed-components) tuple type — order is structural. */
+export type TupleTypeOf<items extends readonly EvsType[]> = {
+  readonly type: 'tuple';
+  readonly components: { readonly [i in keyof items]: TypeToComponent<'', items[i]> };
+};
+/** `t.array(tupleType)` → an array-of-tuple type (one `[]` deeper). */
+export type TupleArrayOf<e extends TupleType> = {
+  readonly type: `${e['type']}[]` & TupleType['type'];
+  readonly components: e['components'];
+};
+
 type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
-  array<const e extends WordType>(elem: e): `${e}[]`;
+  array<const e extends StringType>(elem: e): `${e}[]`;
+  array<const e extends TupleType>(elem: e): TupleArrayOf<e>;
+  struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>;
+  tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>;
 };
 
 const UINT_BITS_LIST: readonly number[] = Array.from({ length: 32 }, (_, i) => 8 * (i + 1));
@@ -168,6 +273,9 @@ function buildWordTypeSets(): {
 
 const SETS = buildWordTypeSets();
 
+// frozen namespace: the overloaded method types are the authority; the impls are intentionally
+// `unknown`-typed and validate at runtime (double-cast through `unknown`).
+// oxlint-disable-next-line typescript/no-unsafe-type-assertion
 export const t: TypeNamespace = Object.freeze({
   address: 'address',
   bool: 'bool',
@@ -269,38 +377,71 @@ export const t: TypeNamespace = Object.freeze({
   bytes32: 'bytes32',
   string: 'string',
   bytes: 'bytes',
-  array<const e extends WordType>(elem: e): `${e}[]` {
-    if (!isWordType(elem)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `t.array(): element type ${JSON.stringify(elem)} is not a word type (uintN/intN/address/bool/bytesN)`,
-        { loc: captureLoc() },
-      );
-    }
-    return `${elem}[]`;
+  array(elem: unknown): unknown {
+    return arrayTypeRT(elem);
   },
-} as const);
+  struct(spec: unknown): unknown {
+    return structTypeRT(spec);
+  },
+  tuple(...items: unknown[]): unknown {
+    return tupleTypeRT(items);
+  },
+} as const) as unknown as TypeNamespace;
 
 // ---------------------------------------------------------------------------
 // runtime type predicates / metadata
 // ---------------------------------------------------------------------------
 
-export function isEvsType(s: string): s is EvsType {
+/** Recognizes a string-encoded type (word, dynamic, or a nested array of such). */
+export function isStringType(s: string): s is StringType {
   if (isWordType(s) || s === 'string' || s === 'bytes') return true;
-  return s.endsWith('[]') && isWordType(s.slice(0, -2));
+  return s.endsWith('[]') && isStringType(s.slice(0, -2));
 }
 
-export function isWordType(s: string): s is WordType {
-  return SETS.word.has(s);
+/** A composite (tuple/struct) type descriptor — the only non-string {@link EvsType}. */
+export function isTupleType(v: unknown): v is TupleType {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const o = v as { type?: unknown; components?: unknown };
+  return (
+    (o.type === 'tuple' || o.type === 'tuple[]' || o.type === 'tuple[][]') &&
+    Array.isArray(o.components)
+  );
+}
+
+/** Any valid {@link EvsType} value (string-encoded or a tuple descriptor). */
+export function isEvsValueType(v: unknown): v is EvsType {
+  return (
+    (typeof v === 'string' && isStringType(v)) || (isTupleType(v) && componentsValid(v.components))
+  );
+}
+
+function componentsValid(components: readonly unknown[]): boolean {
+  return components.every((c) => {
+    if (typeof c !== 'object' || c === null) return false;
+    const o = c as { name?: unknown; type?: unknown; components?: unknown };
+    if (typeof o.name !== 'string' || typeof o.type !== 'string') return false;
+    if (o.type.startsWith('tuple'))
+      return Array.isArray(o.components) && componentsValid(o.components);
+    return isStringType(o.type) && o.components === undefined;
+  });
+}
+
+/** String type validity (word, dynamic, nested arrays). Tuples are objects — see {@link isEvsValueType}. */
+export function isEvsType(s: string): s is StringType {
+  return isStringType(s);
+}
+
+export function isWordType(s: string | TupleType): s is WordType {
+  return typeof s === 'string' && SETS.word.has(s);
 }
 
 export function isNumeric(s: EvsType): s is NumericType {
-  return SETS.numeric.has(s);
+  return typeof s === 'string' && SETS.numeric.has(s);
 }
 
-/** `intN` → true; every other v0 type (incl. `intN[]`) → false. */
+/** `intN` → true; every other v0 type (incl. `intN[]`, tuples) → false. */
 export function isSigned(s: EvsType): boolean {
-  return SETS.signed.has(s);
+  return typeof s === 'string' && SETS.signed.has(s);
 }
 
 /** address→160, bool→8 (canonical 0/1), bytesN→8N, uintN/intN→N. */
@@ -314,33 +455,252 @@ export function bitsOf(s: WordType): number {
   return bits;
 }
 
-/** string | bytes | T[] */
+/** Memref-valued (not a single stack word): string | bytes | T[] | tuple. */
 export function isDynamicType(s: EvsType): boolean {
+  if (typeof s !== 'string') return true; // tuples are always memref pointers
   return s === 'string' || s === 'bytes' || s.endsWith('[]');
 }
 
-export function elemTypeOf(s: ArrayType): WordType {
-  const elem: string = s.endsWith('[]') ? s.slice(0, -2) : '';
-  if (!isWordType(elem)) {
+/** A `T[]` array type (string array or tuple array). */
+export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
+  return typeof s === 'string' ? s.endsWith('[]') : s.type !== 'tuple';
+}
+
+/** The element type of an array type: one `[]` peeled off (string arrays) or the element
+ *  tuple (tuple arrays). */
+export function elemTypeOf(s: ArrayType | TupleType): EvsType {
+  if (typeof s === 'string') {
+    const elem: string = s.endsWith('[]') ? s.slice(0, -2) : '';
+    if (isStringType(elem)) return elem;
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `elemTypeOf: ${JSON.stringify(s)} is not a v0 array type (\`T[]\` of a word type)`,
+      `elemTypeOf: ${JSON.stringify(s)} is not an array type`,
       { loc: captureLoc() },
     );
   }
-  return elem;
+  if (s.type === 'tuple') {
+    throw new EvsTypeError('TYPE_MISMATCH', `elemTypeOf: a tuple is not an array type`, {
+      loc: captureLoc(),
+    });
+  }
+  const innerTag = s.type.slice(0, -2); // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]'
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- peeling one [] off a tuple-array tag yields a valid TupleType tag
+  return Object.freeze({ type: innerTag as TupleType['type'], components: s.components });
+}
+
+/** Structural equality of two value types — deep for tuples, `===` for string types. Tuple
+ *  descriptors are fresh objects (never reference-equal), so callers must use this, not `===`. */
+export function typesEqual(a: EvsType, b: EvsType): boolean {
+  if (typeof a === 'string' || typeof b === 'string') return a === b;
+  if (a.type !== b.type || a.components.length !== b.components.length) return false;
+  return a.components.every((ca, i) => {
+    const cb = b.components[i];
+    return (
+      cb !== undefined && ca.name === cb.name && typesEqual(abiParamToType(ca), abiParamToType(cb))
+    );
+  });
+}
+
+/** A {@link NamedType} / IR `PlainAbiParam` → its {@link EvsType} (a string, or a TupleType when
+ *  the param carries `components`). */
+export function abiParamToType(p: { type: string; components?: readonly NamedType[] }): EvsType {
+  if (p.type.startsWith('tuple') && p.components !== undefined) {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- guarded by startsWith('tuple') + components present
+    return { type: p.type as TupleType['type'], components: p.components };
+  }
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- non-tuple PlainAbiParam types are string-encoded EvsTypes
+  return p.type as EvsType;
+}
+
+/** An {@link EvsType} → an abitype param/component with `name`. Inverse of {@link abiParamToType}. */
+export function typeToAbiParam(name: string, ty: EvsType): NamedType {
+  if (typeof ty === 'string') return Object.freeze({ name, type: ty });
+  return Object.freeze({ name, type: ty.type, components: ty.components });
+}
+
+// ---------------------------------------------------------------------------
+// `t.struct` / `t.tuple` / `t.array` runtime constructors
+// ---------------------------------------------------------------------------
+
+/** A user-supplied member/element type → a canonical {@link NamedType} component. Accepts a
+ *  type string, a {@link TupleType}, or a raw `readonly AbiParameter[]` (interpreted as a tuple's
+ *  components). */
+function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
+  if (typeof ty === 'string') {
+    assertEvsType(ty, ctx);
+    return Object.freeze({ name, type: ty });
+  }
+  if (isTupleType(ty)) {
+    return Object.freeze({
+      name,
+      type: ty.type,
+      components: normalizeComponents(ty.components, ctx),
+    });
+  }
+  if (Array.isArray(ty)) {
+    return Object.freeze({ name, type: 'tuple', components: componentsFromAbi(ty, ctx) });
+  }
+  throw new EvsTypeError(
+    'TYPE_MISMATCH',
+    `${ctx}: expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
+    { loc: captureLoc() },
+  );
+}
+
+function describeTypeInput(v: unknown): string {
+  if (v === undefined) return 'undefined';
+  if (v === null) return 'null';
+  if (typeof v === 'object') return 'an object';
+  return JSON.stringify(v);
+}
+
+function normalizeComponents(components: readonly NamedType[], ctx: string): readonly NamedType[] {
+  return Object.freeze(
+    components.map((c) =>
+      c.components === undefined
+        ? toComponentRT(c.name, c.type, ctx)
+        : Object.freeze({
+            name: c.name,
+            type: c.type,
+            components: normalizeComponents(c.components, ctx),
+          }),
+    ),
+  );
+}
+
+/** Validate + canonicalize a raw `readonly AbiParameter[]` into tuple components. */
+function componentsFromAbi(params: readonly unknown[], ctx: string): readonly NamedType[] {
+  if (params.length === 0) {
+    throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: a tuple must have at least one component`, {
+      loc: captureLoc(),
+    });
+  }
+  return Object.freeze(
+    params.map((p, i) => {
+      if (typeof p !== 'object' || p === null) {
+        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} is not an ABI parameter`, {
+          loc: captureLoc(),
+        });
+      }
+      const o = p as { name?: unknown; type?: unknown; components?: unknown };
+      const name = typeof o.name === 'string' ? o.name : '';
+      if (typeof o.type !== 'string') {
+        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} has no \`type\``, {
+          loc: captureLoc(),
+        });
+      }
+      if (o.type.startsWith('tuple')) {
+        if (!Array.isArray(o.components)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${ctx}: tuple component #${i} ("${name}") has no \`components\``,
+            { loc: captureLoc() },
+          );
+        }
+        return Object.freeze({
+          name,
+          type: o.type,
+          components: componentsFromAbi(o.components, ctx),
+        });
+      }
+      assertEvsType(o.type, `${ctx} component #${i}`);
+      return Object.freeze({ name, type: o.type });
+    }),
+  );
+}
+
+function structTypeRT(spec: unknown): TupleType {
+  if (typeof spec !== 'object' || spec === null || Array.isArray(spec)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `t.struct(): expected a record of { field: type }, got ${describeTypeInput(spec)}`,
+      { loc: captureLoc() },
+    );
+  }
+  const entries = Object.entries(spec);
+  if (entries.length === 0) {
+    throw new EvsTypeError('TYPE_MISMATCH', `t.struct(): a struct must have at least one field`, {
+      loc: captureLoc(),
+    });
+  }
+  const components = entries.map(([name, ty]) => {
+    if (!IDENT_RE.test(name)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `t.struct(): field name ${JSON.stringify(name)} must be a non-empty identifier (an empty/odd name would collapse the struct to a positional array on the viem side)`,
+        { loc: captureLoc() },
+      );
+    }
+    return toComponentRT(name, ty, `t.struct() field "${name}"`);
+  });
+  return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
+}
+
+function tupleTypeRT(items: readonly unknown[]): TupleType {
+  if (items.length === 0) {
+    throw new EvsTypeError('TYPE_MISMATCH', `t.tuple(): a tuple must have at least one member`, {
+      loc: captureLoc(),
+    });
+  }
+  const components = items.map((ty, i) => toComponentRT('', ty, `t.tuple() member #${i}`));
+  return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
+}
+
+function arrayTypeRT(elem: unknown): EvsType {
+  if (typeof elem === 'string') {
+    assertEvsType(elem, 't.array() element');
+    arrayDepthGuard(`${elem}[]`);
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType, so `${elem}[]` is a valid ArrayType (depth-guarded)
+    return `${elem}[]` as ArrayType;
+  }
+  if (isTupleType(elem)) {
+    const tag = `${elem.type}[]`;
+    if (tag !== 'tuple[]' && tag !== 'tuple[][]') {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        `t.array(): tuple array nesting deeper than [][] is not supported`,
+        {
+          loc: captureLoc(),
+        },
+      );
+    }
+    return Object.freeze({
+      type: tag,
+      components: normalizeComponents(elem.components, 't.array()'),
+    });
+  }
+  if (Array.isArray(elem)) {
+    return Object.freeze({ type: 'tuple[]', components: componentsFromAbi(elem, 't.array()') });
+  }
+  throw new EvsTypeError(
+    'TYPE_MISMATCH',
+    `t.array(): element type ${describeTypeInput(elem)} is not a type (use the \`t\` namespace)`,
+    { loc: captureLoc() },
+  );
+}
+
+function arrayDepthGuard(s: string): void {
+  // depth-3 ceiling matches the ArrayType template type; deeper string arrays are rejected so
+  // the runtime and type-level vocabularies agree.
+  if (/\[\]\[\]\[\]\[\]/.test(s)) {
+    throw new EvsTypeError(
+      'UNSUPPORTED_V0',
+      `t.array(): array nesting deeper than [][][] is not supported`,
+      {
+        loc: captureLoc(),
+      },
+    );
+  }
 }
 
 // ---------------------------------------------------------------------------
 // internal helpers (module-private to evs; not part of the frozen M1 surface)
 // ---------------------------------------------------------------------------
 
-/** Recognizably-Solidity types that are deliberately out of v0 get the UNSUPPORTED_V0 code. */
+/** Recognizably-Solidity types that are deliberately out of evs get the UNSUPPORTED_V0 code. */
 function looksDeferred(s: string): boolean {
-  if (s === 'tuple' || s.startsWith('tuple')) return true; // tuples / tuple arrays
   if (/\[\d+\]$/.test(s)) return true; // fixed-size arrays T[N]
-  if (s.endsWith('[]') && /\[\]|\[\d+\]/.test(s.slice(0, -2))) return true; // nested arrays
-  if (s.endsWith('[]')) return true; // T[] of a non-word type (e.g. string[])
+  if (s.endsWith('[]') && /\[\d+\]/.test(s.slice(0, -2))) return true; // arrays containing a fixed array
   return false;
 }
 
@@ -348,18 +708,18 @@ function looksDeferred(s: string): boolean {
  * Eager type-string validation: throws `EvsTypeError` with the caller's loc, using
  * `UNSUPPORTED_V0` for valid-Solidity-but-deferred shapes and `TYPE_MISMATCH` otherwise.
  */
-function assertEvsType(s: string, context: string): asserts s is EvsType {
-  if (isEvsType(s)) return;
+function assertEvsType(s: string, context: string): asserts s is StringType {
+  if (isStringType(s)) return;
   if (looksDeferred(s)) {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
-      `${context}: type ${JSON.stringify(s)} is not supported in evs v0 (tuples, fixed-size arrays \`T[N]\`, and nested/non-word arrays are deferred)`,
+      `${context}: type ${JSON.stringify(s)} is not supported (fixed-size arrays \`T[N]\` are deferred — use a dynamic \`T[]\`)`,
       { loc: captureLoc() },
     );
   }
   throw new EvsTypeError(
     'TYPE_MISMATCH',
-    `${context}: unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, or T[] of a word type)`,
+    `${context}: unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, a \`T[]\` array, or a \`t.struct\`/\`t.tuple\`)`,
     { loc: captureLoc() },
   );
 }

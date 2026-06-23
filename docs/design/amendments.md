@@ -712,6 +712,345 @@ from `docs/design/`.
 
 ---
 
+## 16. Composite types (issue #2)
+
+Tuple/struct support (decode + encode + construction): `t.struct`/`t.tuple`, `s.tuple`, `Tuple`/
+`Field` handles, tuple call outputs/args, tuple returns, and a breaking args rewrite to positional
+callback params. The binding contract is `docs/design/proposals/composite-types-impl-plan.md`.
+api.md §2/§3/§5/§6, architecture.md §0/§2/§2.1/§4/§5/§7.2/§8, and module-interfaces.md (M1–M3, M5,
+M9) are amended in place; this section quotes each pre-change frozen signature.
+
+### 16.1 `evscript` / `ScriptBuilder` — positional callback params, `ScriptBuilder` non-generic
+
+- Law: api.md §1/§4 + module-interfaces §M5 —
+  ```ts
+  export function evscript<
+    const name extends string,
+    const args extends readonly ArgSpec[],
+    ret extends Record<string, Expr>,
+  >(
+    def: { name: name; args: args },
+    body: (s: ScriptBuilder<args>) => ScriptReturn<ret>,
+    opts?: { locations?: boolean },
+  ): EvsScript<name, args, ret>;
+  export interface ScriptBuilder<args extends readonly ArgSpec[]> {
+    readonly args: { readonly [a in args[number] as a['name']]: Expr<a['type']> }; /* … */
+  }
+  ```
+- Shipped:
+  ```ts
+  export type ArgsInput = EvsType | readonly EvsType[];
+  export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+  export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+  export type ArgHandles<types extends readonly EvsType[]> = {
+    readonly [i in keyof types]: ArgHandle<types[i]>;
+  };
+  export function evscript<
+    const name extends string,
+    const args extends ArgsInput = readonly [],
+    ret extends Record<string, Expr> = Record<string, Expr>,
+  >(
+    def: { name: name; args?: args },
+    body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
+    opts?: { locations?: boolean },
+  ): EvsScript<name, NormalizeArgs<args>, ret>;
+  export interface ScriptBuilder {
+    /* non-generic; no `args` param, no `s.args` member */
+  }
+  ```
+  `args` is now a single `t.*` type or a `readonly` list of them (`args: t.uint256` ≡
+  `args: [t.uint256]`), optional (a zero-arg script omits it). Args arrive as **positional callback
+  params after `s`** (`(s, token, amount) => {…}`): an `Expr` per scalar/string/array arg, a
+  `Tuple` handle per `t.struct`/`t.tuple` arg. `ScriptBuilder` lost its `args` type param and its
+  `s.args` getter.
+- Rationale: composite (struct/tuple) script args have no place in the `{ [name]: Expr }` record,
+  and viem infers `args` positionally regardless of input labels; the positional list is also the
+  natural home for a `Tuple` handle. `ArgHandles` is a homomorphic mapped tuple — order/labels are
+  structural, so the `UnionToTuple` interning hazard (abitype §4.2) that the old ordered-`ArgSpec`
+  tuple avoided is still avoided.
+- Status: **accepted**.
+
+### 16.2 `arg()` / `ArgSpec` retained for `s.fn` params (not script args)
+
+- Law: api.md §2 / module-interfaces §M1 — `arg()`/`ArgSpec` were the script-args declarator
+  (`{ name: …, args: [arg('pool', t.address)] }`) AND the `s.fn` param declarator.
+- Shipped: `arg()` and `ArgSpec` stay exported and unchanged in role for `s.fn` params
+  (`s.fn(name, [arg('x', t.uint256)], (x) => …)` keeps working); only the script-args surface moved
+  off them. The `arg()` parameter-type bound is `StringType` (was `ArgType`/`EvsType`) — `s.fn`
+  params remain string-encoded types in v0; the change is a no-op for existing call sites.
+- Rationale: `s.fn` params are positional+named today and not part of the composite rewrite;
+  breaking them was unnecessary. Keeping the export avoids a churn in every `s.fn` user.
+- Status: **accepted**.
+
+### 16.3 `t` namespace — `struct` / `tuple` / tuple `array` overload
+
+- Law: api.md §2 / module-interfaces §M1 —
+  ```ts
+  export const t: {
+    /* WordType keys + string + bytes */
+    array<const e extends WordType>(elem: e): `${e}[]`;
+  };
+  ```
+- Shipped:
+  ```ts
+  export const t: {
+    /* WordType|DynType keys */
+  } & {
+    array<const e extends StringType>(elem: e): `${e}[]`;
+    array<const e extends TupleType>(elem: e): TupleArrayOf<e>; // tuple → tuple[]
+    struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>; // named
+    tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>; // positional
+  };
+  ```
+  `t.struct` builds a named tuple (runtime member order = `Object.keys` insertion order, the only
+  encode-order source of truth); `t.tuple` builds a positional tuple (members `name: ''`);
+  `t.array` is broadened to a string-array element AND a tuple element. `StructTypeOf`/`TupleTypeOf`/
+  `TupleArrayOf`/`TypeToComponent` are exported for the overloads. The `array` element bound widened
+  from `WordType` to `StringType` (nested string arrays are represented in the vocabulary).
+- Rationale: a struct record compiles to a single NAMED ABI tuple, which abitype infers as an
+  order-insensitive object — `UnionToTuple` over the record keys is therefore SAFE (the runtime
+  `Object.keys` order is authoritative). Positional `t.tuple` uses ordered declarators and never
+  touches `UnionToTuple`.
+- Status: **accepted**.
+
+### 16.4 `EvsType` / `Expr.at` — tuple objects + nested string arrays
+
+- Law: api.md §3 / module-interfaces §M1 —
+  ```ts
+  export type ArrayType = `${WordType}[]`;
+  export type EvsType = WordType | DynType | ArrayType;        // string-only
+  at<elem extends WordType>(this: Expr<`${elem}[]`>, i: IntoExpr<'uint256'>): Expr<elem>;
+  ```
+- Shipped:
+  ```ts
+  export type ScalarType = WordType | DynType;
+  export type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+  export type StringType = ScalarType | ArrayType;
+  export interface TupleType { readonly type: 'tuple'|'tuple[]'|'tuple[][]';
+    readonly components: readonly NamedType[]; }
+  export interface NamedType { readonly name: string; readonly type: string;
+    readonly components?: readonly NamedType[]; }
+  export type EvsType = WordType | DynType | ArrayType | TupleType;   // string OR tuple object
+  at<elem extends StringType>(this: Expr<`${elem}[]` & ArrayType>, i: IntoExpr<'uint256'>): Expr<elem>;
+  ```
+  `EvsType` now includes `TupleType` descriptor OBJECTS and string-array nesting. `LitOf` gained a
+  `TupleType` branch (→ `TupleLitOf`, an abitype delegation). `Expr.at` broadened to `StringType`
+  elements (the `& ArrayType` pins the result back into the depth-bounded vocabulary). Tuple
+  descriptors are fresh objects, never `===`, so every value-type comparison in the recorder and
+  `ir/validate.ts` uses the structural `typesEqual`.
+- Rationale: named tuple members cannot live in a type string; a descriptor object that is
+  abitype-`AbiParameter`-shaped lets abitype infer literals/returns directly and the IR/codegen
+  recurse over `NamedType`/`PlainAbiParam` trees.
+- Status: **accepted**.
+
+### 16.5 `ScriptAbi` / `buildScriptAbi` — `args` reparameterized to `readonly EvsType[]`
+
+- Law: module-interfaces §M3 —
+  ```ts
+  export type ScriptAbi<name extends string, args extends readonly ArgSpec[],
+    ret extends Record<string, Expr>> = readonly [
+    { /* function */ readonly inputs: {
+        readonly [i in keyof args]: { readonly name: args[i]['name']; readonly type: args[i]['type'] };
+      }; /* … */ }, …];
+  export function buildScriptAbi(name: string, args: readonly ArgSpec[],
+    returns: readonly { name: string; type: EvsType }[]): Abi;
+  ```
+- Shipped:
+  ```ts
+  export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+  export type ArgsToInputs<args extends readonly EvsType[]> = {
+    readonly [i in keyof args]: TypeToComponent<ArgName<i>, args[i]> };
+  export type ScriptAbi<name extends string, args extends readonly EvsType[],
+    ret extends Record<string, Expr>> = readonly [
+    { /* function */ readonly inputs: ArgsToInputs<args>; /* … */ }, …];
+  export function buildScriptAbi(name: string, args: readonly EvsType[],
+    returns: readonly { name: string; type: EvsType }[]): Abi;
+  ```
+  Inputs are auto-named `arg0`, `arg1`, … (positional labels); a tuple arg expands via
+  `TypeToComponent`/`typeToAbiParam` to `{ name, type: 'tuple', components }`. `ArgsToInputs` is a
+  HOMOMORPHIC mapped type over the arg-TYPE tuple — no `UnionToTuple`, `args` stays covariant (a
+  concrete tuple-arg `ScriptAbi`/`EvsScript`/`CompiledEvsScript` is assignable to the
+  default-instantiated one, like the `ret` relaxation in amendment 14.4). The labeled-positional
+  `ReadContractParameters['args']` CI type test still passes.
+- Rationale: script args are positional after the rewrite (16.1) and carry no names; the ABI input
+  names are pure labels.
+- Status: **accepted**.
+
+### 16.6 `CompiledEvsScript` / `EvsScript` `args` type param
+
+- Law: api.md §1/§10 / module-interfaces §M5/§M9 — `EvsScript<name, args extends readonly ArgSpec[],
+ret>` and `CompiledEvsScript<name, args, ret>` parameterized by `readonly ArgSpec[]`.
+- Shipped: both are parameterized by `args extends readonly EvsType[]`; `evscript` instantiates
+  them at `NormalizeArgs<args>`. `compile`'s structural `CompiledOf<s>` constraint (amendment 12.1)
+  is unchanged and still works.
+- Rationale: mechanical consequence of the args reparameterization (16.5); keeps the literal ABI
+  type and the compiled artifact in sync with the normalized positional arg-type list.
+- Status: **accepted**.
+
+### 16.7 `Tuple` / `Field` / `s.tuple` — the new composite builder surface
+
+- Law: api.md §4/§5 — no tuple handle existed; tuple args/outputs were a recording-time
+  `EvsTypeError` ("Output/arg types outside v0 (`tuple`, …) → recording-time `EvsTypeError`").
+- Shipped (api.md §5; module-interfaces §M5):
+  ```ts
+  export interface Field<t extends EvsType> { readonly type: t;
+    get(): t extends TupleType ? Tuple<t> : Expr<t>; set(value: IntoMember<t>): void; }
+  export type Tuple<C extends TupleType> = {
+    readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]:
+      Field<ComponentToType<c>>;
+    } & { at(i: number): Field<ComponentToType<C['components'][number]>>; expr(): Expr<C>; };
+  export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
+  export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+  export type TupleInit<C extends TupleType> = /* named object | positional record, all optional */;
+  // on ScriptBuilder:
+  tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
+  ```
+  A `Tuple` handle is a flat-pointer memref (architecture §5): one frame slot holds a pointer to a
+  packed `[w0…w_{n-1}]` block. `s.tuple` bump-allocs `32·n`, zero-fills, and MSTOREs provided
+  members (omitted/literal-`0` → no write). Reference semantics: passing the handle copies the
+  pointer, so a later `field.set()` is visible through every alias. The SAME handle type is produced
+  by `s.tuple`, a decoded tuple call output, and a struct/tuple script arg.
+- Rationale: composite values need named/positional field access and a single unified handle across
+  construction, decode, and args.
+- Status: **accepted**.
+
+### 16.8 `SubcallInputs` / `SubcallOutputs` — tuple handles + literal structs; deferral dropped
+
+- Law: api.md §6 —
+  ```ts
+  export type SubcallInputs<abi, name> = {
+    readonly [i in keyof inputs]:
+      | AbiParameterToPrimitiveType<inputs[i], 'inputs'>
+      | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>;
+  };
+  // outputs []→void; [one]→Expr<one>; [many]→readonly tuple of Exprs
+  ```
+  plus the §6 rule "Output/arg types outside v0 (`tuple`, `T[N]`, nested arrays) → recording-time
+  `EvsTypeError`".
+- Shipped: per-parameter `SubcallInputs` extends a tuple param's accepted value to
+  `AbiParameterToPrimitiveType<input,'inputs'> | Tuple<input> | Expr<input>` (a `Tuple` handle, an
+  `s.tuple(...)` result, OR a plain literal object — the recorder builds the tuple via `tuplenew`,
+  members literal-or-`Expr`, omitted → 0). `SubcallOutputs` maps a `'tuple'` output to a `Tuple`
+  handle; `UnwrapSingle` yields `Tuple<one>` for a single tuple output. The `tuple → EvsTypeError`
+  deferral is dropped. `T[N]`, arrays of tuples (`tuple[]`), and nested string arrays remain a
+  recording-time `EvsTypeError('UNSUPPORTED_V0', …)`.
+- Rationale: tuples now decode/encode end to end (architecture §7.2/§8); the deferral no longer
+  reflects the shipped capability.
+- Status: **accepted**.
+
+### 16.9 IR — `tuplenew` / `field` / `tupleset` nodes; `arrnew.elem` widened; tuple-carrying types
+
+- Law: module-interfaces §M2 / architecture §4 — Stmt had no tuple variants;
+  `arrnew { elem: WordType, … }`; `ValueInfo.type`/`args`/`returns`/fn types implicitly the
+  string-only `EvsType`; `validateIr` compared types with `===`/the op table.
+- Shipped: three new Stmt variants —
+  ```ts
+  | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
+  | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
+  | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
+  ```
+  the out/tuple ValueId's `values[id].type` carries the `TupleType` (with components). `arrnew.elem`
+  is widened to `EvsType` (validate still restricts to word — composite arrays deferred).
+  `ValueInfo.type`/`args`/`returns`/fn param+result types are `EvsType` (string OR tuple object);
+  serialize/deserialize (`asEvsType`) handle the descriptor objects; `checkAbiParams` recurses
+  through components; `validateIr` uses the structural `typesEqual` for all value-type comparisons.
+- Rationale: tuples need an alloc/read/write node trio and tuple-typed values throughout the IR; the
+  recursive `NamedType` shape makes the follow-up array-of-tuple cases additive.
+- Status: **accepted**.
+
+### 16.10 Deferred follow-up: `tuple[]` and nested string arrays
+
+- Law: architecture §2/§18, api.md §2/§6 — `T[N]`/nested tuples were the single deferred bucket.
+- Shipped: the `TupleType` vocabulary already represents `tuple[]`/`tuple[][]` and `ArrayType`
+  represents nested string arrays (`uint256[][]`, `string[]`), but the builder/codegen restrict to
+  the delivered shapes. `s.newArray` stays word-element-only; `at()` on a tuple-element array is the
+  follow-up; reaching a deferred shape throws `EvsTypeError('UNSUPPORTED_V0', …)` naming it. The
+  follow-up is additive (a codegen `case` per emitter + builder wiring), NOT a rewrite, because the
+  emitters are already recursive over `NamedType`/`PlainAbiParam` trees.
+- Status: **accepted** — PARTLY REVERSED by **16.11**: one-level arrays of composite —
+  `tuple[]`, `T[][]`, `string[]`/`bytes[]` — are now DELIVERED (decode/read, construct/mutate,
+  return, call-arg encode; byte-exact vs viem + real solc on paris/shanghai/cancun). `s.newArray`
+  and `at()` no longer reject them. Only `tuple[][]` (two-level tuple array), fixed-size `T[N]`, and
+  string arrays nested deeper than `[][]` remain `UNSUPPORTED_V0` (lock-tested).
+
+### 16.11 Arrays of composite (`tuple[]`, `T[][]`, `string[]`)
+
+> Closes issue #2's "arrays of tuples" + `T[][]` follow-up; PARTLY REVERSES 16.10. Delivered in
+> PR #3 milestones M1–M4 — one level of array nesting over a composite/dynamic element (`tuple[]`
+> static-element AND dynamic-member element, `uint256[][]`, `string[]`/`bytes[]`), byte-exact vs
+> viem `encodeAbiParameters` + real solc on paris/shanghai/cancun. The binding byte-exact spec is
+> `docs/design/proposals/composite-types-impl-plan.md` §12; architecture §2.1/§5/§8/§18, api.md
+> §5/§6, and module-interfaces §M1–M3/§M5 are amended in place.
+
+- Law: architecture §5 / module-interfaces §M3 `abi/layout.ts` — the `TypeLayout` array variant
+  was `elem: WordLayout` ("dynamic arrays of words only in v0"); §M2 `arrnew.elem` was widened to
+  `EvsType` but `validateIr` "still restricts to word — composite arrays deferred"; §M5
+  `MutArray<e extends WordType>` and `s.newArray(elem: WordType, …)`; api.md §3 — "Dynamic
+  literals (and literal arrays) become bytecode **data segments** materialized by CODECOPY".
+- Shipped:
+  - **Memory model (architecture §5).** A composite-element array (`tuple[]`, `T[][]`,
+    `string[]`/`bytes[]`) is an ARRAY OF POINTERS: a memref to `[len:32][p0:32][p1:32]…` — IDENTICAL
+    to the word-array block (`ptr + 32 + 32·i` addressing, len at `ptr`), except each slot `pᵢ`
+    holds a memref POINTER to element `i`'s own block rather than an inline value word (`tuple[]` →
+    a flat tuple block §3; `T[][]` → an inner array; `string[]`/`bytes[]` → a bytes block). This is
+    exactly Solidity `Struct[]`/`T[][]`/`string[]` memory. `lowerArrnew`/`lowerIndex`/`lowerArrset`
+    address arithmetic + bounds (`i<len`→Panic 0x32) + alloc cap (`2^32-1`→Panic 0x41) are
+    element-type-agnostic and reused UNCHANGED; only the leaf semantics differ (the slot holds a
+    pointer; `index` yields it as the element handle; an unset slot is UB exactly like Solidity).
+  - **Layout (`abi/layout.ts`).** The array variant is widened `elem: WordLayout` →
+    **`elem: TypeLayout`**; `layoutOf`/`layoutOfType` return an array-of-composite layout for a
+    one-level `tuple[]`/`T[][]`/`string[]`/`bytes[]` element (the `badTypeError` narrows to still
+    reject `T[N]`/`tuple[][]`/`[][][]+`). A `staticSize(elem)` helper = `headBytes(components)` for a
+    static tuple element, `32` for a word.
+  - **Validate (`ir/validate.ts`).** `checkElemType` (the arrnew/array-element gate) is widened to
+    accept `word | string | bytes | one-level T[] | tuple` elements; it still rejects `T[N]`,
+    `tuple[][]`, and `[][]`-deeper string arrays with `UNSUPPORTED_V0` (a `tuple[][]` IR node still
+    fails validation). `index`/`arrset`/`len` were already element-agnostic.
+  - **Decode codegen (`codegen/abi.ts` + `call.ts`).** New `emitDecodeArrayToMem` — an ON-STACK
+    element loop (NO `emitMemCopy`: it freshly allocates each tuple/array element block and aliases
+    leaf bytes into the returndata snapshot). Per-element source base lives in a fixed scratch slot
+    (`ELEM_BASE = 0x20`) so the recursive element decoders' `pushBase` is stack-depth-independent.
+    Dynamic-element offsets are read relative to the array DATA START `D` (the word after `len`);
+    static-element arrays have no offset words (`len·staticSize` contiguous). Wired into the args
+    decoder (§8.1) and the call-output decoder (§7.2).
+  - **Encode codegen (`codegen/abi.ts` + `call.ts`).** New `emitEncodeArrayTail` on the shared
+    monotone tail cursor (`TAIL_CURSOR = 0x00`): a static element inlines `len·staticSize`; a
+    dynamic element writes `len` offset words relative to `D` then appends each element's tail. The
+    dynamic-element loop keeps ALL of its state `{arrPtr, D, len, i}` in a reserved 4-word memory
+    FRAME BELOW the output/call buffer (`reserveEncodeFrames` bumps `FREE_PTR` by `32·FRAMES·4`
+    before `out = MLOAD(0x40)` is read, so `RETURN` never returns scratch), keeping the operand
+    stack at baseline 0 so every `@memcpy` runs at EXACTLY `[dst, src, len]` (the pre-cancun
+    height-4 checked-entry contract, amendment 9.4). `FRAMES` = the max concurrent array-nesting
+    depth along any path of the encoded type (statically known; `tuple[]`=1; a `tuple[]` whose
+    member is a `string[]`=2). Static-element loops use no memcpy, so they keep counter state on the
+    stack.
+  - **Builder (`builder/{script,expr}.ts`).** `s.newArray` is widened off word-only to admit
+    `word | string | bytes | one-level T[] | tuple` elements (`T[N]`/`tuple[][]` still gated). The
+    `MutArray<e>` generic widens from `WordType` to `EvsType`: `get`/`at` on a `tuple[]` return a
+    `Tuple` element handle (the SAME unified tuple handle as a decoded tuple, §3/16.7), `set` accepts
+    an `IntoMember<e>` (a `Tuple` handle / array handle / `Expr` per element type), `expr()` types as
+    `Expr<tuple[]>`; `arrset` stores the element pointer. A `tuple[]`/`uint256[][]`/`string[]`/
+    `bytes[]` LITERAL (a JS array) is constructible anywhere its value type is expected — but, unlike
+    a word/string/bytes literal, it is BUILT AT RECORD TIME as `arrnew` + per-element
+    (`tuplenew`/`arrset`), with reference semantics and a fresh `[len][p0…]` block. This changes
+    `encodeLiteralData`'s contract: a composite-array literal has **NO flat data-segment literal**
+    (it cannot — the elements are pointers into freshly-allocated blocks), so the recorder
+    materializes it structurally rather than emitting a CODECOPY'd `[len][payload]` blob.
+  - **Types.** `s.call` `tuple[]` output → `readonly Struct[]`; `uint256[][]` →
+    `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`. A tuple-array `Expr`'s
+    `.at(i)` returns a typed `Tuple` element. `SubcallInputs` accepts `Expr<tupleArrayType>`, an
+    array handle, or a `readonly Struct[]` literal for a `tuple[]` arg.
+- Rationale: the array-of-pointers layout makes the change ADDITIVE on the flat-pointer tuple model
+  (§3 / architecture §5) — the existing word-array addressing is element-agnostic, so only the leaf
+  decode/encode/construct semantics are new. The scratch-frame encode discipline is the load-bearing
+  detail: it preserves the pre-cancun `@memcpy` `[dst,src,len]` height invariant through an
+  arbitrarily nested dynamic-element loop. The recorder-builds-the-literal change is forced because a
+  composite array's elements are pointers, not inline bytes — there is no flat blob to CODECOPY.
+- Status: **accepted**. Still deferred (throw `UNSUPPORTED_V0`, lock-tested): `tuple[][]` (two-level
+  tuple array), fixed-size `T[N]`, and string arrays nested deeper than `[][]`.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

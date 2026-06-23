@@ -12,22 +12,20 @@ the recorder seals; any later builder call throws `EvsScopeError` (`RECORDING_CL
 Member signatures below are interface excerpts, not runnable modules. `Expr`, `IntoExpr`,
 `LitOf`, and the type vocabulary are documented in [the types reference](/reference/types/).
 
-## s.args
+## Script arguments — positional callback params
 
-```ts nocheck
-readonly args: { readonly [a in args[number] as a['name']]: Expr<a['type']> };
-```
-
-A record derived from the script's args tuple: one property per declared argument, typed
-`Expr` of the declared type. Property access records nothing — the argument values are decoded
-and validated once at script entry.
+Script args are declared on the header as `t.*` types (a lone type or a `readonly` list) and
+arrive as **positional parameters after `s`** in the body callback — there is no `s.args`. A
+scalar arg arrives as an `Expr`; a `TupleType` arg as a [`Tuple` handle](#stuple). Property
+access records nothing — argument values are decoded and validated once at script entry. See
+[the evscript reference](/reference/evscript/#evscript) for the full signature.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
 const sum = evscript(
-  { name: 'sum', args: [arg('a', t.uint256), arg('b', t.uint256)] },
-  (s) => s.return({ total: s.args.a.add(s.args.b) }),
+  { name: 'sum', args: [t.uint256, t.uint256] },
+  (s, a, b) => s.return({ total: a.add(b) }),
 );
 ```
 
@@ -67,15 +65,15 @@ inferred); to seed a cell with a literal, use the two-argument overload. A `Cell
 every use.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const clamp = evscript({ name: 'clamp', args: [arg('x', t.uint256)] }, (s) => {
+const clamp = evscript({ name: 'clamp', args: [t.uint256] }, (s, x) => {
   const acc = s.let(t.uint256, 0n); // typed literal init
-  const copy = s.let(s.args.x); // type inferred: Cell<'uint256'>
+  const copy = s.let(x); // type inferred: Cell<'uint256'>
   s.if(
-    s.args.x.gt(100n),
+    x.gt(100n),
     () => acc.set(100n),
-    () => acc.set(s.args.x),
+    () => acc.set(x),
   );
   return s.return({ clamped: acc.get(), original: copy.get() });
 });
@@ -89,29 +87,82 @@ pointer assignment — reference semantics, not a copy.
 ## s.newArray
 
 ```ts nocheck
-newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
 ```
 
-Allocates a zero-filled mutable array of word-type elements with a runtime (or literal) length.
-This is the building block for "loop over inputs, collect outputs" — the multicall replacement
-pattern (see [token balances](/examples/token-balances/)).
+Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
+type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple[]`). This is
+the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
+(see [token balances](/examples/token-balances/)).
 
 - Runtime lengths of `2^32` or more revert with Panic `0x41` (allocation too large).
 - A *literal* length of `2^32` or more throws at recording time (`CERTAIN_PANIC`).
 - Allocating inside a loop allocates fresh memory every iteration — `compile` warns with
   `LOOP_ALLOCATION`.
+- A **composite element** (`tuple`, `string`/`bytes`, `T[]`) makes the array an array of
+  pointers; `get(i)` returns the element handle (a [`Tuple`](#tuple) for a tuple element), a
+  reference into slot `i`, and `set(i, v)` takes the element's `IntoMember` (a `Tuple`/literal for
+  a tuple element).
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const squares = evscript({ name: 'squares', args: [arg('n', t.uint256)] }, (s) => {
-  const out = s.newArray(t.uint256, s.args.n); // zero-filled uint256[n]
-  s.for({ type: t.uint256, from: 0n, until: s.args.n }, (i) => {
+const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
+  const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
+  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
     out.set(i, i.mul(i));
   });
   return s.return({ squares: out.expr() });
 });
 ```
+
+A `tuple[]` array — `get(i)` returns the element `Tuple`, filled in place:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const positions = evscript({ name: 'positions', args: [t.address, t.uint256] }, (s, owner, n) => {
+  const out = s.newArray(Position, n); // zero-filled tuple[n] (array of pointers)
+  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+    const el = out.get(i); // Tuple handle into slot i
+    el.liquidity.set(i.toUint(t.uint128));
+    el.owner.set(owner);
+  });
+  return s.return({ positions: out.expr() }); // readonly { liquidity; owner }[]
+});
+```
+
+## s.tuple
+
+```ts nocheck
+tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
+```
+
+Allocates a tuple/struct in memory and returns a [`Tuple`](#tuple) handle. `type` is a
+[`TupleType`](/reference/types/#composite-types-tupletype) — a `t.struct`/`t.tuple` (or a raw
+`readonly AbiParameter[]`). `init` is a **partial**, name-keyed (struct) or positional
+(`t.tuple`) record of members; every member is optional, defaults to zero, and accepts a
+literal, an `Expr`, or a nested `Tuple`. Use the returned handle's [`Field.set`](#field) to fill
+or overwrite members later.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const mkPos = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
+  const pos = s.tuple(Position, { liquidity: 42n, owner }); // alloc + zero-fill + set members
+  pos.liquidity.set(pos.liquidity.get().add(1n)); // read-modify-write a field
+  return s.return({ liq: pos.liquidity.get(), pos }); // a field, and the whole struct (returned directly)
+});
+```
+
+The allocation is zero-filled, so omitted members start at zero with no extra write. A tuple
+handle is a pointer with **reference semantics**: copying it (or passing it to a call) shares the
+same block, so a later `.set()` is visible through every alias. See
+[composite types in values & types](/guides/values-and-types/#composite-types-structs-and-tuples).
 
 ## s.env
 
@@ -126,7 +177,7 @@ other kinds produce `Expr<'uint256'>`. An unknown kind throws `EvsTypeError`.
 ```ts
 import { evscript } from '@maxencerb/evs';
 
-const ctx = evscript({ name: 'ctx', args: [] }, (s) =>
+const ctx = evscript({ name: 'ctx' }, (s) =>
   s.return({
     me: s.env('caller'), // frame-dependent
     here: s.env('address'), // frame-dependent
@@ -163,10 +214,10 @@ recording, and a fold that would certainly panic throws `CERTAIN_PANIC` instead 
 guaranteed revert.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const remaining = evscript({ name: 'remaining', args: [arg('used', t.uint256)] }, (s) =>
-  s.return({ left: s.sub(10_000n, s.args.used) }),
+const remaining = evscript({ name: 'remaining', args: [t.uint256] }, (s, used) =>
+  s.return({ left: s.sub(10_000n, used) }),
 );
 ```
 
@@ -233,10 +284,10 @@ re-execute every iteration. Values recorded in the header are visible in the bod
 recorded inside the loop (header or body) is visible after it — carry state in cells.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 
-const log2 = evscript({ name: 'log2', args: [arg('x', t.uint256)] }, (s) => {
-  const v = s.let(t.uint256, s.args.x);
+const log2 = evscript({ name: 'log2', args: [t.uint256] }, (s, x) => {
+  const v = s.let(t.uint256, x);
   const bits = s.let(t.uint256, 0n);
   s.while(
     () => v.get().gt(1n), // recorded once, executes every iteration
@@ -284,9 +335,9 @@ call<const abi extends Abi | readonly unknown[], name extends ContractFunctionNa
   readonly address: IntoExpr<'address'>;
   readonly abi: abi;
   readonly functionName: name; // autocomplete union over view/pure functions
-  readonly args?: SubcallInputs; // per parameter: ABI primitive literal OR Expr of that type
+  readonly args?: SubcallInputs; // per parameter: ABI primitive/Expr; a tuple param: Tuple/s.tuple/literal object
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
-}): CallOutputs; // outputs [] → void; [one] → Expr<one>; [many] → readonly tuple of Exprs
+}): CallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple
 ```
 
 A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallInputs` and
@@ -295,29 +346,32 @@ A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallIn
 (exhaustive treatment in [calls](/guides/calls/)):
 
 - Only `view`/`pure` functions are offered; nonpayable/payable names are TypeScript errors.
+- A `'tuple'` output decodes into a [`Tuple` handle](#tuple) (named/positional field access); a
+  `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
+  object. See [calls — struct arguments and outputs](/guides/calls/#struct-and-array-arguments-and-outputs).
 - Callee reverts bubble **verbatim** (Error/Panic/custom alike).
 - Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the
   site back to your source line.
 - Dirty high bits in word outputs are normalized, not reverted.
 - A non-`as const` ABI degrades gracefully: `functionName: string`, untyped args, outputs as
-  `readonly Expr[]` — never a hard type error.
-- Overloaded function names and ABI parameter types outside v0 throw `EvsTypeError` at
-  recording.
+  `readonly (Expr | Tuple)[]` — never a hard type error.
+- Overloaded function names and ABI parameter types outside the current scope throw
+  `EvsTypeError` at recording.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const tokenInfo = evscript(
-  { name: 'tokenInfo', args: [arg('token', t.address), arg('owner', t.address)] },
-  (s) => {
-    const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+  { name: 'tokenInfo', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
     // symbol: Expr<'string'>
     const bal = s.call({
-      address: s.args.token,
+      address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
-      args: [s.args.owner], // literals and Exprs mix freely
+      args: [owner], // literals and Exprs mix freely
       gas: 100_000n, // optional per-call gas cap
     });
     return s.return({ symbol, bal });
@@ -335,15 +389,15 @@ tryCall<const abi extends Abi | readonly unknown[], name extends ContractFunctio
 
 Like `s.call`, but failure becomes data instead of a revert. `success` is `false` when the call
 fails **or** when the returndata is structurally malformed; `value` is then zeros, empty
-strings, or empty arrays — always safe to use. (This is stricter than Solidity's `try/catch`,
-which would surface malformed returndata differently.)
+strings, empty arrays, or zero-filled tuples — always safe to use. (This is stricter than
+Solidity's `try/catch`, which would surface malformed returndata differently.)
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const tokenDecimals = evscript({ name: 'tokenDecimals', args: [arg('token', t.address)] }, (s) => {
-  const d = s.tryCall({ address: s.args.token, abi: erc20Abi, functionName: 'decimals' });
+const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s, token) => {
+  const d = s.tryCall({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ decimals: s.select(d.success, d.value, 18) }); // default on failure
 });
 ```
@@ -363,7 +417,9 @@ a package-internal helper: `Expr` results come back as fresh `Expr`s, tuples as 
 `void` as `void`). Rules ([full guide](/guides/functions/)):
 
 - The body runs **once, at definition**, in an isolated scope: params only, **no capture** of
-  outer `Expr`s, cells, or `s.args` (`EvsScopeError` at recording).
+  outer `Expr`s or cells (`EvsScopeError` at recording).
+- `s.fn` params are still declared with `arg(name, type)` — `arg`/`ArgSpec` are retained for this
+  use (only the script-header `args` surface moved to positional `t.*` types).
 - Each call of the returned handle records one statement and returns fresh handles — two calls
   never alias.
 - Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled
@@ -374,8 +430,8 @@ import { arg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const pairBalances = evscript(
-  { name: 'pairBalances', args: [arg('a', t.address), arg('b', t.address), arg('who', t.address)] },
-  (s) => {
+  { name: 'pairBalances', args: [t.address, t.address, t.address] },
+  (s, a, b, who) => {
     const balOf = s.fn(
       'balOf',
       [arg('token', t.address), arg('owner', t.address)] as const,
@@ -383,8 +439,8 @@ const pairBalances = evscript(
         s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
     );
     return s.return({
-      balA: balOf(s.args.a, s.args.who),
-      balB: balOf(s.args.b, s.args.who),
+      balA: balOf(a, who),
+      balB: balOf(b, who),
     });
   },
 );
@@ -393,7 +449,8 @@ const pairBalances = evscript(
 ## s.return
 
 ```ts nocheck
-return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>;
+// each value is an Expr OR a Tuple handle directly:
+return<const ret extends Record<string, Expr | Tuple<TupleType>>>(values: ret): ScriptReturn<ret>;
 ```
 
 Declares the script's outputs and seals the recorder. Must be called exactly once,
@@ -403,7 +460,9 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 - Record keys become the named components of the single tuple output; viem consumers receive an
   **object**. Keys must be identifiers; empty keys are rejected (`ABI_SHAPE`) because an
   unnamed component silently degrades viem's result to a positional array.
-- Every value must be an `Expr` — type literals with `s.lit` first.
+- Each value is an `Expr`, or a `Tuple` handle **directly** — a struct/tuple flows out as a
+  `'tuple'` component, abitype-typed. (`tupleHandle.expr()` is equivalent and still valid, for
+  the bare memref `Expr`.) Type bare literals with `s.lit` first.
 - After sealing, any builder call throws `EvsScopeError` (`RECORDING_CLOSED`).
 
 ## Cell
@@ -424,21 +483,93 @@ defining scope is on the recording stack; touching it elsewhere throws `EvsScope
 
 ## MutArray
 
-```ts
-import type { Expr, IntoExpr, WordType } from '@maxencerb/evs';
-
-interface MutArray<e extends WordType> {
+```ts nocheck
+interface MutArray<e extends EvsType> {
   readonly elemType: e;
   readonly length: Expr<'uint256'>;
-  set(i: IntoExpr<'uint256'>, v: IntoExpr<e>): void; // bounds-checked → Panic 0x32
-  get(i: IntoExpr<'uint256'>): Expr<e>; // bounds-checked → Panic 0x32
-  expr(): Expr<`${e}[]`>; // handle to the SAME buffer (reference semantics)
+  set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // bounds-checked → Panic 0x32
+  get(i: IntoExpr<'uint256'>): MutArrayElem<e>; // bounds-checked → Panic 0x32
+  expr(): Expr<MutArrayValueOf<e>>; // handle to the SAME buffer (reference semantics)
 }
 ```
 
 Returned by [`s.newArray`](#snewarray). All indexed access is bounds-checked (Panic `0x32`).
 `expr()` returns a plain `Expr` array handle aliasing the same buffer — later `set()` calls are
-visible through it. `length` is recorded once, at construction.
+visible through it. `length` is recorded once, at construction. For a **word element** the slots
+are inline values: `set`/`get` take/return an `Expr<e>` and `expr()` is the array `Expr` (the
+`e[]` handle). For a
+**composite element** (`tuple`/`string`/`bytes`/`T[]`) the array is an array of pointers: `get(i)`
+returns the element handle (a [`Tuple`](#tuple) for a tuple element) — a reference into slot `i` —
+and `set(i, v)` takes the element's `IntoMember` (a `Tuple` handle / literal for a tuple element).
+
+## Tuple
+
+```ts nocheck
+type Tuple<C extends TupleType> = {
+  // one property per NAMED component → a Field over that member:
+  readonly [name in NamedComponents<C>]: Field<MemberType<name>>;
+  at(i: number): Field<…>; // positional accessor (literal index)
+  expr(): Expr<C>; // the raw memref — for s.return or passing as a call arg
+};
+```
+
+A tuple/struct memref handle. Produced by [`s.tuple`](#stuple), by a `TupleType` script arg, and
+by a `'tuple'` output of [`s.call`](#scall). For each **named** component it exposes a property
+keyed by the component name returning a [`Field`](#field); `at(i)` is the positional accessor
+(`i` is a **recording-time literal** `number` in `[0, memberCount)` — tuples are flat with a fixed
+member count, so there is no runtime member indexing; passing a non-literal throws `TYPE_MISMATCH`.
+Use an array's `.at(Expr)` for runtime indexing); and `expr()` is the raw `Expr<C>` memref. The handle is itself
+returnable from `s.return` and passable as a `'tuple'` call argument **directly** — `expr()` is
+only needed when you want the bare `Expr<C>`.
+A tuple handle is a pointer with **reference semantics** (passing it shares the block).
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const slot0Abi = [
+  {
+    type: 'function',
+    name: 'slot0Struct',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'sqrtPriceX96', type: 'uint160' },
+          { name: 'tick', type: 'int24' },
+          { name: 'unlocked', type: 'bool' },
+        ],
+      },
+    ],
+  },
+] as const;
+
+const readSlot0 = evscript({ name: 'readSlot0', args: [t.address] }, (s, pool) => {
+  const slot0 = s.call({ address: pool, abi: slot0Abi, functionName: 'slot0Struct' });
+  //    ^? Tuple<…> — the 'tuple' output decoded into a handle
+  return s.return({
+    tick: slot0.tick.get(), // Expr<'int24'> by name
+    unlocked: slot0.at(2).get(), // Expr<'bool'> by position
+    slot0, // a Tuple handle is returnable directly — the whole struct flows out, abitype-typed
+  });
+});
+```
+
+## Field
+
+```ts nocheck
+interface Field<t extends EvsType> {
+  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  set(value: IntoMember<t>): void; // IntoExpr<t> for scalars; a Tuple/literal for composite members
+}
+```
+
+A handle over one tuple member (Cell-like). `get()` reads the member: a scalar member yields an
+`Expr`, a nested-tuple member yields a `Tuple` handle. `set(v)` writes it — `tupleset` under the
+hood, so writes are visible through every alias of the owning tuple. Obtained from a
+[`Tuple`](#tuple) by name (`pos.liquidity`) or position (`pos.at(0)`).
 
 ## LoopCtl
 

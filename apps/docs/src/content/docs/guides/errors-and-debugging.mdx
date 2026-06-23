@@ -22,11 +22,11 @@ The builder callback runs exactly once, and evs validates everything it can the 
 builder method is called — so the stack trace points at *your* line:
 
 ```ts
-import { arg, evscript, EvsTypeError, t } from '@maxencerb/evs';
+import { evscript, EvsTypeError, t } from '@maxencerb/evs';
 
 try {
-  evscript({ name: 'overflowing', args: [arg('x', t.uint8)] }, (s) => {
-    const y = s.args.x.add(300n); // 300 does not fit uint8 — throws here, at recording
+  evscript({ name: 'overflowing', args: [t.uint8] }, (s, x) => {
+    const y = x.add(300n); // 300 does not fit uint8 — throws here, at recording
     return s.return({ y });
   });
 } catch (e) {
@@ -49,7 +49,7 @@ Staging misuse deserves a callout because TypeScript catches most of it too. Thi
 compile, and each line would throw `EvsStagingError` at recording if it did:
 
 ```ts nocheck
-const sum = s.args.x + 1n; // Expr<'uint256'> is not a bigint — use s.args.x.add(1n)
+const sum = x + 1n; // Expr<'uint256'> is not a bigint — use x.add(1n)
 const label = `balance: ${bal}`; // template-string coercion on a handle throws
 ```
 
@@ -66,10 +66,10 @@ Non-fatal findings are **warnings**, delivered only through the `onDiagnostic` c
 `compile()` never logs:
 
 ```ts
-import { arg, compile, evscript, EvsCompileError, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { compile, evscript, EvsCompileError, t, type EvsDiagnostic } from '@maxencerb/evs';
 
-const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
-  s.return({ x: s.args.x }),
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
+  s.return({ x }),
 );
 
 const warnings: EvsDiagnostic[] = [];
@@ -136,7 +136,7 @@ back to the script line that produced it. The full flow — catch the viem error
 payload, explain it:
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { compile, evscript, t } from '@maxencerb/evs';
 import {
   BaseError,
   ContractFunctionRevertedError,
@@ -145,8 +145,8 @@ import {
   http,
 } from 'viem';
 
-const tokenMeta = evscript({ name: 'tokenMeta', args: [arg('token', t.address)] }, (s) => {
-  const symbol = s.call({ address: s.args.token, abi: erc20Abi, functionName: 'symbol' });
+const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
+  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
   return s.return({ symbol });
 });
 
@@ -199,10 +199,10 @@ anything, so their attributions are authoritative.
 renders it with labels, jump targets, notes, and source locations:
 
 ```ts
-import { arg, compile, evscript, lookupPc, t } from '@maxencerb/evs';
+import { compile, evscript, lookupPc, t } from '@maxencerb/evs';
 
-const echo = evscript({ name: 'echo', args: [arg('x', t.uint256)] }, (s) =>
-  s.return({ x: s.args.x }),
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
+  s.return({ x }),
 );
 const compiled = compile(echo);
 
