@@ -1,0 +1,27 @@
+name: Setup bun + node
+description: Install bun & node, restore the bun install cache, then `bun install --frozen-lockfile`.
+
+runs:
+  using: composite
+  steps:
+    - uses: oven-sh/setup-bun@v2
+      with:
+        bun-version: latest
+
+    # vitest executes on Node (bun is the package manager / script runner)
+    - uses: actions/setup-node@v6
+      with:
+        node-version: 24
+
+    # Cache bun's global install cache keyed on the lockfile — the single biggest
+    # repeated cost across the fan-out jobs. restore-keys lets a changed lock still
+    # warm-start from the previous run's cache.
+    - uses: actions/cache@v4
+      with:
+        path: ~/.bun/install/cache
+        key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
+        restore-keys: |
+          bun-${{ runner.os }}-
+
+    - shell: bash
+      run: bun install --frozen-lockfile

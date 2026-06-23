@@ -13,48 +13,133 @@ permissions:
   contents: read
 
 jobs:
-  check-and-test:
-    name: Lint, typecheck, unit & type tests
+  # ── Producers ──────────────────────────────────────────────────────────────
+  # Two independent prerequisites the checks fan out from. The library tests import
+  # from src (not dist), so `dist` is only needed by the type-aware lint and the
+  # package-health checks; `test/generated` (forge codegen) is needed by typecheck
+  # and the test suites. Building these once and sharing via artifacts turns the old
+  # sum-of-everything serial job into max-of-slowest parallel checks.
+
+  build:
+    name: Build library
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6 # no submodules: src build doesn't touch contracts
+      - uses: ./.github/actions/setup
+      - run: bun run build
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: packages/evs/dist
+          retention-days: 1
+          if-no-files-found: error
+
+  contracts:
+    name: Contracts (forge build + test + codegen)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v6
         with:
           submodules: recursive # contracts/lib/forge-std
-
-      - uses: oven-sh/setup-bun@v2
-        with:
-          bun-version: latest
-
-      # vitest executes on Node (bun is the package manager / script runner)
-      - uses: actions/setup-node@v6
-        with:
-          node-version: 24
-
+      - uses: ./.github/actions/setup
       - uses: foundry-rs/foundry-toolchain@v1
         with:
           version: v1.7.1 # pinned: anvil/forge determinism
-
-      - run: bun install --frozen-lockfile
-
-      - name: Build + test contracts (reference + mocks)
+      - name: Build + test contracts, emit codegen artifacts
         working-directory: packages/contracts
         run: forge build && forge test && bun run codegen
+      - uses: actions/upload-artifact@v4
+        with:
+          name: generated
+          path: packages/evs/test/generated
+          retention-days: 1
+          if-no-files-found: error
 
-      # build first: type-aware lint resolves workspace imports through .d.ts
-      - name: Build library
-        run: bun run build
+  # ── Checks (fan out, run in parallel) ───────────────────────────────────────
 
+  lint:
+    name: Format + lint
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: packages/evs/dist
       - run: bun run fmt:check
+      # type-aware lint resolves workspace imports through the built .d.ts
       - run: bun run lint:ci
-      - run: bun run typecheck
 
-      - name: Unit + type tests
-        run: bun run test
+  typecheck:
+    name: Typecheck (library)
+    needs: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated
+          path: packages/evs/test/generated
+      # library only — apps/docs astro check runs as its own job (docs-typecheck)
+      - run: bun run --filter '@maxencerb/evs' typecheck
 
-      - name: Integration tests (anvil via prool)
-        run: bun run test:integration
+  docs-typecheck:
+    name: Typecheck (docs / astro check)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: packages/evs/dist
+      - run: bun run --filter '@maxencerb/evs-docs' typecheck
 
-      - name: Package health (publint + attw)
+  test:
+    name: Unit + type tests
+    needs: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated
+          path: packages/evs/test/generated
+      - run: bun run test
+
+  integration:
+    name: Integration tests (anvil via prool)
+    needs: contracts
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: foundry-rs/foundry-toolchain@v1
+        with:
+          version: v1.7.1
+      - uses: actions/download-artifact@v4
+        with:
+          name: generated
+          path: packages/evs/test/generated
+      - run: bun run test:integration
+
+  package-health:
+    name: Package health (publint + attw)
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v6
+      - uses: ./.github/actions/setup
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: packages/evs/dist
+      - name: publint + attw
         working-directory: packages/evs
         # esm-only profile: CJSResolvesToESM is the accepted cost of shipping ESM-only
         # (repo-layout.md §5 decision); attw exits 1 on ANY problem without the profile.
@@ -62,6 +147,7 @@ jobs:
           bunx publint
           bunx @arethetypeswrong/cli --pack . --profile esm-only
 
+  # ── Scheduled / manual mainnet-fork suite (unchanged trigger) ───────────────
   fork-tests:
     name: Mainnet-fork suite (scheduled / manual)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
@@ -69,18 +155,13 @@ jobs:
     steps:
       - uses: actions/checkout@v6
         with: { submodules: recursive }
-      - uses: oven-sh/setup-bun@v2
-        with: { bun-version: latest }
-      - uses: actions/setup-node@v6
-        with: { node-version: 24 }
+      - uses: ./.github/actions/setup
       - uses: foundry-rs/foundry-toolchain@v1
         with: { version: v1.7.1 }
-      - run: bun install --frozen-lockfile
       # the integration suite imports gitignored test/generated/ artifacts — regenerate them
       - name: Build contracts (reference + mocks)
         working-directory: packages/contracts
         run: forge build && bun run codegen
-      - run: bun run build
       - name: Fork integration
         env:
           ANVIL_FORK_URL: ${{ secrets.ANVIL_FORK_URL }}
