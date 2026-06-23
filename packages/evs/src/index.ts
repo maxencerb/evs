@@ -7,6 +7,10 @@
  * - `AsmNode`, `LabelId`, `EvmVersion` (type-only) — referenced by the public `CompileOptions`
  *   but previously unreachable through the single entry point (the exports map blocks deep
  *   imports).
+ * - issue #5 composite-ergonomics types (amendments §17): `FromAbiOutputs`, `AbiParamToEvsType`,
+ *   `AbiParamsToComponents`, `AbiParamToComponent` (the `t.fromOutputs`/`t.fromAbiParameter`
+ *   derivations); `AnyTuple`, `AnyMutArray`, `ReturnValue`, `IntoMember`, `IntoTuple`, `IntoArray`
+ *   (the widened return/member surface); `SubcallStruct` (the `s.call({ …, struct: true })` result).
  */
 
 // core
@@ -21,6 +25,9 @@ export {
 export type { EvsDiagnostic, EvsErrorCode, SourceLoc } from './core/errors.js';
 export { arg, t } from './core/types.js';
 export type {
+  AbiParamsToComponents, // issue #5: ABI-param → t.* type derivation helpers (t.fromOutputs/…)
+  AbiParamToComponent,
+  AbiParamToEvsType,
   Address,
   ArgSpec,
   ArgType,
@@ -31,6 +38,7 @@ export type {
   DynType,
   EvsType,
   Expr,
+  FromAbiOutputs, // issue #5: the return type of `t.fromOutputs(abi, name)`
   Hex,
   IntoExpr,
   IntType,
@@ -72,6 +80,8 @@ export type { SourceMap } from './asm/sourcemap.js';
 // builder
 export { evscript } from './builder/script.js';
 export type {
+  AnyMutArray, // issue #5: the erased MutArray brand (bare-MutArray return/array-slot widening)
+  AnyTuple,
   ArgHandle,
   ArgHandles,
   ArgsInput,
@@ -79,11 +89,16 @@ export type {
   ComponentToType,
   EvsScript,
   Field,
+  IntoArray, // issue #5: array-typed slot accepts an Expr/literal or a bare MutArray
+  IntoMember,
+  IntoTuple,
   LoopCtl,
   MutArray,
   NormalizeArgs,
+  ReturnValue,
   ScriptBuilder,
   ScriptReturn,
+  SubcallStruct, // issue #5: the `s.call({ …, struct: true })` result type
   Tuple,
   TupleInit,
 } from './builder/script.js';

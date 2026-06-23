@@ -69,6 +69,12 @@ export const t: {
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>; // t.array(t.struct({…})) -> tuple[]
   struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>; // named tuple
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>; // positional
+  // derive a type from an ABI instead of re-typing it (amended by #5 ask #4):
+  fromOutputs<const abi extends Abi | readonly unknown[], const name extends string>(
+    abi: abi,
+    name: name,
+  ): FromAbiOutputs<abi, name>; // outputs of `name` (1 → its type; n → struct)
+  fromAbiParameter<const p extends AbiParameter>(param: p): AbiParamToEvsType<p>; // one ABI param
 };
 ```
 
@@ -84,6 +90,16 @@ wherever a tuple type is expected.
 insertion order — the only encode-order source of truth); `t.tuple(...)` builds a **positional**
 tuple type (members `name: ''`); `t.array(elem)` is extended to tuple elements (`tuple` →
 `tuple[]`). See §3 for `EvsType`/`TupleType`.
+
+**`t.fromOutputs` / `t.fromAbiParameter` (amended by #5).** Derive a `t.*` type from an ABI rather
+than re-declaring it: `t.fromOutputs(abi, name)` returns the `EvsType` of a view/pure function's
+outputs — a single output yields its type directly (a `TupleType` for a `tuple` output, else the
+scalar/array string); **multiple** named outputs yield a `tuple` `TupleType` over them, **in ABI
+declaration order**. `t.fromAbiParameter(param)` maps one `AbiParameter` the same way. Because ABI
+outputs are an already-ordered `AbiParameter[]`, a `fromOutputs` derivation **sidesteps the
+`UnionToTuple` key-order instability** of a hand-written `t.struct`, and the result unifies with an
+`s.call({ …, struct: true })` decode of the same function (§6). An overloaded name / unknown name /
+no-output function throws.
 
 **No `UnionToTuple` hazard.** A `t.struct` record is unordered at the type level, but it
 compiles to a single NAMED ABI `tuple`, which abitype infers as an **order-insensitive object**
@@ -423,6 +439,8 @@ export interface SubcallParams<
   readonly functionName: name | ContractFunctionName<abi, ViewMutability>  // autocomplete union
   readonly args?: SubcallInputs<abi, name>
   readonly gas?: IntoExpr<'uint256'>            // optional cap; default forward-all
+  readonly struct?: boolean                     // opt-in (amended by #5 ask #2): decode named
+                                                // multi-outputs into ONE Tuple (see below)
 }
 // per-parameter union (amended by #2): the abitype Register-resolved primitive (a literal object
 // for a struct, a positional array for an unnamed tuple, a readonly Struct[] for a tuple[]) OR an
@@ -436,18 +454,40 @@ export type SubcallInputs<abi, name> = {
         | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>
 } // where inputs = ExtractAbiFunction<abi, name, ViewMutability>['inputs']
 
+// THREE overloads (amended by #5 ask #2), in precedence order, so the static type ALWAYS matches the
+// runtime (`wantStruct = struct === true`). `tryCall` mirrors this on `.value`.
+call<const abi extends Abi | readonly unknown[],
+     name extends ContractFunctionName<abi, ViewMutability>>(
+  p: SubcallParams<abi, name> & { readonly struct: true },
+): SubcallStruct<abi, name> // ONE named Tuple over ALL outputs (ABI order); every output must be named
+call<const abi extends Abi | readonly unknown[],
+     name extends ContractFunctionName<abi, ViewMutability>>(
+  p: SubcallParams<abi, name> & { readonly struct?: false },
+): UnwrapSingle<SubcallOutputs<abi, name>> // the frozen positional default (struct: false / omitted)
 call<const abi extends Abi | readonly unknown[],
      name extends ContractFunctionName<abi, ViewMutability>>(
   p: SubcallParams<abi, name>,
-): UnwrapSingle<SubcallOutputs<abi, name>>
-// outputs []  → void;  [one] → Expr<one> | Tuple<one> (Tuple if the single output is a tuple);
-// [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem). A tuple[] output → a
-// readonly Struct[] Expr whose .at(i) yields a typed Tuple element (added by the #2 follow-up).
+): SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>> // a NON-LITERAL boolean → narrow
+// default (no/false struct): outputs []  → void;  [one] → Expr<one> | Tuple<one> (Tuple if the
+// single output is a tuple); [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem) —
+// UNCHANGED. A tuple[] output → a readonly Struct[] Expr whose .at(i) yields a typed Tuple element.
 
+// tryCall mirrors the three overloads, wrapping the same value shape in { success, value }:
+tryCall<const abi extends Abi | readonly unknown[],
+        name extends ContractFunctionName<abi, ViewMutability>>(
+  p: SubcallParams<abi, name> & { readonly struct: true },
+): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name> }
+tryCall<const abi extends Abi | readonly unknown[],
+        name extends ContractFunctionName<abi, ViewMutability>>(
+  p: SubcallParams<abi, name> & { readonly struct?: false },
+): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> }
 tryCall<const abi extends Abi | readonly unknown[],
         name extends ContractFunctionName<abi, ViewMutability>>(
   p: SubcallParams<abi, name>,
-): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> }
+): {
+  readonly success: Expr<'bool'>
+  readonly value: SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>
+}
 ```
 
 Semantics and permissiveness:
@@ -463,6 +503,14 @@ Semantics and permissiveness:
   may be a `Tuple` handle, an `s.tuple(...)` result, or a plain literal object (the recorder builds
   the tuple from the object, members literal-or-`Expr`, omitted → 0). Amended by #2 — the previous
   "`tuple` → recording-time `EvsTypeError`" deferral is dropped.
+- **`struct: true` (opt-in, amended by #5 ask #2)**: a function with **multiple named** outputs
+  (e.g. UniV3 `slot0()`'s 7) normally decodes to a positional `readonly [Expr, …]` (the viem
+  mirror, unchanged). Passing `struct: true` instead composes the decoded outputs into **one named
+  `Tuple`** (`s.call({…, struct: true}).sqrtPriceX96.get()`), emitting a `tuplenew` over them; the
+  struct type is in **ABI declaration order**, so it unifies with `t.fromOutputs(abi, name)` and
+  flows straight into a same-shaped `t.struct` slot (§5). Every output must be **named** (an unnamed
+  member would degrade viem's object inference to a positional array) → recording-time `EvsTypeError`
+  otherwise. The default (no `struct`) shape is unchanged.
 - **Composite-element array outputs/args** (`tuple[]`, `T[][]`, `string[]`/`bytes[]`, added by the
   #2 follow-up): a `tuple[]` output decodes to a `readonly Struct[]` (an array of `Tuple` element
   handles — `out.at(i).field.get()`); `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` →
@@ -502,16 +550,22 @@ fn<const params extends readonly ArgSpec[], const r extends FnReturn>(
   body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
 ): EvsFn<params, r>
 
-export type FnReturn = Expr | readonly Expr[] | void
+// amended by #5 ask #1: a body may also return a Tuple/MutArray handle (composite/array result):
+export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly (Expr | AnyTuple | AnyMutArray)[] | void
 export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> =
   (...args: { [i in keyof params]: IntoExpr<params[i]['type']> }) => RebuildExprs<r>
-// RebuildExprs: Expr<t> → fresh Expr<t>; tuples → fresh tuples; void → void
+// RebuildExprs (amended by #5): Expr<t> → Expr<t>; a Tuple (or an Expr<tuple> via `.expr()`) →
+// Tuple<C>; a MutArray / array Expr → Expr<that array type>; the [many] list → element-wise; void →
+// void. The dispatch is on the RESULT TYPE, so it matches the runtime `s.call` wrap.
 ```
 
-- The body runs **once at definition** in an isolated scope. Params may be any `EvsType`
-  (memrefs pass as pointer words). **No capture** of outer Exprs/Cells (`EvsScopeError`).
-- Calling the `EvsFn` records one statement and returns fresh handles; two calls never alias.
-- Recursion is unconstructible (the handle does not exist inside its own body).
+- The body runs **once at definition** in an isolated scope. **Params** stay word/string-typed
+  (`arg()`'s bound is `StringType` — composite params are a deliberate v0 narrowing, amendment
+  16.2). **No capture** of outer Exprs/Cells (`EvsScopeError`).
+- Calling the `EvsFn` records one statement and returns fresh handles; two calls never alias. A
+  `tuple` result comes back as a usable `Tuple` (named field access at the call site), like `s.call`.
+- Recursion is unconstructible (the handle does not exist inside its own body). #5 widened only the
+  RETURN type, not this.
 - Compiled as a JUMPDEST subroutine — code emitted once regardless of call count; uncalled fns
   are dropped.
 
@@ -519,7 +573,8 @@ export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> =
 
 ```ts
 declare const returnBrand: unique symbol
-// a return value is an Expr OR a Tuple handle (ReturnValue = Expr | AnyTuple)
+// a return value is an Expr, a Tuple handle, OR a MutArray handle (amended by #5 ask #5):
+//   ReturnValue = Expr | AnyTuple | AnyMutArray — the bare handle needs no `.expr()`.
 export interface ScriptReturn<ret extends Record<string, ReturnValue>> { readonly [returnBrand]: ret }
 
 return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>
@@ -529,8 +584,11 @@ return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn
   from the builder callback. Violations → `EvsScopeError`/`EvsTypeError` at recording.
 - Record keys become the named components of the **single tuple output**; empty-string keys
   rejected. viem consumers receive an **object** (`{ token0: '0x…', symbol0: 'WETH', … }`).
-- Each value is an `Expr`, or a `Tuple` handle **directly** (no `.expr()` — it flows out as a
-  `'tuple'` component, abitype-typed; `tupleHandle.expr()` remains equivalent).
+- Each value is an `Expr`, a `Tuple` handle **directly**, or a `MutArray` handle **directly**
+  (amended by #5 — no `.expr()` needed; the bare handle IS the memref, byte-identical IR. It flows
+  out as a `'tuple'`/array component, abitype-typed; `handle.expr()` remains equivalent). The
+  narrowed `classify()` guards still reject a handle where a _word_ is required (e.g. arithmetic),
+  with the targeted "use `.expr()`" message.
 - `s.return` seals the recorder; any later builder call → `EvsScopeError(RECORDING_CLOSED)`.
 
 ## 10. `compile()` and the artifact

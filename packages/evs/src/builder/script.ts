@@ -16,7 +16,9 @@ import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc, setLocCapture } from '../core/loc.js';
 import { isEvsValueType } from '../core/types.js';
 import type {
+  AbiParamsToComponents,
   ArgSpec,
+  ArrayType,
   BitsType,
   EvsType,
   Expr,
@@ -202,6 +204,9 @@ export interface MutArray<e extends EvsType> {
   set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // bounds-checked → Panic 0x32
   get(i: IntoExpr<'uint256'>): MutArrayElem<e>; // bounds-checked → Panic 0x32
   expr(): Expr<MutArrayValueOf<e>>; // memref handle to the SAME buffer (reference semantics)
+  // phantom brand (issue #5 ask #5): lets `s.return({ arr })` / an array slot accept the bare
+  // handle (no `.expr()`). Type-only — the runtime `MutArrayImpl` carries no such property.
+  readonly [mutArrayBrand]: MutArrayValueOf<e>;
 }
 
 export interface LoopCtl {
@@ -225,11 +230,32 @@ export type ComponentToType<c extends NamedType> = c['type'] extends `tuple${str
     : never
   : Extract<c['type'], EvsType>;
 
-/** The value a composite member accepts on write/init: a {@link Tuple} handle or a host literal. */
-export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
+/**
+ * The value a composite (plain `tuple`) member accepts on write/init: a precise {@link Tuple}
+ * handle of that member type, ANY {@link Tuple} handle (issue #5 ask #3 — the erased
+ * {@link tupleBrand} makes a call-decoded `Tuple<C_abi>` assignable into a `t.struct`-typed slot
+ * whose `C` is `UnionToTuple`-ordered; the runtime `typesEqual` is the order-sensitive guard), or
+ * a host literal.
+ */
+export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | LitOf<t>;
 
-/** What `Field.set(v)` / a `s.tuple(...)` init slot accepts for a member of type `t`. */
-export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+/** What an ARRAY-typed slot accepts: an {@link Expr}/literal of the array type, or a bare
+ *  {@link MutArray} handle (issue #5 ask #5 — runtime `typesEqual` enforces the element match,
+ *  mirroring the bare-{@link Tuple} loosening). */
+export type IntoArray<t extends EvsType> = IntoExpr<t> | AnyMutArray;
+
+/**
+ * What `Field.set(v)` / a `s.tuple(...)` init slot / `MutArray.set` accepts for a member of type
+ * `t`: a plain `tuple` member → {@link IntoTuple}; a `tuple[]`/`tuple[][]` or string-array member →
+ * {@link IntoArray} (array Expr/literal/`MutArray`); a scalar member → {@link IntoExpr}.
+ */
+export type IntoMember<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple'
+    ? IntoTuple<t>
+    : IntoArray<t>
+  : t extends ArrayType
+    ? IntoArray<t>
+    : IntoExpr<t>;
 
 /**
  * A field handle over one tuple member (Cell-like). A composite member's `.get()` follows the
@@ -288,21 +314,34 @@ export declare const tupleBrand: unique symbol;
 /** A {@link Tuple} of unknown component shape — the erased brand carrier (return-bound widening). */
 export type AnyTuple = { readonly [tupleBrand]: TupleType };
 
-/**
- * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),
- * or a {@link Tuple} handle DIRECTLY (no `.expr()` needed — composite types §6/§8). `.expr()`
- * stays valid: it just yields the equivalent `Expr<C>`, which this union also covers.
- */
-export type ReturnValue = Expr | AnyTuple;
+/** @internal phantom brand keying {@link MutArray}; never present at runtime. Symmetric with
+ *  {@link tupleBrand} — lets a bare `MutArray` handle be accepted in a return / array slot (issue
+ *  #5 ask #5) while staying distinguishable from an `Expr`/`Tuple`. Erased to {@link EvsType}; the
+ *  precise array value type is recovered from `expr()` via {@link TypeOfReturn}. */
+export declare const mutArrayBrand: unique symbol;
+
+/** A {@link MutArray} of unknown element shape — the erased brand carrier (return/array-slot
+ *  widening, issue #5 ask #5). */
+export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
 
 /**
- * The {@link EvsType} a {@link ReturnValue} contributes: an `Expr`'s `t`, or — for a bare `Tuple`
- * handle — the `C` recovered from its `expr()` signature (a `Tuple` carries no `exprBrand`, so it
- * never matches the `Expr` arm; the erased {@link tupleBrand} only marks it as a tuple). The
- * recovered `C` is exactly what `tuple.expr()` would have yielded, so both forms infer identically.
+ * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),
+ * a {@link Tuple} handle DIRECTLY (no `.expr()` needed — composite types §6/§8), or a
+ * {@link MutArray} handle DIRECTLY (no `.expr()` — issue #5 ask #5). `.expr()` stays valid on
+ * both handles: it just yields the equivalent `Expr<C>`, which this union also covers.
+ */
+export type ReturnValue = Expr | AnyTuple | AnyMutArray;
+
+/**
+ * The {@link EvsType} a {@link ReturnValue} contributes: an `Expr`'s `t`, or — for a bare `Tuple` /
+ * `MutArray` handle — the `C` recovered from its `expr()` signature (neither handle carries an
+ * `exprBrand`, so they never match the `Expr` arm; the erased {@link tupleBrand}/{@link
+ * mutArrayBrand} only mark the handle kind). The recovered `C` is exactly what `handle.expr()`
+ * would have yielded (a `TupleType` for a `Tuple`, the array value type for a `MutArray`), so the
+ * bare-handle and `.expr()` forms infer identically.
  */
 export type TypeOfReturn<v> =
-  v extends Expr<infer t> ? t : v extends { expr(): Expr<infer c extends TupleType> } ? c : never;
+  v extends Expr<infer t> ? t : v extends { expr(): Expr<infer c extends EvsType> } ? c : never;
 
 /**
  * The partial member record accepted by `s.tuple(type, init?)`. A fully-named struct takes a
@@ -385,9 +424,10 @@ type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
       | AbiParameterToPrimitiveType<p, 'inputs'>
       | Tuple<ParamToTupleType<p>>
+      | AnyTuple // issue #5 ask #3: a cross-order call-decoded Tuple is accepted (runtime-checked)
       | Expr<ParamToTupleType<p>>
   : p['type'] extends 'tuple[]'
-    ? AbiParameterToPrimitiveType<p, 'inputs'> | Expr<ParamToTupleArrayType<p>>
+    ? AbiParameterToPrimitiveType<p, 'inputs'> | Expr<ParamToTupleArrayType<p>> | AnyMutArray // issue #5 ask #5: a bare MutArray<tuple> is accepted (runtime-checked)
     :
         | AbiParameterToPrimitiveType<p, 'inputs'>
         | Expr<p['type'] extends EvsType ? p['type'] : never>;
@@ -415,6 +455,21 @@ export type UnwrapSingle<outs> = outs extends readonly []
     ? one
     : outs;
 
+/**
+ * `s.call({ …, struct: true })` (issue #5 ask #2) → ONE named {@link Tuple} handle built over ALL
+ * of the function's (named, ABI-ordered) outputs — the opt-in alternative to the default positional
+ * `[many]` shape (which stays the default, mirroring viem's `readContract`). Requires every output
+ * to carry a name at record time. The struct type is in ABI declaration order, so it unifies with
+ * `t.fromOutputs(abi, name)` and a `t.struct` declared in the same order (issue #5 asks #3/#4).
+ */
+export type SubcallStruct<abi extends Abi | readonly unknown[], name extends string> = [
+  ViewFnOf<abi, name>,
+] extends [never]
+  ? Tuple<TupleType>
+  : ViewFnOf<abi, name> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+    ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>
+    : Tuple<TupleType>;
+
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
   name extends ContractFunctionName<abi, ViewMutability>,
@@ -424,21 +479,54 @@ export interface SubcallParams<
   readonly functionName: name | ContractFunctionName<abi, ViewMutability>; // autocomplete union
   readonly args?: SubcallInputs<abi, name>;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
+  // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
+  // the default positional `[many]` array. See {@link SubcallStruct}.
+  readonly struct?: boolean;
 }
 
 // ---------------------------------------------------------------------------
 // user functions (api.md §8)
 // ---------------------------------------------------------------------------
 
-export type FnReturn = Expr | readonly Expr[] | void;
+/**
+ * What an `s.fn` body may return (widened by issue #5 ask #1): a single {@link Expr}, a single
+ * {@link Tuple}/{@link MutArray} handle (a composite/array result — byte-identical IR to `.expr()`),
+ * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed
+ * (composite params are a separate v0 deferral — `arg()`'s bound is `StringType`).
+ */
+export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
+/** One element of an `s.fn` body's `[many]`-shape return. */
+export type FnResult = Expr | AnyTuple | AnyMutArray;
 
-// RebuildExprs: Expr<t> → fresh Expr<t>; tuples → fresh tuples; void → void
-export type RebuildExprs<r extends FnReturn> =
-  r extends Expr<infer tt>
-    ? Expr<tt>
-    : r extends readonly Expr[]
-      ? { readonly [i in keyof r]: r[i] extends Expr<infer tt> ? Expr<tt> : never }
-      : void;
+/** An {@link EvsType} → the call-site handle the runtime `wrap`/`handleFor` yields for it: a plain
+ *  `tuple` → a {@link Tuple} handle (named field access); any array/scalar → an {@link Expr}. */
+type HandleOfType<c extends EvsType> = c extends TupleType
+  ? c['type'] extends 'tuple'
+    ? Tuple<c>
+    : Expr<c>
+  : Expr<c>;
+
+/**
+ * One fn result → the handle the CALL SITE receives, recovering the precise `EvsType` from the
+ * result's static form and applying {@link HandleOfType}. CRUCIAL: this must agree with the runtime
+ * `fnCall` `wrap` (which dispatches on the RESULT TYPE, not the body's static form), so a body that
+ * returns `s.tuple(...).expr()` (an `Expr<tuple>`) and one that returns the bare `Tuple` both yield
+ * a `Tuple<C>` at the call site — and an array result (`Expr<tuple[]>`, `MutArray`) yields an `Expr`.
+ */
+export type RebuildFnResult<r> =
+  r extends Expr<infer t>
+    ? HandleOfType<t>
+    : r extends { expr(): Expr<infer c extends EvsType> }
+      ? HandleOfType<c>
+      : never;
+
+// RebuildExprs: the `[many]` list → element-wise rebuild; a single Expr/Tuple/MutArray → its
+// rebuilt call-site handle (via the result TYPE, matching the runtime); void → void.
+export type RebuildExprs<r extends FnReturn> = r extends readonly FnResult[]
+  ? { readonly [i in keyof r]: RebuildFnResult<r[i]> }
+  : r extends Expr | AnyTuple | AnyMutArray
+    ? RebuildFnResult<r>
+    : void;
 
 export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> = (
   ...args: { [i in keyof params]: IntoExpr<params[i]['type']> }
@@ -493,19 +581,51 @@ export interface ScriptBuilder {
   ): void;
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
 
-  // calls (api.md §6)
+  // calls (api.md §6) — the result shape depends on `struct` (issue #5 ask #2). Three overloads in
+  // precedence order so the static type ALWAYS matches the runtime (`wantStruct = struct === true`):
+  //   `struct: true`  → ONE named Tuple;
+  //   `struct?: false` / omitted → the frozen positional `[many]` shape (unchanged default);
+  //   a NON-LITERAL `boolean` → the union of both (the runtime decides on the value, so the caller
+  //     must narrow — this closes the literal-vs-boolean soundness gap).
+  call<
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, ViewMutability>,
+  >(
+    p: SubcallParams<abi, name> & { readonly struct: true },
+  ): SubcallStruct<abi, name>;
+  call<
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, ViewMutability>,
+  >(
+    p: SubcallParams<abi, name> & { readonly struct?: false },
+  ): UnwrapSingle<SubcallOutputs<abi, name>>;
   call<
     const abi extends Abi | readonly unknown[],
     name extends ContractFunctionName<abi, ViewMutability>,
   >(
     p: SubcallParams<abi, name>,
-  ): UnwrapSingle<SubcallOutputs<abi, name>>;
+  ): SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>;
+  tryCall<
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, ViewMutability>,
+  >(
+    p: SubcallParams<abi, name> & { readonly struct: true },
+  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name> };
+  tryCall<
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, ViewMutability>,
+  >(
+    p: SubcallParams<abi, name> & { readonly struct?: false },
+  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> };
   tryCall<
     const abi extends Abi | readonly unknown[],
     name extends ContractFunctionName<abi, ViewMutability>,
   >(
     p: SubcallParams<abi, name>,
-  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> };
+  ): {
+    readonly success: Expr<'bool'>;
+    readonly value: SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>;
+  };
 
   // functions (api.md §8)
   fn<const params extends readonly ArgSpec[], const r extends FnReturn>(

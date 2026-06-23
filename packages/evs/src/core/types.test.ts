@@ -204,8 +204,9 @@ describe('t namespace', () => {
     for (const s of [...WORD_TYPES, ...DYN_TYPES]) {
       expect((t as Record<string, unknown>)[s]).toBe(s);
     }
-    // 98 word types + string + bytes + array() + struct() + tuple() = 103 keys
-    expect(Object.keys(t)).toHaveLength(103);
+    // 98 word types + string + bytes + array() + struct() + tuple() + fromOutputs() +
+    // fromAbiParameter() = 105 keys
+    expect(Object.keys(t)).toHaveLength(105);
   });
 
   test('is frozen', () => {
@@ -291,6 +292,110 @@ describe('t.struct / t.tuple (composite types)', () => {
 
   test('isDynamicType: a tuple is always memref-valued', () => {
     expect(isDynamicType(t.struct({ x: t.uint256 }))).toBe(true);
+  });
+});
+
+describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)', () => {
+  const slot0Outputs = [
+    { name: 'sqrtPriceX96', type: 'uint160' },
+    { name: 'tick', type: 'int24' },
+    { name: 'unlocked', type: 'bool' },
+  ] as const;
+  const poolAbi = [
+    { type: 'function', name: 'slot0', stateMutability: 'view', inputs: [], outputs: slot0Outputs },
+    {
+      type: 'function',
+      name: 'fee',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'uint24' }],
+    },
+    { type: 'function', name: 'poke', stateMutability: 'view', inputs: [], outputs: [] },
+    {
+      type: 'function',
+      name: 'positions',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        {
+          name: '',
+          type: 'tuple',
+          components: [
+            { name: 'liquidity', type: 'uint128' },
+            { name: 'owner', type: 'address' },
+          ],
+        },
+      ],
+    },
+  ] as const;
+
+  test('multi-named-output function → a named struct in ABI declaration order', () => {
+    const Slot0 = t.fromOutputs(poolAbi, 'slot0');
+    expect(isTupleType(Slot0)).toBe(true);
+    const comps = (Slot0 as TupleType).components;
+    expect(comps.map((c) => c.name)).toEqual(['sqrtPriceX96', 'tick', 'unlocked']);
+    expect(comps.map((c) => c.type)).toEqual(['uint160', 'int24', 'bool']);
+  });
+
+  test('single scalar output → the scalar type string', () => {
+    expect(t.fromOutputs(poolAbi, 'fee')).toBe('uint24');
+  });
+
+  test('single tuple output → that tuple type', () => {
+    const Pos = t.fromOutputs(poolAbi, 'positions');
+    expect(Pos).toMatchObject({
+      type: 'tuple',
+      components: [
+        { name: 'liquidity', type: 'uint128' },
+        { name: 'owner', type: 'address' },
+      ],
+    });
+  });
+
+  test('the derived struct is structurally a valid, usable t.* type', () => {
+    const Slot0 = t.fromOutputs(poolAbi, 'slot0');
+    expect(isEvsValueType(Slot0)).toBe(true);
+    // and it round-trips: a hand-written t.struct in the SAME order is typesEqual to it.
+    const Hand = t.struct({ sqrtPriceX96: t.uint160, tick: t.int24, unlocked: t.bool });
+    expect(typesEqual(Slot0, Hand)).toBe(true);
+  });
+
+  test('errors: unknown fn, no outputs, non-ABI input', () => {
+    expect(() => t.fromOutputs(poolAbi, 'missing')).toThrow(/no function named/);
+    expect(() => t.fromOutputs(poolAbi, 'poke')).toThrow(/no outputs/);
+    expect(() => t.fromOutputs({} as never, 'slot0')).toThrow(/ABI array/);
+  });
+
+  test('overloaded function name is a v0 deferral', () => {
+    const overloaded = [
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ name: 'a', type: 'uint256' }],
+      },
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [{ name: 'x', type: 'uint256' }],
+        outputs: [{ name: 'b', type: 'bool' }],
+      },
+    ] as const;
+    expect(() => t.fromOutputs(overloaded, 'f')).toThrow(/overloaded/);
+  });
+
+  test('fromAbiParameter maps a scalar / tuple parameter to its EvsType', () => {
+    expect(t.fromAbiParameter({ name: 'x', type: 'uint256' })).toBe('uint256');
+    expect(t.fromAbiParameter({ name: 'xs', type: 'address[]' })).toBe('address[]');
+    expect(
+      t.fromAbiParameter({
+        name: 'p',
+        type: 'tuple',
+        components: [{ name: 'a', type: 'uint8' }],
+      }),
+    ).toMatchObject({ type: 'tuple', components: [{ name: 'a', type: 'uint8' }] });
   });
 });
 

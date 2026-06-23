@@ -11,7 +11,7 @@ import { captureLoc } from './loc.js';
 // re-exported per the module-interfaces conventions block ("`Address` is re-exported from
 // `abitype`"); type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
-import type { AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
+import type { Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
 
 // ---------------------------------------------------------------------------
 // type vocabulary
@@ -234,11 +234,79 @@ export type TupleArrayOf<e extends TupleType> = {
   readonly components: e['components'];
 };
 
+// -- ABI → `t.*` type derivation (`t.fromOutputs` / `t.fromAbiParameter`, issue #5 ask #4) -------
+// ABI parameters are an already-ORDERED `AbiParameter[]`, so deriving a type from them is SAFER
+// than `t.struct` — it sidesteps the `UnionToTuple` record-key-order instability entirely (the
+// derived components are in ABI declaration order, matching the runtime decode + `s.call({...,
+// struct: true})`).
+
+/** An abitype `AbiParameter`'s `name` (`''` when absent) — abitype params name is optional. */
+type AbiParamName<p extends AbiParameter> = p extends { readonly name: infer n extends string }
+  ? n
+  : '';
+
+/** One ABI `AbiParameter` → a canonical {@link NamedType} component (recursing into tuple
+ *  components, preserving names/order). The mirror of {@link ComponentToType} in the ABI→type
+ *  direction, normalizing the optional `name` to a string so the result is a valid `NamedType`. */
+export type AbiParamToComponent<p extends AbiParameter> = p extends {
+  readonly type: `tuple${string}`;
+  readonly components: infer comps extends readonly AbiParameter[];
+}
+  ? {
+      readonly name: AbiParamName<p>;
+      readonly type: p['type'];
+      readonly components: AbiParamsToComponents<comps>;
+    }
+  : { readonly name: AbiParamName<p>; readonly type: p['type'] };
+
+/** A list of ABI `AbiParameter`s → {@link NamedType} components (homomorphic — order preserved). */
+export type AbiParamsToComponents<ps extends readonly AbiParameter[]> = {
+  readonly [i in keyof ps]: AbiParamToComponent<ps[i]>;
+};
+
+/** One ABI `AbiParameter` → its {@link EvsType}: a `tuple…` param → the matching {@link TupleType}
+ *  descriptor; every scalar/array param → its type string. The type-level mirror of core's
+ *  `abiParamToType`. */
+export type AbiParamToEvsType<p extends AbiParameter> = p extends {
+  readonly type: `tuple${string}`;
+  readonly components: infer comps extends readonly AbiParameter[];
+}
+  ? {
+      readonly type: p['type'] & TupleType['type'];
+      readonly components: AbiParamsToComponents<comps>;
+    }
+  : Extract<p['type'], EvsType>;
+
+/** The view/pure-or-any `function` entry of `abi` named `name` (a union if overloaded). */
+type AbiFnNamed<abi, name extends string> = abi extends Abi
+  ? Extract<abi[number], { readonly type: 'function'; readonly name: name }>
+  : never;
+
+/**
+ * `t.fromOutputs(abi, name)` → the {@link EvsType} of the function's outputs: a SINGLE output →
+ * that output's type (a {@link TupleType} for a tuple output, else the scalar/array string); MANY
+ * outputs → a {@link TupleType} struct over the (named, ABI-ordered) outputs. A non-`const` ABI /
+ * unknown name degrades to {@link EvsType} (never a hard error — mirrors `s.call` widening).
+ */
+export type FromAbiOutputs<abi, name extends string> = [AbiFnNamed<abi, name>] extends [never]
+  ? EvsType
+  : AbiFnNamed<abi, name> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+    ? outs extends readonly [infer one extends AbiParameter]
+      ? AbiParamToEvsType<one>
+      : { readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }
+    : EvsType;
+
 type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
   array<const e extends StringType>(elem: e): `${e}[]`;
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>;
   struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>;
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>;
+  // derive a `t.*` type from an ABI function's outputs / a single ABI parameter (issue #5 ask #4):
+  fromOutputs<const abi extends Abi | readonly unknown[], const name extends string>(
+    abi: abi,
+    name: name,
+  ): FromAbiOutputs<abi, name>;
+  fromAbiParameter<const p extends AbiParameter>(param: p): AbiParamToEvsType<p>;
 };
 
 const UINT_BITS_LIST: readonly number[] = Array.from({ length: 32 }, (_, i) => 8 * (i + 1));
@@ -385,6 +453,12 @@ export const t: TypeNamespace = Object.freeze({
   },
   tuple(...items: unknown[]): unknown {
     return tupleTypeRT(items);
+  },
+  fromOutputs(abi: unknown, name: unknown): unknown {
+    return fromOutputsRT(abi, name);
+  },
+  fromAbiParameter(param: unknown): unknown {
+    return fromAbiParameterRT(param);
   },
 } as const) as unknown as TypeNamespace;
 
@@ -691,6 +765,80 @@ function arrayDepthGuard(s: string): void {
       },
     );
   }
+}
+
+/** A non-null, non-array object — narrows `unknown` to a property-indexable record. */
+function isRecordObject(v: unknown): v is Record<string, unknown> {
+  return typeof v === 'object' && v !== null && !Array.isArray(v);
+}
+
+/**
+ * `t.fromOutputs(abi, name)` runtime: locate the single function named `name` (overloads are a v0
+ * deferral, mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
+ * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
+ * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
+ * does and round-trips with a `s.call({…, struct: true})` decode of the same function.
+ */
+function fromOutputsRT(abi: unknown, name: unknown): EvsType {
+  if (typeof name !== 'string') {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `t.fromOutputs(): functionName must be a string, got ${describeTypeInput(name)}`,
+      { loc: captureLoc() },
+    );
+  }
+  if (!Array.isArray(abi)) {
+    throw new EvsTypeError('ABI_SHAPE', `t.fromOutputs("${name}"): abi must be an ABI array`, {
+      loc: captureLoc(),
+    });
+  }
+  // `Array.isArray` narrows `abi` to `any[]`; re-widen to `unknown[]` so member access is guarded.
+  const entries: readonly unknown[] = abi;
+  const fns = entries.filter(
+    (it): it is Record<string, unknown> =>
+      isRecordObject(it) && it['type'] === 'function' && it['name'] === name,
+  );
+  if (fns.length === 0) {
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `t.fromOutputs("${name}"): the provided ABI has no function named "${name}"`,
+      { loc: captureLoc() },
+    );
+  }
+  if (fns.length > 1) {
+    throw new EvsTypeError(
+      'UNSUPPORTED_V0',
+      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is deferred in v0; prune the ABI to the single intended entry`,
+      { loc: captureLoc() },
+    );
+  }
+  const outputs = fns[0]?.outputs;
+  if (!Array.isArray(outputs) || outputs.length === 0) {
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `t.fromOutputs("${name}"): function "${name}" has no outputs to derive a type from`,
+      { loc: captureLoc() },
+    );
+  }
+  const components = componentsFromAbi(outputs, `t.fromOutputs("${name}")`);
+  const single = components[0];
+  if (components.length === 1 && single !== undefined) return abiParamToType(single);
+  return Object.freeze({ type: 'tuple', components });
+}
+
+/**
+ * `t.fromAbiParameter(param)` runtime: validate + canonicalize one ABI parameter and return its
+ * {@link EvsType} (a {@link TupleType} for a `tuple…` param, else the scalar/array string).
+ */
+function fromAbiParameterRT(param: unknown): EvsType {
+  const components = componentsFromAbi([param], 't.fromAbiParameter()');
+  const single = components[0];
+  if (single === undefined) {
+    throw new EvsTypeError('ABI_SHAPE', `t.fromAbiParameter(): missing parameter`, {
+      loc: captureLoc(),
+    });
+  }
+  return abiParamToType(single);
 }
 
 // ---------------------------------------------------------------------------
