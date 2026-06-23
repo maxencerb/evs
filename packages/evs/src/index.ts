@@ -31,6 +31,7 @@ export type {
   Address,
   ArgSpec,
   ArgType,
+  ArrayElemOf, // the element type of `Expr.at` (one `[]` peeled — amendment 18.1)
   ArrayType,
   BitsType,
   BytesNType,

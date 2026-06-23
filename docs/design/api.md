@@ -186,13 +186,15 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  // amended by #2: `elem` broadened to StringType (nested string arrays in the vocabulary); the
-  // `& ArrayType` pins `${elem}[]` to the depth-bounded array set (an unbounded `${StringType}[]`
+  // amended by #2: broadened to StringType elements (nested string arrays in the vocabulary); the
+  // `& ArrayType` pins the result to the depth-bounded array set (an unbounded `${StringType}[]`
   // could reach depth 4, which is not an EvsType).
-  at<elem extends StringType>(
-    this: Expr<`${elem}[]` & ArrayType>,
-    i: IntoExpr<'uint256'>,
-  ): Expr<elem>;
+  // amended by 18.1 (tsc perf): the element is derived by FORWARD `infer` on the receiver's own
+  // `t` via ArrayElemOf, not a reverse-solved `elem extends StringType`. Type-equivalent — same
+  // element, same array-only `this` guard — but ~10× cheaper to check (no reverse-matching the
+  // ~400-member union). Prior form: `at<elem extends StringType>(this: Expr<`${elem}[]` &
+  // ArrayType>, i): Expr<elem>`.
+  at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // amended by the #2 follow-up: a tuple-array Expr's `.at(i)` returns a typed Tuple element handle
   // (the same unified Tuple — `.at(i).field.get()`).
   at<C extends TupleType>(this: Expr<C & { type: 'tuple[]' }>, i: IntoExpr<'uint256'>): Tuple</* elem */>;

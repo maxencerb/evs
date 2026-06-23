@@ -1195,6 +1195,42 @@ genuinely-wrong positions (arithmetic on a `MutArray`, a `Tuple` where a word is
 
 ---
 
+## 18. Type-check performance — `Expr.at` element inference
+
+### 18.1 `Expr.at` element type via forward `infer` (`ArrayElemOf`) instead of a reverse-solved generic
+
+- Law: api.md §3 / module-interfaces §M1 (as amended by 16.4) —
+  ```ts
+  at<elem extends StringType>(this: Expr<`${elem}[]` & ArrayType>, i: IntoExpr<'uint256'>): Expr<elem>;
+  ```
+- Shipped:
+  ```ts
+  export type ArrayElemOf<t extends EvsType> = [t] extends [`${infer e extends StringType}[]`] ? e : never;
+  // on Expr<t>:
+  at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
+  ```
+  Same observable typing — `Expr<'uint256[][]'>.at(i)` → `Expr<'uint256[]'>`, a non-array receiver
+  is still rejected by the `t & ArrayType` `this` constraint — but the element type is now derived by
+  FORWARD `infer` on the receiver's own (already-concrete) `t`, not by reverse-solving a fresh
+  `elem extends StringType` so that `` `${elem}[]` `` matches the receiver. The check type in
+  `ArrayElemOf` is tuple-wrapped (`[t] extends [...]`) so it does not distribute: a wide/non-array
+  `t` (e.g. a loosely-typed `Expr<EvsType>`) collapses to `never` rather than materializing the
+  ~400-member `StringType`/`ArrayType` union.
+- Rationale: PR #2's nested-array reads (`m.at(i).at(j)` chains feeding a composite `s.return`)
+  turned the reverse-inference form into the dominant `tsc` cost — a `--generateTrace` of the type
+  suite put ~88% of a 38.7 s check time in one `differential.test.ts` expression, with 71
+  `recursiveTypeRelatedTo_DepthLimit` bailouts. Reverse-matching a template literal against the
+  union is super-linear; forward `infer` on a concrete receiver is ~free. Measured: check time
+  **38.7 s → 3.7 s** (~10×), instantiations 1.12 M → 1.02 M, with all unit + type-contract tests
+  unchanged. The depth-limit bailouts had also been masking a latent "union too complex" (TS2590) in
+  the loose `differential.test.ts` read-path corpus; with the bailouts gone, that corpus's handle
+  shape was pinned to `Expr<'uint256'>` (the word every terminal read actually yields) so viem's
+  `decodeFunctionResult` re-inference over the returned struct stays a struct-of-words.
+- Status: **accepted** — type-preserving reformulation of a frozen signature; the element type and
+  the array-only `this` guard are identical, only the computation strategy changed.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |
