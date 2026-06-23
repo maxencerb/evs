@@ -79,12 +79,18 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
 }
 export function arg<const name extends string, const type extends StringType>(
   name: name, type: type): ArgSpec<name, type>          // amended by #2: param type is StringType
-// the `t` namespace gains `struct`/`tuple` and a tuple `array` overload (amended by #2):
+// the `t` namespace gains `struct`/`tuple` and a tuple `array` overload (amended by #2); plus
+// `fromOutputs`/`fromAbiParameter` ABI→type derivations (amended by #5 ask #4):
 export const t: { /* every WordType|DynType key */ } & {
   array<const e extends StringType>(elem: e): `${e}[]`
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>
   struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>
+  // derive an EvsType from an ABI function's outputs (single → its type; many → a named struct in
+  // ABI order) / a single ABI parameter — sidesteps `UnionToTuple` key-order instability (#5 #4):
+  fromOutputs<const abi extends Abi | readonly unknown[], const name extends string>(
+    abi: abi, name: name): FromAbiOutputs<abi, name>
+  fromAbiParameter<const p extends AbiParameter>(param: p): AbiParamToEvsType<p>
 }
 // the type-level namespace helpers (exported for the overloads + builder/abi):
 export type TypeToComponent<name extends string, ty extends EvsType> = /* see core/types.ts */
@@ -625,7 +631,9 @@ export interface MutArray<e extends EvsType> {
   /* api.md §5 — amended by the #2 follow-up: `e` widened WordType → EvsType (composite-element
      arrays of pointers); `get`/`at` on a tuple[] return a Tuple element handle, `set` takes
      IntoMember<e>, `expr()` types as the array type. `s.newArray` admits word|string|bytes|
-     one-level T[]|tuple; T[N]/tuple[][]/deeper still UNSUPPORTED_V0. */
+     one-level T[]|tuple; T[N]/tuple[][]/deeper still UNSUPPORTED_V0. amended by #5 ask #5: gains a
+     phantom `readonly [mutArrayBrand]: MutArrayValueOf<e>` so a bare handle is a `ReturnValue` /
+     array-slot value (`s.return({ arr })`, no `.expr()`). */
 }
 export interface LoopCtl {
   break(): void;
@@ -644,18 +652,29 @@ export type Tuple<C extends TupleType> = {
 } & { at(i: number): Field</* element type */>; expr(): Expr<C> } & {
   readonly [tupleBrand]: TupleType; // erased (order-insensitive) so Tuple↔Tuple assignability holds
 };
-export type IntoTuple<t extends TupleType> = Tuple<t> | LitOf<t>;
-export type IntoMember<t extends EvsType> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>;
+// amended by #5 ask #3: a composite INPUT slot also accepts ANY Tuple handle (the erased brand
+// makes a call-decoded `Tuple<C_abi>` assignable into a `t.struct`-typed slot whose `C` is
+// `UnionToTuple`-ordered; runtime `typesEqual` is the order-sensitive guard). Array slots also take
+// a bare `MutArray` (`IntoArray`, #5 ask #5).
+export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | LitOf<t>;
+export type IntoArray<t extends EvsType> = IntoExpr<t> | AnyMutArray;
+export type IntoMember<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple' ? IntoTuple<t> : IntoArray<t>
+  : t extends ArrayType ? IntoArray<t> : IntoExpr<t>;
 export type TupleInit<C extends TupleType> = /* named object | positional record, all members optional */;
 // (s.tuple is a method on ScriptBuilder: `tuple<const c extends TupleType>(type: c, init?:
 //  TupleInit<c>): Tuple<c>`.)
-// amended by #2 (composite types): a return value is an Expr OR a Tuple handle returned directly.
-// `TypeOfReturn` recovers an Expr's `t` or a Tuple's `C` (from its `expr()` signature) for ScriptAbi.
+// amended by #2: a return value is an Expr OR a Tuple handle returned directly. amended by #5 ask
+// #5: a bare `MutArray` handle is ALSO a return value (`AnyMutArray`, an erased brand symmetric
+// with `tupleBrand`; `MutArray<e>` gains `readonly [mutArrayBrand]: MutArrayValueOf<e>`).
+// `TypeOfReturn` recovers an Expr's `t`, or a Tuple/MutArray's value type `c` from its `expr()`.
+export declare const mutArrayBrand: unique symbol; // phantom; marks a MutArray in a return/array bound
 export type AnyTuple = { readonly [tupleBrand]: TupleType };
-export type ReturnValue = Expr | AnyTuple;
+export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
+export type ReturnValue = Expr | AnyTuple | AnyMutArray;
 export type TypeOfReturn<v> = v extends Expr<infer t>
   ? t
-  : v extends { expr(): Expr<infer c extends TupleType> }
+  : v extends { expr(): Expr<infer c extends EvsType> }
     ? c
     : never;
 export declare const returnBrand: unique symbol;

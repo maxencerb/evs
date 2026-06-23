@@ -78,11 +78,13 @@ test('t.struct infers a named-component TupleType; t.tuple a positional one', ()
   const pos = t.struct({ liquidity: t.uint128, owner: t.address });
   expectTypeOf(pos).toMatchTypeOf<TupleType>();
   expectTypeOf(pos.type).toEqualTypeOf<'tuple'>();
-  expectTypeOf(pos.components).toMatchTypeOf<
-    readonly [
-      { readonly name: 'liquidity'; readonly type: 'uint128' },
-      { readonly name: 'owner'; readonly type: 'address' },
-    ]
+  // A `t.struct`'s component ORDER is `UnionToTuple`'s TS-internal-id order — explicitly UNSTABLE
+  // (core/types.ts §4.2; it can flip when unrelated types are added). Assert the component SET (the
+  // `[number]` element union, order-insensitive), which is the property the design actually
+  // guarantees — viem infers an order-insensitive object from the named tuple either way.
+  expectTypeOf<(typeof pos.components)[number]>().toEqualTypeOf<
+    | { readonly name: 'liquidity'; readonly type: 'uint128' }
+    | { readonly name: 'owner'; readonly type: 'address' }
   >();
 
   const tup = t.tuple(t.uint256, t.bool);

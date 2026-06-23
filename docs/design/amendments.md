@@ -1051,6 +1051,150 @@ ret>` and `CompiledEvsScript<name, args, ret>` parameterized by `readonly ArgSpe
 
 ---
 
+## 17. Composite-type ergonomics (issue #5)
+
+Real usage of the #2 composite-type system (a Uniswap V3 multi-pool metadata reader) surfaced an
+**ergonomics / unification** cluster: already-representable values were awkward to construct, name,
+pass, or return. All five asks are **additive widenings** of frozen M5/M1 signatures — never breaks
+of existing call sites — plus one new `t` member. The runtime IR/codegen/validate layers were
+already capable (a composite/array value is one pointer word — architecture §5/§9); the gaps were the
+builder surface + static types. The narrowed `classify()` / `requireFnResult` guards still reject
+genuinely-wrong positions (arithmetic on a `MutArray`, a `Tuple` where a word is required).
+
+### 17.1 `t` namespace — `t.fromOutputs` / `t.fromAbiParameter` (ask #4)
+
+- Law: api.md §2 / module-interfaces §M1 — the `t` namespace was exactly the word/dyn keys plus
+  `array`/`struct`/`tuple`; no ABI→type derivation existed (`abiParamToType` was runtime-only).
+- Shipped (core/types.ts):
+  ```ts
+  fromOutputs<const abi extends Abi | readonly unknown[], const name extends string>(
+    abi: abi, name: name): FromAbiOutputs<abi, name>;
+  fromAbiParameter<const p extends AbiParameter>(param: p): AbiParamToEvsType<p>;
+  ```
+  `t.fromOutputs(abi, name)` derives the `EvsType` of a function's outputs — a SINGLE output → its
+  type (a `TupleType` for a `tuple` output, else the scalar/array string); MANY → a `tuple`
+  `TupleType` over the named outputs **in ABI declaration order**. `t.fromAbiParameter(param)` maps
+  one `AbiParameter` the same way. Both validate via the existing `componentsFromAbi`/`abiParamToType`
+  and freeze. Type helpers `FromAbiOutputs`, `AbiParamToEvsType`, `AbiParamsToComponents`,
+  `AbiParamToComponent` are exported. Overloaded/unknown/no-output names throw.
+- Rationale: removes the duplicate hand-written struct (`Slot0` lived twice — in the ABI and the
+  script). Because ABI outputs are an already-ordered `AbiParameter[]`, the derivation **sidesteps
+  the `UnionToTuple` record-key-order instability** of `t.struct` (core/types.ts §4.2) and unifies
+  with a `s.call({ …, struct: true })` decode of the same function (17.5).
+- Status: **accepted** — purely additive (`t` is frozen, so even a new member is recorded here).
+
+### 17.2 `ReturnValue` / `MutArray` brand — bare `MutArray` returns (ask #5)
+
+- Law: api.md §9 / module-interfaces §M5 — `export type ReturnValue = Expr | AnyTuple;`. A bare
+  `MutArray` in `s.return` was a compile error and a runtime `TYPE_MISMATCH` ("a MutArray is not an
+  Expr — use … `.expr()`").
+- Shipped (builder/script.ts):
+  ```ts
+  export declare const mutArrayBrand: unique symbol; // phantom; erased to EvsType
+  export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
+  export type ReturnValue = Expr | AnyTuple | AnyMutArray; // widened
+  export type TypeOfReturn<v> =
+    v extends Expr<infer t> ? t : v extends { expr(): Expr<infer c extends EvsType> } ? c : never; // `TupleType`→`EvsType`
+  // MutArray<e> gains: readonly [mutArrayBrand]: MutArrayValueOf<e>;
+  ```
+  Runtime: `ret()` gains an `ARR_INTERNALS` fast-path (before `classify`, mirroring the bare-`Tuple`
+  branch) that returns the array's `ValueId` verbatim after owner+visibility checks — **byte-identical
+  IR** to `.expr()`. `coerceToId` gains the symmetric array-target branch, so a bare `MutArray` is
+  also accepted in array member/arg slots.
+- Rationale: the natural symmetric follow-up to #2's bare-`Tuple` return (commit `39c0d70`) — the
+  only `.expr()` the flagship still hit was the whole-array-handle case.
+- Status: **accepted** — additive superset; `classify()` rejection kept for wrong positions.
+
+### 17.3 `IntoTuple` / `IntoMember` / `IntoArray` — composite/array input loosening (asks #3/#5)
+
+- Law: module-interfaces §M5 — `IntoTuple<t> = Tuple<t> | LitOf<t>`,
+  `IntoMember<t> = t extends TupleType ? IntoTuple<t> : IntoExpr<t>`.
+- Shipped (builder/script.ts):
+  ```ts
+  export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | LitOf<t>; // + AnyTuple
+  export type IntoArray<t extends EvsType> = IntoExpr<t> | AnyMutArray; // new
+  export type IntoMember<t extends EvsType> = t extends TupleType
+    ? t['type'] extends 'tuple'
+      ? IntoTuple<t>
+      : IntoArray<t>
+    : t extends ArrayType
+      ? IntoArray<t>
+      : IntoExpr<t>;
+  ```
+  Plus the `SubcallInputs` tuple arm gains `| AnyTuple` and the `tuple[]` arm `| AnyMutArray`.
+- Rationale: a call-decoded `Tuple<C_abi>` (abitype's _ordered_ `C`) was NOT assignable into a
+  `t.struct`-typed slot (whose `C` is `UnionToTuple`-mapped) because `expr(): Expr<C>` leaks the
+  ordered `C`. Accepting `AnyTuple` (the erased brand) at INPUT positions makes it assignable and
+  leans on the runtime `typesEqual` as the order-sensitive guard — the runtime whole-block aliasing
+  (`coerceTupleToId`) was already complete. Symmetric for arrays via `IntoArray`/`AnyMutArray`.
+- Status: **accepted** — a regression-of-promise from #2 ("one unified tuple type") closed at the
+  type level; READ positions (`Field.get`, call outputs) keep the precise `Tuple<C>`.
+
+### 17.4 `FnReturn` / `RebuildExprs` / `EvsFn` — composite `s.fn` returns (ask #1)
+
+- Law: api.md §8 / module-interfaces §M5 — `export type FnReturn = Expr | readonly Expr[] | void`;
+  `requireFnResult` routed through `classify()`, which rejected any `Tuple` ("a Tuple is not an
+  Expr — use .expr()…"); `fnCall` re-wrapped every output with `makeExpr` (losing the field surface).
+- Shipped (builder/script.ts + builder/expr.ts):
+  ```ts
+  export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
+  export type RebuildFnResult<r> = /* recover the EvsType from the result's static form, then a
+    plain `tuple` → Tuple<C> (named field access), any array/scalar → Expr — matching the runtime */;
+  export type RebuildExprs<r extends FnReturn> = /* [many] → element-wise; single → RebuildFnResult */;
+  ```
+  Runtime: `requireFnResult` accepts a `Tuple`/`MutArray` handle (returns its `ValueId` verbatim,
+  byte-identical to `.expr()`); `fnCall` wraps each result by its recorded type (a plain `tuple` → a
+  `Tuple` handle, like `s.call`). No IR/codegen/validate changes — a fncall result is one pointer
+  word (architecture §9), already carried by `FnIr.results: { type: EvsType }[]` + `validate.ts`.
+  Crucially `RebuildExprs` dispatches on the RESULT TYPE (not the body's static form), so a body that
+  returns `s.tuple(…)` and one that returns `s.tuple(…).expr()` agree with the runtime (both → a
+  `Tuple` at the call site). `s.fn` PARAMS stay word/string-typed (amendment 16.2 narrowing — a
+  separate, optional follow-up; not delivered here).
+- Rationale: the doc comment at api.md §8 (`RebuildExprs: … tuples → fresh tuples`) anticipated this
+  but it was never delivered (#2's impl-plan §0 scoped `s.fn` out). Orthogonal to the recursion
+  non-goal (the self-call ban is about recursion, not return types).
+- Status: **accepted** — IR/codegen already ready; builder surface + static types widened.
+
+### 17.5 `SubcallParams.struct` / `SubcallStruct` / `call`+`tryCall` overloads — `struct: true` (ask #2)
+
+- Law: api.md §6 — `s.call`'s `[many]` shape is a positional `readonly (Expr|Tuple)[]` per output
+  (mirrors viem's `readContract`); `SubcallParams` had no `struct` field; one `call`/`tryCall`
+  signature each.
+- Shipped (builder/script.ts + builder/expr.ts):
+  ```ts
+  interface SubcallParams<…> { …; readonly struct?: boolean }
+  export type SubcallStruct<abi, name> = Tuple<{ type: 'tuple'; components: <named outputs> }>;
+  // THREE overloads each for call/tryCall, in precedence order, so the static type ALWAYS matches
+  // the runtime `wantStruct = struct === true`:
+  //   { struct: true }    → SubcallStruct                   (one named Tuple)
+  //   { struct?: false }  → UnwrapSingle<SubcallOutputs>    (the frozen positional default)
+  //   (default catch-all) → SubcallStruct | UnwrapSingle<…> (a NON-LITERAL boolean → caller narrows)
+  ```
+  Runtime: when `struct === true`, `subcall` composes a `tuplenew` over the already-decoded output
+  ValueIds and returns ONE named `Tuple` (the struct type is in ABI order); the default positional
+  `[many]` path is untouched. Requires every output to be **named** (an unnamed member degrades
+  viem's object inference to a positional array) → recording-time `EvsTypeError`. The three overloads
+  close the literal-vs-`boolean` soundness gap: a literal `true`/`false`/omitted gets the precise
+  shape, a non-literal `boolean` gets the union (matching the value-dependent runtime), so neither
+  shape is silently mis-promised.
+- Rationale: real `slot0()` is **7 separately-named** outputs (not one `tuple`), so it decoded to a
+  positional `readonly [Expr,…]` and lost the names. `struct: true` is the **opt-in** the issue asked
+  for — it does NOT silently change the frozen positional default or diverge from viem mirroring, and
+  it composes with 17.1/17.3 (a `t.fromOutputs`-typed slot accepts the result directly).
+- Status: **accepted** — opt-in only; default `[many]` shape pinned unchanged by type tests.
+
+### 17.6 `index.ts` — §M9 public-surface additions
+
+- Law: module-interfaces §M9 / api.md §10 — the curated single-entry export list.
+- Shipped: re-export the new public types — `FromAbiOutputs`, `AbiParamToEvsType`,
+  `AbiParamsToComponents`, `AbiParamToComponent` (core); `AnyTuple`, `AnyMutArray`, `ReturnValue`,
+  `IntoMember`, `IntoTuple`, `IntoArray`, `SubcallStruct` (builder).
+- Rationale: every type reachable through `t.fromOutputs`/`s.call({struct:true})`/`s.return` is now
+  nameable from the package entry point (same treatment as `StructTypeOf`/`ComponentToType`/`Tuple`).
+- Status: **accepted** — additive to the export list; no value-shape change.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

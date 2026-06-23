@@ -1033,7 +1033,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
       () => rec((s) => s.fn('bad', [] as const, () => 5n as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /must return an Expr, a readonly Expr\[\] tuple, or void/,
+      /must return an Expr, a Tuple, a MutArray, a readonly array of those, or void/,
     );
   });
 
@@ -1181,11 +1181,14 @@ describe('staging traps', () => {
       'TYPE_MISMATCH',
       /Cell is not an Expr.*\.get\(\)/s,
     );
+    // A bare MutArray IS returnable now (issue #5 ask #5), but using it where a WORD value is
+    // required (arithmetic) still gets the targeted "use .expr()" message — the guard is narrowed,
+    // not deleted.
     expectEvs(
       () =>
         rec((s) => {
           const a = s.newArray(t.uint256, 1n);
-          return s.return({ a: a as never });
+          return s.return({ x: s.add(a as never, 1n) });
         }),
       EvsTypeError,
       'TYPE_MISMATCH',

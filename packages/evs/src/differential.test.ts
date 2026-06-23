@@ -2361,6 +2361,132 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 13. issue #5 ergonomics — struct: true multi-output decode + composite s.fn returns
+// ---------------------------------------------------------------------------
+
+// `bare` returns the MutArray directly (#5); otherwise via `.expr()` — must be byte-identical IR.
+function fillScript(bare: boolean) {
+  return evscript({ name: 'fill', args: [t.uint256] }, (s, n) => {
+    const xs = s.newArray(t.uint256, n);
+    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+      xs.set(i, i.mul(2n));
+    });
+    return s.return({ xs: bare ? xs : xs.expr() });
+  });
+}
+
+describe('issue #5 ergonomics', () => {
+  const poolAbi = [
+    {
+      type: 'function',
+      name: 'slot0',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: 'sqrtPriceX96', type: 'uint160' },
+        { name: 'tick', type: 'int24' },
+        { name: 'unlocked', type: 'bool' },
+      ],
+    },
+  ] as const satisfies Abi;
+  const erc20 = [
+    {
+      type: 'function',
+      name: 'symbol',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'string' }],
+    },
+    {
+      type: 'function',
+      name: 'decimals',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'uint8' }],
+    },
+  ] as const satisfies Abi;
+
+  const PRICE = 1n << 96n;
+  const TICK = -887_272; // int24 ≤ 48 bits → abitype/viem types it as `number`
+  const slot0Data = encodeAbiParameters(
+    [{ type: 'uint160' }, { type: 'int24' }, { type: 'bool' }],
+    [PRICE, TICK, true],
+  );
+  const poolTable: CalleeTable = {
+    [POOL]: {
+      kind: 'dispatch',
+      cases: [{ selector: sel('slot0()'), kind: 'return', data: slot0Data }],
+    },
+  };
+  const tokTable: CalleeTable = {
+    [TOKA]: {
+      kind: 'dispatch',
+      cases: [
+        {
+          selector: sel('symbol()'),
+          kind: 'return',
+          data: encodeAbiParameters([{ type: 'string' }], ['WETH']),
+        },
+        { selector: sel('decimals()'), kind: 'return', data: word(18n) },
+      ],
+    },
+  };
+
+  for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+    test(`s.call({ struct: true }) decodes named outputs into one struct [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'slot0Struct', args: [t.address] }, (s, pool) => {
+        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        return s.return({ slot0 });
+      });
+      const [o] = await expectAgreement(script, [[POOL]], poolTable, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'slot0Struct',
+        data: o?.data ?? '0x',
+      });
+      // viem infers an object from the named struct output — same field names + ABI order.
+      expect(decoded).toEqual({
+        slot0: { sqrtPriceX96: PRICE, tick: TICK, unlocked: true },
+      });
+    });
+
+    test(`an s.fn returns a struct directly; the caller decodes it [${evmVersion}]`, async () => {
+      const TokenMeta = t.struct({ symbol: t.string, decimals: t.uint8 });
+      const script = evscript({ name: 'tokMeta', args: [t.address] }, (s, token) => {
+        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+          s.tuple(TokenMeta, {
+            symbol: s.call({ address: tok, abi: erc20, functionName: 'symbol' }),
+            decimals: s.call({ address: tok, abi: erc20, functionName: 'decimals' }),
+          }),
+        );
+        return s.return({ meta: getMeta(token) });
+      });
+      const [o] = await expectAgreement(script, [[TOKA]], tokTable, evmVersion);
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'tokMeta',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ meta: { symbol: 'WETH', decimals: 18 } });
+    });
+
+    test(`a bare MutArray return is byte-identical to .expr() on-chain [${evmVersion}]`, async () => {
+      const [bare] = await expectAgreement(fillScript(true), [[4n]], {}, evmVersion);
+      const [viaExpr] = await expectAgreement(fillScript(false), [[4n]], {}, evmVersion);
+      expect(bare?.data).toBe(viaExpr?.data);
+      const decoded = decodeFunctionResult({
+        abi: fillScript(true).abi,
+        functionName: 'fill',
+        data: bare?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ xs: [0n, 2n, 4n, 6n] });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // helper mocks
 // ---------------------------------------------------------------------------
 

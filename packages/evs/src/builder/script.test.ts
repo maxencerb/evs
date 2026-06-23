@@ -1129,3 +1129,307 @@ describe('integration-shaped recording', () => {
     expect(serializeIr(script.ir)).toMatchSnapshot();
   });
 });
+
+// ---------------------------------------------------------------------------
+// composite-type ergonomics — issue #5 (s.fn struct returns, struct: true named
+// multi-output decode, bare MutArray return, call/constructed tuple unification)
+// ---------------------------------------------------------------------------
+
+describe('issue #5 ergonomics', () => {
+  const TokenMeta = t.struct({ symbol: t.string, decimals: t.uint8 });
+
+  // -- ask #1: s.fn returns a struct/composite directly -----------------------------------
+  test('s.fn returns a struct directly — byte-identical IR to .expr(); the result type is the struct', () => {
+    const direct = evscript(
+      { name: 'meta', args: [t.address] },
+      (s, token) => {
+        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+          s.tuple(TokenMeta, {
+            symbol: s.call({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
+            decimals: s.call({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
+          }),
+        );
+        const m = getMeta(token);
+        return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
+      },
+      NO_LOC,
+    );
+    const viaExpr = evscript(
+      { name: 'meta', args: [t.address] },
+      (s, token) => {
+        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+          s
+            .tuple(TokenMeta, {
+              symbol: s.call({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
+              decimals: s.call({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
+            })
+            .expr(),
+        );
+        const m = getMeta(token);
+        return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(direct.ir)).not.toThrow();
+    // the bare-Tuple fn return is byte-identical to wrapping it in `.expr()`.
+    expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
+    expect(serializeIr(direct.ir)).toMatchSnapshot();
+    // the fn result type is recorded as the full struct.
+    expect(direct.ir.fns[0]?.results[0]?.type).toMatchObject({ type: 'tuple' });
+    // the call site receives a Tuple handle (field reads are member-typed via `field` stmts).
+    expect(direct.ir.returns.find((r) => r.name === 'symbol')?.type).toBe('string');
+    expect(direct.ir.returns.find((r) => r.name === 'decimals')?.type).toBe('uint8');
+    expect(direct.ir.returns.find((r) => r.name === 'meta')?.type).toMatchObject({ type: 'tuple' });
+  });
+
+  test('s.fn can return a MutArray (composite/array result) — call site gets an array Expr', () => {
+    const script = evscript(
+      { name: 'mkArr', args: [t.uint256] },
+      (s, n) => {
+        const build = s.fn('build', [arg('len', t.uint256)] as const, (len) => {
+          const arr = s.newArray(t.uint256, len);
+          arr.set(0n, 7n);
+          return arr;
+        });
+        const a = build(n);
+        return s.return({ all: a, len: a.length() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.fns[0]?.results[0]?.type).toBe('uint256[]');
+    expect(script.ir.returns.find((r) => r.name === 'all')?.type).toBe('uint256[]');
+  });
+
+  // (recursion stays unsupported — the fn handle does not exist inside its own body, so a
+  //  self-call is unconstructible by design; issue #5 widened only the RETURN type, not this.)
+
+  // -- ask #2: struct: true named multi-output decode --------------------------------------
+  test('s.call({ struct: true }) decodes named multi-outputs into one Tuple (tuplenew over outputs)', () => {
+    const script = evscript(
+      { name: 'pool', args: [t.address] },
+      (s, pool) => {
+        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        return s.return({ price: slot0.sqrtPriceX96.get(), tick: slot0.tick.get(), slot0 });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    // ONE tuplenew composes the three decoded outputs; the default positional path emits none.
+    const news = allStmts(script.ir).filter((st) => st.k === 'tuplenew');
+    expect(news).toHaveLength(1);
+    expect(news[0]?.k === 'tuplenew' && news[0].inits).toHaveLength(3);
+    // named field reads carry the output types.
+    expect(script.ir.returns.find((r) => r.name === 'price')?.type).toBe('uint160');
+    expect(script.ir.returns.find((r) => r.name === 'tick')?.type).toBe('int24');
+    // the whole struct flows out as a tuple, components in ABI declaration order.
+    expect(script.ir.returns.find((r) => r.name === 'slot0')?.type).toMatchObject({
+      type: 'tuple',
+      components: [{ name: 'sqrtPriceX96' }, { name: 'tick' }, { name: 'unlocked' }],
+    });
+  });
+
+  test('the default [many] shape is unchanged without struct: true (no tuplenew, positional)', () => {
+    const script = evscript(
+      { name: 'pos', args: [t.address] },
+      (s, pool) => {
+        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0' });
+        return s.return({ price: slot0[0], tick: slot0[1] });
+      },
+      NO_LOC,
+    );
+    expect(allStmts(script.ir).filter((st) => st.k === 'tuplenew')).toHaveLength(0);
+    expect(script.ir.returns.find((r) => r.name === 'price')?.type).toBe('uint160');
+  });
+
+  test('s.call({ struct: true }) rejects an unnamed output (would degrade viem to positional)', () => {
+    const unnamedAbi = [
+      {
+        type: 'function',
+        name: 'pair',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'a', type: 'uint256' },
+          { name: '', type: 'uint256' },
+        ],
+      },
+    ] as const satisfies Abi;
+    expect(() =>
+      evscript(
+        { name: 'bad', args: [t.address] },
+        (s, x) =>
+          s.return({
+            r: s.call({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
+          }),
+        NO_LOC,
+      ),
+    ).toThrow(/unnamed/);
+  });
+
+  test('struct: true works through tryCall too', () => {
+    const script = evscript(
+      { name: 'trySlot', args: [t.address] },
+      (s, pool) => {
+        const r = s.tryCall({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        return s.return({ ok: r.success, tick: r.value.tick.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(allStmts(script.ir).filter((st) => st.k === 'tuplenew')).toHaveLength(1);
+    expect(script.ir.returns.find((r) => r.name === 'tick')?.type).toBe('int24');
+  });
+
+  // -- ask #5: bare MutArray return --------------------------------------------------------
+  test('s.return accepts a bare MutArray handle — byte-identical IR to .expr()', () => {
+    const direct = evscript(
+      { name: 'arr', args: [t.uint256] },
+      (s, n) => {
+        const out = s.newArray(t.uint256, n);
+        out.set(0n, 42n);
+        return s.return({ all: out });
+      },
+      NO_LOC,
+    );
+    const viaExpr = evscript(
+      { name: 'arr', args: [t.uint256] },
+      (s, n) => {
+        const out = s.newArray(t.uint256, n);
+        out.set(0n, 42n);
+        return s.return({ all: out.expr() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(direct.ir)).not.toThrow();
+    expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
+    expect(direct.ir.returns.find((r) => r.name === 'all')?.type).toBe('uint256[]');
+  });
+
+  test('a tuple[] MutArray is returnable bare (the flagship `s.return({ metadata })` shape)', () => {
+    const Item = t.struct({ a: t.uint256, b: t.address });
+    const direct = evscript(
+      { name: 'items', args: [t.uint256] },
+      (s, n) => {
+        const arr = s.newArray(Item, n);
+        return s.return({ metadata: arr });
+      },
+      NO_LOC,
+    );
+    const viaExpr = evscript(
+      { name: 'items', args: [t.uint256] },
+      (s, n) => {
+        const arr = s.newArray(Item, n);
+        return s.return({ metadata: arr.expr() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(direct.ir)).not.toThrow();
+    expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
+    expect(direct.ir.returns.find((r) => r.name === 'metadata')?.type).toMatchObject({
+      type: 'tuple[]',
+    });
+  });
+
+  test('a bare MutArray passed as a struct array member aliases the array (no copy)', () => {
+    const Wrapper = t.struct({ xs: t.array(t.uint256) });
+    const script = evscript(
+      { name: 'wrap', args: [t.uint256] },
+      (s, n) => {
+        const xs = s.newArray(t.uint256, n);
+        const w = s.tuple(Wrapper, { xs });
+        return s.return({ w });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    // the tuplenew member init points straight at the arrnew out (reference, not a rebuild).
+    const arrnew = allStmts(script.ir).find((st) => st.k === 'arrnew');
+    const tuplenew = allStmts(script.ir).find((st) => st.k === 'tuplenew');
+    expect(tuplenew?.k === 'tuplenew' && tuplenew.inits[0]?.value).toBe(
+      arrnew?.k === 'arrnew' ? arrnew.out : -1,
+    );
+  });
+
+  test('a bare MutArray of the WRONG element type is rejected at record time (runtime typesEqual guard)', () => {
+    // `IntoArray`/`AnyMutArray` erase the element type, so this typechecks; the runtime `typesEqual`
+    // guard in `coerceToId` is what rejects a `bool[]` where a `uint256[]` is expected.
+    const Wrapper = t.struct({ xs: t.array(t.uint256) });
+    expect(() =>
+      evscript(
+        { name: 'wrongElem', args: [t.uint256] },
+        (s, n) => {
+          const wrong = s.newArray(t.bool, n);
+          return s.return({ w: s.tuple(Wrapper, { xs: wrong }) });
+        },
+        NO_LOC,
+      ),
+    ).toThrow(/expected 'uint256\[\]', got Expr<'bool\[\]'>/);
+  });
+
+  test('a bare MutArray passed as a call arg aliases the array (call args route through coerceToId)', () => {
+    const consumerAbi = [
+      {
+        type: 'function',
+        name: 'useStructs',
+        stateMutability: 'view',
+        inputs: [
+          {
+            name: 'ps',
+            type: 'tuple[]',
+            components: [
+              { name: 'liquidity', type: 'uint128' },
+              { name: 'owner', type: 'address' },
+            ],
+          },
+        ],
+        outputs: [{ name: '', type: 'uint256' }],
+      },
+    ] as const satisfies Abi;
+    const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
+    const script = evscript(
+      { name: 'callarg', args: [t.address, t.uint256] },
+      (s, target, n) => {
+        const arr = s.newArray(Pos, n);
+        const r = s.call({
+          address: target,
+          abi: consumerAbi,
+          functionName: 'useStructs',
+          args: [arr],
+        });
+        return s.return({ r });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const arrnew = allStmts(script.ir).find((st) => st.k === 'arrnew');
+    const call = allStmts(script.ir).find((st) => st.k === 'call');
+    expect(call?.k === 'call' && call.args[0]).toBe(arrnew?.k === 'arrnew' ? arrnew.out : -1);
+  });
+
+  // -- ask #3: a call-decoded tuple flows straight into a constructed struct ----------------
+  test('a single-tuple call output passes directly into an s.tuple member (aliases, no rebuild)', () => {
+    const Outer = t.struct({ pos: t.fromOutputs(positionAbi, 'positions'), tag: t.uint256 });
+    const script = evscript(
+      { name: 'nest', args: [t.address, t.uint256] },
+      (s, manager, tokenId) => {
+        const pos = s.call({
+          address: manager,
+          abi: positionAbi,
+          functionName: 'positions',
+          args: [tokenId],
+        });
+        const outer = s.tuple(Outer, { pos, tag: tokenId });
+        return s.return({ outer });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    // exactly ONE tuplenew (the outer struct) — the inner tuple aliases the call's decoded block.
+    expect(allStmts(script.ir).filter((st) => st.k === 'tuplenew')).toHaveLength(1);
+    expect(script.ir.returns.find((r) => r.name === 'outer')?.type).toMatchObject({
+      type: 'tuple',
+    });
+  });
+});

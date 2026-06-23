@@ -58,6 +58,7 @@ import type {
   EnvOp,
   FnId,
   FnIr,
+  PlainAbiParam,
   ScriptIr,
   Stmt,
   ValueId,
@@ -1043,6 +1044,19 @@ export class Recorder {
     // the Expr path (where the encode milestone's guard fires for a returned/passed composite array).
     if (isTupleType(type) && !isArrayValueType(type))
       return this.coerceTupleToId(v, type, what, loc);
+    // a bare MutArray handle is accepted where an ARRAY value is expected (issue #5 ask #5): reuse
+    // its ValueId verbatim (reference) when the types match — byte-identical IR to passing
+    // `.expr()`. Routed before classify(), which rejects MutArray handles with the "use .expr()"
+    // message (kept intact for genuinely-wrong positions like arithmetic).
+    if (isArrayValueType(type) && typeof v === 'object' && v !== null) {
+      const ai = ARR_INTERNALS.get(v);
+      if (ai !== undefined) {
+        const id = this.arrHandleId(ai, what, loc);
+        const at = this.typeOfValue(id);
+        if (!typesEqual(at, type)) this.typeMismatch(what, type, at, loc);
+        return id;
+      }
+    }
     const c = this.classify(v, what, loc);
     if (c.kind === 'expr') {
       if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type, loc);
@@ -1166,6 +1180,45 @@ export class Recorder {
     }
     // a plain object/array literal → build the tuple from its members.
     return this.buildTupleNew(type, v, what, loc);
+  }
+
+  /** FOREIGN_HANDLE check for a bare {@link TupleHandle}/{@link MutArrayImpl} reused in a return /
+   *  member / array slot — handles never cross scripts. */
+  private assertHandleOwner(
+    owner: Recorder,
+    id: ValueId,
+    kind: 'Tuple' | 'MutArray',
+    what: string,
+    loc: SourceLoc | null,
+  ): void {
+    if (owner === this) return;
+    throw new EvsScopeError(
+      'FOREIGN_HANDLE',
+      `${what}: this ${kind} belongs to script "${owner.name}" (defined at ${fmtLoc(owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
+      {
+        loc,
+        relatedLocs: [
+          { label: `script "${owner.name}" defined at`, loc: owner.scriptLoc },
+          { label: 'handle recorded at', loc: owner.valueLoc(id) },
+        ],
+      },
+    );
+  }
+
+  /** The ValueId behind a bare {@link Tuple} handle, after owner + visibility checks. Reused by the
+   *  direct-return paths (`s.return`, `s.fn` result — composite types §6/§8, issue #5 ask #1). */
+  private tupleHandleId(ti: TupleInternals, what: string, loc: SourceLoc | null): ValueId {
+    this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what, loc);
+    this.checkVisible(ti.id, what, loc);
+    return ti.id;
+  }
+
+  /** The ValueId behind a bare {@link MutArray} handle, after owner + visibility checks (issue #5
+   *  ask #5 — a bare array handle is returnable / passable, byte-identical to `.expr()`). */
+  private arrHandleId(ai: ArrInternals, what: string, loc: SourceLoc | null): ValueId {
+    this.assertHandleOwner(ai.owner, ai.id, 'MutArray', what, loc);
+    this.checkVisible(ai.id, what, loc);
+    return ai.id;
   }
 
   // -- tuples / structs ---------------------------------------------------------------------
@@ -2051,7 +2104,16 @@ export class Recorder {
       functionName?: unknown;
       args?: unknown;
       gas?: unknown;
+      struct?: unknown;
     }>(p);
+    if (params.struct !== undefined && typeof params.struct !== 'boolean') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`struct\` must be a boolean (omit it, or pass \`struct: true\` to decode named outputs into one Tuple)`,
+        { loc },
+      );
+    }
+    const wantStruct = params.struct === true;
     const abi = params.abi;
     if (!Array.isArray(abi)) {
       throw new EvsTypeError('ABI_SHAPE', `${label}: \`abi\` must be an ABI array`, { loc });
@@ -2174,16 +2236,58 @@ export class Recorder {
     // yield the element/length handles — a `tuple[]` element `.at(i)` is a `Tuple` handle).
     const handleFor = (id: ValueId, oty: EvsType): Expr | object =>
       isTupleType(oty) && !isArrayValueType(oty) ? makeTuple(this, id, oty) : makeExpr(this, id);
-    const first = outIds[0];
-    const firstType = outTypes[0];
-    const value: unknown =
-      outIds.length === 0
-        ? undefined
-        : outIds.length === 1 && first !== undefined && firstType !== undefined
-          ? handleFor(first, firstType)
-          : // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- outTypes is parallel to outIds (same length); the index is always in range
-            Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
+    let value: unknown;
+    if (wantStruct) {
+      // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
+      // `tuplenew` over the already-decoded output ValueIds — the default positional `[many]`
+      // shape (above) is unchanged.
+      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fname, loc);
+    } else {
+      const first = outIds[0];
+      const firstType = outTypes[0];
+      value =
+        outIds.length === 0
+          ? undefined
+          : outIds.length === 1 && first !== undefined && firstType !== undefined
+            ? handleFor(first, firstType)
+            : // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- outTypes is parallel to outIds (same length); the index is always in range
+              Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
+    }
     return { success: successId !== undefined ? makeExpr(this, successId) : null, value };
+  }
+
+  /** `s.call({ …, struct: true })` (issue #5 ask #2): compose ONE Tuple from a call's outputs by
+   *  emitting a `tuplenew` over the already-decoded output ValueIds. Requires every output to be
+   *  named (an unnamed member would degrade viem's object inference to a positional array). The
+   *  struct type is in ABI declaration order, so it round-trips with `t.fromOutputs(abi, name)`. */
+  private buildSubcallStruct(
+    outputs: readonly PlainAbiParam[],
+    outIds: readonly ValueId[],
+    callerName: string,
+    fname: string,
+    loc: SourceLoc | null,
+  ): object {
+    if (outputs.length === 0) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `${callerName}({ struct: true }): function "${fname}" has no outputs to build a struct from`,
+        { loc },
+      );
+    }
+    outputs.forEach((o, i) => {
+      if (o.name === '') {
+        throw new EvsTypeError(
+          'ABI_SHAPE',
+          `${callerName}({ struct: true }): output #${i} of "${fname}" is unnamed — every output must be named to decode into a named Tuple (an unnamed member degrades viem's object inference to a positional array); use the default positional result instead`,
+          { loc },
+        );
+      }
+    });
+    const structType: TupleType = Object.freeze({ type: 'tuple', components: outputs });
+    const inits = outIds.map((id, i) => ({ index: i, value: id }));
+    const structId = this.newValue(structType, loc, `${callerName}(${fname}) struct`);
+    this.appendStmt({ k: 'tuplenew', inits, out: structId }, loc);
+    return makeTuple(this, structId, structType);
   }
 
   // -- user functions ----------------------------------------------------------------------
@@ -2285,11 +2389,22 @@ export class Recorder {
   ): ValueId {
     const what =
       index === null ? `s.fn("${fnName}") result` : `s.fn("${fnName}") result [${index}]`;
+    // a Tuple / MutArray handle is returnable from a fn body DIRECTLY (composite/array result —
+    // issue #5 ask #1): return its ValueId verbatim (byte-identical to `.expr()`) after owner +
+    // visibility checks. The fncall result is a single pointer word (architecture §5/§9), so the
+    // IR/codegen/validate layers carry it unchanged. classify() (below) still rejects these handles
+    // on the arithmetic paths with the "use .expr()" message.
+    if (typeof v === 'object' && v !== null) {
+      const ti = TUPLE_INTERNALS.get(v);
+      if (ti !== undefined) return this.tupleHandleId(ti, what, loc);
+      const ai = ARR_INTERNALS.get(v);
+      if (ai !== undefined) return this.arrHandleId(ai, what, loc);
+    }
     const c = this.classify(v, what, loc);
     if (c.kind !== 'expr') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: fn bodies must return an Expr, a readonly Expr[] tuple, or void — got ${describeHost(v)}`,
+        `${what}: fn bodies must return an Expr, a Tuple, a MutArray, a readonly array of those, or void — got ${describeHost(v)}`,
         { loc },
       );
     }
@@ -2332,9 +2447,18 @@ export class Recorder {
     });
     this.appendStmt({ k: 'fncall', fn: fnId, args: argIds, outs: outIds }, loc);
     if (shape === 'void') return undefined;
+    // wrap each result by its recorded type (issue #5 ask #1): a plain `tuple` result → a Tuple
+    // handle (so named field access works at the call site, like `s.call`); a composite array
+    // (`tuple[]`) or any scalar/word-array → an Expr. Mirrors `subcall`'s `handleFor`.
+    const wrap = (id: ValueId): Expr | object => {
+      const oty = this.typeOfValue(id);
+      return isTupleType(oty) && !isArrayValueType(oty)
+        ? makeTuple(this, id, oty)
+        : makeExpr(this, id);
+    };
     const first = outIds[0];
-    if (shape === 'single' && first !== undefined) return makeExpr(this, first);
-    return Object.freeze(outIds.map((id) => makeExpr(this, id)));
+    if (shape === 'single' && first !== undefined) return wrap(first);
+    return Object.freeze(outIds.map((id) => wrap(id)));
   }
 
   // -- return + sealing ----------------------------------------------------------------------
@@ -2380,27 +2504,21 @@ export class Recorder {
           { loc },
         );
       }
-      // a Tuple handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS the
-      // memref, so we return its ValueId verbatim — byte-identical to `tuple.expr()`. classify()
-      // (below) still rejects tuples on the arithmetic paths with the "use .expr()" message.
+      // a Tuple / MutArray handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS
+      // the memref, so we return its ValueId verbatim — byte-identical to `handle.expr()`.
+      // classify() (below) still rejects these handles on the arithmetic paths with the targeted
+      // "use .expr()" message (issue #5 asks #5 / #2's bare-Tuple precedent).
       if (typeof v === 'object' && v !== null) {
         const ti = TUPLE_INTERNALS.get(v);
         if (ti !== undefined) {
-          if (ti.owner !== this) {
-            throw new EvsScopeError(
-              'FOREIGN_HANDLE',
-              `s.return() value "${key}": this Tuple belongs to script "${ti.owner.name}" (defined at ${fmtLoc(ti.owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
-              {
-                loc,
-                relatedLocs: [
-                  { label: `script "${ti.owner.name}" defined at`, loc: ti.owner.scriptLoc },
-                  { label: 'handle recorded at', loc: ti.owner.valueLoc(ti.id) },
-                ],
-              },
-            );
-          }
-          this.checkVisible(ti.id, `s.return() value "${key}"`, loc);
-          returns.push({ name: key, type: this.typeOfValue(ti.id), value: ti.id });
+          const id = this.tupleHandleId(ti, `s.return() value "${key}"`, loc);
+          returns.push({ name: key, type: this.typeOfValue(id), value: id });
+          continue;
+        }
+        const ai = ARR_INTERNALS.get(v);
+        if (ai !== undefined) {
+          const id = this.arrHandleId(ai, `s.return() value "${key}"`, loc);
+          returns.push({ name: key, type: this.typeOfValue(id), value: id });
           continue;
         }
       }

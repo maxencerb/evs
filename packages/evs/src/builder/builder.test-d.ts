@@ -480,3 +480,246 @@ test('the body callback must return a ScriptReturn (not a bare record)', () => {
     return token;
   });
 });
+
+// ---------------------------------------------------------------------------
+// composite-type ergonomics — issue #5 (s.fn struct returns, struct: true,
+// call/constructed tuple unification, t.fromOutputs, bare MutArray return)
+// ---------------------------------------------------------------------------
+
+const positionFixture = [
+  {
+    type: 'function',
+    name: 'positions',
+    stateMutability: 'view',
+    inputs: [{ name: 'tokenId', type: 'uint256' }],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ],
+  },
+] as const satisfies Abi;
+
+// view functions taking composite INPUTS (for the call-arg widening, #3/#5)
+const consumerFixture = [
+  {
+    type: 'function',
+    name: 'useStruct',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'p',
+        type: 'tuple',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'useStructs',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'ps',
+        type: 'tuple[]',
+        components: [
+          { name: 'liquidity', type: 'uint128' },
+          { name: 'owner', type: 'address' },
+        ],
+      },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const satisfies Abi;
+
+test('#1 s.fn returns a struct directly; the call site receives a Tuple handle', () => {
+  const Meta = t.struct({ symbol: t.string, decimals: t.uint8 });
+  evscript({ name: 'fnstruct', args: [t.address] }, (s, token) => {
+    const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+      s.tuple(Meta, {
+        symbol: s.call({ address: tok, abi: erc20Fixture, functionName: 'symbol' }),
+        decimals: s.call({ address: tok, abi: erc20Fixture, functionName: 'decimals' }),
+      }),
+    );
+    const m = getMeta(token);
+    // the result is a usable Tuple — field reads are member-typed (was `readonly [Expr,…]` before).
+    expectTypeOf(m.symbol.get()).toEqualTypeOf<Expr<'string'>>();
+    expectTypeOf(m.decimals.get()).toEqualTypeOf<Expr<'uint8'>>();
+    return s.return({ meta: m });
+  });
+});
+
+test('#1 s.fn returns a MutArray; the call site receives an array Expr', () => {
+  evscript({ name: 'fnarr', args: [t.uint256] }, (s, n) => {
+    const build = s.fn('build', [arg('len', t.uint256)] as const, (len) =>
+      s.newArray(t.uint256, len),
+    );
+    const a = build(n);
+    expectTypeOf(a).toEqualTypeOf<Expr<'uint256[]'>>();
+    expectTypeOf(a.at(0n)).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ all: a });
+  });
+});
+
+test('#1 scalar / [many] fn returns are unchanged (regression pin)', () => {
+  evscript({ name: 'fnscalar', args: [t.uint256] }, (s, x) => {
+    const inc = s.fn('inc', [arg('a', t.uint256)] as const, (a) => a.add(1n));
+    expectTypeOf(inc).toEqualTypeOf<EvsFn<readonly [ArgSpec<'a', 'uint256'>], Expr<'uint256'>>>();
+    const pair = s.fn('pair', [arg('a', t.uint8)] as const, (a) => [a, a.eq(0n)] as const);
+    expectTypeOf(pair(3n)).toEqualTypeOf<readonly [Expr<'uint8'>, Expr<'bool'>]>();
+    return s.return({ x: inc(x) });
+  });
+});
+
+test('#2 s.call({ struct: true }) returns ONE named Tuple over the outputs (opt-in)', () => {
+  evscript({ name: 'structcall', args: [t.address] }, (s, pool) => {
+    const slot0 = s.call({
+      address: pool,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: true,
+    });
+    expectTypeOf(slot0.sqrtPriceX96.get()).toEqualTypeOf<Expr<'uint160'>>();
+    expectTypeOf(slot0.tick.get()).toEqualTypeOf<Expr<'int24'>>();
+    expectTypeOf(slot0.unlocked.get()).toEqualTypeOf<Expr<'bool'>>();
+
+    // the DEFAULT (no struct) keeps the frozen positional `[many]` shape — unchanged.
+    const positional = s.call({ address: pool, abi: poolFixture, functionName: 'slot0' });
+    expectTypeOf(positional).toEqualTypeOf<
+      readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]
+    >();
+    // a literal `struct: false` is also the positional shape.
+    const falseStruct = s.call({
+      address: pool,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: false,
+    });
+    expectTypeOf(falseStruct).toEqualTypeOf<
+      readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]
+    >();
+
+    // a NON-LITERAL boolean `struct` is the UNION of both shapes — the runtime decides on the value
+    // (`wantStruct = struct === true`), so the caller must NARROW. This is the soundness fix for the
+    // literal-vs-boolean gap: neither a positional index nor a struct field works un-narrowed.
+    const flag = (1 as number) > 0; // a non-literal boolean
+    const maybe = s.call({ address: pool, abi: poolFixture, functionName: 'slot0', struct: flag });
+    // @ts-expect-error — `maybe` may be a Tuple, so a positional index is not available un-narrowed.
+    expectTypeOf(maybe[0]);
+    // @ts-expect-error — `maybe` may be the positional array, so a struct field is not available.
+    expectTypeOf(maybe.sqrtPriceX96);
+
+    // tryCall + struct: true wraps the value, keeps success.
+    const tried = s.tryCall({
+      address: pool,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: true,
+    });
+    expectTypeOf(tried.success).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(tried.value.tick.get()).toEqualTypeOf<Expr<'int24'>>();
+    return s.return({ tick: slot0.tick.get() });
+  });
+});
+
+test('#3 a call-decoded Tuple flows into a hand-written t.struct slot (cross-order assignable)', () => {
+  const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
+  evscript({ name: 'nest', args: [t.address, t.uint256] }, (s, mgr, id) => {
+    const pos = s.call({
+      address: mgr,
+      abi: positionFixture,
+      functionName: 'positions',
+      args: [id],
+    });
+    // the decoded handle is a precise Tuple (named field reads are member-typed) …
+    expectTypeOf(pos.liquidity.get()).toEqualTypeOf<Expr<'uint128'>>();
+    // … and `pos` (a Tuple<C_abi>) is assignable into a member typed by the `t.struct` `Pos`
+    // (C_struct) even though abitype-order and UnionToTuple-order may differ (runtime `typesEqual`
+    // is the guard). The assignment below only typechecks because of the #3 loosening.
+    const Outer = t.struct({ pos: Pos, tag: t.uint256 });
+    const outer = s.tuple(Outer, { pos, tag: id });
+    // and MutArray.set / IntoMember accept it too.
+    const arr = s.newArray(Pos, id);
+    arr.set(0n, pos);
+    return s.return({ outer });
+  });
+});
+
+test('#3/#5 call ARGS accept a bare MutArray (tuple[] input) and any Tuple (tuple input)', () => {
+  const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
+  evscript({ name: 'callargs', args: [t.address, t.uint256] }, (s, addr, n) => {
+    // a bare MutArray<tuple> is accepted for a `tuple[]` input (the AnyMutArray arm, #5).
+    const arr = s.newArray(Pos, n);
+    const r1 = s.call({
+      address: addr,
+      abi: consumerFixture,
+      functionName: 'useStructs',
+      args: [arr],
+    });
+    expectTypeOf(r1).toEqualTypeOf<Expr<'uint256'>>();
+    // a built Tuple handle is accepted for a `tuple` input (the AnyTuple arm, #3 — cross-shape
+    // assignability; the runtime `typesEqual` is the order/shape guard).
+    const p = s.tuple(Pos, { liquidity: 1n, owner: addr });
+    const r2 = s.call({
+      address: addr,
+      abi: consumerFixture,
+      functionName: 'useStruct',
+      args: [p],
+    });
+    expectTypeOf(r2).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ r1, r2 });
+  });
+});
+
+test('#4 t.fromOutputs / t.fromAbiParameter derive a t.* type from an ABI', () => {
+  // a single scalar output → its type string; a single tuple → the tuple type.
+  expectTypeOf(t.fromOutputs(erc20Fixture, 'decimals')).toEqualTypeOf<'uint8'>();
+  expectTypeOf(t.fromOutputs(erc20Fixture, 'symbol')).toEqualTypeOf<'string'>();
+  expectTypeOf(
+    t.fromAbiParameter({ name: 'x', type: 'uint256' } as const),
+  ).toEqualTypeOf<'uint256'>();
+
+  // a multi-named-output function → a struct usable wherever a t.* type is (and unifies with
+  // `s.call({ struct: true })` of the SAME function — same ABI order).
+  const Slot0 = t.fromOutputs(poolFixture, 'slot0');
+  expectTypeOf<typeof Slot0>().toMatchTypeOf<TupleType>();
+  evscript({ name: 'derive', args: [t.address] }, (s, pool) => {
+    const slot0 = s.call({
+      address: pool,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: true,
+    });
+    const Wrapped = t.struct({ slot0: Slot0, label: t.uint256 });
+    const wrapped = s.tuple(Wrapped, { slot0, label: 1n });
+    return s.return({ wrapped });
+  });
+});
+
+test('#5 a bare MutArray is returnable; the script output infers the array shape', () => {
+  const words = evscript({ name: 'words', args: [t.uint256] }, (s, n) => {
+    const xs = s.newArray(t.uint256, n);
+    return s.return({ xs }); // bare MutArray — no `.expr()`
+  });
+  expectTypeOf<ReadContractReturnType<typeof words.abi, 'words'>>().toEqualTypeOf<{
+    xs: readonly bigint[];
+  }>();
+
+  const Item = t.struct({ a: t.uint256, b: t.bool });
+  const items = evscript({ name: 'items', args: [t.uint256] }, (s, n) => {
+    const metadata = s.newArray(Item, n);
+    return s.return({ metadata }); // a bare tuple[] MutArray — the flagship shape
+  });
+  expectTypeOf<ReadContractReturnType<typeof items.abi, 'items'>>().toEqualTypeOf<{
+    metadata: readonly { a: bigint; b: boolean }[];
+  }>();
+});
