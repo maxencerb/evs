@@ -194,7 +194,8 @@ Pinned suites (exact viem patch version in the catalog — viem types change in 
 
 - `core`: `IntoExpr`/`LitOf` acceptance/rejection matrices; brand nominality
   (structurally-similar object NOT assignable to `Expr`).
-- `builder`: `s.args` record from a tuple; `s.call` output unwrap (0/1/n); `@ts-expect-error`
+- `builder`: positional arg handles (scalar arg → `Expr`, `TupleType` arg → `Tuple`; amendment
+  16.1 removed `s.args`); `s.call` output unwrap (0/1/n); `@ts-expect-error`
   on nonpayable names, wrong arg literal types, `eq` on `Expr<'string'>`; graceful widening
   (non-const ABI → `functionName: string`, output `Expr<EvsType>` — compiles, no error).
 - `abi`: `ScriptAbi` literal shape; `ReadContractParameters<abi, name>['args']` is the labeled

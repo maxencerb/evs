@@ -516,7 +516,9 @@ type Tuple<C extends TupleType> = {
 A tuple/struct memref handle. Produced by [`s.tuple`](#stuple), by a `TupleType` script arg, and
 by a `'tuple'` output of [`s.call`](#scall). For each **named** component it exposes a property
 keyed by the component name returning a [`Field`](#field); `at(i)` is the positional accessor
-(literal `number` index); and `expr()` is the raw `Expr<C>` memref. The handle is itself
+(`i` is a **recording-time literal** `number` in `[0, memberCount)` — tuples are flat with a fixed
+member count, so there is no runtime member indexing; passing a non-literal throws `TYPE_MISMATCH`.
+Use an array's `.at(Expr)` for runtime indexing); and `expr()` is the raw `Expr<C>` memref. The handle is itself
 returnable from `s.return` and passable as a `'tuple'` call argument **directly** — `expr()` is
 only needed when you want the bare `Expr<C>`.
 A tuple handle is a pointer with **reference semantics** (passing it shares the block).

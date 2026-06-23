@@ -19,7 +19,7 @@ import { evscript, compile, t } from '@maxencerb/evs';
 export function evscript<
   const name extends string,
   const args extends ArgsInput = readonly [],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>, // a value is Expr | Tuple (§9)
 >(
   def: { name: name; args?: args },
   body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
@@ -29,7 +29,7 @@ export function evscript<
 export interface EvsScript<
   name extends string = string,
   args extends readonly EvsType[] = readonly EvsType[],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>, // a value is Expr | Tuple (§9)
 > {
   readonly name: name;
   readonly ir: ScriptIr; // frozen, JSON-serializable
@@ -264,7 +264,7 @@ export interface ScriptBuilder {
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>
   let<t extends EvsType>(init: Expr<t>): Cell<t>
-  newArray<const e extends WordType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>
+  newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e> // §5 — word OR composite element
   tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>  // §5 — allocator
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>
   // EnvKind = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'
@@ -311,7 +311,7 @@ export interface ScriptBuilder {
 
   // calls (§6), functions (§8), return (§9)
   call: /* §6 */; tryCall: /* §6 */; fn: /* §8 */
-  return<const ret extends Record<string, Expr>>(values: ret): ScriptReturn<ret>
+  return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret> // value is Expr | Tuple (§9)
 }
 ```
 

@@ -158,7 +158,7 @@ export class EvsInternalError extends EvsError {} // message MUST contain "bug i
 
 export interface EvsDiagnostic {
   severity: 'warning';
-  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME';
+  code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT'; // ENV_FRAME_DEPENDENT amended §14.1
   message: string;
   loc: SourceLoc | null;
 }
@@ -736,7 +736,7 @@ export function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number },
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides }, // env amended §14.2
 ): InterpResult;
 ```
 
