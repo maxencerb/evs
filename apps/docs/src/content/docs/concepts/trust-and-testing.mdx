@@ -95,17 +95,21 @@ optimization the compiler does not perform.
 
 ## What CI gates on every pull request
 
-The pipeline, in order (from the repo's `ci.yml`):
+Two producer jobs run first — build the library and build + test the contracts (with codegen).
+The remaining checks then fan out and run in parallel (from the repo's `ci.yml`); each job restores
+the artifacts it needs and runs `bun install --frozen-lockfile` (viem is exact-pinned — its types
+move in patches):
 
-| Step                                            | What it proves                                                                  |
+| Job                                             | What it proves                                                                  |
 | ----------------------------------------------- | ------------------------------------------------------------------------------- |
-| `bun install --frozen-lockfile`                 | exact pinned dependency tree (viem is exact-pinned — its types move in patches)  |
-| `forge build && forge test && bun run codegen`  | the solc 0.8.30 reference and mock contracts compile and pass their own tests    |
-| `bun run build`                                 | the library builds with `tsc` (declarations included)                           |
-| `bun run fmt:check`, `bun run lint:ci`, `bun run typecheck` | formatting, type-aware lint, strict typecheck across the workspace  |
-| `bun run test`                                  | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
-| `bun run test:integration`                      | the anvil suite (foundry pinned at v1.7.1 for determinism)                       |
-| `publint` + `@arethetypeswrong/cli --pack`      | the published package shape resolves correctly (ESM-only profile)                |
+| `build` — `bun run build`                       | the library builds with `tsc` (declarations included)                           |
+| `contracts` — `forge build && forge test && bun run codegen` | the solc 0.8.30 reference and mock contracts compile, pass their own tests, and emit codegen artifacts |
+| `lint` — `bun run fmt:check` + `bun run lint:ci` | formatting and type-aware lint                                                  |
+| `typecheck` — `bun run --filter '@maxencerb/evs' typecheck` | strict typecheck of the library                                     |
+| `docs-typecheck` — `bun run --filter '@maxencerb/evs-docs' typecheck` | the docs site type-checks (`astro check`)                  |
+| `test` — `bun run test`                         | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
+| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.7.1 for determinism)                       |
+| `package-health` — `publint` + `@arethetypeswrong/cli --pack` | the published package shape resolves correctly (ESM-only profile)  |
 
 The integration tier executes compiled scripts through every supported path on a real node:
 `setCode` plus a plain `readContract`, the state-override mode, and the deployless `code`

@@ -1,7 +1,9 @@
 // @ts-check
 import starlight from '@astrojs/starlight';
 import { defineConfig } from 'astro/config';
+import ecTwoSlash from 'expressive-code-twoslash';
 import starlightLinksValidator from 'starlight-links-validator';
+import starlightLlmsTxt from 'starlight-llms-txt';
 import starlightThemeRapide from 'starlight-theme-rapide';
 
 // https://astro.build/config
@@ -18,7 +20,34 @@ export default defineConfig({
         { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/@maxencerb/evs' },
       ],
       editLink: { baseUrl: 'https://github.com/maxencerb/evs/edit/main/apps/docs/' },
-      plugins: [starlightThemeRapide(), starlightLinksValidator()],
+      // Twoslash renders real type-on-hover + inline errors for ```ts twoslash fences
+      // (issue #13). The plain ```ts fences stay untouched (explicitTrigger) so the
+      // bulk of the snippet-gate-checked examples are unaffected. We use the plugin's
+      // default compiler options (it resolves @maxencerb/evs + viem from this package's
+      // node_modules); every twoslash fence is ALSO checked by the stricter snippet gate
+      // (scripts/check-snippets.ts), so a fence that twoslashes is a valid standalone
+      // module and vice versa.
+      expressiveCode: {
+        // explicitTrigger (default true) keeps Twoslash to ```ts twoslash fences only, so the
+        // ~100 plain ```ts snippets are untouched by it (the snippet gate still checks them all).
+        plugins: [ecTwoSlash({ instanceConfigs: { twoslash: { explicitTrigger: true } } })],
+      },
+      plugins: [
+        starlightThemeRapide(),
+        // /llms.txt + /llms-full.txt for LLM ingestion (issue #14); code fences kept intact.
+        starlightLlmsTxt({
+          projectName: 'evs',
+          description:
+            'Typed EVM read scripts in plain TypeScript: a callback-builder compiled to EVM bytecode that batches dozens of dependent on-chain reads into a single deployless eth_call, with full viem type inference and no deployed contracts.',
+          details:
+            'evs (`@maxencerb/evs`) lets you write read-only EVM scripts in TypeScript, compile them to runtime bytecode, and execute them with viem in one eth_call — including reads whose targets depend on earlier reads, which multicall cannot batch.',
+          optionalLinks: [
+            { label: 'GitHub repository', url: 'https://github.com/maxencerb/evs' },
+            { label: 'npm package', url: 'https://www.npmjs.com/package/@maxencerb/evs' },
+          ],
+        }),
+        starlightLinksValidator(),
+      ],
       sidebar: [
         {
           label: 'Getting started',

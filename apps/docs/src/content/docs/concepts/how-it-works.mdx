@@ -118,7 +118,7 @@ report"), never silently ships bad bytecode.
 ## Stage 6: the EIP-170 size check
 
 Runtime bytecode is capped at 24,576 bytes (EIP-170). Exceeding it throws `EvsCompileError`
-with a per-region size breakdown (body, functions, shared tails, data segments) so you can see
+with a per-region size breakdown (dispatcher, body, functions, shared tails, data segments) so you can see
 what to trim. The artifact that comes out the other side — `runtimeBytecode`, the deployless
 `initBytecode` wrapper, the literal-typed ABI, the source map, and the debugging methods — is
 documented in [The compiled artifact](/reference/artifact/).

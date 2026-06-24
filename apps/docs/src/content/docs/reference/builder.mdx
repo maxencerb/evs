@@ -16,7 +16,7 @@ Member signatures below are interface excerpts, not runnable modules. `Expr`, `I
 
 Script args are declared on the header as `t.*` types (a lone type or a `readonly` list) and
 arrive as **positional parameters after `s`** in the body callback — there is no `s.args`. A
-scalar arg arrives as an `Expr`; a `TupleType` arg as a [`Tuple` handle](#stuple). Property
+scalar arg arrives as an `Expr`; a `TupleType` arg as a [`Tuple` handle](#tuple). Property
 access records nothing — argument values are decoded and validated once at script entry. See
 [the evscript reference](/reference/evscript/#evscript) for the full signature.
 
@@ -91,7 +91,8 @@ newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArra
 ```
 
 Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
-type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple[]`). This is
+type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple`) — the
+resulting array is then a `tuple[]`; a `tuple[]` *element* is rejected (`UNSUPPORTED_V0`). This is
 the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
 (see [token balances](/examples/token-balances/)).
 
@@ -337,7 +338,8 @@ call<const abi extends Abi | readonly unknown[], name extends ContractFunctionNa
   readonly functionName: name; // autocomplete union over view/pure functions
   readonly args?: SubcallInputs; // per parameter: ABI primitive/Expr; a tuple param: Tuple/s.tuple/literal object
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
-}): CallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple
+  readonly struct?: boolean; // opt-in: fuse multiple named outputs into ONE named Tuple (ABI order)
+}): CallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple (or one Tuple with struct:true)
 ```
 
 A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallInputs` and
@@ -349,6 +351,14 @@ A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallIn
 - A `'tuple'` output decodes into a [`Tuple` handle](#tuple) (named/positional field access); a
   `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
   object. See [calls — struct arguments and outputs](/guides/calls/#struct-and-array-arguments-and-outputs).
+- By default a function's **multiple** outputs decode to the positional `[many]` shape (a
+  `readonly` tuple of `Expr | Tuple`, mirroring viem). Passing `struct: true` instead fuses them
+  into **one named [`Tuple` handle](#tuple)** in ABI declaration order (e.g. `s.call({ …,
+  functionName: 'slot0', struct: true }).sqrtPriceX96.get()`), so it unifies with a `t.struct` /
+  [`t.fromOutputs(abi, name)`](/guides/values-and-types/#deriving-types-from-an-abi) in the same
+  order. **Every output must be named**, else `EvsTypeError` at recording; a non-literal `boolean`
+  widens the result to the union of both shapes. `s.tryCall` takes `struct` too. See
+  [calls — decoding multiple outputs into a struct](/guides/calls/#decoding-multiple-outputs-into-a-struct).
 - Callee reverts bubble **verbatim** (Error/Panic/custom alike).
 - Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the
   site back to your source line.
@@ -405,16 +415,22 @@ const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s,
 ## s.fn
 
 ```ts nocheck
-fn<const params extends readonly ArgSpec[], const r extends Expr | readonly Expr[] | void>(
+fn<
+  const params extends readonly ArgSpec[],
+  const r extends Expr | Tuple | MutArray | readonly (Expr | Tuple | MutArray)[] | void,
+>(
   name: string,
   params: params,
   body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
 ): (...args: { [i in keyof params]: IntoExpr<params[i]['type']> }) => FreshHandles<r>;
 ```
 
-Defines a reusable typed subroutine and returns a callable handle (`FreshHandles` stands in for
-a package-internal helper: `Expr` results come back as fresh `Expr`s, tuples as fresh tuples,
-`void` as `void`). Rules ([full guide](/guides/functions/)):
+Defines a reusable typed subroutine and returns a callable handle. A body may return a single
+`Expr`, a single `Tuple` (a struct/composite result), a single `MutArray` (an array result), a
+readonly list of those (the `[many]` shape), or `void`. (`FreshHandles` stands in for a
+package-internal helper: `Expr` results come back as fresh `Expr`s, `Tuple` results as fresh
+`Tuple` handles, array/`MutArray` results as fresh array `Expr`s at the call site, and `void` as
+`void`.) Rules ([full guide](/guides/functions/)):
 
 - The body runs **once, at definition**, in an isolated scope: params only, **no capture** of
   outer `Expr`s or cells (`EvsScopeError` at recording).
@@ -449,8 +465,8 @@ const pairBalances = evscript(
 ## s.return
 
 ```ts nocheck
-// each value is an Expr OR a Tuple handle directly:
-return<const ret extends Record<string, Expr | Tuple<TupleType>>>(values: ret): ScriptReturn<ret>;
+// each value is an Expr, a Tuple handle, OR a MutArray handle — directly:
+return<const ret extends Record<string, Expr | Tuple<TupleType> | MutArray<EvsType>>>(values: ret): ScriptReturn<ret>;
 ```
 
 Declares the script's outputs and seals the recorder. Must be called exactly once,
@@ -463,6 +479,9 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 - Each value is an `Expr`, or a `Tuple` handle **directly** — a struct/tuple flows out as a
   `'tuple'` component, abitype-typed. (`tupleHandle.expr()` is equivalent and still valid, for
   the bare memref `Expr`.) Type bare literals with `s.lit` first.
+- A [`MutArray`](#mutarray) handle is also returnable **directly** (no `.expr()`) — the array
+  flows out as its abitype-typed array shape; `arr.expr()` is equivalent and still valid. The
+  per-value type is `ReturnValue = Expr | Tuple | MutArray`.
 - After sealing, any builder call throws `EvsScopeError` (`RECORDING_CLOSED`).
 
 ## Cell
@@ -586,14 +605,15 @@ owning loop's body throws `EvsScopeError`.
 ## ScriptReturn
 
 ```ts
-import type { Expr } from '@maxencerb/evs';
+import type { ReturnValue } from '@maxencerb/evs';
 
 declare const returnBrand: unique symbol;
-interface ScriptReturn<ret extends Record<string, Expr>> {
+interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
 ```
 
-The opaque branded token produced by [`s.return`](#sreturn) and required as the callback's
+`ReturnValue` is `Expr | AnyTuple | AnyMutArray` — an `Expr`, a `Tuple` handle, or a `MutArray`
+handle. The opaque branded token produced by [`s.return`](#sreturn) and required as the callback's
 return value. It exists purely so the type system can thread the return record's literal type
 into `EvsScript` — you never construct or inspect one.

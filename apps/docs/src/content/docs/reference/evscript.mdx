@@ -17,7 +17,7 @@ import { arg, compile, evscript, t } from '@maxencerb/evs';
 declare function evscript<
   const name extends string,
   const args extends ArgsInput, // EvsType | readonly EvsType[]
-  ret extends Record<string, Expr>,
+  ret extends Record<string, ReturnValue>, // each value: Expr | Tuple | MutArray
 >(
   def: { name: name; args?: args },
   body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
@@ -100,7 +100,7 @@ import type {
   CompiledEvsScript,
   CompileOptions,
   EvsType,
-  Expr,
+  ReturnValue,
   ScriptAbi,
   ScriptIr,
 } from '@maxencerb/evs';
@@ -108,7 +108,7 @@ import type {
 interface EvsScript<
   name extends string = string,
   args extends readonly EvsType[] = readonly EvsType[],
-  ret extends Record<string, Expr> = Record<string, Expr>,
+  ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly name: name;
   readonly ir: ScriptIr; // frozen, JSON-serializable
@@ -130,14 +130,14 @@ interface EvsScript<
 ## arg() and ArgSpec (for s.fn)
 
 ```ts
-import type { ArgType } from '@maxencerb/evs';
+import type { ArgType, StringType } from '@maxencerb/evs';
 
 interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
   readonly name: name;
   readonly type: type;
 }
 
-declare function arg<const name extends string, const type extends ArgType>(
+declare function arg<const name extends string, const type extends StringType>(
   name: name,
   type: type,
 ): ArgSpec<name, type>;
@@ -149,9 +149,10 @@ script-header `args` surface no longer uses `arg()` — those are bare `t.*` typ
 returns a frozen object:
 
 - `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
-- `type` must be an `ArgType`: any word type, `string`, `bytes`, or a string array
-  (`ArgType` excludes tuples — `s.fn` params are string-encoded). Shapes outside that throw
-  `EvsTypeError` with code `UNSUPPORTED_V0`.
+- `type` must be a `StringType`: any word type, `string`, `bytes`, or a string array. Tuples are
+  excluded — `s.fn` params are string-encoded. (`ArgType`, the `ArgSpec` type parameter shown
+  above, is an alias of `EvsType` and is intentionally wider than the `arg` function's actual
+  `StringType` bound.) Shapes outside `StringType` throw `EvsTypeError` with code `UNSUPPORTED_V0`.
 
 ```ts
 import { arg, t } from '@maxencerb/evs';
@@ -170,7 +171,7 @@ viem-native positional (`args: [pool, fee]`). The full type vocabulary lives in
 ## compile()
 
 ```ts
-import type { CompiledEvsScript, CompileOptions, EvsScript, EvsType, Expr, ScriptIr } from '@maxencerb/evs';
+import type { CompiledEvsScript, CompileOptions, EvsScript, EvsType, ReturnValue, ScriptIr } from '@maxencerb/evs';
 
 declare function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
@@ -180,7 +181,7 @@ declare function compile<
 ): s extends EvsScript<
   infer n extends string,
   infer a extends readonly EvsType[],
-  infer r extends Record<string, Expr>
+  infer r extends Record<string, ReturnValue>
 >
   ? CompiledEvsScript<n, a, r>
   : never;

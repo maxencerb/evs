@@ -154,6 +154,74 @@ const getQuote = evscript(
 
 A `TupleType` arg works the same way: declare it on the header (`args: [QuoteParams]`) and the body receives a `Tuple` handle instead of an `Expr`. Reference semantics apply throughout — a `Tuple` handle is a pointer, so passing it (or aliasing it) shares the same block and a later `.set()` is visible everywhere. The full `Tuple`/`Field`/`s.tuple` surface is in the [builder reference](/reference/builder/#stuple).
 
+## Deriving types from an ABI
+
+When a type already exists in an ABI, you do not have to retype it. `t.fromOutputs(abi, name)`
+derives an evs type straight from a function's ABI outputs, and `t.fromAbiParameter(param)` does
+the same for a single ABI parameter:
+
+- **`t.fromOutputs(abi, name)`** — a function with **one** output returns that output's type (a
+  [`TupleType`](/reference/types/#composite-types-tupletype) for a `tuple` output, else the scalar
+  or array type string); a function with **several** outputs returns a `TupleType` struct over them,
+  with components in ABI declaration order.
+- **`t.fromAbiParameter(param)`** — one ABI parameter → its evs type (a `tuple…` param becomes a
+  `TupleType`, anything else its type string).
+
+```ts twoslash
+import { evscript, t } from '@maxencerb/evs';
+
+const poolAbi = [
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'fee',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint24' }],
+  },
+] as const;
+
+// Several named outputs → a named struct type, in ABI declaration order.
+const Slot0 = t.fromOutputs(poolAbi, 'slot0');
+//    ^?
+// A single output → that output's type directly.
+const Fee = t.fromOutputs(poolAbi, 'fee'); // 'uint24'
+// One ABI parameter → its evs type.
+const Tick = t.fromAbiParameter({ name: 'tick', type: 'int24' }); // 'int24'
+
+const readPool = evscript({ name: 'readPool', args: [t.address] }, (s, pool) => {
+  // `struct: true` decodes the multi-output slot0() into one Slot0-shaped Tuple, so the derived
+  // type round-trips with the decode (same fields, same ABI order). See calls — struct: true.
+  const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+  return s.return({
+    tick: slot0.tick.get(), // Expr<'int24'>, read by name
+    slot0, // the whole struct flows out, typed as Slot0
+  });
+});
+
+void [Slot0, Fee, Tick, readPool];
+```
+
+A derived type flows everywhere a hand-written `t.struct`/`t.tuple` does — as a script arg, a
+`s.call` argument or output, an `s.newArray` element, or an `s.return` value. Because the
+components come from the ABI in declaration order, a `t.fromOutputs(abi, name)` type is
+interchangeable with a `t.struct` written in the same order and with a
+[`s.call({ …, struct: true })`](/guides/calls/#decoding-multiple-outputs-into-a-struct) decode of
+that same function. An overloaded or unknown function name throws `EvsTypeError` at the call site
+(a non-`as const` ABI degrades to `EvsType` rather than erroring, mirroring `s.call`). The exact
+return types (`FromAbiOutputs`, `AbiParamToEvsType`) are in the
+[types reference](/reference/types/#the-t-namespace).
+
 ## Composite arrays: `tuple[]`, `T[][]`, `string[]`
 
 Arrays whose element is itself composite — `tuple[]` (arrays of structs), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays (`string[]`, `bytes[]`) — are first-class. They share the word-array handle surface (`.length()`, `.at(i)`, `s.newArray`); the only difference is in memory each slot holds a **pointer** to the element's own block instead of an inline value (an array-of-pointers, exactly Solidity `Struct[]`/`T[][]`/`string[]` memory). Reference semantics carry over: an array handle is a pointer, so the element handles you read from it alias the array's slots.
@@ -213,19 +281,23 @@ const buildPositions = evscript({ name: 'buildPositions', args: [t.address, t.ui
 });
 ```
 
-A composite-array **literal** (a plain JS array of struct objects, of arrays, or of strings) is constructible anywhere the value type is expected — it is built at record time into a fresh `[length][p0…]` block with reference semantics (not a flat data segment):
+A composite-array **literal** (a plain JS array of struct objects, of inner arrays, or of
+strings) is accepted wherever a value type is *coerced* — a call argument, an `s.return` value, or
+a tuple/array member slot (`s.tuple` / `Field.set` / `MutArray.set`) — and is built at record time
+into a fresh `[length][p0…]` block with reference semantics (not a flat data segment). The
+string-typed shapes (`uint256[][]`, `string[]`) can also be materialized directly with
+[`s.lit`](/reference/builder/#slit), because their type is a plain string; a `tuple[]` literal
+cannot — `s.lit` only accepts string-encoded types and rejects the `t.array(t.struct(...))` object
+with `EvsTypeError` (`TYPE_MISMATCH`), so build a `tuple[]` with `s.newArray` (above) or pass it
+through a coerced position (a call arg, below):
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
 
 const literals = evscript({ name: 'literals', args: [] }, (s) => {
-  const positions = s.lit(t.array(t.struct({ liquidity: t.uint128, owner: t.address })), [
-    { liquidity: 100n, owner: '0x0000000000000000000000000000000000000001' },
-    { liquidity: 200n, owner: '0x0000000000000000000000000000000000000002' },
-  ]);
-  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]); // uint256[][]
-  const tags = s.lit(t.array(t.string), ['alpha', 'beta']); // string[]
-  return s.return({ positions, grid, tags });
+  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]); // uint256[][] — a string type
+  const tags = s.lit(t.array(t.string), ['alpha', 'beta']); // string[] — a string type
+  return s.return({ grid, tags });
 });
 ```
 
@@ -281,7 +353,7 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
 | `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to zero |
 
-Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array.
+Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

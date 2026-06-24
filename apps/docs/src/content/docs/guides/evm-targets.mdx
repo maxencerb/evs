@@ -44,7 +44,8 @@ instruction selection differs:
   `PUSH1 0x00`, and the deployless init wrapper swaps its two `PUSH0` bytes for
   `RETURNDATASIZE`, which is guaranteed zero at the start of an init frame.
 - `MCOPY` is EIP-5656, activated in Cancun. On older targets memory copies go through a shared
-  `@memcpy` word-loop subroutine, emitted once and only if the script actually copies memory.
+  `@memcpy` word-loop subroutine, emitted once per pre-Cancun build (a few dozen bytes, present
+  whether or not the script actually copies memory).
 
 The assembler's verifier enforces the gate as a backstop: no opcode newer than the chosen
 target can survive into the bytecode (a stray `MCOPY` in a `paris` build is an internal error,

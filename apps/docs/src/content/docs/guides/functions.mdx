@@ -27,11 +27,15 @@ const clamp = evscript(
 ```
 
 - **Parameters** are declared with `arg(name, type)` — the `arg`/`ArgSpec` helpers are retained
-  for `s.fn` (only the script-header `args` surface moved to positional `t.*` types). A param
-  may be any `ArgType` (string-encoded — word, dynamic, or string array); dynamic types pass as
-  memref pointer words. The body receives them as positionally typed `Expr`s.
-- **Returns** can be a single `Expr`, a readonly tuple of `Expr`s (use `as const`, as above),
-  or `void`.
+  for `s.fn` (only the script-header `args` surface moved to positional `t.*` types). A param may
+  be any string-encoded type (`arg()`'s bound is `StringType`) — a word, dynamic, or string array;
+  composite/tuple params are a deliberate v0 narrowing. Dynamic types pass as memref pointer words.
+  The body receives them as positionally typed `Expr`s.
+- **Returns** can be a single `Expr`, a single `Tuple` handle (a struct/composite result — the call
+  site then gets a `Tuple` with named field access, like `s.call`), a single `MutArray` handle (an
+  array result — the call site gets an array `Expr`), a readonly tuple of any of those (use
+  `as const`, as above), or `void`. (Composite/array returns were widened in issue #5; a bare
+  `Tuple`/`MutArray` body return is byte-identical IR to wrapping it in `.expr()`.)
 - **Call sites** accept literals anywhere a parameter type allows them — `minMax(lo, 100n)`
   works, with the usual [literal coercion rules](/guides/values-and-types/).
 
