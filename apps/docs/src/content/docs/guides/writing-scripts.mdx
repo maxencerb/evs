@@ -59,7 +59,7 @@ These are not values — they are typed handles standing in for the values that 
 
 - Call it **exactly once, unconditionally**, and return its result from the callback. Calling it inside `s.if`/`s.while`, twice, or not at all is a recording-time error (`EvsScopeError`/`EvsTypeError`).
 - The record's keys become the named components of the script's single tuple output. viem consumers receive a plain object with the same keys — `{ symbol: 'DAI', decimals: 18, balance: 123n }`-shaped, fully typed.
-- Every value is an `Expr` or a `Tuple` handle (returned directly — a struct flows out as an object). Read a cell with `.get()`, convert a `MutArray` with `.expr()` (see [control flow](/guides/control-flow/)).
+- Every value is an `Expr`, a `Tuple` handle, or a `MutArray` handle — all returned directly (a struct flows out as an object, an array as a list). Read a cell with `.get()`; `.expr()` on a `Tuple`/`MutArray` is the equivalent optional form (the bare handle works too — see [control flow](/guides/control-flow/)).
 - `s.return` seals the recorder: any builder call after it throws `EvsScopeError` (`RECORDING_CLOSED`).
 
 :::tip

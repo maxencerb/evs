@@ -100,7 +100,7 @@ codes; everything else can still reach you because callee reverts bubble verbati
 | ------ | -------------------------------------------- | -------------------------------------------------------- |
 | `0x00` | generic compiler panic                       | bubbled from a callee only                                |
 | `0x01` | assertion failure (`assert`)                 | bubbled from a callee only                                |
-| `0x11` | arithmetic overflow or underflow             | yes — checked `add`/`sub`/`mul`, narrowing conversions    |
+| `0x11` | arithmetic overflow or underflow             | yes — checked `add`/`sub`/`mul`/`div`/`mod` (`int256` min ÷ −1), narrowing conversions |
 | `0x12` | division or modulo by zero                   | yes — `div`/`mod`                                         |
 | `0x21` | invalid enum conversion                      | bubbled from a callee only                                |
 | `0x22` | corrupted storage byte array                 | bubbled from a callee only                                |

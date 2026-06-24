@@ -1,108 +1,251 @@
 ---
 title: Quick start
-description: Write a typed read script, compile it to bytecode, and execute it with viem in a single deployless eth_call — typed end to end.
+description: Build a typed batch reader for Uniswap V3 pools — dependent on-chain reads collapsed into one deployless eth_call, fully inferred by viem end to end.
 ---
 
-import { Steps } from '@astrojs/starlight/components';
-
-You will build a script that fetches an ERC-20 token's symbol, decimals, and total supply —
-three reads, one `eth_call`, one fully typed result. You need
+You will build a real batch reader: given a list of Uniswap V3 pool addresses and a user
+address, fetch **each pool's** `fee`, its `slot0` (price/tick), and for **both of its tokens**
+the `symbol`, `decimals`, and the user's balance — dozens of reads, several of them *dependent*
+(a token read's target is the output of a pool read), all in a **single `eth_call`** that
+returns one fully-typed array. You need
 [`@maxencerb/evs` and `viem` installed](/getting-started/installation/) and an RPC URL.
 
-<Steps>
+## The script
 
-1. **Define the script.** `evscript` takes a header — `{ name, args }`, with each argument
-   declared as a `t.*` type from the `t` namespace — and a builder callback. The callback
-   receives the builder `s` followed by one positional handle per argument, records calls
-   with `s.call`, and must return `s.return({ ... })` with the values you want back:
+The pool ABI is elided below for readability (hover any identifier to see its inferred type —
+this page uses [Twoslash](https://twoslash.netlify.app/)). Everything else is the whole script:
 
-   ```ts
-   import { evscript, t } from '@maxencerb/evs';
-   import { erc20Abi } from 'viem';
+```ts twoslash
+import { arg, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+// ---cut-start---
+const uniswapV3PoolAbi = [
+  { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  { type: 'function', name: 'fee', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint24' }] },
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+// ---cut-end---
+// Derive the slot0 struct type straight from the ABI — no re-typing its 7 fields.
+const Slot0 = t.fromOutputs(uniswapV3PoolAbi, 'slot0');
+//    ^?
 
-   export const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
-     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
-     return s.return({ symbol, decimals, totalSupply });
-   });
-   ```
+// Compose the output shape from structs; a struct member can itself be a struct.
+const TokenMetadata = t.struct({
+  address: t.address,
+  symbol: t.string,
+  decimals: t.uint8,
+  userBalance: t.uint256,
+});
+const PoolMetadata = t.struct({
+  token0: TokenMetadata,
+  token1: TokenMetadata,
+  fee: t.uint24,
+  slot0: Slot0,
+});
 
-   `s.call` is typed like viem's `readContract`: pass any `as const` ABI, get back typed
-   handles (`symbol` is `Expr<'string'>`, `decimals` is `Expr<'uint8'>`). The callback runs
-   exactly once, at recording time — it records what the script will do on-chain. Details in
-   [writing scripts](/guides/writing-scripts/).
+export const poolsData = evscript(
+  { name: 'poolsData', args: [t.array(t.address), t.address] },
+  (s, pools, user) => {
+    // A reusable, typed subroutine: one token's metadata. `arg(name, type)` names its params.
+    const tokenMetadata = s.fn(
+      'tokenMetadata',
+      [arg('token', t.address), arg('owner', t.address)] as const,
+      (token, owner) =>
+        s.tuple(TokenMetadata, {
+          address: token,
+          symbol: s.call({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+          decimals: s.call({ address: token, abi: erc20Abi, functionName: 'decimals' }),
+          userBalance: s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+        }),
+    );
 
-2. **Compile it.** `compile` validates the recorded script, generates EVM bytecode, and
-   returns a frozen artifact (the `tokenMeta.compile()` method is sugar for the same call):
+    // One output row per input pool, collected in a counted loop.
+    const metadata = s.newArray(PoolMetadata, pools.length());
+    s.for({ type: t.uint256, from: 0n, until: pools.length() }, (i) => {
+      const pool = pools.at(i);
+      const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+      const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+      metadata.set(
+        i,
+        s.tuple(PoolMetadata, {
+          // DEPENDENT reads: token0/token1 are outputs of the pool read above, and become
+          // the *target* of the token reads inside tokenMetadata — on-chain, in one call.
+          token0: tokenMetadata(token0, user),
+          token1: tokenMetadata(token1, user),
+          fee: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
+          // `struct: true` decodes slot0's 7 named outputs into one Slot0-shaped object.
+          slot0: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
+        }),
+      );
+    });
 
-   ```ts
-   import { compile, evscript, t } from '@maxencerb/evs';
-   import { erc20Abi } from 'viem';
+    return s.return({ metadata });
+  },
+);
+```
 
-   const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
-     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
-     return s.return({ symbol, decimals, totalSupply });
-   });
+Each line is plain TypeScript that *records* what the script will do; the callback runs once,
+at recording time. The pieces, in order:
 
-   export const compiled = compile(tokenMeta);
-   // compiled.runtimeBytecode — the script body (EIP-170: at most 24,576 bytes, enforced)
-   // compiled.initBytecode   — the runtime wrapped in a 10-byte init shim for deployless mode
-   // compiled.abi            — literal-typed ABI: one view function named 'tokenMeta'
-   ```
+- **`t.fromOutputs(abi, 'slot0')`** derives a struct type from a function's ABI outputs, so
+  `Slot0` matches `slot0()` exactly without hand-retyping its seven fields — see
+  [deriving types from an ABI](/guides/values-and-types/#deriving-types-from-an-abi).
+- **`t.struct({ ... })`** builds composite types, and a member can itself be a struct
+  (`PoolMetadata.token0` is a `TokenMetadata`) — see
+  [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
+- **`s.fn(name, [arg(...)], body)`** defines a reusable typed subroutine compiled once and
+  called twice here (token0 and token1) — see [user functions](/guides/functions/).
+- **`s.call({ ..., struct: true })`** decodes a multi-output getter into one named object
+  instead of a positional tuple — see [calls](/guides/calls/#decoding-multiple-outputs-into-a-struct).
+- **`s.newArray` + `s.for`** collect one row per pool, the multicall-style fan-out — see
+  [control flow](/guides/control-flow/).
 
-3. **Execute it with viem.** Spread `toViem()` into `readContract`: it contributes
-   `{ abi, code }`, you add the `functionName` (the script's name) and the typed positional
-   `args`:
+The dependency that makes this a script and not a multicall: `token0` is the **output** of the
+pool read and the **address** of the token reads. Multicall must know every target up front, so
+it cannot express this in one round trip; evs records the chain and runs it on-chain. See
+[why evs](/getting-started/why-evs/).
 
-   ```ts
-   import { compile, evscript, t } from '@maxencerb/evs';
-   import { createPublicClient, erc20Abi, http } from 'viem';
+## Compile and run it
 
-   const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-     const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-     const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
-     const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
-     return s.return({ symbol, decimals, totalSupply });
-   });
+`compile()` validates the recorded script and returns a frozen artifact; spread `toViem()` into
+a plain viem `readContract` and add the `functionName` and typed `args`:
 
-   const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-   const usdc = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+```ts twoslash
+import { arg, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+// ---cut-start---
+const uniswapV3PoolAbi = [
+  { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
+  { type: 'function', name: 'fee', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'uint24' }] },
+  {
+    type: 'function',
+    name: 'slot0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      { name: 'sqrtPriceX96', type: 'uint160' },
+      { name: 'tick', type: 'int24' },
+      { name: 'observationIndex', type: 'uint16' },
+      { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
+      { name: 'unlocked', type: 'bool' },
+    ],
+  },
+] as const;
+const Slot0 = t.fromOutputs(uniswapV3PoolAbi, 'slot0');
+const TokenMetadata = t.struct({
+  address: t.address,
+  symbol: t.string,
+  decimals: t.uint8,
+  userBalance: t.uint256,
+});
+const PoolMetadata = t.struct({ token0: TokenMetadata, token1: TokenMetadata, fee: t.uint24, slot0: Slot0 });
+const poolsData = evscript(
+  { name: 'poolsData', args: [t.array(t.address), t.address] },
+  (s, pools, user) => {
+    const tokenMetadata = s.fn(
+      'tokenMetadata',
+      [arg('token', t.address), arg('owner', t.address)] as const,
+      (token, owner) =>
+        s.tuple(TokenMetadata, {
+          address: token,
+          symbol: s.call({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+          decimals: s.call({ address: token, abi: erc20Abi, functionName: 'decimals' }),
+          userBalance: s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+        }),
+    );
+    const metadata = s.newArray(PoolMetadata, pools.length());
+    s.for({ type: t.uint256, from: 0n, until: pools.length() }, (i) => {
+      const pool = pools.at(i);
+      const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+      const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+      metadata.set(
+        i,
+        s.tuple(PoolMetadata, {
+          token0: tokenMetadata(token0, user),
+          token1: tokenMetadata(token1, user),
+          fee: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
+          slot0: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
+        }),
+      );
+    });
+    return s.return({ metadata });
+  },
+);
+// ---cut-end---
+const code = poolsData.compile();
+// code.runtimeBytecode — the script body (EIP-170: at most 24,576 bytes, enforced)
+// code.abi            — literal-typed ABI: the 'poolsData' view function plus the two evs error entries
 
-   export const out = await client.readContract({
-     ...compile(tokenMeta).toViem(), // { abi, code } — deployless eth_call
-     functionName: 'tokenMeta',
-     args: [usdc], // typed: readonly [`0x${string}`]
-   });
-   // out: { symbol: string; decimals: number; totalSupply: bigint }
-   ```
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
 
-</Steps>
+const result = await client.readContract({
+  ...code.toViem(), // { abi, code } — one deployless eth_call, nothing deployed
+  functionName: 'poolsData',
+  args: [
+    ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // USDC/WETH 0.05% pool (mainnet)
+    '0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640',
+  ],
+});
+```
 
 ## The typed result
 
-`out` is `{ symbol: string; decimals: number; totalSupply: bigint }` — viem decodes the
-script's single named-tuple output into an object keyed by your `s.return` keys, with each
-component mapped by its ABI type (`uint8` to `number`, `uint256` to `bigint`). The whole
-chain — argument tuple, function name, result shape — is inferred from the script itself; no
-`as const`, no generated types.
+`result` is inferred entirely from the script — no `as const`, no codegen. Each `s.return` key
+becomes a named output; structs become objects, `tuple[]`/arrays become arrays, and every leaf
+maps by its ABI type (`address` → `` `0x${string}` ``, `uint8`/`uint24`/`int24` → `number`,
+`uint256` → `bigint`, `bool` → `boolean`):
+
+```ts
+type Result = {
+  metadata: readonly {
+    token0: { address: `0x${string}`; symbol: string; decimals: number; userBalance: bigint };
+    token1: { address: `0x${string}`; symbol: string; decimals: number; userBalance: bigint };
+    fee: number;
+    slot0: {
+      sqrtPriceX96: bigint;
+      tick: number;
+      observationIndex: number;
+      observationCardinality: number;
+      observationCardinalityNext: number;
+      feeProtocol: number;
+      unlocked: boolean;
+    };
+  }[];
+};
+```
 
 ## What just happened
 
-Nothing was deployed and no transaction was sent. `toViem()` hands viem the script's
-`initBytecode` under the `code` parameter; viem issues a single plain two-parameter
-`eth_call` (no `to`) in which the script is instantiated counterfactually, runs — decoding
-your arguments from calldata, performing the three reads with values flowing between them
-on-chain — and returns one ABI-encoded result. Everything inside the call is discarded by
-the node afterwards. A state-override mode with a deterministic script address also exists;
-see [execution](/guides/execution/).
+Nothing was deployed and no transaction was sent. `toViem()` hands viem the script's init
+bytecode under the `code` parameter; viem issues a single plain two-parameter `eth_call` (no
+`to`) in which the script is instantiated counterfactually, runs — decoding your arguments,
+looping over the pools, performing the dependent reads with values flowing between them
+on-chain — and returns one ABI-encoded result that viem decodes into the typed array above.
+Everything inside the call is discarded by the node afterwards. A state-override mode with a
+deterministic script address also exists; see [execution](/guides/execution/).
 
 ## Where next
 
 - [Why evs?](/getting-started/why-evs/) — the dependent-read problem and the comparison with multicall3
 - [Writing scripts](/guides/writing-scripts/) — the script header, positional args, and the recording-time vs run-time model
-- [Calls](/guides/calls/) — the full `s.call` / `s.tryCall` option surface and failure handling
-- [Execution](/guides/execution/) — deployless vs state override, block pinning, `s.env` caveats
-- [Pool metadata example](/examples/pool-metadata/) — the flagship: pool config plus token metadata in one call
+- [Values & types](/guides/values-and-types/) — `Expr` handles, composite types, and deriving types from an ABI
+- [Calls](/guides/calls/) — the full `s.call` / `s.tryCall` surface, `struct: true`, and failure handling
+- [Pool metadata example](/examples/pool-metadata/) — the same idea, built up one read at a time

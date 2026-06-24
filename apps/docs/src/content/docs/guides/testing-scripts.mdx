@@ -108,12 +108,14 @@ word the script holds), so normalize before comparing — `USDC.toLowerCase()` a
 | `bytes`                | `0x` hex string                                      |
 | `string`               | `string`                                             |
 | `T[]`                  | array of element values                              |
+| `tuple` / `struct`     | object keyed by component names (a `t.struct`), or a positional array (a `t.tuple`); members coerce by their own type's rules |
 
 `outcome.values` decodes the return record with viem's conventions, so assertions written
 against `interpret()` match what `readContract` returns in production: `bool` becomes
 `boolean`, `address` a checksummed string, `uintN`/`intN` a `number` when N is at most 48 and
 a `bigint` otherwise, `bytesN`/`bytes` hex strings, `string` a string, arrays an array of
-element values. `outcome.data` is the raw ABI-encoded returndata — byte-equal to what the
+element values, and a tuple/struct an object keyed by component names when every member is named
+(otherwise a positional array, recursing through members). `outcome.data` is the raw ABI-encoded returndata — byte-equal to what the
 compiled script returns from `eth_call`.
 
 ## Testing reverts

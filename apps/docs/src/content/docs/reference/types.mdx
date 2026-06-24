@@ -11,11 +11,14 @@ narrative version (and the staging-misuse failure modes), see
 
 ```ts
 import type { EvsType, StringType, TupleType } from '@maxencerb/evs';
+import type { Abi, AbiParameter } from 'viem';
 
 declare const t: { readonly [k in Exclude<StringType, `${string}[]`>]: k } & {
   array(elem: StringType | TupleType): StringType | TupleType;
   struct(spec: Record<string, EvsType>): TupleType;
   tuple(...items: readonly EvsType[]): TupleType;
+  fromOutputs(abi: Abi, name: string): EvsType; // derive a type from a function's outputs
+  fromAbiParameter(param: AbiParameter): EvsType; // derive a type from one ABI parameter
 };
 ```
 
@@ -36,6 +39,8 @@ autocomplete sugar — plus three functions that build composite types. Raw type
 | `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]`), or a `tuple[]` of a tuple element |
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
+| `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); overloaded/unknown name throws (a non-`const` ABI degrades to `EvsType`) |
+| `t.fromAbiParameter(param)`      | `EvsType`                      | function: derive a type from one ABI parameter (`AbiParamToEvsType`) — a `tuple…` param → a `TupleType`, else the type string |
 
 `t.array` validates its element at the call site. `t.struct`/`t.tuple` build a
 [`TupleType`](#composite-types-tupletype) descriptor — an abitype `AbiParameter`-shaped object
@@ -82,7 +87,7 @@ interface TupleType {
   readonly components: readonly NamedType[];
 }
 type EvsType = WordType | DynType | ArrayType | TupleType;
-type ArgType = WordType | DynType | ArrayType; // s.fn param types (string-encoded)
+type ArgType = EvsType; // script arg types — word, dynamic, string array, or a TupleType
 type NumericType = UintType | IntType;
 type BitsType = UintType | BytesNType;
 ```
@@ -104,7 +109,7 @@ type BitsType = UintType | BytesNType;
 | `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
 | `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
 | `EvsType`     | Every value type: word, dynamic, string array, or a `TupleType`.                              |
-| `ArgType`     | The valid `s.fn` parameter types (string-encoded — no tuples).                                |
+| `ArgType`     | The script-argument value type — an alias for `EvsType` (word, dynamic, string array, or `TupleType`); types `ScriptIr.args` and `ArgSpec.type`. `s.fn` params are narrower (string-encoded only) — that bound lives on [`arg()`](/reference/evscript/#arg-and-argspec-for-sfn), not here. |
 | `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
@@ -161,6 +166,22 @@ Several type-level helpers are exported for advanced inference: `StructTypeOf`, 
 power `t.struct`/`t.tuple` inference — but they are public for building your own type-level
 glue.
 
+### Deriving a type from an ABI
+
+`t.fromOutputs(abi, name)` and `t.fromAbiParameter(param)` build a `t.*` type from existing ABI
+material instead of a hand-written `t.struct`/`t.tuple` — see
+[deriving types from an ABI](/guides/values-and-types/#deriving-types-from-an-abi) for the
+narrative and a runnable example. Their return types are exported:
+
+- **`FromAbiOutputs<abi, name>`** — the type of `t.fromOutputs(abi, name)`: a single output's type,
+  or a `TupleType` struct over several outputs (named, in ABI declaration order). An unknown name
+  or a non-`const` ABI widens to `EvsType`; an overloaded name throws at recording.
+- **`AbiParamToEvsType<p>`** — the type of `t.fromAbiParameter(p)`: a `TupleType` for a `tuple…`
+  parameter, else the scalar/array type string.
+
+The component-level mirrors `AbiParamToComponent` and `AbiParamsToComponents` are exported too, for
+building your own ABI→type glue.
+
 ## Literal coercion: LitOf and IntoExpr
 
 Every builder position typed `IntoExpr` accepts either an `Expr` or a plain host literal:
@@ -178,10 +199,10 @@ type LitOf<t extends EvsType> = t extends NumericType
           ? string
           : t extends 'bytes'
             ? `0x${string}`
-            : t extends `${infer e extends StringType}[]`
-              ? readonly LitOf<e>[]
-              : t extends TupleType
-                ? TupleLitOf<t> // delegated to abitype: object (all-named) or array (positional)
+            : t extends TupleType
+              ? TupleLitOf<t> // delegated to abitype: object (all-named) or array (positional)
+              : t extends `${infer e extends StringType}[]`
+                ? readonly LitOf<e>[]
                 : never;
 
 type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;

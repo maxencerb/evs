@@ -19,18 +19,31 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-```ts
+```ts twoslash
 import { evscript, t, compile } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
-
-const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-  const symbol = s.call({ abi: erc20Abi, address: token, functionName: 'symbol' });
-  const decimals = s.call({ abi: erc20Abi, address: token, functionName: 'decimals' });
-  return s.return({ symbol, decimals });
+// ---cut-start---
+const poolAbi = [
+  {
+    type: 'function',
+    name: 'token0',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'address' }],
+  },
+] as const;
+// ---cut-end---
+// Two DEPENDENT reads, one eth_call: the second call's target IS the first
+// call's result — a chain multicall can't batch (it needs every address up front).
+const poolToken0 = evscript({ name: 'poolToken0', args: [t.address] }, (s, pool) => {
+  const token0 = s.call({ address: pool, abi: poolAbi, functionName: 'token0' });
+  //    ^?
+  const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ token0, symbol });
 });
 
-const script = compile(tokenMeta);
-// → runtime bytecode + a literal-typed ABI viem can infer from
+const script = compile(poolToken0);
+// → runtime bytecode + a literal-typed ABI viem infers your args & result from
 ```
 
 <CardGrid stagger>
@@ -46,7 +59,7 @@ const script = compile(tokenMeta);
     Scripts execute deploylessly via the `eth_call` `code` parameter or a state override.
     The chain never sees a deployment; any standard RPC node works.
   </Card>
-  <Card title="Solidity-grade semantics" icon="seti:solidity">
+  <Card title="Solidity-grade semantics" icon="seti:ethereum">
     Checked arithmetic with solc 0.8 panic codes, verbatim revert bubbling, and a
     differential test suite that pins the bytecode against a reference interpreter,
     viem's codecs, and real solc output.
