@@ -287,8 +287,10 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
   `CALLDATACOPY(dst, CALLDATASIZE, size)` (reads past calldata end are zero-padded [evm §2]).
 - **Allocation**: `ptr := MLOAD(0x40); MSTORE(0x40, ptr + ceil32(size))`. Never freed. Loop
   allocations grow memory monotonically; `compile()` emits a `LOOP_ALLOCATION` diagnostic via
-  the pinned `onDiagnostic` callback (§13.3) when a `call` with outputs, `arrnew`, or a dynamic
-  literal materialization sits inside a `while` body.
+  the pinned `onDiagnostic` callback (§13.3) when an allocating statement — a `call` with
+  outputs, `arrnew`, `tuplenew` (`s.tuple`), or a dynamic literal materialization — or a
+  `fncall` whose callee transitively allocates sits inside a loop body **or header** (`while`
+  or `for`; amendments 10.7, 14.6).
 
 ## 6. Checked arithmetic (full specification — resolves the cross-proposal MUL/SDIV flaws)
 
@@ -617,7 +619,7 @@ dispatch:   PUSH1 0x04 CALLDATASIZE LT PUSH2 @badcd JUMPI
             <body statement templates — @zero_* tryCall zeroing blocks sit inline (amendment 9.6)>
             <return encode (§8.2)> RETURN
 @fn_*:      <subroutines (§9)>
-@memcpy:    <shared word-loop — only if evmVersion < cancun AND any copy emitted>
+@memcpy:    <shared word-loop — pre-cancun only (evmVersion < cancun); emitted unconditionally there, like all shared tails (amendment 10.2)>
 @dfail_*:   <per-site stubs → @decode_revert>
 @panic_overflow/@panic_divzero/@panic_bounds/@panic_alloc → @panic:  <shared Panic tail (§15.0)>
 @decode_revert: <EvsDecodeError(site) tail>
@@ -821,9 +823,11 @@ time is reserved for whole-program facts. The full recording-time checklist is p
 
 ### 13.3 Diagnostics channel (pinned — resolves C's wobble)
 
-`EvsDiagnostic = { severity: 'warning'; code: 'LOOP_ALLOCATION' | 'LARGE_FRAME'; message: string;
-loc: SourceLoc | null }`, delivered only via `CompileOptions.onDiagnostic`. The artifact stays
-pure; nothing is logged by default.
+`EvsDiagnostic = { severity: 'warning'; code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' |
+'ENV_FRAME_DEPENDENT'; message: string; loc: SourceLoc | null }`, delivered only via
+`CompileOptions.onDiagnostic`. (`ENV_FRAME_DEPENDENT` — emitted once per `s.env('caller')` /
+`s.env('address')`, whose value is execution-frame-dependent — was added by amendment 14.1.) The
+artifact stays pure; nothing is logged by default.
 
 ## 14. PC→source map and disassembler
 
