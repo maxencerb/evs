@@ -23,7 +23,7 @@ const erc20 = [
 ] as const;
 
 const script = evscript({ name: 'totalSupplyOf', args: [t.address] }, (s, token) => {
-  const supply = s.call({ address: token, abi: erc20, functionName: 'totalSupply' });
+  const supply = s.read({ address: token, abi: erc20, functionName: 'totalSupply' });
   return s.return({ supply });
 });
 
@@ -178,7 +178,7 @@ EVS_ERROR_ABI[1]; // { type: 'error', name: 'EvsDecodeError', inputs: [{ name: '
 | Error | Selector | Raised when |
 | --- | --- | --- |
 | `EvsInvalidCalldata()` | `0xf43fed56` | The calldata does not match the script's function (wrong selector, truncated calldata, malformed dynamic arguments) |
-| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | A strict `s.call` got returndata that fails to decode; `site` identifies the recorded call site |
+| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | A strict `s.read` got returndata that fails to decode; `site` identifies the recorded call site |
 
 Because both entries are in every script's ABI, viem decodes these reverts into named errors out
 of the box. All other reverts (callee `Error(string)`, custom errors, panics) bubble through the

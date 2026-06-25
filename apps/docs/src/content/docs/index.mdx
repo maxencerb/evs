@@ -36,9 +36,9 @@ const poolAbi = [
 // Two DEPENDENT reads, one eth_call: the second call's target IS the first
 // call's result — a chain multicall can't batch (it needs every address up front).
 const poolToken0 = evscript({ name: 'poolToken0', args: [t.address] }, (s, pool) => {
-  const token0 = s.call({ address: pool, abi: poolAbi, functionName: 'token0' });
+  const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
   //    ^?
-  const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
   return s.return({ token0, symbol });
 });
 
@@ -60,8 +60,9 @@ const script = compile(poolToken0);
     The chain never sees a deployment; any standard RPC node works.
   </Card>
   <Card title="Solidity-grade semantics" icon="seti:ethereum">
-    Checked arithmetic with solc 0.8 panic codes, verbatim revert bubbling, and a
-    differential test suite that pins the bytecode against a reference interpreter,
-    viem's codecs, and real solc output.
+    Checked arithmetic with solc 0.8 panic codes, verbatim revert bubbling, three calling verbs
+    (`s.read` view reads, `s.call` for `CALL`-frame functions like a Uniswap quoter, `s.simulate`
+    to dry-run a write), and a differential test suite that pins the bytecode against a reference
+    interpreter, viem's codecs, and real solc output.
   </Card>
 </CardGrid>

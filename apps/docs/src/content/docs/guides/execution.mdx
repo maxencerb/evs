@@ -22,8 +22,8 @@ import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 
 const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
 
@@ -74,7 +74,7 @@ import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 
 const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
-  const balance = s.call({
+  const balance = s.read({
     address: token,
     abi: erc20Abi,
     functionName: 'balanceOf',
@@ -158,7 +158,7 @@ import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
-  const balance = s.call({
+  const balance = s.read({
     address: token,
     abi: erc20Abi,
     functionName: 'balanceOf',

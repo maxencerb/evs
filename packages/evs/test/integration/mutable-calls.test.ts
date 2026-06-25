@@ -31,11 +31,19 @@ beforeEach(async () => {
 });
 
 /** `s.call(deposit)` then `s.read(totalShares)` — the write is visible to the later read. */
-const callThenRead = evscript({ name: 'callThenRead', args: [t.address, t.uint256] }, (s, v, amount) => {
-  const shares = s.call({ address: v, abi: MockVault.abi, functionName: 'deposit', args: [amount] });
-  const total = s.read({ address: v, abi: MockVault.abi, functionName: 'totalShares' });
-  return s.return({ shares, total });
-});
+const callThenRead = evscript(
+  { name: 'callThenRead', args: [t.address, t.uint256] },
+  (s, v, amount) => {
+    const shares = s.call({
+      address: v,
+      abi: MockVault.abi,
+      functionName: 'deposit',
+      args: [amount],
+    });
+    const total = s.read({ address: v, abi: MockVault.abi, functionName: 'totalShares' });
+    return s.return({ shares, total });
+  },
+);
 
 /** `s.simulate(deposit)` then `s.read(totalShares)` — the write is rolled back (invisible). */
 const simulateThenRead = evscript(

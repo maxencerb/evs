@@ -73,7 +73,7 @@ try {
 | `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
 | `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
 | `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: two-level tuple arrays `tuple[][]`, arrays nested deeper than `[][]`, fixed-size arrays `T[N]`, overloaded callee functions (tuples, `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]` are supported) | Recording |
-| `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid struct field names, duplicate or invalid return component names, or a malformed ABI fragment passed to `s.call`. (An invalid script *name* given to `evscript()` is caught at the entry point as `TYPE_MISMATCH`.) | Recording |
+| `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid struct field names, duplicate or invalid return component names, or a malformed ABI fragment passed to `s.read`. (An invalid script *name* given to `evscript()` is caught at the entry point as `TYPE_MISMATCH`.) | Recording |
 | `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget | Compile / interpret |
 | `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |
 | `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script | Any |
@@ -119,7 +119,7 @@ loc.column; // number
 
 | Code | Triggers when | Why it matters |
 | --- | --- | --- |
-| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, `s.tuple(...)` (struct/tuple flat-block allocation), an `s.call`/`s.tryCall` with outputs (each call snapshots returndata), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
+| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, `s.tuple(...)` (struct/tuple flat-block allocation), an `s.read`/`s.tryRead` with outputs (each call snapshots returndata), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
 | `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
 | `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')` | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/) |
 

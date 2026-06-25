@@ -236,17 +236,17 @@ literal-or-`Expr` unions, outputs unwrapped one→`Expr`/many→tuple) and a `tr
 `{ success: Expr<'bool'>, value }` (`success` false on failure **or** malformed returndata,
 `value` then zeros/empty — pair with `s.select` for defaults).
 
-| Verb | Opcode | Functions | State |
-| --- | --- | --- | --- |
-| `s.read` / `s.tryRead` | `STATICCALL` | `view` / `pure` | static — no writes possible |
-| `s.call` / `s.tryCall` | `CALL` | `nonpayable` / `payable` | a real frame; the write is **not** rolled back |
+| Verb                           | Opcode                                | Functions                | State                                                           |
+| ------------------------------ | ------------------------------------- | ------------------------ | --------------------------------------------------------------- |
+| `s.read` / `s.tryRead`         | `STATICCALL`                          | `view` / `pure`          | static — no writes possible                                     |
+| `s.call` / `s.tryCall`         | `CALL`                                | `nonpayable` / `payable` | a real frame; the write is **not** rolled back                  |
 | `s.simulate` / `s.trySimulate` | `CALL` via a self-call + revert macro | `nonpayable` / `payable` | the write is **rolled back**, yet its return value is read back |
 
 `s.read` is the normal view-read path. `s.call` opens a non-static frame for functions that
 aren't `view` yet don't usefully persist state — the canonical case is a Uniswap **quoter** (it
 simulates a swap and so can't run under `STATICCALL`); the write it makes is visible to later
 subcalls in the same script but the `eth_call` itself never commits. `s.simulate` dry-runs a true
-**write** in a self-call sub-frame that reverts, so you read back what it *would* return while its
+**write** in a self-call sub-frame that reverts, so you read back what it _would_ return while its
 state changes are discarded and isolated from later reads. Mutability is filtered per verb — a
 `nonpayable` function under `s.read`, or a `view` function under `s.call`, is a compile error that
 steers you to the right verb.

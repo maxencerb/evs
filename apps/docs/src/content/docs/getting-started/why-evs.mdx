@@ -45,10 +45,10 @@ const uniswapV3PoolAbi = [
 export const poolToken0 = evscript(
   { name: 'poolToken0', args: [t.address] },
   (s, pool) => {
-    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     // token0 is Expr<'address'> — it feeds the next two calls ON-CHAIN
-    const symbol = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.read({ address: token0, abi: erc20Abi, functionName: 'decimals' });
     return s.return({ token0, symbol, decimals });
   },
 );
@@ -70,7 +70,12 @@ checked arithmetic, runtime conditionals, and loops over runtime arrays — see
 evs is strictly **read-only**. Scripts execute via `eth_call`: any state changes inside the
 call are discarded by the node, and nothing is ever deployed — the bytecode travels in the
 request itself. evs is not a smart-contract language: no persistent storage, no events, no
-transactions. If you need to write state, you need a contract and a transaction.
+transactions. If you need to *commit* state, you need a contract and a transaction.
+
+Within that `eth_call`, sub-calls come in three verbs: `s.read` (`STATICCALL` view reads),
+`s.call` (a real `CALL` frame — e.g. a Uniswap quoter), and `s.simulate` (dry-run a write and read
+its return value, rolled back). The `CALL` verbs touch state only *inside* the call; nothing ever
+reaches the chain. See [calling contracts](/guides/calls/).
 :::
 
 ## Compared to the alternatives
@@ -80,7 +85,7 @@ transactions. If you need to write state, you need a contract and a transaction.
 | Round trips for dependent reads | one per read | one per dependency level | one |
 | Output of one call feeds another | in your app, between trips | not expressible | on-chain, via `Expr` values |
 | Runtime loops and branches | in your app, between trips | no | `s.if`, `s.for`, `s.while` |
-| Per-call failure handling | try/catch per request | `allowFailure` per call | `s.tryCall` with typed `{ success, value }` |
+| Per-call failure handling | try/catch per request | `allowFailure` per call | `s.tryRead` with typed `{ success, value }` |
 | Requires a deployed contract | no | yes (per-chain deployment) | no |
 | Typed results | per call, via viem | via viem `multicall` | end-to-end; the script is its own ABI |
 

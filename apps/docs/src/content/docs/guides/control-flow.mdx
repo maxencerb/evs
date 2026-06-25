@@ -45,13 +45,13 @@ import { erc20Abi } from 'viem';
 const holderRatio = evscript(
   { name: 'holderRatio', args: [t.address, t.address, t.address] },
   (s, token, a, b) => {
-    const balA = s.call({
+    const balA = s.read({
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
       args: [a],
     });
-    const balB = s.call({
+    const balB = s.read({
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
@@ -112,7 +112,7 @@ branch or a loop body is invalid once that block finishes recording:
 ```ts nocheck
 let leaked: Expr<'uint256'> | undefined;
 s.if(cond, () => {
-  leaked = s.call({ address: pool, abi: erc20Abi, functionName: 'totalSupply' });
+  leaked = s.read({ address: pool, abi: erc20Abi, functionName: 'totalSupply' });
 });
 leaked!.add(1n);
 // EvsScopeError (SCOPE_VIOLATION): this value was recorded in a block that has
@@ -159,7 +159,7 @@ const firstPool = evscript(
       () => i.get().lt(fees.length()), // header: re-evaluated every iteration
       (loop) => {
         const fee = fees.at(i.get());
-        const pool = s.call({
+        const pool = s.read({
           address: UNISWAP_V3_FACTORY,
           abi: uniswapV3FactoryAbi,
           functionName: 'getPool',

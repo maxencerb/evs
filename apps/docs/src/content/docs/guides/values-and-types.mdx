@@ -36,7 +36,7 @@ const ex = evscript(
 
 ## `Expr`: branded handles for runtime values
 
-An `Expr<t>` is a phantom-typed handle to a value that will exist at run time. It is **not** the value: you cannot read a number out of it, and you cannot construct one yourself. Handles are produced by the script's positional args, `s.lit`, `s.call`, `s.env`, cell reads, and every operation — and consumed by other operations, sub-call parameters, and `s.return`.
+An `Expr<t>` is a phantom-typed handle to a value that will exist at run time. It is **not** the value: you cannot read a number out of it, and you cannot construct one yourself. Handles are produced by the script's positional args, `s.lit`, `s.read`, `s.env`, cell reads, and every operation — and consumed by other operations, sub-call parameters, and `s.return`.
 
 The brand is nominal (a `unique symbol`), so nothing structurally fakes an `Expr`, and each handle carries a runtime-readable `.type` tag. Word-typed handles stand for single words; dynamic and array handles are **memrefs** — references to a memory buffer, with reference semantics where mutation is possible (see `MutArray` in [control flow](/guides/control-flow/)).
 
@@ -61,7 +61,7 @@ Solidity structs and tuples are first-class. Build a composite type with `t.stru
 
 Three things you do with composites:
 
-**Decode a struct return.** A `'tuple'` output of `s.call` becomes a `Tuple` handle; read members by name with `.field.get()`:
+**Decode a struct return.** A `'tuple'` output of `s.read` becomes a `Tuple` handle; read members by name with `.field.get()`:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -89,7 +89,7 @@ const positionsAbi = [
 const readPosition = evscript(
   { name: 'readPosition', args: [t.address, t.uint256] },
   (s, manager, tokenId) => {
-    const pos = s.call({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
+    const pos = s.read({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
     //    ^? Tuple<…> — the struct output, decoded
     return s.return({
       operator: pos.operator.get(), // Expr<'address'>, read by name
@@ -146,7 +146,7 @@ const getQuote = evscript(
   { name: 'getQuote', args: ['address', 'address', 'uint24', 'uint256'] },
   (s, quoter, tokenIn, fee, amountIn) => {
     const params = s.tuple(QuoteParams, { tokenIn, fee, amountIn });
-    const amountOut = s.call({ address: quoter, abi: quoteAbi, functionName: 'quote', args: [params] });
+    const amountOut = s.read({ address: quoter, abi: quoteAbi, functionName: 'quote', args: [params] });
     return s.return({ amountOut });
   },
 );
@@ -202,7 +202,7 @@ const Tick = t.fromAbiParameter({ name: 'tick', type: 'int24' }); // 'int24'
 const readPool = evscript({ name: 'readPool', args: [t.address] }, (s, pool) => {
   // `struct: true` decodes the multi-output slot0() into one Slot0-shaped Tuple, so the derived
   // type round-trips with the decode (same fields, same ABI order). See calls — struct: true.
-  const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+  const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
   return s.return({
     tick: slot0.tick.get(), // Expr<'int24'>, read by name
     slot0, // the whole struct flows out, typed as Slot0
@@ -213,12 +213,12 @@ void [Slot0, Fee, Tick, readPool];
 ```
 
 A derived type flows everywhere a hand-written `t.struct`/`t.tuple` does — as a script arg, a
-`s.call` argument or output, an `s.newArray` element, or an `s.return` value. Because the
+`s.read` argument or output, an `s.newArray` element, or an `s.return` value. Because the
 components come from the ABI in declaration order, a `t.fromOutputs(abi, name)` type is
 interchangeable with a `t.struct` written in the same order and with a
-[`s.call({ …, struct: true })`](/guides/calls/#decoding-multiple-outputs-into-a-struct) decode of
+[`s.read({ …, struct: true })`](/guides/calls/#decoding-multiple-outputs-into-a-struct) decode of
 that same function. An overloaded or unknown function name throws `EvsTypeError` at the call site
-(a non-`as const` ABI degrades to `EvsType` rather than erroring, mirroring `s.call`). The exact
+(a non-`as const` ABI degrades to `EvsType` rather than erroring, mirroring `s.read`). The exact
 return types (`FromAbiOutputs`, `AbiParamToEvsType`) are in the
 [types reference](/reference/types/#the-t-namespace).
 
@@ -226,7 +226,7 @@ return types (`FromAbiOutputs`, `AbiParamToEvsType`) are in the
 
 Arrays whose element is itself composite — `tuple[]` (arrays of structs), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays (`string[]`, `bytes[]`) — are first-class. They share the word-array handle surface (`.length()`, `.at(i)`, `s.newArray`); the only difference is in memory each slot holds a **pointer** to the element's own block instead of an inline value (an array-of-pointers, exactly Solidity `Struct[]`/`T[][]`/`string[]` memory). Reference semantics carry over: an array handle is a pointer, so the element handles you read from it alias the array's slots.
 
-**Read a `tuple[]` output.** A `'tuple[]'` output of `s.call` is an array handle; `.at(i)` returns the i-th element as a typed [`Tuple`](/reference/builder/#tuple) — read its fields by name:
+**Read a `tuple[]` output.** A `'tuple[]'` output of `s.read` is an array handle; `.at(i)` returns the i-th element as a typed [`Tuple`](/reference/builder/#tuple) — read its fields by name:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -251,7 +251,7 @@ const registryAbi = [
 ] as const;
 
 const readPositions = evscript({ name: 'readPositions', args: [t.address] }, (s, registry) => {
-  const positions = s.call({ address: registry, abi: registryAbi, functionName: 'allPositions' });
+  const positions = s.read({ address: registry, abi: registryAbi, functionName: 'allPositions' });
   //    ^? Expr<'tuple[]'> — the array handle
   const first = positions.at(0n); // Tuple element — bounds-checked, Panic(0x32) if out of range
   return s.return({
@@ -326,7 +326,7 @@ const sinkAbi = [
 ] as const;
 
 const sumLiquidity = evscript({ name: 'sumLiquidity', args: [t.address] }, (s, sink) => {
-  const total = s.call({
+  const total = s.read({
     address: sink,
     abi: sinkAbi,
     functionName: 'totalLiquidity',

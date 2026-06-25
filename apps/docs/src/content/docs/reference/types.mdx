@@ -147,7 +147,7 @@ void types;
 `LitOf<TupleType>` delegates to abitype: an all-named tuple becomes an object, a positional
 tuple an array, recursing through nested components. `TupleType` flows everywhere a value type
 does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#stuple)), as a
-`s.call` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
+`s.read` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
 `s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
 
 `t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`). A
@@ -155,7 +155,7 @@ composite-element array — `tuple[]`, a one-level nested array (`uint256[][]`),
 array (`string[]`/`bytes[]`) — is an **array of pointers** in memory: the `[length]` prefix is
 followed by one pointer word per element, each pointing at the element's own block (a tuple
 block, an inner array, or a bytes block). It shares the word-array handle surface — `.length()`,
-`.at(i)`, `s.newArray` — and the same reference semantics; an `s.call` `tuple[]` output is an
+`.at(i)`, `s.newArray` — and the same reference semantics; an `s.read` `tuple[]` output is an
 array handle whose `.at(i)` yields a typed [`Tuple`](/reference/builder/#tuple) element. The
 build/read/pass examples live in [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string).
 Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays

@@ -15,13 +15,13 @@ import { erc20Abi } from 'viem';
 export const tokenDecimals = evscript(
   { name: 'tokenDecimals', args: [t.address] },
   (s, token) => {
-    const d = s.tryCall({ address: token, abi: erc20Abi, functionName: 'decimals' });
+    const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
     return s.return({ decimals: s.select(d.success, d.value, 18) });
   },
 );
 ```
 
-`s.tryCall` never reverts your script: `success` is false when the call fails **or** when the
+`s.tryRead` never reverts your script: `success` is false when the call fails **or** when the
 returndata does not decode, and `value` is then zeroed, so it is always safe to use.
 `s.select` picks between the real value and the default — both sides are already-computed
 values, so this is one expression, no branch needed. Full semantics in
@@ -60,7 +60,7 @@ export const firstPool = evscript(
       () => i.get().lt(fees.length()),
       (loop) => {
         const fee = fees.at(i.get());
-        const pool = s.call({
+        const pool = s.read({
           address: FACTORY,
           abi: uniswapV3FactoryAbi,
           functionName: 'getPool',
@@ -98,7 +98,7 @@ export const portfolio = evscript(
       'balOf',
       [arg('token', t.address), arg('who', t.address)] as const,
       (token, who) =>
-        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+        s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );
     const n = tokens.length();
     const out = s.newArray(t.uint256, n);
@@ -141,13 +141,13 @@ const vaultAbi = [
 export const healthCheck = evscript(
   { name: 'healthCheck', args: [t.address, t.address] },
   (s, vault, user) => {
-    const debt = s.call({
+    const debt = s.read({
       address: vault,
       abi: vaultAbi,
       functionName: 'debtOf',
       args: [user],
     });
-    const coll = s.call({
+    const coll = s.read({
       address: vault,
       abi: vaultAbi,
       functionName: 'collateralOf',
@@ -184,8 +184,8 @@ import {
 } from 'viem';
 
 const supply = evscript({ name: 'supply', args: [t.address] }, (s, token) => {
-  const totalSupply = s.call({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
-  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const totalSupply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ totalSupply, decimals });
 });
 

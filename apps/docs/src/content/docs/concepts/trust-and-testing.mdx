@@ -81,7 +81,7 @@ opcode ever. A verifier failure throws `EvsInternalError` instead of shipping th
 Decode soundness is tested against attacker-shaped callees, not just well-behaved ones:
 hand-assembled fixtures (and a `Malformed.sol` mirror on anvil) return huge head offsets, huge
 lengths, off-by-one truncations, dirty high bits, and empty returndata. The suite asserts the
-script reverts with `EvsDecodeError(site)` — attributable to the exact `s.call` line — and
+script reverts with `EvsDecodeError(site)` — attributable to the exact `s.read` line — and
 **never** hits an exceptional halt that would consume all gas (gas usage is sanity-checked).
 A real solc `Reverter` contract covers the bubbling path end to end: `Error(string)`, `Panic`,
 custom errors, and empty reverts must all surface through the script unchanged.

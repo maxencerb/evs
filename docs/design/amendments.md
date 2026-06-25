@@ -1231,6 +1231,146 @@ genuinely-wrong positions (arithmetic on a `MutArray`, a `Tuple` where a word is
 
 ---
 
+## 19. Calls split by mutability (issue #1)
+
+The single read-only call verb (`s.call`/`s.tryCall`, STATICCALL) is split into THREE verb pairs on
+`ScriptBuilder`, partitioned by ABI mutability and call frame. All three pairs share ONE
+`SubcallParams` (now generic over the mutability bucket) and the SAME three struct-aware overloads
+(`struct: true` → one named `Tuple`; `struct?: false` → the positional default; non-literal boolean
+→ the union) + a `try*` variant returning `{ success, value }`. The runtime arg-encode /
+returndata-decode / verbatim-revert-bubble / `try`-zeroing path is shared; only the opcode, the
+mutability filter, and (for `simulate`) a rollback trampoline differ.
+
+| Verb                       | Opcode                                   | Mutability bucket                               | State semantics                                                                                                                                    |
+| -------------------------- | ---------------------------------------- | ----------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `read` / `tryRead`         | STATICCALL                               | `ViewMutability` = `'pure' \| 'view'`           | static — no state change possible (the frozen read surface, mechanically renamed)                                                                  |
+| `call` / `tryCall`         | CALL (value 0)                           | `WriteMutability` = `'nonpayable' \| 'payable'` | a real non-static frame; the write is NOT rolled back — it persists to LATER subcalls in the same top-level `eth_call` (which still never commits) |
+| `simulate` / `trySimulate` | CALL via a self-call + revert trampoline | `WriteMutability`                               | the write is rolled back + isolated from later reads in the same script, yet the return value is read back (dry-run a true write)                  |
+
+module-interfaces §M2 (`ir/nodes.ts` + `validate.ts`), §M5 (builder), §M6 (`ir/interp.ts`), §M9
+(`index.ts`) and §M4 (`asm/ops.ts` FORBIDDEN), api.md §4/§6, and architecture §7 are amended in place.
+
+### 19.1 `s.call`/`s.tryCall` → `s.read`/`s.tryRead` rename; `s.call` reused for CALL (BREAKING)
+
+- Law: api.md §6 / module-interfaces §M5 — `s.call`/`s.tryCall` were the read verbs (STATICCALL,
+  `ViewMutability`), the only call surface.
+- Shipped: the read verbs are RENAMED to `s.read`/`s.tryRead` (identical `ViewMutability`, STATICCALL,
+  decode/bubble/`tryRead`-zeroing — a pure mechanical rename, byte-identical codegen). Every former
+  `s.call`/`s.tryCall` site (all view reads) becomes `s.read`/`s.tryRead`. The names `s.call`/
+  `s.tryCall` are REUSED for the new CALL (value-0) verb — same arg-encode / returndata-decode /
+  verbatim-revert-bubble / `try`-zeroing path as `s.read`, but emitting CALL instead of STATICCALL,
+  with NO rollback machinery ("a read with the CALL opcode"). A write done via `s.call` is visible to
+  a later `s.read` in the same script (same `eth_call` frame); the `eth_call` result is still never
+  committed on-chain. The Uniswap quoter is the flagship `s.call` example — QuoterV2-style functions
+  return normally (use `s.call`); QuoterV1-style functions REVERT with the ABI-encoded result (use
+  `s.tryCall`, which reports `success=false`; decoding the revert data AS the result is a documented
+  v0 follow-up, NOT implemented). Quoter functions are nonpayable (not view), so they cannot run under
+  STATICCALL — exactly why `s.call` exists.
+- Rationale: read-only view calls and real (non-view) calls need distinct opcodes; `s.read` names the
+  former precisely and frees `s.call` for the CALL frame that mirrors `eth_call`'s own non-static
+  top-level frame.
+- Status: **accepted** — BREAKING (acceptable pre-1.0): both the rename and the `s.call`-with-CALL
+  semantics are flagged.
+
+### 19.2 IR — `call` Stmt gains optional `kind`
+
+- Law: module-interfaces §M2 — the `call` Stmt had no opcode/frame discriminant (STATICCALL implied).
+- Shipped: `kind?: 'static' | 'call' | 'simulate'` (absent ⇒ `'static'` ⇒ STATICCALL). `'call'` ⇒
+  CALL value-0; `'simulate'` ⇒ CALL via the self-call trampoline (19.4). Because the field is
+  optional and absent means `'static'`, pre-issue-#1 serialized IR is BYTE-UNCHANGED. `validateIr`
+  accepts the field; the call-output decode / `successOut`-iff-`try` rules are kind-independent.
+- Rationale: one discriminant on the existing call node carries the opcode/frame choice through
+  serialize/validate/codegen without a new Stmt kind.
+- Status: **accepted**.
+
+### 19.3 asm — CALL admitted; removed from FORBIDDEN
+
+- Law: module-interfaces §M4 `asm/ops.ts` — `FORBIDDEN` includes CALL; the assembler emits only the
+  STATICCALL-class call op.
+- Shipped: CALL (opcode `0xf1`) is ADMITTED by the assembler and REMOVED from `FORBIDDEN`.
+  CALLCODE/DELEGATECALL/CREATE/CREATE2/SELFDESTRUCT/SSTORE/SLOAD/TSTORE/TLOAD/LOG\* stay forbidden.
+  The STATICCALL-only opcode whitelist is relaxed ONLY on the `s.call`/`s.simulate` lowering paths;
+  `s.read` stays STATICCALL-pure.
+- Rationale: the new `call`/`simulate` verbs require a real CALL; the rest of the no-side-effects
+  forbidden set is unchanged (scripts still never write storage, create, or self-destruct).
+- Status: **accepted**.
+
+### 19.4 `simulate` — the self-call revert trampoline (second dispatcher entrypoint)
+
+- Law: architecture §7 — calls lowered to a single STATICCALL pattern; the program had ONE dispatcher
+  entrypoint (the script's own selector).
+- Shipped: `s.simulate` lowers to: build the target calldata like a normal call, wrap it as
+  `[trampolineSelector(4)][target address(32)][target calldata…]`, then `CALL ADDRESS()` — the
+  script's OWN address (the script code is present at `ADDRESS()` in BOTH `toViem` modes: deployless's
+  counterfactual CREATE address and stateOverride's override address). A reserved SECOND dispatcher
+  entrypoint (the "trampoline") decodes target+payload, performs the real CALL to the write target,
+  then REVERTs with `[MAGIC(32)][innerSuccess(32)][target returndata…]`. That REVERT unwinds the
+  sub-frame, discarding every state change the write made — THAT is the rollback. The outer frame
+  recognizes the magic word, branches on `innerSuccess` (strict: bubble the target's revert verbatim;
+  try: `success=false`, zeroed value), and decodes the carried returndata via the shared in-memory
+  tuple decoder. Constants: reserved trampoline selector =
+  `toFunctionSelector('__evs_simulate(address,bytes)')` = `0xbbde5aa3`; MAGIC =
+  `keccak256("evs.simulate.revert.v1")` =
+  `0xe7dc6cc8acb6dfffe16c5466c82c888cde4d25c3f822bd2740efb87faa5dda3c`. The compiler ASSERTS the
+  script's own selector ≠ the trampoline selector (collision ≈ 2⁻³²). New codegen module
+  `src/codegen/simulate.ts` (trampoline emitter + constants); `src/codegen/call.ts` gains
+  `emitSimulateCall` and emits CALL for `kind:'call'`; `src/codegen/program.ts` adds the trampoline
+  dispatcher branch + entrypoint when any simulate site exists.
+- Rationale: a revert is the only EVM primitive that isolates and discards a sub-frame's state while
+  carrying data back out; routing the write through the script's own second entrypoint lets the outer
+  frame both roll back the write AND read what it would have returned.
+- Status: **accepted**.
+
+### 19.5 `MockChain.call` — optional non-static oracle hook
+
+- Law: module-interfaces §M6 — `MockChain` had only `staticcall`.
+- Shipped: an OPTIONAL `call(req)` method (defaults to `staticcall` when absent), the `s.call`/
+  `s.simulate` target. The stateless oracle decodes `call`/`simulate` returndata IDENTICALLY to a
+  read — the simulate rollback is INVISIBLE there (no persisted state to model). The rollback and the
+  write-persistence semantics are pinned in the anvil integration tier, not the interp oracle.
+- Rationale: the reference interpreter is stateless, so it cannot observe rollback vs persistence;
+  decode equivalence is all it must guarantee, and the integration tier carries the state semantics.
+- Status: **accepted**.
+
+### 19.6 Mutability filter + steering errors
+
+- Law: api.md §6 — `functionName` was constrained to `ViewMutability` only.
+- Shipped: mutability is filtered at the `functionName` TYPE level PER VERB — `s.read`/`s.tryRead`
+  accept `ViewMutability` (`'pure' | 'view'`), `s.call`/`s.tryCall`/`s.simulate`/`s.trySimulate`
+  accept `WriteMutability` (`'nonpayable' | 'payable'`). A nonpayable function under `s.read` is a
+  compile error (steered to `s.call`/`s.simulate`); a view/pure function under `s.call`/`s.simulate`
+  is a compile error (steered to `s.read`). The runtime recorder mirrors this with a steering
+  `EvsTypeError(ABI_SHAPE)`. `ViewMutability` and `WriteMutability` are exported from `index.ts`.
+- Rationale: the bucket steers the user to the correct verb at the type level and prevents e.g. a
+  nonpayable function being silently run under STATICCALL (which would revert at runtime).
+- Status: **accepted**.
+
+### 19.7 Frame dependence — stateOverride for msg.sender-sensitive `s.call`/`s.simulate`
+
+- Law: architecture §13.3 / amendment 14.1 documents the `s.env('caller')`/`s.env('address')`
+  frame-dependence warning; the new call verbs add a symmetric one.
+- Shipped: `s.call` and `s.simulate` make a real call in which the TARGET sees
+  `msg.sender = the SCRIPT's address` — a per-script counterfactual CREATE2 address in the default
+  deployless `toViem()` mode, or the override address in stateOverride mode. For
+  msg.sender-sensitive writes, use `toViem({ mode: 'stateOverride' })` + the `account` call parameter.
+  The `simulate` self-call to `ADDRESS()` works in BOTH modes. Documented like the existing
+  `s.env('caller')` warning (api.md §4/§6 + both READMEs).
+- Rationale: the script's address is the caller of the real CALL, so writes that branch on
+  `msg.sender` need the user to pin the script's address via stateOverride; compile-time cannot know
+  the mode, so this is a documented caveat, not an error.
+- Status: **accepted**.
+
+### 19.8 Open follow-ups
+
+- **Nested `s.simulate`** (a simulate inside a simulate-targeted frame) is not yet supported.
+- **Explicit gas cap on the inner CALL** of the simulate trampoline is not yet wired.
+- **`msg.sender` on the self-call hop** (overriding the caller seen by the simulate target) is open.
+- **Decode-revert-data-AS-result for QuoterV1-style functions** (a `s.tryCall` that REVERTs with the
+  ABI-encoded result) is a documented v0 follow-up — today `s.tryCall` reports `success=false` and the
+  revert payload is not decoded as the value.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |
