@@ -590,6 +590,55 @@ describe('checklist: call-site ABI validation', () => {
     );
   });
 
+  // issue #1 — the mutability filter is split per verb; the wrong bucket gets a steering error.
+  test('s.read on a nonpayable function steers to s.call / s.simulate', () => {
+    const e = expectEvs(
+      () =>
+        rec((s, a) =>
+          s.read({
+            address: a.who,
+            abi: erc20Abi,
+            functionName: 'transfer' as never,
+            args: [a.who, 1n] as never,
+          }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /is nonpayable/,
+    );
+    expect(e.message).toMatch(/STATICCALL/);
+    expect(e.message).toMatch(/s\.call.*s\.simulate/s);
+  });
+
+  test('s.call on a view function steers to s.read', () => {
+    const e = expectEvs(
+      () =>
+        rec((s, a) => s.call({ address: a.who, abi: erc20Abi, functionName: 'decimals' as never })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /is view/,
+    );
+    expect(e.message).toMatch(/runs under CALL/);
+    expect(e.message).toMatch(/use s\.read/);
+  });
+
+  test('s.simulate on a view function steers to s.read', () => {
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.simulate({
+            address: a.who,
+            abi: erc20Abi,
+            functionName: 'balanceOf' as never,
+            args: [a.who] as never,
+          }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /use s\.read/,
+    );
+  });
+
   test('overloaded name → UNSUPPORTED_V0 with the pruned-ABI workaround', () => {
     const e = expectEvs(
       () => rec((s, a) => s.read({ address: a.who, abi: overloadedAbi, functionName: 'get' })),
