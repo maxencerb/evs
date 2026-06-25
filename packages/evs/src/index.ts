@@ -10,7 +10,7 @@
  * - issue #5 composite-ergonomics types (amendments §17): `FromAbiOutputs`, `AbiParamToEvsType`,
  *   `AbiParamsToComponents`, `AbiParamToComponent` (the `t.fromOutputs`/`t.fromAbiParameter`
  *   derivations); `AnyTuple`, `AnyMutArray`, `ReturnValue`, `IntoMember`, `IntoTuple`, `IntoArray`
- *   (the widened return/member surface); `SubcallStruct` (the `s.call({ …, struct: true })` result).
+ *   (the widened return/member surface); `SubcallStruct` (the `s.read({ …, struct: true })` result).
  */
 
 // core
@@ -99,7 +99,7 @@ export type {
   ReturnValue,
   ScriptBuilder,
   ScriptReturn,
-  SubcallStruct, // issue #5: the `s.call({ …, struct: true })` result type
+  SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
   Tuple,
   TupleInit,
 } from './builder/script.js';

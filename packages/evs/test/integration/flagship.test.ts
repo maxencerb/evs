@@ -18,15 +18,15 @@ import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 // --- E1: flagship pool metadata script (api.md §11 E1, verbatim semantics) ---------------
 
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
-  const token0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
-  const token1 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
-  const fee = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
-  const slot0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
-  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-  const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const token0 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
+  const token1 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
+  const fee = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
+  const slot0 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
+  const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+  const dec = s.tryRead({ address: token0, abi: erc20Abi, functionName: 'decimals' });
   const decimals0 = s.select(dec.success, dec.value, 18);
-  const bal0 = s.call({
+  const bal0 = s.read({
     address: token0,
     abi: erc20Abi,
     functionName: 'balanceOf',
@@ -129,7 +129,7 @@ const balances = evscript(
     const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
       const token = tokens.at(i);
-      const r = s.tryCall({
+      const r = s.tryRead({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
@@ -208,7 +208,7 @@ describe('failure half: explainRevert names the originating call', () => {
     // Malformed.emptyReturn() is declared `returns (string)` but returns ZERO bytes —
     // the strict call must revert EvsDecodeError(site), never decode garbage.
     const script = evscript({ name: 'readMalformed', args: [t.address] }, (s, target) => {
-      const v = s.call({ address: target, abi: Malformed.abi, functionName: 'emptyReturn' });
+      const v = s.read({ address: target, abi: Malformed.abi, functionName: 'emptyReturn' });
       return s.return({ v });
     });
     const compiled = script.compile();

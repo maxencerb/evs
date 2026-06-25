@@ -59,6 +59,7 @@ const EXPECTED: readonly [Mnemonic, number, number, number, OpInfo['since']][] =
   ['JUMPDEST', 0x5b, 0, 0, 'frontier'],
   ['MCOPY', 0x5e, 3, 0, 'cancun'],
   ['PUSH0', 0x5f, 0, 1, 'shanghai'],
+  ['CALL', 0xf1, 7, 1, 'frontier'],
   ['STATICCALL', 0xfa, 6, 1, 'frontier'],
   ['RETURN', 0xf3, 2, 0, 'frontier'],
   ['REVERT', 0xfd, 2, 0, 'frontier'],
@@ -141,6 +142,8 @@ describe('OPS table vs evm-target §2', () => {
 
 describe('FORBIDDEN', () => {
   test('contains exactly the state-touching byte set', () => {
+    // CALL (0xf1) is intentionally NOT here: issue #1 admits it for the mutable-call surface
+    // (s.call / s.simulate). Every other frame-escaping / state-persisting opcode stays forbidden.
     const expected = [
       0x54, // SLOAD
       0x55, // SSTORE
@@ -152,7 +155,6 @@ describe('FORBIDDEN', () => {
       0xa3, // LOG3
       0xa4, // LOG4
       0xf0, // CREATE
-      0xf1, // CALL
       0xf2, // CALLCODE
       0xf4, // DELEGATECALL
       0xf5, // CREATE2

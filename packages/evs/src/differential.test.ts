@@ -668,9 +668,9 @@ describe('dynamic values', () => {
 describe('calls', () => {
   test('word outputs are normalized, never reverted (dirty high bits)', async () => {
     const script = evscript({ name: 'norm', args: [] }, (s) => {
-      const d = s.call({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
-      const f = s.call({ address: TOKB, abi: erc20ishAbi, functionName: 'flag' });
-      const tk = s.call({ address: POOL, abi: erc20ishAbi, functionName: 'tick' });
+      const d = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
+      const f = s.read({ address: TOKB, abi: erc20ishAbi, functionName: 'flag' });
+      const tk = s.read({ address: POOL, abi: erc20ishAbi, functionName: 'tick' });
       return s.return({ d, f, tk });
     });
     const table: CalleeTable = {
@@ -689,7 +689,7 @@ describe('calls', () => {
 
   test('multi-output static call destructures into a tuple', async () => {
     const script = evscript({ name: 'multi', args: [] }, (s) => {
-      const [a, b, c] = s.call({ address: TOKA, abi: erc20ishAbi, functionName: 'multi' });
+      const [a, b, c] = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'multi' });
       return s.return({ a, b, c });
     });
     const payload = concatHex(word(1n << 159n), word((1n << 200n) | 0xfffff6n), word(7n));
@@ -698,13 +698,13 @@ describe('calls', () => {
 
   test('dynamic outputs decode in place (string, uint256[]), with a gas cap', async () => {
     const script = evscript({ name: 'dyn', args: [] }, (s) => {
-      const symbol = s.call({
+      const symbol = s.read({
         address: TOKA,
         abi: erc20ishAbi,
         functionName: 'symbol',
         gas: 200_000n,
       });
-      const list = s.call({ address: TOKB, abi: erc20ishAbi, functionName: 'list' });
+      const list = s.read({ address: TOKB, abi: erc20ishAbi, functionName: 'list' });
       return s.return({ symbol, list, len: list.length(), first: list.at(0n) });
     });
     const table: CalleeTable = {
@@ -722,7 +722,7 @@ describe('calls', () => {
     // interpreter's and the compiler's sub-call calldata (selector, heads, dynamic tail,
     // padding) shows up as a byte mismatch of the final returndata.
     const script = evscript({ name: 'mixer', args: [t.uint256, t.bytes] }, (s, v, payload) => {
-      const out = s.call({
+      const out = s.read({
         address: ECHO,
         abi: erc20ishAbi,
         functionName: 'mix',
@@ -752,7 +752,7 @@ describe('calls', () => {
 
   test('plain word call with an arg through the raw echo mock', async () => {
     const script = evscript({ name: 'echoCall', args: [t.address] }, (s, who) => {
-      const r = s.call({
+      const r = s.read({
         address: ECHO,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
@@ -766,7 +766,7 @@ describe('calls', () => {
 
   test('strict call to an unmocked (code-less) address → EvsDecodeError, not a halt', async () => {
     const script = evscript({ name: 'ghost', args: [] }, (s) => {
-      const d = s.call({ address: DEAD, abi: erc20ishAbi, functionName: 'decimals' });
+      const d = s.read({ address: DEAD, abi: erc20ishAbi, functionName: 'decimals' });
       return s.return({ d });
     });
     const [o] = await expectAgreement(script, [[]]);
@@ -792,7 +792,7 @@ describe('decode bounds', () => {
   for (const [name, payload] of Object.entries(ATTACKER_PAYLOADS)) {
     test(`strict symbol() against '${name}' returndata → EvsDecodeError(site) on both sides`, async () => {
       const script = evscript({ name: 'attacked', args: [] }, (s) => {
-        const symbol = s.call({ address: TOKA, abi: erc20ishAbi, functionName: 'symbol' });
+        const symbol = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'symbol' });
         return s.return({ symbol });
       });
       const [o] = await expectAgreement(script, [[]], {
@@ -867,7 +867,7 @@ describe('revert bubbling (Reverter.sol, byte-exact)', () => {
   for (const fn of FNS) {
     test(`${fn} bubbles verbatim through a strict call`, async () => {
       const script = evscript({ name: 'bubble', args: [] }, (s) => {
-        const x = s.call({ address: REVERTER, abi: Reverter.abi, functionName: fn });
+        const x = s.read({ address: REVERTER, abi: Reverter.abi, functionName: fn });
         return s.return({ x });
       });
       const [o] = await expectAgreement(script, [[]], table);
@@ -884,9 +884,9 @@ describe('revert bubbling (Reverter.sol, byte-exact)', () => {
 describe('tryCall', () => {
   const tryScript = () =>
     evscript({ name: 'trying', args: [] }, (s) => {
-      const d = s.tryCall({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
-      const sym = s.tryCall({ address: TOKB, abi: erc20ishAbi, functionName: 'symbol' });
-      const list = s.tryCall({ address: DEAD, abi: erc20ishAbi, functionName: 'list' });
+      const d = s.tryRead({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
+      const sym = s.tryRead({ address: TOKB, abi: erc20ishAbi, functionName: 'symbol' });
+      const list = s.tryRead({ address: DEAD, abi: erc20ishAbi, functionName: 'list' });
       return s.return({
         ok1: d.success,
         v1: d.value,
@@ -964,7 +964,7 @@ describe('user functions', () => {
           'balOf',
           [arg('token', t.address), arg('who', t.address)] as const,
           (token, who) =>
-            s.call({ address: token, abi: erc20ishAbi, functionName: 'balanceOf', args: [who] }),
+            s.read({ address: token, abi: erc20ishAbi, functionName: 'balanceOf', args: [who] }),
         );
         const n = tokens.length();
         const out = s.newArray(t.uint256, n);
@@ -1037,14 +1037,14 @@ describe('flagship', () => {
 
   const poolMeta = () =>
     evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
-      const token0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token0' });
-      const token1 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'token1' });
-      const slot0 = s.call({ address: pool, abi: erc20ishAbi, functionName: 'slot0' });
-      const symbol0 = s.call({ address: token0, abi: erc20ishAbi, functionName: 'symbol' });
-      const symbol1 = s.call({ address: token1, abi: erc20ishAbi, functionName: 'symbol' });
-      const dec = s.tryCall({ address: token0, abi: erc20ishAbi, functionName: 'decimals' });
+      const token0 = s.read({ address: pool, abi: erc20ishAbi, functionName: 'token0' });
+      const token1 = s.read({ address: pool, abi: erc20ishAbi, functionName: 'token1' });
+      const slot0 = s.read({ address: pool, abi: erc20ishAbi, functionName: 'slot0' });
+      const symbol0 = s.read({ address: token0, abi: erc20ishAbi, functionName: 'symbol' });
+      const symbol1 = s.read({ address: token1, abi: erc20ishAbi, functionName: 'symbol' });
+      const dec = s.tryRead({ address: token0, abi: erc20ishAbi, functionName: 'decimals' });
       const decimals0 = s.select(dec.success, dec.value, 18);
-      const bal0 = s.call({
+      const bal0 = s.read({
         address: token0,
         abi: erc20ishAbi,
         functionName: 'balanceOf',
@@ -1081,7 +1081,7 @@ describe('flagship', () => {
           const out = s.newArray(t.uint256, n);
           s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
             const token = tokens.at(i);
-            const r = s.tryCall({
+            const r = s.tryRead({
               address: token,
               abi: erc20ishAbi,
               functionName: 'balanceOf',
@@ -1155,7 +1155,7 @@ describe('composite types', () => {
     test(`decode a struct output and return a field [${evmVersion}]`, async () => {
       // (a) decode the Position output, read a static field after the head/tail decode.
       const script = evscript({ name: 'getLiq', args: [t.uint256] }, (s, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: POOL,
           abi: positionAbi,
           functionName: 'positions',
@@ -1182,7 +1182,7 @@ describe('composite types', () => {
       // (a′) re-encode the decoded tuple as a tuple OUTPUT — flat-block → ABI head/tail must
       // round-trip byte-exactly against viem's tuple codec.
       const script = evscript({ name: 'echoPos', args: [t.uint256] }, (s, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: POOL,
           abi: positionAbi,
           functionName: 'positions',
@@ -1281,7 +1281,7 @@ describe('composite regression', () => {
   for (const evmVersion of EVM_VERSIONS) {
     test(`(1) all-static struct: decode + return several fields [${evmVersion}]`, async () => {
       const script = evscript({ name: 'rdSlot0', args: [] }, (s) => {
-        const slot0 = s.call({ address: POOL, abi: slot0Abi, functionName: 'slot0Struct' });
+        const slot0 = s.read({ address: POOL, abi: slot0Abi, functionName: 'slot0Struct' });
         return s.return({
           price: slot0.sqrtPriceX96.get(),
           tick: slot0.tick.get(),
@@ -1334,7 +1334,7 @@ describe('composite regression', () => {
         [WITH_BYTES],
       );
       const script = evscript({ name: 'rdWithBytes', args: [] }, (s) => {
-        const wb = s.call({ address: POOL, abi: withBytesAbi, functionName: 'getWithBytes' });
+        const wb = s.read({ address: POOL, abi: withBytesAbi, functionName: 'getWithBytes' });
         const data = wb.data.get();
         return s.return({ id: wb.id.get(), data, len: data.length() });
       });
@@ -1383,7 +1383,7 @@ describe('composite regression', () => {
         [OUTER],
       );
       const script = evscript({ name: 'rdOuter', args: [] }, (s) => {
-        const outer = s.call({ address: POOL, abi: outerAbi, functionName: 'getOuter' });
+        const outer = s.read({ address: POOL, abi: outerAbi, functionName: 'getOuter' });
         const inner = outer.inner.get(); // follows the pointer to the inner Tuple handle
         return s.return({ a: inner.a.get(), b: inner.b.get(), x: outer.x.get() });
       });
@@ -1470,7 +1470,7 @@ describe('composite regression', () => {
             fee: 3000n,
             amountIn: amt,
           });
-          const out = s.call({
+          const out = s.read({
             address: ECHO,
             abi: quoteAbi,
             functionName: 'quote',
@@ -1542,7 +1542,7 @@ describe('composite regression', () => {
         [MIXED],
       );
       const script = evscript({ name: 'rdMixed', args: [] }, (s) => {
-        const m = s.call({ address: POOL, abi: mixedAbi, functionName: 'getMixed' });
+        const m = s.read({ address: POOL, abi: mixedAbi, functionName: 'getMixed' });
         const b = m.b.get();
         const d = m.d.get();
         return s.return({
@@ -1708,7 +1708,7 @@ describe('composite arrays (read path)', () => {
     test(`(A) Position[] (static-elem): len + element field [${evmVersion}]`, async () => {
       const script = evscript({ name: 'rdPositions', args: [t.uint256] }, (s, n) => {
         const ps = asArr(
-          s.call({
+          s.read({
             address: POOL,
             abi: positionsBatchAbi,
             functionName: 'positionsBatch',
@@ -1745,7 +1745,7 @@ describe('composite arrays (read path)', () => {
     test(`(B) WithBytes[] (dynamic-member elem): len + blob length [${evmVersion}]`, async () => {
       const script = evscript({ name: 'rdWithBytes', args: [t.uint256] }, (s, n) => {
         const xs = asArr(
-          s.call({
+          s.read({
             address: POOL,
             abi: withBytesBatchAbi,
             functionName: 'withBytesBatch',
@@ -1781,7 +1781,7 @@ describe('composite arrays (read path)', () => {
     test(`(C) uint256[][] (ragged): outer len + a nested element [${evmVersion}]`, async () => {
       const script = evscript({ name: 'rdMatrix', args: [t.uint256] }, (s, n) => {
         const m = asArr(
-          s.call({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] }),
+          s.read({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] }),
         );
         // m.at(3) → an inner uint256[] Expr; .length() and .at(2) read into it.
         const row3 = m.at(3n);
@@ -1815,7 +1815,7 @@ describe('composite arrays (read path)', () => {
     test(`(D) string[]: outer len + an element length [${evmVersion}]`, async () => {
       const script = evscript({ name: 'rdNames', args: [t.uint256] }, (s, n) => {
         const ns = asArr(
-          s.call({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] }),
+          s.read({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] }),
         );
         return s.return({
           count: ns.length(),
@@ -1946,7 +1946,7 @@ describe('composite arrays (return path)', () => {
   for (const evmVersion of EVM_VERSIONS) {
     test(`(A) return whole Position[] (static-elem) [${evmVersion}]`, async () => {
       const script = evscript({ name: 'retPositions', args: [t.uint256] }, (s, n) => {
-        const ps = s.call({
+        const ps = s.read({
           address: POOL,
           abi: positionsBatchAbi,
           functionName: 'positionsBatch',
@@ -1971,7 +1971,7 @@ describe('composite arrays (return path)', () => {
 
     test(`(B) return whole WithBytes[] (dynamic-member elem) [${evmVersion}]`, async () => {
       const script = evscript({ name: 'retWithBytes', args: [t.uint256] }, (s, n) => {
-        const xs = s.call({
+        const xs = s.read({
           address: POOL,
           abi: withBytesBatchAbi,
           functionName: 'withBytesBatch',
@@ -1996,7 +1996,7 @@ describe('composite arrays (return path)', () => {
 
     test(`(C) return whole uint256[][] (ragged) [${evmVersion}]`, async () => {
       const script = evscript({ name: 'retMatrix', args: [t.uint256] }, (s, n) => {
-        const m = s.call({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] });
+        const m = s.read({ address: POOL, abi: matrixAbi, functionName: 'matrix', args: [n] });
         return s.return({ m: asExpr(m) });
       });
       const [o] = await expectAgreement(
@@ -2016,7 +2016,7 @@ describe('composite arrays (return path)', () => {
 
     test(`(D) return whole string[] [${evmVersion}]`, async () => {
       const script = evscript({ name: 'retNames', args: [t.uint256] }, (s, n) => {
-        const ns = s.call({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] });
+        const ns = s.read({ address: POOL, abi: namesAbi, functionName: 'names', args: [n] });
         return s.return({ ns: asExpr(ns) });
       });
       const [o] = await expectAgreement(
@@ -2151,13 +2151,13 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
     //      recorded calldata as bytes, which we assert == viem encodeFunctionData(sink, [POSITIONS]).
     test(`(a1) forward decoded Position[] as a call arg → calldata == viem [${evmVersion}]`, async () => {
       const script = evscript({ name: 'fwdPositions' }, (s) => {
-        const ps = s.call({
+        const ps = s.read({
           address: POOL,
           abi: poolAbi,
           functionName: 'positionsBatch',
           args: [3n],
         });
-        const echoed = s.call({
+        const echoed = s.read({
           address: SINK,
           abi: sinkPositionsAbi,
           functionName: 'sink',
@@ -2199,7 +2199,7 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
     // (a2) CALL-ARG: forward a ragged uint256[][] literal to an echo sink; calldata == viem.
     test(`(a2) forward a uint256[][] literal as a call arg → calldata == viem [${evmVersion}]`, async () => {
       const script = evscript({ name: 'fwdMatrix' }, (s) => {
-        const echoed = s.call({
+        const echoed = s.read({
           address: SINK,
           abi: sinkMatrixAbi,
           functionName: 'sink',
@@ -2239,7 +2239,7 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
     // (a3) CALL-ARG: forward a string[] literal to an echo sink; calldata == viem.
     test(`(a3) forward a string[] literal as a call arg → calldata == viem [${evmVersion}]`, async () => {
       const script = evscript({ name: 'fwdNames' }, (s) => {
-        const echoed = s.call({
+        const echoed = s.read({
           address: SINK,
           abi: sinkNamesAbi,
           functionName: 'sink',
@@ -2440,9 +2440,9 @@ describe('issue #5 ergonomics', () => {
   };
 
   for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
-    test(`s.call({ struct: true }) decodes named outputs into one struct [${evmVersion}]`, async () => {
+    test(`s.read({ struct: true }) decodes named outputs into one struct [${evmVersion}]`, async () => {
       const script = evscript({ name: 'slot0Struct', args: [t.address] }, (s, pool) => {
-        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
         return s.return({ slot0 });
       });
       const [o] = await expectAgreement(script, [[POOL]], poolTable, evmVersion);
@@ -2463,8 +2463,8 @@ describe('issue #5 ergonomics', () => {
       const script = evscript({ name: 'tokMeta', args: [t.address] }, (s, token) => {
         const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
           s.tuple(TokenMeta, {
-            symbol: s.call({ address: tok, abi: erc20, functionName: 'symbol' }),
-            decimals: s.call({ address: tok, abi: erc20, functionName: 'decimals' }),
+            symbol: s.read({ address: tok, abi: erc20, functionName: 'symbol' }),
+            decimals: s.read({ address: tok, abi: erc20, functionName: 'decimals' }),
           }),
         );
         return s.return({ meta: getMeta(token) });

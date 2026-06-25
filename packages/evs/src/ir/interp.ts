@@ -70,6 +70,16 @@ import { validateIr } from './validate.js';
 
 export interface MockChain {
   staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
+  /**
+   * Optional mutable-subcall oracle for `s.call` / `s.simulate` (issue #1, `kind: 'call'` /
+   * `'simulate'`). Defaults to {@link MockChain.staticcall} when omitted — the reference
+   * interpreter is STATELESS, so a `CALL` and a `STATICCALL` observe the same returndata and a
+   * `simulate`'s rollback is invisible here (each subcall is independent; the rollback only
+   * matters for *persisting* writes, which a stateless mock never persists anyway). Provide a
+   * distinct `call` only to return different returndata for the non-static path; the byte-exact
+   * rollback/isolation semantics are pinned in the integration tier (anvil) against real state.
+   */
+  call?(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
 }
 
 export interface InterpResult {
@@ -608,11 +618,25 @@ class Interp {
     if (s.gas !== undefined) this.word(s.gas); // evaluated; the interpreter has no gas model
     const calldata = this.encodeCalldata(s.fnAbi, s.args);
     const to: Hex = `0x${target.toString(16).padStart(40, '0')}`;
-    const res = this.chain.staticcall({ to, data: bytesToHex(calldata) });
+    // kind === 'static' (or absent) → STATICCALL; 'call'/'simulate' → the mutable-subcall oracle
+    // (issue #1). `MockChain.call` is optional and defaults to `staticcall` (the stateless oracle
+    // cannot observe a CALL's writes nor a simulate's rollback — both decode the returndata the
+    // same way; the rollback is pinned in the anvil tier).
+    const req = { to, data: bytesToHex(calldata) };
+    const mutable = s.kind === 'call' || s.kind === 'simulate';
+    let res: { success: boolean; data: Hex };
+    let oracle: 'call' | 'staticcall';
+    if (mutable && this.chain.call !== undefined) {
+      oracle = 'call';
+      res = this.chain.call(req); // narrowed + directly called (bound)
+    } else {
+      oracle = 'staticcall';
+      res = this.chain.staticcall(req);
+    }
     if (typeof res !== 'object' || res === null || typeof res.success !== 'boolean') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `interpret: MockChain.staticcall returned a malformed result for ${s.fnAbi.name}()`,
+        `interpret: MockChain.${oracle} returned a malformed result for ${s.fnAbi.name}()`,
         { loc: s.loc },
       );
     }

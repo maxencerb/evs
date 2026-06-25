@@ -989,7 +989,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x0059  6080        PUSH1 0x80
 0x005b  51          MLOAD  ; target
 0x005c  5a          GAS
-0x005d  fa          STATICCALL  ; strict call symbol (site 0)
+0x005d  fa          STATICCALL  ; strict read symbol (site 0)
 0x005e  610069      PUSH2 0x0069 → @call_ok_0
 0x0061  57          JUMPI
 0x0062  3d          RETURNDATASIZE

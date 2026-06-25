@@ -20,8 +20,8 @@ const forkUrl = process.env.ANVIL_FORK_URL ?? process.env.RPC_URL;
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
 
 const wethMeta = evscript({ name: 'wethMeta', args: [t.address] }, (s, token) => {
-  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
 

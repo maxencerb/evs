@@ -402,7 +402,7 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
 function makeHandle(): Record<PropertyKey, unknown> {
   const target: Record<PropertyKey, unknown> = { type: 'uint256' };
   installStagingTraps(target, {
-    describe: () => 'Expr<uint256> #4 ← s.call(token0) at pools.ts:9:18',
+    describe: () => 'Expr<uint256> #4 ← s.read(token0) at pools.ts:9:18',
     recordedAt: () => ({ file: 'pools.ts', line: 9, column: 18 }),
   });
   return target;
@@ -456,7 +456,7 @@ describe('staging traps (installStagingTraps)', () => {
   test('nodejs.util.inspect.custom is NON-throwing and returns the description', () => {
     const x = makeHandle();
     const inspect = x[Symbol.for('nodejs.util.inspect.custom')] as () => string;
-    expect(inspect()).toBe('Expr<uint256> #4 ← s.call(token0) at pools.ts:9:18');
+    expect(inspect()).toBe('Expr<uint256> #4 ← s.read(token0) at pools.ts:9:18');
   });
 
   test('traps are non-enumerable (the handle still JSON-walks its data props only)', () => {

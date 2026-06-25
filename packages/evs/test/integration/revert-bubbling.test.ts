@@ -38,7 +38,7 @@ beforeAll(async () => {
 describe('revert bubbling through viem (byte-exact vs direct call)', () => {
   test.each(FLAVORS)('%s', async (flavor) => {
     const script = evscript({ name: 'bubble', args: [t.address] }, (s, target) => {
-      const v = s.call({ address: target, abi: Reverter.abi, functionName: flavor });
+      const v = s.read({ address: target, abi: Reverter.abi, functionName: flavor });
       return s.return({ v });
     });
     const compiled = script.compile();
@@ -72,7 +72,7 @@ describe('revert bubbling through viem (byte-exact vs direct call)', () => {
 describe('explainRevert round-trip on EvsDecodeError', () => {
   test('malformed string return → evs-decode with the originating call site', async () => {
     const script = evscript({ name: 'decodeFail', args: [t.address] }, (s, target) => {
-      const v = s.call({ address: target, abi: Malformed.abi, functionName: 'hugeOffset' });
+      const v = s.read({ address: target, abi: Malformed.abi, functionName: 'hugeOffset' });
       return s.return({ v });
     });
     const compiled = script.compile();

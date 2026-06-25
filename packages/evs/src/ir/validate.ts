@@ -683,6 +683,12 @@ class IrValidator {
 
   private checkCall(s: Extract<Stmt, { k: 'call' }>, path: string): void {
     const what = `${path} (call${s.mode === 'try' ? ' try' : ''} "${s.fnAbi.name}")`;
+    if (s.kind !== undefined && s.kind !== 'static' && s.kind !== 'call' && s.kind !== 'simulate') {
+      this.fail(
+        `${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind as unknown)}`,
+        s.loc,
+      );
+    }
     this.use(s.target, 'address', `${what} target`, s.loc);
     this.checkPlainAbi(s.fnAbi, what, s.loc);
     if (s.args.length !== s.fnAbi.inputs.length) {

@@ -478,7 +478,7 @@ describe('Tuple (s.tuple + field get/set)', () => {
     const script = evscript(
       { name: 'getPos', args: [t.address, t.uint256] },
       (s, manager, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: manager,
           abi: positionAbi,
           functionName: 'positions',
@@ -500,7 +500,7 @@ describe('Tuple (s.tuple + field get/set)', () => {
     const direct = evscript(
       { name: 'getPos', args: [t.address, t.uint256] },
       (s, manager, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: manager,
           abi: positionAbi,
           functionName: 'positions',
@@ -514,7 +514,7 @@ describe('Tuple (s.tuple + field get/set)', () => {
     const viaExpr = evscript(
       { name: 'getPos', args: [t.address, t.uint256] },
       (s, manager, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: manager,
           abi: positionAbi,
           functionName: 'positions',
@@ -765,16 +765,16 @@ describe('s.call / s.tryCall', () => {
   const script = evscript(
     { name: 'calls', args: [t.address, t.address] },
     (s, pool, user) => {
-      const symbol = s.call({ address: pool, abi: erc20Abi, functionName: 'symbol' });
-      const bal = s.call({
+      const symbol = s.read({ address: pool, abi: erc20Abi, functionName: 'symbol' });
+      const bal = s.read({
         address: pool,
         abi: erc20Abi,
         functionName: 'balanceOf',
         args: [user],
         gas: 100_000n,
       });
-      const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0' });
-      const dec = s.tryCall({ address: pool, abi: erc20Abi, functionName: 'decimals' });
+      const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
+      const dec = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
       const decimals = s.select(dec.success, dec.value, s.lit(t.uint8, 18));
       return s.return({ symbol, bal, tick: slot0[1], decimals });
     },
@@ -807,9 +807,9 @@ describe('s.call / s.tryCall', () => {
     const script2 = evscript(
       { name: 'voidcall', args: [t.address] },
       (s, pool) => {
-        const nothing = s.call({ address: pool, abi: poolAbi, functionName: 'poke' });
+        const nothing = s.read({ address: pool, abi: poolAbi, functionName: 'poke' });
         expect(nothing).toBeUndefined();
-        const bal = s.call({
+        const bal = s.read({
           address: '0x00000000000000000000000000000000deadbeef',
           abi: erc20Abi,
           functionName: 'balanceOf',
@@ -824,7 +824,7 @@ describe('s.call / s.tryCall', () => {
 
   test('output handles carry debugNames for inspectability', () => {
     const symId = script.ir.returns.find((r) => r.name === 'symbol')?.value ?? -1;
-    expect(script.ir.values[symId]?.debugName).toBe('s.call(symbol)');
+    expect(script.ir.values[symId]?.debugName).toBe('s.read(symbol)');
   });
 });
 
@@ -840,7 +840,7 @@ describe('s.fn', () => {
         'balOf',
         [arg('token', t.address), arg('who', t.address)] as const,
         (token, who) =>
-          s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+          s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
       );
       const a = balOf(tokens.at(0n), owner);
       const b = balOf(tokens.at(1n), owner);
@@ -1107,7 +1107,7 @@ describe('integration-shaped recording', () => {
           () => i.get().lt(fees.length()),
           (loop: LoopCtl) => {
             const fee = fees.at(i.get());
-            const pool = s.call({
+            const pool = s.read({
               address: FACTORY,
               abi: factoryAbi,
               functionName: 'getPool',
@@ -1145,8 +1145,8 @@ describe('issue #5 ergonomics', () => {
       (s, token) => {
         const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
           s.tuple(TokenMeta, {
-            symbol: s.call({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
-            decimals: s.call({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
+            symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
+            decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
           }),
         );
         const m = getMeta(token);
@@ -1160,8 +1160,8 @@ describe('issue #5 ergonomics', () => {
         const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
           s
             .tuple(TokenMeta, {
-              symbol: s.call({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
-              decimals: s.call({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
+              symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
+              decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
             })
             .expr(),
         );
@@ -1205,11 +1205,11 @@ describe('issue #5 ergonomics', () => {
   //  self-call is unconstructible by design; issue #5 widened only the RETURN type, not this.)
 
   // -- ask #2: struct: true named multi-output decode --------------------------------------
-  test('s.call({ struct: true }) decodes named multi-outputs into one Tuple (tuplenew over outputs)', () => {
+  test('s.read({ struct: true }) decodes named multi-outputs into one Tuple (tuplenew over outputs)', () => {
     const script = evscript(
       { name: 'pool', args: [t.address] },
       (s, pool) => {
-        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
         return s.return({ price: slot0.sqrtPriceX96.get(), tick: slot0.tick.get(), slot0 });
       },
       NO_LOC,
@@ -1234,7 +1234,7 @@ describe('issue #5 ergonomics', () => {
     const script = evscript(
       { name: 'pos', args: [t.address] },
       (s, pool) => {
-        const slot0 = s.call({ address: pool, abi: poolAbi, functionName: 'slot0' });
+        const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
         return s.return({ price: slot0[0], tick: slot0[1] });
       },
       NO_LOC,
@@ -1243,7 +1243,7 @@ describe('issue #5 ergonomics', () => {
     expect(script.ir.returns.find((r) => r.name === 'price')?.type).toBe('uint160');
   });
 
-  test('s.call({ struct: true }) rejects an unnamed output (would degrade viem to positional)', () => {
+  test('s.read({ struct: true }) rejects an unnamed output (would degrade viem to positional)', () => {
     const unnamedAbi = [
       {
         type: 'function',
@@ -1261,7 +1261,7 @@ describe('issue #5 ergonomics', () => {
         { name: 'bad', args: [t.address] },
         (s, x) =>
           s.return({
-            r: s.call({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
+            r: s.read({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
           }),
         NO_LOC,
       ),
@@ -1272,7 +1272,7 @@ describe('issue #5 ergonomics', () => {
     const script = evscript(
       { name: 'trySlot', args: [t.address] },
       (s, pool) => {
-        const r = s.tryCall({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+        const r = s.tryRead({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
         return s.return({ ok: r.success, tick: r.value.tick.get() });
       },
       NO_LOC,
@@ -1392,7 +1392,7 @@ describe('issue #5 ergonomics', () => {
       { name: 'callarg', args: [t.address, t.uint256] },
       (s, target, n) => {
         const arr = s.newArray(Pos, n);
-        const r = s.call({
+        const r = s.read({
           address: target,
           abi: consumerAbi,
           functionName: 'useStructs',
@@ -1414,7 +1414,7 @@ describe('issue #5 ergonomics', () => {
     const script = evscript(
       { name: 'nest', args: [t.address, t.uint256] },
       (s, manager, tokenId) => {
-        const pos = s.call({
+        const pos = s.read({
           address: manager,
           abi: positionAbi,
           functionName: 'positions',

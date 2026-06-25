@@ -21,7 +21,7 @@ const balances = evscript(
     const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
       const token = tokens.at(i); // bounds-checked
-      const r = s.tryCall({
+      const r = s.tryRead({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',

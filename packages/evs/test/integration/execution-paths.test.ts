@@ -19,9 +19,9 @@ import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 const tokenMeta = evscript(
   { name: 'tokenMeta', args: [t.address, t.address] },
   (s, token, holder) => {
-    const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
-    const bal = s.call({
+    const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+    const bal = s.read({
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',

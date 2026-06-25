@@ -58,11 +58,11 @@ const erc20Abi = [
 ] as const satisfies Abi;
 
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
-  const token0 = s.call({ address: pool, abi: poolAbi, functionName: 'token0' });
-  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+  const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const dec = s.tryRead({ address: token0, abi: erc20Abi, functionName: 'decimals' });
   const decimals0 = s.select(dec.success, dec.value, 18);
-  const bal0 = s.call({
+  const bal0 = s.read({
     address: token0,
     abi: erc20Abi,
     functionName: 'balanceOf',
@@ -214,12 +214,12 @@ type Slot0Struct = {
 
 // bare handle: `slot0` is the Tuple itself (no `.expr()`)
 const poolSlot0Direct = evscript({ name: 'poolSlot0', args: t.address }, (s, poolAddr) => {
-  const slot0 = s.call({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
+  const slot0 = s.read({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
   return s.return({ tick: slot0.tick.get(), slot0 });
 });
 // the legacy `.expr()` form — must remain valid and infer identically
 const poolSlot0Expr = evscript({ name: 'poolSlot0', args: t.address }, (s, poolAddr) => {
-  const slot0 = s.call({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
+  const slot0 = s.read({ address: poolAddr, abi: slot0Abi, functionName: 'slot0' });
   return s.return({ tick: slot0.tick.get(), slot0: slot0.expr() });
 });
 

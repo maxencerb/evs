@@ -566,7 +566,7 @@ describe('checklist: call-site ABI validation', () => {
   test('abi has no function with that name', () => {
     expectEvs(
       () =>
-        rec((s, a) => s.call({ address: a.who, abi: erc20Abi, functionName: 'symbol' as never })),
+        rec((s, a) => s.read({ address: a.who, abi: erc20Abi, functionName: 'symbol' as never })),
       EvsTypeError,
       'ABI_SHAPE',
       /no function named "symbol"/,
@@ -577,7 +577,7 @@ describe('checklist: call-site ABI validation', () => {
     expectEvs(
       () =>
         rec((s, a) =>
-          s.call({
+          s.read({
             address: a.who,
             abi: erc20Abi,
             functionName: 'transfer' as never,
@@ -592,7 +592,7 @@ describe('checklist: call-site ABI validation', () => {
 
   test('overloaded name → UNSUPPORTED_V0 with the pruned-ABI workaround', () => {
     const e = expectEvs(
-      () => rec((s, a) => s.call({ address: a.who, abi: overloadedAbi, functionName: 'get' })),
+      () => rec((s, a) => s.read({ address: a.who, abi: overloadedAbi, functionName: 'get' })),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /overloaded/,
@@ -602,7 +602,7 @@ describe('checklist: call-site ABI validation', () => {
 
   test('v0-unsupported output type names the parameter', () => {
     const e = expectEvs(
-      () => rec((s, a) => s.call({ address: a.who, abi: tupleAbi, functionName: 'observe' })),
+      () => rec((s, a) => s.read({ address: a.who, abi: tupleAbi, functionName: 'observe' })),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,
@@ -615,7 +615,7 @@ describe('checklist: call-site ABI validation', () => {
     expectEvs(
       () =>
         rec((s, a) =>
-          s.call({
+          s.read({
             address: a.who,
             abi: erc20Abi,
             functionName: 'balanceOf',
@@ -632,7 +632,7 @@ describe('checklist: call-site ABI validation', () => {
     expectEvs(
       () =>
         rec((s, a) =>
-          s.call({
+          s.read({
             address: a.who,
             abi: erc20Abi,
             functionName: 'balanceOf',
@@ -647,19 +647,19 @@ describe('checklist: call-site ABI validation', () => {
 
   test('missing functionName / abi not an array / missing address', () => {
     expectEvs(
-      () => rec((s, a) => s.call({ address: a.who, abi: erc20Abi } as never)),
+      () => rec((s, a) => s.read({ address: a.who, abi: erc20Abi } as never)),
       EvsTypeError,
       'ABI_SHAPE',
       /functionName/,
     );
     expectEvs(
-      () => rec((s, a) => s.call({ address: a.who, abi: {}, functionName: 'x' } as never)),
+      () => rec((s, a) => s.read({ address: a.who, abi: {}, functionName: 'x' } as never)),
       EvsTypeError,
       'ABI_SHAPE',
       /must be an ABI array/,
     );
     expectEvs(
-      () => rec((s) => s.call({ abi: erc20Abi, functionName: 'decimals' } as never)),
+      () => rec((s) => s.read({ abi: erc20Abi, functionName: 'decimals' } as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
       /`address` is required/,
@@ -669,7 +669,7 @@ describe('checklist: call-site ABI validation', () => {
   test('tryCall shares the same checks', () => {
     expectEvs(
       () =>
-        rec((s, a) => s.tryCall({ address: a.who, abi: erc20Abi, functionName: 'nope' as never })),
+        rec((s, a) => s.tryRead({ address: a.who, abi: erc20Abi, functionName: 'nope' as never })),
       EvsTypeError,
       'ABI_SHAPE',
       /no function named "nope"/,
@@ -997,7 +997,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
       () =>
         rec((s, a) =>
           s.fn('meta', [arg('token', t.address)] as const, (token) =>
-            s.call({
+            s.read({
               address: token,
               abi: erc20Abi,
               functionName: 'balanceOf',
@@ -1160,12 +1160,12 @@ describe('staging traps', () => {
     rec((s, a) => {
       const printed = inspect(a.x);
       expect(printed).toMatch(/^Expr<uint256> #0 ← args\.arg0 at /);
-      const sym = s.call({
+      const sym = s.read({
         address: a.who,
         abi: erc20Abi,
         functionName: 'decimals',
       });
-      expect(inspect(sym)).toMatch(/^Expr<uint8> #\d+ ← s\.call\(decimals\) at /);
+      expect(inspect(sym)).toMatch(/^Expr<uint8> #\d+ ← s\.read\(decimals\) at /);
       return s.return({ x: a.x });
     });
   });

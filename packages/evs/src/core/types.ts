@@ -250,7 +250,7 @@ export type TupleArrayOf<e extends TupleType> = {
 // -- ABI → `t.*` type derivation (`t.fromOutputs` / `t.fromAbiParameter`, issue #5 ask #4) -------
 // ABI parameters are an already-ORDERED `AbiParameter[]`, so deriving a type from them is SAFER
 // than `t.struct` — it sidesteps the `UnionToTuple` record-key-order instability entirely (the
-// derived components are in ABI declaration order, matching the runtime decode + `s.call({...,
+// derived components are in ABI declaration order, matching the runtime decode + `s.read({...,
 // struct: true})`).
 
 /** An abitype `AbiParameter`'s `name` (`''` when absent) — abitype params name is optional. */
@@ -790,7 +790,7 @@ function isRecordObject(v: unknown): v is Record<string, unknown> {
  * deferral, mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
  * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
  * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
- * does and round-trips with a `s.call({…, struct: true})` decode of the same function.
+ * does and round-trips with a `s.read({…, struct: true})` decode of the same function.
  */
 function fromOutputsRT(abi: unknown, name: unknown): EvsType {
   if (typeof name !== 'string') {
