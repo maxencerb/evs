@@ -82,16 +82,16 @@ const poolMeta = evscript(
   // args arrive as positional params after `s`, in declaration order
   (s, pool, user) => {
     // values flow BETWEEN calls on-chain — a multicall cannot do this
-    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>
-    const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const token1 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, …]
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+    const dec = s.tryRead({ address: token0, abi: erc20Abi, functionName: 'decimals' });
     const decimals0 = s.select(dec.success, dec.value, 18); // default when the call fails
-    const bal0 = s.call({
+    const bal0 = s.read({
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
@@ -228,17 +228,34 @@ const v = s.select(cond, a, b); // ternary — but EAGER on both sides (they are
 runtime array with `s.for` + `s.newArray` to collect outputs — that is the multicall
 replacement pattern ([`examples/token-balances`](examples/token-balances)).
 
-### Calls, `tryCall`, and revert bubbling
+### Calls: `read`, `call`, `simulate`
 
-`s.call({ address, abi, functionName, args })` is typed like viem's `readContract`: only
-`view`/`pure` functions, per-arg literal-or-`Expr` unions, outputs unwrapped (one output → one
-`Expr`, many → a tuple). A callee revert **bubbles verbatim** (`Error(string)`, `Panic`,
-custom errors alike), so viem decodes the original error through your script. Structurally
-malformed returndata reverts a named `EvsDecodeError(site)` — never a silent wrong value.
+The calling surface is split into three verbs by mutability and call frame. All three share the
+same `{ address, abi, functionName, args }` shape (typed like viem's `readContract`: per-arg
+literal-or-`Expr` unions, outputs unwrapped one→`Expr`/many→tuple) and a `try*` variant returning
+`{ success: Expr<'bool'>, value }` (`success` false on failure **or** malformed returndata,
+`value` then zeros/empty — pair with `s.select` for defaults).
 
-`s.tryCall(...)` returns `{ success: Expr<'bool'>, value }` instead: `success` is false on
-failure **or** malformed returndata, and `value` is then zeros/empty — always safe to consume
-(pair it with `s.select` for defaults).
+| Verb | Opcode | Functions | State |
+| --- | --- | --- | --- |
+| `s.read` / `s.tryRead` | `STATICCALL` | `view` / `pure` | static — no writes possible |
+| `s.call` / `s.tryCall` | `CALL` | `nonpayable` / `payable` | a real frame; the write is **not** rolled back |
+| `s.simulate` / `s.trySimulate` | `CALL` via a self-call + revert macro | `nonpayable` / `payable` | the write is **rolled back**, yet its return value is read back |
+
+`s.read` is the normal view-read path. `s.call` opens a non-static frame for functions that
+aren't `view` yet don't usefully persist state — the canonical case is a Uniswap **quoter** (it
+simulates a swap and so can't run under `STATICCALL`); the write it makes is visible to later
+subcalls in the same script but the `eth_call` itself never commits. `s.simulate` dry-runs a true
+**write** in a self-call sub-frame that reverts, so you read back what it *would* return while its
+state changes are discarded and isolated from later reads. Mutability is filtered per verb — a
+`nonpayable` function under `s.read`, or a `view` function under `s.call`, is a compile error that
+steers you to the right verb.
+
+A callee revert **bubbles verbatim** (`Error(string)`, `Panic`, custom errors alike) under the
+strict verbs, so viem decodes the original error through your script; malformed returndata reverts
+a named `EvsDecodeError(site)`. ⚠ `s.call`/`s.simulate` make a real call where the target sees
+`msg.sender` as your script's address — use `toViem({ mode: 'stateOverride' })` + `account` for
+`msg.sender`-sensitive targets.
 
 ### Checked arithmetic
 

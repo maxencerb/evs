@@ -97,11 +97,22 @@ export type {
   MutArray,
   NormalizeArgs,
   ReturnValue,
+  ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
   ScriptBuilder,
   ScriptReturn,
+  SubcallInputs, // issue #1: per-verb arg/output/struct helpers, generic over the mutability bucket
+  SubcallOutputs,
+  SubcallParams,
   SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
+  SubcallVerb,
+  TryReadVerb,
+  TrySubcallVerb,
+  TryWriteVerb,
   Tuple,
   TupleInit,
+  ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
+  WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket
+  WriteVerb, // issue #1: the s.call / s.tryCall / s.simulate / s.trySimulate verb types (CALL)
 } from './builder/script.js';
 
 // compile + viem
