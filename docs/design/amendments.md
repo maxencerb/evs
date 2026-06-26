@@ -1379,6 +1379,140 @@ module-interfaces §M2 (`ir/nodes.ts` + `validate.ts`), §M5 (builder), §M6 (`i
 
 ---
 
+## 20. Consistent named top-level args via `namedArg()` (issue #9)
+
+A single, consistent `namedArg("token", t.address)` wrapper names a **top-level** arg/param so the
+name actually surfaces in the resulting type, for both `evscript` args and `s.fn` params. This
+extends/partially reverses §16.2/§16.5/§16.6 (the script-args surface goes back to carrying names).
+
+### 20.1 `arg()` → `namedArg()` (BREAKING rename)
+
+- Law: api.md §2/§8 / module-interfaces §M1/§M9 — `arg<const name, const type extends StringType>(
+name, type): ArgSpec<name, type>`, exported as `arg`.
+- Shipped: the same function, renamed `namedArg` (signature, `StringType` bound, and frozen-`ArgSpec`
+  return unchanged). `arg` is no longer exported. `ArgSpec`/`ArgType` stay. `index.ts` + `builder/
+args.ts` export `namedArg`.
+- Rationale: §16.2 left `arg()` naming `s.fn` params but the name was dropped from the surfaced type
+  (`EvsFn` built its params positionally), so the wrapper had no observable purpose. One clearly-named
+  wrapper, whose name now surfaces, is the issue's ask. The package is pre-release (v0.0.0), so the
+  rename is taken cleanly rather than via a deprecated alias.
+- Status: **accepted**.
+
+### 20.2 `evscript` args / `s.fn` params — unified `ArgsInput`; the single-arg shorthand extends to named args
+
+- Law: api.md §2/§8 / module-interfaces §M5 — `ArgsInput = EvsType | readonly EvsType[]`;
+  `NormalizeArgs<a> = a extends readonly EvsType[] ? a : readonly [a]`; `s.fn(name, params extends
+readonly ArgSpec[], body)`.
+- Shipped:
+  ```ts
+  export type ArgInput = EvsType | ArgSpec; // a bare type OR a namedArg
+  export type ArgsInput = ArgInput | readonly ArgInput[];
+  export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+  export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
+    ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
+    : readonly [ToArgSpec<a>]; // → readonly ArgSpec[]
+  ```
+  Both `evscript` args and `s.fn` params accept a bare type, a single `namedArg`, or a `readonly`
+  list mixing named/bare; a lone declarator normalizes to a one-element list. A bare arg becomes an
+  unnamed `ArgSpec<'', T>` (the `''` sentinel resolves to the positional `arg{i}` fallback). `s.fn`'s
+  composite-param v0 exclusion stays enforced at record time (`assertV0Type` rejects a non-string
+  param type — `defineFn` in `builder/expr.ts`).
+- Rationale: one normalization shape for both surfaces; the bare/single/array shorthand is the issue's
+  ask #4. The runtime (`evscript`, `defineFn`) detects a `namedArg` by its string `name` field.
+- Status: **accepted**.
+
+### 20.3 `ScriptAbi` / `ArgsToInputs` / `buildScriptAbi` — args carry names again
+
+- Law (after §16.5): `args extends readonly EvsType[]`; inputs auto-named `arg0`/`arg1`/….
+- Shipped: `args extends readonly ArgSpec[]`; the surfaced name is resolved per position:
+  ```ts
+  export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+  export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i> : name;
+  export type ArgsToInputs<args extends readonly ArgSpec[]> = {
+    readonly [i in keyof args]: TypeToComponent<
+      ResolveArgName<args[i]['name'], i>,
+      args[i]['type']
+    >;
+  };
+  export function buildScriptAbi(
+    name: string,
+    args: readonly { name: string; type: EvsType }[],
+    returns: readonly { name: string; type: EvsType }[],
+  ): Abi; // uses arg names; dedups; identifier-checks
+  ```
+  `ArgsToInputs` stays a HOMOMORPHIC mapped type over the arg-SPEC tuple (no `UnionToTuple`; `args`
+  stays covariant — the §16.5/14.4 relaxations hold). `EvsScript`/`CompiledEvsScript`/`CompiledOf`
+  args type params follow (`readonly ArgSpec[]`). The recorder pre-resolves bare args to `arg{i}` in
+  `ir.args`, which `evscript` passes straight to `buildScriptAbi`.
+- Rationale: viem derives its `args` tuple LABELS from the ABI input `name` (`ContractFunctionArgs`
+  → `AbiParametersToPrimitiveTypes<…, 'inputs', true>`), so a meaningful input name surfaces as the
+  args-tuple label automatically. The input `name` literal is also type-testable (the cosmetic tuple
+  label is not — see §20.5).
+- Status: **accepted**.
+
+### 20.4 `EvsFn` / body callback params — labeled via a label-carrier
+
+- Law: module-interfaces §M5 — `EvsFn<params, r> = (...args: { [i in keyof params]:
+IntoExpr<params[i]['type']> }) => RebuildExprs<r>` (positional, names dropped); the `evscript` body
+  is `(s, ...ArgHandles<NormalizeArgs<args>>)`.
+- Shipped: `EvsFn`, `ArgHandles`, and the `s.fn` body params are labeled by mapping HOMOMORPHICALLY
+  over a `LabelCarrier` type PARAMETER (the only way to synthesize tuple/param labels in TS), with the
+  element handles drawn from the parallel spec list:
+  ```ts
+  type LabelCarrier<specs extends readonly ArgSpec[]> = AbiParametersToPrimitiveTypes<
+    {
+      readonly [i in keyof specs]: {
+        readonly name: ResolveArgName<specs[i]['name'], i>;
+        readonly type: 'uint256';
+      };
+    },
+    'inputs',
+    true
+  >;
+  export type ArgHandles<
+    specs extends readonly ArgSpec[],
+    L extends readonly unknown[] = LabelCarrier<specs>,
+  > = {
+    readonly [i in keyof L]: i extends keyof specs
+      ? ArgHandle<Extract<specs[i]['type'], EvsType>>
+      : never;
+  };
+  export type EvsFn<
+    params extends readonly ArgSpec[],
+    r extends FnReturn,
+    L extends readonly unknown[] = LabelCarrier<params>,
+  > = (
+    ...args: {
+      [i in keyof L]: i extends keyof params
+        ? IntoExpr<Extract<params[i]['type'], EvsType>>
+        : never;
+    }
+  ) => RebuildExprs<r>;
+  ```
+  The carrier reuses abitype's PUBLIC `AbiParametersToPrimitiveTypes<…, 'inputs', true>` (the same
+  generated `AbiParameterTupleNameLookup` name→label table viem relies on) purely for its LABELS — the
+  element `type` is a constant `'uint256'` placeholder that the remap discards. The placeholder keeps
+  the synthetic params PROVABLY `readonly AbiParameter[]` with NO intersection: an intersection
+  (`… & readonly AbiParameter[]`) breaks abitype's `>6`-element rest-pattern match — it falls back to
+  `readonly unknown[]`, silently dropping args. A name present in the lookup table surfaces as the
+  param label; a name absent from it (e.g. an exotic identifier, or `arg2`+) degrades gracefully to the
+  positional `args_N` label.
+- Rationale: this is the mechanism that makes `namedArg('token', …)` show as `(token) => …` /
+  `[token: …]` instead of `(args_0) => …` / `[arg0: …]`.
+- Status: **accepted**.
+
+### 20.5 Testing — names are type-tested via the ABI input `name`; tuple LABELS are cosmetic
+
+TypeScript tuple-member and function-parameter LABELS are not reifiable (`keyof`, `infer`, and
+vitest's `expectTypeOf().toEqualTypeOf()` all ignore them — `[token: T]`, `[T]`, and `[foo: T]` are
+the same type). The surfaced names are therefore pinned by: (a) the type-level ABI input `name`
+literal (`ScriptAbi<…>[0]['inputs'][i]['name']`, `abi/artifact.test-d.ts`); (b) runtime assertions
+on `script.ir.args` / `script.abi[0].inputs` / `s.fn` IR params (`builder/script.test.ts`); and (c)
+the handle/param TYPES being preserved under naming (`builder/builder.test-d.ts`). The cosmetic
+IntelliSense label itself is verified by inspection, not `toEqualTypeOf`.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

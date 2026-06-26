@@ -39,7 +39,7 @@ import { assemble, AsmWriter, type LabelId } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
-import { arg, t, type Expr, type Hex, type NumericType } from './core/types.js';
+import { namedArg, t, type Expr, type Hex, type NumericType } from './core/types.js';
 import { interpret, type MockChain } from './ir/interp.js';
 import type { ScriptIr } from './ir/nodes.js';
 
@@ -938,12 +938,12 @@ describe('tryCall', () => {
 describe('user functions', () => {
   test('fn called twice + multi-result fn (no aliasing); panics propagate through fns', async () => {
     const script = evscript({ name: 'fns', args: [t.uint256, t.uint256] }, (s, a, b) => {
-      const double = s.fn('double', [arg('x', t.uint256)] as const, (x) => x.add(x));
+      const double = s.fn('double', [namedArg('x', t.uint256)] as const, (x) => x.add(x));
       const da = double(a);
       const db = double(b);
       const pair = s.fn(
         'pair',
-        [arg('x', t.uint256), arg('y', t.uint256)] as const,
+        [namedArg('x', t.uint256), namedArg('y', t.uint256)] as const,
         (x, y) => [x.add(y), x.mul(y)] as const,
       );
       const [sum, prod] = pair(da, db);
@@ -962,7 +962,7 @@ describe('user functions', () => {
       (s, owner, tokens) => {
         const balOf = s.fn(
           'balOf',
-          [arg('token', t.address), arg('who', t.address)] as const,
+          [namedArg('token', t.address), namedArg('who', t.address)] as const,
           (token, who) =>
             s.read({ address: token, abi: erc20ishAbi, functionName: 'balanceOf', args: [who] }),
         );
@@ -2461,7 +2461,7 @@ describe('issue #5 ergonomics', () => {
     test(`an s.fn returns a struct directly; the caller decodes it [${evmVersion}]`, async () => {
       const TokenMeta = t.struct({ symbol: t.string, decimals: t.uint8 });
       const script = evscript({ name: 'tokMeta', args: [t.address] }, (s, token) => {
-        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+        const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
           s.tuple(TokenMeta, {
             symbol: s.read({ address: tok, abi: erc20, functionName: 'symbol' }),
             decimals: s.read({ address: tok, abi: erc20, functionName: 'decimals' }),

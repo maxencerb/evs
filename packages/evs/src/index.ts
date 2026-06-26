@@ -23,7 +23,7 @@ export {
   EvsTypeError,
 } from './core/errors.js';
 export type { EvsDiagnostic, EvsErrorCode, SourceLoc } from './core/errors.js';
-export { arg, t } from './core/types.js';
+export { namedArg, t } from './core/types.js';
 export type {
   AbiParamsToComponents, // issue #5: ABI-param → t.* type derivation helpers (t.fromOutputs/…)
   AbiParamToComponent,
@@ -85,6 +85,7 @@ export type {
   AnyTuple,
   ArgHandle,
   ArgHandles,
+  ArgInput, // issue #9: one top-level arg declarator (a bare type or a namedArg)
   ArgsInput,
   Cell,
   ComponentToType,

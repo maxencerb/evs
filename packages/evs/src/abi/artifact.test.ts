@@ -352,9 +352,12 @@ describe('encodeLiteralData', () => {
 // ---------------------------------------------------------------------------
 
 describe('buildScriptAbi', () => {
-  // args are now a positional EvsType list (auto-named arg0, arg1, … — script args carry no
-  // names after the composite-types rewrite; viem infers `args` positionally regardless).
-  const args = ['address', 'uint24'] as const;
+  // args are a normalized `{ name, type }` list (issue #9): bare args carry their resolved `arg{i}`
+  // fallback name, named args (`namedArg`) carry the user name; viem infers `args` positionally.
+  const args = [
+    { name: 'arg0', type: 'address' },
+    { name: 'arg1', type: 'uint24' },
+  ] as const;
   const returns = [
     { name: 'token0', type: 'address' },
     { name: 'symbol0', type: 'string' },
@@ -369,7 +372,7 @@ describe('buildScriptAbi', () => {
         name: 'poolMeta',
         stateMutability: 'view',
         inputs: [
-          { name: 'arg0', type: 'address' }, // = args list order, auto-named
+          { name: 'arg0', type: 'address' }, // = args list order, resolved names
           { name: 'arg1', type: 'uint24' },
         ],
         outputs: [
@@ -427,16 +430,57 @@ describe('buildScriptAbi', () => {
         ]),
       ).code,
     ).toBe('ABI_SHAPE');
-    // an invalid arg TYPE is reported against its auto-name (arg0), not a user-supplied name
-    const badType = catchEvs(() => buildScriptAbi('s', ['uint256[2]' as 'uint256'], returns));
+    // an invalid arg TYPE is reported against its name
+    const badType = catchEvs(() =>
+      buildScriptAbi('s', [{ name: 'arg0', type: 'uint256[2]' as 'uint256' }], returns),
+    );
     expect(badType.code).toBe('UNSUPPORTED_V0');
     expect(badType.message).toContain('"arg0"');
+  });
+
+  test('arg names: user names (namedArg) surface as input labels; duplicates rejected (issue #9)', () => {
+    const abi = buildScriptAbi(
+      'named',
+      [
+        { name: 'token', type: 'address' },
+        { name: 'fee', type: 'uint24' },
+      ],
+      [{ name: 'ok', type: 'bool' }],
+    );
+    const fn = abi[0] as Extract<(typeof abi)[number], { type: 'function' }>;
+    expect(fn.inputs).toEqual([
+      { name: 'token', type: 'address' },
+      { name: 'fee', type: 'uint24' },
+    ]);
+    // duplicate input names are an ABI_SHAPE error
+    expect(
+      catchEvs(() =>
+        buildScriptAbi(
+          'dup',
+          [
+            { name: 'x', type: 'address' },
+            { name: 'x', type: 'uint24' },
+          ],
+          [{ name: 'ok', type: 'bool' }],
+        ),
+      ).code,
+    ).toBe('ABI_SHAPE');
+    // a non-identifier input name is an ABI_SHAPE error
+    expect(
+      catchEvs(() =>
+        buildScriptAbi('bad', [{ name: '1bad', type: 'address' }], [{ name: 'ok', type: 'bool' }]),
+      ).code,
+    ).toBe('ABI_SHAPE');
   });
 
   test('tuple arg + tuple return expand to named-component tuple ABI params', () => {
     const params = t.struct({ tokenIn: t.address, fee: t.uint24 });
     const pos = t.struct({ liquidity: t.uint128, owner: t.address });
-    const abi = buildScriptAbi('quote', [params], [{ name: 'pos', type: pos }]);
+    const abi = buildScriptAbi(
+      'quote',
+      [{ name: 'arg0', type: params }],
+      [{ name: 'pos', type: pos }],
+    );
     const fn = abi[0] as Extract<(typeof abi)[number], { type: 'function' }>;
     expect(fn.inputs).toEqual([
       {

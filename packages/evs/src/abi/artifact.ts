@@ -9,8 +9,9 @@
  * Type-level design per docs/research/abitype-typing.md: the return record becomes ONE output
  * of type `'tuple'` with fully-named components, so viem infers an *object* — immune to the
  * §4.2 `UnionToTuple` interning-order instability. Script inputs map over the normalized arg
- * TYPE tuple (`readonly EvsType[]`, order-preserving by construction), auto-naming each input
- * `arg0`, `arg1`, … — the labels are positional, so they never touch `UnionToTuple`.
+ * SPEC tuple (`readonly ArgSpec[]`, order-preserving by construction), labeling each input with
+ * its user-provided name (`namedArg`, issue #9) or the positional `arg0`/`arg1`/… fallback for a
+ * bare arg — the labels are positional, so they never touch `UnionToTuple`.
  */
 
 import type { Abi, AbiFunction, AbiParameter } from 'abitype';
@@ -25,6 +26,7 @@ import {
   isSigned,
   isWordType,
   typeToAbiParam,
+  type ArgSpec,
   type ArrayType,
   type DynType,
   type EvsType,
@@ -82,26 +84,30 @@ export type ReturnSpecToComponents<ret extends Record<string, ReturnValue>> =
     ? readonly { readonly name: string; readonly type: EvsType }[]
     : MapComponents<UnionToTuple<keyof ret>, ret>;
 
-// The auto-name for arg position `i`: `arg{i}` for a concrete tuple index (a numeric-string key),
-// but a plain `string` for the open `number` index of the default `readonly EvsType[]`
-// instantiation — so `arg0`/`arg1` literals stay assignable to it (vs. collapsing to `never`,
-// which would reject every concrete script).
+// The positional fallback name for arg position `i`: `arg{i}` for a concrete tuple index (a
+// numeric-string key), but a plain `string` for the open `number` index of the default
+// `readonly ArgSpec[]` instantiation — so `arg0`/`arg1` literals stay assignable to it (vs.
+// collapsing to `never`, which would reject every concrete script).
 export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
 
-// inputs are auto-named `arg0`, `arg1`, … (positional labels; viem infers `args` positionally
-// regardless). A tuple arg expands to `{ name, type: 'tuple', components }` via {@link
-// TypeToComponent}; a scalar arg to `{ name, type }`. A purely HOMOMORPHIC mapped type over the
-// arg TYPE tuple — order/labels preserved structurally (no `UnionToTuple`), and no conditional
-// over `args` itself, so `args` stays a COVARIANT type parameter (a concrete tuple-arg
-// `ScriptAbi`/`EvsScript`/`CompiledEvsScript` is assignable to the default-instantiated one, just
-// like the `ret` relaxation — pinned by compile.test-d).
-export type ArgsToInputs<args extends readonly EvsType[]> = {
-  readonly [i in keyof args]: TypeToComponent<ArgName<i>, args[i]>;
+// The surfaced name of an arg at position `i`: its user-provided {@link namedArg} name, or the
+// positional `arg{i}` fallback when the arg was passed bare (an empty sentinel name). issue #9.
+export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i> : name;
+
+// inputs are labeled by their user name (`namedArg`) or the positional `arg0`/`arg1`/… fallback;
+// viem infers `args` positionally regardless, but the label surfaces in the args tuple (issue #9).
+// A tuple arg expands to `{ name, type: 'tuple', components }` via {@link TypeToComponent}; a scalar
+// arg to `{ name, type }`. A purely HOMOMORPHIC mapped type over the arg SPEC tuple — order/labels
+// preserved structurally (no `UnionToTuple`), and no conditional over `args` itself, so `args` stays
+// a COVARIANT type parameter (a concrete `ScriptAbi`/`EvsScript`/`CompiledEvsScript` is assignable to
+// the default-instantiated one, just like the `ret` relaxation — pinned by compile.test-d).
+export type ArgsToInputs<args extends readonly ArgSpec[]> = {
+  readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
 };
 
 export type ScriptAbi<
   name extends string,
-  args extends readonly EvsType[],
+  args extends readonly ArgSpec[],
   ret extends Record<string, ReturnValue>,
 > = readonly [
   {
@@ -169,16 +175,17 @@ function assertStructFieldNames(type: EvsType, where: string): void {
 /**
  * Runtime mirror of `ScriptAbi`: `[function, EvsInvalidCalldata, EvsDecodeError]`.
  *
- * `args` is the NORMALIZED arg TYPE list (a `readonly EvsType[]` — script args are positional
- * after the rewrite, so they carry no names): each input is auto-named `arg0`, `arg1`, … and
- * expanded via {@link typeToAbiParam} (a tuple type → `{ name, type: 'tuple', components }`).
- * `inputs` order = `args` order; `components` order = `returns` insertion order (the runtime ABI
- * array is the encode/decode source of truth — abitype-typing §4.2). Every arg/return type is
- * validated through the tuple-aware layout, and struct field names are re-checked.
+ * `args` is the NORMALIZED arg list (`{ name, type }`): each input is labeled with its `name` —
+ * a user-provided {@link namedArg} name, or the positional `arg{i}` fallback the recorder assigns to
+ * a bare arg (issue #9) — and expanded via {@link typeToAbiParam} (a tuple type → `{ name, type:
+ * 'tuple', components }`). Names must be non-empty identifiers and unique across inputs. `inputs`
+ * order = `args` order; `components` order = `returns` insertion order (the runtime ABI array is the
+ * encode/decode source of truth — abitype-typing §4.2). Every arg/return type is validated through
+ * the tuple-aware layout, and struct field names are re-checked.
  */
 export function buildScriptAbi(
   name: string,
-  args: readonly EvsType[],
+  args: readonly { name: string; type: EvsType }[],
   returns: readonly { name: string; type: EvsType }[],
 ): Abi {
   if (!IDENT_RE.test(name)) {
@@ -188,11 +195,26 @@ export function buildScriptAbi(
       { loc: captureLoc() },
     );
   }
-  const inputs = args.map((ty, i) => {
-    const argName = `arg${i}`;
-    validateV0Type(ty, `argument #${i} ("${argName}")`);
-    assertStructFieldNames(ty, `argument #${i} ("${argName}")`);
-    return Object.freeze(typeToAbiParam(argName, ty));
+  const seenArgs = new Set<string>();
+  const inputs = args.map((a, i) => {
+    if (!IDENT_RE.test(a.name)) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        { loc: captureLoc() },
+      );
+    }
+    if (seenArgs.has(a.name)) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `buildScriptAbi: duplicate argument name ${JSON.stringify(a.name)}`,
+        { loc: captureLoc() },
+      );
+    }
+    seenArgs.add(a.name);
+    validateV0Type(a.type, `argument #${i} ("${a.name}")`);
+    assertStructFieldNames(a.type, `argument #${i} ("${a.name}")`);
+    return Object.freeze(typeToAbiParam(a.name, a.type));
   });
   const seenReturns = new Set<string>();
   const components = returns.map((r, i) => {

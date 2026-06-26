@@ -22,7 +22,7 @@ import {
   EvsTypeError,
   type EvsErrorCode,
 } from '../core/errors.js';
-import { arg, t, type Expr } from '../core/types.js';
+import { namedArg, t, type Expr } from '../core/types.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
 const erc20Abi = [
@@ -1045,7 +1045,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
     const e = expectEvs(
       () =>
         rec((s, a) =>
-          s.fn('meta', [arg('token', t.address)] as const, (token) =>
+          s.fn('meta', [namedArg('token', t.address)] as const, (token) =>
             s.read({
               address: token,
               abi: erc20Abi,
@@ -1090,8 +1090,10 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
     expectEvs(
       () =>
         rec((s) => {
-          const f = s.fn('two', [arg('a', t.uint256), arg('b', t.uint256)] as const, (a, b) =>
-            a.add(b),
+          const f = s.fn(
+            'two',
+            [namedArg('a', t.uint256), namedArg('b', t.uint256)] as const,
+            (a, b) => a.add(b),
           );
           return (f as (...args: unknown[]) => unknown)(1n);
         }),
@@ -1103,7 +1105,10 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
 
   test('duplicate / invalid fn param names; deferred param types', () => {
     expectEvs(
-      () => rec((s) => s.fn('d', [arg('a', t.uint256), arg('a', t.uint8)] as const, () => {})),
+      () =>
+        rec((s) =>
+          s.fn('d', [namedArg('a', t.uint256), namedArg('a', t.uint8)] as const, () => {}),
+        ),
       EvsTypeError,
       'TYPE_MISMATCH',
       /duplicate param name/,
@@ -1120,7 +1125,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
     expectEvs(
       () =>
         rec((s) =>
-          s.fn('r', [arg('a', t.uint256)] as const, (a) => {
+          s.fn('r', [namedArg('a', t.uint256)] as const, (a) => {
             s.return({ a });
           }),
         ),

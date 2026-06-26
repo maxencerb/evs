@@ -5,7 +5,6 @@ import { describe, expect, test } from 'vitest';
 
 import { EvsStagingError, EvsTypeError } from './errors.js';
 import {
-  arg,
   bitsOf,
   elemTypeOf,
   installStagingTraps,
@@ -16,6 +15,7 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  namedArg,
   t,
   typesEqual,
   type ArrayType,
@@ -134,16 +134,16 @@ describe('predicates', () => {
   });
 });
 
-describe('arg()', () => {
+describe('namedArg()', () => {
   test('returns a frozen ArgSpec', () => {
-    const a = arg('pool', t.address);
+    const a = namedArg('pool', t.address);
     expect(a).toEqual({ name: 'pool', type: 'address' });
     expect(Object.isFrozen(a)).toBe(true);
   });
 
   test('accepts identifier names', () => {
     for (const name of ['_x', 'A1', 'pool_2', 'camelCase', '__proto', 'x']) {
-      expect(arg(name, 'uint256').name).toBe(name);
+      expect(namedArg(name, 'uint256').name).toBe(name);
     }
   });
 
@@ -151,7 +151,7 @@ describe('arg()', () => {
     for (const name of ['', '1abc', 'a-b', 'a b', 'é', 'foo.bar', 'a$', ' x']) {
       let caught: unknown;
       try {
-        arg(name, 'uint256');
+        namedArg(name, 'uint256');
       } catch (e) {
         caught = e;
       }
@@ -169,7 +169,7 @@ describe('arg()', () => {
     for (const type of ['uint7', 'bytes33', 'Uint256', 'foo']) {
       let caught: unknown;
       try {
-        arg('x', type as never);
+        namedArg('x', type as never);
       } catch (e) {
         caught = e;
       }
@@ -182,11 +182,11 @@ describe('arg()', () => {
 
   test('rejects deferred fixed-size-array Solidity types with UNSUPPORTED_V0', () => {
     // fixed-size arrays `T[N]` stay deferred (nested dynamic arrays + tuples are now in the
-    // string/tuple vocabulary, so they are no longer rejected by arg()).
+    // string/tuple vocabulary, so they are no longer rejected by namedArg()).
     for (const type of ['address[3]', 'uint256[2]', 'address[3][]']) {
       let caught: unknown;
       try {
-        arg('x', type as never);
+        namedArg('x', type as never);
       } catch (e) {
         caught = e;
       }

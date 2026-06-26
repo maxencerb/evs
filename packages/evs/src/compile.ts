@@ -26,7 +26,7 @@ import {
   type EvsDiagnostic,
   type SourceLoc,
 } from './core/errors.js';
-import type { EvsType, Hex } from './core/types.js';
+import type { ArgSpec, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
@@ -44,7 +44,7 @@ export interface CompileOptions {
 
 export interface CompiledEvsScript<
   name extends string = string,
-  args extends readonly EvsType[] = readonly EvsType[],
+  args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly abi: ScriptAbi<name, args, ret>; // literal-typed: [function, EvsInvalidCalldata, EvsDecodeError]
@@ -78,7 +78,7 @@ export interface RevertExplanation {
 export type CompiledOf<s> =
   s extends EvsScript<
     infer n extends string,
-    infer a extends readonly EvsType[],
+    infer a extends readonly ArgSpec[],
     infer r extends Record<string, ReturnValue>
   >
     ? CompiledEvsScript<n, a, r>
