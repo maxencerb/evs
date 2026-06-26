@@ -9,7 +9,7 @@ import type { Abi } from 'abitype';
 import type { ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
-import { arg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
+import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
 import {
   evscript,
   type Cell,
@@ -151,6 +151,72 @@ test('dynamic arg types flow through (string/bytes/T[])', () => {
     expectTypeOf(tokens.length()).toEqualTypeOf<Expr<'uint256'>>();
     expectTypeOf(blob.length()).toEqualTypeOf<Expr<'uint256'>>();
     return s.return({ n: tokens.length() });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// issue #9 — namedArg: names surface in the ABI inputs + the shorthand extends to named args
+// (NOTE: TS tuple/param LABELS are cosmetic — `toEqualTypeOf` cannot observe them, so the surfaced
+// names are pinned through the type-level ABI input `name` field and at runtime via `script.abi`;
+// the body/param handle TYPES are asserted here to prove naming never disturbs inference.)
+// ---------------------------------------------------------------------------
+
+test('namedArg in evscript args: handle types preserved; ABI inputs carry the user/fallback names', () => {
+  const script = evscript(
+    { name: 'named', args: [namedArg('token', t.address), t.uint24] },
+    (s, token, fee) => {
+      // body handles keep their element types (the label is cosmetic)
+      expectTypeOf(token).toEqualTypeOf<Expr<'address'>>();
+      expectTypeOf(fee).toEqualTypeOf<Expr<'uint24'>>();
+      return s.return({ token });
+    },
+  );
+  // a named arg surfaces its user name; a bare arg keeps the positional `arg{i}` fallback
+  expectTypeOf(script.abi[0].inputs).toEqualTypeOf<
+    readonly [
+      { readonly name: 'token'; readonly type: 'address' },
+      { readonly name: 'arg1'; readonly type: 'uint24' },
+    ]
+  >();
+});
+
+test('single-arg shorthand extends to a lone namedArg', () => {
+  const script = evscript(
+    { name: 'loneNamed', args: namedArg('amount', t.uint256) },
+    (s, amount) => {
+      expectTypeOf(amount).toEqualTypeOf<Expr<'uint256'>>();
+      return s.return({ amount });
+    },
+  );
+  expectTypeOf(script.abi[0].inputs).toEqualTypeOf<
+    readonly [{ readonly name: 'amount'; readonly type: 'uint256' }]
+  >();
+});
+
+test('s.fn: a lone bare type and a lone namedArg are accepted (shorthand); params are Exprs', () => {
+  evscript({ name: 'fns' }, (s) => {
+    // bare-type shorthand (no array wrapper)
+    const dbl = s.fn('dbl', t.uint256, (x) => {
+      expectTypeOf(x).toEqualTypeOf<Expr<'uint256'>>();
+      return x.add(x);
+    });
+    expectTypeOf(dbl).toEqualTypeOf<EvsFn<readonly [ArgSpec<'', 'uint256'>], Expr<'uint256'>>>();
+    // lone namedArg shorthand
+    const inc = s.fn('inc', namedArg('a', t.uint256), (a) => {
+      expectTypeOf(a).toEqualTypeOf<Expr<'uint256'>>();
+      return a.add(1n);
+    });
+    expectTypeOf(inc).toEqualTypeOf<EvsFn<readonly [ArgSpec<'a', 'uint256'>], Expr<'uint256'>>>();
+    // mixed named/bare list
+    const mix = s.fn('mix', [namedArg('a', t.uint256), t.uint8] as const, (a, b) => {
+      expectTypeOf(a).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(b).toEqualTypeOf<Expr<'uint8'>>();
+      return a;
+    });
+    expectTypeOf(mix).toEqualTypeOf<
+      EvsFn<readonly [ArgSpec<'a', 'uint256'>, ArgSpec<'', 'uint8'>], Expr<'uint256'>>
+    >();
+    return s.return({ x: dbl(2n) });
   });
 });
 
@@ -385,7 +451,7 @@ test('Cell / MutArray / env / for typing', () => {
 
 test('EvsFn: params map to IntoExpr, results are rebuilt fresh Exprs', () => {
   evscript({ name: 'fns', args: [t.uint256] }, (s, x) => {
-    const inc = s.fn('inc', [arg('a', t.uint256)] as const, (a) => {
+    const inc = s.fn('inc', [namedArg('a', t.uint256)] as const, (a) => {
       expectTypeOf(a).toEqualTypeOf<Expr<'uint256'>>();
       return a.add(1n);
     });
@@ -395,7 +461,7 @@ test('EvsFn: params map to IntoExpr, results are rebuilt fresh Exprs', () => {
     // @ts-expect-error — wrong literal shape for uint256
     inc('0x00');
 
-    const pair = s.fn('pair', [arg('a', t.uint8)] as const, (a) => [a, a.eq(0n)] as const);
+    const pair = s.fn('pair', [namedArg('a', t.uint8)] as const, (a) => [a, a.eq(0n)] as const);
     expectTypeOf(pair(3n)).toEqualTypeOf<readonly [Expr<'uint8'>, Expr<'bool'>]>();
 
     const noop = s.fn('noop', [] as const, () => {});
@@ -425,7 +491,7 @@ test('ScriptReturn flows through evscript into EvsScript / ScriptAbi / viem retu
   expectTypeOf(script).toMatchTypeOf<
     EvsScript<
       'meta',
-      readonly ['address', 'address'],
+      readonly [ArgSpec<'', 'address'>, ArgSpec<'', 'address'>],
       { symbol: Expr<'string'>; bal: Expr<'uint256'>; tick: Expr<'int24'> }
     >
   >();
@@ -566,7 +632,7 @@ const consumerFixture = [
 test('#1 s.fn returns a struct directly; the call site receives a Tuple handle', () => {
   const Meta = t.struct({ symbol: t.string, decimals: t.uint8 });
   evscript({ name: 'fnstruct', args: [t.address] }, (s, token) => {
-    const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+    const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
       s.tuple(Meta, {
         symbol: s.read({ address: tok, abi: erc20Fixture, functionName: 'symbol' }),
         decimals: s.read({ address: tok, abi: erc20Fixture, functionName: 'decimals' }),
@@ -582,7 +648,7 @@ test('#1 s.fn returns a struct directly; the call site receives a Tuple handle',
 
 test('#1 s.fn returns a MutArray; the call site receives an array Expr', () => {
   evscript({ name: 'fnarr', args: [t.uint256] }, (s, n) => {
-    const build = s.fn('build', [arg('len', t.uint256)] as const, (len) =>
+    const build = s.fn('build', [namedArg('len', t.uint256)] as const, (len) =>
       s.newArray(t.uint256, len),
     );
     const a = build(n);
@@ -594,9 +660,9 @@ test('#1 s.fn returns a MutArray; the call site receives an array Expr', () => {
 
 test('#1 scalar / [many] fn returns are unchanged (regression pin)', () => {
   evscript({ name: 'fnscalar', args: [t.uint256] }, (s, x) => {
-    const inc = s.fn('inc', [arg('a', t.uint256)] as const, (a) => a.add(1n));
+    const inc = s.fn('inc', [namedArg('a', t.uint256)] as const, (a) => a.add(1n));
     expectTypeOf(inc).toEqualTypeOf<EvsFn<readonly [ArgSpec<'a', 'uint256'>], Expr<'uint256'>>>();
-    const pair = s.fn('pair', [arg('a', t.uint8)] as const, (a) => [a, a.eq(0n)] as const);
+    const pair = s.fn('pair', [namedArg('a', t.uint8)] as const, (a) => [a, a.eq(0n)] as const);
     expectTypeOf(pair(3n)).toEqualTypeOf<readonly [Expr<'uint8'>, Expr<'bool'>]>();
     return s.return({ x: inc(x) });
   });

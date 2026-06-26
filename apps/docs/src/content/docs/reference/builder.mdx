@@ -541,15 +541,16 @@ package-internal helper: `Expr` results come back as fresh `Expr`s, `Tuple` resu
 
 - The body runs **once, at definition**, in an isolated scope: params only, **no capture** of
   outer `Expr`s or cells (`EvsScopeError` at recording).
-- `s.fn` params are still declared with `arg(name, type)` — `arg`/`ArgSpec` are retained for this
-  use (only the script-header `args` surface moved to positional `t.*` types).
+- `s.fn` params accept a bare `t.*` type, a single `namedArg(name, type)`, or a `readonly` list
+  mixing named/bare (issue #9) — a `namedArg` labels the callback parameter, a bare param keeps the
+  positional `arg{i}` name.
 - Each call of the returned handle records one statement and returns fresh handles — two calls
   never alias.
 - Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled
   fns are dropped. Recursion is unconstructible.
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const pairBalances = evscript(
@@ -557,7 +558,7 @@ const pairBalances = evscript(
   (s, a, b, who) => {
     const balOf = s.fn(
       'balOf',
-      [arg('token', t.address), arg('owner', t.address)] as const,
+      [namedArg('token', t.address), namedArg('owner', t.address)] as const,
       (token, owner) =>
         s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
     );

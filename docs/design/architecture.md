@@ -94,16 +94,18 @@ separate `T[N]` codepath), not a rewrite — §8.
 
 ### 2.1 Args declaration (decision 1 — amended by #2)
 
-**Positional callback params over an ordered arg-type list.** `args` is a single `t.*` type or a
-`readonly` list of them, normalized to `readonly EvsType[]`; each arg arrives as a positional
-callback param after `s` (`(s, token, amount) => {…}`) — an `Expr` for scalars/strings/arrays, a
-`Tuple` handle for `t.struct`/`t.tuple` args. `arg()`/`s.args`/`ArgSpec` are no longer the
-script-args surface (they remain for `s.fn` params).
+**Positional callback params over an ordered arg-spec list.** `args` is a single declarator (a bare
+`t.*` type or a `namedArg(...)` — issue #9) or a `readonly` list of them, normalized to
+`readonly ArgSpec[]`; each arg arrives as a positional callback param after `s`
+(`(s, token, amount) => {…}`) — an `Expr` for scalars/strings/arrays, a `Tuple` handle for
+`t.struct`/`t.tuple` args. The declarator is `namedArg` (#9: renamed from `arg`); it names a
+top-level arg/param for BOTH script args and `s.fn` params, and the name surfaces in the type.
 
 This **avoids** the `UnionToTuple` interning hazard [abitype §4.2] for the arg path exactly as the
-old ordered-`ArgSpec`-tuple did: the arg-type list is an ordered tuple, so declaration order,
-type-level order, runtime encode order, and ABI `inputs` order (`arg0`, `arg1`, … — auto-named
-positional labels) are the same object; no record→tuple conversion exists on the input path. A
+old ordered-`ArgSpec`-tuple did: the arg-spec list is an ordered tuple, so declaration order,
+type-level order, runtime encode order, and ABI `inputs` order are the same object; no record→tuple
+conversion exists on the input path. Each input is labeled with its `namedArg` name, or the positional
+`arg0`/`arg1`/… fallback for a bare arg (#9 — names are pure metadata; codegen is name-agnostic). A
 `t.struct` record IS unordered at the type level — recovering an order needs `UnionToTuple`, whose
 order is TS-internal-id order, NOT declaration order — but that is **SAFE** because a struct
 compiles to a single NAMED ABI `tuple`, which abitype infers as an **order-insensitive object**;

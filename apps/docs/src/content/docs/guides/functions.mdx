@@ -10,12 +10,12 @@ jump into one shared copy of the code.
 ## Declaring and calling
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 
 const clamp = evscript(
   { name: 'clamp', args: [t.uint256, t.uint256, t.uint256] },
   (s, x, lo, hi) => {
-    const minMax = s.fn('minMax', [arg('a', t.uint256), arg('b', t.uint256)], (a, b) => {
+    const minMax = s.fn('minMax', [namedArg('a', t.uint256), namedArg('b', t.uint256)], (a, b) => {
       const aFirst = a.lt(b);
       return [s.select(aFirst, a, b), s.select(aFirst, b, a)] as const;
     });
@@ -26,11 +26,12 @@ const clamp = evscript(
 );
 ```
 
-- **Parameters** are declared with `arg(name, type)` — the `arg`/`ArgSpec` helpers are retained
-  for `s.fn` (only the script-header `args` surface moved to positional `t.*` types). A param may
-  be any string-encoded type (`arg()`'s bound is `StringType`) — a word, dynamic, or string array;
+- **Parameters** accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a
+  single `namedArg(name, type)`, or a `readonly` list mixing named/bare. A `namedArg` labels the
+  callback parameter (`(token) => …`); a bare param keeps the positional `arg{i}` name. A param may
+  be any string-encoded type (`namedArg()`'s bound is `StringType`) — a word, dynamic, or string array;
   composite/tuple params are a deliberate v0 narrowing. Dynamic types pass as memref pointer words.
-  The body receives them as positionally typed `Expr`s.
+  The body receives them as `Expr`s.
 - **Returns** can be a single `Expr`, a single `Tuple` handle (a struct/composite result — the call
   site then gets a `Tuple` with named field access, like `s.read`), a single `MutArray` handle (an
   array result — the call site gets an array `Expr`), a readonly tuple of any of those (use
@@ -50,7 +51,7 @@ in the enclosing script:
 
 ```ts nocheck
 const portfolio = evscript({ name: 'portfolio', args: [t.address] }, (s, owner) => {
-  const bad = s.fn('bad', [arg('token', t.address)], (token) =>
+  const bad = s.fn('bad', [namedArg('token', t.address)], (token) =>
     // `owner` belongs to the enclosing script, not to the fn body:
     s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
   );
@@ -80,7 +81,7 @@ output entirely.
 ## Full example: a balance subroutine over a loop
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 const portfolio = evscript(
@@ -89,7 +90,7 @@ const portfolio = evscript(
     // everything the body needs comes in as params — fn bodies cannot capture
     const balOf = s.fn(
       'balOf',
-      [arg('token', t.address), arg('who', t.address)],
+      [namedArg('token', t.address), namedArg('who', t.address)],
       (token, who) =>
         s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );

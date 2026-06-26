@@ -6,10 +6,16 @@
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
  * in `builder/expr.ts`; this file owns the frozen types and wires the typed facade onto it.
  */
-import type { Abi, AbiParameter, AbiParameterToPrimitiveType, AbiStateMutability } from 'abitype';
+import type {
+  Abi,
+  AbiParameter,
+  AbiParameterToPrimitiveType,
+  AbiParametersToPrimitiveTypes,
+  AbiStateMutability,
+} from 'abitype';
 import type { ContractFunctionName } from 'viem';
 
-import { buildScriptAbi, type ScriptAbi } from '../abi/artifact.js';
+import { buildScriptAbi, type ResolveArgName, type ScriptAbi } from '../abi/artifact.js';
 import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
@@ -39,7 +45,7 @@ import { assertV0Type, Recorder } from './expr.js';
 
 export interface EvsScript<
   name extends string = string,
-  args extends readonly EvsType[] = readonly EvsType[],
+  args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly name: name;
@@ -49,13 +55,29 @@ export interface EvsScript<
 }
 
 /**
- * Script-args input (api.md §2): a single `t.*` type, or a `readonly` list of them. A lone type
- * is sugar for a one-element list (`args: t.uint256` ≡ `args: [t.uint256]`).
+ * One top-level arg/param declarator (api.md §2; issue #9): a bare `t.*` type, or a
+ * {@link namedArg}-produced {@link ArgSpec} that labels the arg.
  */
-export type ArgsInput = EvsType | readonly EvsType[];
+export type ArgInput = EvsType | ArgSpec;
 
-/** Normalizes {@link ArgsInput} to the canonical `readonly EvsType[]` (lone type → one-tuple). */
-export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+/**
+ * Args/params input: a single {@link ArgInput} (a bare type or a {@link namedArg}), or a `readonly`
+ * list of them (mixing named and bare). A lone declarator is sugar for a one-element list
+ * (`args: t.uint256` ≡ `args: [t.uint256]`; `args: namedArg('x', t.uint256)` ≡ `args:
+ * [namedArg('x', t.uint256)]`) — shared by `evscript` args and `s.fn` params.
+ */
+export type ArgsInput = ArgInput | readonly ArgInput[];
+
+/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a bare type
+ *  becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
+ *  downstream (`ResolveArgName` / the recorder). */
+export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+
+/** Normalizes {@link ArgsInput} to the canonical `readonly ArgSpec[]` (lone declarator → one-tuple;
+ *  homomorphic over a list so order/positions are preserved). */
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
+  ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
+  : readonly [ToArgSpec<a>];
 
 /**
  * The body-callback handle for one normalized arg type: a tuple/struct arg arrives as a
@@ -64,14 +86,59 @@ export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? 
 export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
 
 /**
- * The positional handle tuple spread into the body after `s`: homomorphic over the normalized arg
- * type list (order/labels preserved structurally — no `UnionToTuple`).
+ * A LABEL-carrying tuple built from an {@link ArgSpec} list (issue #9): abitype's named-tuple
+ * inference (`AbiParametersToPrimitiveTypes<…, 'inputs', true>` — the exact path viem uses for its
+ * `args` labels) applied to synthetic `AbiParameter`s. Used PURELY as a source of tuple-member
+ * LABELS — the element primitive types are remapped away by {@link ArgHandles}/{@link FnArgHandles}/
+ * {@link EvsFn}, so the carrier's element `type` is a constant placeholder (the label comes from the
+ * NAME, never the type). A named arg labels its element; a bare arg (resolved to `arg{i}`) labels
+ * positionally. The placeholder keeps the synthetic params PROVABLY `readonly AbiParameter[]` with no
+ * intersection — an intersection breaks abitype's `>6`-element rest-pattern match (it falls back to
+ * `readonly unknown[]`, dropping args), so it must stay a clean tuple.
  */
-export type ArgHandles<types extends readonly EvsType[]> = {
-  readonly [i in keyof types]: ArgHandle<types[i]>;
+type LabelCarrier<specs extends readonly ArgSpec[]> = AbiParametersToPrimitiveTypes<
+  {
+    readonly [i in keyof specs]: {
+      readonly name: ResolveArgName<specs[i]['name'], i>;
+      readonly type: 'uint256';
+    };
+  },
+  'inputs',
+  true
+>;
+
+/**
+ * The positional handle tuple spread into the body after `s`: homomorphic over the {@link
+ * LabelCarrier} type parameter `L` so the surfaced arg names appear as the callback parameter
+ * LABELS (issue #9; mapping over a label-carrying type parameter is the only way to synthesize tuple
+ * labels — see `LabelCarrier`), while the element handles come from the parallel `specs` (a tuple
+ * arg → a {@link Tuple} handle, else an {@link Expr}). No `UnionToTuple`.
+ */
+export type ArgHandles<
+  specs extends readonly ArgSpec[],
+  L extends readonly unknown[] = LabelCarrier<specs>,
+> = {
+  readonly [i in keyof L]: i extends keyof specs
+    ? ArgHandle<Extract<specs[i]['type'], EvsType>>
+    : never;
 };
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
+
+/**
+ * A {@link namedArg}-produced {@link ArgSpec} value: a plain object carrying a string `name` (a bare
+ * type is a string; a bare composite type is a {@link TupleType} object, which has no `name`). Used
+ * to distinguish a named declarator from a bare one when normalizing `evscript` args / `s.fn` params.
+ */
+function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    typeof (v as { name?: unknown }).name === 'string' &&
+    'type' in v
+  );
+}
 
 export function evscript<
   const name extends string,
@@ -95,26 +162,35 @@ export function evscript<
       { loc: entryLoc },
     );
   }
-  // `args` is optional (a zero-arg script omits it); a lone type normalizes to a one-element list.
-  let argTypesIn: readonly unknown[];
+  // `args` is optional (a zero-arg script omits it); a lone declarator (a bare type or a single
+  // `namedArg`) normalizes to a one-element list (issue #9).
+  let declsIn: readonly unknown[];
   if (def.args === undefined) {
-    argTypesIn = [];
+    declsIn = [];
   } else if (Array.isArray(def.args)) {
-    argTypesIn = def.args;
+    declsIn = def.args;
   } else {
-    argTypesIn = [def.args];
+    declsIn = [def.args];
   }
   if (typeof body !== 'function') {
     throw new EvsTypeError('TYPE_MISMATCH', `evscript "${def.name}": body must be a callback`, {
       loc: entryLoc,
     });
   }
-  const argSpecs = argTypesIn.map((ty, i): { name: string; type: EvsType } => {
-    if (!isEvsValueType(ty)) {
-      assertV0Type(ty, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
+  // a `namedArg` declarator carries its user name; a bare type is auto-named `arg{i}` (the
+  // positional fallback — viem still infers args positionally, but the name surfaces as the label).
+  const argSpecs = declsIn.map((d, i): { name: string; type: EvsType } => {
+    if (isArgSpecValue(d)) {
+      const ty: unknown = d.type;
+      if (!isEvsValueType(ty)) {
+        assertV0Type(ty, `evscript "${def.name}" arg "${d.name}"`, entryLoc);
+      }
+      return { name: d.name, type: ty };
     }
-    // each normalized arg is auto-named `arg{i}` (positional labels; viem infers args positionally)
-    return { name: `arg${i}`, type: ty };
+    if (!isEvsValueType(d)) {
+      assertV0Type(d, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
+    }
+    return { name: `arg${i}`, type: d };
   });
 
   const locations = opts?.locations ?? true;
@@ -133,13 +209,15 @@ export function evscript<
     if (!locations) setLocCapture(true);
   }
   const { ir, returns } = recorder.finish(callbackResult);
-  // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it
+  // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
+  // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so
+  // the ABI inputs are labeled accordingly (issue #9).
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement is pinned by M3 tests
-  const abi = buildScriptAbi(
-    def.name,
-    ir.args.map((a) => a.type),
-    returns,
-  ) as unknown as ScriptAbi<name, NormalizeArgs<args>, ret>;
+  const abi = buildScriptAbi(def.name, ir.args, returns) as unknown as ScriptAbi<
+    name,
+    NormalizeArgs<args>,
+    ret
+  >;
   const script: EvsScript<name, NormalizeArgs<args>, ret> = {
     name: def.name,
     ir,
@@ -558,7 +636,8 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  * What an `s.fn` body may return (widened by issue #5 ask #1): a single {@link Expr}, a single
  * {@link Tuple}/{@link MutArray} handle (a composite/array result — byte-identical IR to `.expr()`),
  * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed
- * (composite params are a separate v0 deferral — `arg()`'s bound is `StringType`).
+ * (composite params are a separate v0 deferral — `namedArg()`'s bound is `StringType`, and a bare
+ * `t.*` param is restricted to a string type at record time).
  */
 export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
 /** One element of an `s.fn` body's `[many]`-shape return. */
@@ -594,8 +673,31 @@ export type RebuildExprs<r extends FnReturn> = r extends readonly FnResult[]
     ? RebuildFnResult<r>
     : void;
 
-export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> = (
-  ...args: { [i in keyof params]: IntoExpr<params[i]['type']> }
+/**
+ * The body-callback param tuple for an `s.fn`: each param as an {@link Expr}, LABELED by its
+ * surfaced name (issue #9) — homomorphic over the {@link LabelCarrier} type parameter `L` (the only
+ * way to synthesize tuple/param labels), with the element types from the parallel `specs`.
+ */
+type FnArgHandles<
+  specs extends readonly ArgSpec[],
+  L extends readonly unknown[] = LabelCarrier<specs>,
+> = {
+  [i in keyof L]: i extends keyof specs ? Expr<Extract<specs[i]['type'], EvsType>> : never;
+};
+
+/**
+ * The call-site signature of an {@link EvsFn}: each param as an {@link IntoExpr}, LABELED by its
+ * surfaced name (a {@link namedArg} name, or the `arg{i}` fallback for a bare param — issue #9).
+ * The labels come from the {@link LabelCarrier} type parameter `L`; the element types from `params`.
+ */
+export type EvsFn<
+  params extends readonly ArgSpec[],
+  r extends FnReturn,
+  L extends readonly unknown[] = LabelCarrier<params>,
+> = (
+  ...args: {
+    [i in keyof L]: i extends keyof params ? IntoExpr<Extract<params[i]['type'], EvsType>> : never;
+  }
 ) => RebuildExprs<r>;
 
 // ---------------------------------------------------------------------------
@@ -660,12 +762,14 @@ export interface ScriptBuilder {
   simulate: WriteVerb;
   trySimulate: TryWriteVerb;
 
-  // functions (api.md §8)
-  fn<const params extends readonly ArgSpec[], const r extends FnReturn>(
+  // functions (api.md §8) — `params` accepts the same shorthand as `evscript` args (issue #9): a
+  // bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing named/bare. Body params
+  // are labeled by name; composite params stay a v0 deferral (rejected at record time).
+  fn<const params extends ArgsInput, const r extends FnReturn>(
     name: string,
     params: params,
-    body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
-  ): EvsFn<params, r>;
+    body: (...args: FnArgHandles<NormalizeArgs<params>>) => r,
+  ): EvsFn<NormalizeArgs<params>, r>;
 
   // return (api.md §9) — accepts an `Expr` OR a `Tuple` handle directly per component (the
   // `.expr()` on a tuple is optional; the bare handle returns the same memref).

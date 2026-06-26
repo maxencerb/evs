@@ -13,7 +13,7 @@
 import { getAddress } from 'viem';
 import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
 
-import { arg, evscript, t } from '../../src/index.js';
+import { namedArg, evscript, t } from '../../src/index.js';
 import { MockERC20, MockUniV3Pool } from '../generated/index.js';
 import { publicClient } from '../harness/anvil.js';
 import { deploy, write } from './helpers.js';
@@ -115,12 +115,15 @@ const PoolMetadata = t.struct({
 
 const poolsData = evscript({ name: 'poolsData', args: t.array(t.address) }, (s, addrs) => {
   // #1 — the fn builds and returns the struct; the call site gets a usable TokenMetadata Tuple.
-  const getTokenMetadata = s.fn('getTokenMetadata', [arg('token', t.address)] as const, (token) =>
-    s.tuple(TokenMetadata, {
-      address: token,
-      symbol: s.read({ address: token, abi: MockERC20.abi, functionName: 'symbol' }),
-      decimals: s.read({ address: token, abi: MockERC20.abi, functionName: 'decimals' }),
-    }),
+  const getTokenMetadata = s.fn(
+    'getTokenMetadata',
+    [namedArg('token', t.address)] as const,
+    (token) =>
+      s.tuple(TokenMetadata, {
+        address: token,
+        symbol: s.read({ address: token, abi: MockERC20.abi, functionName: 'symbol' }),
+        decimals: s.read({ address: token, abi: MockERC20.abi, functionName: 'decimals' }),
+      }),
   );
   const len = addrs.length();
   const metadata = s.newArray(PoolMetadata, len);

@@ -88,7 +88,7 @@ moment a pool is found. Details in [control flow](/guides/control-flow/).
 ## Reusable subroutines with s.fn
 
 ```ts
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
 export const portfolio = evscript(
@@ -96,7 +96,7 @@ export const portfolio = evscript(
   (s, owner, tokens) => {
     const balOf = s.fn(
       'balOf',
-      [arg('token', t.address), arg('who', t.address)] as const,
+      [namedArg('token', t.address), namedArg('who', t.address)] as const,
       (token, who) =>
         s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );
@@ -114,7 +114,8 @@ export const portfolio = evscript(
 code is emitted once no matter how many call sites exist. The body runs in an isolated scope —
 it cannot capture outer `Expr`s or cells (that throws `EvsScopeError` at recording), which is
 why `owner` is passed as the `who` parameter instead of read from the outer scope inside the
-body. `s.fn` params are still declared with `arg(name, type)`. See [functions](/guides/functions/).
+body. `s.fn` params use `namedArg(name, type)` to label them (a bare `t.*` type works too). See
+[functions](/guides/functions/).
 
 ## Conditional checked math with s.if
 

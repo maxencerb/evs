@@ -28,7 +28,7 @@ export function evscript<
 
 export interface EvsScript<
   name extends string = string,
-  args extends readonly EvsType[] = readonly EvsType[],
+  args extends readonly ArgSpec[] = readonly ArgSpec[], // amended by #9 (was readonly EvsType[])
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>, // a value is Expr | Tuple (§9)
 > {
   readonly name: name;
@@ -44,14 +44,27 @@ ABIs: declare `as const satisfies Abi`.
 ## 2. Args: positional callback params and the `t` type namespace (decision 1 — amended by #2)
 
 ```ts
-export type ArgsInput = EvsType | readonly EvsType[]; // a lone type or a list
-export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+// a top-level arg declarator: a bare `t.*` type, or a `namedArg(...)` that labels it (issue #9)
+export type ArgInput = EvsType | ArgSpec;
+export type ArgsInput = ArgInput | readonly ArgInput[]; // a lone declarator or a list (mix named/bare)
+// normalize to a `readonly ArgSpec[]`; a bare type becomes an unnamed spec (positional `arg{i}`)
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
+  ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
+  : readonly [ToArgSpec<a>];
+
+// names a TOP-LEVEL arg so the name surfaces in the type (issue #9). `type` is a `StringType`
+// (word/dynamic/string-array) — composite (`t.struct`/`t.tuple`) args are passed bare.
+export function namedArg<const name extends string, const type extends StringType>(
+  name: name,
+  type: type,
+): ArgSpec<name, type>;
 
 // the body-callback handle for one normalized arg type
 export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
-// the positional handle tuple spread into the body after `s` (homomorphic — order preserved)
-export type ArgHandles<types extends readonly EvsType[]> = {
-  readonly [i in keyof types]: ArgHandle<types[i]>;
+// the positional handle tuple spread into the body after `s`, LABELED by the surfaced arg names
+// (issue #9 — homomorphic over a label carrier; order preserved)
+export type ArgHandles<specs extends readonly ArgSpec[]> = {
+  readonly [i in keyof specs /* labeled by name */]: ArgHandle<specs[i]['type']>;
 };
 
 export const t: {
@@ -78,13 +91,23 @@ export const t: {
 };
 ```
 
-`args` is a single `t.*` type or a `readonly` list of them; a lone type is sugar for a
-one-element list (`args: t.uint256` ≡ `args: [t.uint256]`), and a zero-arg script omits `args`
-entirely. Args arrive as **positional callback params after `s`**:
-`(s, token, amount) => {…}`. A scalar/string/array arg arrives as an `Expr`; a `t.struct`/
-`t.tuple` arg arrives as a `Tuple` handle (§5/§6). Raw type strings are accepted everywhere
-`t.*` is (the `t` namespace is autocomplete sugar); a raw `readonly AbiParameter[]` is accepted
-wherever a tuple type is expected.
+`args` is a single declarator or a `readonly` list of them; a declarator is a bare `t.*` type **or**
+a `namedArg("name", t.*)` (issue #9). A lone declarator is sugar for a one-element list
+(`args: t.uint256` ≡ `args: [t.uint256]`; `args: namedArg("token", t.address)` ≡
+`args: [namedArg("token", t.address)]`), and a zero-arg script omits `args` entirely. Args arrive as
+**positional callback params after `s`**: `(s, token, amount) => {…}`. A scalar/string/array arg
+arrives as an `Expr`; a `t.struct`/`t.tuple` arg arrives as a `Tuple` handle (§5/§6). Raw type
+strings are accepted everywhere `t.*` is (the `t` namespace is autocomplete sugar); a raw
+`readonly AbiParameter[]` is accepted wherever a tuple type is expected.
+
+**Named top-level args (`namedArg`, issue #9).** Wrapping a top-level arg in `namedArg("token",
+t.address)` makes the name surface in the resulting type: the viem `args` tuple element is labeled
+(`args: readonly [token: \`0x${string}\`]`instead of`[arg0: …]`), and the body callback parameter
+is labeled. A **bare** (unnamed) arg keeps the positional `arg0`/`arg1`/… fallback name. Only
+top-level fields can be named; nested composite fields are named via `t.struct`and keep their
+existing behaviour. Note that TypeScript tuple/parameter labels are **cosmetic** (they aid
+autocomplete/hover but are not part of type identity); the name is also carried, observably, in the
+script's ABI input`name` (and the IR), which is what viem derives the args label from.
 
 `t.struct({...})` builds a **named** tuple type (its runtime member order is `Object.keys`
 insertion order — the only encode-order source of truth); `t.tuple(...)` builds a **positional**
@@ -609,24 +632,30 @@ trampoline) for the mechanism.
 ## 8. User functions — `s.fn`
 
 ```ts
-fn<const params extends readonly ArgSpec[], const r extends FnReturn>(
+// params accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a single
+// `namedArg(...)`, or a `readonly` list mixing named/bare. Body params are LABELED by name.
+fn<const params extends ArgsInput, const r extends FnReturn>(
   name: string,
   params: params,
-  body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
-): EvsFn<params, r>
+  body: (...args: /* labeled */ { [i in keyof NormalizeArgs<params>]: Expr<…> }) => r,
+): EvsFn<NormalizeArgs<params>, r>
 
 // amended by #5 ask #1: a body may also return a Tuple/MutArray handle (composite/array result):
 export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly (Expr | AnyTuple | AnyMutArray)[] | void
+// amended by #9: the call-site params are LABELED by their surfaced names (a `namedArg` name, or the
+// `arg{i}` fallback for a bare param) — homomorphic over a label carrier; element types from `params`.
 export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> =
-  (...args: { [i in keyof params]: IntoExpr<params[i]['type']> }) => RebuildExprs<r>
+  (...args: /* labeled */ { [i in keyof params]: IntoExpr<params[i]['type']> }) => RebuildExprs<r>
 // RebuildExprs (amended by #5): Expr<t> → Expr<t>; a Tuple (or an Expr<tuple> via `.expr()`) →
 // Tuple<C>; a MutArray / array Expr → Expr<that array type>; the [many] list → element-wise; void →
 // void. The dispatch is on the RESULT TYPE, so it matches the runtime `s.call` wrap.
 ```
 
 - The body runs **once at definition** in an isolated scope. **Params** stay word/string-typed
-  (`arg()`'s bound is `StringType` — composite params are a deliberate v0 narrowing, amendment
-  16.2). **No capture** of outer Exprs/Cells (`EvsScopeError`).
+  (`namedArg()`'s bound is `StringType`, and a bare `t.*` param is restricted to a string type at
+  record time — composite params are a deliberate v0 narrowing, amendments 16.2/20). A `namedArg`
+  param surfaces as a labeled callback parameter (`(token) => …`); a bare param keeps the positional
+  `arg{i}` fallback. **No capture** of outer Exprs/Cells (`EvsScopeError`).
 - Calling the `EvsFn` records one statement and returns fresh handles; two calls never alias. A
   `tuple` result comes back as a usable `Tuple` (named field access at the call site), like `s.call`.
 - Recursion is unconstructible (the handle does not exist inside its own body). #5 widened only the
@@ -819,12 +848,12 @@ const firstPool = evscript(
 moved to positional callback params):
 
 ```ts
-import { evscript, arg, t } from '@maxencerb/evs'; // `arg` is still needed for s.fn params
+import { evscript, namedArg, t } from '@maxencerb/evs'; // `namedArg` names s.fn params (and script args)
 
 const portfolio = evscript(
   { name: 'portfolio', args: [t.address, t.array(t.address)] }, // owner, tokens
   (s, owner, tokens) => {
-    const meta = s.fn('meta', [arg('token', t.address)] as const, (token) => {
+    const meta = s.fn('meta', namedArg('token', t.address), (token) => {
       const bal = s.call({
         address: token,
         abi: erc20Abi,
@@ -836,7 +865,7 @@ const portfolio = evscript(
     // correct version: pass everything as params
     const balOf = s.fn(
       'balOf',
-      [arg('token', t.address), arg('who', t.address)] as const,
+      [namedArg('token', t.address), namedArg('who', t.address)] as const,
       (token, who) =>
         s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );

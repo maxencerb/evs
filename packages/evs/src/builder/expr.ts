@@ -2316,27 +2316,46 @@ export class Recorder {
         { loc },
       );
     }
-    if (!Array.isArray(paramsIn)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `s.fn("${name}"): params must be a readonly ArgSpec[] tuple (use arg(name, type))`,
-        { loc },
-      );
-    }
     if (typeof bodyFn !== 'function') {
       throw new EvsTypeError('TYPE_MISMATCH', `s.fn("${name}"): body must be a callback`, { loc });
     }
+    // params accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a single
+    // `namedArg(...)`, or a `readonly` list mixing named/bare. A lone declarator → a one-element list.
+    let declsIn: readonly unknown[];
+    if (Array.isArray(paramsIn)) {
+      declsIn = paramsIn;
+    } else if (paramsIn === undefined) {
+      declsIn = [];
+    } else {
+      declsIn = [paramsIn];
+    }
     const seen = new Set<string>();
-    const params = paramsIn.map((spec: unknown, i) => {
-      const sp: Record<string, unknown> = isRecordObj(spec) ? spec : {};
-      const pName = sp['name'];
-      const pType = sp['type'];
-      if (typeof pName !== 'string' || !IDENT_RE.test(pName)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `s.fn("${name}") param #${i}: invalid name ${describeHost(pName)} (must be a non-empty identifier)`,
-          { loc },
-        );
+    const params = declsIn.map((decl: unknown, i) => {
+      // a `namedArg` result is a `{ name, type }` object; a bare type is a string (a bare composite
+      // type is a TupleType object with no `name`, rejected as a composite param by assertV0Type).
+      // Detection mirrors `evscript`'s `isArgSpecValue` (name + type present, not an array) so the
+      // two arg/param surfaces classify declarators identically.
+      let pName: string;
+      let pType: unknown;
+      if (
+        isRecordObj(decl) &&
+        !Array.isArray(decl) &&
+        typeof decl['name'] === 'string' &&
+        'type' in decl
+      ) {
+        pName = decl['name'];
+        pType = decl['type'];
+        if (!IDENT_RE.test(pName)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `s.fn("${name}") param #${i}: invalid name ${describeHost(pName)} (must be a non-empty identifier)`,
+            { loc },
+          );
+        }
+      } else {
+        // a bare (unnamed) param keeps the positional `arg{i}` fallback name.
+        pName = `arg${i}`;
+        pType = decl;
       }
       if (seen.has(pName)) {
         throw new EvsTypeError(

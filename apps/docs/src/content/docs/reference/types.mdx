@@ -109,7 +109,7 @@ type BitsType = UintType | BytesNType;
 | `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
 | `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
 | `EvsType`     | Every value type: word, dynamic, string array, or a `TupleType`.                              |
-| `ArgType`     | The script-argument value type — an alias for `EvsType` (word, dynamic, string array, or `TupleType`); types `ScriptIr.args` and `ArgSpec.type`. `s.fn` params are narrower (string-encoded only) — that bound lives on [`arg()`](/reference/evscript/#arg-and-argspec-for-sfn), not here. |
+| `ArgType`     | The script-argument value type — an alias for `EvsType` (word, dynamic, string array, or `TupleType`); types `ScriptIr.args` and `ArgSpec.type`. Named args/params are narrower (string-encoded only) — that bound lives on [`namedArg()`](/reference/evscript/#namedarg-and-argspec), not here. |
 | `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |

@@ -74,12 +74,14 @@ export type TupleAsParam<t extends TupleType> = { readonly name: ''; readonly ty
   readonly components: t['components'] } & AbiParameter
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>
 
-// arg()/ArgSpec are RETAINED for s.fn param declarations (NOT the script-args surface) — #2
+// ArgSpec is RETAINED; the declarator is `namedArg` (renamed from `arg` by #9). It names a
+// TOP-LEVEL arg/param for BOTH `evscript` args and `s.fn` params, and the name now surfaces in the
+// type (#9). The `arg` export is removed.
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
   readonly name: name
   readonly type: type
 }
-export function arg<const name extends string, const type extends StringType>(
+export function namedArg<const name extends string, const type extends StringType>(  // #9: arg→namedArg
   name: name, type: type): ArgSpec<name, type>          // amended by #2: param type is StringType
 // the `t` namespace gains `struct`/`tuple` and a tuple `array` overload (amended by #2); plus
 // `fromOutputs`/`fromAbiParameter` ABI→type derivations (amended by #5 ask #4):
@@ -119,7 +121,7 @@ export function abiParamToType(p: { type: string; components?: readonly NamedTyp
 export function typeToAbiParam(name: string, ty: EvsType): NamedType        // inverse
 ```
 
-Invariants: `arg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `assertEvsType`), throws
+Invariants: `namedArg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `assertEvsType`), throws
 `EvsTypeError` with `captureLoc()`, returns frozen object. `t.struct`/`t.tuple`/`t.array` validate
 and freeze their result; `t` is frozen.
 
@@ -185,9 +187,9 @@ export function setLocCapture(enabled: boolean): void; // used by evscript({loca
 **Unit tests (M1)**: `isEvsType`/`bitsOf` exhaustive table over every v0 type string; rejection
 of `uint7`, `bytes33`; the still-deferred string-array depths (`uint256[][]` as a script arg) and
 raw `'tuple'` strings; `t.struct`/`t.tuple`/`t.array`, the guards, and `typesEqual`
-structural-equality matrix (amended by #2); `arg()` validation matrix with loc assertions; error
+structural-equality matrix (amended by #2); `namedArg()` validation matrix with loc assertions; error
 class construction; loc capture under bun- and node-format stack traces.
-**Type tests**: `ArgSpec` inference via `arg('pool', t.address)` is exactly
+**Type tests**: `ArgSpec` inference via `namedArg('pool', t.address)` is exactly
 `ArgSpec<'pool','address'>`; `IntoExpr<'uint8'>` accepts `5`, `5n`, `Expr<'uint8'>`, rejects
 `'0x'`/`Expr<'uint16'>`; `LitOf` of a `t.struct` is the named object (amended by #2).
 
@@ -388,17 +390,20 @@ export const EVS_ERROR_ABI = [
   { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
 ] as const;
 
-// amended by #2: `args` is reparameterized from `readonly ArgSpec[]` to `readonly EvsType[]`
-// (positional, auto-named arg0/arg1/…); inputs expand via TypeToComponent (a tuple arg →
-// `{ name, type: 'tuple', components }`). ArgsToInputs is HOMOMORPHIC over the arg-type tuple (no
-// UnionToTuple — order/labels structural; `args` stays a covariant type param).
+// amended by #9: `args` carries names again — `readonly ArgSpec[]` (was `readonly EvsType[]` per #2).
+// Each input is labeled with its `namedArg` name, or the positional `arg{i}` fallback for a bare arg
+// (the `''` sentinel resolves via `ResolveArgName`); inputs expand via TypeToComponent (a tuple arg →
+// `{ name, type: 'tuple', components }`). ArgsToInputs stays HOMOMORPHIC over the arg-SPEC tuple (no
+// UnionToTuple — order/labels structural; `args` stays a covariant type param). viem derives its
+// `args` tuple labels from these input names.
 export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
-export type ArgsToInputs<args extends readonly EvsType[]> = {
-  readonly [i in keyof args]: TypeToComponent<ArgName<i>, args[i]>;
+export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i> : name;
+export type ArgsToInputs<args extends readonly ArgSpec[]> = {
+  readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
 };
 export type ScriptAbi<
   name extends string,
-  args extends readonly EvsType[],
+  args extends readonly ArgSpec[], // amended by #9 (was readonly EvsType[] per #2)
   ret extends Record<string, ReturnValue>, // amended: a return value is an Expr OR a Tuple handle
 > = readonly [
   {
@@ -420,11 +425,12 @@ export type ScriptAbi<
 
 export function buildScriptAbi(
   name: string,
-  args: readonly EvsType[], // amended by #2: NORMALIZED arg TYPE list (positional, no names)
+  args: readonly { name: string; type: EvsType }[], // amended by #9: NORMALIZED arg list (carries names)
   returns: readonly { name: string; type: EvsType }[],
 ): Abi;
-// runtime mirror; inputs auto-named arg0/arg1/… (order = args order; a tuple arg →
-// typeToAbiParam); components order = returns insertion order
+// runtime mirror; inputs labeled by their resolved name (user `namedArg` name or the `arg{i}`
+// fallback the recorder assigns to a bare arg — #9); names are identifier-checked + deduped;
+// a tuple arg → typeToAbiParam; components order = returns insertion order
 
 export function selectorOf(name: string, argTypes: readonly string[]): Hex; // viem toFunctionSelector
 export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction; // + selector; validates v0 types
@@ -609,11 +615,20 @@ buildScriptAbi), `compile.js` (the `compile` function — for the `.compile()` s
 // builder/script.ts — amended by #2: `evscript` takes `args?: ArgsInput` and spreads positional
 // arg handles after `s`; `ScriptBuilder` is non-generic (no `args` param, no `s.args`) and gains
 // `s.tuple`; `Tuple`/`Field`/`s.tuple` are the new composite surface.
-export type ArgsInput = EvsType | readonly EvsType[];
-export type NormalizeArgs<a extends ArgsInput> = a extends readonly EvsType[] ? a : readonly [a];
+// amended by #9: `ArgsInput` admits `namedArg` declarators; `NormalizeArgs` → `readonly ArgSpec[]`;
+// `ArgHandles` is labeled by the surfaced arg names (via a `LabelCarrier` type param — see §20.4).
+export type ArgInput = EvsType | ArgSpec; // a bare type OR a namedArg
+export type ArgsInput = ArgInput | readonly ArgInput[];
+export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
+  ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
+  : readonly [ToArgSpec<a>]; // → readonly ArgSpec[]
 export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
-export type ArgHandles<types extends readonly EvsType[]> = {
-  readonly [i in keyof types]: ArgHandle<types[i]>;
+// LabelCarrier is module-private: a label-carrying tuple via abitype's public
+// AbiParametersToPrimitiveTypes<…,'inputs',true>; ArgHandles maps over it (a type PARAMETER) to
+// surface the names as the callback param labels while drawing element handles from `specs`.
+export type ArgHandles<specs extends readonly ArgSpec[], L extends readonly unknown[] = /*LabelCarrier*/ readonly unknown[]> = {
+  readonly [i in keyof L]: i extends keyof specs ? ArgHandle<Extract<specs[i]['type'], EvsType>> : never;
 };
 export function evscript<
   const name extends string,
@@ -625,8 +640,8 @@ export function evscript<
   opts?: { locations?: boolean },
 ): EvsScript<name, NormalizeArgs<args>, ret>;
 
-export interface EvsScript<name, args extends readonly EvsType[], ret> {
-  /* exactly api.md §1 — `args` param is `readonly EvsType[]` (amended by #2) */
+export interface EvsScript<name, args extends readonly ArgSpec[], ret> {
+  /* exactly api.md §1 — `args` param is `readonly ArgSpec[]` (amended by #9, was readonly EvsType[]/#2) */
 }
 export interface ScriptBuilder {
   /* exactly api.md §4 — non-generic; no `args`/`s.args`; gained `s.tuple` (amended by #2). The call
@@ -955,8 +970,8 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `asm/*`, `codegen/program.js`, `viem
 export interface CompileOptions {
   /* exactly api.md §10 */
 }
-export interface CompiledEvsScript<name, args extends readonly EvsType[], ret> {
-  /* exactly api.md §10 — `args` param is `readonly EvsType[]` (amended by #2, was readonly ArgSpec[]) */
+export interface CompiledEvsScript<name, args extends readonly ArgSpec[], ret> {
+  /* exactly api.md §10 — `args` param is `readonly ArgSpec[]` (amended by #9, was readonly EvsType[]/#2) */
 }
 export interface RevertExplanation {
   kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
@@ -988,7 +1003,7 @@ export function toViemStateOverride<const abi extends Abi>(
 
 // index.ts — the complete public surface (nothing else is exported from the package; single
 // entry point, no subpath exports in v0):
-// evscript, compile, arg, t, interpret, disassemble, lookupPc, serializeIr, deserializeIr,
+// evscript, compile, namedArg (#9: renamed from arg), t, interpret, disassemble, lookupPc, serializeIr, deserializeIr,
 // EVS_ERROR_ABI, DEFAULT_SCRIPT_ADDRESS, EvsError + subclasses, and all public types
 // (Expr, IntoExpr, EvsType…, ArgSpec, ScriptBuilder, Cell, MutArray, LoopCtl, ScriptReturn,
 // EvsScript, CompiledEvsScript, CompileOptions, EvsDiagnostic, ScriptAbi, SourceMap,
@@ -997,7 +1012,8 @@ export function toViemStateOverride<const abi extends Abi>(
 //   TupleType, NamedType, ScalarType, StringType, Tuple, Field, ArgsInput, NormalizeArgs,
 //   ArgHandle, ArgHandles, ComponentToType, TupleInit, and the `t`-namespace helper types
 //   StructTypeOf / TupleTypeOf / TupleArrayOf / TypeToComponent / TupleLitOf / TupleAsParam.
-//   `arg`/`ArgSpec` remain exported (s.fn params). `ScriptBuilder` is non-generic.
+//   `ArgSpec` remains exported; the declarator is `namedArg` (#9: renamed from `arg`; `ArgInput`
+//   is also exported). `ScriptBuilder` is non-generic.
 // Added by #1 (calls split by mutability — see §19) — type-only additions to the public surface:
 //   ViewMutability, WriteMutability, and the per-verb param/output/struct types
 //   (SubcallParams now generic over the mutability bucket). `ScriptBuilder` gains the read/tryRead,

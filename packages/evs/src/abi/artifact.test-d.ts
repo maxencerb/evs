@@ -15,7 +15,7 @@ import type { Abi } from 'abitype';
 import type { ReadContractParameters, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
-import type { Expr } from '../core/types.js';
+import type { ArgSpec, Expr } from '../core/types.js';
 import {
   buildScriptAbi,
   EVS_ERROR_ABI,
@@ -62,7 +62,8 @@ type PoolMetaRet = {
   symbol0: Expr<'string'>;
   tick: Expr<'int24'>;
 };
-type PoolMetaAbi = ScriptAbi<'poolMeta', readonly ['address'], PoolMetaRet>;
+// a bare arg (empty-named ArgSpec) resolves to the positional `arg0` fallback (issue #9).
+type PoolMetaAbi = ScriptAbi<'poolMeta', readonly [ArgSpec<'', 'address'>], PoolMetaRet>;
 
 test('ScriptAbi satisfies Abi (declaration-emit safe, no widening)', () => {
   expectTypeOf<PoolMetaAbi>().toMatchTypeOf<Abi>();
@@ -71,9 +72,36 @@ test('ScriptAbi satisfies Abi (declaration-emit safe, no widening)', () => {
   expectTypeOf<PoolMetaAbi[0]['stateMutability']>().toEqualTypeOf<'view'>();
 });
 
-test('inputs are the exact arg-TYPE tuple mapping (auto-named arg0…, order-preserving)', () => {
+test('inputs map over the arg-SPEC tuple; a bare arg resolves to the arg0 fallback name', () => {
   expectTypeOf<PoolMetaAbi[0]['inputs']>().toEqualTypeOf<
     readonly [{ readonly name: 'arg0'; readonly type: 'address' }]
+  >();
+});
+
+test('a namedArg surfaces its user name in the ABI input (issue #9)', () => {
+  type NamedAbi = ScriptAbi<
+    'named',
+    readonly [ArgSpec<'token', 'address'>, ArgSpec<'fee', 'uint24'>],
+    { ok: Expr<'bool'> }
+  >;
+  // the input NAME literal carries the user name (the cosmetic viem args label derives from this);
+  // a bare arg in the same list keeps the positional fallback.
+  expectTypeOf<NamedAbi[0]['inputs']>().toEqualTypeOf<
+    readonly [
+      { readonly name: 'token'; readonly type: 'address' },
+      { readonly name: 'fee'; readonly type: 'uint24' },
+    ]
+  >();
+  type MixedAbi = ScriptAbi<
+    'mixed',
+    readonly [ArgSpec<'token', 'address'>, ArgSpec<'', 'uint24'>],
+    { ok: Expr<'bool'> }
+  >;
+  expectTypeOf<MixedAbi[0]['inputs']>().toEqualTypeOf<
+    readonly [
+      { readonly name: 'token'; readonly type: 'address' },
+      { readonly name: 'arg1'; readonly type: 'uint24' },
+    ]
   >();
 });
 
@@ -114,11 +142,13 @@ test('errors ride along as the literal EVS_ERROR_ABI items', () => {
 // ---------------------------------------------------------------------------
 
 test('args is the labeled positional tuple in DECLARATION order (3 args)', () => {
-  // inputs map over the arg-TYPE tuple, so type-level order cannot diverge from runtime encode
-  // order; the auto-names arg0/arg1/arg2 surface as the positional labels.
+  // inputs map over the arg-SPEC tuple, so type-level order cannot diverge from runtime encode
+  // order; the bare-arg arg0/arg1/arg2 fallbacks surface as the positional labels (NOTE: TS tuple
+  // labels are cosmetic — `toEqualTypeOf` cannot see them, so this also passes unlabeled; the names
+  // are pinned type-testably via `inputs[i]['name']` above and at runtime via `script.abi`).
   type ThreeArgAbi = ScriptAbi<
     'threeArg',
-    readonly ['address', 'uint24', 'address'],
+    readonly [ArgSpec<'', 'address'>, ArgSpec<'', 'uint24'>, ArgSpec<'', 'address'>],
     { ok: Expr<'bool'> }
   >;
   expectTypeOf<ReadContractParameters<ThreeArgAbi, 'threeArg'>['args']>().toEqualTypeOf<
@@ -140,7 +170,7 @@ test('zero-arg script: args is the (optional) empty tuple', () => {
 test('dynamic returns flow through viem: string / bytes / T[]', () => {
   type DynAbi = ScriptAbi<
     'dyn',
-    readonly ['address'],
+    readonly [ArgSpec<'', 'address'>],
     { name: Expr<'string'>; raw: Expr<'bytes'>; balances: Expr<'uint256[]'> }
   >;
   expectTypeOf<ReadContractReturnType<DynAbi, 'dyn'>>().toEqualTypeOf<{
@@ -158,7 +188,11 @@ test('a struct return flows through viem as a named object; a struct arg as a la
       { readonly name: 'owner'; readonly type: 'address' },
     ];
   };
-  type CompositeAbi = ScriptAbi<'comp', readonly [PositionType], { pos: Expr<PositionType> }>;
+  type CompositeAbi = ScriptAbi<
+    'comp',
+    readonly [ArgSpec<'', PositionType>],
+    { pos: Expr<PositionType> }
+  >;
   // the struct OUTPUT is an object keyed by the (named) struct fields
   expectTypeOf<ReadContractReturnType<CompositeAbi, 'comp'>>().toMatchTypeOf<{
     pos: { liquidity: bigint; owner: `0x${string}` };

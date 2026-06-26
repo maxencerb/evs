@@ -9,7 +9,8 @@ import type { Abi } from 'abitype';
  */
 import { describe, expect, test } from 'vitest';
 
-import { arg, t, type Expr } from '../core/types.js';
+import { EvsError } from '../core/errors.js';
+import { namedArg, t, type Expr } from '../core/types.js';
 import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
@@ -134,6 +135,75 @@ describe('script shell', () => {
   });
 
   test('recorded IR passes validateIr', () => {
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// named args (issue #9) — namedArg threads the user name into the IR + ABI; bare args keep the
+// positional arg{i} fallback; the single-arg shorthand extends to a lone namedArg.
+// ---------------------------------------------------------------------------
+
+describe('named args (namedArg)', () => {
+  test('a namedArg threads its name into ir.args + abi inputs; bare args fall back to arg{i}', () => {
+    const script = evscript(
+      { name: 'named', args: [namedArg('token', t.address), t.uint24, namedArg('who', t.address)] },
+      (s, token, _fee, who) => s.return({ token, who }),
+      NO_LOC,
+    );
+    expect(script.ir.args).toEqual([
+      { name: 'token', type: 'address' },
+      { name: 'arg1', type: 'uint24' }, // bare → positional fallback
+      { name: 'who', type: 'address' },
+    ]);
+    expect(script.abi[0].inputs).toEqual([
+      { name: 'token', type: 'address' },
+      { name: 'arg1', type: 'uint24' },
+      { name: 'who', type: 'address' },
+    ]);
+    expect(script.ir.values[0]).toMatchObject({ debugName: 'args.token' });
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('single-arg shorthand: a lone namedArg (no array wrapper)', () => {
+    const script = evscript(
+      { name: 'lone', args: namedArg('amount', t.uint256) },
+      (s, amount) => s.return({ amount }),
+      NO_LOC,
+    );
+    expect(script.ir.args).toEqual([{ name: 'amount', type: 'uint256' }]);
+    expect(script.abi[0].inputs).toEqual([{ name: 'amount', type: 'uint256' }]);
+  });
+
+  test('duplicate arg names are rejected (ABI_SHAPE)', () => {
+    let code: string | undefined;
+    try {
+      evscript(
+        { name: 'dup', args: [namedArg('x', t.address), namedArg('x', t.uint256)] },
+        (s, a) => s.return({ a }),
+        NO_LOC,
+      );
+    } catch (e) {
+      if (e instanceof EvsError) code = e.code;
+    }
+    expect(code).toBe('ABI_SHAPE');
+  });
+
+  test('s.fn: bare-type and lone-namedArg shorthand; names land in the fn IR params', () => {
+    const script = evscript(
+      { name: 'fnnames', args: [t.uint256] },
+      (s, n) => {
+        const dbl = s.fn('dbl', t.uint256, (x) => x.add(x)); // bare-type shorthand
+        const inc = s.fn('inc', namedArg('a', t.uint256), (a) => a.add(1n)); // lone namedArg
+        return s.return({ a: dbl(n), b: inc(n) });
+      },
+      NO_LOC,
+    );
+    const [dblFn, incFn] = script.ir.fns;
+    expect(dblFn?.params.map((p) => ({ name: p.name, type: p.type }))).toEqual([
+      { name: 'arg0', type: 'uint256' }, // bare → positional fallback
+    ]);
+    expect(incFn?.params.map((p) => p.name)).toEqual(['a']); // named
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 });
@@ -838,7 +908,7 @@ describe('s.fn', () => {
     (s, owner, tokens) => {
       const balOf = s.fn(
         'balOf',
-        [arg('token', t.address), arg('who', t.address)] as const,
+        [namedArg('token', t.address), namedArg('who', t.address)] as const,
         (token, who) =>
           s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
       );
@@ -867,7 +937,7 @@ describe('s.fn', () => {
       (s, x) => {
         const pair = s.fn(
           'pair',
-          [arg('a', t.uint256)] as const,
+          [namedArg('a', t.uint256)] as const,
           (a) => [a.add(1n), a.eq(0n)] as const,
         );
         const noop = s.fn('noop', [] as const, () => {});
@@ -885,7 +955,7 @@ describe('s.fn', () => {
     const script3 = evscript(
       { name: 'uncalled', args: [t.uint256] },
       (s, x) => {
-        s.fn('unused', [arg('a', t.uint256)] as const, (a) => a.add(1n));
+        s.fn('unused', [namedArg('a', t.uint256)] as const, (a) => a.add(1n));
         return s.return({ x });
       },
       NO_LOC,
@@ -898,7 +968,7 @@ describe('s.fn', () => {
     const script4 = evscript(
       { name: 'fnlit', args: [] },
       (s) => {
-        const inc = s.fn('inc', [arg('a', t.uint8)] as const, (a) => a.add(1n));
+        const inc = s.fn('inc', [namedArg('a', t.uint8)] as const, (a) => a.add(1n));
         return s.return({ two: inc(1n) });
       },
       NO_LOC,
@@ -1143,7 +1213,7 @@ describe('issue #5 ergonomics', () => {
     const direct = evscript(
       { name: 'meta', args: [t.address] },
       (s, token) => {
-        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+        const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
           s.tuple(TokenMeta, {
             symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
             decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
@@ -1157,7 +1227,7 @@ describe('issue #5 ergonomics', () => {
     const viaExpr = evscript(
       { name: 'meta', args: [t.address] },
       (s, token) => {
-        const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
+        const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
           s
             .tuple(TokenMeta, {
               symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
@@ -1186,7 +1256,7 @@ describe('issue #5 ergonomics', () => {
     const script = evscript(
       { name: 'mkArr', args: [t.uint256] },
       (s, n) => {
-        const build = s.fn('build', [arg('len', t.uint256)] as const, (len) => {
+        const build = s.fn('build', [namedArg('len', t.uint256)] as const, (len) => {
           const arr = s.newArray(t.uint256, len);
           arr.set(0n, 7n);
           return arr;

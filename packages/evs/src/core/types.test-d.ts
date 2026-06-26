@@ -2,7 +2,7 @@
  * type-level tests conjure phantom Expr handles via assertions; nothing here runs. */
 import { expectTypeOf, test } from 'vitest';
 
-import { arg, t } from './types.js';
+import { namedArg, t } from './types.js';
 import type { ArgSpec, Expr, IntoExpr, LitOf, TupleType } from './types.js';
 
 const takeU8 = (_x: IntoExpr<'uint8'>): void => undefined;
@@ -10,10 +10,12 @@ const takeExprU8 = (_x: Expr<'uint8'>): void => undefined;
 const e8 = {} as Expr<'uint8'>;
 const e16 = {} as Expr<'uint16'>;
 
-test('ArgSpec inference: arg(name, type) is exactly ArgSpec<name, type>', () => {
-  expectTypeOf(arg('pool', t.address)).toEqualTypeOf<ArgSpec<'pool', 'address'>>();
-  expectTypeOf(arg('fee', 'uint24')).toEqualTypeOf<ArgSpec<'fee', 'uint24'>>();
-  expectTypeOf(arg('tokens', t.array(t.address))).toEqualTypeOf<ArgSpec<'tokens', 'address[]'>>();
+test('ArgSpec inference: namedArg(name, type) is exactly ArgSpec<name, type>', () => {
+  expectTypeOf(namedArg('pool', t.address)).toEqualTypeOf<ArgSpec<'pool', 'address'>>();
+  expectTypeOf(namedArg('fee', 'uint24')).toEqualTypeOf<ArgSpec<'fee', 'uint24'>>();
+  expectTypeOf(namedArg('tokens', t.array(t.address))).toEqualTypeOf<
+    ArgSpec<'tokens', 'address[]'>
+  >();
 });
 
 test('t namespace literal types', () => {

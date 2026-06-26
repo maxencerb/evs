@@ -1,6 +1,6 @@
 ---
 title: evscript and compile
-description: "Exact signatures for evscript, EvsScript, arg, ArgSpec, compile, and CompileOptions, including every compile default."
+description: "Exact signatures for evscript, EvsScript, namedArg, ArgSpec, compile, and CompileOptions, including every compile default."
 ---
 
 This page is the signature-level reference for the script entry point and the compiler entry
@@ -8,7 +8,7 @@ point. For the narrative introduction, see [writing scripts](/guides/writing-scr
 compiled artifact returned by `compile`, see [the artifact reference](/reference/artifact/).
 
 ```ts
-import { arg, compile, evscript, t } from '@maxencerb/evs';
+import { namedArg, compile, evscript, t } from '@maxencerb/evs';
 ```
 
 ## evscript()
@@ -16,7 +16,7 @@ import { arg, compile, evscript, t } from '@maxencerb/evs';
 ```ts nocheck
 declare function evscript<
   const name extends string,
-  const args extends ArgsInput, // EvsType | readonly EvsType[]
+  const args extends ArgsInput, // ArgInput | readonly ArgInput[]; ArgInput = EvsType | ArgSpec
   ret extends Record<string, ReturnValue>, // each value: Expr | Tuple | MutArray
 >(
   def: { name: name; args?: args },
@@ -30,11 +30,13 @@ declare function evscript<
 callback must return the value produced by `s.return(...)` — returning anything else (or not
 calling `s.return` at all) throws `EvsTypeError`.
 
-Args are declared as `t.*` types — a single type or a `readonly` list — and arrive as
-**positional parameters after `s`**. A scalar arg arrives as an `Expr`, a `TupleType` arg as a
-[`Tuple` handle](/reference/builder/#tuple). `args` is optional; a zero-arg script omits it. A
-lone type is sugar for a one-element list (`args: t.uint256` ≡ `args: [t.uint256]`). The `const`
-type parameters mean inline `args` need no `as const`.
+Args are declared as `t.*` types or [`namedArg(name, type)`](#namedarg-and-argspec) wrappers — a
+single declarator or a `readonly` list — and arrive as **positional parameters after `s`**. A scalar
+arg arrives as an `Expr`, a `TupleType` arg as a [`Tuple` handle](/reference/builder/#tuple). `args`
+is optional; a zero-arg script omits it. A lone declarator is sugar for a one-element list
+(`args: t.uint256` ≡ `args: [t.uint256]`). A `namedArg` labels the arg in the viem `args` tuple; a
+bare arg keeps the positional `arg0`/`arg1`/… name. The `const` type parameters mean inline `args`
+need no `as const`.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -51,17 +53,19 @@ The relevant type helpers (all exported):
 
 | Type                  | Meaning                                                                            |
 | --------------------- | ---------------------------------------------------------------------------------- |
-| `ArgsInput`           | `EvsType \| readonly EvsType[]` — the accepted `args` input.                        |
-| `NormalizeArgs<a>`    | Normalizes to `readonly EvsType[]` (a lone type → a one-element list).              |
+| `ArgInput`            | `EvsType \| ArgSpec` — one declarator: a bare type or a `namedArg`.                 |
+| `ArgsInput`           | `ArgInput \| readonly ArgInput[]` — the accepted `args` input.                      |
+| `NormalizeArgs<a>`    | Normalizes to `readonly ArgSpec[]` (a lone declarator → a one-element list).        |
 | `ArgHandle<t>`        | `t extends TupleType ? Tuple<t> : Expr<t>` — one arg's body handle.                 |
-| `ArgHandles<types>`   | The positional handle tuple spread into the body after `s` (order preserved).      |
+| `ArgHandles<specs>`   | The positional handle tuple spread into the body after `s`, labeled by arg name.    |
 
 Recording-time validation (each violation throws `EvsTypeError` with the call-site location):
 
 - `def.name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
-- `def.args`, when present, must be a single `EvsType` or a `readonly` list of them. Each
-  normalized arg is auto-named `arg{i}` in the generated ABI (the names are positional labels;
-  viem infers `args` positionally regardless).
+- `def.args`, when present, must be a single declarator (a bare `EvsType` or a `namedArg`) or a
+  `readonly` list of them. A `namedArg` labels its input in the generated ABI; a bare arg is
+  auto-named `arg{i}` (the names are positional labels; viem infers `args` positionally regardless).
+  Duplicate arg names are rejected (`ABI_SHAPE`).
 - Every arg type must be a valid `EvsType` — a word/dynamic type, an array (a scalar array, a
   one-level nested array `T[][]`, or a `tuple[]`), or a `TupleType` (struct/tuple). Shapes
   outside the supported set — `tuple[][]`, deeper-than-`[][]` nesting, fixed `T[N]` — throw with
@@ -97,9 +101,9 @@ The value returned by `evscript`. It is frozen; `ir` is deep-frozen.
 
 ```ts
 import type {
+  ArgSpec,
   CompiledEvsScript,
   CompileOptions,
-  EvsType,
   ReturnValue,
   ScriptAbi,
   ScriptIr,
@@ -107,7 +111,7 @@ import type {
 
 interface EvsScript<
   name extends string = string,
-  args extends readonly EvsType[] = readonly EvsType[],
+  args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
 > {
   readonly name: name;
@@ -118,8 +122,9 @@ interface EvsScript<
 ```
 
 - `name` — the literal script name; becomes the ABI function name.
-- `args` — the normalized `readonly EvsType[]` of argument types (the type param, not a runtime
-  field).
+- `args` — the normalized `readonly ArgSpec[]` of argument specs (the type param, not a runtime
+  field): each `{ name, type }` carries the surfaced arg name (a `namedArg` name, or the `arg{i}`
+  fallback for a bare arg) and its type.
 - `ir` — the recorded program. Serialize it with `serializeIr` or run it with the `interpret`
   oracle without compiling; see [testing scripts](/guides/testing-scripts/).
 - `abi` — the literal-typed `ScriptAbi` (one `view` function plus the two evs error entries).
@@ -127,7 +132,7 @@ interface EvsScript<
   [the artifact reference](/reference/artifact/) for its shape.
 - `compile(options?)` — identical to the free-standing `compile(script, options)`.
 
-## arg() and ArgSpec (for s.fn)
+## namedArg() and ArgSpec
 
 ```ts
 import type { ArgType, StringType } from '@maxencerb/evs';
@@ -137,31 +142,54 @@ interface ArgSpec<name extends string = string, type extends ArgType = ArgType> 
   readonly type: type;
 }
 
-declare function arg<const name extends string, const type extends StringType>(
+declare function namedArg<const name extends string, const type extends StringType>(
   name: name,
   type: type,
 ): ArgSpec<name, type>;
 ```
 
-`arg` declares one **`s.fn` parameter** (see [user functions](/guides/functions/)). The
-script-header `args` surface no longer uses `arg()` — those are bare `t.*` types — but `arg` and
-`ArgSpec` are retained for `s.fn` param declarations. `arg` validates at the call site and
-returns a frozen object:
+`namedArg` names one **top-level** arg/param so the name surfaces in the resulting type — usable
+consistently in both a script's `args` and an `s.fn`'s params. Anywhere a bare `t.*` type is
+accepted, a `namedArg(...)` is too. A named **script** arg surfaces as a labeled element in the viem
+`args` tuple (`args: readonly [token: \`0x${string}\`]`); a named **`s.fn`** param surfaces as a
+labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps the positional
+`arg0`/`arg1`/… fallback name. `namedArg` validates at the call site and returns a frozen object:
 
 - `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
-- `type` must be a `StringType`: any word type, `string`, `bytes`, or a string array. Tuples are
-  excluded — `s.fn` params are string-encoded. (`ArgType`, the `ArgSpec` type parameter shown
-  above, is an alias of `EvsType` and is intentionally wider than the `arg` function's actual
-  `StringType` bound.) Shapes outside `StringType` throw `EvsTypeError` with code `UNSUPPORTED_V0`.
+- `type` must be a `StringType`: any word type, `string`, `bytes`, or a string array. Composite
+  (`t.struct`/`t.tuple`) types are passed bare — only top-level fields are named; nested composite
+  fields are named via `t.struct`. (`ArgType`, the `ArgSpec` type parameter shown above, is an alias
+  of `EvsType` and is intentionally wider than `namedArg`'s actual `StringType` bound.) Shapes
+  outside `StringType` throw `EvsTypeError` with code `UNSUPPORTED_V0`.
 
 ```ts
-import { arg, t } from '@maxencerb/evs';
+import { namedArg, t } from '@maxencerb/evs';
 
-const token = arg('token', t.address); // ArgSpec<'token', 'address'>
-const fees = arg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
-const amount = arg('amount', 'uint128'); // raw type strings work everywhere t.* does
+const token = namedArg('token', t.address); // ArgSpec<'token', 'address'>
+const fees = namedArg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
+const amount = namedArg('amount', 'uint128'); // raw type strings work everywhere t.* does
 void [token, fees, amount];
 ```
+
+Used in a script's `args`, the name flows into the ABI input and surfaces as the viem `args` label:
+
+```ts
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const balance = evscript(
+  { name: 'balance', args: [namedArg('token', t.address), namedArg('holder', t.address)] },
+  (s, token, holder) => s.return({ token, holder }), // body params are labeled `token`, `holder`
+);
+// balance.abi[0].inputs === [{ name: 'token', … }, { name: 'holder', … }]
+// a viem readContract over balance.abi types args as `readonly [token: `0x…`, holder: `0x…`]`
+void balance;
+```
+
+:::note
+TypeScript tuple/parameter **labels are cosmetic** — they improve autocomplete and hover but are not
+part of type identity. The name is also carried, observably, in the script's ABI input `name` (and
+the IR), which is what viem derives the `args` tuple label from.
+:::
 
 For **script** arguments, declaration order is still load-bearing: the args list order is the
 type-level order, the runtime encode order, and the ABI `inputs` order — call sites stay
@@ -171,7 +199,7 @@ viem-native positional (`args: [pool, fee]`). The full type vocabulary lives in
 ## compile()
 
 ```ts
-import type { CompiledEvsScript, CompileOptions, EvsScript, EvsType, ReturnValue, ScriptIr } from '@maxencerb/evs';
+import type { ArgSpec, CompiledEvsScript, CompileOptions, EvsScript, ReturnValue, ScriptIr } from '@maxencerb/evs';
 
 declare function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
@@ -180,7 +208,7 @@ declare function compile<
   options?: CompileOptions,
 ): s extends EvsScript<
   infer n extends string,
-  infer a extends readonly EvsType[],
+  infer a extends readonly ArgSpec[],
   infer r extends Record<string, ReturnValue>
 >
   ? CompiledEvsScript<n, a, r>

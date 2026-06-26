@@ -16,7 +16,7 @@ The pool ABI is elided below for readability (hover any identifier to see its in
 this page uses [Twoslash](https://twoslash.netlify.app/)). Everything else is the whole script:
 
 ```ts twoslash
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 // ---cut-start---
 const uniswapV3PoolAbi = [
@@ -61,10 +61,10 @@ const PoolMetadata = t.struct({
 export const poolsData = evscript(
   { name: 'poolsData', args: [t.array(t.address), t.address] },
   (s, pools, user) => {
-    // A reusable, typed subroutine: one token's metadata. `arg(name, type)` names its params.
+    // A reusable, typed subroutine: one token's metadata. `namedArg(name, type)` names its params.
     const tokenMetadata = s.fn(
       'tokenMetadata',
-      [arg('token', t.address), arg('owner', t.address)] as const,
+      [namedArg('token', t.address), namedArg('owner', t.address)] as const,
       (token, owner) =>
         s.tuple(TokenMetadata, {
           address: token,
@@ -108,7 +108,7 @@ at recording time. The pieces, in order:
 - **`t.struct({ ... })`** builds composite types, and a member can itself be a struct
   (`PoolMetadata.token0` is a `TokenMetadata`) — see
   [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
-- **`s.fn(name, [arg(...)], body)`** defines a reusable typed subroutine compiled once and
+- **`s.fn(name, [namedArg(...)], body)`** defines a reusable typed subroutine compiled once and
   called twice here (token0 and token1) — see [user functions](/guides/functions/).
 - **`s.read({ ..., struct: true })`** decodes a multi-output getter into one named object
   instead of a positional tuple — see [calls](/guides/calls/#decoding-multiple-outputs-into-a-struct).
@@ -126,7 +126,7 @@ it cannot express this in one round trip; evs records the chain and runs it on-c
 a plain viem `readContract` and add the `functionName` and typed `args`:
 
 ```ts twoslash
-import { arg, evscript, t } from '@maxencerb/evs';
+import { namedArg, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
 // ---cut-start---
 const uniswapV3PoolAbi = [
@@ -162,7 +162,7 @@ const poolsData = evscript(
   (s, pools, user) => {
     const tokenMetadata = s.fn(
       'tokenMetadata',
-      [arg('token', t.address), arg('owner', t.address)] as const,
+      [namedArg('token', t.address), namedArg('owner', t.address)] as const,
       (token, owner) =>
         s.tuple(TokenMetadata, {
           address: token,

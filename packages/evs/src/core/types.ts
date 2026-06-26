@@ -1,5 +1,5 @@
 /**
- * M1 `core/types.ts` — the type vocabulary, `Expr` brand, `arg()`/`t`, and runtime type
+ * M1 `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
  * predicates/metadata (single source of truth for all modules).
  *
  * Contract: docs/design/module-interfaces.md §M1 (frozen) + api.md §2/§3.
@@ -179,7 +179,7 @@ export type TupleAsParam<t extends TupleType> = {
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 
 // ---------------------------------------------------------------------------
-// arg() declarators + the `t` type namespace (api.md §2)
+// namedArg() declarator + the `t` type namespace (api.md §2)
 // ---------------------------------------------------------------------------
 
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
@@ -189,7 +189,15 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
 
 const IDENT_RE = /^[A-Za-z_]\w*$/;
 
-export function arg<const name extends string, const type extends StringType>(
+/**
+ * Names a **top-level** arg/param so the name surfaces in the resulting type (issue #9): in a
+ * script's `args`, the viem `args` tuple element is labeled (`[token: …]`); in an `s.fn`'s params,
+ * the callback parameter is labeled (`(token) => …`). The `type` bound is {@link StringType} (word/
+ * dynamic/string-array) — composite (`t.struct`/`t.tuple`) types are passed bare; nested composite
+ * fields are named via `t.struct` and keep their behaviour. A bare (unnamed) top-level arg keeps the
+ * positional `arg{i}` fallback name.
+ */
+export function namedArg<const name extends string, const type extends StringType>(
   name: name,
   type: type,
 ): ArgSpec<name, type> {

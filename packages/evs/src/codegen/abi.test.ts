@@ -145,7 +145,7 @@ describe('calldata decode → return encode echo, differential vs viem (cancun)'
     expect(res.success).toBe(true);
     const abi = buildScriptAbi(
       'echo',
-      [...types],
+      types.map((type, i) => ({ name: `arg${i}`, type })),
       types.map((type, i) => ({ name: `v${i}`, type })),
     );
     const decoded = decodeFunctionResult({ abi, functionName: 'echo', data: res.data });
