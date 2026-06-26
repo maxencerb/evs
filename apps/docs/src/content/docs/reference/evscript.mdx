@@ -151,7 +151,7 @@ declare function namedArg<const name extends string, const type extends StringTy
 `namedArg` names one **top-level** arg/param so the name surfaces in the resulting type — usable
 consistently in both a script's `args` and an `s.fn`'s params. Anywhere a bare `t.*` type is
 accepted, a `namedArg(...)` is too. A named **script** arg surfaces as a labeled element in the viem
-`args` tuple (`args: readonly [token: \`0x${string}\`]`); a named **`s.fn`** param surfaces as a
+`args` tuple (`[token: 0x…]` instead of `[arg0: 0x…]`); a named **`s.fn`** param surfaces as a
 labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps the positional
 `arg0`/`arg1`/… fallback name. `namedArg` validates at the call site and returns a frozen object:
 
