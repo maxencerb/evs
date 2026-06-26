@@ -773,10 +773,13 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `viem` (encode/decode for ABI byte-a
 export interface MockChain {
   staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
   // amended by #1: an OPTIONAL non-static frame (s.call / s.simulate targets). Defaults to
-  // `staticcall` when absent. The stateless oracle decodes call/simulate returndata IDENTICALLY to
-  // a read (the simulate rollback is invisible here — no persisted state to model); the rollback
-  // and write-persistence semantics are pinned in the anvil integration tier, not here.
-  call?(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
+  // `staticcall` when absent. `req.kind` ('call' | 'simulate') is INFORMATIONAL ONLY — the stateless
+  // oracle decodes call/simulate returndata IDENTICALLY to a read (returndata is a pure function of
+  // to+data+state; the simulate rollback is invisible here — no persisted state to model), so a
+  // stateless mock MUST return the same data for either kind. `kind` exists for routing assertions
+  // and user-built stateful mocks; the rollback/write-persistence semantics are pinned in the anvil
+  // integration tier, not here.
+  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate' }): { success: boolean; data: Hex };
 }
 export interface InterpResult {
   outcome:
@@ -800,7 +803,9 @@ codegen. On divergence in differential tests, `evm-target.md` + architecture §6
 
 **Unit tests (M6)**: golden runs over hand-built IRs covering every stmt kind; revert paths
 (panic codes per width incl. `int256 min / −1`, MUL wrap-back for uint192); decode-fail site
-ids; tryCall zeroing; maxSteps guard.
+ids; tryCall zeroing; call-kind routing (`kind:'call'`/`'simulate'` → the mutable `call` oracle,
+with `staticcall` fallback when `call` is absent; strict-bubble + try-zero on the mutable path);
+maxSteps guard.
 
 ---
 

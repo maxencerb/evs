@@ -1321,15 +1321,23 @@ module-interfaces §M2 (`ir/nodes.ts` + `validate.ts`), §M5 (builder), §M6 (`i
   frame both roll back the write AND read what it would have returned.
 - Status: **accepted**.
 
-### 19.5 `MockChain.call` — optional non-static oracle hook
+### 19.5 `MockChain.call` — optional non-static oracle hook (with informational `kind`)
 
 - Law: module-interfaces §M6 — `MockChain` had only `staticcall`.
 - Shipped: an OPTIONAL `call(req)` method (defaults to `staticcall` when absent), the `s.call`/
-  `s.simulate` target. The stateless oracle decodes `call`/`simulate` returndata IDENTICALLY to a
-  read — the simulate rollback is INVISIBLE there (no persisted state to model). The rollback and the
-  write-persistence semantics are pinned in the anvil integration tier, not the interp oracle.
+  `s.simulate` target. `req` carries `kind: 'call' | 'simulate'` so the oracle is TOLD which verb
+  invoked it — but it is INFORMATIONAL ONLY. The stateless oracle decodes `call`/`simulate`
+  returndata IDENTICALLY to a read — the simulate rollback is INVISIBLE there (no persisted state to
+  model). The rollback and write-persistence semantics are pinned in the anvil integration tier, not
+  the interp oracle.
 - Rationale: the reference interpreter is stateless, so it cannot observe rollback vs persistence;
   decode equivalence is all it must guarantee, and the integration tier carries the state semantics.
+  Returndata is a pure function of `to+data+state`, so a stateless mock MUST return the same data
+  regardless of `kind` (diverging on it would model physically-impossible behavior and break the
+  byte-for-byte agreement with the bytecode). `kind` was added so routing is assertable at the unit
+  tier and a user-built _stateful_ mock can choose to apply-then-roll-back itself; it changes no
+  existing implementor (handlers read a subset of `req`, none construct one). The unit tier pins the
+  routing (`kind:'call'`/`'simulate'` → `call`, `staticcall` fallback, strict-bubble, try-zero).
 - Status: **accepted**.
 
 ### 19.6 Mutability filter + steering errors
