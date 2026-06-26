@@ -162,26 +162,31 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
   of `EvsType` and is intentionally wider than `namedArg`'s actual `StringType` bound.) Shapes
   outside `StringType` throw `EvsTypeError` with code `UNSUPPORTED_V0`.
 
-```ts
+```ts twoslash
 import { namedArg, t } from '@maxencerb/evs';
 
-const token = namedArg('token', t.address); // ArgSpec<'token', 'address'>
+const token = namedArg('token', t.address);
+//    ^?
 const fees = namedArg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
 const amount = namedArg('amount', 'uint128'); // raw type strings work everywhere t.* does
 void [token, fees, amount];
 ```
 
-Used in a script's `args`, the name flows into the ABI input and surfaces as the viem `args` label:
+Used in a script's `args`, the name flows into the ABI input and surfaces as the viem `args` label —
+hover the inferred `Args` type below (a bare arg would read `arg0`/`arg1` instead):
 
-```ts
+```ts twoslash
 import { evscript, namedArg, t } from '@maxencerb/evs';
+import type { ReadContractParameters } from 'viem';
 
 const balance = evscript(
   { name: 'balance', args: [namedArg('token', t.address), namedArg('holder', t.address)] },
   (s, token, holder) => s.return({ token, holder }), // body params are labeled `token`, `holder`
 );
-// balance.abi[0].inputs === [{ name: 'token', … }, { name: 'holder', … }]
-// a viem readContract over balance.abi types args as `readonly [token: `0x…`, holder: `0x…`]`
+
+// viem labels the call args with your names — `token`/`holder`, not `arg0`/`arg1`:
+type Args = ReadContractParameters<typeof balance.abi, 'balance'>['args'];
+//   ^?
 void balance;
 ```
 
