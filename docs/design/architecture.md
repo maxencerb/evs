@@ -143,7 +143,7 @@ never re-executes. This is the direct answer to the PyTeal post-mortem [prior-ar
 - **Staging traps**: handles throw `EvsStagingError` from `valueOf`, `Symbol.toPrimitive`,
   `toString`, **and `toJSON`** (resolves A's false "uninterceptable" claim), citing both the
   handle's recording site and the misuse site. `nodejs.util.inspect.custom` is implemented
-  **non-throwing** (`Expr<address> #4 ← s.call(token0) at pools.ts:9:18`) — printing is
+  **non-throwing** (`Expr<address> #4 ← s.read(token0) at pools.ts:9:18`) — printing is
   debugging, not misuse. The un-poisonable `if (expr)` truthiness gap is mitigated by a
   front-page docs warning + the recommended type-aware `typescript/strict-boolean-expressions`
   lint (oxlint + tsgolint).
@@ -353,11 +353,35 @@ Shared panic tails are emitted once (§11); exact bytes hand-verified in §15.0.
 
 ## 7. Call codegen (decision 6)
 
-Surface mirrors `readContract` (signatures in `api.md` §6): `s.call`/`s.tryCall` with
-`{ address, abi, functionName, args?, gas? }`; abitype generics with viem's graceful-widening,
+Surface mirrors `readContract` (signatures in `api.md` §6). **Three calling verbs**, split by
+mutability + call frame, all sharing the SAME params object (`{ address, abi, functionName,
+args?, gas? }`) and the SAME overload structure (struct-aware default / `struct: true` /
+non-literal, plus a `try*` variant returning `{ success, value }`):
+
+| Verb                         | Opcode                                   | Mutability filter (functionName type)           | State semantics                                                                                                                                                                                       |
+| ---------------------------- | ---------------------------------------- | ----------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `s.read` / `s.tryRead`       | `STATICCALL`                             | `ViewMutability` = `'pure'`\|`'view'`           | static — no state change possible. The renamed frozen read surface (a MECHANICAL RENAME of the old `s.call`/`s.tryCall` — identical codegen).                                                         |
+| `s.call` / `s.tryCall`       | `CALL` (value 0)                         | `WriteMutability` = `'nonpayable'`\|`'payable'` | a real non-static frame; the write is NOT rolled back — it persists to LATER subcalls in the same top-level `eth_call` (the `eth_call` itself still never commits). Canonical case: a Uniswap quoter. |
+| `s.simulate`/`s.trySimulate` | `CALL` via self-call + revert trampoline | `WriteMutability` = `'nonpayable'`\|`'payable'` | the write is rolled back and isolated from later reads in the same script, yet the return value is read back. Dry-run a true write and read what it would return.                                     |
+
+Mutability is filtered at the `functionName` TYPE level per verb: a nonpayable function under
+`s.read` is a compile error (steered to `s.call`/`s.simulate`); a `view`/`pure` function under
+`s.call`/`s.simulate` is a compile error (steered to `s.read`). The runtime recorder mirrors
+this with a steering `EvsTypeError(ABI_SHAPE)`. abitype generics carry viem's graceful-widening,
 `[never]` guards, and the `functionName: name | AllNames` autocomplete union [abitype §2].
 Overloaded names are rejected at recording (v0); `ExtractAbiFunctionForArgs` is the documented
 later fix. Output/arg types outside the v0 `EvsType` set → recording-time `EvsTypeError`.
+
+**BREAKING CHANGE (acceptable pre-1.0):** the `s.call`/`s.tryCall` → `s.read`/`s.tryRead` rename
+AND the reuse of `s.call` with `CALL`-opcode semantics. Every former `s.call`/`s.tryCall` site
+(view reads) is now `s.read`/`s.tryRead`.
+
+**FRAME DEPENDENCE** (document like the `s.env('caller')` warning, §13.3): `s.call` and
+`s.simulate` make a real call in which the TARGET sees `msg.sender` = the SCRIPT's address — a
+per-script counterfactual CREATE2 address in the default deployless `toViem()` mode, or the
+override address in `stateOverride` mode. For `msg.sender`-sensitive writes, use
+`toViem({ mode: 'stateOverride' })` + the `account` call parameter. The simulate self-call to
+`ADDRESS()` works in both modes.
 
 ### 7.1 Calldata build — `CalldataTemplate`
 
@@ -367,13 +391,19 @@ MSTORE at its head offset), `dyn` segments (runtime `string`/`bytes`/`T[]` arg �
 word + tail copied from the memref via MCOPY, with explicit zero-padding of the last word).
 All-literal calls collapse to **one const segment**: ≤ 96 bytes → PUSH32-chunked MSTOREs;
 larger → **data segment + CODECOPY** (B's §9 convention, §10 below). Buffer at transient
-scratch `MLOAD(0x40)`, not bumped.
+scratch `MLOAD(0x40)`, not bumped. §7.1 and §7.2 are **shared by `s.read` (STATICCALL) and
+`s.call` (CALL with value 0)** — the two are identical save the opcode plus the extra `value`
+operand on CALL. `s.simulate` (§7.3) reuses §7.1's calldata build for the inner target calldata.
 
 ### 7.2 The call, bubbling, decode
 
-1. `STATICCALL(gas(), addr, buf, argsSize, 0, 0)` — `retSize 0` always; returndata is fetched
-   uniformly via RETURNDATACOPY (no `min(retSize, rds)` partial-copy trap). Optional `gas` cap
-   operand; default forward-all (EIP-150 63/64 applies).
+1. `STATICCALL(gas(), addr, buf, argsSize, 0, 0)` (`s.read`) or `CALL(gas(), addr, 0, buf,
+argsSize, 0, 0)` (`s.call`, `value` 0) — `retSize 0` always; returndata is fetched uniformly
+   via RETURNDATACOPY (no `min(retSize, rds)` partial-copy trap). Optional `gas` cap operand;
+   default forward-all (EIP-150 63/64 applies). `s.call` is "read with the CALL opcode": the same
+   arg-encode / returndata-decode / verbatim-revert-bubble / `try`-zeroing path as `s.read`, with
+   no rollback machinery — a write it performs IS visible to a later `s.read` in the same script
+   (same `eth_call` frame), but the `eth_call` result is still never committed on-chain.
 2. **Failure (strict mode)** → bubble verbatim — works for `Error(string)`, `Panic`, custom
    errors alike [evm §5]: `RETURNDATASIZE PUSH0 PUSH0 RETURNDATACOPY RETURNDATASIZE PUSH0 REVERT`.
 3. **Head-size guard BEFORE any head read** (B's `staticMinSize` graft — closes C's verified
@@ -409,9 +439,9 @@ scratch `MLOAD(0x40)`, not bumped.
    `EvsDecodeError(uint256 site)` (declared in the generated ABI; `explainRevert`/`sourceMap.sites`
    maps the site to "decoding `symbol()` returndata recorded at pools.ts:9:18").
    Try mode → the call's `@zero_<site>` block: `successOut = 0`, word outs = 0, memref outs =
-   `0x60` (zero slot ⇒ empty); a failed STATICCALL takes the same block. `tryCall.success` is
-   false on call failure **or** malformed returndata; `value` is always safe to use (documented
-   divergence from Solidity try/catch).
+   `0x60` (zero slot ⇒ empty); a failed STATICCALL/CALL takes the same block. `tryRead`/`tryCall`
+   `.success` is false on call failure **or** malformed returndata; `value` is always safe to use
+   (documented divergence from Solidity try/catch).
 
 **RETURNDATACOPY invariant (named, machine-checked)**: the compiler only ever emits the two
 intrinsically safe shapes `(0, 0, rds)` and `(base, 0, rds)` — `offset = 0, size = RETURNDATASIZE`
@@ -421,6 +451,41 @@ preceded by the node window `RETURNDATASIZE, PUSH0, (PUSH0 | DUPn)`.
 
 Warm/cold note: first STATICCALL per address costs 2600, later 100 [evm §2]; documented, no
 dedup in v0.
+
+### 7.3 Simulate trampoline (`s.simulate` / `s.trySimulate`)
+
+`s.simulate` dry-runs a true write and reads back what it would return, while rolling the write
+back and isolating it from later reads in the same script. It lowers via a reserved **second
+dispatcher entrypoint** (the "trampoline") and a self-call:
+
+1. Build the target calldata exactly like a normal call (§7.1).
+2. Above that buffer, build the self-call wrapper `[trampSel(4 bytes)][target address(32)][target
+calldata…]`.
+3. `CALL ADDRESS()` — the script calls **itself** (the script code is present at `ADDRESS()` in
+   BOTH `toViem` modes: deployless's counterfactual CREATE address and `stateOverride`'s override
+   address).
+4. The dispatcher routes the reserved trampoline selector to the **trampoline body**, which
+   decodes `target` + `payload`, performs the real `CALL` to the write target, and then **REVERTs**
+   with `[MAGIC(32)][innerSuccess(32)][target returndata…]`. That REVERT unwinds the sub-frame,
+   discarding every state change the write made — **THAT is the rollback**.
+5. Back in the outer frame, the self-call returns failure (the trampoline reverted). The outer
+   frame recognizes the magic word, branches on `innerSuccess` (strict: bubble the target's revert
+   verbatim; `try`: `success = false`, zeroed value), and decodes the carried returndata via the
+   **shared in-memory tuple decoder** (§7.2 / §8).
+
+Constants: reserved trampoline selector `0xbbde5aa3` = `toFunctionSelector(
+'__evs_simulate(address,bytes)')`; `MAGIC` = `keccak256("evs.simulate.revert.v1")` =
+`0xe7dc6cc8acb6dfffe16c5466c82c888cde4d25c3f822bd2740efb87faa5dda3c`. The compiler asserts the
+script's own selector != the trampoline selector at compile time (collision ~2^-32 →
+`EvsInternalError`). `s.read` stays STATICCALL-pure — the trampoline machinery and the CALL
+opcode appear only on the `s.call` / `s.simulate` paths.
+
+Codegen modules: `src/codegen/simulate.ts` (the trampoline emitter + constants); `src/codegen/
+call.ts` gains `emitSimulateCall` and emits `CALL` for `kind: 'call'`; `src/codegen/program.ts`
+adds the trampoline dispatcher branch + entrypoint when any simulate site exists. The IR `call`
+statement gains an optional `kind?: 'static' | 'call' | 'simulate'` (absent ⇒ `'static'`, so
+pre-issue-#1 serialized IR is byte-unchanged). Nested `s.simulate`, an explicit gas cap on the
+inner CALL, and `msg.sender` on the self-call hop are open follow-ups (§18).
 
 ## 8. ABI encode/decode codegen (decision 7)
 
@@ -582,9 +647,11 @@ AsmNode = op | push{value: bigint}        // minimal-width PUSHn; 0 → PUSH0 (p
   3. **Shape lints**: every `RETURNDATACOPY` preceded by exactly
      `RETURNDATASIZE, PUSH0, (PUSH0|DUPn)` (§7); no opcode with `since` newer than
      `opts.evmVersion` (catches a stray MCOPY in a paris build); `TSTORE`/`TLOAD`/`SSTORE`/
-     `LOG*`/`CREATE*`/`SELFDESTRUCT`/`CALL`/`DELEGATECALL`/`CALLCODE` never appear (STATICCALL-
-     clean by construction); EIP-170 size ≤ 24,576 → `EvsCompileError` with a per-region
-     breakdown (body / fns / tails / data segments — C's actionable variant).
+     `SLOAD`/`LOG*`/`CREATE*`/`SELFDESTRUCT`/`DELEGATECALL`/`CALLCODE` never appear. `CALL`
+     (opcode `0xf1`) is now **ADMITTED** (removed from the FORBIDDEN set — it is reachable only
+     on the `s.call` / `s.simulate` paths; `s.read` stays STATICCALL-pure); the STATICCALL-only
+     opcode whitelist is relaxed only there. EIP-170 size ≤ 24,576 → `EvsCompileError` with a
+     per-region breakdown (body / fns / tails / data segments — C's actionable variant).
 - **Peephole hook**: `peephole?: (nodes) => AsmNode[]` in `CompileOptions`, **default identity**
   (no optimization in v0 — the honesty rule applies to docs and goldens). B's rule table ships
   as documentation for the first optional pass: store-forward
@@ -634,6 +701,11 @@ unreachable bytes (amendment 10.2) — and the dispatcher reaches `@badcd` throu
 `PUSH2 @badcd JUMP` above (amendment 10.3). The fallback is the **named**
 `EvsInvalidCalldata()` (A graft) — viem decodes it from the generated ABI instead of a bare
 `revert(0,0)`.
+
+When any `s.simulate` site exists, the dispatcher gains a **second selector compare** (a
+`DUP1 + PUSH4 <trampoline selector> + EQ + PUSH2 @simulate_trampoline + JUMPI` ahead of the main
+selector compare) routing to a `@simulate_trampoline` entrypoint emitted among the tails (§7.3);
+the dispatcher is byte-identical to before when there is no simulate site.
 
 The sketch above is the map; the listing below is the territory — the complete annotated
 disassembly of the minimal script `echo(uint256)`
@@ -815,8 +887,8 @@ EvsError (base; code: EvsErrorCode, loc, relatedLocs[])
 
 ### 13.2 Policy
 
-Validate at recording wherever the information exists at recording (almost everywhere — `s.call`
-sees its ABI fragment immediately). Every message speaks user vocabulary with `file:line:col`
+Validate at recording wherever the information exists at recording (almost everywhere —
+`s.read`/`s.call` sees its ABI fragment immediately). Every message speaks user vocabulary with `file:line:col`
 from `captureLoc()`, plus `relatedLocs` when two sites are involved (PyTeal lesson). Compile
 time is reserved for whole-program facts. The full recording-time checklist is pinned in
 `module-interfaces.md` §builder.
@@ -938,7 +1010,7 @@ solc sign-case formula.
 
 ### 15.2 STATICCALL `symbol()` → dynamic string (the decode-soundness graft applied)
 
-From the script `sym(token0)` returning `{ symbol0: s.call({ address: token0, abi: erc20Abi,
+From the script `sym(token0)` returning `{ symbol0: s.read({ address: token0, abi: erc20Abi,
 functionName: 'symbol' }) }`: arg `token0`→`0x80`, result memref `symbol0`→`0xA0`, the call is
 **site 0**. Calldata is all-literal after folding (selector only) and is built at transient
 scratch with the stack empty, recomputing the buffer pointer from `0x40` instead of keeping it
@@ -989,7 +1061,7 @@ on the stack (amendment 9.8). Reading the excerpt top to bottom:
 0x0059  6080        PUSH1 0x80
 0x005b  51          MLOAD  ; target
 0x005c  5a          GAS
-0x005d  fa          STATICCALL  ; strict call symbol (site 0)
+0x005d  fa          STATICCALL  ; strict read symbol (site 0)
 0x005e  610069      PUSH2 0x0069 → @call_ok_0
 0x0061  57          JUMPI
 0x0062  3d          RETURNDATASIZE
@@ -1077,7 +1149,7 @@ shared `@decode_revert` tail (§15.0 shape):
 
 Every head word read happens **after** `rds ≥ 32·nOutputs` is established — no stale-memory
 read exists on any path (the resolved C §14.2 hole). The string body is never copied twice.
-`tryCall` variant: the post-STATICCALL `JUMPI` inverts to the `@zero_0` block and `@dfail_0`
+`tryRead` variant: the post-STATICCALL `JUMPI` inverts to the `@zero_0` block and `@dfail_0`
 jumps there too; `@zero_0` sets `success=0`, `slot[0xA0]=0x60`, and rejoins inline at the
 per-site join label (amendment 9.6).
 
@@ -1197,27 +1269,27 @@ eth_call budgets [evm §4]) and the first documented peephole candidate, not v0.
 
 ## 16. Constraint → mechanism traceability (merged A §13 / B §14 / C §13 — living CI checklist)
 
-| Constraint (source)                                                       | Mechanism (module)                                                                                                                              |
-| ------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
-| RETURNDATACOPY OOB = exceptional halt, all gas [evm §2]                   | only `(0,0,rds)`/`(base,0,rds)` shapes; assembler shape lint (asm/verify)                                                                       |
-| viem `code` executes as init code; raw runtime fails silently [viem §1.3] | `toViem()` only exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode`; deployless regression test (viem.ts, tests) |
-| JUMPDEST validity skips PUSH immediates [evm §3]                          | PUSH2-only label pushes + consensus-identical post-assembly scan (asm/verify)                                                                   |
-| EIP-170 24,576 runtime / EIP-3860 init [evm §4]                           | `EvsCompileError` with per-region size breakdown (compile.ts)                                                                                   |
-| eth_call gas caps: anvil 30M default, geth 50M floor [evm §4]             | harness/anvil pinned `--gas-limit 100000000`; docs state the 50M production floor                                                               |
-| TSTORE/TLOAD/state-writes halt in static context [evm §1]                 | never emitted; shape lint blocklist (asm/verify)                                                                                                |
-| stack limit 1024 / DUP-SWAP reach 16 [evm §2]                             | empty-statement-boundary invariant + ≤16 template depth, machine-checked (asm/verify)                                                           |
-| Panic encoding `0x4e487b71` + 36-byte payload [evm §5]                    | shared tails (§15.0), golden-tested byte-exact                                                                                                  |
-| `−2^255 / −1` SDIV silent wrap [evm §5]                                   | explicit check → Panic 0x11 (§6)                                                                                                                |
-| sub-word MUL 256-bit wrap-back (N>128)                                    | div-back + range check (§6); boundary-matrix tests incl. wrap-past-2^256 cases                                                                  |
-| UnionToTuple order instability [abitype §4.2]                             | ordered positional arg-type list inputs; t.struct → single named tuple → object; CI type regression (amended by #2)                             |
-| empty component name degrades object→array [abitype §4.3]                 | recording-time rejection of empty return keys (builder)                                                                                         |
-| viem ≥ 2.14.1 floor; type-volatile patches [viem §1.2, abitype §0]        | peerDeps floor; CI pins exact viem for type tests                                                                                               |
-| anvil deployless constructor-return history [stack §3]                    | permanent pinned integration test on the `code` path                                                                                            |
-| stateOverride undocumented on Alchemy/Infura [viem §4]                    | deployless is the `toViem()` default                                                                                                            |
-| override `code` does not clear account state [viem §3.1]                  | vanity `DEFAULT_SCRIPT_ADDRESS`; scripts never SLOAD                                                                                            |
-| warm/cold 2600/100 [evm §2]                                               | documented; no dedup in v0                                                                                                                      |
-| ABIs must be inline or `as const` [prior-art §5]                          | `script.abi` is a literal-typed runtime value; any file emission is `.ts` `as const`                                                            |
-| PyTeal silent-misuse / late sourcemaps [prior-art §2]                     | value semantics, throwing brands (+toJSON), locs on every node, sourceMap/disasm/explainRevert day one                                          |
+| Constraint (source)                                                       | Mechanism (module)                                                                                                                               |
+| ------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------ |
+| RETURNDATACOPY OOB = exceptional halt, all gas [evm §2]                   | only `(0,0,rds)`/`(base,0,rds)` shapes; assembler shape lint (asm/verify)                                                                        |
+| viem `code` executes as init code; raw runtime fails silently [viem §1.3] | `toViem()` only exposes `initBytecode` under `code`; fields named `runtimeBytecode`/`initBytecode`; deployless regression test (viem.ts, tests)  |
+| JUMPDEST validity skips PUSH immediates [evm §3]                          | PUSH2-only label pushes + consensus-identical post-assembly scan (asm/verify)                                                                    |
+| EIP-170 24,576 runtime / EIP-3860 init [evm §4]                           | `EvsCompileError` with per-region size breakdown (compile.ts)                                                                                    |
+| eth_call gas caps: anvil 30M default, geth 50M floor [evm §4]             | harness/anvil pinned `--gas-limit 100000000`; docs state the 50M production floor                                                                |
+| TSTORE/TLOAD/state-writes halt in static context [evm §1]                 | never emitted; shape lint blocklist (asm/verify). `CALL` admitted for `s.call`/`s.simulate` (`eth_call` never commits); `s.read` STATICCALL-pure |
+| stack limit 1024 / DUP-SWAP reach 16 [evm §2]                             | empty-statement-boundary invariant + ≤16 template depth, machine-checked (asm/verify)                                                            |
+| Panic encoding `0x4e487b71` + 36-byte payload [evm §5]                    | shared tails (§15.0), golden-tested byte-exact                                                                                                   |
+| `−2^255 / −1` SDIV silent wrap [evm §5]                                   | explicit check → Panic 0x11 (§6)                                                                                                                 |
+| sub-word MUL 256-bit wrap-back (N>128)                                    | div-back + range check (§6); boundary-matrix tests incl. wrap-past-2^256 cases                                                                   |
+| UnionToTuple order instability [abitype §4.2]                             | ordered positional arg-type list inputs; t.struct → single named tuple → object; CI type regression (amended by #2)                              |
+| empty component name degrades object→array [abitype §4.3]                 | recording-time rejection of empty return keys (builder)                                                                                          |
+| viem ≥ 2.14.1 floor; type-volatile patches [viem §1.2, abitype §0]        | peerDeps floor; CI pins exact viem for type tests                                                                                                |
+| anvil deployless constructor-return history [stack §3]                    | permanent pinned integration test on the `code` path                                                                                             |
+| stateOverride undocumented on Alchemy/Infura [viem §4]                    | deployless is the `toViem()` default                                                                                                             |
+| override `code` does not clear account state [viem §3.1]                  | vanity `DEFAULT_SCRIPT_ADDRESS`; scripts never SLOAD                                                                                             |
+| warm/cold 2600/100 [evm §2]                                               | documented; no dedup in v0                                                                                                                       |
+| ABIs must be inline or `as const` [prior-art §5]                          | `script.abi` is a literal-typed runtime value; any file emission is `.ts` `as const`                                                             |
+| PyTeal silent-misuse / late sourcemaps [prior-art §2]                     | value semantics, throwing brands (+toJSON), locs on every node, sourceMap/disasm/explainRevert day one                                           |
 
 ## 17. Resolved flaws (every judged flaw, with its fix)
 
@@ -1277,6 +1349,11 @@ retSize pushed first, retOffset above it, gas on top at STATICCALL). 36. *Bare`r
   builder wiring (`s.newArray` still gates them). The `TupleType`/`ArrayType` vocabulary already
   represents them, so it is additive; the recording-time `EvsTypeError('UNSUPPORTED_V0', …)` guard
   names the reached shape.
+- **Split calls by mutability**: SHIPPED by #1 (`s.read`/`s.tryRead` STATICCALL, `s.call`/
+  `s.tryCall` CALL value 0, `s.simulate`/`s.trySimulate` self-call + revert trampoline) — see
+  §7, §11. Open follow-ups: **nested `s.simulate`**, an **explicit gas cap on the inner CALL**,
+  **`msg.sender` on the self-call hop**, and decoding a QuoterV1-style revert payload AS the
+  `s.tryCall` result (today `s.tryCall` only reports `success = false` on the revert).
 - **Overload disambiguation** (`ExtractAbiFunctionForArgs`), **dynamic-length stack of args >
   word count**, **`s.rawCall({to, data})`** typed escape hatch, **recursion** (FP-relative
   slots confined to codegen), **single named-tuple input option** for many-arg scripts,

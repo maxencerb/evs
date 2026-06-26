@@ -49,7 +49,7 @@ function sumScript() {
 
 function symbolScript() {
   return evscript({ name: 'sym', args: [] }, (s) => {
-    const symbol = s.call({ address: TOKEN, abi: erc20Abi, functionName: 'symbol' });
+    const symbol = s.read({ address: TOKEN, abi: erc20Abi, functionName: 'symbol' });
     return s.return({ symbol });
   });
 }
@@ -535,8 +535,8 @@ describe('composite-array CALL ARG encode (M4)', () => {
 
   test('forwarding a decoded tuple[] as a call arg now COMPILES (§12.7 M4)', () => {
     const script = evscript({ name: 'sumPositions' }, (s) => {
-      const ps = s.call({ address: POOL, abi, functionName: 'positionsBatch', args: [2n] });
-      const sum = s.call({
+      const ps = s.read({ address: POOL, abi, functionName: 'positionsBatch', args: [2n] });
+      const sum = s.read({
         address: POOL,
         abi,
         functionName: 'sumLiquidity',
@@ -563,7 +563,7 @@ describe('composite-array CALL ARG encode (M4)', () => {
     // deferred shape STILL throws UNSUPPORTED_V0.
     const err = captureError(() => {
       const script = evscript({ name: 'badTwoLevel' }, (s) => {
-        const out = s.call({
+        const out = s.read({
           address: POOL,
           abi: abi2,
           functionName: 'twoLevels',

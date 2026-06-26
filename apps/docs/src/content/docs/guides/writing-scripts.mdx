@@ -16,9 +16,9 @@ const tokenMeta = evscript(
   { name: 'tokenMeta', args: [t.address, t.address] },
   // 2. builder callback: args arrive as positional params after `s`
   (s, token, owner) => {
-    const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
-    const balance = s.call({
+    const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+    const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+    const balance = s.read({
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
@@ -68,14 +68,14 @@ Need a conditional result? Declare a cell with `s.let`, assign it inside `s.if` 
 
 ## Two timelines: recording time vs run time
 
-This is the one mental model the whole library hangs on. The builder callback runs once, at **recording time**, in your JS process. Each builder call appends a statement to the script's IR and hands back a typed placeholder (`Expr`) — `s.call` performs no call, `x.add(1n)` adds nothing. The compiled bytecode then replays the recorded statements at **run time**, inside `eth_call` on the node.
+This is the one mental model the whole library hangs on. The builder callback runs once, at **recording time**, in your JS process. Each builder call appends a statement to the script's IR and hands back a typed placeholder (`Expr`) — `s.read` performs no call, `x.add(1n)` adds nothing. The compiled bytecode then replays the recorded statements at **run time**, inside `eth_call` on the node.
 
 ```txt
 recording time (your machine)              run time (the node, inside eth_call)
 ─────────────────────────────              ────────────────────────────────────
 evscript(header, callback)
   └─ callback runs ONCE, records IR  ──►   compiled bytecode executes
-       s.call({...})  → Expr handle          STATICCALL token.symbol() → real bytes
+       s.read({...})  → Expr handle          STATICCALL token.symbol() → real bytes
        x.add(1n)      → Expr handle          checked ADD → real word
        s.return({...})                       ABI-encode outputs → returndata
 ```
@@ -105,7 +105,7 @@ const watchlist = evscript({ name: 'watchlist', args: [t.address] }, (s, owner) 
   // host loop over a host array: runs at recording time and unrolls —
   // the compiled script contains one balanceOf call per token, no loop
   for (const token of TOKENS) {
-    const bal = s.call({
+    const bal = s.read({
       address: token,
       abi: erc20Abi,
       functionName: 'balanceOf',
@@ -148,5 +148,5 @@ const lean = evscript(
 ## Next
 
 - [Values and types](/guides/values-and-types/) — what an `Expr` is and which literals coerce.
-- [Calls](/guides/calls/) — `s.call` and `s.tryCall` in depth.
+- [Calls](/guides/calls/) — `s.read` and `s.tryRead` in depth.
 - [Execution](/guides/execution/) — running the compiled script with viem.

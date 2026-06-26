@@ -27,6 +27,11 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import {
+  emitSimulateTrampoline,
+  SIMULATE_TRAMPOLINE_SELECTOR,
+  SIMULATE_TRAMPOLINE_SELECTOR_NUM,
+} from './simulate.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
 // ---------------------------------------------------------------------------
@@ -95,11 +100,31 @@ export function lowerProgram(
   w.push(0x40);
   w.op('MSTORE', { note: 'free-ptr init' });
 
+  // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
+  // bytecode carries a second internal entrypoint reached by a reserved selector. Detect it across
+  // the body and ALL recorded fns (a simulate inside an uncalled, dropped fn just leaves the
+  // trampoline unreachable — a few dozen bytes, like the always-emitted shared tails).
+  let hasSimulate = false;
+  const markSimulate = (s: Stmt): void => {
+    if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
+  };
+  walkStmts(ir.body, markSimulate);
+  for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
+  const trampoline = hasSimulate ? w.newLabel('simulate_trampoline') : null;
+
   // -- dispatcher (§11): size floor, selector match, fallback EvsInvalidCalldata --------
   // tuple args expand to their canonical `(t1,t2,…)` signature so the dispatcher selector is
   // byte-identical to viem's over the tuple-expanded ScriptAbi inputs.
   const argTypes = ir.args.map((a) => canonicalTypeSignature(a.type));
   const selector = selectorOf(ir.name, argTypes);
+  if (
+    trampoline !== null &&
+    Number.parseInt(selector.slice(2), 16) === SIMULATE_TRAMPOLINE_SELECTOR_NUM
+  ) {
+    throw internal(
+      `script selector ${selector} collides with the reserved simulate trampoline selector ${SIMULATE_TRAMPOLINE_SELECTOR} — rename the script`,
+    );
+  }
   const main = w.newLabel('main');
   w.push(4);
   w.op('CALLDATASIZE');
@@ -110,6 +135,17 @@ export function lowerProgram(
   w.op('CALLDATALOAD');
   w.push(0xe0);
   w.op('SHR'); // [selector]
+  // simulate trampoline route (issue #1) — DUP1 keeps the selector for the main compare below.
+  // When there is no simulate site the dispatcher is byte-identical to the pre-issue-#1 shape.
+  if (trampoline !== null) {
+    w.op('DUP1');
+    w.pushBytes(selectorBytes(SIMULATE_TRAMPOLINE_SELECTOR), {
+      note: 'simulate trampoline selector',
+    });
+    w.op('EQ');
+    w.pushLabel(trampoline);
+    w.op('JUMPI'); // [selector]
+  }
   w.pushBytes(selectorBytes(selector), { note: `selector ${ir.name}(${argTypes.join(',')})` });
   w.op('EQ');
   w.pushLabel(main);
@@ -141,6 +177,9 @@ export function lowerProgram(
 
   // -- fn subroutines (only fns reached through fncall — uncalled fns dropped, §9) ---------
   emitFnSubroutines(w, ctx);
+
+  // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
+  if (trampoline !== null) emitSimulateTrampoline(w, trampoline, evm);
 
   // -- per-site decode-fail stubs (strict calls) + shared tails (§11/§15.0) ----------------
   for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
@@ -216,10 +255,15 @@ function collectSites(
 
 function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
   switch (s.k) {
-    case 'call':
+    case 'call': {
+      // explainRevert detail (issue #1): the STATICCALL (static) detail is kept verbatim; the new
+      // CALL kinds prefix their verb so a simulate/call site is distinguishable in the message.
+      const isStatic = s.kind === undefined || s.kind === 'static';
+      const prefix = isStatic ? '' : `${s.kind} `;
       return s.mode === 'strict'
-        ? ['decode', `decoding ${s.fnAbi.name}() returndata`]
-        : ['call', `tryCall ${s.fnAbi.name}()`];
+        ? ['decode', `decoding ${prefix}${s.fnAbi.name}() returndata`]
+        : ['call', `try ${prefix}${s.fnAbi.name}()`];
+    }
     case 'bin':
       switch (s.op) {
         case 'add':

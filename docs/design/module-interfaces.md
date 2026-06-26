@@ -303,6 +303,9 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
       mode: 'strict' | 'try';
       successOut?: ValueId;
       gas?: ValueId;
+      kind?: 'static' | 'call' | 'simulate'; // amended by #1: opcode/frame (absent => 'static',
+      //   STATICCALL; 'call' => CALL value-0; 'simulate' => CALL via the self-call trampoline).
+      //   Absent leaves pre-issue-#1 serialized IR byte-unchanged; validate accepts the field.
     }
   | { k: 'fncall'; fn: FnId; args: readonly ValueId[]; outs: readonly ValueId[] }
   | { k: 'if'; cond: ValueId; then: readonly Stmt[]; else: readonly Stmt[] }
@@ -332,6 +335,8 @@ export function validateIr(ir: ScriptIr): void;
 // range; field out type = abiParamToType(components[index])); ALL value-type comparisons use the
 // STRUCTURAL `typesEqual` (tuple descriptors are fresh objects, never ===); checkAbiParams
 // recurses through tuple components; arrnew.elem still restricted to word (composite arrays deferred).
+// Amended by #1: the `call` Stmt's optional `kind` ('static'|'call'|'simulate', absent => 'static')
+// is accepted (the call-output decode/successOut rules are kind-independent).
 ```
 
 **Unit tests (M2)**: accept/reject hand-built IRs per Stmt kind; every validation rule has a
@@ -624,7 +629,21 @@ export interface EvsScript<name, args extends readonly EvsType[], ret> {
   /* exactly api.md §1 — `args` param is `readonly EvsType[]` (amended by #2) */
 }
 export interface ScriptBuilder {
-  /* exactly api.md §4 — non-generic; no `args`/`s.args`; gained `s.tuple` (amended by #2) */
+  /* exactly api.md §4 — non-generic; no `args`/`s.args`; gained `s.tuple` (amended by #2). The call
+     surface is SPLIT BY MUTABILITY (amended by #1 — see §19): three verb pairs, all sharing one
+     `SubcallParams<abi, name, mut>` (now generic over the mutability bucket) and the same three
+     struct-aware overloads (`struct: true` → one named Tuple; `struct?: false` → the positional
+     default; non-literal boolean → the union) + a `try*` variant returning `{ success, value }`:
+       - read / tryRead   — ViewMutability  = 'pure' | 'view'        → STATICCALL (BREAKING RENAME of
+                            the frozen s.call/s.tryCall — IDENTICAL codegen/decode/bubble/try-zeroing)
+       - call / tryCall   — WriteMutability = 'nonpayable' | 'payable' → CALL (value 0); same decode/
+                            bubble path as read, no rollback (writes persist to LATER subcalls within
+                            the same uncommitted eth_call)
+       - simulate / trySimulate — WriteMutability                    → CALL via the self-call revert
+                            trampoline (the write is rolled back + isolated, the return value is read
+                            back). Mutability is filtered at the `functionName` TYPE level per verb
+                            (a wrong bucket is a compile error steered to the right verb; the recorder
+                            mirrors it with EvsTypeError(ABI_SHAPE)). */
 }
 export interface Cell<t extends EvsType> {
   /* api.md §5 */
@@ -683,6 +702,11 @@ export declare const returnBrand: unique symbol;
 export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
+// call-surface mutability buckets (added by #1 — see §19): `SubcallParams` is generic over `mut`,
+// each verb pair fixes it. `read`/`tryRead` use ViewMutability; `call`/`tryCall` + `simulate`/
+// `trySimulate` use WriteMutability. Both are exported (index.ts §M9):
+export type ViewMutability = 'pure' | 'view';
+export type WriteMutability = 'nonpayable' | 'payable';
 ```
 
 Implementation invariants (binding):
@@ -733,9 +757,11 @@ visible in body, body value invisible after); fold tests incl. certain-panic; `s
 get-set/tuple-output decode (amended by #2).
 **Type tests** (`builder.test-d.ts`): args-as-positional-callback-params inference; `t.struct`
 field-handle typing (`slot0.tick.get(): Expr<'int24'>`); a tuple call output → a `Tuple` handle;
-`s.call` single-output unwrap / tuple / void; `@ts-expect-error` on nonpayable functionName, wrong
-literal types, `eq` on memref; graceful widening with a non-const ABI; `ScriptReturn` inference
-through `evscript` (amended by #2 — `s.args` record test is gone).
+`s.read` single-output unwrap / tuple / void (amended by #1 — was `s.call`); the mutability filter
+(`@ts-expect-error` a nonpayable functionName under `s.read`, a view functionName under `s.call`/
+`s.simulate`); `@ts-expect-error` on wrong literal types, `eq` on memref; graceful widening with a
+non-const ABI; `ScriptReturn` inference through `evscript` (amended by #2 — `s.args` record test is
+gone).
 
 ---
 
@@ -746,6 +772,14 @@ Imports allowed: `core/*`, `ir/*`, `abi/*`, `viem` (encode/decode for ABI byte-a
 ```ts
 export interface MockChain {
   staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
+  // amended by #1: an OPTIONAL non-static frame (s.call / s.simulate targets). Defaults to
+  // `staticcall` when absent. `req.kind` ('call' | 'simulate') is INFORMATIONAL ONLY — the stateless
+  // oracle decodes call/simulate returndata IDENTICALLY to a read (returndata is a pure function of
+  // to+data+state; the simulate rollback is invisible here — no persisted state to model), so a
+  // stateless mock MUST return the same data for either kind. `kind` exists for routing assertions
+  // and user-built stateful mocks; the rollback/write-persistence semantics are pinned in the anvil
+  // integration tier, not here.
+  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate' }): { success: boolean; data: Hex };
 }
 export interface InterpResult {
   outcome:
@@ -769,7 +803,9 @@ codegen. On divergence in differential tests, `evm-target.md` + architecture §6
 
 **Unit tests (M6)**: golden runs over hand-built IRs covering every stmt kind; revert paths
 (panic codes per width incl. `int256 min / −1`, MUL wrap-back for uint192); decode-fail site
-ids; tryCall zeroing; maxSteps guard.
+ids; tryCall zeroing; call-kind routing (`kind:'call'`/`'simulate'` → the mutable `call` oracle,
+with `staticcall` fallback when `call` is absent; strict-bubble + try-zero on the mutable path);
+maxSteps guard.
 
 ---
 
@@ -962,6 +998,11 @@ export function toViemStateOverride<const abi extends Abi>(
 //   ArgHandle, ArgHandles, ComponentToType, TupleInit, and the `t`-namespace helper types
 //   StructTypeOf / TupleTypeOf / TupleArrayOf / TypeToComponent / TupleLitOf / TupleAsParam.
 //   `arg`/`ArgSpec` remain exported (s.fn params). `ScriptBuilder` is non-generic.
+// Added by #1 (calls split by mutability — see §19) — type-only additions to the public surface:
+//   ViewMutability, WriteMutability, and the per-verb param/output/struct types
+//   (SubcallParams now generic over the mutability bucket). `ScriptBuilder` gains the read/tryRead,
+//   call/tryCall, simulate/trySimulate verb pairs (the frozen s.call/s.tryCall are RENAMED to
+//   s.read/s.tryRead — BREAKING).
 ```
 
 **Unit tests (M9)**: artifact shape; EIP-170 rejection on a synthetic huge script with region

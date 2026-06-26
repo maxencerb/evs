@@ -4,7 +4,7 @@
  * This is the issue's motivating example, rewritten to use every ergonomic improvement at once,
  * against REAL solc-0.8.30 deployments (`MockUniV3Pool` + `MockERC20`) decoded through viem:
  *   - #1 `s.fn` returns a `t.struct` directly (`getTokenMetadata` → `TokenMetadata`);
- *   - #2 `s.call({ …, struct: true })` decodes the 7-output `slot0()` into one named Tuple;
+ *   - #2 `s.read({ …, struct: true })` decodes the 7-output `slot0()` into one named Tuple;
  *   - #3 the struct-decoded `slot0` flows straight into the `PoolMetadata` struct slot;
  *   - #4 `t.fromOutputs(MockUniV3Pool.abi, 'slot0')` derives `Slot0` from the ABI (no re-typing);
  *   - #5 `s.return({ metadata })` returns the `MutArray` bare (no `.expr()`).
@@ -118,19 +118,19 @@ const poolsData = evscript({ name: 'poolsData', args: t.array(t.address) }, (s, 
   const getTokenMetadata = s.fn('getTokenMetadata', [arg('token', t.address)] as const, (token) =>
     s.tuple(TokenMetadata, {
       address: token,
-      symbol: s.call({ address: token, abi: MockERC20.abi, functionName: 'symbol' }),
-      decimals: s.call({ address: token, abi: MockERC20.abi, functionName: 'decimals' }),
+      symbol: s.read({ address: token, abi: MockERC20.abi, functionName: 'symbol' }),
+      decimals: s.read({ address: token, abi: MockERC20.abi, functionName: 'decimals' }),
     }),
   );
   const len = addrs.length();
   const metadata = s.newArray(PoolMetadata, len);
   s.for({ type: t.uint256, from: 0n, until: len }, (i) => {
     const pool = addrs.at(i);
-    const token0Address = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
-    const token1Address = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
-    const fee = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
+    const token0Address = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
+    const token1Address = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
+    const fee = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
     // #2 — `struct: true` decodes the 7 named outputs into one Slot0-shaped Tuple.
-    const slot0 = s.call({
+    const slot0 = s.read({
       address: pool,
       abi: MockUniV3Pool.abi,
       functionName: 'slot0',

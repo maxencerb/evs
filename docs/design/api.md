@@ -327,8 +327,11 @@ export interface ScriptBuilder {
   ): void
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>
 
-  // calls (§6), functions (§8), return (§9)
-  call: /* §6 */; tryCall: /* §6 */; fn: /* §8 */
+  // calls (§6) — split by mutability + frame: read/tryRead (STATICCALL, view/pure),
+  // call/tryCall (CALL value 0, no rollback, nonpayable/payable), simulate/trySimulate
+  // (CALL + revert trampoline, rolled back, nonpayable/payable). functions (§8), return (§9)
+  read: /* §6 */; tryRead: /* §6 */
+  call: /* §6 */; tryCall: /* §6 */; simulate: /* §6 */; trySimulate: /* §6 */; fn: /* §8 */
   return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret> // value is Expr | Tuple (§9)
 }
 ```
@@ -427,19 +430,33 @@ export interface LoopCtl {
 
 `LoopCtl` is scoped: calling it outside its owning loop's body recording → `EvsScopeError`.
 
-## 6. Calls — `s.call` / `s.tryCall`
+## 6. Calls — `s.read`/`s.tryRead`, `s.call`/`s.tryCall`, `s.simulate`/`s.trySimulate`
+
+Calls are **split by mutability + call frame** into three verb pairs (issue #1). Every verb shares
+the SAME params shape and the SAME three struct-aware overloads + try-variant; they differ only in
+the mutability bucket the `functionName`/arg/output handles are filtered by, and in the opcode and
+state semantics:
+
+| Verb                           | Opcode                                 | Mutability                                 | State semantics                                                                                                                                     |
+| ------------------------------ | -------------------------------------- | ------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `s.read` / `s.tryRead`         | `STATICCALL`                           | `ViewMutability` (`pure`/`view`)           | static — no state change possible (the renamed frozen read surface)                                                                                 |
+| `s.call` / `s.tryCall`         | `CALL` (value 0)                       | `WriteMutability` (`nonpayable`/`payable`) | a real non-static frame; the write is **not** rolled back — it persists to LATER subcalls in the same `eth_call` (which itself still never commits) |
+| `s.simulate` / `s.trySimulate` | `CALL` (self-call + revert trampoline) | `WriteMutability` (`nonpayable`/`payable`) | the write is **rolled back** and isolated from later reads in the same script, yet the return value is read back                                    |
 
 ```ts
 type ViewMutability = 'pure' | 'view'
+type WriteMutability = 'nonpayable' | 'payable'
 
+// SubcallParams is generic over the mutability bucket (`mut`). The same shape applies to every verb.
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
-  name extends ContractFunctionName<abi, ViewMutability>,
+  name extends ContractFunctionName<abi, mut>,
+  mut extends AbiStateMutability = ViewMutability,
 > {
   readonly address: IntoExpr<'address'>
   readonly abi: abi
-  readonly functionName: name | ContractFunctionName<abi, ViewMutability>  // autocomplete union
-  readonly args?: SubcallInputs<abi, name>
+  readonly functionName: name | ContractFunctionName<abi, mut>  // autocomplete union (bucket-filtered)
+  readonly args?: SubcallInputs<abi, name, mut>
   readonly gas?: IntoExpr<'uint256'>            // optional cap; default forward-all
   readonly struct?: boolean                     // opt-in (amended by #5 ask #2): decode named
                                                 // multi-outputs into ONE Tuple (see below)
@@ -449,47 +466,55 @@ export interface SubcallParams<
 // Expr of that type OR — for a tuple param — a Tuple handle / s.tuple(...) result. A tuple[] param
 // (added by the #2 follow-up) accepts the readonly Struct[] literal, an Expr<tuple[]>, or an array
 // handle (its .expr()).
-export type SubcallInputs<abi, name> = {
+export type SubcallInputs<abi, name, mut = ViewMutability> = {
   readonly [i in keyof inputs]: inputs[i]['type'] extends 'tuple'
     ? AbiParameterToPrimitiveType<inputs[i], 'inputs'> | Tuple</* inputs[i] */> | Expr</* inputs[i] */>
     : AbiParameterToPrimitiveType<inputs[i], 'inputs'>
         | Expr<inputs[i]['type'] extends EvsType ? inputs[i]['type'] : never>
-} // where inputs = ExtractAbiFunction<abi, name, ViewMutability>['inputs']
+} // where inputs = ExtractAbiFunction<abi, name, mut>['inputs']
 
-// THREE overloads (amended by #5 ask #2), in precedence order, so the static type ALWAYS matches the
-// runtime (`wantStruct = struct === true`). `tryCall` mirrors this on `.value`.
-call<const abi extends Abi | readonly unknown[],
-     name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name> & { readonly struct: true },
-): SubcallStruct<abi, name> // ONE named Tuple over ALL outputs (ABI order); every output must be named
-call<const abi extends Abi | readonly unknown[],
-     name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name> & { readonly struct?: false },
-): UnwrapSingle<SubcallOutputs<abi, name>> // the frozen positional default (struct: false / omitted)
-call<const abi extends Abi | readonly unknown[],
-     name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name>,
-): SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>> // a NON-LITERAL boolean → narrow
+// To avoid repeating 18 overloads across the six verbs, each verb is one of two shared callable
+// types — `SubcallVerb<mut>` (strict) / `TrySubcallVerb<mut>` — each carrying the THREE struct-aware
+// overloads (amended by #5 ask #2), in precedence order, so the static type ALWAYS matches the
+// runtime (`wantStruct = struct === true`):
+export interface SubcallVerb<mut extends AbiStateMutability> {
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct: true },
+  ): SubcallStruct<abi, name, mut> // ONE named Tuple over ALL outputs (ABI order); every output named
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  ): UnwrapSingle<SubcallOutputs<abi, name, mut>> // the frozen positional default (struct false/omitted)
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut>,
+  ): SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>> // NON-LITERAL → narrow
+}
 // default (no/false struct): outputs []  → void;  [one] → Expr<one> | Tuple<one> (Tuple if the
 // single output is a tuple); [many] → readonly tuple of (Expr|Tuple) per output (mirrors viem) —
 // UNCHANGED. A tuple[] output → a readonly Struct[] Expr whose .at(i) yields a typed Tuple element.
 
-// tryCall mirrors the three overloads, wrapping the same value shape in { success, value }:
-tryCall<const abi extends Abi | readonly unknown[],
-        name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name> & { readonly struct: true },
-): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name> }
-tryCall<const abi extends Abi | readonly unknown[],
-        name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name> & { readonly struct?: false },
-): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> }
-tryCall<const abi extends Abi | readonly unknown[],
-        name extends ContractFunctionName<abi, ViewMutability>>(
-  p: SubcallParams<abi, name>,
-): {
-  readonly success: Expr<'bool'>
-  readonly value: SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>
+// the try variant mirrors the same three overloads, wrapping the value shape in { success, value }:
+export interface TrySubcallVerb<mut extends AbiStateMutability> {
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct: true },
+  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut> }
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut>> }
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut>,
+  ): {
+    readonly success: Expr<'bool'>
+    readonly value: SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>
+  }
 }
+
+// the six verbs on ScriptBuilder (§4) — same overloads, different bucket + opcode:
+read: SubcallVerb<ViewMutability>          // STATICCALL — view/pure
+tryRead: TrySubcallVerb<ViewMutability>
+call: SubcallVerb<WriteMutability>         // CALL (value 0), no rollback — nonpayable/payable
+tryCall: TrySubcallVerb<WriteMutability>
+simulate: SubcallVerb<WriteMutability>     // CALL + revert trampoline, rolled back — nonpayable/payable
+trySimulate: TrySubcallVerb<WriteMutability>
 ```
 
 Semantics and permissiveness:
@@ -497,9 +522,43 @@ Semantics and permissiveness:
 - **Graceful widening (viem pattern, adopted)**: a non-`as const` ABI degrades to
   `functionName: string`, `args: readonly unknown[]`, outputs `Expr<EvsType>` — never a hard
   type error. `[x] extends [never]` guards after every Extract.
-- Mutability filtered at the name level: nonpayable/payable functions are compile errors.
+- **Mutability filtered + steered per verb (issue #1)**: `read`/`tryRead` admit only
+  `view`/`pure`; `call`/`tryCall`/`simulate`/`trySimulate` admit only `nonpayable`/`payable`. A
+  `nonpayable` function under `s.read` is a compile error (steered to `s.call`/`s.simulate`); a
+  `view`/`pure` function under `s.call`/`s.simulate` is a compile error (steered to `s.read`). The
+  runtime recorder mirrors this with a steering `EvsTypeError(ABI_SHAPE)`.
 - Overloaded names → recording-time `EvsTypeError` (disambiguation via a pruned ABI; viem's
   `ExtractAbiFunctionForArgs` is the documented later fix).
+- **`s.read` / `s.tryRead`** are the renamed frozen read surface (a MECHANICAL RENAME of the former
+  `s.call` / `s.tryCall` — identical codegen): `STATICCALL`, same arg-encode / returndata-decode /
+  verbatim-revert-bubble / `tryRead`-zeroing path. Every former `s.call`/`s.tryCall` site (a view
+  read) is now `s.read`/`s.tryRead`.
+- **`s.call` / `s.tryCall` (CALL, value 0 — no rollback)**: same arg-encode / returndata-decode /
+  verbatim-revert-bubble / try-zeroing path as `s.read`, but emits `CALL` instead of `STATICCALL` —
+  "read with the `CALL` opcode", no rollback machinery. A write done via `s.call` **is** visible to a
+  later `s.read` in the same script (same `eth_call` frame); the `eth_call` result is still never
+  committed on-chain. The canonical use is a **Uniswap quoter** — a `nonpayable` (not `view`)
+  function that needs a real frame but doesn't usefully persist state, and so cannot run under
+  `STATICCALL` (that is exactly why `s.call` exists). A QuoterV2-style function returns normally (use
+  `s.call`); a QuoterV1-style function REVERTs with the ABI-encoded result (use `s.tryCall`, which
+  reports `success = false` — decoding that revert data AS the result is a documented v0 follow-up,
+  not implemented).
+- **`s.simulate` / `s.trySimulate` (CALL + revert trampoline — rolled back, value read back)**: a
+  true write dry-run. The target calldata is wrapped as `[trampolineSelector][target address][target
+calldata…]` and the script `CALL`s its own `ADDRESS()`; a reserved SECOND dispatcher entrypoint
+  (the trampoline) decodes target+payload, performs the real `CALL` to the write target, then REVERTs
+  with `[MAGIC][innerSuccess][target returndata…]`. That REVERT unwinds the sub-frame, discarding
+  every state change the write made — THAT is the rollback. The outer frame recognizes the magic
+  word and branches on `innerSuccess`: **strict** (`s.simulate`) bubbles the target's revert
+  verbatim; **try** (`s.trySimulate`) reports `success = false` with a zeroed value; either way the
+  carried returndata is decoded via the shared in-memory tuple decoder. (Nested `s.simulate`, an
+  explicit gas cap on the inner `CALL`, and `msg.sender` on the self-call hop are open follow-ups.)
+- **Frame dependence** (like the `s.env('caller')` warning, §4): `s.call` and `s.simulate` make a
+  real call in which the TARGET sees `msg.sender` = the SCRIPT's own address — a per-script
+  counterfactual CREATE2 address in the default deployless `toViem()` mode, or the override address
+  in `stateOverride` mode. For `msg.sender`-sensitive writes, use `toViem({ mode: 'stateOverride' })`
+  - the `account` call parameter. (The `s.simulate` self-call to `ADDRESS()` works in both modes —
+    the script code is present at `ADDRESS()` in each.)
 - **Tuple/struct outputs** (`'tuple'`) decode to a `Tuple` handle (§5); a single tuple output
   unwraps to `Tuple<one>`, a tuple among many to its slot in the handle list. **Tuple/struct args**
   may be a `Tuple` handle, an `s.tuple(...)` result, or a plain literal object (the recorder builds
@@ -508,7 +567,7 @@ Semantics and permissiveness:
 - **`struct: true` (opt-in, amended by #5 ask #2)**: a function with **multiple named** outputs
   (e.g. UniV3 `slot0()`'s 7) normally decodes to a positional `readonly [Expr, …]` (the viem
   mirror, unchanged). Passing `struct: true` instead composes the decoded outputs into **one named
-  `Tuple`** (`s.call({…, struct: true}).sqrtPriceX96.get()`), emitting a `tuplenew` over them; the
+  `Tuple`** (`s.read({…, struct: true}).sqrtPriceX96.get()`), emitting a `tuplenew` over them; the
   struct type is in **ABI declaration order**, so it unifies with `t.fromOutputs(abi, name)` and
   flows straight into a same-shaped `t.struct` slot (§5). Every output must be **named** (an unnamed
   member would degrade viem's object inference to a positional array) → recording-time `EvsTypeError`
@@ -521,13 +580,17 @@ Semantics and permissiveness:
 - Arg/output types still outside the surface (`T[N]`, two-level arrays of tuples `tuple[][]`, string
   arrays nested deeper than `[][]`) → recording-time `EvsTypeError('UNSUPPORTED_V0', …)` naming the
   parameter; these remain a follow-up (the vocabulary already represents them — §2).
-- **Strict mode**: callee revert bubbles **verbatim** (Error/Panic/custom alike). Structural
-  returndata decode failure reverts `EvsDecodeError(site)` — viem names it, `explainRevert`
-  maps the site to your source line.
-- **`tryCall`**: `success` is false on call failure **or** malformed returndata; `value` is
-  then zeros / empty strings / empty arrays — always safe to use. (Divergence from Solidity
-  try/catch, documented.)
+- **Strict mode** (`s.read`/`s.call`/`s.simulate`): callee revert bubbles **verbatim** (Error/Panic/
+  custom alike — for `s.simulate`, the target's revert as carried through the trampoline). Structural
+  returndata decode failure reverts `EvsDecodeError(site)` — viem names it, `explainRevert` maps the
+  site to your source line.
+- **Try variants** (`s.tryRead`/`s.tryCall`/`s.trySimulate`): `success` is false on call failure **or**
+  malformed returndata; `value` is then zeros / empty strings / empty arrays — always safe to use.
+  (Divergence from Solidity try/catch, documented.)
 - Dirty high bits in word outputs are **normalized**, not reverted (viem-lenient).
+
+See `architecture.md` §7 (call codegen — the `STATICCALL`/`CALL` lowering and the simulate
+trampoline) for the mechanism.
 
 ## 7. Control flow combinators
 

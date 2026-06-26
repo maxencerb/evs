@@ -55,17 +55,17 @@ const uniswapV3PoolAbi = [
 export const poolMeta = evscript(
   { name: 'poolMeta', args: [t.address] },
   (s, pool) => {
-    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'> — a runtime value, usable as the address of the NEXT call
-    const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-    const fee = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
-    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const token1 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+    const fee = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+    const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
     //    ^? readonly tuple of Exprs — one per slot0 output
 
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-    const decimals0 = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
-    const decimals1 = s.call({ address: token1, abi: erc20Abi, functionName: 'decimals' });
+    const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+    const decimals0 = s.read({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const decimals1 = s.read({ address: token1, abi: erc20Abi, functionName: 'decimals' });
 
     return s.return({
       token0,
@@ -81,12 +81,12 @@ export const poolMeta = evscript(
 );
 ```
 
-The single `pool` argument arrives as a positional callback param after `s`. `s.call` types
+The single `pool` argument arrives as a positional callback param after `s`. `s.read` types
 like viem's `readContract`: the inline `as const` pool ABI and viem's `erc20Abi` drive
 autocomplete for `functionName` and the output types. `token0` comes back as `Expr<'address'>` —
 a handle to a value that exists only at run time — and goes straight into the `address` field of
 the `symbol` and `decimals` calls. This `slot0` returns seven flat outputs, so it is a readonly
-tuple of `Expr`s and `slot0[1]` is the tick. See [calls](/guides/calls/) for the full `s.call`
+tuple of `Expr`s and `slot0[1]` is the tick. See [calls](/guides/calls/) for the full `s.read`
 surface and [values and types](/guides/values-and-types/) for how `Expr` handles work.
 
 ### When the getter returns a struct
@@ -119,7 +119,7 @@ const slot0StructAbi = [
 ] as const;
 
 const poolSlot0 = evscript({ name: 'poolSlot0', args: [t.address] }, (s, pool) => {
-  const slot0 = s.call({ address: pool, abi: slot0StructAbi, functionName: 'slot0Struct' });
+  const slot0 = s.read({ address: pool, abi: slot0StructAbi, functionName: 'slot0Struct' });
   //    ^? Tuple<…> — the struct output, decoded
   return s.return({
     sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>
@@ -198,14 +198,14 @@ const uniswapV3PoolAbi = [
 ] as const;
 
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address] }, (s, pool) => {
-  const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-  const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
-  const fee = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
-  const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
-  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-  const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-  const decimals0 = s.call({ address: token0, abi: erc20Abi, functionName: 'decimals' });
-  const decimals1 = s.call({ address: token1, abi: erc20Abi, functionName: 'decimals' });
+  const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+  const token1 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+  const fee = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' });
+  const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+  const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+  const decimals0 = s.read({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const decimals1 = s.read({ address: token1, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ token0, token1, fee, tick: slot0[1], symbol0, symbol1, decimals0, decimals1 });
 });
 
@@ -251,8 +251,8 @@ symbols as `string`.
 
 :::tip
 Some legacy tokens are not clean ERC-20s (for example, a `symbol()` that returns `bytes32`
-instead of `string`). A strict `s.call` reverts with `EvsDecodeError` when returndata does not
-decode; swap in `s.tryCall` and a default to tolerate them — see
+instead of `string`). A strict `s.read` reverts with `EvsDecodeError` when returndata does not
+decode; swap in `s.tryRead` and a default to tolerate them — see
 [tryCall with a default](/examples/patterns/) and [calls](/guides/calls/).
 :::
 

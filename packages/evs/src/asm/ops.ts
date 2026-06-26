@@ -28,7 +28,7 @@ export type Mnemonic = 'STOP' | 'ADD' | 'MUL' | 'SUB' | 'DIV' | 'SDIV' | 'MOD' |
   | 'RETURNDATASIZE' | 'RETURNDATACOPY' | 'TIMESTAMP' | 'NUMBER' | 'CHAINID' | 'POP' | 'MLOAD'
   | 'MSTORE' | 'MSTORE8' | 'JUMP' | 'JUMPI' | 'PC' | 'MSIZE' | 'GAS' | 'JUMPDEST' | 'MCOPY'
   | 'PUSH0' | `PUSH${PushWidth}` | `DUP${StackReach}` | `SWAP${StackReach}`
-  | 'STATICCALL' | 'RETURN' | 'REVERT' | 'INVALID';
+  | 'CALL' | 'STATICCALL' | 'RETURN' | 'REVERT' | 'INVALID';
 
 export interface OpInfo {
   readonly code: number;
@@ -154,6 +154,11 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   SWAP14: { code: 0x9d, pops: 15, pushes: 15, since: 'frontier' },
   SWAP15: { code: 0x9e, pops: 16, pushes: 16, since: 'frontier' },
   SWAP16: { code: 0x9f, pops: 17, pushes: 17, since: 'frontier' },
+  // CALL is permitted in v0 ONLY for the mutable-call surface (s.call / s.simulate, issue #1):
+  // a non-static subcall frame for non-view targets (Uniswap quoters, write dry-runs). Everything
+  // still executes inside the top-level eth_call, so any state it touches is discarded when the
+  // eth_call ends. CALLCODE/DELEGATECALL/CREATE*/SELFDESTRUCT stay FORBIDDEN.
+  CALL: { code: 0xf1, pops: 7, pushes: 1, since: 'frontier' },
   STATICCALL: { code: 0xfa, pops: 6, pushes: 1, since: 'frontier' },
   RETURN: { code: 0xf3, pops: 2, pushes: 0, since: 'frontier' },
   REVERT: { code: 0xfd, pops: 2, pushes: 0, since: 'frontier' },
@@ -162,9 +167,11 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
 
 /**
  * Bytes that must never appear as opcodes in evs output (architecture §10 shape lint):
- * SLOAD, SSTORE, TLOAD, TSTORE, LOG0–LOG4, CREATE, CALL, CALLCODE, DELEGATECALL, CREATE2,
- * SELFDESTRUCT. Scripts are STATICCALL-clean by construction and never read their own storage
- * (SLOAD is allowed nowhere in v0).
+ * SLOAD, SSTORE, TLOAD, TSTORE, LOG0–LOG4, CREATE, CALLCODE, DELEGATECALL, CREATE2,
+ * SELFDESTRUCT. Scripts never read/write their own storage (SLOAD/SSTORE are allowed nowhere in
+ * v0). `CALL` (0xf1) was removed from this set by issue #1 — it is emitted ONLY by the
+ * `s.call`/`s.simulate` mutable-call surface (architecture §7); the verifier still rejects every
+ * frame-escaping or state-persisting opcode below.
  */
 export const FORBIDDEN: ReadonlySet<number> = new Set([
   0x54, // SLOAD
@@ -177,7 +184,6 @@ export const FORBIDDEN: ReadonlySet<number> = new Set([
   0xa3, // LOG3
   0xa4, // LOG4
   0xf0, // CREATE
-  0xf1, // CALL
   0xf2, // CALLCODE
   0xf4, // DELEGATECALL
   0xf5, // CREATE2

@@ -54,7 +54,7 @@ function adduListing(): string {
 /** §15.2 — STATICCALL `symbol()` → dynamic string. */
 function symListing(): string {
   const sym = evscript({ name: 'sym', args: [t.address] }, (s, token0) => {
-    const symbol0 = s.call({
+    const symbol0 = s.read({
       address: token0,
       abi: erc20SymbolAbi,
       functionName: 'symbol',

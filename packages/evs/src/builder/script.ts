@@ -6,7 +6,7 @@
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
  * in `builder/expr.ts`; this file owns the frozen types and wires the typed facade onto it.
  */
-import type { Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
+import type { Abi, AbiParameter, AbiParameterToPrimitiveType, AbiStateMutability } from 'abitype';
 import type { ContractFunctionName } from 'viem';
 
 import { buildScriptAbi, type ScriptAbi } from '../abi/artifact.js';
@@ -286,7 +286,7 @@ export type Tuple<C extends TupleType> = {
   // while staying distinguishable from an `Expr` even when a struct field is literally named
   // "type"/"expr". The brand is ERASED to `TupleType` (not `C`) so it is order-insensitive —
   // a `Tuple<A>` stays assignable to a `Tuple<B>` whenever their named members match (the
-  // `s.call(...)` tuple-input boundary relies on this), and `TypeOfReturn` recovers the precise
+  // `s.read(...)` tuple-input boundary relies on this), and `TypeOfReturn` recovers the precise
   // `C` from `expr()` instead. Type-only — the runtime `TupleHandle` carries no such property.
   readonly [tupleBrand]: TupleType;
 };
@@ -378,12 +378,24 @@ export type EnvTypeOf<k extends EnvKind> = k extends 'address' | 'caller' ? 'add
 // calls (api.md §6)
 // ---------------------------------------------------------------------------
 
+/**
+ * The two mutability buckets the calling surface is split across (issue #1):
+ * - {@link ViewMutability} (`'pure' | 'view'`) — `s.read` / `s.tryRead`, lowered to `STATICCALL`.
+ *   The EVM forbids *any* state-touching subcall under `STATICCALL`, so the `read` name makes the
+ *   restriction explicit and frees `call`.
+ * - {@link WriteMutability} (`'nonpayable' | 'payable'`) — `s.call` / `s.tryCall` (a plain `CALL`
+ *   frame: non-view targets that need a real frame but don't usefully persist state, e.g. Uniswap
+ *   quoters) and `s.simulate` / `s.trySimulate` (a `CALL` dry-run whose state is rolled back).
+ * The `functionName` autocomplete + the arg/output handle shapes are filtered by the bucket of the
+ * verb you call, so a `nonpayable` function is a compile error under `s.read` and vice-versa.
+ */
 export type ViewMutability = 'pure' | 'view';
+export type WriteMutability = 'nonpayable' | 'payable';
 
-type ViewFnOf<abi, name> = abi extends Abi
+type FnOf<abi, name, mut extends AbiStateMutability> = abi extends Abi
   ? Extract<
       abi[number],
-      { readonly type: 'function'; readonly name: name; readonly stateMutability: ViewMutability }
+      { readonly type: 'function'; readonly name: name; readonly stateMutability: mut }
     >
   : never;
 
@@ -432,19 +444,23 @@ type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
         | AbiParameterToPrimitiveType<p, 'inputs'>
         | Expr<p['type'] extends EvsType ? p['type'] : never>;
 
-export type SubcallInputs<abi extends Abi | readonly unknown[], name extends string> = [
-  ViewFnOf<abi, name>,
-] extends [never]
+export type SubcallInputs<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+> = [FnOf<abi, name, mut>] extends [never]
   ? readonly unknown[]
-  : ViewFnOf<abi, name> extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
+  : FnOf<abi, name, mut> extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
     ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
     : readonly unknown[];
 
-export type SubcallOutputs<abi extends Abi | readonly unknown[], name extends string> = [
-  ViewFnOf<abi, name>,
-] extends [never]
+export type SubcallOutputs<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+> = [FnOf<abi, name, mut>] extends [never]
   ? readonly (Expr | Tuple<TupleType>)[]
-  : ViewFnOf<abi, name> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
     ? { readonly [i in keyof outs]: OutputHandle<outs[i]> }
     : readonly (Expr | Tuple<TupleType>)[];
 
@@ -456,33 +472,83 @@ export type UnwrapSingle<outs> = outs extends readonly []
     : outs;
 
 /**
- * `s.call({ …, struct: true })` (issue #5 ask #2) → ONE named {@link Tuple} handle built over ALL
+ * `s.read({ …, struct: true })` (issue #5 ask #2) → ONE named {@link Tuple} handle built over ALL
  * of the function's (named, ABI-ordered) outputs — the opt-in alternative to the default positional
  * `[many]` shape (which stays the default, mirroring viem's `readContract`). Requires every output
  * to carry a name at record time. The struct type is in ABI declaration order, so it unifies with
  * `t.fromOutputs(abi, name)` and a `t.struct` declared in the same order (issue #5 asks #3/#4).
  */
-export type SubcallStruct<abi extends Abi | readonly unknown[], name extends string> = [
-  ViewFnOf<abi, name>,
-] extends [never]
+export type SubcallStruct<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+> = [FnOf<abi, name, mut>] extends [never]
   ? Tuple<TupleType>
-  : ViewFnOf<abi, name> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
     ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>
     : Tuple<TupleType>;
 
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
-  name extends ContractFunctionName<abi, ViewMutability>,
+  name extends ContractFunctionName<abi, mut>,
+  mut extends AbiStateMutability = ViewMutability,
 > {
   readonly address: IntoExpr<'address'>;
   readonly abi: abi;
-  readonly functionName: name | ContractFunctionName<abi, ViewMutability>; // autocomplete union
-  readonly args?: SubcallInputs<abi, name>;
+  readonly functionName: name | ContractFunctionName<abi, mut>; // autocomplete union
+  readonly args?: SubcallInputs<abi, name, mut>;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
   // the default positional `[many]` array. See {@link SubcallStruct}.
   readonly struct?: boolean;
 }
+
+// ---------------------------------------------------------------------------
+// the six calling verbs (issue #1) as callable interfaces — one set of three struct-aware
+// overloads per (mutability bucket × strict/try). `read`/`tryRead` filter to ViewMutability
+// (STATICCALL); `call`/`tryCall`/`simulate`/`trySimulate` filter to WriteMutability (CALL).
+// ---------------------------------------------------------------------------
+
+/** The strict result shape, parameterized over the mutability bucket. */
+export interface SubcallVerb<mut extends AbiStateMutability> {
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct: true },
+  ): SubcallStruct<abi, name, mut>;
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  ): UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut>,
+  ): SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+}
+
+/** The try result shape (`{ success, value }`), parameterized over the mutability bucket. */
+export interface TrySubcallVerb<mut extends AbiStateMutability> {
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct: true },
+  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut> };
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  ): {
+    readonly success: Expr<'bool'>;
+    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+  };
+  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
+    p: SubcallParams<abi, name, mut>,
+  ): {
+    readonly success: Expr<'bool'>;
+    readonly value: SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+  };
+}
+
+/** `s.read` — STATICCALL of a `view`/`pure` function (the frozen read surface). */
+export type ReadVerb = SubcallVerb<ViewMutability>;
+/** `s.tryRead` — STATICCALL, never reverts the script (`{ success, value }`). */
+export type TryReadVerb = TrySubcallVerb<ViewMutability>;
+/** `s.call` / `s.simulate` — a `CALL` frame for a `nonpayable`/`payable` function. */
+export type WriteVerb = SubcallVerb<WriteMutability>;
+/** `s.tryCall` / `s.trySimulate` — a `CALL` frame, never reverts the script. */
+export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
 
 // ---------------------------------------------------------------------------
 // user functions (api.md §8)
@@ -581,51 +647,18 @@ export interface ScriptBuilder {
   ): void;
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
 
-  // calls (api.md §6) — the result shape depends on `struct` (issue #5 ask #2). Three overloads in
-  // precedence order so the static type ALWAYS matches the runtime (`wantStruct = struct === true`):
-  //   `struct: true`  → ONE named Tuple;
-  //   `struct?: false` / omitted → the frozen positional `[many]` shape (unchanged default);
-  //   a NON-LITERAL `boolean` → the union of both (the runtime decides on the value, so the caller
-  //     must narrow — this closes the literal-vs-boolean soundness gap).
-  call<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name> & { readonly struct: true },
-  ): SubcallStruct<abi, name>;
-  call<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name> & { readonly struct?: false },
-  ): UnwrapSingle<SubcallOutputs<abi, name>>;
-  call<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name>,
-  ): SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>;
-  tryCall<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name> & { readonly struct: true },
-  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name> };
-  tryCall<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name> & { readonly struct?: false },
-  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<SubcallOutputs<abi, name>> };
-  tryCall<
-    const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, ViewMutability>,
-  >(
-    p: SubcallParams<abi, name>,
-  ): {
-    readonly success: Expr<'bool'>;
-    readonly value: SubcallStruct<abi, name> | UnwrapSingle<SubcallOutputs<abi, name>>;
-  };
+  // calls (api.md §6) — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
+  // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the
+  // mutability bucket its `functionName`/arg/output handles are filtered by:
+  //   read     / tryRead     → STATICCALL of view/pure          (the renamed frozen read surface)
+  //   call     / tryCall     → CALL of nonpayable/payable        (non-static frame, NO rollback)
+  //   simulate / trySimulate → CALL of nonpayable/payable        (write dry-run, state rolled back)
+  read: ReadVerb;
+  tryRead: TryReadVerb;
+  call: WriteVerb;
+  tryCall: TryWriteVerb;
+  simulate: WriteVerb;
+  trySimulate: TryWriteVerb;
 
   // functions (api.md §8)
   fn<const params extends readonly ArgSpec[], const r extends FnReturn>(
@@ -683,9 +716,21 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     },
     select: (cond: unknown, a: unknown, b: unknown) => r.select(cond, a, b),
 
-    call: (p: unknown) => r.subcall(p, 'strict').value,
+    // the six calling verbs (issue #1) — all route through the one recorder `subcall`, differing
+    // in the call kind (frame/state semantics) and, for the try variants, the success/value wrap.
+    read: (p: unknown) => r.subcall(p, 'strict', 'static').value,
+    tryRead: (p: unknown) => {
+      const res = r.subcall(p, 'try', 'static');
+      return Object.freeze({ success: res.success, value: res.value });
+    },
+    call: (p: unknown) => r.subcall(p, 'strict', 'call').value,
     tryCall: (p: unknown) => {
-      const res = r.subcall(p, 'try');
+      const res = r.subcall(p, 'try', 'call');
+      return Object.freeze({ success: res.success, value: res.value });
+    },
+    simulate: (p: unknown) => r.subcall(p, 'strict', 'simulate').value,
+    trySimulate: (p: unknown) => {
+      const res = r.subcall(p, 'try', 'simulate');
       return Object.freeze({ success: res.success, value: res.value });
     },
 

@@ -34,7 +34,7 @@ interface MockChainShape {
 - `ir` — the script's IR, straight off the script: `interpret(myScript.ir, …)`. It is
   validated on entry, so garbage IR fails loudly instead of producing garbage results.
 - `args` — the script's arguments as plain JS values (same conventions as viem; table below).
-- `chain` — your mock: every `s.call`/`s.tryCall` the script executes arrives as one
+- `chain` — your mock: every `s.read`/`s.tryRead` the script executes arrives as one
   `staticcall` request with the target address and the exact ABI-encoded calldata the
   compiled script would send.
 - `InterpResult.outcome` is either `{ kind: 'return', data, values }` — `data` is the
@@ -45,7 +45,7 @@ interface MockChainShape {
 
 A `MockChain` answers each sub-call with `{ success, data }`. Return `success: true` with
 ABI-encoded returndata (viem's `encodeFunctionResult` is the convenient way to build it), or
-`success: false` with a revert payload — a strict `s.call` bubbles it verbatim, a `s.tryCall`
+`success: false` with a revert payload — a strict `s.read` bubbles it verbatim, a `s.tryRead`
 zeroes its outputs. This is a complete, runnable test with no test framework at all:
 
 ```ts
@@ -53,8 +53,8 @@ import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
 import { encodeFunctionResult, erc20Abi, toFunctionSelector } from 'viem';
 
 const tokenInfo = evscript({ name: 'tokenInfo', args: [t.address] }, (s, token) => {
-  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  const decimals = s.call({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
 
@@ -146,8 +146,8 @@ if (explained.kind !== 'panic' || explained.panicCode !== 0x12n) throw new Error
 ```
 
 Malformed returndata is covered with the same fidelity: have your mock return `success: true`
-with truncated or structurally invalid bytes and a strict `s.call` reverts with
-`EvsDecodeError(site)`, while a `s.tryCall` reports `success = false` with zeroed values —
+with truncated or structurally invalid bytes and a strict `s.read` reverts with
+`EvsDecodeError(site)`, while a `s.tryRead` reports `success = false` with zeroed values —
 exactly like the bytecode. See [Calling contracts](/guides/calls/) for those semantics.
 
 ## Modeling the execution frame

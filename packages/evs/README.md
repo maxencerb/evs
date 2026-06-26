@@ -31,13 +31,13 @@ const poolMeta = evscript(
   { name: 'poolMeta', args: [t.address, t.address] },
   // args arrive as positional params after `s`, in declaration order
   (s, pool, user) => {
-    const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
     //    ^? Expr<'address'>  — feeds the next call ON-CHAIN
-    const slot0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
-    const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+    const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
+    const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const dec = s.tryRead({ address: token0, abi: erc20Abi, functionName: 'decimals' });
     const decimals0 = s.select(dec.success, dec.value, 18); // default when the call fails
-    const bal0 = s.call({
+    const bal0 = s.read({
       address: token0,
       abi: erc20Abi,
       functionName: 'balanceOf',
@@ -104,7 +104,10 @@ deployed, and gas is bounded only by the node's `eth_call` cap.
 ## More
 
 - Checked arithmetic (solc ≥ 0.8 `Panic` semantics), checked narrowing conversions.
-- `s.tryCall` → `{ success, value }` with safe zero defaults; callee reverts bubble verbatim.
+- Calls split by mutability: `s.read` (`STATICCALL`, view/pure), `s.call` (`CALL`, nonpayable —
+  Uniswap quoters and other non-static reads), and `s.simulate` (a `CALL` write dry-run whose
+  state is rolled back, yet whose return value is read back). Each has a `try*` variant →
+  `{ success, value }` with safe zero defaults; strict callee reverts bubble verbatim.
 - Loops over runtime arrays + `s.newArray` collection — the multicall replacement.
 - `compile({ evmVersion: 'paris' | 'shanghai' | 'cancun' })` for pre-Shanghai chains.
 - Inspectable artifact: `disassemble().format()`, `sourceMap`, `explainRevert(data)` mapping

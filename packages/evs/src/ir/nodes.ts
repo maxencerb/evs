@@ -120,6 +120,16 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
       args: readonly ValueId[];
       outs: readonly ValueId[];
       mode: 'strict' | 'try';
+      // call frame + state semantics (issue #1):
+      //   'static'   — STATICCALL: view/pure reads, no state change possible (s.read/s.tryRead).
+      //   'call'     — CALL: a non-static frame for non-view targets (Uniswap quoters, calls that
+      //                don't usefully persist state); the write is NOT rolled back within the
+      //                script (s.call/s.tryCall).
+      //   'simulate' — CALL via a self-call + revert macro: a true write is dry-run and its return
+      //                value read back, with the write's state rolled back and isolated from later
+      //                reads in the same script (s.simulate/s.trySimulate). architecture §7.
+      // OPTIONAL/defaulting to 'static' so v1 serialized IR (no `kind`) deserializes unchanged.
+      kind?: 'static' | 'call' | 'simulate';
       successOut?: ValueId;
       gas?: ValueId;
     }
@@ -590,6 +600,11 @@ function decodeStmt(v: unknown, path: string): Stmt {
       if (mode !== 'strict' && mode !== 'try') {
         fail(`${path}.mode`, `expected 'strict' | 'try', got ${describe(mode)}`);
       }
+      // `kind` is OPTIONAL: absent → 'static' (pre-issue-#1 IR is STATICCALL-only).
+      const kind: unknown = o['kind'];
+      if (kind !== undefined && kind !== 'static' && kind !== 'call' && kind !== 'simulate') {
+        fail(`${path}.kind`, `expected 'static' | 'call' | 'simulate', got ${describe(kind)}`);
+      }
       const successOut: unknown = o['successOut'];
       const gas: unknown = o['gas'];
       return {
@@ -601,6 +616,7 @@ function decodeStmt(v: unknown, path: string): Stmt {
         args: decodeIdArray(o['args'], `${path}.args`),
         outs: decodeIdArray(o['outs'], `${path}.outs`),
         mode,
+        ...(kind !== undefined && kind !== 'static' ? { kind } : {}),
         ...(successOut !== undefined ? { successOut: asId(successOut, `${path}.successOut`) } : {}),
         ...(gas !== undefined ? { gas: asId(gas, `${path}.gas`) } : {}),
       };

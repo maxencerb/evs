@@ -59,6 +59,7 @@ import {
   type SharedTails,
   type SlotRef,
 } from './abi.js';
+import { SIMULATE_MAGIC, SIMULATE_TRAMPOLINE_SELECTOR_NUM } from './simulate.js';
 
 // ---------------------------------------------------------------------------
 // frozen contract types (module-interfaces §M7 + recorded targetRef/gasRef deviation)
@@ -741,7 +742,14 @@ export function emitStaticCall(
     emitCalldataBuild(w, template, tails, opts, dataSeg);
   }
 
-  // -- 2. staticcall(gas, addr, buf, argsSize, 0, 0) --------------------------------------
+  // -- 2. the subcall (issue #1): STATICCALL for `kind: 'static'` (s.read), CALL with value 0 for
+  // `kind: 'call'` (s.call — a non-static frame for non-view targets). `kind: 'simulate'` never
+  // reaches here (lowerCall routes it to emitSimulateCall). Operand order:
+  //   STATICCALL(gas, addr, buf, argsSize, 0, 0)
+  //   CALL      (gas, addr, value=0, buf, argsSize, 0, 0)
+  // — identical save the extra `value` word, so only one push + the opcode differ; the decode,
+  // bubble, and try-zeroing below are byte-shared.
+  const useCall = stmt.kind === 'call';
   w.push(FREE_PTR);
   w.op('MLOAD'); // [buf]
   w.push(0); // [retSize, buf]
@@ -756,6 +764,7 @@ export function emitStaticCall(
     w.op('SUB'); // [argsSize, retOff, retSize, buf]
   }
   w.op('DUP4'); // [argsOff = buf, argsSize, retOff, retSize, buf]
+  if (useCall) w.push(0, { note: 'value 0' }); // [value, argsOff, …] — CALL only
   if (isLiteralRef(plan.targetRef)) {
     w.push(literalWordValue(plan.targetRef.literal, `target of ${fnAbi.name}`), {
       note: 'target',
@@ -772,9 +781,9 @@ export function emitStaticCall(
     w.push(plan.gasRef.slot);
     w.op('MLOAD', { note: 'gas cap' });
   }
-  w.op('STATICCALL', {
+  w.op(useCall ? 'CALL' : 'STATICCALL', {
     loc: stmt.loc,
-    note: `${stmt.mode} call ${fnAbi.name} (site ${siteId})`,
+    note: `${stmt.mode} ${useCall ? 'call' : 'read'} ${fnAbi.name} (site ${siteId})`,
   }); // [success, buf]
 
   const ok = w.newLabel(`call_ok_${siteId}`);
@@ -1058,5 +1067,296 @@ export function emitStaticCall(
       w.op('MSTORE');
     }
     w.label(join, 0); // fallthrough from the zero block rejoins here
+  }
+}
+
+// ---------------------------------------------------------------------------
+// emitSimulateCall — the s.simulate / s.trySimulate self-call trampoline (issue #1,
+// architecture §7.3; trampoline body in codegen/simulate.ts)
+// ---------------------------------------------------------------------------
+
+/** Reserved 4-byte trampoline selector as a left-shifted 32-byte word (`sel << 224`). */
+const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
+/** Scratch slot holding the wrapper argsSize (36 + payload length) across the payload memcpy
+ *  (the pre-cancun `@memcpy` only clobbers scratch 0x00, so 0x20 survives it). */
+const SIM_ARGSIZE_SLOT = 0x20;
+
+/**
+ * Emits an `s.simulate` / `s.trySimulate` site (architecture §7.3). Builds the target's calldata
+ * exactly like a normal call, wraps it as `[trampSel(4)][target(32)][payload…]` in transient
+ * scratch above the buffer, self-`CALL`s `ADDRESS()` so the trampoline (codegen/simulate.ts)
+ * performs the real write-`CALL` and `REVERT`s with `[MAGIC][innerSuccess][returndata]`, then
+ * recognizes the magic, distinguishes a reverting target (strict: bubble; try: success=0), and
+ * decodes the carried returndata via the shared memory tuple-decoder — so the write's state is
+ * rolled back yet its return value is read back.
+ */
+export function emitSimulateCall(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  dataSeg: (bytes: Uint8Array) => LabelId,
+): void {
+  const { stmt, siteId } = plan;
+  const { fnAbi } = stmt;
+  const outputs = fnAbi.outputs;
+  const tryMode = stmt.mode === 'try';
+
+  if (outputs.length !== plan.outRefs.length) {
+    throw internal(
+      `simulate ${fnAbi.name} (site ${siteId}): ${outputs.length} ABI output(s) but ${plan.outRefs.length} out ref(s)`,
+    );
+  }
+  if (tryMode && plan.successRef === null) {
+    throw internal(`try simulate ${fnAbi.name} (site ${siteId}): successRef is required`);
+  }
+  if (!tryMode && plan.successRef !== null) {
+    throw internal(`strict simulate ${fnAbi.name} (site ${siteId}): successRef must be null`);
+  }
+
+  /** Decode-fail router (structural decode failure / missing magic). Mirrors emitStaticCall:
+   *  strict → the `'any'` dfail stub (EvsDecodeError(site)); try → clean stack 0, zero block. */
+  const emitDecodeFail = (liveDepth: number): void => {
+    if (!tryMode) {
+      w.pushLabel(plan.dfailLabel);
+      w.op('JUMPI');
+      return;
+    }
+    const cont = w.newLabel(`sim_${siteId}_cont`);
+    w.op('ISZERO');
+    w.pushLabel(cont);
+    w.op('JUMPI'); // […live]
+    for (let k = 0; k < liveDepth; k++) w.op('POP');
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP');
+    w.label(cont, liveDepth);
+  };
+
+  // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
+  const needsRecursiveEncode = fnAbi.inputs.some(
+    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
+  );
+  const template = needsRecursiveEncode ? null : buildTemplate(plan);
+  if (template === null) {
+    emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
+  } else {
+    emitCalldataBuild(w, template, tails, opts, dataSeg);
+  }
+
+  // -- 2. wrap [trampSel(4)][target(32)][payload(L)] at W = buf + ceil32(L), above the buffer --
+  // L = payload length (static-regime const, else tail cursor − buf). The buffer stays at
+  // MLOAD(0x40); the wrapper is transient scratch above it (dead after the self-call).
+  if (template !== null && template.regime === 'static') {
+    w.push(template.staticSize, { note: 'payload size L' }); // [L]
+  } else {
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tailEnd]
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [buf, tailEnd]
+    w.op('SWAP1');
+    w.op('SUB'); // [L = tailEnd − buf]
+  }
+  // argsSize = 36 + L → SIM_ARGSIZE_SLOT (survives the payload memcpy — @memcpy only clobbers 0x00).
+  // Consumes L: W and the memcpy len are recomputed from argsSize, so nothing stays on the stack.
+  w.push(36);
+  w.op('ADD'); // [argsSize = 36+L]
+  w.push(SIM_ARGSIZE_SLOT);
+  w.op('MSTORE'); // []   scratch[0x20] = argsSize
+  // W = buf + ceil32(L). It is NOT kept on the stack across the payload memcpy (the pre-cancun
+  // `@memcpy` requires the stack to be EXACTLY [dst, src, len]); instead it is recomputed from the
+  // stored argsSize as buf + ceil32(argsSize − 36) wherever needed.
+  const pushCeil32 = (): void => {
+    w.push(31);
+    w.op('ADD');
+    w.push(31);
+    w.op('NOT');
+    w.op('AND'); // [ceil32(x)]
+  };
+  const pushWrapperBase = (): void => {
+    w.push(SIM_ARGSIZE_SLOT);
+    w.op('MLOAD');
+    w.push(36);
+    w.op('SWAP1');
+    w.op('SUB'); // [L = argsSize − 36]
+    pushCeil32(); // [ceil32(L)]
+    w.push(FREE_PTR);
+    w.op('MLOAD');
+    w.op('ADD'); // [W = buf + ceil32(L)]
+  };
+  pushWrapperBase(); // [W]
+  // header word 0: MSTORE(W, trampSel << 224)
+  w.push(TRAMP_SELECTOR_WORD, { note: 'trampoline selector' }); // [sel, W]
+  w.op('DUP2');
+  w.op('MSTORE'); // [W]   mem[W] = sel<<224 (zeros [W+4,W+32))
+  // header word 1: MSTORE(W+4, target) (overwrites those zeros with the address)
+  if (isLiteralRef(plan.targetRef)) {
+    w.push(literalWordValue(plan.targetRef.literal, `target of ${fnAbi.name}`), { note: 'target' });
+  } else {
+    w.push(plan.targetRef.slot);
+    w.op('MLOAD', { note: 'target' });
+  } // [target, W]
+  w.op('DUP2');
+  w.push(4);
+  w.op('ADD'); // [W+4, target, W]
+  w.op('MSTORE'); // [W]   mem[W+4] = target
+  // payload memcpy(dst = W+36, src = buf, len = L) — consumes W; leaves EXACTLY [dst, src, len]
+  w.push(36);
+  w.op('ADD'); // [W+36]   (dst)
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [buf, W+36]   (src)
+  w.push(SIM_ARGSIZE_SLOT);
+  w.op('MLOAD');
+  w.push(36);
+  w.op('SWAP1');
+  w.op('SUB'); // [L, buf, W+36]   (len = argsSize − 36)
+  w.op('SWAP2'); // [W+36, buf, L]
+  emitMemCopy(w, tails, opts); // []   (W+36 > buf+L ⇒ non-overlapping, all forks)
+
+  // -- 3. self-CALL(gas, ADDRESS(), 0, W, argsSize, 0, 0) — W recomputed from argsSize ----------
+  w.push(0); // [retSize=0]
+  w.push(0); // [retOff=0, 0]
+  w.push(SIM_ARGSIZE_SLOT);
+  w.op('MLOAD'); // [argsSize, 0, 0]
+  pushWrapperBase(); // [argsOff=W, argsSize, 0, 0]
+  w.push(0, { note: 'value 0' }); // [value=0, …]
+  w.op('ADDRESS', { note: 'self (the script holds the trampoline)' }); // [self, …]
+  if (plan.gasRef === undefined) {
+    w.op('GAS');
+  } else if (isLiteralRef(plan.gasRef)) {
+    w.push(literalWordValue(plan.gasRef.literal, `gas of ${fnAbi.name}`), { note: 'gas cap' });
+  } else {
+    w.push(plan.gasRef.slot);
+    w.op('MLOAD', { note: 'gas cap' });
+  }
+  w.op('CALL', {
+    loc: stmt.loc,
+    note: `${stmt.mode} simulate ${fnAbi.name} (site ${siteId}) — self-call trampoline`,
+  }); // [success]
+  w.op('POP'); // []   self-call success ignored (the trampoline always reverts; MAGIC is the proof)
+
+  // -- 4. recognize the trampoline revert; snapshot; check magic + inner success --------------
+  // rds ≥ 64 (MAGIC + innerSuccess) or it is a genuine failure (OOG / codeless self) → decode-fail
+  w.push(64);
+  w.op('RETURNDATASIZE');
+  w.op('LT'); // [rds < 64]
+  emitDecodeFail(0); // []
+
+  // snapshot the whole returndata at buf; bump free ptr by ceil32(rds); SNAP_SLOT = buf
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [buf]
+  w.returndatacopyAll({ dupDepth: 1 }); // [buf]   mem[buf..] = trampoline revert payload
+  w.op('RETURNDATASIZE');
+  w.push(31);
+  w.op('ADD');
+  w.push(31);
+  w.op('NOT');
+  w.op('AND'); // [ceil32(rds), buf]
+  w.op('DUP2');
+  w.op('ADD'); // [buf+ceil32(rds), buf]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [buf]
+  w.op('DUP1');
+  w.push(SNAP_SLOT);
+  w.op('MSTORE'); // [buf]   scratch[SNAP_SLOT] = snapshot base (decoders read it stably)
+
+  // magic check: MLOAD(buf) === MAGIC, else decode-fail
+  w.op('DUP1');
+  w.op('MLOAD'); // [word0, buf]
+  w.push(SIMULATE_MAGIC, { note: 'simulate magic' });
+  w.op('EQ');
+  w.op('ISZERO'); // [word0 != MAGIC, buf]
+  emitDecodeFail(1); // [buf]
+
+  // innerSuccess = MLOAD(buf+32); 0 → the target reverted
+  const decodeOk = w.newLabel(`sim_ok_${siteId}`);
+  w.op('DUP1');
+  w.push(32);
+  w.op('ADD');
+  w.op('MLOAD'); // [innerSuccess, buf]
+  w.pushLabel(decodeOk);
+  w.op('JUMPI'); // [buf]   innerSuccess != 0 → decode the outputs
+  // innerSuccess == 0 (target reverted):
+  if (tryMode) {
+    w.op('POP'); // []
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP'); // → zero block
+  } else {
+    // strict: bubble the target's revert verbatim — revert(buf+64, rds−64)
+    w.op('RETURNDATASIZE');
+    w.push(64);
+    w.op('SWAP1');
+    w.op('SUB'); // [rds−64, buf]
+    w.op('SWAP1');
+    w.push(64);
+    w.op('ADD'); // [buf+64, rds−64]
+    w.op('REVERT', { note: 'bubble the simulated write revert' });
+  }
+  w.label(decodeOk, 1); // [buf]
+
+  // -- 5. decode the carried returndata [buf+64, buf+rds) as the output tuple ------------------
+  if (outputs.length > 0) {
+    const minSize = headBytes(outputs);
+    // head-size guard on the INNER length: rds−64 ≥ headBytes(outputs)
+    w.op('RETURNDATASIZE');
+    w.push(64);
+    w.op('SWAP1');
+    w.op('SUB'); // [rds−64, buf]
+    w.push(minSize, { note: `staticMinSize ${minSize}` });
+    w.op('GT'); // [minSize > rds−64, buf]
+    emitDecodeFail(1); // [buf]
+
+    // decode the outputs as one tuple from [SNAP+64, SNAP+rds) into a flat block, then scatter.
+    const pushBase: PushBase = () => {
+      w.push(SNAP_SLOT);
+      w.op('MLOAD');
+      w.push(64);
+      w.op('ADD'); // [buf+64]
+    };
+    const pushEnd = (): void => {
+      w.push(SNAP_SLOT);
+      w.op('MLOAD');
+      w.op('RETURNDATASIZE');
+      w.op('ADD'); // [buf+rds]
+    };
+    emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
+    outputs.forEach((out, j) => {
+      const ref = plan.outRefs[j];
+      if (ref === undefined) throw internal(`simulate missing out ref #${j}`);
+      w.op('DUP1'); // [flat, flat, buf]
+      if (j !== 0) {
+        w.push(32 * j);
+        w.op('ADD');
+      }
+      w.op('MLOAD'); // [word_j, flat, buf]
+      w.push(ref.slot);
+      w.op('MSTORE', { note: `out #${j} ${out.type}` }); // [flat, buf]
+    });
+    w.op('POP'); // [buf]
+  }
+  w.op('POP'); // []
+
+  // -- 6. try mode: success flag, zero block (checked — rejoins), join ------------------------
+  if (tryMode) {
+    if (plan.successRef !== null) {
+      w.push(1);
+      w.push(plan.successRef.slot);
+      w.op('MSTORE', { note: `success = 1 (site ${siteId})` });
+    }
+    const join = w.newLabel(`sim_join_${siteId}`);
+    w.pushLabel(join);
+    w.op('JUMP');
+
+    w.label(plan.dfailLabel, 0, `zero_${siteId}`);
+    if (plan.successRef !== null) {
+      w.push(0);
+      w.push(plan.successRef.slot);
+      w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
+    }
+    for (const ref of plan.outRefs) {
+      emitZeroValue(w, ref.type);
+      w.push(ref.slot);
+      w.op('MSTORE');
+    }
+    w.label(join, 0);
   }
 }

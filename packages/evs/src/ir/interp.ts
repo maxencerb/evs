@@ -70,6 +70,22 @@ import { validateIr } from './validate.js';
 
 export interface MockChain {
   staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
+  /**
+   * Optional mutable-subcall oracle for `s.call` / `s.simulate` (issue #1). Defaults to
+   * {@link MockChain.staticcall} when omitted.
+   *
+   * `req.kind` tells the mock which non-static verb is calling (`'call'` = a real CALL frame,
+   * `'simulate'` = the self-call/revert dry-run) — but it is **informational only**. The reference
+   * interpreter is STATELESS, so returndata is a pure function of `(to, data, chain-state)`: a CALL
+   * and the simulate trampoline relay the SAME calldata to the SAME target and read back the SAME
+   * bytes; the only real difference is whether the write *persists*, which needs state this oracle
+   * deliberately does not model. So a stateless mock MUST return identical data regardless of
+   * `kind` — diverging on it would model behavior that cannot physically happen and would break the
+   * byte-for-byte agreement with the compiled bytecode. `kind` exists for routing assertions and
+   * for a user-built *stateful* mock that chooses to apply-then-roll-back itself; the canonical
+   * persistence/rollback semantics are pinned in the integration tier (anvil) against real state.
+   */
+  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate' }): { success: boolean; data: Hex };
 }
 
 export interface InterpResult {
@@ -608,11 +624,25 @@ class Interp {
     if (s.gas !== undefined) this.word(s.gas); // evaluated; the interpreter has no gas model
     const calldata = this.encodeCalldata(s.fnAbi, s.args);
     const to: Hex = `0x${target.toString(16).padStart(40, '0')}`;
-    const res = this.chain.staticcall({ to, data: bytesToHex(calldata) });
+    // kind 'static' (or absent) → STATICCALL via `staticcall`; 'call'/'simulate' → the mutable
+    // oracle `call`, which receives the kind (informational — see the MockChain doc) and defaults
+    // to `staticcall` when the host supplied none. Everything below is kind-INDEPENDENT: a stateless
+    // oracle decodes/bubbles/zeroes the returndata identically however it was produced (the rollback
+    // is unobservable here — pinned in the anvil tier).
+    const base = { to, data: bytesToHex(calldata) };
+    let res: { success: boolean; data: Hex };
+    let oracle: 'call' | 'staticcall';
+    if ((s.kind === 'call' || s.kind === 'simulate') && this.chain.call !== undefined) {
+      oracle = 'call';
+      res = this.chain.call({ ...base, kind: s.kind }); // s.kind narrowed to 'call' | 'simulate'
+    } else {
+      oracle = 'staticcall';
+      res = this.chain.staticcall(base);
+    }
     if (typeof res !== 'object' || res === null || typeof res.success !== 'boolean') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `interpret: MockChain.staticcall returned a malformed result for ${s.fnAbi.name}()`,
+        `interpret: MockChain.${oracle} returned a malformed result for ${s.fnAbi.name}()`,
         { loc: s.loc },
       );
     }

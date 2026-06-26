@@ -32,7 +32,7 @@ const clamp = evscript(
   composite/tuple params are a deliberate v0 narrowing. Dynamic types pass as memref pointer words.
   The body receives them as positionally typed `Expr`s.
 - **Returns** can be a single `Expr`, a single `Tuple` handle (a struct/composite result — the call
-  site then gets a `Tuple` with named field access, like `s.call`), a single `MutArray` handle (an
+  site then gets a `Tuple` with named field access, like `s.read`), a single `MutArray` handle (an
   array result — the call site gets an array `Expr`), a readonly tuple of any of those (use
   `as const`, as above), or `void`. (Composite/array returns were widened in issue #5; a bare
   `Tuple`/`MutArray` body return is byte-identical IR to wrapping it in `.expr()`.)
@@ -44,7 +44,7 @@ Each call returns **fresh** handles: two calls never alias, even with identical 
 
 ## Fn bodies are isolated — no capture
 
-The body runs once, at definition, in its own scope. It can use the builder freely (`s.call`,
+The body runs once, at definition, in its own scope. It can use the builder freely (`s.read`,
 `s.if`, cells declared inside, nested loops), but it cannot touch `Expr`s or `Cell`s recorded
 in the enclosing script:
 
@@ -52,7 +52,7 @@ in the enclosing script:
 const portfolio = evscript({ name: 'portfolio', args: [t.address] }, (s, owner) => {
   const bad = s.fn('bad', [arg('token', t.address)], (token) =>
     // `owner` belongs to the enclosing script, not to the fn body:
-    s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+    s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
   );
   // EvsScopeError (SCOPE_VIOLATION): s.fn("bad") bodies cannot capture values from
   // the enclosing script — pass them in as fn params instead
@@ -91,7 +91,7 @@ const portfolio = evscript(
       'balOf',
       [arg('token', t.address), arg('who', t.address)],
       (token, who) =>
-        s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
+        s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [who] }),
     );
     const n = tokens.length();
     const out = s.newArray(t.uint256, n);
@@ -105,7 +105,7 @@ const portfolio = evscript(
 
 The loop machinery (`s.for`, `s.newArray`, cells) is covered in
 [control flow](/guides/control-flow/); the sub-call typing in [calls](/guides/calls/). A
-revert-tolerant variant of this exact shape — `s.tryCall` so one bad token cannot kill the
+revert-tolerant variant of this exact shape — `s.tryRead` so one bad token cannot kill the
 batch — is the [batch token balances example](/examples/token-balances/), and more `s.fn`
 patterns live in [patterns](/examples/patterns/). Frozen signatures: the
 [ScriptBuilder reference](/reference/builder/).

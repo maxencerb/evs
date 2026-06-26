@@ -119,15 +119,15 @@ already included in every compiled script's `abi`, so viem names them when decod
 | Error                        | Reverted when                                                                                      |
 | ---------------------------- | --------------------------------------------------------------------------------------------------- |
 | `EvsInvalidCalldata()`       | the calldata does not match the script function: wrong selector, truncated calldata, malformed dynamic arguments |
-| `EvsDecodeError(uint256 site)` | a strict `s.call` received structurally malformed returndata; `site` indexes the artifact's source map           |
+| `EvsDecodeError(uint256 site)` | a strict `s.read` received structurally malformed returndata; `site` indexes the artifact's source map           |
 
 ### Bubbled callee reverts
 
-When a contract called via `s.call` reverts, the script reverts with the callee's payload
+When a contract called via `s.read` reverts, the script reverts with the callee's payload
 **byte-for-byte** — `Error(string)`, `Panic(uint256)`, and custom errors alike. Nothing is
 wrapped or rewritten, so you can decode the payload against the callee's ABI as if you had
 called it directly. If you want a failed sub-call to produce zeros instead of reverting, use
-`s.tryCall` — see [calling contracts](/guides/calls/).
+`s.tryRead` — see [calling contracts](/guides/calls/).
 
 ## `explainRevert` — from a viem error to your source line
 
@@ -146,7 +146,7 @@ import {
 } from 'viem';
 
 const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-  const symbol = s.call({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
   return s.return({ symbol });
 });
 
@@ -167,7 +167,7 @@ try {
       // explanation.kind    → 'evs-decode'
       // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 1)
       //                        — recorded at token-meta.ts:5:20"
-      // explanation.site    → { id, loc, detail } for the s.call that failed
+      // explanation.site    → { id, loc, detail } for the s.read that failed
     }
   }
 }
@@ -179,7 +179,7 @@ The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` a
 | `kind`                   | Payload                          | Source attribution                                                                  |
 | ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
-| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.call` whose returndata failed to decode, with its recorded loc  |
+| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode, with its recorded loc  |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
 | `'error-string'`         | `Error(string)`                  | none — bubbled verbatim from a callee                                                 |
 | `'custom'`               | any other selector               | none — decode it against the callee's ABI                                             |

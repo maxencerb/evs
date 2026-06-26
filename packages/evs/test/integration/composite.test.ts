@@ -59,7 +59,7 @@ const TOKEN_ID = 0xdeadn;
 const readPosition = evscript(
   { name: 'readPosition', args: [t.address, t.uint256] },
   (s, target, tokenId) => {
-    const pos = s.call({
+    const pos = s.read({
       address: target,
       abi: Composite.abi,
       functionName: 'positions',
@@ -133,7 +133,7 @@ describe('positions(tokenId): struct output decode + named fields, all three toV
 
 describe('slot0Struct(): tick field (int24 → number)', () => {
   const readTick = evscript({ name: 'readTick', args: t.address }, (s, target) => {
-    const slot0 = s.call({ address: target, abi: Composite.abi, functionName: 'slot0Struct' });
+    const slot0 = s.read({ address: target, abi: Composite.abi, functionName: 'slot0Struct' });
     return s.return({ tick: slot0.tick.get() });
   });
 
@@ -153,7 +153,7 @@ describe('slot0Struct(): tick field (int24 → number)', () => {
 
 describe('getOuter(): nested struct field (outer.inner.b)', () => {
   const readInnerB = evscript({ name: 'readInnerB', args: t.address }, (s, target) => {
-    const outer = s.call({ address: target, abi: Composite.abi, functionName: 'getOuter' });
+    const outer = s.read({ address: target, abi: Composite.abi, functionName: 'getOuter' });
     return s.return({ b: outer.inner.get().b.get() });
   });
 
@@ -199,7 +199,7 @@ describe('quote(QuoteParams): composite input encode + (uint256, Position) outpu
     { name: 'runQuote', args: [t.address, t.address, t.address, t.uint24, t.uint256] },
     (s, target, tokenIn, tokenOut, fee, amountIn) => {
       const params = s.tuple(QuoteParams, { tokenIn, tokenOut, fee, amountIn });
-      const [amountOut, pos] = s.call({
+      const [amountOut, pos] = s.read({
         address: target,
         abi: Composite.abi,
         functionName: 'quote',
@@ -275,7 +275,7 @@ describe('composite arrays (read path) against real solc getters', () => {
   test('positionsBatch(3)[1].liquidity + nonce + len (static-element tuple[])', async () => {
     const script = evscript({ name: 'rdPositions', args: t.address }, (s, target) => {
       const ps = asArr(
-        s.call({ address: target, abi: Composite.abi, functionName: 'positionsBatch', args: [3n] }),
+        s.read({ address: target, abi: Composite.abi, functionName: 'positionsBatch', args: [3n] }),
       );
       const p1 = ps.at(1n);
       return s.return({
@@ -300,7 +300,7 @@ describe('composite arrays (read path) against real solc getters', () => {
   test('withBytesBatch(3)[2].id + blob length (dynamic-member tuple[])', async () => {
     const script = evscript({ name: 'rdWithBytes', args: t.address }, (s, target) => {
       const xs = asArr(
-        s.call({ address: target, abi: Composite.abi, functionName: 'withBytesBatch', args: [3n] }),
+        s.read({ address: target, abi: Composite.abi, functionName: 'withBytesBatch', args: [3n] }),
       );
       const e2 = xs.at(2n);
       return s.return({
@@ -325,7 +325,7 @@ describe('composite arrays (read path) against real solc getters', () => {
   test('matrix(5): outer row count + a nested cell (uint256[][])', async () => {
     const script = evscript({ name: 'rdMatrix', args: t.address }, (s, target) => {
       const m = asArr(
-        s.call({ address: target, abi: Composite.abi, functionName: 'matrix', args: [5n] }),
+        s.read({ address: target, abi: Composite.abi, functionName: 'matrix', args: [5n] }),
       );
       const row3 = m.at(3n); // row 3 length = (3 % 4) + 1 = 4
       return s.return({
@@ -352,7 +352,7 @@ describe('composite arrays (read path) against real solc getters', () => {
   test('names(4)[2] length + outer count (string[])', async () => {
     const script = evscript({ name: 'rdNames', args: t.address }, (s, target) => {
       const ns = asArr(
-        s.call({ address: target, abi: Composite.abi, functionName: 'names', args: [4n] }),
+        s.read({ address: target, abi: Composite.abi, functionName: 'names', args: [4n] }),
       );
       return s.return({
         count: ret(ns.length()),
@@ -387,7 +387,7 @@ const whole = (v: unknown): never => v as never;
 describe('composite arrays (return path) against real solc getters', () => {
   test('return whole positionsBatch(4) (static-element tuple[]) — all three toViem paths', async () => {
     const script = evscript({ name: 'retPositions', args: t.address }, (s, target) => {
-      const ps = s.call({
+      const ps = s.read({
         address: target,
         abi: Composite.abi,
         functionName: 'positionsBatch',
@@ -431,7 +431,7 @@ describe('composite arrays (return path) against real solc getters', () => {
 
   test('return whole withBytesBatch(4) (dynamic-member tuple[])', async () => {
     const script = evscript({ name: 'retWithBytes', args: t.address }, (s, target) => {
-      const xs = s.call({
+      const xs = s.read({
         address: target,
         abi: Composite.abi,
         functionName: 'withBytesBatch',
@@ -456,7 +456,7 @@ describe('composite arrays (return path) against real solc getters', () => {
 
   test('return whole matrix(6) (ragged uint256[][])', async () => {
     const script = evscript({ name: 'retMatrix', args: t.address }, (s, target) => {
-      const m = s.call({ address: target, abi: Composite.abi, functionName: 'matrix', args: [6n] });
+      const m = s.read({ address: target, abi: Composite.abi, functionName: 'matrix', args: [6n] });
       return s.return({ m: whole(m) });
     });
     const compiled = script.compile();
@@ -476,7 +476,7 @@ describe('composite arrays (return path) against real solc getters', () => {
 
   test('return whole names(5) (string[])', async () => {
     const script = evscript({ name: 'retNames', args: t.address }, (s, target) => {
-      const ns = s.call({ address: target, abi: Composite.abi, functionName: 'names', args: [5n] });
+      const ns = s.read({ address: target, abi: Composite.abi, functionName: 'names', args: [5n] });
       return s.return({ ns: whole(ns) });
     });
     const compiled = script.compile();
@@ -532,7 +532,7 @@ describe('composite arrays CALL-ARG encode + construct against real solc (M4)', 
         });
         arr.set(BigInt(i), tup);
       });
-      const sum = s.call({
+      const sum = s.read({
         address: target,
         abi: Composite.abi,
         functionName: 'sumLiquidity',

@@ -184,7 +184,7 @@ test('this-parameter constraints: arithmetic on address / eq on memref are type 
   evscript({ name: 'thisParam', args: [t.address] }, (s, who) => {
     // @ts-expect-error — address is not numeric (this: Expr<t & NumericType> = never)
     who.add(1n);
-    const str = s.call({ address: who, abi: erc20Fixture, functionName: 'symbol' });
+    const str = s.read({ address: who, abi: erc20Fixture, functionName: 'symbol' });
     // @ts-expect-error — eq is word-types-only (this: Expr<t & WordType> = never for 'string')
     str.eq(str);
     // address equality IS a word comparison — fine:
@@ -201,14 +201,14 @@ test('this-parameter constraints: arithmetic on address / eq on memref are type 
 
 test('s.call unwraps outputs: [] → void, [one] → Expr, [many] → labeled tuple of Exprs', () => {
   evscript({ name: 'unwrap', args: [t.address] }, (s, pool) => {
-    const sym = s.call({ address: pool, abi: erc20Fixture, functionName: 'symbol' });
+    const sym = s.read({ address: pool, abi: erc20Fixture, functionName: 'symbol' });
     expectTypeOf(sym).toEqualTypeOf<Expr<'string'>>();
 
-    const slot0 = s.call({ address: pool, abi: poolFixture, functionName: 'slot0' });
+    const slot0 = s.read({ address: pool, abi: poolFixture, functionName: 'slot0' });
     expectTypeOf(slot0).toEqualTypeOf<readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]>();
     expectTypeOf(slot0[1]).toEqualTypeOf<Expr<'int24'>>();
 
-    const nothing = s.call({ address: pool, abi: poolFixture, functionName: 'poke' });
+    const nothing = s.read({ address: pool, abi: poolFixture, functionName: 'poke' });
     expectTypeOf(nothing).toBeVoid();
 
     return s.return({ sym, tick: slot0[1] });
@@ -218,14 +218,14 @@ test('s.call unwraps outputs: [] → void, [one] → Expr, [many] → labeled tu
 test('composite-array outputs: nested word arrays and string arrays index to typed Exprs (§12)', () => {
   evscript({ name: 'rdArrays', args: [t.address] }, (s, target) => {
     // uint256[][] → an array Expr; .at(i) peels one [] (Expr<'uint256[]'>), .at(i).at(j) → word.
-    const m = s.call({ address: target, abi: arraysFixture, functionName: 'matrix' });
+    const m = s.read({ address: target, abi: arraysFixture, functionName: 'matrix' });
     expectTypeOf(m).toEqualTypeOf<Expr<'uint256[][]'>>();
     expectTypeOf(m.at(0n)).toEqualTypeOf<Expr<'uint256[]'>>();
     expectTypeOf(m.at(0n).at(0n)).toEqualTypeOf<Expr<'uint256'>>();
     expectTypeOf(m.length()).toEqualTypeOf<Expr<'uint256'>>();
 
     // string[] → an array Expr; .at(i) → Expr<'string'>, .at(i).length() → a word.
-    const ns = s.call({ address: target, abi: arraysFixture, functionName: 'names' });
+    const ns = s.read({ address: target, abi: arraysFixture, functionName: 'names' });
     expectTypeOf(ns).toEqualTypeOf<Expr<'string[]'>>();
     expectTypeOf(ns.at(1n)).toEqualTypeOf<Expr<'string'>>();
     expectTypeOf(ns.at(1n).length()).toEqualTypeOf<Expr<'uint256'>>();
@@ -236,13 +236,13 @@ test('composite-array outputs: nested word arrays and string arrays index to typ
 
 test('args are per-parameter unions: abitype primitive OR Expr of that type', () => {
   evscript({ name: 'callArgs', args: [t.address, t.address] }, (s, token, user) => {
-    const a = s.call({
+    const a = s.read({
       address: token,
       abi: erc20Fixture,
       functionName: 'balanceOf',
       args: [user], // Expr<'address'>
     });
-    const b = s.call({
+    const b = s.read({
       address: token,
       abi: erc20Fixture,
       functionName: 'balanceOf',
@@ -251,14 +251,14 @@ test('args are per-parameter unions: abitype primitive OR Expr of that type', ()
     expectTypeOf(a).toEqualTypeOf<Expr<'uint256'>>();
     expectTypeOf(b).toEqualTypeOf<Expr<'uint256'>>();
 
-    s.call({
+    s.read({
       address: token,
       abi: erc20Fixture,
       functionName: 'balanceOf',
       // @ts-expect-error — number is neither `0x…` nor Expr<'address'>
       args: [123],
     });
-    s.call({
+    s.read({
       address: token,
       abi: erc20Fixture,
       functionName: 'balanceOf',
@@ -269,25 +269,47 @@ test('args are per-parameter unions: abitype primitive OR Expr of that type', ()
   });
 });
 
-test('mutability is filtered at the name level: nonpayable functionName is a type error', () => {
+test('mutability is filtered per verb (issue #1): read=view/pure, call/simulate=nonpayable/payable', () => {
   evscript({ name: 'mut', args: [t.address] }, (s, token) => {
-    s.call({
+    // s.read / s.tryRead run under STATICCALL → only view/pure names typecheck.
+    s.read({
       address: token,
       abi: erc20Fixture,
       // @ts-expect-error — 'transfer' is nonpayable, not in ContractFunctionName<…, 'pure'|'view'>
       functionName: 'transfer',
     });
-    // the view/pure name union is exactly the callable surface
+    // s.call / s.tryCall / s.simulate / s.trySimulate run under CALL → only nonpayable/payable.
+    s.call({
+      address: token,
+      abi: erc20Fixture,
+      // @ts-expect-error — 'symbol' is view, not in ContractFunctionName<…, 'nonpayable'|'payable'>
+      functionName: 'symbol',
+    });
+    s.simulate({
+      address: token,
+      abi: erc20Fixture,
+      // @ts-expect-error — 'balanceOf' is view, not callable under s.simulate (CALL)
+      functionName: 'balanceOf',
+    });
+    // 'transfer' (nonpayable) IS callable under s.call/s.simulate, returning its `bool` output
+    const ok = s.call({
+      address: token,
+      abi: erc20Fixture,
+      functionName: 'transfer',
+      args: ['0x0000000000000000000000000000000000000001', 1n],
+    });
+    expectTypeOf(ok).toEqualTypeOf<Expr<'bool'>>();
+    // the view/pure name union is exactly the s.read callable surface
     expectTypeOf<'symbol' | 'decimals' | 'balanceOf'>().toMatchTypeOf<
-      Parameters<typeof s.call<typeof erc20Fixture, 'symbol'>>[0]['functionName']
+      Parameters<typeof s.read<typeof erc20Fixture, 'symbol'>>[0]['functionName']
     >();
-    return s.return({ ok: s.lit(t.bool, true) });
+    return s.return({ ok });
   });
 });
 
 test('tryCall: success Expr<bool> + the same unwrapped value shape', () => {
   evscript({ name: 'tryc', args: [t.address] }, (s, token) => {
-    const d = s.tryCall({ address: token, abi: erc20Fixture, functionName: 'decimals' });
+    const d = s.tryRead({ address: token, abi: erc20Fixture, functionName: 'decimals' });
     expectTypeOf(d.success).toEqualTypeOf<Expr<'bool'>>();
     expectTypeOf(d.value).toEqualTypeOf<Expr<'uint8'>>();
     const defaulted = s.select(d.success, d.value, 18);
@@ -299,7 +321,7 @@ test('tryCall: success Expr<bool> + the same unwrapped value shape', () => {
 test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
   const wideAbi: Abi = [];
   evscript({ name: 'wide', args: [t.address] }, (s, target) => {
-    const res = s.call({
+    const res = s.read({
       address: target,
       abi: wideAbi,
       functionName: 'anythingGoes', // functionName: string
@@ -307,7 +329,7 @@ test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
     });
     // a non-const ABI widens outputs to a list of (Expr | Tuple) handles
     expectTypeOf(res).toEqualTypeOf<readonly (Expr | Tuple<TupleType>)[]>();
-    const tre = s.tryCall({ address: target, abi: wideAbi, functionName: 'x' });
+    const tre = s.tryRead({ address: target, abi: wideAbi, functionName: 'x' });
     expectTypeOf(tre.success).toEqualTypeOf<Expr<'bool'>>();
     expectTypeOf(tre.value).toEqualTypeOf<readonly (Expr | Tuple<TupleType>)[]>();
     return s.return({ ok: s.lit(t.bool, true) });
@@ -389,14 +411,14 @@ test('EvsFn: params map to IntoExpr, results are rebuilt fresh Exprs', () => {
 
 test('ScriptReturn flows through evscript into EvsScript / ScriptAbi / viem return types', () => {
   const script = evscript({ name: 'meta', args: [t.address, t.address] }, (s, pool, user) => {
-    const symbol = s.call({ address: pool, abi: erc20Fixture, functionName: 'symbol' });
-    const bal = s.call({
+    const symbol = s.read({ address: pool, abi: erc20Fixture, functionName: 'symbol' });
+    const bal = s.read({
       address: pool,
       abi: erc20Fixture,
       functionName: 'balanceOf',
       args: [user],
     });
-    const slot0 = s.call({ address: pool, abi: poolFixture, functionName: 'slot0' });
+    const slot0 = s.read({ address: pool, abi: poolFixture, functionName: 'slot0' });
     return s.return({ symbol, bal, tick: slot0[1] });
   });
 
@@ -444,18 +466,18 @@ test('returning a whole composite array infers an abitype-typed script output (�
   // of the compiled script infers the precise shape: `tuple[]` → `readonly Struct[]`, `uint256[][]`
   // → `readonly (readonly bigint[])[]`, `string[]` → `readonly string[]`.
   const script = evscript({ name: 'arrs', args: [t.uint256] }, (s, n) => {
-    const ps = s.call({
+    const ps = s.read({
       address: '0x0000000000000000000000000000000000000001',
       abi: arraysFixture,
       functionName: 'positionsBatch',
       args: [n],
     });
-    const m = s.call({
+    const m = s.read({
       address: '0x0000000000000000000000000000000000000001',
       abi: arraysFixture,
       functionName: 'matrix',
     });
-    const ns = s.call({
+    const ns = s.read({
       address: '0x0000000000000000000000000000000000000001',
       abi: arraysFixture,
       functionName: 'names',
@@ -546,8 +568,8 @@ test('#1 s.fn returns a struct directly; the call site receives a Tuple handle',
   evscript({ name: 'fnstruct', args: [t.address] }, (s, token) => {
     const getMeta = s.fn('getMeta', [arg('tok', t.address)] as const, (tok) =>
       s.tuple(Meta, {
-        symbol: s.call({ address: tok, abi: erc20Fixture, functionName: 'symbol' }),
-        decimals: s.call({ address: tok, abi: erc20Fixture, functionName: 'decimals' }),
+        symbol: s.read({ address: tok, abi: erc20Fixture, functionName: 'symbol' }),
+        decimals: s.read({ address: tok, abi: erc20Fixture, functionName: 'decimals' }),
       }),
     );
     const m = getMeta(token);
@@ -580,9 +602,9 @@ test('#1 scalar / [many] fn returns are unchanged (regression pin)', () => {
   });
 });
 
-test('#2 s.call({ struct: true }) returns ONE named Tuple over the outputs (opt-in)', () => {
+test('#2 s.read({ struct: true }) returns ONE named Tuple over the outputs (opt-in)', () => {
   evscript({ name: 'structcall', args: [t.address] }, (s, pool) => {
-    const slot0 = s.call({
+    const slot0 = s.read({
       address: pool,
       abi: poolFixture,
       functionName: 'slot0',
@@ -593,12 +615,12 @@ test('#2 s.call({ struct: true }) returns ONE named Tuple over the outputs (opt-
     expectTypeOf(slot0.unlocked.get()).toEqualTypeOf<Expr<'bool'>>();
 
     // the DEFAULT (no struct) keeps the frozen positional `[many]` shape — unchanged.
-    const positional = s.call({ address: pool, abi: poolFixture, functionName: 'slot0' });
+    const positional = s.read({ address: pool, abi: poolFixture, functionName: 'slot0' });
     expectTypeOf(positional).toEqualTypeOf<
       readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]
     >();
     // a literal `struct: false` is also the positional shape.
-    const falseStruct = s.call({
+    const falseStruct = s.read({
       address: pool,
       abi: poolFixture,
       functionName: 'slot0',
@@ -612,14 +634,14 @@ test('#2 s.call({ struct: true }) returns ONE named Tuple over the outputs (opt-
     // (`wantStruct = struct === true`), so the caller must NARROW. This is the soundness fix for the
     // literal-vs-boolean gap: neither a positional index nor a struct field works un-narrowed.
     const flag = (1 as number) > 0; // a non-literal boolean
-    const maybe = s.call({ address: pool, abi: poolFixture, functionName: 'slot0', struct: flag });
+    const maybe = s.read({ address: pool, abi: poolFixture, functionName: 'slot0', struct: flag });
     // @ts-expect-error — `maybe` may be a Tuple, so a positional index is not available un-narrowed.
     expectTypeOf(maybe[0]);
     // @ts-expect-error — `maybe` may be the positional array, so a struct field is not available.
     expectTypeOf(maybe.sqrtPriceX96);
 
     // tryCall + struct: true wraps the value, keeps success.
-    const tried = s.tryCall({
+    const tried = s.tryRead({
       address: pool,
       abi: poolFixture,
       functionName: 'slot0',
@@ -634,7 +656,7 @@ test('#2 s.call({ struct: true }) returns ONE named Tuple over the outputs (opt-
 test('#3 a call-decoded Tuple flows into a hand-written t.struct slot (cross-order assignable)', () => {
   const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
   evscript({ name: 'nest', args: [t.address, t.uint256] }, (s, mgr, id) => {
-    const pos = s.call({
+    const pos = s.read({
       address: mgr,
       abi: positionFixture,
       functionName: 'positions',
@@ -659,7 +681,7 @@ test('#3/#5 call ARGS accept a bare MutArray (tuple[] input) and any Tuple (tupl
   evscript({ name: 'callargs', args: [t.address, t.uint256] }, (s, addr, n) => {
     // a bare MutArray<tuple> is accepted for a `tuple[]` input (the AnyMutArray arm, #5).
     const arr = s.newArray(Pos, n);
-    const r1 = s.call({
+    const r1 = s.read({
       address: addr,
       abi: consumerFixture,
       functionName: 'useStructs',
@@ -669,7 +691,7 @@ test('#3/#5 call ARGS accept a bare MutArray (tuple[] input) and any Tuple (tupl
     // a built Tuple handle is accepted for a `tuple` input (the AnyTuple arm, #3 — cross-shape
     // assignability; the runtime `typesEqual` is the order/shape guard).
     const p = s.tuple(Pos, { liquidity: 1n, owner: addr });
-    const r2 = s.call({
+    const r2 = s.read({
       address: addr,
       abi: consumerFixture,
       functionName: 'useStruct',
@@ -689,11 +711,11 @@ test('#4 t.fromOutputs / t.fromAbiParameter derive a t.* type from an ABI', () =
   ).toEqualTypeOf<'uint256'>();
 
   // a multi-named-output function → a struct usable wherever a t.* type is (and unifies with
-  // `s.call({ struct: true })` of the SAME function — same ABI order).
+  // `s.read({ struct: true })` of the SAME function — same ABI order).
   const Slot0 = t.fromOutputs(poolFixture, 'slot0');
   expectTypeOf<typeof Slot0>().toMatchTypeOf<TupleType>();
   evscript({ name: 'derive', args: [t.address] }, (s, pool) => {
-    const slot0 = s.call({
+    const slot0 = s.read({
       address: pool,
       abi: poolFixture,
       functionName: 'slot0',

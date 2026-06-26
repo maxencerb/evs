@@ -68,9 +68,9 @@ export const poolsData = evscript(
       (token, owner) =>
         s.tuple(TokenMetadata, {
           address: token,
-          symbol: s.call({ address: token, abi: erc20Abi, functionName: 'symbol' }),
-          decimals: s.call({ address: token, abi: erc20Abi, functionName: 'decimals' }),
-          userBalance: s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+          symbol: s.read({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+          decimals: s.read({ address: token, abi: erc20Abi, functionName: 'decimals' }),
+          userBalance: s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
         }),
     );
 
@@ -78,8 +78,8 @@ export const poolsData = evscript(
     const metadata = s.newArray(PoolMetadata, pools.length());
     s.for({ type: t.uint256, from: 0n, until: pools.length() }, (i) => {
       const pool = pools.at(i);
-      const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-      const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+      const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+      const token1 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
       metadata.set(
         i,
         s.tuple(PoolMetadata, {
@@ -87,9 +87,9 @@ export const poolsData = evscript(
           // the *target* of the token reads inside tokenMetadata — on-chain, in one call.
           token0: tokenMetadata(token0, user),
           token1: tokenMetadata(token1, user),
-          fee: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
+          fee: s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
           // `struct: true` decodes slot0's 7 named outputs into one Slot0-shaped object.
-          slot0: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
+          slot0: s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
         }),
       );
     });
@@ -110,7 +110,7 @@ at recording time. The pieces, in order:
   [composite types](/guides/values-and-types/#composite-types-structs-and-tuples).
 - **`s.fn(name, [arg(...)], body)`** defines a reusable typed subroutine compiled once and
   called twice here (token0 and token1) — see [user functions](/guides/functions/).
-- **`s.call({ ..., struct: true })`** decodes a multi-output getter into one named object
+- **`s.read({ ..., struct: true })`** decodes a multi-output getter into one named object
   instead of a positional tuple — see [calls](/guides/calls/#decoding-multiple-outputs-into-a-struct).
 - **`s.newArray` + `s.for`** collect one row per pool, the multicall-style fan-out — see
   [control flow](/guides/control-flow/).
@@ -166,23 +166,23 @@ const poolsData = evscript(
       (token, owner) =>
         s.tuple(TokenMetadata, {
           address: token,
-          symbol: s.call({ address: token, abi: erc20Abi, functionName: 'symbol' }),
-          decimals: s.call({ address: token, abi: erc20Abi, functionName: 'decimals' }),
-          userBalance: s.call({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
+          symbol: s.read({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+          decimals: s.read({ address: token, abi: erc20Abi, functionName: 'decimals' }),
+          userBalance: s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] }),
         }),
     );
     const metadata = s.newArray(PoolMetadata, pools.length());
     s.for({ type: t.uint256, from: 0n, until: pools.length() }, (i) => {
       const pool = pools.at(i);
-      const token0 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-      const token1 = s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
+      const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
+      const token1 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token1' });
       metadata.set(
         i,
         s.tuple(PoolMetadata, {
           token0: tokenMetadata(token0, user),
           token1: tokenMetadata(token1, user),
-          fee: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
-          slot0: s.call({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
+          fee: s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'fee' }),
+          slot0: s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true }),
         }),
       );
     });
@@ -247,5 +247,5 @@ deterministic script address also exists; see [execution](/guides/execution/).
 - [Why evs?](/getting-started/why-evs/) — the dependent-read problem and the comparison with multicall3
 - [Writing scripts](/guides/writing-scripts/) — the script header, positional args, and the recording-time vs run-time model
 - [Values & types](/guides/values-and-types/) — `Expr` handles, composite types, and deriving types from an ABI
-- [Calls](/guides/calls/) — the full `s.call` / `s.tryCall` surface, `struct: true`, and failure handling
+- [Calls](/guides/calls/) — the three calling verbs (`s.read` view reads, `s.call` for `CALL`-frame functions like a Uniswap quoter, `s.simulate` to dry-run a write), `struct: true`, and failure handling
 - [Pool metadata example](/examples/pool-metadata/) — the same idea, built up one read at a time

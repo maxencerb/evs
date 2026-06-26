@@ -20,17 +20,17 @@ import { Composite, MockERC20, MockUniV3Pool } from '../../packages/evs/test/gen
 
 // `args: [t.address, t.address]` → the body callback receives `(s, pool, user)` positionally.
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
-  const token0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
-  const token1 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
-  const fee = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
+  const token0 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
+  const token1 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token1' });
+  const fee = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'fee' });
   // MockUniV3Pool.slot0() returns 7 FLAT outputs, so `slot0` is a readonly tuple of Exprs
   // accessed positionally — `slot0[1]` is the int24 tick. (Compare the struct getter below.)
-  const slot0 = s.call({ address: pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
-  const symbol0 = s.call({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-  const symbol1 = s.call({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-  const dec = s.tryCall({ address: token0, abi: erc20Abi, functionName: 'decimals' });
+  const slot0 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'slot0' });
+  const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+  const dec = s.tryRead({ address: token0, abi: erc20Abi, functionName: 'decimals' });
   const decimals0 = s.select(dec.success, dec.value, 18); // default on failure
-  const bal0 = s.call({
+  const bal0 = s.read({
     address: token0,
     abi: erc20Abi,
     functionName: 'balanceOf',
@@ -42,7 +42,7 @@ const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s
 // A second script showing a STRUCT-returning getter decoded into a `Tuple` handle: the
 // `'tuple'` output of `slot0Struct()` becomes a handle whose fields are read by name.
 const poolSlot0 = evscript({ name: 'poolSlot0', args: [t.address] }, (s, composite) => {
-  const slot0 = s.call({ address: composite, abi: Composite.abi, functionName: 'slot0Struct' });
+  const slot0 = s.read({ address: composite, abi: Composite.abi, functionName: 'slot0Struct' });
   return s.return({
     sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>
     tick: slot0.tick.get(), // Expr<'int24'>

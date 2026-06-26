@@ -2087,8 +2087,16 @@ export class Recorder {
 
   // -- calls -------------------------------------------------------------------------------
 
-  subcall(p: unknown, mode: 'strict' | 'try'): SubcallShape {
-    const label = mode === 'try' ? 's.tryCall()' : 's.call()';
+  subcall(p: unknown, mode: 'strict' | 'try', kind: 'static' | 'call' | 'simulate'): SubcallShape {
+    // verb name for error messages / debug names: static→read, call→call, simulate→simulate,
+    // with a `try` prefix in try mode (s.read / s.tryRead / s.call / s.tryCall / s.simulate /
+    // s.trySimulate).
+    const verbBase = kind === 'static' ? 'read' : kind;
+    const callerName =
+      mode === 'try'
+        ? `s.try${verbBase[0]?.toUpperCase() ?? ''}${verbBase.slice(1)}`
+        : `s.${verbBase}`;
+    const label = `${callerName}()`;
     const loc = captureLoc();
     this.assertOpen(label, loc);
     if (typeof p !== 'object' || p === null) {
@@ -2136,11 +2144,14 @@ export class Recorder {
         { loc },
       );
     }
-    const viewish = named.filter(
-      (it) =>
-        isRecordObj(it) && (it['stateMutability'] === 'view' || it['stateMutability'] === 'pure'),
+    // mutability filter, split by call kind (issue #1): STATICCALL admits view/pure; CALL
+    // (s.call/s.simulate) admits nonpayable/payable. The wrong bucket gets a steering error.
+    const allowedMuts: readonly string[] =
+      kind === 'static' ? ['view', 'pure'] : ['nonpayable', 'payable'];
+    const matching = named.filter(
+      (it) => isRecordObj(it) && allowedMuts.includes(String(it['stateMutability'])),
     );
-    if (viewish.length === 0) {
+    if (matching.length === 0) {
       const muts = named
         .map((it) => {
           if (!isRecordObj(it)) return 'unspecified';
@@ -2148,20 +2159,22 @@ export class Recorder {
           return typeof m === 'string' ? m : 'unspecified';
         })
         .join('/');
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `${label}: function "${fname}" is ${muts} — read scripts can only call view/pure functions`,
-        { loc },
-      );
+      const steer =
+        kind === 'static'
+          ? `${label} runs under STATICCALL and can only call view/pure functions — for a non-view target use s.call (plain CALL) or s.simulate (rolled-back write dry-run)`
+          : `${label} runs under CALL and can only call nonpayable/payable functions — for a view/pure read use s.read`;
+      throw new EvsTypeError('ABI_SHAPE', `${label}: function "${fname}" is ${muts}. ${steer}`, {
+        loc,
+      });
     }
-    if (viewish.length > 1) {
+    if (matching.length > 1) {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${label}: function "${fname}" is overloaded (${viewish.length} view/pure overloads) — overload disambiguation is deferred in v0; prune the ABI to the single intended entry`,
+        `${label}: function "${fname}" is overloaded (${matching.length} ${allowedMuts.join('/')} overloads) — overload disambiguation is deferred in v0; prune the ABI to the single intended entry`,
         { loc },
       );
     }
-    const item = viewish[0];
+    const item = matching[0];
     if (item === undefined || !Array.isArray(item['inputs']) || !Array.isArray(item['outputs'])) {
       throw new EvsTypeError(
         'ABI_SHAPE',
@@ -2200,7 +2213,6 @@ export class Recorder {
       params.gas === undefined
         ? undefined
         : this.coerceToId(params.gas, 'uint256', `${label} gas`, loc);
-    const callerName = mode === 'try' ? 's.tryCall' : 's.call';
     // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
     // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
     // Tuple handle on unwrap; scalars/arrays yield an Expr.
@@ -2217,7 +2229,7 @@ export class Recorder {
       return this.newValue(oty, loc, tag);
     });
     const successId =
-      mode === 'try' ? this.newValue('bool', loc, `s.tryCall(${fname}).success`) : undefined;
+      mode === 'try' ? this.newValue('bool', loc, `${callerName}(${fname}).success`) : undefined;
     this.appendStmt(
       {
         k: 'call',
@@ -2226,6 +2238,8 @@ export class Recorder {
         args: argIds,
         outs: outIds,
         mode,
+        // omit `kind` when 'static' so STATICCALL IR stays byte-identical to the pre-issue-#1 shape
+        ...(kind !== 'static' ? { kind } : {}),
         ...(successId !== undefined ? { successOut: successId } : {}),
         ...(gasId !== undefined ? { gas: gasId } : {}),
       },
@@ -2256,7 +2270,7 @@ export class Recorder {
     return { success: successId !== undefined ? makeExpr(this, successId) : null, value };
   }
 
-  /** `s.call({ …, struct: true })` (issue #5 ask #2): compose ONE Tuple from a call's outputs by
+  /** `s.read({ …, struct: true })` (issue #5 ask #2): compose ONE Tuple from a call's outputs by
    *  emitting a `tuplenew` over the already-decoded output ValueIds. Requires every output to be
    *  named (an unnamed member would degrade viem's object inference to a positional array). The
    *  struct type is in ABI declaration order, so it round-trips with `t.fromOutputs(abi, name)`. */

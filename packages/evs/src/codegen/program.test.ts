@@ -506,7 +506,7 @@ describe('worked-example goldens (architecture §15)', () => {
       0x001e  6080        PUSH1 0x80
       0x0020  51          MLOAD  ; target
       0x0021  5a          GAS
-      0x0022  fa          STATICCALL  ; strict call symbol (site 7)
+      0x0022  fa          STATICCALL  ; strict read symbol (site 7)
       0x0023  61002e      PUSH2 0x002e → @call_ok_7
       0x0026  57          JUMPI
       0x0027  3d          RETURNDATASIZE

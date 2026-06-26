@@ -113,6 +113,40 @@ function chainOf(handler: (to: Hex, data: Hex) => { success: boolean; data: Hex 
   };
 }
 
+interface SplitChain extends MockChain {
+  readonly staticReqs: { to: Hex; data: Hex }[];
+  readonly callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate' }[];
+}
+
+/**
+ * A chain whose two oracles are DISTINGUISHABLE: `staticcall` and `call` return different data and
+ * record into separate request logs, so a test can prove which oracle a given call `kind` routed
+ * to (issue #1). Omit `callResult` to exercise the absent-`call` fallback to `staticcall`.
+ */
+function chainSplit(opts: {
+  staticResult: () => { success: boolean; data: Hex };
+  callResult?: () => { success: boolean; data: Hex };
+}): SplitChain {
+  const staticReqs: { to: Hex; data: Hex }[] = [];
+  const callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate' }[] = [];
+  const chain: SplitChain = {
+    staticReqs,
+    callReqs,
+    staticcall(req) {
+      staticReqs.push(req);
+      return opts.staticResult();
+    },
+  };
+  const callResult = opts.callResult;
+  if (callResult !== undefined) {
+    chain.call = (req) => {
+      callReqs.push(req);
+      return callResult();
+    };
+  }
+  return chain;
+}
+
 function retOf(res: InterpResult): Record<string, unknown> {
   if (res.outcome.kind !== 'return') {
     throw new Error(`expected a return outcome, got revert ${res.outcome.data}`);
@@ -1597,6 +1631,165 @@ describe('tryCall — zeroing', () => {
       chainOf(() => ({ success: true, data })),
     );
     expect(retOf(res)).toEqual({ ok: true, n: 5n, s: 'ok', xs: [1, 2] });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// call kind routing — STATICCALL vs the mutable `call` oracle (issue #1)
+//
+// The reference interpreter is STATELESS (architecture §4): a CALL and a STATICCALL observe the
+// same returndata and a simulate's rollback is invisible. So the ONLY interpreter-observable
+// difference between the three kinds is *which MockChain oracle answers the subcall*. These tests
+// pin that routing (the persistence/rollback semantics themselves live in the anvil tier).
+// ---------------------------------------------------------------------------
+
+const getAbi = fnAbi('get', [], [{ name: '', type: 'uint256' }]);
+const encU = (n: bigint): Hex => encodeAbiParameters([{ type: 'uint256' }], [n]);
+
+/** strict `get()` on a target arg, parameterized by call kind; returns the uint256. */
+function strictKindScript(kind: 'static' | 'call' | 'simulate'): ScriptIr {
+  return ir({
+    name: 'kinded',
+    args: [{ name: 'target', type: 'address' }],
+    values: [vi('address'), vi('uint256')],
+    body: [
+      mk({ k: 'call', target: 0, fnAbi: getAbi, args: [], outs: [1], mode: 'strict', kind }, 5),
+    ],
+    returns: [{ name: 'n', type: 'uint256', value: 1 }],
+  });
+}
+
+/** try-mode `get()` on a target arg, parameterized by call kind; returns { ok, n }. */
+function tryKindScript(kind: 'static' | 'call' | 'simulate'): ScriptIr {
+  return ir({
+    name: 'kindedTry',
+    args: [{ name: 'target', type: 'address' }],
+    values: [vi('address'), vi('uint256'), vi('bool')],
+    body: [
+      mk(
+        {
+          k: 'call',
+          target: 0,
+          fnAbi: getAbi,
+          args: [],
+          outs: [1],
+          mode: 'try',
+          kind,
+          successOut: 2,
+        },
+        5,
+      ),
+    ],
+    returns: [
+      { name: 'ok', type: 'bool', value: 2 },
+      { name: 'n', type: 'uint256', value: 1 },
+    ],
+  });
+}
+
+describe('call — kind routing (mutable `call` oracle)', () => {
+  test('kind:"call" routes to MockChain.call, never staticcall', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: encU(11n) }),
+      callResult: () => ({ success: true, data: encU(22n) }),
+    });
+    expect(retOf(interpret(strictKindScript('call'), [TOKEN], chain))).toEqual({ n: 22n });
+    expect(chain.callReqs).toHaveLength(1);
+    expect(chain.callReqs[0]?.to).toBe(TOKEN);
+    expect(chain.callReqs[0]?.kind).toBe('call'); // the oracle is TOLD which verb called it
+    expect(chain.staticReqs).toHaveLength(0);
+  });
+
+  test('kind:"simulate" uses the SAME mutable oracle as call (stateless — no rollback model)', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: encU(11n) }),
+      callResult: () => ({ success: true, data: encU(33n) }),
+    });
+    expect(retOf(interpret(strictKindScript('simulate'), [TOKEN], chain))).toEqual({ n: 33n });
+    expect(chain.callReqs).toHaveLength(1);
+    expect(chain.callReqs[0]?.kind).toBe('simulate'); // same oracle, but the kind distinguishes it
+    expect(chain.staticReqs).toHaveLength(0);
+  });
+
+  test('kind:"static" routes to staticcall even when a call oracle is present', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: encU(11n) }),
+      callResult: () => ({ success: true, data: encU(99n) }),
+    });
+    expect(retOf(interpret(strictKindScript('static'), [TOKEN], chain))).toEqual({ n: 11n });
+    expect(chain.staticReqs).toHaveLength(1);
+    expect(chain.callReqs).toHaveLength(0);
+  });
+
+  test('a mutable kind FALLS BACK to staticcall when MockChain.call is absent', () => {
+    // a stateless oracle cannot tell CALL from STATICCALL, so an omitted `call` is answered by
+    // `staticcall` — a script that merely contains an s.call/s.simulate need not duplicate its mock.
+    for (const kind of ['call', 'simulate'] as const) {
+      const chain = chainSplit({ staticResult: () => ({ success: true, data: encU(7n) }) });
+      expect('call' in chain).toBe(false);
+      expect(retOf(interpret(strictKindScript(kind), [TOKEN], chain))).toEqual({ n: 7n });
+      expect(chain.staticReqs).toHaveLength(1);
+    }
+  });
+
+  test('mutable-kind calldata to the call oracle is byte-equal to viem (shared encode path)', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: true, data: encU(1n) }),
+    });
+    interpret(strictKindScript('call'), [TOKEN], chain);
+    expect(chain.callReqs[0]?.data).toBe(
+      encodeFunctionData({
+        abi: [
+          {
+            type: 'function',
+            name: 'get',
+            stateMutability: 'nonpayable',
+            inputs: [],
+            outputs: [{ name: '', type: 'uint256' }],
+          },
+        ],
+        functionName: 'get',
+        args: [],
+      }),
+    );
+  });
+
+  test('strict mutable kinds bubble the callee revert verbatim', () => {
+    for (const kind of ['call', 'simulate'] as const) {
+      const chain = chainSplit({
+        staticResult: () => ({ success: true, data: encU(0n) }),
+        callResult: () => ({ success: false, data: '0xdeadbeef' }),
+      });
+      expect(revertData(interpret(strictKindScript(kind), [TOKEN], chain))).toBe('0xdeadbeef');
+    }
+  });
+
+  test('try mutable kinds zero outs + successOut on failure, decode on success', () => {
+    for (const kind of ['call', 'simulate'] as const) {
+      const failing = chainSplit({
+        staticResult: () => ({ success: true, data: encU(0n) }),
+        callResult: () => ({ success: false, data: '0xdead' }),
+      });
+      expect(retOf(interpret(tryKindScript(kind), [TOKEN], failing))).toEqual({ ok: false, n: 0n });
+
+      // success=true but malformed returndata also zeroes on the mutable path (decode-fail → tryCall
+      // zero, never a revert) — the post-oracle decode is kind-independent, same as the static path.
+      const malformed = chainSplit({
+        staticResult: () => ({ success: true, data: encU(0n) }),
+        callResult: () => ({ success: true, data: '0x' }),
+      });
+      expect(retOf(interpret(tryKindScript(kind), [TOKEN], malformed))).toEqual({
+        ok: false,
+        n: 0n,
+      });
+
+      const ok = chainSplit({
+        staticResult: () => ({ success: true, data: encU(0n) }),
+        callResult: () => ({ success: true, data: encU(42n) }),
+      });
+      expect(retOf(interpret(tryKindScript(kind), [TOKEN], ok))).toEqual({ ok: true, n: 42n });
+    }
   });
 });
 

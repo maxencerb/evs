@@ -20,7 +20,7 @@ export const balances = evscript(
     const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
       const token = tokens.at(i); // bounds-checked
-      const r = s.tryCall({
+      const r = s.tryRead({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',
@@ -40,7 +40,7 @@ Three pieces do the work:
   [control flow](/guides/control-flow/) for why native JS `for` cannot do this.
 - `s.newArray(t.uint256, n)` allocates a zero-filled mutable output array;
   `out.expr()` hands the same buffer back as an `Expr` for `s.return`.
-- `s.tryCall` plus `s.select` makes the batch fault-tolerant: an EOA or non-token address in
+- `s.tryRead` plus `s.select` makes the batch fault-tolerant: an EOA or non-token address in
   the list yields `success = false` and a zeroed `value`, so that slot reports `0n` instead of
   reverting the entire batch. See [calls](/guides/calls/) for the exact zeroing semantics.
 
@@ -59,7 +59,7 @@ const balances = evscript(
     const out = s.newArray(t.uint256, n);
     s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
       const token = tokens.at(i);
-      const r = s.tryCall({
+      const r = s.tryRead({
         address: token,
         abi: erc20Abi,
         functionName: 'balanceOf',

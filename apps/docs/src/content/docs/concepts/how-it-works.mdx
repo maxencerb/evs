@@ -9,7 +9,7 @@ optimizer, no hidden passes, and a set of machine-checked invariants that run on
 compile. Each stage produces an artifact you can inspect.
 
 ```txt
-your callback       s.call / a.add(b) / s.if / s.while / s.fn / s.return
+your callback       s.read / a.add(b) / s.if / s.while / s.fn / s.return
       |  recording: TS types + eager runtime validation + source locations
       v
 ScriptIr            structured statement tree over a flat value table — plain JSON, frozen
@@ -72,7 +72,7 @@ function parameter/result — see the memory model below), then emits, as one no
   to its frame slot;
 - one **statement template** per IR statement — load operands from slots, compute, store the
   result back;
-- the **call and ABI emitters** for `s.call`/`s.tryCall` and the return-tuple encoder;
+- the **call and ABI emitters** for `s.read`/`s.tryRead` and the return-tuple encoder;
 - the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
   `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback;
 - **data segments** for large constants, referenced only by `CODECOPY`.

@@ -48,7 +48,7 @@ import {
   type ValueId,
 } from '../ir/nodes.js';
 import { emitNormalizeWord, wordNeedsNormalize, type SharedTails } from './abi.js';
-import { emitStaticCall, type CallSitePlan } from './call.js';
+import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
 
 // ---------------------------------------------------------------------------
@@ -1002,7 +1002,13 @@ function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx)
     dfailLabel,
     siteId: site,
   };
-  emitStaticCall(w, plan, ctx.tails, ctx.opts, ctx.dataSeg);
+  // issue #1: kind 'static' (STATICCALL) / 'call' (CALL) share emitStaticCall; 'simulate' is the
+  // self-call trampoline + rollback macro.
+  if (s.kind === 'simulate') {
+    emitSimulateCall(w, plan, ctx.tails, ctx.opts, ctx.dataSeg);
+  } else {
+    emitStaticCall(w, plan, ctx.tails, ctx.opts, ctx.dataSeg);
+  }
 }
 
 function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: LowerCtx): void {
