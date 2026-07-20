@@ -1513,6 +1513,57 @@ IntelliSense label itself is verified by inspection, not `toEqualTypeOf`.
 
 ---
 
+## 21. keccak256 + ABI encoding ops (issue #17)
+
+`ScriptBuilder` gains three ops — `s.encode(...)` (`abi.encode` → `Expr<'bytes'>`),
+`s.encodePacked(...)` (`abi.encodePacked` → `Expr<'bytes'>`), and `s.keccak256(...)`
+(`keccak256(abi.encodePacked(...))` → `Expr<'bytes32'>`) — all additive, byte-exact vs Solidity
+(viem oracle at the unit tier, solc 0.8.30 `EvsReference` on anvil — testing.md §4.4).
+module-interfaces §M1/§M2/§M5/§M7/§M9, api.md §4/§4.1, architecture §4/§5/§8.4/§18, and
+testing.md §4.4 are amended in place.
+
+### 21.1 Semantics decisions (the issue's open questions, settled)
+
+- **`s.keccak256` defaults to PACKED encoding** — Solidity's idiomatic
+  `keccak256(abi.encodePacked(...))`. A single `bytes`/`string` value is hashed directly
+  (byte-identical to packing it, no copy — this IS Solidity's `keccak256(bytes)`); a single
+  WORD therefore hashes at its packed width (`uint8` → 1 byte, `uint256`/`bytes32` → the full
+  word), exactly `keccak256(abi.encodePacked(x))`. The standard-encoding hash is the explicit
+  composition `s.keccak256(s.encode(...))`.
+- **Packed mode carries solc's restrictions**: words, `string`/`bytes`, and word-element arrays
+  (elements padded to 32 bytes) only. Structs, nested arrays, and `string[]`/`bytes[]` — which
+  solc REJECTS in `abi.encodePacked` — are rejected at record time (`core/types.ts`
+  `isPackedEncodable`, re-checked by `ir/validate`), keeping every packed shape
+  solc-differentiable. `s.encode` accepts the full v0 composite vocabulary.
+- **Handles only, ≥1 value**: a raw literal has no unambiguous ABI type, so the recorder
+  rejects it with the `s.lit(type, value)` steering message; bare `Tuple`/`MutArray` handles
+  are accepted (their memref, like `s.return`).
+
+### 21.2 IR — two new Stmt kinds
+
+- `{ k: 'encode'; mode: 'abi' | 'packed'; args: ValueId[]; out }` (out: `bytes`) and
+  `{ k: 'keccak256'; a; out }` (a: `bytes`/`string`, out: `bytes32`) — the issue sketched a
+  raw `{ offset, size }` keccak node, but the IR has no address-typed values; a
+  memref-consuming node matches the existing `len` shape and keeps validate/interp total.
+  `s.keccak256` records packed-encode-then-hash (or hash-directly for a single bytes/string
+  value). Both are additive: pre-#17 serialized IR is byte-unchanged. `encode` counts as an
+  allocating statement (`LOOP_ALLOCATION`); neither can revert (no panic sites).
+
+### 21.3 Codegen — reuse of the §8.2/§8.3 encoder; one new packed emitter
+
+`emitAbiEncodeToBytes` wraps the EXISTING recursive `emitEncodeBlock` (heads at `ptr+32`,
+tails at the scratch cursor, `reserveEncodeFrames` below the block) into a fresh
+`[len][payload]` memref — `abi.encode` compatibility is inherited from the return-encode path.
+`emitPackedEncodeToBytes` is new: a linear cursor walk (SHL-left-aligned unpadded word stores,
+raw payload / `32·len` array-body copies via `emitMemCopy`, one trailing zero-pad word that
+also heals the pre-cancun `@memcpy` whole-word over-copy). `keccak256` lowers to
+`KECCAK256(ptr+32, MLOAD(ptr))` — the opcode was already in the §M4 table. Both statements'
+templates stay net-zero on the stack via the ordinary out-slot store.
+
+- Status: **accepted**.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

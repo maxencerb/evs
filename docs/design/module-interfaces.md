@@ -117,6 +117,8 @@ export function isArrayValueType(s: EvsType): s is ArrayType | TupleType    // T
 export function elemTypeOf(s: ArrayType | TupleType): EvsType               // one `[]` peeled
 export function typesEqual(a: EvsType, b: EvsType): boolean // STRUCTURAL — tuple descriptors are
   // fresh objects (never ===); ALL value-type comparisons in recorder/validate use this, not ===
+export function isPackedEncodable(s: EvsType): boolean     // added by #17: abi.encodePacked's
+  // accepted set — word | string | bytes | word-element array; false for tuples/nested/string[]
 export function abiParamToType(p: { type: string; components?: readonly NamedType[] }): EvsType
 export function typeToAbiParam(name: string, ty: EvsType): NamedType        // inverse
 ```
@@ -293,6 +295,11 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
   | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
   | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
+  // ABI encoding + hashing — added by #17. `encode` materializes the standard ('abi') or
+  // packed encoding of its args into a fresh `bytes` memref; `keccak256` hashes a
+  // bytes/string memref into a bytes32 word (KECCAK256(ptr+32, MLOAD(ptr))).
+  | { k: 'encode'; mode: 'abi' | 'packed'; args: readonly ValueId[]; out: ValueId }
+  | { k: 'keccak256'; a: ValueId; out: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
@@ -339,6 +346,8 @@ export function validateIr(ir: ScriptIr): void;
 // recurses through tuple components; arrnew.elem still restricted to word (composite arrays deferred).
 // Amended by #1: the `call` Stmt's optional `kind` ('static'|'call'|'simulate', absent => 'static')
 // is accepted (the call-output decode/successOut rules are kind-independent).
+// Amended by #17: `encode` validated (args nonempty; packed mode restricted to
+// isPackedEncodable types; out is 'bytes') and `keccak256` (a is bytes|string; out 'bytes32').
 ```
 
 **Unit tests (M2)**: accept/reject hand-built IRs per Stmt kind; every validation rule has a
@@ -717,6 +726,16 @@ export declare const returnBrand: unique symbol;
 export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
+// ABI encoding + hashing (added by #17 — api.md §4.1): `ScriptBuilder` gains
+//   encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>        // abi.encode
+//   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>  // abi.encodePacked
+//   keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>   // packed-then-hash
+// with EncodeValue = Expr | AnyTuple | AnyMutArray and PackedValue = Expr | AnyMutArray (both
+// exported — index.ts §M9). Handles only (literals via s.lit); ≥1 value; packed mode enforces
+// core's isPackedEncodable at record time. s.keccak256 hashes a single bytes/string value
+// directly (no encode stmt); otherwise records encode(packed) then keccak256.
+export type EncodeValue = Expr | AnyTuple | AnyMutArray;
+export type PackedValue = Expr | AnyMutArray;
 // call-surface mutability buckets (added by #1 — see §19): `SubcallParams` is generic over `mut`,
 // each verb pair fixes it. `read`/`tryRead` use ViewMutability; `call`/`tryCall` + `simulate`/
 // `trySimulate` use WriteMutability. Both are exported (index.ts §M9):
@@ -867,6 +886,35 @@ export function emitMemCopy(
   opts: { evmVersion: EvmVersion },
 ): void;
 // emits MCOPY (cancun) or call to tails.memcpy; stack contract: [dst, src, len] → []
+
+// added by #17 (architecture §8.4): materialize abi.encode / abi.encodePacked of the items
+// into a fresh [len][payload] bytes memref; net stack +1 (the pointer). `pushSrc` thunks must
+// be stack-depth-independent. The abi variant reuses emitEncodeBlock (heads at ptr+32, tails
+// at the scratch cursor, composite-array frames reserved below the block); the packed variant
+// is a linear segment walk (SHL-left-aligned word stores, raw-payload/array-body copies, one
+// trailing zero-pad word).
+export interface EncodeSrcItem {
+  param: NamedType;
+  pushSrc: () => void;
+}
+export interface EncodeMeta {
+  loc?: SourceLoc | null;
+  note?: string;
+}
+export function emitAbiEncodeToBytes(
+  w: AsmWriter,
+  items: readonly EncodeSrcItem[],
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  meta?: EncodeMeta,
+): void;
+export function emitPackedEncodeToBytes(
+  w: AsmWriter,
+  items: readonly { layout: TypeLayout; pushSrc: () => void }[],
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  meta?: EncodeMeta,
+): void;
 
 // codegen/call.ts
 export interface CallSitePlan {
@@ -1019,6 +1067,8 @@ export function toViemStateOverride<const abi extends Abi>(
 //   (SubcallParams now generic over the mutability bucket). `ScriptBuilder` gains the read/tryRead,
 //   call/tryCall, simulate/trySimulate verb pairs (the frozen s.call/s.tryCall are RENAMED to
 //   s.read/s.tryRead — BREAKING).
+// Added by #17 (keccak256 + ABI encoding ops) — type-only additions to the public surface:
+//   EncodeValue, PackedValue. `ScriptBuilder` gains encode/encodePacked/keccak256 (§M5).
 ```
 
 **Unit tests (M9)**: artifact shape; EIP-170 rejection on a synthetic huge script with region

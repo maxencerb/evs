@@ -63,6 +63,7 @@ export default defineConfig({
             { label: 'Writing scripts', slug: 'guides/writing-scripts' },
             { label: 'Values & types', slug: 'guides/values-and-types' },
             { label: 'Arithmetic & checked math', slug: 'guides/arithmetic' },
+            { label: 'Hashing & ABI encoding', slug: 'guides/hashing-encoding' },
             { label: 'Calling contracts', slug: 'guides/calls' },
             { label: 'Control flow & cells', slug: 'guides/control-flow' },
             { label: 'User functions', slug: 'guides/functions' },

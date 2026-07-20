@@ -43,7 +43,7 @@
  * chain outcome. `validateIr` runs on entry, so garbage IR fails loudly instead of diverging.
  */
 
-import { getAddress } from 'viem';
+import { getAddress, keccak256 as viemKeccak256 } from 'viem';
 
 import { selectorOf } from '../abi/artifact.js';
 import {
@@ -517,6 +517,20 @@ class Interp {
         // word element → store the canonical word (preserves canonicalization); composite element
         // → store the element's memref Value by reference (§12.5).
         arr.items[Number(i)] = isWordType(arr.elem) ? this.word(s.value) : this.getValue(s.value);
+        return;
+      }
+      case 'encode': {
+        const items = s.args.map((id) => ({ type: this.typeOf(id), value: this.getValue(id) }));
+        const bytes = s.mode === 'abi' ? encodeParamsBlock(items) : encodePackedBlock(items);
+        this.values.set(s.out, { kind: 'bytes', bytes });
+        return;
+      }
+      case 'keccak256': {
+        const m = this.memref(s.a);
+        if (m.kind !== 'bytes') {
+          throw new EvsInternalError('INTERNAL', `interpret: keccak256 over a non-bytes memref`);
+        }
+        this.values.set(s.out, BigInt(viemKeccak256(bytesToHex(m.bytes))));
         return;
       }
       case 'cellnew': {
@@ -1017,6 +1031,45 @@ function encodeParamsBlock(items: readonly { type: EvsType; value: Value }[]): U
     }
   }
   return concatBytes([...heads, ...tails]);
+}
+
+/**
+ * Packed (`abi.encodePacked`) encoding over `items` (issue #17): a word packs to its exact byte
+ * width with no padding (`uintN`/`intN` → the low `N/8` bytes of the canonical word, `address` →
+ * 20 bytes, `bool` → 1 byte, `bytesN` → the high `N` bytes); `string`/`bytes` contribute their raw
+ * payload with no length prefix; a word-element array packs each element padded to 32 bytes (the
+ * Solidity in-array padding rule). Composite types never reach here (validateIr rejects them in
+ * packed mode, matching solc's compile error). Byte-equal to viem `encodePacked`.
+ */
+function encodePackedBlock(items: readonly { type: EvsType; value: Value }[]): Uint8Array {
+  const chunks: Uint8Array[] = [];
+  for (const item of items) {
+    const { type, value } = item;
+    if (isWordType(type)) {
+      if (typeof value !== 'bigint') {
+        throw new EvsInternalError('INTERNAL', `interpret: word value expected for '${type}'`);
+      }
+      const size = bitsOf(type) / 8; // bool → 1 (bitsOf 8), address → 20 (bitsOf 160)
+      const word = wordToBytes(value);
+      chunks.push(type.startsWith('bytes') ? word.slice(0, size) : word.slice(32 - size));
+      continue;
+    }
+    if (typeof value === 'bigint' || value.kind === 'tuple') {
+      throw new EvsInternalError('INTERNAL', 'interpret: packed encode over a non-packable value');
+    }
+    if (value.kind === 'bytes') {
+      chunks.push(value.bytes); // raw payload, no length prefix
+      continue;
+    }
+    // word-element array: each element is its canonical word — exactly the padded encoding.
+    for (const it of value.items) {
+      if (typeof it !== 'bigint') {
+        throw new EvsInternalError('INTERNAL', 'interpret: packed array element is not a word');
+      }
+      chunks.push(wordToBytes(it));
+    }
+  }
+  return concatBytes(chunks);
 }
 
 /** True for a **plain** tuple descriptor (`{type:'tuple'}`) — NOT a tuple array (`tuple[]`). */
@@ -1549,6 +1602,10 @@ function noteOf(s: Stmt): string {
       return `field #${s.index}`;
     case 'tupleset':
       return `tupleset #${s.index}`;
+    case 'encode':
+      return `encode ${s.mode}`;
+    case 'keccak256':
+      return 'keccak256';
     case 'cellnew':
       return `cellnew #${s.cell}`;
     case 'cellget':

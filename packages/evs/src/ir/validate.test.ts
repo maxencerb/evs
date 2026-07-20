@@ -828,6 +828,123 @@ describe('validateIr — select/index/len/array rules', () => {
 });
 
 // ---------------------------------------------------------------------------
+// encode / keccak256 (issue #17)
+// ---------------------------------------------------------------------------
+
+describe('validateIr — encode/keccak256 rules', () => {
+  const struct = { type: 'tuple', components: [{ name: 'x', type: 'uint256' }] } as const;
+
+  test('accepts abi encode over words, dynamics, arrays, and tuples', () => {
+    const fixture = ir({
+      args: [
+        { name: 'a', type: 'uint8' },
+        { name: 's', type: 'string' },
+        { name: 'arr', type: 'uint256[]' },
+        { name: 'st', type: struct },
+        { name: 'nested', type: 'uint256[][]' },
+      ],
+      values: [
+        vi('uint8'),
+        vi('string'),
+        vi('uint256[]'),
+        vi(struct),
+        vi('uint256[][]'),
+        vi('bytes'),
+      ],
+      body: [mk({ k: 'encode', mode: 'abi', args: [0, 1, 2, 3, 4], out: 5 })],
+      returns: [{ name: 'out', type: 'bytes', value: 5 }],
+    });
+    expect(() => validateIr(fixture)).not.toThrow();
+  });
+
+  test('accepts packed encode over words, string/bytes, and word-element arrays', () => {
+    const fixture = ir({
+      args: [
+        { name: 'a', type: 'int64' },
+        { name: 'b', type: 'bytes' },
+        { name: 'arr', type: 'address[]' },
+      ],
+      values: [vi('int64'), vi('bytes'), vi('address[]'), vi('bytes')],
+      body: [mk({ k: 'encode', mode: 'packed', args: [0, 1, 2], out: 3 })],
+      returns: [{ name: 'out', type: 'bytes', value: 3 }],
+    });
+    expect(() => validateIr(fixture)).not.toThrow();
+  });
+
+  test('accepts keccak256 over bytes and string operands', () => {
+    const fixture = ir({
+      args: [
+        { name: 'b', type: 'bytes' },
+        { name: 's', type: 'string' },
+      ],
+      values: [vi('bytes'), vi('string'), vi('bytes32'), vi('bytes32')],
+      body: [mk({ k: 'keccak256', a: 0, out: 2 }), mk({ k: 'keccak256', a: 1, out: 3 }, 1)],
+      returns: [{ name: 'h', type: 'bytes32', value: 2 }],
+    });
+    expect(() => validateIr(fixture)).not.toThrow();
+  });
+
+  test('rejects an empty encode arg list', () => {
+    expectInvalid(
+      ir({ values: [vi('bytes')], body: [mk({ k: 'encode', mode: 'abi', args: [], out: 0 })] }),
+      /at least one value/,
+    );
+  });
+
+  test('rejects packed encode over tuples, nested arrays, and string arrays', () => {
+    const packedOver = (type: EvsType): ScriptIr =>
+      ir({
+        args: [{ name: 'v', type }],
+        values: [vi(type), vi('bytes')],
+        body: [mk({ k: 'encode', mode: 'packed', args: [0], out: 1 })],
+      });
+    expectInvalid(packedOver(struct), /cannot be packed-encoded/);
+    expectInvalid(packedOver('uint256[][]'), /cannot be packed-encoded/);
+    expectInvalid(packedOver('string[]'), /cannot be packed-encoded/);
+  });
+
+  test('rejects a non-bytes encode out value', () => {
+    expectInvalid(
+      ir({
+        args: [{ name: 'x', type: 'uint256' }],
+        values: [vi('uint256'), vi('uint256')],
+        body: [mk({ k: 'encode', mode: 'abi', args: [0], out: 1 })],
+      }),
+      /declared 'uint256' but the statement produces 'bytes'/,
+    );
+  });
+
+  test('rejects a keccak256 word operand and a non-bytes32 out', () => {
+    expectInvalid(
+      ir({
+        args: [{ name: 'x', type: 'uint256' }],
+        values: [vi('uint256'), vi('bytes32')],
+        body: [mk({ k: 'keccak256', a: 0, out: 1 })],
+      }),
+      /operand must be bytes\/string/,
+    );
+    expectInvalid(
+      ir({
+        args: [{ name: 'b', type: 'bytes' }],
+        values: [vi('bytes'), vi('uint256')],
+        body: [mk({ k: 'keccak256', a: 0, out: 1 })],
+      }),
+      /declared 'uint256' but the statement produces 'bytes32'/,
+    );
+  });
+
+  test('rejects encode args used before definition', () => {
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('bytes')],
+        body: [mk({ k: 'encode', mode: 'abi', args: [0], out: 1 })],
+      }),
+      /used before it is defined/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cells
 // ---------------------------------------------------------------------------
 

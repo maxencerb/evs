@@ -37,6 +37,7 @@ import {
   isDynamicType,
   isEvsValueType,
   isNumeric,
+  isPackedEncodable,
   isSigned,
   isTupleType,
   isWordType,
@@ -1882,6 +1883,86 @@ export class Recorder {
     // `index` out ValueId (same `TUPLE_INTERNALS` as a decoded tuple); a `T[][]`/`string[]` element
     // → an Expr (whose `.at`/`.length` keep working recursively); a word element → an Expr.
     return this.valueHandle(out, elem);
+  }
+
+  // -- ABI encoding + hashing (issue #17) ---------------------------------------------------
+
+  /** `s.encode(...)` / `s.encodePacked(...)`: materialize the standard/packed ABI encoding of
+   *  the staged values into a fresh `bytes` value. Handles only — literals go through `s.lit`. */
+  encodeOp(mode: 'abi' | 'packed', values: readonly unknown[], what: string): Expr {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    const ids = this.encodeArgIds(mode, values, what, loc);
+    const out = this.newValue('bytes', loc, `${what.slice(0, -2)}(…)`);
+    this.appendStmt({ k: 'encode', mode, args: ids, out }, loc);
+    return makeExpr(this, out);
+  }
+
+  /**
+   * `s.keccak256(...)`: hash with Solidity's idiomatic `keccak256(abi.encodePacked(...))`
+   * semantics — the values are packed-encoded, then hashed. A single `bytes`/`string` value is
+   * hashed directly (byte-identical — packed-encoding one bytes/string value IS its payload —
+   * but skips the copy). For standard ABI encoding, hash explicitly: `s.keccak256(s.encode(…))`.
+   */
+  keccakOp(values: readonly unknown[], what: string): Expr {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    const ids = this.encodeArgIds('packed', values, what, loc);
+    let a: ValueId;
+    const single = ids.length === 1 ? ids[0] : undefined;
+    const singleType = single === undefined ? null : this.typeOfValue(single);
+    if (single !== undefined && (singleType === 'bytes' || singleType === 'string')) {
+      a = single;
+    } else {
+      a = this.newValue('bytes', loc, 's.keccak256(…) packed bytes');
+      this.appendStmt({ k: 'encode', mode: 'packed', args: ids, out: a }, loc);
+    }
+    const out = this.newValue('bytes32', loc, 's.keccak256(…)');
+    this.appendStmt({ k: 'keccak256', a, out }, loc);
+    return makeExpr(this, out);
+  }
+
+  /** Resolves the variadic encode/hash values to ValueIds: an Expr, a bare Tuple/MutArray
+   *  handle (its memref, like `s.return`), never a raw literal; packed mode additionally
+   *  enforces Solidity's `abi.encodePacked` type restrictions. */
+  private encodeArgIds(
+    mode: 'abi' | 'packed',
+    values: readonly unknown[],
+    what: string,
+    loc: SourceLoc | null,
+  ): ValueId[] {
+    if (values.length === 0) {
+      throw new EvsTypeError('TYPE_MISMATCH', `${what}: at least one value is required`, { loc });
+    }
+    return values.map((v, i) => {
+      const valueWhat = `${what} value #${i}`;
+      let id: ValueId;
+      const bare = this.bareHandleId(v, valueWhat, loc);
+      if (bare !== null) {
+        id = bare;
+      } else {
+        const c = this.classify(v, valueWhat, loc);
+        if (c.kind !== 'expr') {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${valueWhat}: must be an Expr, Tuple, or MutArray handle — type a literal with s.lit(type, value)`,
+            { loc },
+          );
+        }
+        id = c.id;
+      }
+      if (mode === 'packed') {
+        const ty = this.typeOfValue(id);
+        if (!isPackedEncodable(ty)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${valueWhat}: '${stringifyEvsType(ty)}' cannot be packed-encoded — abi.encodePacked supports words, string/bytes, and word-element arrays only (structs, nested arrays, and string[]/bytes[] are rejected, matching solc); use s.encode() for standard ABI encoding`,
+            { loc },
+          );
+        }
+      }
+      return id;
+    });
   }
 
   // -- control flow ---------------------------------------------------------------------

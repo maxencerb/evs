@@ -209,4 +209,79 @@ contract EvsReference {
         // forge-lint: disable-next-line(unsafe-typecast)
         return uint8(x);
     }
+
+    // ---------------------------------------------------------------- abi.encode /
+    // abi.encodePacked / keccak256 (issue #17): solc 0.8.30 is the ground truth the
+    // s.encode / s.encodePacked / s.keccak256 differential suite (testing.md §4.4)
+    // asserts byte-identical results against.
+    struct EncPair {
+        address token;
+        uint24 fee;
+    }
+
+    struct EncOrder {
+        uint256 id;
+        string label;
+        uint128[] amounts;
+    }
+
+    function encodeWords(uint8 a, int64 b, address c, bool d, bytes32 e)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(a, b, c, d, e);
+    }
+
+    function encodeDyn(string calldata s, bytes calldata b, uint256[] calldata arr)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(s, b, arr);
+    }
+
+    function encodeStruct(EncPair calldata pair, EncOrder calldata order)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encode(pair, order);
+    }
+
+    function encodeComposite(
+        string[] calldata strs,
+        uint256[][] calldata grid,
+        EncPair[] calldata pairs
+    ) external pure returns (bytes memory) {
+        return abi.encode(strs, grid, pairs);
+    }
+
+    function packedWords(uint8 a, int64 b, address c, bool d, bytes3 e)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodePacked(a, b, c, d, e);
+    }
+
+    function packedDyn(string calldata s, bytes calldata b, uint16[] calldata arr)
+        external
+        pure
+        returns (bytes memory)
+    {
+        return abi.encodePacked(s, b, arr);
+    }
+
+    function hashBytes(bytes calldata b) external pure returns (bytes32) {
+        return keccak256(b);
+    }
+
+    function hashPacked(uint8 a, uint256 x, string calldata s) external pure returns (bytes32) {
+        return keccak256(abi.encodePacked(a, x, s));
+    }
+
+    function hashEncoded(uint256 x, string calldata s) external pure returns (bytes32) {
+        return keccak256(abi.encode(x, s));
+    }
 }

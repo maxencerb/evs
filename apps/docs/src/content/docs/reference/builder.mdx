@@ -258,6 +258,22 @@ Bitwise mirrors over `BitsType` (`uintN` or `bytesN`). Results are re-canonicali
 operand's width; shifts never panic — bits shifted out are dropped. Details and the
 per-type lane semantics: [arithmetic](/guides/arithmetic/).
 
+## s.encode / s.encodePacked / s.keccak256
+
+```ts nocheck
+encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>;        // abi.encode
+encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;  // abi.encodePacked
+keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>;   // keccak256(abi.encodePacked(...))
+```
+
+Byte-exact mirrors of Solidity's encoding and hashing primitives. `EncodeValue` is any staged
+handle (`Expr` | `Tuple` | `MutArray`); `PackedValue` excludes `Tuple` (packed mode carries
+Solidity's restrictions — words, `string`/`bytes`, and word-element arrays only). At least one
+value is required, and literals must be lifted with `s.lit`. `s.keccak256` hashes the
+**packed** encoding (a lone `bytes`/`string` value is hashed directly); hash a standard
+encoding with `s.keccak256(s.encode(...))`. Semantics, packed rules, and the single-word
+hashing case: [hashing & ABI encoding](/guides/hashing-encoding/).
+
 ## s.if
 
 ```ts nocheck

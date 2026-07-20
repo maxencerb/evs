@@ -556,6 +556,18 @@ export function isDynamicType(s: EvsType): boolean {
   return s === 'string' || s === 'bytes' || s.endsWith('[]');
 }
 
+/**
+ * True when `abi.encodePacked` accepts a value of this type (issue #17): a word, `string`/`bytes`,
+ * or a word-element array (whose elements pack padded to 32 bytes, per the Solidity spec).
+ * Everything Solidity rejects in packed mode — structs, nested arrays, arrays of dynamic
+ * elements — is false here; `s.encode` (standard ABI) handles those.
+ */
+export function isPackedEncodable(s: EvsType): boolean {
+  if (typeof s !== 'string') return false; // tuple / tuple[] descriptors
+  if (isWordType(s) || s === 'string' || s === 'bytes') return true;
+  return s.endsWith('[]') && isWordType(s.slice(0, -2));
+}
+
 /** A `T[]` array type (string array or tuple array). */
 export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
   return typeof s === 'string' ? s.endsWith('[]') : s.type !== 'tuple';

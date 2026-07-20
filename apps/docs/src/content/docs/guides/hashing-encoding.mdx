@@ -1,0 +1,99 @@
+---
+title: Hashing and ABI encoding
+description: keccak256 hashing plus the abi.encode / abi.encodePacked primitives on the builder, byte-exact with Solidity.
+---
+
+evs mirrors Solidity's three encoding-and-hashing primitives on the builder, byte-exact with what solc produces:
+
+| Op                       | Solidity equivalent                  | Result           |
+| ------------------------ | ------------------------------------ | ---------------- |
+| `s.encode(...values)`       | `abi.encode(...)`                    | `Expr<'bytes'>`  |
+| `s.encodePacked(...values)` | `abi.encodePacked(...)`              | `Expr<'bytes'>`  |
+| `s.keccak256(...values)`    | `keccak256(abi.encodePacked(...))`   | `Expr<'bytes32'>` |
+
+All three take **staged values** — `Expr`s, `Tuple` handles, `MutArray` handles — and at least one of them. A raw literal has no unambiguous ABI type, so lift it with `s.lit` first:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const transferTopic = evscript({ name: 'transferTopic', args: [] }, (s) => {
+  const sig = s.lit(t.string, 'Transfer(address,address,uint256)');
+  return s.return({ topic: s.keccak256(sig) });
+});
+```
+
+## `s.keccak256` — the packed default
+
+`s.keccak256(...values)` hashes the **packed** encoding of its values — Solidity's idiomatic `keccak256(abi.encodePacked(...))`. A single `bytes` or `string` value is hashed directly (identical bytes, no copy), which is exactly Solidity's `keccak256(someBytes)`.
+
+Because packing is the default, a single **word** hashes at its packed width: a `uint8` hashes one byte, a `uint256` or `bytes32` the full 32-byte word — the same result Solidity gives for `keccak256(abi.encodePacked(x))`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const pairKey = evscript(
+  { name: 'pairKey', args: [t.address, t.address, t.uint24] },
+  (s, tokenA, tokenB, fee) => {
+    // keccak256(abi.encodePacked(tokenA, tokenB, fee)) — 20 + 20 + 3 bytes
+    const key = s.keccak256(tokenA, tokenB, fee);
+    // bytes32 → uint256 view when you need a number
+    return s.return({ key, keyAsUint: key.asUint256() });
+  },
+);
+```
+
+To hash the **standard** ABI encoding instead, compose explicitly — the composition is the documentation:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const structHash = evscript({ name: 'structHash', args: [t.uint256, t.string] }, (s, id, label) => {
+  // keccak256(abi.encode(id, label)) — EIP-712-style leaf hashing
+  return s.return({ h: s.keccak256(s.encode(id, label)) });
+});
+```
+
+## `s.encode` — standard ABI encoding
+
+`s.encode` produces the head/tail `abi.encode` bytes of its values and accepts the whole v0 type vocabulary: words, `string`/`bytes`, arrays (including `string[]`, `uint256[][]`, and arrays of structs), and `t.struct`/`t.tuple` values — bare `Tuple` and `MutArray` handles are fine, just like in `s.return`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const encodeOrder = evscript(
+  { name: 'encodeOrder', args: [t.uint256, t.array(t.uint128)] },
+  (s, id, amounts) => {
+    const pair = s.tuple(Pair, { token: '0x00000000000000000000000000000000deadbeef', fee: 500n });
+    return s.return({ blob: s.encode(id, pair, amounts) });
+  },
+);
+```
+
+The output matches `abi.encode` (and viem's `encodeAbiParameters`) byte for byte: 32-byte head words, dynamic members as offsets relative to the start of the encoding, tails in declaration order.
+
+## `s.encodePacked` — packed encoding
+
+Packed encoding follows Solidity's rules exactly:
+
+- sub-32-byte word types pack **unpadded**: `uintN`/`intN` take `N / 8` bytes, `address` 20, `bool` 1, `bytesN` exactly `N`;
+- `string` and `bytes` contribute their raw payload with **no length prefix**;
+- a word-element array (`uint16[]`, `address[]`, …) packs each element **padded to 32 bytes** — Solidity pads array elements even in packed mode.
+
+The shapes Solidity rejects in `abi.encodePacked` — structs, nested arrays, and `string[]`/`bytes[]` — are rejected at recording time with an `EvsTypeError`, so every packed encoding evs produces is one solc could have produced. Use `s.encode` for those types.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const packed = evscript({ name: 'packed', args: [t.uint8, t.string, t.address] }, (s, v, name, who) => {
+  // 1 byte ++ raw utf8 ++ 20 bytes — no padding, no length words
+  return s.return({ blob: s.encodePacked(v, name, who) });
+});
+```
+
+Note the usual packed caveat (inherited from Solidity, not fixed by evs): packed encoding is **ambiguous** for adjacent dynamic values — `encodePacked("ab", "c")` equals `encodePacked("a", "bc")`. Don't hash attacker-controlled adjacent dynamic values with `s.keccak256`'s packed default; hash `s.encode(...)` instead.
+
+## Costs and placement
+
+Both encoders materialize a fresh `bytes` value in script memory (evs never frees memory, so an encode inside a loop allocates every iteration — `compile()` warns with the `LOOP_ALLOCATION` diagnostic). `s.keccak256` over a single `bytes`/`string` performs no allocation at all — it hashes the existing value in place. None of these operations can revert.

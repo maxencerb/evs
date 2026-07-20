@@ -193,6 +193,9 @@ Stmt = { loc, site: SiteId } & (
   | tupleset  { tuple, index, value }           // member write = MSTORE(tuplePtr + 32·index, v)
   |                                             //   (tuple IR nodes added by #2 — §5; out/tuple
   |                                             //    ValueId's `values[id].type` carries TupleType)
+  | encode    { mode: 'abi'|'packed', args: ValueId[], out } // abi.encode / abi.encodePacked →
+  |                                             //   fresh bytes memref (added by #17 — §8.4)
+  | keccak256 { a, out }                        // hash a bytes/string memref → bytes32 (#17)
   | cellnew   { cell, init } | cellget { cell, out } | cellset { cell, value }
   | call      { target, fnAbi: PlainAbiFunction, args[], outs[], mode:'strict'|'try', successOut? }
   | fncall    { fn: FnId, args[], outs[] }
@@ -290,7 +293,8 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
 - **Allocation**: `ptr := MLOAD(0x40); MSTORE(0x40, ptr + ceil32(size))`. Never freed. Loop
   allocations grow memory monotonically; `compile()` emits a `LOOP_ALLOCATION` diagnostic via
   the pinned `onDiagnostic` callback (§13.3) when an allocating statement — a `call` with
-  outputs, `arrnew`, `tuplenew` (`s.tuple`), or a dynamic literal materialization — or a
+  outputs, `arrnew`, `tuplenew` (`s.tuple`), an `encode` (`s.encode`/`s.encodePacked`/the
+  `s.keccak256` packed pre-encode — #17), or a dynamic literal materialization — or a
   `fncall` whose callee transitively allocates sits inside a loop body **or header** (`while`
   or `for`; amendments 10.7, 14.6).
 
@@ -598,6 +602,39 @@ known: `tuple[]`=1; a `tuple[]` whose member is a `string[]`=2). The loop reads/
 frame and recomputes `elemPtrᵢ = MLOAD(arrPtr + 32 + 32·i)`, so nothing but the live `[dst,src,len]`
 is on the stack when `emitMemCopy` runs. Static-element loops use no memcpy and keep counter state
 on the stack.
+
+### 8.4 Encode-to-bytes + `keccak256` (added by #17)
+
+`codegen/abi.ts` gains two encode-to-memref emitters, both materializing a fresh
+`[len:32][payload…]` `bytes` block at `MLOAD(0x40)` and net `+1` on the stack (the pointer,
+which the `encode` statement template stores to its out slot):
+
+- **`emitAbiEncodeToBytes`** (`mode: 'abi'`) — the args encode as a top-level ABI tuple: heads
+  at `ptr + 32`, dynamic offsets relative to that payload base, tails appended at the shared
+  scratch cursor (`TAIL_CURSOR`), all via the EXISTING recursive `emitEncodeBlock` — i.e. the
+  §8.2 return shape minus the outer RETURN and the single-output wrapper, so `abi.encode`
+  byte-compatibility is inherited from the return path. Composite-array loop frames are
+  reserved below the block (`reserveEncodeFrames`, §8.3); the free pointer holds still during
+  the encode and is bumped to the (already 32-aligned) final cursor at the end, after the
+  length word `total = cursor − ptr − 32` is stored.
+- **`emitPackedEncodeToBytes`** (`mode: 'packed'`) — a linear segment walk at the scratch
+  cursor: a word left-aligns its packed lane via `SHL(256 − bits)` (bytesN is already
+  left-aligned) and `MSTORE`s it at the cursor, advancing by its packed width — the trailing
+  bytes of the store are zeros, overwritten by the next segment; `string`/`bytes` `MCOPY`
+  (pre-cancun `@memcpy`) their raw payload; a word-element array copies its `32·len`-byte body
+  verbatim (canonical elements ARE the padded packed encoding). A final explicit zero-word
+  store at the end cursor zero-pads the trailing partial word (and heals any pre-cancun
+  whole-word over-copy); the free pointer bumps to `ceil32(cursor)`. Composite types never
+  reach this emitter — `ir/validate` (and the recorder, `core/types.isPackedEncodable`)
+  restricts packed mode to words, `string`/`bytes`, and word-element arrays, exactly the set
+  solc accepts in `abi.encodePacked`.
+
+`keccak256` lowers to `KECCAK256(ptr + 32, MLOAD(ptr))` over a `bytes`/`string` memref — the
+`s.keccak256(...args)` builder records packed-encode-then-hash (Solidity's
+`keccak256(abi.encodePacked(...))` idiom), skipping the encode when the single arg is already
+`bytes`/`string`. Neither statement can revert (no panics; memory growth is gas-bounded).
+Differential anchors: viem `encodeAbiParameters`/`encodePacked`/`keccak256` at the unit tier
+and solc 0.8.30 `EvsReference` on anvil (testing.md §4.4).
 
 ## 9. User-defined functions (decision 5)
 
@@ -1356,7 +1393,10 @@ retSize pushed first, retOffset above it, gas on top at STATICCALL). 36. *Bare`r
   §7, §11. Open follow-ups: **nested `s.simulate`**, an **explicit gas cap on the inner CALL**,
   **`msg.sender` on the self-call hop**, and decoding a QuoterV1-style revert payload AS the
   `s.tryCall` result (today `s.tryCall` only reports `success = false` on the revert).
+- **`s.keccak256` + ABI encoding ops**: SHIPPED by #17 (`s.encode`/`s.encodePacked`/
+  `s.keccak256`, the `encode`/`keccak256` IR nodes, and the §8.4 emitters) — see §4, §8.4, and
+  amendments.md §21.
 - **Overload disambiguation** (`ExtractAbiFunctionForArgs`), **dynamic-length stack of args >
   word count**, **`s.rawCall({to, data})`** typed escape hatch, **recursion** (FP-relative
   slots confined to codegen), **single named-tuple input option** for many-arg scripts,
-  **`s.keccak256`/env extensions**, **generator sugar** (locked out).
+  **env extensions**, **generator sugar** (locked out).

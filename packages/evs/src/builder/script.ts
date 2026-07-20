@@ -403,6 +403,21 @@ export declare const mutArrayBrand: unique symbol;
 export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
 
 /**
+ * What `s.encode(...)` accepts per value (issue #17): any staged handle — an {@link Expr} of any
+ * v0 type, a {@link Tuple}, or a {@link MutArray} (bare handles contribute their memref, like
+ * `s.return`). Literals must be lifted with `s.lit(type, value)` (an untyped literal is ambiguous).
+ */
+export type EncodeValue = Expr | AnyTuple | AnyMutArray;
+
+/**
+ * What `s.encodePacked(...)` / `s.keccak256(...)` accept per value (issue #17): an {@link Expr}
+ * or a bare {@link MutArray}. Packed mode carries Solidity's `abi.encodePacked` restrictions —
+ * words, `string`/`bytes`, and word-element arrays only; structs, nested arrays, and
+ * `string[]`/`bytes[]` are rejected at record time (matching solc's compile error).
+ */
+export type PackedValue = Expr | AnyMutArray;
+
+/**
  * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),
  * a {@link Tuple} handle DIRECTLY (no `.expr()` needed — composite types §6/§8), or a
  * {@link MutArray} handle DIRECTLY (no `.expr()` — issue #5 ask #5). `.expr()` stays valid on
@@ -740,6 +755,13 @@ export interface ScriptBuilder {
   shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
   shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
 
+  // ABI encoding + hashing (issue #17; api.md §4.1). `keccak256` hashes with Solidity's
+  // idiomatic `keccak256(abi.encodePacked(...))` semantics (a single bytes/string value is
+  // hashed directly); hash a standard encoding with s.keccak256(s.encode(…)).
+  encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>;
+  encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;
+  keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>;
+
   // control flow (combinators — api.md §7)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
@@ -817,6 +839,10 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     bitNot: (a: unknown) => r.bitNotOp(a, 's.bitNot()'),
     shl: (a: unknown, bits: unknown) => r.bin('shl', a, bits, 's.shl()'),
     shr: (a: unknown, bits: unknown) => r.bin('shr', a, bits, 's.shr()'),
+
+    encode: (...values: unknown[]) => r.encodeOp('abi', values, 's.encode()'),
+    encodePacked: (...values: unknown[]) => r.encodeOp('packed', values, 's.encodePacked()'),
+    keccak256: (...values: unknown[]) => r.keccakOp(values, 's.keccak256()'),
 
     if: (cond: unknown, then: unknown, otherwise?: unknown) => {
       r.ifStmt(cond, then, otherwise);
