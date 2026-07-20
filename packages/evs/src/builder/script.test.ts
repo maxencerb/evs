@@ -641,6 +641,127 @@ describe('Tuple (s.tuple + field get/set)', () => {
 });
 
 // ---------------------------------------------------------------------------
+// ABI encoding + hashing (s.encode / s.encodePacked / s.keccak256) — issue #17
+// ---------------------------------------------------------------------------
+
+describe('s.encode / s.encodePacked / s.keccak256', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+  test('s.encode records one encode(abi) stmt over the staged values (incl. bare handles)', () => {
+    const script = evscript(
+      { name: 'enc', args: [t.uint256, t.string, t.array(t.uint256)] },
+      (s, x, str, arr) => {
+        const pair = s.tuple(Pair, { fee: 500n });
+        const out = s.encode(x, str, arr, pair);
+        return s.return({ out });
+      },
+      NO_LOC,
+    );
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const enc = allStmts(script.ir).filter((s) => s.k === 'encode');
+    expect(enc).toHaveLength(1);
+    expect(enc[0]?.k === 'encode' && enc[0].mode).toBe('abi');
+    expect(enc[0]?.k === 'encode' && enc[0].args).toHaveLength(4);
+    expect(script.ir.returns[0]?.type).toBe('bytes');
+  });
+
+  test('s.encodePacked records encode(packed); s.keccak256 packs then hashes', () => {
+    const script = evscript(
+      { name: 'hashes', args: [t.uint256, t.string] },
+      (s, x, str) => {
+        const packed = s.encodePacked(x, str);
+        const h = s.keccak256(x, str);
+        return s.return({ packed, h });
+      },
+      NO_LOC,
+    );
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
+    expect(encs).toHaveLength(2);
+    expect(encs.every((s) => s.k === 'encode' && s.mode === 'packed')).toBe(true);
+    const hash = allStmts(script.ir).find((s) => s.k === 'keccak256');
+    // the hash consumes the second packed encode's out value
+    expect(hash?.k === 'keccak256' && hash.a).toBe(encs[1]?.k === 'encode' && encs[1].out);
+    expect(script.ir.returns.find((r) => r.name === 'h')?.type).toBe('bytes32');
+  });
+
+  test('s.keccak256 of a single bytes/string value hashes it directly (no encode stmt)', () => {
+    const script = evscript(
+      { name: 'direct', args: [t.bytes, t.string] },
+      (s, b, str) => s.return({ hb: s.keccak256(b), hs: s.keccak256(str) }),
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(allStmts(script.ir).filter((s) => s.k === 'encode')).toHaveLength(0);
+    const hashes = allStmts(script.ir).filter((s) => s.k === 'keccak256');
+    expect(hashes).toHaveLength(2);
+    // both hash the arg memrefs directly (ValueIds 0 and 1)
+    expect(hashes.map((s) => s.k === 'keccak256' && s.a)).toEqual([0, 1]);
+  });
+
+  test('s.keccak256 of a single word packs it first (Solidity encodePacked semantics)', () => {
+    const script = evscript(
+      { name: 'word', args: [t.uint8] },
+      (s, x) => s.return({ h: s.keccak256(x) }),
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const enc = allStmts(script.ir).find((s) => s.k === 'encode');
+    expect(enc?.k === 'encode' && enc.mode).toBe('packed');
+  });
+
+  test('rejects zero values and raw literals with a steering message', () => {
+    expect(() =>
+      evscript({ name: 'bad', args: [] }, (s) =>
+        s.return({
+          // @ts-expect-error — zero values is a type error too; the runtime guard is pinned here
+          x: s.encode(),
+        }),
+      ),
+    ).toThrowError(/at least one value/);
+    expect(() =>
+      evscript({ name: 'bad2', args: [] }, (s) =>
+        s.return({
+          // @ts-expect-error — a raw literal is not a staged value (runtime steering pinned)
+          x: s.keccak256('hello'),
+        }),
+      ),
+    ).toThrowError(/s\.lit\(type, value\)/);
+  });
+
+  test('rejects packed-mode composites, matching solc (structs / nested / string[])', () => {
+    expect(() =>
+      evscript({ name: 'bad3', args: [] }, (s) => {
+        const pair = s.tuple(Pair);
+        return s.return({
+          // @ts-expect-error — a Tuple is not a PackedValue (runtime rejection pinned)
+          x: s.encodePacked(pair),
+        });
+      }),
+    ).toThrowError(/cannot be packed-encoded/);
+    expect(() =>
+      evscript({ name: 'bad4', args: [t.array(t.string)] }, (s, strs) =>
+        // string[] is a valid PackedValue at the type level; the record-time guard rejects it
+        s.return({ x: s.keccak256(strs) }),
+      ),
+    ).toThrowError(/cannot be packed-encoded/);
+    // …while s.encode accepts the same values (standard ABI covers composites)
+    expect(() =>
+      evscript(
+        { name: 'ok', args: [t.array(t.string)] },
+        (s, strs) => {
+          const pair = s.tuple(Pair);
+          return s.return({ x: s.encode(pair, strs) });
+        },
+        NO_LOC,
+      ),
+    ).not.toThrow();
+  });
+});
+
+// ---------------------------------------------------------------------------
 // control flow
 // ---------------------------------------------------------------------------
 

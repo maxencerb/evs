@@ -220,6 +220,28 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
+    'encode + keccak256 (issue #17)',
+    ir({
+      args: [{ name: 'x', type: 'uint256' }],
+      values: [
+        vi('uint256', 'x'),
+        vi('string'),
+        vi('bytes'),
+        vi('bytes'),
+        vi('bytes32'),
+        vi('bytes32'),
+      ],
+      body: [
+        mk({ k: 'const', out: 1, data: { kind: 'data', hex: dataHex('616263') }, type: 'string' }),
+        mk({ k: 'encode', mode: 'abi', args: [0, 1], out: 2 }, 1),
+        mk({ k: 'encode', mode: 'packed', args: [0, 1], out: 3 }, 2),
+        mk({ k: 'keccak256', a: 3, out: 4 }, 3),
+        mk({ k: 'keccak256', a: 1, out: 5 }, 4),
+      ],
+      returns: [{ name: 'h', type: 'bytes32', value: 4 }],
+    }),
+  ],
+  [
     'array const + locs',
     ir({
       values: [vi('uint24[]', 'fees')],
@@ -670,6 +692,24 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['body'][13]['args'] = [0, 'x']), /args\[1\]/);
     reject((r) => (r['body'][17]['then'] = {}), /then/);
     reject((r) => (r['body'][18]['header'] = null), /header/);
+  });
+
+  test('rejects malformed encode/keccak256 statements (issue #17)', () => {
+    function rejectEnc(mutate: (raw: Record<string, any>) => void, msg: RegExp): void {
+      const fixture = CORPUS.find(([name]) => name.startsWith('encode'));
+      expect(fixture).toBeDefined();
+      const raw: Record<string, any> = JSON.parse(serializeIr(fixture![1]));
+      mutate(raw);
+      const json = JSON.stringify(raw);
+      expect(() => deserializeIr(json)).toThrowError(EvsTypeError);
+      expect(() => deserializeIr(json)).toThrowError(msg);
+    }
+    rejectEnc((r) => (r['body'][1]['mode'] = 'tight'), /mode.*'abi' \| 'packed'/);
+    rejectEnc((r) => delete r['body'][1]['mode'], /mode/);
+    rejectEnc((r) => (r['body'][1]['args'] = [0, 'x']), /args\[1\]/);
+    rejectEnc((r) => (r['body'][1]['out'] = -1), /\.out/);
+    rejectEnc((r) => (r['body'][3]['a'] = null), /\.a/);
+    rejectEnc((r) => (r['body'][3]['out'] = 1.5), /\.out/);
   });
 
   test('rejects malformed nested statements with their JSON path in the message', () => {

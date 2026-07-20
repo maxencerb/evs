@@ -8,7 +8,13 @@
  * (Panic codes per width class incl. `int256 −2^255 / −1` and the uint192 MUL wrap-back);
  * decode-fail site ids; tryCall zeroing; maxSteps guard; byte-exact ABI agreement with viem.
  */
-import { encodeAbiParameters, encodeFunctionData, toFunctionSelector } from 'viem';
+import {
+  encodeAbiParameters,
+  encodeFunctionData,
+  encodePacked,
+  keccak256,
+  toFunctionSelector,
+} from 'viem';
 import { describe, expect, test } from 'vitest';
 
 import { canonicalTypeSignature } from '../abi/artifact.js';
@@ -997,6 +1003,128 @@ describe('arrays + cells', () => {
 // ---------------------------------------------------------------------------
 // control flow: if / while / break / continue / fncall
 // ---------------------------------------------------------------------------
+
+describe('encode / keccak256 (issue #17)', () => {
+  const structType = {
+    type: 'tuple',
+    components: [
+      { name: 'x', type: 'uint256' },
+      { name: 's', type: 'string' },
+    ],
+  } as const;
+
+  test('abi encode matches viem encodeAbiParameters across mixed args', () => {
+    const script = ir({
+      name: 'enc',
+      args: [
+        { name: 'a', type: 'uint8' },
+        { name: 's', type: 'string' },
+        { name: 'arr', type: 'uint256[]' },
+        { name: 'st', type: structType },
+      ],
+      values: [vi('uint8'), vi('string'), vi('uint256[]'), vi(structType), vi('bytes')],
+      body: [mk({ k: 'encode', mode: 'abi', args: [0, 1, 2, 3], out: 4 })],
+      returns: [{ name: 'out', type: 'bytes', value: 4 }],
+    });
+    const res = interpret(script, [7n, 'héllo', [1n, 2n], { x: 9n, s: 'in' }], deadChain);
+    expect(res.outcome.kind).toBe('return');
+    if (res.outcome.kind !== 'return') return;
+    const expected = encodeAbiParameters(
+      [
+        { type: 'uint8' },
+        { type: 'string' },
+        { type: 'uint256[]' },
+        {
+          type: 'tuple',
+          components: [
+            { name: 'x', type: 'uint256' },
+            { name: 's', type: 'string' },
+          ],
+        },
+      ],
+      [7, 'héllo', [1n, 2n], { x: 9n, s: 'in' }],
+    );
+    expect(res.outcome.values['out']).toBe(expected);
+  });
+
+  test('packed encode matches viem encodePacked (unpadded words, raw bytes, padded array elems)', () => {
+    const script = ir({
+      name: 'packed',
+      args: [
+        { name: 'a', type: 'uint8' },
+        { name: 'b', type: 'int64' },
+        { name: 'who', type: 'address' },
+        { name: 'f', type: 'bool' },
+        { name: 'tag', type: 'bytes3' },
+        { name: 's', type: 'string' },
+        { name: 'arr', type: 'uint16[]' },
+      ],
+      values: [
+        vi('uint8'),
+        vi('int64'),
+        vi('address'),
+        vi('bool'),
+        vi('bytes3'),
+        vi('string'),
+        vi('uint16[]'),
+        vi('bytes'),
+      ],
+      body: [mk({ k: 'encode', mode: 'packed', args: [0, 1, 2, 3, 4, 5, 6], out: 7 })],
+      returns: [{ name: 'out', type: 'bytes', value: 7 }],
+    });
+    const who = '0x00000000000000000000000000000000deadbeef';
+    const res = interpret(
+      script,
+      [0xabn, -2n, who, true, '0x010203', 'xyz', [1n, 500n]],
+      deadChain,
+    );
+    expect(res.outcome.kind).toBe('return');
+    if (res.outcome.kind !== 'return') return;
+    const expected = encodePacked(
+      ['uint8', 'int64', 'address', 'bool', 'bytes3', 'string', 'uint16[]'],
+      [0xab, -2n, who, true, '0x010203', 'xyz', [1, 500]],
+    );
+    expect(res.outcome.values['out']).toBe(expected);
+  });
+
+  test('keccak256 of a bytes memref matches viem keccak256 (incl. the empty hash)', () => {
+    const script = ir({
+      name: 'hash',
+      args: [{ name: 'b', type: 'bytes' }],
+      values: [vi('bytes'), vi('bytes32')],
+      body: [mk({ k: 'keccak256', a: 0, out: 1 })],
+      returns: [{ name: 'h', type: 'bytes32', value: 1 }],
+    });
+    for (const payload of ['0x', '0x01', `0x${'ab'.repeat(64)}`] as const) {
+      const res = interpret(script, [payload], deadChain);
+      expect(res.outcome.kind).toBe('return');
+      if (res.outcome.kind !== 'return') continue;
+      expect(res.outcome.values['h']).toBe(keccak256(payload));
+    }
+  });
+
+  test('packed-encode-then-hash matches keccak256(encodePacked(...))', () => {
+    const script = ir({
+      name: 'hash2',
+      args: [
+        { name: 'x', type: 'uint256' },
+        { name: 's', type: 'string' },
+      ],
+      values: [vi('uint256'), vi('string'), vi('bytes'), vi('bytes32')],
+      body: [
+        mk({ k: 'encode', mode: 'packed', args: [0, 1], out: 2 }),
+        mk({ k: 'keccak256', a: 2, out: 3 }, 1),
+      ],
+      returns: [{ name: 'h', type: 'bytes32', value: 3 }],
+    });
+    const res = interpret(script, [42n, 'transfer(address,uint256)'], deadChain);
+    expect(res.outcome.kind).toBe('return');
+    if (res.outcome.kind !== 'return') return;
+    expect(res.outcome.values['h']).toBe(
+      keccak256(encodePacked(['uint256', 'string'], [42n, 'transfer(address,uint256)'])),
+    );
+  });
+});
 
 describe('control flow', () => {
   test('if takes the then-branch on true and the else-branch on false', () => {

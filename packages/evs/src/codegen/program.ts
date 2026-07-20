@@ -287,11 +287,12 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
 // ---------------------------------------------------------------------------
 
 /** Statements that allocate memory at runtime (call-with-outputs snapshots returndata; a
- *  `tuplenew` bump-allocates its flat block). */
+ *  `tuplenew` bump-allocates its flat block; an `encode` materializes a fresh bytes memref). */
 function stmtAllocates(s: Stmt): boolean {
   return (
     s.k === 'arrnew' ||
     s.k === 'tuplenew' ||
+    s.k === 'encode' ||
     (s.k === 'call' && s.outs.length > 0) ||
     (s.k === 'const' && s.data.kind === 'data')
   );
@@ -355,11 +356,13 @@ function collectDiagnostics(
             ? `s.newArray(${typeof s.elem === 'string' ? s.elem : JSON.stringify(s.elem)}, …)`
             : s.k === 'tuplenew'
               ? 's.tuple(…) (flat-block allocation)'
-              : s.k === 'call'
-                ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
-                : s.k === 'fncall'
-                  ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
-                  : 'a dynamic literal materialization';
+              : s.k === 'encode'
+                ? `s.${s.mode === 'abi' ? 'encode' : 'encodePacked'}(…) (fresh bytes memref)`
+                : s.k === 'call'
+                  ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
+                  : s.k === 'fncall'
+                    ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
+                    : 'a dynamic literal materialization';
         diagnostics.push({
           severity: 'warning',
           code: 'LOOP_ALLOCATION',

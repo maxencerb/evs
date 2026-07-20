@@ -27,6 +27,7 @@
  * express. No recursion ⇒ one spill slot per fn is sound.
  */
 
+import { layoutOfType } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { HEX_BYTES_RE, hexToBytes, padWordAligned } from '../core/bytes.js';
@@ -36,6 +37,7 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  typeToAbiParam,
   type EvsType,
   type WordType,
 } from '../core/types.js';
@@ -48,7 +50,14 @@ import {
   type Stmt,
   type ValueId,
 } from '../ir/nodes.js';
-import { emitNormalizeWord, fmtType, wordNeedsNormalize, type SharedTails } from './abi.js';
+import {
+  emitAbiEncodeToBytes,
+  emitNormalizeWord,
+  emitPackedEncodeToBytes,
+  fmtType,
+  wordNeedsNormalize,
+  type SharedTails,
+} from './abi.js';
 import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
 
@@ -289,6 +298,12 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       return;
     case 'tuplenew':
       lowerTupleNew(w, s, ctx);
+      return;
+    case 'encode':
+      lowerEncode(w, s, ctx);
+      return;
+    case 'keccak256':
+      lowerKeccak256(w, s, ctx);
       return;
     case 'field':
       lowerField(w, s, ctx);
@@ -945,6 +960,46 @@ function lowerTupleSet(w: AsmWriter, s: Extract<Stmt, { k: 'tupleset' }>, ctx: L
     w.op('ADD'); // [ptr+32·i, v]
   }
   w.op('MSTORE'); // []
+}
+
+// ---------------------------------------------------------------------------
+// ABI encoding + hashing — `s.encode` / `s.encodePacked` / `s.keccak256` (issue #17, §8.4)
+// ---------------------------------------------------------------------------
+
+/** `encode` — materialize the standard/packed ABI encoding of the args into a fresh `bytes`
+ *  memref (codegen/abi.ts emitters) and store its pointer to the out slot. */
+function lowerEncode(w: AsmWriter, s: Extract<Stmt, { k: 'encode' }>, ctx: LowerCtx): void {
+  const m = meta(ctx, s, `encode ${s.mode}`);
+  if (s.mode === 'abi') {
+    const items = s.args.map((a) => ({
+      param: typeToAbiParam('', typeOf(ctx, a)),
+      pushSrc: (): void => {
+        loadOperand(w, ctx, a);
+      },
+    }));
+    emitAbiEncodeToBytes(w, items, ctx.tails, ctx.opts, m); // [ptr]
+  } else {
+    const items = s.args.map((a) => ({
+      layout: layoutOfType(typeOf(ctx, a)),
+      pushSrc: (): void => {
+        loadOperand(w, ctx, a);
+      },
+    }));
+    emitPackedEncodeToBytes(w, items, ctx.tails, ctx.opts, m); // [ptr]
+  }
+  storeOut(w, ctx, s.out); // []
+}
+
+/** `keccak256` — hash a `bytes`/`string` memref's payload: `KECCAK256(ptr + 32, MLOAD(ptr))`. */
+function lowerKeccak256(w: AsmWriter, s: Extract<Stmt, { k: 'keccak256' }>, ctx: LowerCtx): void {
+  loadOperand(w, ctx, s.a, meta(ctx, s, 'keccak256')); // [ptr]
+  w.op('DUP1');
+  w.op('MLOAD'); // [len, ptr]
+  w.op('SWAP1');
+  w.push(32);
+  w.op('ADD'); // [ptr+32, len]     KECCAK256 pops [offset, size]
+  w.op('KECCAK256'); // [hash]
+  storeOut(w, ctx, s.out); // []
 }
 
 // ---------------------------------------------------------------------------

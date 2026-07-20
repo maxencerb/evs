@@ -27,6 +27,7 @@ import {
   isEvsType,
   isEvsValueType,
   isNumeric,
+  isPackedEncodable,
   isSigned,
   isTupleType,
   isWordType,
@@ -496,6 +497,32 @@ class IrValidator {
           this.fail(`${what}: member index ${s.index} out of range`, s.loc);
         }
         this.use(s.value, abiParamToType(comp), `${what} value`, s.loc);
+        return;
+      }
+      case 'encode': {
+        const what = `${path} (encode ${s.mode})`;
+        if (s.args.length === 0) {
+          this.fail(`${what}: at least one value is required`, s.loc);
+        }
+        s.args.forEach((a, i) => {
+          const ta = this.use(a, null, `${what} value #${i}`, s.loc);
+          if (s.mode === 'packed' && !isPackedEncodable(ta)) {
+            this.fail(
+              `${what} value #${i}: '${stringifyType(ta)}' cannot be packed-encoded (abi.encodePacked supports words, string/bytes, and word-element arrays only)`,
+              s.loc,
+            );
+          }
+        });
+        this.define(s.out, 'bytes', what, s.loc);
+        return;
+      }
+      case 'keccak256': {
+        const what = `${path} (keccak256)`;
+        const ta = this.use(s.a, null, what, s.loc);
+        if (ta !== 'bytes' && ta !== 'string') {
+          this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`, s.loc);
+        }
+        this.define(s.out, 'bytes32', what, s.loc);
         return;
       }
       case 'cellnew': {

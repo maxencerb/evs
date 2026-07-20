@@ -111,6 +111,8 @@ function outsOf(s: Stmt): readonly ValueId[] {
     case 'bin':
     case 'tuplenew': // one frame slot — the tuple pointer
     case 'field': // one frame slot — the member word or nested pointer
+    case 'encode': // one frame slot — the fresh bytes memref pointer
+    case 'keccak256': // one frame slot — the bytes32 hash word
       return [s.out];
     case 'call':
       return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];

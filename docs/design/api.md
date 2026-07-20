@@ -341,6 +341,11 @@ export interface ScriptBuilder {
   shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>
   shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>
 
+  // ABI encoding + hashing (added by #17 — see §4.1)
+  encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>        // abi.encode
+  encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>  // abi.encodePacked
+  keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>   // keccak256(abi.encodePacked(...))
+
   // control flow (combinators — §7)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void
@@ -358,6 +363,34 @@ export interface ScriptBuilder {
   return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret> // value is Expr | Tuple (§9)
 }
 ```
+
+### 4.1 ABI encoding + `keccak256` (added by #17)
+
+```ts
+export type EncodeValue = Expr | AnyTuple | AnyMutArray; // any staged handle
+export type PackedValue = Expr | AnyMutArray; // packed mode: no Tuple handles
+```
+
+- **`s.encode(...values)`** — the standard ABI encoding (`abi.encode`) of the values as a fresh
+  `bytes` value. Values can be anything staged: words, `string`/`bytes`, arrays (incl.
+  composite-element `tuple[]`/`T[][]`/`string[]`), `Tuple`/`MutArray` handles (bare, like
+  `s.return`), nested composites. Byte-exact vs solc/viem (head/tail, 32-byte words, dynamic
+  offsets) — differential-tested (testing.md §4.4).
+- **`s.encodePacked(...values)`** — the non-standard packed encoding (`abi.encodePacked`):
+  sub-32-byte words pack unpadded (`uintN`/`intN` → `N/8` bytes, `address` → 20, `bool` → 1,
+  `bytesN` → `N`), `string`/`bytes` contribute their raw payload with no length prefix, and a
+  word-element array packs each element **padded to 32 bytes** (Solidity's in-array rule). The
+  types Solidity rejects in packed mode — structs, nested arrays, `string[]`/`bytes[]` — are
+  rejected at recording (`EvsTypeError`), keeping evs inside solc-verifiable territory.
+- **`s.keccak256(...values)`** — `keccak256(abi.encodePacked(...values))`, the Solidity idiom,
+  as an `Expr<'bytes32'>` (`.asUint256()` is available for a uint view). A single
+  `bytes`/`string` value is hashed directly (byte-identical, no copy) — matching Solidity's
+  `keccak256(bytes)`. Consequently a single WORD hashes at its packed width: `s.keccak256(x)`
+  over a `uint8` hashes ONE byte, over a `uint256`/`bytes32` the full word — exactly
+  `keccak256(abi.encodePacked(x))` in Solidity. For the standard encoding, compose explicitly:
+  `s.keccak256(s.encode(...))`.
+- All three take **staged handles only** (≥ 1); literals are lifted with `s.lit(type, value)` —
+  a bare literal has no unambiguous ABI type, so recording rejects it with that suggestion.
 
 ## 5. Cells, mutable arrays, loop control
 

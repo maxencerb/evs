@@ -811,3 +811,40 @@ test('#5 a bare MutArray is returnable; the script output infers the array shape
     metadata: readonly { a: bigint; b: boolean }[];
   }>();
 });
+
+// ---------------------------------------------------------------------------
+// issue #17 — s.encode / s.encodePacked / s.keccak256
+// ---------------------------------------------------------------------------
+
+test('#17 encode/encodePacked/keccak256 result types and value bounds', () => {
+  evscript({ name: 'enc17', args: [t.uint256, t.string, t.array(t.uint8)] }, (s, x, str, arr) => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    const pair = s.tuple(Pair, { fee: 500n });
+    const words = s.newArray(t.uint256, 2n);
+
+    // results are typed bytes / bytes32 Exprs
+    expectTypeOf(s.encode(x, str, arr, pair, words)).toEqualTypeOf<Expr<'bytes'>>();
+    expectTypeOf(s.encodePacked(x, str, arr)).toEqualTypeOf<Expr<'bytes'>>();
+    expectTypeOf(s.keccak256(x, str)).toEqualTypeOf<Expr<'bytes32'>>();
+    // a single bytes-typed value hashes directly; the composed standard form typechecks too
+    expectTypeOf(s.keccak256(s.encode(x, pair))).toEqualTypeOf<Expr<'bytes32'>>();
+    // the bytes32 hash chains into the existing word ops
+    expectTypeOf(s.keccak256(str).asUint256()).toEqualTypeOf<Expr<'uint256'>>();
+
+    // at least one value is required
+    // @ts-expect-error — zero values
+    s.encode();
+    // @ts-expect-error — zero values
+    s.keccak256();
+    // raw literals are not staged values (lift with s.lit)
+    // @ts-expect-error — bare string literal
+    s.keccak256('transfer(address,uint256)');
+    // @ts-expect-error — bare bigint literal
+    s.encode(1n);
+    // packed mode rejects Tuple handles at the type level (s.encode accepts them)
+    // @ts-expect-error — a Tuple is not a PackedValue
+    s.encodePacked(pair);
+
+    return s.return({ h: s.keccak256(x) });
+  });
+});

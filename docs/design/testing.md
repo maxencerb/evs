@@ -177,6 +177,25 @@ function (deployed on the harness from `deployedBytecode`) and the equivalent ev
 asserts identical success/revert outcomes and identical `Panic(code)` payloads. This pins the
 architecture §6 table to solc ground truth.
 
+### 4.4 ABI encoding + keccak256 vs viem AND solc (issue #17)
+
+Two complementary oracles pin `s.encode` / `s.encodePacked` / `s.keccak256` byte-exact:
+
+- **viem oracle (unit)** — `packages/evs/src/codegen/encode.test.ts`: a corpus across every
+  type kind (all `uintN`/`intN`/`bytesN` widths, `address`, `bool`; `bytes`/`string` incl.
+  empty and non-32-aligned lengths; word arrays incl. sub-word elements; structs flat/nested/
+  with dynamic members; composite arrays `string[]`/`uint256[][]`/`tuple[]`; mixed multi-arg
+  head/tail tuples; packed-specific mixes) asserts the compiled bytecode's results equal
+  viem's `encodeAbiParameters` / `encodePacked` / `keccak256` byte-for-byte, AND that
+  `interpret(ir, …)` agrees with the bytecode on the full returndata. One packed + one
+  composite case re-run on every `evmVersion` (the pre-cancun `@memcpy` unaligned-copy path).
+- **solc oracle (integration)** — `EvsReference.sol` gains `abi.encode` / `abi.encodePacked` /
+  `keccak256` reference functions (words, dynamics, structs, composite arrays, packed mixes,
+  and both the pre-encoded `keccak256(bytes)` and raw-args `keccak256(abi.encodePacked(…))` /
+  `keccak256(abi.encode(…))` paths); `test/integration/encode.test.ts` drives the deployed
+  contract and the equivalent evs scripts (default deployless mode) with the same corpus on
+  anvil and asserts byte-identical decoded results.
+
 Also in `packages/contracts/src`:
 
 - `MockERC20.sol`, `MockUniV3Pool.sol` (slot0/token0/token1/fee) — integration fixtures.

@@ -111,6 +111,13 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
   | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
   | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
+  // ABI encoding + hashing (issue #17). `encode` materializes the standard (`abi.encode`) or
+  // packed (`abi.encodePacked`) encoding of its args into a fresh `bytes` memref; `keccak256`
+  // hashes a `bytes`/`string` memref's payload into a `bytes32` word. `s.keccak256(...args)`
+  // records packed-encode-then-hash (the Solidity `keccak256(abi.encodePacked(...))` idiom),
+  // skipping the encode when the single arg is already `bytes`/`string` (byte-identical).
+  | { k: 'encode'; mode: 'abi' | 'packed'; args: readonly ValueId[]; out: ValueId }
+  | { k: 'keccak256'; a: ValueId; out: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
@@ -566,6 +573,22 @@ function decodeStmt(v: unknown, path: string): Stmt {
         index: asId(o['index'], `${path}.index`),
         value: asId(o['value'], `${path}.value`),
       };
+    case 'encode': {
+      const mode: unknown = o['mode'];
+      if (mode !== 'abi' && mode !== 'packed') {
+        fail(`${path}.mode`, `expected 'abi' | 'packed', got ${describe(mode)}`);
+      }
+      return {
+        loc,
+        site,
+        k,
+        mode,
+        args: decodeIdArray(o['args'], `${path}.args`),
+        out: asId(o['out'], `${path}.out`),
+      };
+    }
+    case 'keccak256':
+      return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     case 'cellnew':
       return {
         loc,
