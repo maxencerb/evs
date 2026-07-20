@@ -577,3 +577,21 @@ describe('composite-array CALL ARG encode (M4)', () => {
     expect(err.code).toBe('UNSUPPORTED_V0');
   });
 });
+
+// ---------------------------------------------------------------------------
+// validation wiring (regression: validateIr runs once, inside lowerProgram)
+// ---------------------------------------------------------------------------
+
+describe('compile — IR validation wiring', () => {
+  test('structurally invalid IR is still rejected by compile()', () => {
+    const script = sumScript();
+    const corrupted = structuredClone(script.ir); // the script's own ir is frozen
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- corrupting on purpose
+    (corrupted.returns[0] as { value: number }).value = 999; // unknown ValueId
+    const err = captureError(
+      () => compile({ name: script.name, abi: script.abi, ir: corrupted }),
+      Error,
+    );
+    expect(err.message).toContain('invalid ScriptIr');
+  });
+});

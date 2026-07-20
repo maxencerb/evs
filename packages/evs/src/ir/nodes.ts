@@ -12,6 +12,7 @@
 /* oxlint-disable unicorn/no-thenable --
  * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
 
+import { isHexString } from '../core/bytes.js';
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
 import { isEvsType, type ArgType, type EvsType, type Hex } from '../core/types.js';
 
@@ -262,12 +263,6 @@ function asId(v: unknown, path: string): number {
     fail(path, `expected a non-negative integer, got ${describe(v)}`);
   }
   return v;
-}
-
-const HEX_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
-
-function isHexString(v: unknown): v is Hex {
-  return typeof v === 'string' && HEX_RE.test(v);
 }
 
 function asHex(v: unknown, path: string): Hex {

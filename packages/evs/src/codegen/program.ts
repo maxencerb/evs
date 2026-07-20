@@ -21,6 +21,7 @@ import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, type AsmNode, type LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
+import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic, type SourceLoc } from '../core/errors.js';
 import { walkStmts, type FnId, type ScriptIr, type SiteId, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
@@ -71,8 +72,7 @@ export function lowerProgram(
   const segments: { label: LabelId; name: string; bytes: Uint8Array }[] = [];
   const segmentByContent = new Map<string, LabelId>();
   const dataSeg = (bytes: Uint8Array): LabelId => {
-    let key = '';
-    for (const b of bytes) key += b.toString(16).padStart(2, '0');
+    const key = bytesToHex(bytes);
     const hit = segmentByContent.get(key);
     if (hit !== undefined) return hit;
     const name = `data_${segments.length}`;
@@ -139,14 +139,16 @@ export function lowerProgram(
   // When there is no simulate site the dispatcher is byte-identical to the pre-issue-#1 shape.
   if (trampoline !== null) {
     w.op('DUP1');
-    w.pushBytes(selectorBytes(SIMULATE_TRAMPOLINE_SELECTOR), {
+    w.pushBytes(selectorBytes(SIMULATE_TRAMPOLINE_SELECTOR, 'codegen/program'), {
       note: 'simulate trampoline selector',
     });
     w.op('EQ');
     w.pushLabel(trampoline);
     w.op('JUMPI'); // [selector]
   }
-  w.pushBytes(selectorBytes(selector), { note: `selector ${ir.name}(${argTypes.join(',')})` });
+  w.pushBytes(selectorBytes(selector, 'codegen/program'), {
+    note: `selector ${ir.name}(${argTypes.join(',')})`,
+  });
   w.op('EQ');
   w.pushLabel(main);
   w.op('JUMPI');
@@ -204,14 +206,6 @@ export function lowerProgram(
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-function selectorBytes(selector: string): Uint8Array {
-  const body = selector.slice(2);
-  if (!/^[0-9a-fA-F]{8}$/.test(body)) throw internal(`malformed selector ${selector}`);
-  const out = new Uint8Array(4);
-  for (let i = 0; i < 4; i++) out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  return out;
-}
 
 function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, string> {
   const names = new Map<LabelId, string>();

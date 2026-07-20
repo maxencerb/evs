@@ -46,6 +46,14 @@
 import { getAddress } from 'viem';
 
 import { selectorOf } from '../abi/artifact.js';
+import {
+  bytesToBigInt as readPartialWord,
+  bytesToHex,
+  hexToBytes,
+  isHexString,
+  padWordAligned,
+  u256ToBytes as wordToBytes,
+} from '../core/bytes.js';
 import { EvsCompileError, EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
 import {
   abiParamToType,
@@ -396,9 +404,15 @@ class Interp {
   // statement execution
   // -------------------------------------------------------------------------
 
+  /** Child statement path for trace notes — only materialized when tracing (the non-tracing
+   *  hot path would otherwise allocate an array per executed statement). */
+  private childPath(path: readonly number[], i: number): readonly number[] {
+    return this.tracing ? [...path, i] : path;
+  }
+
   private execBlock(stmts: readonly Stmt[], path: readonly number[]): void {
     stmts.forEach((s, i) => {
-      this.execStmt(s, [...path, i]);
+      this.execStmt(s, this.childPath(path, i));
     });
   }
 
@@ -531,19 +545,19 @@ class Interp {
       }
       case 'if': {
         if (this.word(s.cond) !== 0n) {
-          this.execBlock(s.then, [...path, 0]);
+          this.execBlock(s.then, this.childPath(path, 0));
         } else {
-          this.execBlock(s.else, [...path, 1]);
+          this.execBlock(s.else, this.childPath(path, 1));
         }
         return;
       }
       case 'while': {
         for (;;) {
           this.tick(); // per-iteration charge — guards loops with no statements at all
-          this.execBlock(s.header, [...path, 0]);
+          this.execBlock(s.header, this.childPath(path, 0));
           if (this.word(s.cond) === 0n) break;
           try {
-            this.execBlock(s.body, [...path, 1]);
+            this.execBlock(s.body, this.childPath(path, 1));
           } catch (e) {
             if (!(e instanceof LoopSignal)) throw e;
             if (e.ctl === 'break') break;
@@ -1054,8 +1068,7 @@ function encodeTail(type: EvsType, value: Value): Uint8Array {
   }
   // string/bytes payload tail
   if (value.kind === 'bytes') {
-    const padded = new Uint8Array(Math.ceil(value.bytes.length / 32) * 32);
-    padded.set(value.bytes, 0);
+    const padded = padWordAligned(value.bytes);
     return concatBytes([wordToBytes(BigInt(value.bytes.length)), padded]);
   }
   if (value.kind !== 'array') {
@@ -1239,7 +1252,7 @@ function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLo
     if (typeof value !== 'string') {
       throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a string`, { loc });
     }
-    return { kind: 'bytes', bytes: new TextEncoder().encode(value) };
+    return { kind: 'bytes', bytes: TEXT_ENCODER.encode(value) };
   }
   if (type === 'bytes') {
     return { kind: 'bytes', bytes: coerceHexArg(value, null, where, loc) };
@@ -1267,11 +1280,16 @@ function coerceTuple(type: TupleType, value: unknown, where: string, loc: Source
     if (typeof value !== 'object' || value === null) {
       throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a struct object`, { loc });
     }
-    const rec = new Map(Object.entries(value));
     return {
       kind: 'tuple',
       fields: comps.map((c) =>
-        coerceValue(abiParamToType(c), rec.get(c.name), `${where}.${c.name}`, loc),
+        coerceValue(
+          abiParamToType(c),
+          // own properties only (Object.entries semantics) — never the prototype chain
+          Object.hasOwn(value, c.name) ? (Reflect.get(value, c.name) as unknown) : undefined,
+          `${where}.${c.name}`,
+          loc,
+        ),
       ),
     };
   }
@@ -1382,7 +1400,7 @@ function jsValueOf(type: EvsType, value: Value): unknown {
     );
   }
   if (value.kind === 'bytes') {
-    return type === 'string' ? new TextDecoder().decode(value.bytes) : bytesToHex(value.bytes);
+    return type === 'string' ? TEXT_DECODER.decode(value.bytes) : bytesToHex(value.bytes);
   }
   // an array projects to items.map(jsValueOf) — a flat number/bigint list for word elements, a
   // nested array/object list for composite elements (matching abitype/viem decode shape, §12.5).
@@ -1423,18 +1441,8 @@ function jsWord(type: WordType, word: bigint): unknown {
 // bytes / hex / word helpers
 // ---------------------------------------------------------------------------
 
-function isHexString(v: unknown): v is Hex {
-  return typeof v === 'string' && /^0x(?:[0-9a-fA-F]{2})*$/.test(v);
-}
-
-function hexToBytes(hex: Hex): Uint8Array {
-  const body = hex.slice(2);
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 function hexToBytesChecked(value: unknown, what: string, loc: SourceLoc | null): Uint8Array {
   if (!isHexString(value)) {
@@ -1447,30 +1455,8 @@ function hexToBytesChecked(value: unknown, what: string, loc: SourceLoc | null):
   return hexToBytes(value);
 }
 
-function bytesToHex(bytes: Uint8Array): Hex {
-  let s = '';
-  for (const b of bytes) s += b.toString(16).padStart(2, '0');
-  return `0x${s}`;
-}
-
-function wordToBytes(word: bigint): Uint8Array {
-  const out = new Uint8Array(32);
-  let v = word & MASK256;
-  for (let i = 31; i >= 0; i--) {
-    out[i] = Number(v & 0xffn);
-    v >>= 8n;
-  }
-  return out;
-}
-
 function readWord(bytes: Uint8Array, offset: number): bigint {
   return readPartialWord(bytes, offset, 32);
-}
-
-function readPartialWord(bytes: Uint8Array, offset: number, size: number): bigint {
-  let v = 0n;
-  for (let i = 0; i < size; i++) v = (v << 8n) | BigInt(bytes[offset + i] ?? 0);
-  return v;
 }
 
 function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {

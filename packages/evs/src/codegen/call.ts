@@ -31,6 +31,7 @@
 import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
+import { bytesToBigInt, HEX_BYTES_RE, hexToBytes, u256ToBytes } from '../core/bytes.js';
 import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
@@ -46,6 +47,7 @@ import {
   emitDecodeArrayToMem,
   emitDecodeTupleToMem,
   emitEncodeBlock,
+  fmtType,
   emitMemCopy,
   emitNormalizeElemsLoop,
   emitNormalizeWord,
@@ -96,53 +98,29 @@ function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/call: ${message}`);
 }
 
-/** Human-readable rendering of a value type for error messages (tuples → their JSON descriptor). */
-function fmtType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
-}
-
 function isLiteralRef(ref: SlotRef | { literal: ConstData }): ref is { literal: ConstData } {
   return 'literal' in ref;
 }
 
-function hexToBytes(hex: Hex, what: string): Uint8Array {
-  const body = hex.slice(2);
-  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
-    throw internal(`${what}: malformed hex ${hex}`);
-  }
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
+function literalBytes(hex: Hex, what: string): Uint8Array {
+  if (!HEX_BYTES_RE.test(hex)) throw internal(`${what}: malformed hex ${hex}`);
+  return hexToBytes(hex);
 }
 
 function literalWordValue(data: ConstData, what: string): bigint {
   if (data.kind !== 'word') throw internal(`${what}: expected a word literal, got '${data.kind}'`);
-  const bytes = hexToBytes(data.hex, what);
+  const bytes = literalBytes(data.hex, what);
   if (bytes.length !== 32) throw internal(`${what}: word literal must be 32 bytes`);
-  let v = 0n;
-  for (const b of bytes) v = (v << 8n) | BigInt(b);
-  return v;
+  return bytesToBigInt(bytes);
 }
 
 function literalDataBytes(data: ConstData, what: string): Uint8Array {
   if (data.kind !== 'data') throw internal(`${what}: expected a data literal, got '${data.kind}'`);
-  const bytes = hexToBytes(data.hex, what);
+  const bytes = literalBytes(data.hex, what);
   if (bytes.length < 32 || bytes.length % 32 !== 0) {
     throw internal(`${what}: data literal must be a padded [len][payload…] image`);
   }
   return bytes;
-}
-
-function u256Bytes(v: bigint): Uint8Array {
-  const out = new Uint8Array(32);
-  let x = v;
-  for (let i = 31; i >= 0; i--) {
-    out[i] = Number(x & 0xffn);
-    x >>= 8n;
-  }
-  return out;
 }
 
 /**
@@ -151,8 +129,7 @@ function u256Bytes(v: bigint): Uint8Array {
  * the `PUSH4 <sel> PUSH1 0xE0 SHL` selector idiom for free).
  */
 function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string): void {
-  let v = 0n;
-  for (const b of chunk) v = (v << 8n) | BigInt(b);
+  const v = bytesToBigInt(chunk, 0, chunk.length);
   const meta = note === undefined ? {} : { note };
   if (v === 0n) {
     w.push(0, meta);
@@ -204,7 +181,7 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       `call to ${fnAbi.name}: ${inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
     );
   }
-  const selector = hexToBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
+  const selector = literalBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
 
   const layouts: TypeLayout[] = inputs.map((p) => layoutOf(p.type));
@@ -243,7 +220,7 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
     const what = `arg #${i} of ${fnAbi.name}`;
     if (l.kind === 'word') {
       if (isLiteralRef(ref)) {
-        const bytes = hexToBytes(ref.literal.hex, what);
+        const bytes = literalBytes(ref.literal.hex, what);
         if (ref.literal.kind !== 'word' || bytes.length !== 32) {
           throw internal(`${what}: word arg requires a 32-byte word literal`);
         }
@@ -267,7 +244,7 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       if (hasRuntimeDyn) {
         dynParts.push({ headOffset, kind: 'literal', bytes });
       } else {
-        place(headOffset, u256Bytes(BigInt(tailPos - 4)));
+        place(headOffset, u256ToBytes(BigInt(tailPos - 4)));
         place(tailPos, bytes);
         tailPos += bytes.length;
       }
@@ -552,7 +529,7 @@ function emitCalldataBuildTuples(
       `call to ${fnAbi.name}: ${inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
     );
   }
-  const selector = hexToBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
+  const selector = literalBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
 
   // Composite-element array CALL ARGS (`tuple[]` directly, or a tuple arg whose member is a
@@ -620,9 +597,7 @@ function emitCalldataBuildTuples(
   reserveEncodeFrames(w, frames, `reserve ${frames} call-arg array-encode frame(s)`);
 
   // -- selector at buf[0..4): MSTORE(buf, selector << 224) (heads at buf+4 overwrite [4,36)) ----
-  let selWord = 0n;
-  for (const b of selector) selWord = (selWord << 8n) | BigInt(b);
-  selWord <<= 224n;
+  const selWord = bytesToBigInt(selector, 0, 4) << 224n;
   w.push(selWord, { note: `selector ${fnAbi.name}` });
   w.push(FREE_PTR);
   w.op('MLOAD');
@@ -672,6 +647,148 @@ function emitCalldataBuildTuples(
 }
 
 // ---------------------------------------------------------------------------
+// machinery shared by emitStaticCall and emitSimulateCall (§7.2/§7.3). The two emitters
+// legitimately diverge only in the middle — per-output in-place decode vs whole-tuple
+// decode-then-scatter — everything else routes through these helpers.
+// ---------------------------------------------------------------------------
+
+/**
+ * try-mode failure router. Stack on entry: `[bad, …live]`; on exit (continue path):
+ * `[…live]`. Strict mode jumps straight to the `'any'` dfail stub; try mode inverts the
+ * branch, cleans the stack to height 0, and jumps to the (checked, height-0) zero block.
+ * `labelPrefix` keeps the emitters' historical label names (`call_*` / `sim_*`).
+ */
+function makeDecodeFail(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  tryMode: boolean,
+  labelPrefix: string,
+): (liveDepth: number) => void {
+  return (liveDepth: number): void => {
+    if (!tryMode) {
+      w.pushLabel(plan.dfailLabel);
+      w.op('JUMPI');
+      return;
+    }
+    const cont = w.newLabel(`${labelPrefix}_${plan.siteId}_cont`);
+    w.op('ISZERO');
+    w.pushLabel(cont);
+    w.op('JUMPI'); // […live]
+    for (let k = 0; k < liveDepth; k++) w.op('POP');
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP');
+    w.label(cont, liveDepth);
+  };
+}
+
+/**
+ * Builds the call payload at `MLOAD(0x40)`. tuple args AND composite-element array args
+ * (`tuple[]`/`T[][]`/`string[]`, here or inside a tuple member) force the recursive encoder
+ * (no const-folding); word/word-array/string/bytes args stay on the template path. Returns
+ * the template (`null` when the recursive encoder ran) so the caller derives argsSize from
+ * its regime — the tail cursor holds the payload end in the non-static regimes.
+ */
+function emitCalldataFor(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+  dataSeg: (bytes: Uint8Array) => LabelId,
+): CalldataTemplate | null {
+  const { fnAbi } = plan.stmt;
+  const needsRecursiveEncode = fnAbi.inputs.some(
+    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
+  );
+  const template = needsRecursiveEncode ? null : buildTemplate(plan);
+  if (template === null) {
+    emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
+  } else {
+    emitCalldataBuild(w, template, tails, opts, dataSeg);
+  }
+  return template;
+}
+
+/** Pushes a word operand: a literal ref as an immediate PUSH, else `MLOAD` of its slot. */
+function pushWordRef(
+  w: AsmWriter,
+  ref: SlotRef | { literal: ConstData },
+  what: string,
+  note: string,
+): void {
+  if (isLiteralRef(ref)) {
+    w.push(literalWordValue(ref.literal, what), { note });
+  } else {
+    w.push(ref.slot);
+    w.op('MLOAD', { note });
+  }
+}
+
+/** Pushes the gas operand: the site's gas cap when one was given, else `GAS`. */
+function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: string): void {
+  if (gasRef === undefined) {
+    w.op('GAS');
+  } else {
+    pushWordRef(w, gasRef, what, 'gas cap');
+  }
+}
+
+/**
+ * `[buf] → [buf]`: snapshot the ENTIRE returndata at buf (RETURNDATACOPY shape 2) and bump
+ * the free pointer to `buf + ceil32(rds)`. With `storeSnapSlot`, also store the base in
+ * scratch `SNAP_SLOT` — the recursive memory decoders churn the free ptr, so they read
+ * base/end from scratch (a stack-resident base would drift).
+ */
+function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
+  w.returndatacopyAll({ dupDepth: 1 }); // [buf]
+  w.op('RETURNDATASIZE');
+  w.push(31);
+  w.op('ADD');
+  w.push(31);
+  w.op('NOT');
+  w.op('AND'); // [ceil32(rds), buf]
+  w.op('DUP2');
+  w.op('ADD'); // [buf + ceil32(rds), buf]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [buf]
+  if (storeSnapSlot) {
+    w.op('DUP1');
+    w.push(SNAP_SLOT);
+    w.op('MSTORE'); // [buf]   scratch[SNAP_SLOT] = snapshot base
+  }
+}
+
+/**
+ * try-mode epilogue: success flag := 1, jump to join; the site's dfail label opens the
+ * (checked, height-0) zero block — success := 0 and a zero value per output (word outs = 0,
+ * string/bytes/array outs = 0x60, tuple outs = a fresh zero-filled flat block) — which falls
+ * through to the join. `labelPrefix` keeps the emitters' historical label names.
+ */
+function emitTryEpilogue(w: AsmWriter, plan: CallSitePlan, labelPrefix: string): void {
+  const { siteId } = plan;
+  if (plan.successRef !== null) {
+    w.push(1);
+    w.push(plan.successRef.slot);
+    w.op('MSTORE', { note: `success = 1 (site ${siteId})` });
+  }
+  const join = w.newLabel(`${labelPrefix}_join_${siteId}`);
+  w.pushLabel(join);
+  w.op('JUMP');
+
+  w.label(plan.dfailLabel, 0, `zero_${siteId}`);
+  if (plan.successRef !== null) {
+    w.push(0);
+    w.push(plan.successRef.slot);
+    w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
+  }
+  for (const ref of plan.outRefs) {
+    emitZeroValue(w, ref.type); // [zero, …]
+    w.push(ref.slot);
+    w.op('MSTORE');
+  }
+  w.label(join, 0); // fallthrough from the zero block rejoins here
+}
+
+// ---------------------------------------------------------------------------
 // emitStaticCall — architecture §7 / §15.2
 // ---------------------------------------------------------------------------
 
@@ -707,40 +824,10 @@ export function emitStaticCall(
     throw internal(`strict call to ${fnAbi.name} (site ${siteId}): successRef must be null`);
   }
 
-  /**
-   * try-mode failure router. Stack on entry: `[bad, …live]`; on exit (continue path):
-   * `[…live]`. Strict mode jumps straight to the `'any'` dfail stub; try mode inverts the
-   * branch, cleans the stack to height 0, and jumps to the (checked, height-0) zero block.
-   */
-  const emitDecodeFail = (liveDepth: number): void => {
-    if (!tryMode) {
-      w.pushLabel(plan.dfailLabel);
-      w.op('JUMPI');
-      return;
-    }
-    const cont = w.newLabel(`call_${siteId}_cont`);
-    w.op('ISZERO');
-    w.pushLabel(cont);
-    w.op('JUMPI'); // […live]
-    for (let k = 0; k < liveDepth; k++) w.op('POP');
-    w.pushLabel(plan.dfailLabel);
-    w.op('JUMP');
-    w.label(cont, liveDepth);
-  };
+  const emitDecodeFail = makeDecodeFail(w, plan, tryMode, 'call');
 
   // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
-  // tuple args AND composite-element array args (`tuple[]`/`T[][]`/`string[]`, here or inside a
-  // tuple member) force the recursive encoder (no const-folding); argsSize then comes from the
-  // tail cursor like the dynamic regime. Word/word-array/string/bytes args stay on the template path.
-  const needsRecursiveEncode = fnAbi.inputs.some(
-    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
-  );
-  const template = needsRecursiveEncode ? null : buildTemplate(plan);
-  if (template === null) {
-    emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
-  } else {
-    emitCalldataBuild(w, template, tails, opts, dataSeg);
-  }
+  const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
 
   // -- 2. the subcall (issue #1): STATICCALL for `kind: 'static'` (s.read), CALL with value 0 for
   // `kind: 'call'` (s.call — a non-static frame for non-view targets). `kind: 'simulate'` never
@@ -765,22 +852,8 @@ export function emitStaticCall(
   }
   w.op('DUP4'); // [argsOff = buf, argsSize, retOff, retSize, buf]
   if (useCall) w.push(0, { note: 'value 0' }); // [value, argsOff, …] — CALL only
-  if (isLiteralRef(plan.targetRef)) {
-    w.push(literalWordValue(plan.targetRef.literal, `target of ${fnAbi.name}`), {
-      note: 'target',
-    });
-  } else {
-    w.push(plan.targetRef.slot);
-    w.op('MLOAD', { note: 'target' });
-  }
-  if (plan.gasRef === undefined) {
-    w.op('GAS');
-  } else if (isLiteralRef(plan.gasRef)) {
-    w.push(literalWordValue(plan.gasRef.literal, `gas of ${fnAbi.name}`), { note: 'gas cap' });
-  } else {
-    w.push(plan.gasRef.slot);
-    w.op('MLOAD', { note: 'gas cap' });
-  }
+  pushWordRef(w, plan.targetRef, `target of ${fnAbi.name}`, 'target');
+  pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
   w.op(useCall ? 'CALL' : 'STATICCALL', {
     loc: stmt.loc,
     note: `${stmt.mode} ${useCall ? 'call' : 'read'} ${fnAbi.name} (site ${siteId})`,
@@ -817,26 +890,9 @@ export function emitStaticCall(
     w.op('GT'); // [minSize > rds, buf]
     emitDecodeFail(1); // [buf]
 
-    // snapshot ENTIRE returndata at buf (shape 2); freePtr = buf + ceil32(rds)
-    w.returndatacopyAll({ dupDepth: 1 }); // [buf]
-    w.op('RETURNDATASIZE');
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(rds), buf]
-    w.op('DUP2');
-    w.op('ADD'); // [buf + ceil32(rds), buf]
-    w.push(FREE_PTR);
-    w.op('MSTORE'); // [buf]
-
-    // tuple outputs decode through scratch-resident buf (the decoder rebases the free ptr below
-    // it, so a stack-resident buf would drift); SNAP_SLOT also yields the `end = buf + rds` bound.
-    if (hasTupleOut) {
-      w.op('DUP1');
-      w.push(SNAP_SLOT);
-      w.op('MSTORE'); // [buf]   scratch[SNAP_SLOT] = snapshot base
-    }
+    // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
+    // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
+    emitSnapshotReturndata(w, hasTupleOut); // [buf]
 
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
@@ -1043,31 +1099,7 @@ export function emitStaticCall(
   w.op('POP'); // []
 
   // -- 4. try mode: success flag, zero block (checked — rejoins), join --------------------
-  if (tryMode) {
-    if (plan.successRef !== null) {
-      w.push(1);
-      w.push(plan.successRef.slot);
-      w.op('MSTORE', { note: `success = 1 (site ${siteId})` });
-    }
-    const join = w.newLabel(`call_join_${siteId}`);
-    w.pushLabel(join);
-    w.op('JUMP');
-
-    w.label(plan.dfailLabel, 0, `zero_${siteId}`);
-    if (plan.successRef !== null) {
-      w.push(0);
-      w.push(plan.successRef.slot);
-      w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
-    }
-    for (const ref of plan.outRefs) {
-      // word outs = 0; string/bytes/array outs = 0x60 (empty memref); tuple outs = a fresh
-      // zero-filled flat block (its dynamic members point at 0x60, nested tuples recurse).
-      emitZeroValue(w, ref.type); // [zero, …]
-      w.push(ref.slot);
-      w.op('MSTORE');
-    }
-    w.label(join, 0); // fallthrough from the zero block rejoins here
-  }
+  if (tryMode) emitTryEpilogue(w, plan, 'call');
 }
 
 // ---------------------------------------------------------------------------
@@ -1114,34 +1146,10 @@ export function emitSimulateCall(
     throw internal(`strict simulate ${fnAbi.name} (site ${siteId}): successRef must be null`);
   }
 
-  /** Decode-fail router (structural decode failure / missing magic). Mirrors emitStaticCall:
-   *  strict → the `'any'` dfail stub (EvsDecodeError(site)); try → clean stack 0, zero block. */
-  const emitDecodeFail = (liveDepth: number): void => {
-    if (!tryMode) {
-      w.pushLabel(plan.dfailLabel);
-      w.op('JUMPI');
-      return;
-    }
-    const cont = w.newLabel(`sim_${siteId}_cont`);
-    w.op('ISZERO');
-    w.pushLabel(cont);
-    w.op('JUMPI'); // […live]
-    for (let k = 0; k < liveDepth; k++) w.op('POP');
-    w.pushLabel(plan.dfailLabel);
-    w.op('JUMP');
-    w.label(cont, liveDepth);
-  };
+  const emitDecodeFail = makeDecodeFail(w, plan, tryMode, 'sim');
 
   // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
-  const needsRecursiveEncode = fnAbi.inputs.some(
-    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
-  );
-  const template = needsRecursiveEncode ? null : buildTemplate(plan);
-  if (template === null) {
-    emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
-  } else {
-    emitCalldataBuild(w, template, tails, opts, dataSeg);
-  }
+  const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
 
   // -- 2. wrap [trampSel(4)][target(32)][payload(L)] at W = buf + ceil32(L), above the buffer --
   // L = payload length (static-regime const, else tail cursor − buf). The buffer stays at
@@ -1189,12 +1197,7 @@ export function emitSimulateCall(
   w.op('DUP2');
   w.op('MSTORE'); // [W]   mem[W] = sel<<224 (zeros [W+4,W+32))
   // header word 1: MSTORE(W+4, target) (overwrites those zeros with the address)
-  if (isLiteralRef(plan.targetRef)) {
-    w.push(literalWordValue(plan.targetRef.literal, `target of ${fnAbi.name}`), { note: 'target' });
-  } else {
-    w.push(plan.targetRef.slot);
-    w.op('MLOAD', { note: 'target' });
-  } // [target, W]
+  pushWordRef(w, plan.targetRef, `target of ${fnAbi.name}`, 'target'); // [target, W]
   w.op('DUP2');
   w.push(4);
   w.op('ADD'); // [W+4, target, W]
@@ -1220,14 +1223,7 @@ export function emitSimulateCall(
   pushWrapperBase(); // [argsOff=W, argsSize, 0, 0]
   w.push(0, { note: 'value 0' }); // [value=0, …]
   w.op('ADDRESS', { note: 'self (the script holds the trampoline)' }); // [self, …]
-  if (plan.gasRef === undefined) {
-    w.op('GAS');
-  } else if (isLiteralRef(plan.gasRef)) {
-    w.push(literalWordValue(plan.gasRef.literal, `gas of ${fnAbi.name}`), { note: 'gas cap' });
-  } else {
-    w.push(plan.gasRef.slot);
-    w.op('MLOAD', { note: 'gas cap' });
-  }
+  pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
   w.op('CALL', {
     loc: stmt.loc,
     note: `${stmt.mode} simulate ${fnAbi.name} (site ${siteId}) — self-call trampoline`,
@@ -1241,23 +1237,10 @@ export function emitSimulateCall(
   w.op('LT'); // [rds < 64]
   emitDecodeFail(0); // []
 
-  // snapshot the whole returndata at buf; bump free ptr by ceil32(rds); SNAP_SLOT = buf
+  // snapshot the whole returndata (the trampoline revert payload) at buf; SNAP_SLOT = buf
   w.push(FREE_PTR);
   w.op('MLOAD'); // [buf]
-  w.returndatacopyAll({ dupDepth: 1 }); // [buf]   mem[buf..] = trampoline revert payload
-  w.op('RETURNDATASIZE');
-  w.push(31);
-  w.op('ADD');
-  w.push(31);
-  w.op('NOT');
-  w.op('AND'); // [ceil32(rds), buf]
-  w.op('DUP2');
-  w.op('ADD'); // [buf+ceil32(rds), buf]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [buf]
-  w.op('DUP1');
-  w.push(SNAP_SLOT);
-  w.op('MSTORE'); // [buf]   scratch[SNAP_SLOT] = snapshot base (decoders read it stably)
+  emitSnapshotReturndata(w, true); // [buf]
 
   // magic check: MLOAD(buf) === MAGIC, else decode-fail
   w.op('DUP1');
@@ -1336,27 +1319,5 @@ export function emitSimulateCall(
   w.op('POP'); // []
 
   // -- 6. try mode: success flag, zero block (checked — rejoins), join ------------------------
-  if (tryMode) {
-    if (plan.successRef !== null) {
-      w.push(1);
-      w.push(plan.successRef.slot);
-      w.op('MSTORE', { note: `success = 1 (site ${siteId})` });
-    }
-    const join = w.newLabel(`sim_join_${siteId}`);
-    w.pushLabel(join);
-    w.op('JUMP');
-
-    w.label(plan.dfailLabel, 0, `zero_${siteId}`);
-    if (plan.successRef !== null) {
-      w.push(0);
-      w.push(plan.successRef.slot);
-      w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
-    }
-    for (const ref of plan.outRefs) {
-      emitZeroValue(w, ref.type);
-      w.push(ref.slot);
-      w.op('MSTORE');
-    }
-    w.label(join, 0);
-  }
+  if (tryMode) emitTryEpilogue(w, plan, 'sim');
 }

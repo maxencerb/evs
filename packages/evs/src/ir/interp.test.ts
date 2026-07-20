@@ -1923,3 +1923,74 @@ describe('width sweep — canonical results across classes', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// regressions — trace paths through loops, host tuple-arg coercion semantics
+// ---------------------------------------------------------------------------
+
+describe('regressions', () => {
+  test('while trace paths: header re-traced per iteration at [..path, 0], body at [..path, 1]', () => {
+    // cell starts at 1; header: cur = cellget, cond = (cur == 1); body: cellset 0.
+    // Runs the body exactly once, re-executes the header, exits.
+    const script = ir({
+      name: 'looped',
+      values: [vi('uint256'), vi('uint256'), vi('uint256'), vi('bool'), vi('uint256')],
+      cells: [{ type: 'uint256', loc: null }],
+      body: [
+        mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint256' }),
+        mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
+        mk({ k: 'cellnew', cell: 0, init: 0 }),
+        mk({
+          k: 'while',
+          header: [
+            mk({ k: 'cellget', cell: 0, out: 2 }),
+            mk({ k: 'bin', op: 'eq', a: 2, b: 0, out: 3 }),
+          ],
+          cond: 3,
+          body: [mk({ k: 'cellset', cell: 0, value: 1 })],
+        }),
+        mk({ k: 'cellget', cell: 0, out: 4 }),
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 4 }],
+    });
+    const plain = interpret(script, [], deadChain);
+    expect(retOf(plain).r).toBe(0n);
+    expect(plain.trace).toBeUndefined();
+    const traced = interpret(script, [], deadChain, { trace: true });
+    const paths = (traced.trace ?? []).map((e) => e.stmtPath.join('.'));
+    expect(paths).toEqual([
+      '0',
+      '1',
+      '2',
+      '3',
+      '3.0.0',
+      '3.0.1', // header, iteration 1 (cond true)
+      '3.1.0', //          body,   iteration 1
+      '3.0.0',
+      '3.0.1', // header, iteration 2 (cond false → exit)
+      '4',
+    ]);
+  });
+
+  test('struct tuple args coerce from OWN properties only (no prototype-chain reads)', () => {
+    const tupleT = {
+      type: 'tuple',
+      components: [{ name: 'toString', type: 'uint256' }],
+    } as const;
+    const script = ir({
+      name: 'tup',
+      args: [{ name: 'v', type: tupleT }],
+      values: [vi(tupleT, 'v')],
+      returns: [{ name: 'r', type: tupleT, value: 0 }],
+    });
+    // own property named like an Object.prototype member works fine
+    const ok = interpret(script, [{ toString: 7n }], deadChain);
+    expect(retOf(ok).r).toEqual({ toString: 7n });
+    // inherited property must NOT be read: `{}` inherits Function toString, Object.create
+    // carries the value only on the prototype — both are missing-field errors
+    expect(() => interpret(script, [{}], deadChain)).toThrowError(EvsTypeError);
+    expect(() =>
+      interpret(script, [Object.setPrototypeOf({}, { toString: 7n })], deadChain),
+    ).toThrowError(EvsTypeError);
+  });
+});
