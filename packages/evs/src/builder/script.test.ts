@@ -1503,3 +1503,39 @@ describe('issue #5 ergonomics', () => {
     });
   });
 });
+
+// ---------------------------------------------------------------------------
+// try verbs — result wrapper shape (facade regression: the six verbs are table-built)
+// ---------------------------------------------------------------------------
+
+describe('calling-verb facade shape', () => {
+  const writeAbi = [
+    {
+      type: 'function',
+      name: 'poke2',
+      stateMutability: 'nonpayable',
+      inputs: [],
+      outputs: [{ name: '', type: 'uint8' }],
+    },
+  ] as const satisfies Abi;
+
+  test('tryRead/tryCall/trySimulate return a frozen { success, value } wrapper', () => {
+    const wrappers: object[] = [];
+    evscript(
+      { name: 'shape', args: [t.address] },
+      (s, pool) => {
+        const a = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
+        const b = s.tryCall({ address: pool, abi: writeAbi, functionName: 'poke2' });
+        const c = s.trySimulate({ address: pool, abi: writeAbi, functionName: 'poke2' });
+        wrappers.push(a, b, c);
+        return s.return({ a: a.value, b: b.value, c: c.value });
+      },
+      NO_LOC,
+    );
+    expect(wrappers).toHaveLength(3);
+    for (const w of wrappers) {
+      expect(Object.isFrozen(w)).toBe(true);
+      expect(Object.keys(w).toSorted()).toEqual(['success', 'value']);
+    }
+  });
+});

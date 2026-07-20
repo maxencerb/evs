@@ -20,6 +20,7 @@ import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
 import { lowerProgram } from './codegen/program.js';
+import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import {
   EvsCompileError,
   EvsTypeError,
@@ -28,7 +29,6 @@ import {
 } from './core/errors.js';
 import type { ArgSpec, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
-import { validateIr } from './ir/validate.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -143,8 +143,8 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   }
   const resolved = resolveOptions(options);
   const ir = script.ir;
-  validateIr(ir);
 
+  // lowerProgram runs validateIr as its first step — no separate validation pass here.
   const lowered = lowerProgram(ir, {
     evmVersion: resolved.evmVersion,
     locations: resolved.locations,
@@ -324,7 +324,7 @@ const CALLEE_FORGERY_HEDGE =
   'selector verbatim (bubbled byte-exactly), in which case the failure originated off-script';
 
 function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanation {
-  const bytes = hexToBytes(data, 'explainRevert');
+  const bytes = decodeHex(data, 'explainRevert');
   const raw = bytesToHex(bytes);
 
   if (bytes.length === 0) {
@@ -347,7 +347,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
   const selector = bytesToHex(bytes.subarray(0, 4));
 
   if (selector === PANIC_SELECTOR && bytes.length === 36) {
-    const code = readWord(bytes, 4);
+    const code = bytesToBigInt(bytes, 4);
     const codeHex = `0x${code.toString(16).padStart(2, '0')}`;
     const meaning = PANIC_MEANINGS[codeHex] ?? 'unknown panic code';
     const candidateSites = map.sites
@@ -369,7 +369,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
   }
 
   if (selector === DECODE_ERROR_SELECTOR && bytes.length === 36) {
-    const id = readWord(bytes, 4);
+    const id = bytesToBigInt(bytes, 4);
     const idNum = id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : -1;
     const site = idNum >= 0 ? siteById(map, idNum) : undefined;
     const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
@@ -438,11 +438,11 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
 function tryDecodeErrorString(bytes: Uint8Array): string | null {
   // [selector:4][offset:32][len:32][utf8 payload, zero-padded]
   if (bytes.length < 4 + 64) return null;
-  const offset = readWord(bytes, 4);
+  const offset = bytesToBigInt(bytes, 4);
   if (offset > BigInt(bytes.length)) return null;
   const lenAt = 4 + Number(offset);
   if (lenAt + 32 > bytes.length) return null;
-  const len = readWord(bytes, lenAt);
+  const len = bytesToBigInt(bytes, lenAt);
   if (len > BigInt(bytes.length)) return null;
   const start = lenAt + 32;
   const end = start + Number(len);
@@ -458,33 +458,12 @@ function tryDecodeErrorString(bytes: Uint8Array): string | null {
 // hex helpers (compile.ts must not depend on viem at runtime)
 // ---------------------------------------------------------------------------
 
-const HEX_BYTES_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
-
-function hexToBytes(hex: Hex, where: string): Uint8Array {
-  if (typeof hex !== 'string' || !HEX_BYTES_RE.test(hex)) {
+function decodeHex(hex: Hex, where: string): Uint8Array {
+  if (!isHexString(hex)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${where}: expected 0x-prefixed even-length hex data, got ${JSON.stringify(hex)}`,
     );
   }
-  const body = hex.slice(2);
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
-
-function bytesToHex(bytes: Uint8Array): Hex {
-  let s = '';
-  for (const b of bytes) s += b.toString(16).padStart(2, '0');
-  return `0x${s}`;
-}
-
-function readWord(bytes: Uint8Array, at: number): bigint {
-  let v = 0n;
-  for (let i = 0; i < 32; i++) {
-    v = (v << 8n) | BigInt(bytes[at + i] ?? 0);
-  }
-  return v;
+  return hexToBytes(hex);
 }

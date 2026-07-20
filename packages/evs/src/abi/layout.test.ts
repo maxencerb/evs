@@ -3,8 +3,8 @@
 import { describe, expect, test } from 'vitest';
 
 import { EvsTypeError } from '../core/errors.js';
-import type { WordType } from '../core/types.js';
-import { headBytes, isDynamic, layoutOf, type TypeLayout } from './layout.js';
+import type { TupleType, WordType } from '../core/types.js';
+import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from './layout.js';
 
 // ---------------------------------------------------------------------------
 // the full v0 vocabulary, built independently of the implementation
@@ -217,5 +217,45 @@ describe('headBytes', () => {
     ).toBe(32);
     // genuinely-unsupported shapes still throw
     expect(() => headBytes([{ name: 'a', type: 'uint256[2]' }])).toThrowError(EvsTypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// memoization (regression: layouts are cached per type and treated as immutable)
+// ---------------------------------------------------------------------------
+
+describe('layout memoization', () => {
+  test('layoutOf returns one cached object per type string', () => {
+    expect(layoutOf('uint256')).toBe(layoutOf('uint256'));
+    expect(layoutOf('uint8[]')).toBe(layoutOf('uint8[]'));
+    expect(layoutOf('string')).toBe(layoutOf('string'));
+  });
+
+  test('layoutOfType caches per tuple descriptor; equal descriptors stay layout-equal', () => {
+    const a: TupleType = {
+      type: 'tuple',
+      components: [
+        { name: 'x', type: 'uint256' },
+        { name: 's', type: 'string' },
+      ],
+    };
+    const b: TupleType = { type: 'tuple', components: [...a.components] };
+    expect(layoutOfType(a)).toBe(layoutOfType(a)); // same descriptor → cached object
+    expect(layoutOfType(b)).not.toBe(layoutOfType(a)); // distinct descriptors…
+    expect(layoutOfType(b)).toEqual(layoutOfType(a)); // …but identical layouts
+    expect(layoutOfType(a)).toEqual({
+      kind: 'tuple',
+      abi: 'tuple',
+      dynamic: true,
+      components: [layoutOf('uint256'), layoutOf('string')],
+    });
+  });
+
+  test('unsupported types still throw (failures are not cached as layouts)', () => {
+    const arr2: TupleType = { type: 'tuple[][]', components: [{ name: 'x', type: 'uint256' }] };
+    expect(() => layoutOfType(arr2)).toThrowError(EvsTypeError);
+    expect(() => layoutOfType(arr2)).toThrowError(EvsTypeError); // idempotent across calls
+    expect(() => layoutOf('uint256[2]')).toThrowError(EvsTypeError);
+    expect(() => layoutOf('uint256[2]')).toThrowError(EvsTypeError);
   });
 });

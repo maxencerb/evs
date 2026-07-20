@@ -768,9 +768,7 @@ export class Recorder {
     // a tuple ARRAY) arg yields a Tuple handle, a composite array / scalar an Expr.
     const handles: (Expr | object)[] = args.map((a) => {
       const id = this.newValue(a.type, scriptLoc, `args.${a.name}`);
-      return isTupleType(a.type) && !isArrayValueType(a.type)
-        ? makeTuple(this, id, a.type)
-        : makeExpr(this, id);
+      return this.valueHandle(id, a.type);
     });
     this.argHandleList = Object.freeze(handles);
   }
@@ -779,6 +777,13 @@ export class Recorder {
 
   argHandles(): readonly (Expr | object)[] {
     return this.argHandleList;
+  }
+
+  /** Wraps a ValueId in its handle: a tuple (NOT a tuple ARRAY) → a Tuple handle; else an Expr. */
+  private valueHandle(id: ValueId, type: EvsType): Expr | object {
+    return isTupleType(type) && !isArrayValueType(type)
+      ? makeTuple(this, id, type)
+      : makeExpr(this, id);
   }
 
   typeOfValue(id: ValueId): EvsType {
@@ -1007,14 +1012,21 @@ export class Recorder {
     return { hex, logical: logicalFromCanonical(type, hex) };
   }
 
-  /** Interns a canonical word const (dedup per (type, hex) across the open scope stack). */
-  private wordConst(type: WordType, logical: bigint, loc: SourceLoc | null, hex?: Hex): ValueId {
-    const h = hex ?? canonicalHex(type, logical);
-    const key = `w:${type}:${h}`;
+  /** Finds an interned const by key across the open scope stack (top-down). */
+  private lookupConst(key: string): ValueId | undefined {
     for (let i = this.stack.length - 1; i >= 0; i--) {
       const found = this.stack[i]?.consts.get(key);
       if (found !== undefined) return found;
     }
+    return undefined;
+  }
+
+  /** Interns a canonical word const (dedup per (type, hex) across the open scope stack). */
+  private wordConst(type: WordType, logical: bigint, loc: SourceLoc | null, hex?: Hex): ValueId {
+    const h = hex ?? canonicalHex(type, logical);
+    const key = `w:${type}:${h}`;
+    const found = this.lookupConst(key);
+    if (found !== undefined) return found;
     const id = this.newValue(type, loc);
     this.appendStmt({ k: 'const', out: id, data: { kind: 'word', hex: h }, type }, loc);
     this.litValues.set(id, logical);
@@ -1026,10 +1038,8 @@ export class Recorder {
   private dataConst(type: DynType | ArrayType, value: unknown, loc: SourceLoc | null): ValueId {
     const hex = encodeLiteralData(type, value);
     const key = `d:${type}:${hex}`;
-    for (let i = this.stack.length - 1; i >= 0; i--) {
-      const found = this.stack[i]?.consts.get(key);
-      if (found !== undefined) return found;
-    }
+    const found = this.lookupConst(key);
+    if (found !== undefined) return found;
     const id = this.newValue(type, loc);
     this.appendStmt({ k: 'const', out: id, data: { kind: 'data', hex }, type }, loc);
     this.top().consts.set(key, id);
@@ -1221,6 +1231,17 @@ export class Recorder {
     return ai.id;
   }
 
+  /** The ValueId behind a bare {@link Tuple} / {@link MutArray} handle (owner + visibility
+   *  checked), or null when `v` is neither. */
+  private bareHandleId(v: unknown, what: string, loc: SourceLoc | null): ValueId | null {
+    if (typeof v !== 'object' || v === null) return null;
+    const ti = TUPLE_INTERNALS.get(v);
+    if (ti !== undefined) return this.tupleHandleId(ti, what, loc);
+    const ai = ARR_INTERNALS.get(v);
+    if (ai !== undefined) return this.arrHandleId(ai, what, loc);
+    return null;
+  }
+
   // -- tuples / structs ---------------------------------------------------------------------
 
   /** `s.tuple(type, init?)`: allocate a flat block, MSTORE provided members (omitted/literal-0 →
@@ -1337,9 +1358,7 @@ export class Recorder {
     const out = this.newValue(memberType, loc);
     this.appendStmt({ k: 'field', tuple: tupleId, index, out }, loc);
     // a tuple (NOT tuple-array) member → a Tuple handle; a composite array / scalar member → an Expr.
-    return isTupleType(memberType) && !isArrayValueType(memberType)
-      ? makeTuple(this, out, memberType)
-      : makeExpr(this, out);
+    return this.valueHandle(out, memberType);
   }
 
   /** `Field.set(v)`: write a member — `tupleset` stmt (`v` coerced to the member type). */
@@ -1523,9 +1542,7 @@ export class Recorder {
     const out = this.newValue(elem, loc);
     this.appendStmt({ k: 'index', arr: arrId, i: iId, out }, loc);
     // a `tuple[]` element → a Tuple handle (same internals as a decoded tuple); else an Expr.
-    return isTupleType(elem) && !isArrayValueType(elem)
-      ? makeTuple(this, out, elem)
-      : makeExpr(this, out);
+    return this.valueHandle(out, elem);
   }
 
   arrExpr(arrId: ValueId, what: string): Expr {
@@ -1864,7 +1881,7 @@ export class Recorder {
     // a composite element yields its handle: a `tuple[]` element → a `Tuple` handle bound to the
     // `index` out ValueId (same `TUPLE_INTERNALS` as a decoded tuple); a `T[][]`/`string[]` element
     // → an Expr (whose `.at`/`.length` keep working recursively); a word element → an Expr.
-    return isTupleType(elem) ? makeTuple(this, out, elem) : makeExpr(this, out);
+    return this.valueHandle(out, elem);
   }
 
   // -- control flow ---------------------------------------------------------------------
@@ -2248,8 +2265,7 @@ export class Recorder {
     // unwrap a tuple (NOT a tuple ARRAY) out ValueId to a Tuple handle; a composite array
     // (`tuple[]`/`T[][]`/`string[]`) or any scalar/word-array → an Expr (its `.at(i)`/`.length()`
     // yield the element/length handles — a `tuple[]` element `.at(i)` is a `Tuple` handle).
-    const handleFor = (id: ValueId, oty: EvsType): Expr | object =>
-      isTupleType(oty) && !isArrayValueType(oty) ? makeTuple(this, id, oty) : makeExpr(this, id);
+    const handleFor = (id: ValueId, oty: EvsType): Expr | object => this.valueHandle(id, oty);
     let value: unknown;
     if (wantStruct) {
       // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
@@ -2427,12 +2443,8 @@ export class Recorder {
     // visibility checks. The fncall result is a single pointer word (architecture §5/§9), so the
     // IR/codegen/validate layers carry it unchanged. classify() (below) still rejects these handles
     // on the arithmetic paths with the "use .expr()" message.
-    if (typeof v === 'object' && v !== null) {
-      const ti = TUPLE_INTERNALS.get(v);
-      if (ti !== undefined) return this.tupleHandleId(ti, what, loc);
-      const ai = ARR_INTERNALS.get(v);
-      if (ai !== undefined) return this.arrHandleId(ai, what, loc);
-    }
+    const bare = this.bareHandleId(v, what, loc);
+    if (bare !== null) return bare;
     const c = this.classify(v, what, loc);
     if (c.kind !== 'expr') {
       throw new EvsTypeError(
@@ -2483,12 +2495,7 @@ export class Recorder {
     // wrap each result by its recorded type (issue #5 ask #1): a plain `tuple` result → a Tuple
     // handle (so named field access works at the call site, like `s.call`); a composite array
     // (`tuple[]`) or any scalar/word-array → an Expr. Mirrors `subcall`'s `handleFor`.
-    const wrap = (id: ValueId): Expr | object => {
-      const oty = this.typeOfValue(id);
-      return isTupleType(oty) && !isArrayValueType(oty)
-        ? makeTuple(this, id, oty)
-        : makeExpr(this, id);
-    };
+    const wrap = (id: ValueId): Expr | object => this.valueHandle(id, this.typeOfValue(id));
     const first = outIds[0];
     if (shape === 'single' && first !== undefined) return wrap(first);
     return Object.freeze(outIds.map((id) => wrap(id)));
@@ -2541,19 +2548,10 @@ export class Recorder {
       // the memref, so we return its ValueId verbatim — byte-identical to `handle.expr()`.
       // classify() (below) still rejects these handles on the arithmetic paths with the targeted
       // "use .expr()" message (issue #5 asks #5 / #2's bare-Tuple precedent).
-      if (typeof v === 'object' && v !== null) {
-        const ti = TUPLE_INTERNALS.get(v);
-        if (ti !== undefined) {
-          const id = this.tupleHandleId(ti, `s.return() value "${key}"`, loc);
-          returns.push({ name: key, type: this.typeOfValue(id), value: id });
-          continue;
-        }
-        const ai = ARR_INTERNALS.get(v);
-        if (ai !== undefined) {
-          const id = this.arrHandleId(ai, `s.return() value "${key}"`, loc);
-          returns.push({ name: key, type: this.typeOfValue(id), value: id });
-          continue;
-        }
+      const bare = this.bareHandleId(v, `s.return() value "${key}"`, loc);
+      if (bare !== null) {
+        returns.push({ name: key, type: this.typeOfValue(bare), value: bare });
+        continue;
       }
       const c = this.classify(v, `s.return() value "${key}"`, loc);
       if (c.kind !== 'expr') {

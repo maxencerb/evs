@@ -29,6 +29,7 @@
 
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
+import { HEX_BYTES_RE, hexToBytes, padWordAligned } from '../core/bytes.js';
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import {
   bitsOf,
@@ -47,7 +48,7 @@ import {
   type Stmt,
   type ValueId,
 } from '../ir/nodes.js';
-import { emitNormalizeWord, wordNeedsNormalize, type SharedTails } from './abi.js';
+import { emitNormalizeWord, fmtType, wordNeedsNormalize, type SharedTails } from './abi.js';
 import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
 
@@ -153,12 +154,6 @@ export function emitFnSubroutines(w: AsmWriter, ctx: LowerCtx): void {
 
 function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/lower: ${message}`);
-}
-
-/** Renders a value type for a debug note / error message (tuples → their JSON descriptor). The
- *  ops below operate on word types, but {@link EvsType} now also admits tuple objects. */
-function fmtType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
 interface NodeMeta {
@@ -355,9 +350,8 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   // dynamic literal: data segment + CODECOPY into a fresh allocation (architecture §3/§10).
   // The image is the memref `[len:32][payload…]`, zero-padded to a word boundary so the
   // trailing partial word lands clean (memory above the free pointer is not zero — §5).
-  const bytes = hexToBytes(s.data.hex, `const #${s.out}`);
-  const padded = new Uint8Array(Math.ceil(bytes.length / 32) * 32);
-  padded.set(bytes);
+  const bytes = literalBytes(s.data.hex, `const #${s.out}`);
+  const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
   w.push(0x40, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
   w.op('MLOAD'); // [ptr]
@@ -373,16 +367,9 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   storeOut(w, ctx, s.out); // []
 }
 
-function hexToBytes(hex: string, what: string): Uint8Array {
-  const body = hex.slice(2);
-  if (body.length % 2 !== 0 || !/^[0-9a-fA-F]*$/.test(body)) {
-    throw internal(`${what}: malformed hex ${hex}`);
-  }
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
+function literalBytes(hex: string, what: string): Uint8Array {
+  if (!HEX_BYTES_RE.test(hex)) throw internal(`${what}: malformed hex ${hex}`);
+  return hexToBytes(hex);
 }
 
 // ---------------------------------------------------------------------------

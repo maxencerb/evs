@@ -24,7 +24,7 @@
 import { selectorOf } from '../abi/artifact.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError } from '../core/errors.js';
+import { selectorBytes } from '../core/bytes.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
 import type { SharedTails } from './abi.js';
@@ -38,21 +38,9 @@ const PANIC_SELECTOR: Hex = '0x4e487b71';
 const DECODE_ERROR_SELECTOR: Hex = selectorOf('EvsDecodeError', ['uint256']);
 const INVALID_CALLDATA_SELECTOR: Hex = selectorOf('EvsInvalidCalldata', []);
 
-function selectorBytes(hex: Hex): Uint8Array {
-  const body = hex.slice(2);
-  if (body.length !== 8 || !/^[0-9a-fA-F]{8}$/.test(body)) {
-    throw new EvsInternalError('INTERNAL', `codegen/tails: malformed selector ${hex}`);
-  }
-  const out = new Uint8Array(4);
-  for (let i = 0; i < 4; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
-
 /** `PUSH4 <sel> PUSH1 0xE0 SHL PUSH0 MSTORE` — selector word into mem[0..32). Net stack 0. */
 function emitSelectorStore(w: AsmWriter, selector: Hex): void {
-  w.pushBytes(selectorBytes(selector), { note: `selector ${selector}` });
+  w.pushBytes(selectorBytes(selector, 'codegen/tails'), { note: `selector ${selector}` });
   w.push(0xe0);
   w.op('SHL'); // [selWord, …]
   w.push(0);

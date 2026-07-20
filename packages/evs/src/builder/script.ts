@@ -781,6 +781,15 @@ export interface ScriptBuilder {
 // ---------------------------------------------------------------------------
 
 function makeBuilder(r: Recorder): ScriptBuilder {
+  // the six calling verbs (issue #1) — all route through the one recorder `subcall`, differing
+  // in the call kind (frame/state semantics) and, for the try variants, the success/value wrap.
+  type CallKind = 'static' | 'call' | 'simulate';
+  const strictVerb = (kind: CallKind) => (p: unknown) => r.subcall(p, 'strict', kind).value;
+  const tryVerb = (kind: CallKind) => (p: unknown) => {
+    const res = r.subcall(p, 'try', kind);
+    return Object.freeze({ success: res.success, value: res.value });
+  };
+
   const builder = {
     lit: (type: unknown, value: unknown) => r.lit(type, value),
     let: (a: unknown, b?: unknown) => r.letCell(a, b),
@@ -820,23 +829,12 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     },
     select: (cond: unknown, a: unknown, b: unknown) => r.select(cond, a, b),
 
-    // the six calling verbs (issue #1) — all route through the one recorder `subcall`, differing
-    // in the call kind (frame/state semantics) and, for the try variants, the success/value wrap.
-    read: (p: unknown) => r.subcall(p, 'strict', 'static').value,
-    tryRead: (p: unknown) => {
-      const res = r.subcall(p, 'try', 'static');
-      return Object.freeze({ success: res.success, value: res.value });
-    },
-    call: (p: unknown) => r.subcall(p, 'strict', 'call').value,
-    tryCall: (p: unknown) => {
-      const res = r.subcall(p, 'try', 'call');
-      return Object.freeze({ success: res.success, value: res.value });
-    },
-    simulate: (p: unknown) => r.subcall(p, 'strict', 'simulate').value,
-    trySimulate: (p: unknown) => {
-      const res = r.subcall(p, 'try', 'simulate');
-      return Object.freeze({ success: res.success, value: res.value });
-    },
+    read: strictVerb('static'),
+    tryRead: tryVerb('static'),
+    call: strictVerb('call'),
+    tryCall: tryVerb('call'),
+    simulate: strictVerb('simulate'),
+    trySimulate: tryVerb('simulate'),
 
     fn: (name: unknown, params: unknown, body: unknown) => r.defineFn(name, params, body),
 

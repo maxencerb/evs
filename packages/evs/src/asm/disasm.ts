@@ -9,6 +9,7 @@
  * `UNKNOWN_0x<byte>` with a 1-byte `raw`, keeping the byte-coverage invariant.
  */
 
+import { bytesToHex, HEX_BYTES_RE, hexToBytes } from '../core/bytes.js';
 import { EvsTypeError, type SourceLoc } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import { OPS } from './ops.js';
@@ -41,30 +42,15 @@ const MNEMONIC_BY_CODE: ReadonlyMap<number, string> = (() => {
   return map;
 })();
 
-const HEX_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
-
 function toBytes(input: Hex | Uint8Array): Uint8Array {
   if (input instanceof Uint8Array) return input;
-  if (!HEX_RE.test(input)) {
+  if (!HEX_BYTES_RE.test(input)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `disassemble: expected 0x-prefixed even-length hex bytecode, got ${JSON.stringify(input.length > 80 ? `${input.slice(0, 80)}…` : input)}`,
     );
   }
-  const body = input.slice(2);
-  const out = new Uint8Array(body.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(body.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
-
-function sliceHex(bytes: Uint8Array, start: number, end: number): Hex {
-  let s = '';
-  for (let i = start; i < end; i++) {
-    s += (bytes[i] ?? 0).toString(16).padStart(2, '0');
-  }
-  return `0x${s}`;
+  return hexToBytes(input);
 }
 
 function formatLoc(loc: SourceLoc): string {
@@ -105,7 +91,7 @@ export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): 
     if (code >= PUSH1_CODE && code <= PUSH32_CODE) {
       const width = code - PUSH1_CODE + 1;
       const immEnd = Math.min(pc + 1 + width, bytes.length); // tolerate truncated trailing push
-      pushValue = sliceHex(bytes, pc + 1, immEnd);
+      pushValue = bytesToHex(bytes, pc + 1, immEnd);
       size = immEnd - pc;
       if (immEnd - (pc + 1) <= 6) {
         // small immediates may be label targets (PUSH2 fixups in practice)
@@ -120,7 +106,7 @@ export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): 
     const known = MNEMONIC_BY_CODE.get(code);
     const line: DisasmLine = {
       pc,
-      raw: sliceHex(bytes, pc, pc + size),
+      raw: bytesToHex(bytes, pc, pc + size),
       mnemonic: known ?? `UNKNOWN_0x${code.toString(16).padStart(2, '0')}`,
     };
     if (pushValue !== undefined) line.pushValue = pushValue;

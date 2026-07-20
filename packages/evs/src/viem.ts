@@ -27,6 +27,7 @@ import type { Abi, Address } from 'abitype';
 import type { StateOverride } from 'viem';
 
 import type { EvmVersion } from './asm/ops.js';
+import { HEX_BYTES_RE } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
 import type { Hex } from './core/types.js';
 
@@ -47,8 +48,6 @@ function assertEvmVersion(evmVersion: string): void {
     );
   }
 }
-
-const HEX_BYTES_RE = /^0x(?:[0-9a-fA-F]{2})*$/;
 
 function runtimeByteLength(runtime: Hex, where: string): number {
   if (typeof runtime !== 'string' || !HEX_BYTES_RE.test(runtime)) {

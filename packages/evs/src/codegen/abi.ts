@@ -106,6 +106,12 @@ function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);
 }
 
+/** Human-readable rendering of a value type for error messages / debug notes (tuples → their
+ *  JSON descriptor). Shared across the codegen emitters. */
+export function fmtType(t: EvsType): string {
+  return typeof t === 'string' ? t : JSON.stringify(t);
+}
+
 /**
  * @internal Shared by `codegen/call.ts`. True when decoding `l` needs a memory snapshot of the
  * source bytes: a tuple, or a composite-element array (`tuple[]`/`T[][]`/`string[]`) — both decode
@@ -356,8 +362,9 @@ function emitOffsetBase(w: AsmWriter, pushBase: PushBase, ho: number): void {
   }
 }
 
-/** DST base of a dynamic inner tuple: `parentBase + MLOAD(parentBase + ho)` (the offset the
- *  parent head already stored points at the sub-block). */
+/** Base of a dynamic inner tuple: `parentBase + MLOAD(parentBase + ho)` (the offset word in the
+ *  parent head points at the sub-block) — the DST base on the encode path, and a {@link PushBase}
+ *  thunk for nested decodes. */
 function emitSubTupleBase(w: AsmWriter, pushBase: PushBase, ho: number): void {
   pushBase(); // [base]
   w.op('DUP1'); // [base, base]
@@ -906,7 +913,7 @@ export function emitDecodeTupleToMem(
         () => {
           // base of the sub-tuple = ptr, which is on the stack just below subFlat work;
           // re-derive instead of holding it: it is `parentBase + MLOAD(parentBase+ho)`.
-          emitSubTupleBaseFromOffset(w, pushBase, ho);
+          emitSubTupleBase(w, pushBase, ho);
         },
         pushEnd,
         fail,
@@ -931,7 +938,7 @@ export function emitDecodeTupleToMem(
       emitDecodeArrayToMem(
         w,
         layout.elem,
-        () => emitSubTupleBaseFromOffset(w, pushBase, ho),
+        () => emitSubTupleBase(w, pushBase, ho),
         pushEnd,
         fail,
         belowFlat + 1,
@@ -993,19 +1000,6 @@ export function emitDecodeTupleToMem(
     } // [flat+32j, ptr, flat, …]
     w.op('MSTORE'); // [flat, …]
   });
-}
-
-/** Re-derives a dynamic sub-tuple's base = `parentBase + MLOAD(parentBase + ho)` (the offset word
- *  the parent stored), for use as a {@link PushBase} thunk inside a nested decode. */
-function emitSubTupleBaseFromOffset(w: AsmWriter, pushBase: PushBase, ho: number): void {
-  pushBase(); // [base]
-  w.op('DUP1'); // [base, base]
-  if (ho !== 0) {
-    w.push(ho);
-    w.op('ADD');
-  } // [base+ho, base]
-  w.op('MLOAD'); // [off, base]
-  w.op('ADD'); // [subBase]
 }
 
 /**
@@ -1337,6 +1331,20 @@ export function emitCalldataDecode(
     w.op('JUMPI');
   };
 
+  // snapshot-relative source thunks for the recursive decoders (tuple / composite-array args)
+  const pushArgsBase = (): void => {
+    w.push(snapSlot);
+    w.op('MLOAD'); // [snap]
+    w.push(4);
+    w.op('ADD'); // [snap+4]  (args region start in the snapshot)
+  };
+  const pushEnd = (): void => {
+    w.push(snapSlot);
+    w.op('MLOAD');
+    w.op('CALLDATASIZE');
+    w.op('ADD'); // [snap + cds]  (one past last valid source byte)
+  };
+
   args.forEach((ref, i) => {
     const layout = layoutOfType(ref.type);
     const headOff = 4 + (headOffs[i] ?? 32 * i);
@@ -1354,18 +1362,6 @@ export function emitCalldataDecode(
       // tuple arg: decode from the memory snapshot; offsets are relative to the args region
       // (snapshot byte snap+4). A static tuple inlines at snap+4+headOff; a dynamic tuple's
       // block is at snap+4+off where off = MLOAD(snap+4+headOff).
-      const pushArgsBase = (): void => {
-        w.push(snapSlot);
-        w.op('MLOAD'); // [snap]
-        w.push(4);
-        w.op('ADD'); // [snap+4]  (args region start in the snapshot)
-      };
-      const pushEnd = (): void => {
-        w.push(snapSlot);
-        w.op('MLOAD');
-        w.op('CALLDATASIZE');
-        w.op('ADD'); // [snap + cds]  (one past last valid source byte)
-      };
       const pushTupleBase: PushBase = layout.dynamic
         ? () => {
             // base = (snap+4) + MLOAD(snap+4+headOff_within_region)
@@ -1419,18 +1415,6 @@ export function emitCalldataDecode(
       // composite-element array arg (`tuple[]`/`T[][]`/`string[]`): decode from the snapshot. The
       // head word at snap+4+headOff is an offset relative to the args region (snap+4); the array
       // block starts at (snap+4)+off.
-      const pushArgsBase = (): void => {
-        w.push(snapSlot);
-        w.op('MLOAD'); // [snap]
-        w.push(4);
-        w.op('ADD'); // [snap+4]
-      };
-      const pushEnd = (): void => {
-        w.push(snapSlot);
-        w.op('MLOAD');
-        w.op('CALLDATASIZE');
-        w.op('ADD'); // [snap + cds]
-      };
       const within = headOff - 4;
       // bounds the offset word: off ≤ 2^64−1, region+off+32 ≤ end
       pushArgsBase();

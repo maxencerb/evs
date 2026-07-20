@@ -87,6 +87,20 @@ function badTypeError(abiType: string): EvsTypeError {
  *  `string[]`/`bytes[]` and one-level `T[][]` produce an array-of-composite layout; `T[N]` and
  *  string arrays nested deeper than `[][]` stay deferred. */
 export function layoutOf(abiType: string): TypeLayout {
+  const hit = layoutByString.get(abiType);
+  if (hit !== undefined) return hit;
+  const layout = computeLayoutOf(abiType);
+  layoutByString.set(abiType, layout);
+  return layout;
+}
+
+// Layouts are pure functions of the type and treated as immutable by every consumer, so they
+// memoize safely: string types through a Map (the vocabulary is small), tuple descriptors
+// through a WeakMap keyed on the descriptor object (stable identity inside one IR).
+const layoutByString = new Map<string, TypeLayout>();
+const layoutByTuple = new WeakMap<TupleType, TypeLayout>();
+
+function computeLayoutOf(abiType: string): TypeLayout {
   if (isWordType(abiType)) return wordLayoutOf(abiType);
   if (abiType === 'bytes' || abiType === 'string') return { kind: 'bytes', abi: abiType };
   if (abiType.endsWith('[]') && !/\[\d+\]$/.test(abiType)) {
@@ -121,6 +135,14 @@ export function layoutOf(abiType: string): TypeLayout {
  */
 export function layoutOfType(t: EvsType): TypeLayout {
   if (!isTupleType(t)) return layoutOf(t);
+  const hit = layoutByTuple.get(t);
+  if (hit !== undefined) return hit;
+  const layout = computeTupleLayout(t);
+  layoutByTuple.set(t, layout);
+  return layout;
+}
+
+function computeTupleLayout(t: TupleType): TypeLayout {
   if (t.type === 'tuple') return tupleLayoutOf(t);
   // one level of tuple-array nesting (§12.3): `tuple[]` → an array whose element is the tuple
   // layout. `tuple[][]` (two levels) stays deferred.
