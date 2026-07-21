@@ -1594,6 +1594,36 @@ solc `EvsReference` incl. a new direct-struct-hash reference) plus both explicit
 
 ---
 
+## 23. `namedArg` accepts every `EvsType` (issue #25)
+
+`namedArg(name, type)`'s bound was `StringType` (a #2 annotation), so exactly the args that
+benefit most from a name — structs like Morpho's `MarketParams` — were stuck with the
+positional `arg{i}` fallback, while BARE struct args were already fully supported (#2:
+`ArgInput = EvsType | ArgSpec`, and `ArgSpec`'s own bound already admitted tuples). The
+declarator widens to the full parameter-type vocabulary:
+
+- **`namedArg<name, type extends EvsType>`** — words, `string`/`bytes`, arrays (incl.
+  composite-element), and `t.struct`/`t.tuple` descriptors (plus `tuple[]` via `t.array`).
+  Runtime validation: string types via `assertEvsType` (unchanged — `UNSUPPORTED_V0` for
+  deferred `T[N]`, `TYPE_MISMATCH` for garbage); tuple descriptors via the recursive
+  `isEvsValueType`, with `TYPE_MISMATCH` + call-site loc for malformed descriptors.
+- **The evscript side needed no changes**: normalization already routed an ArgSpec's `type`
+  through `isEvsValueType`, `ArgHandle` already mapped a `TupleType` to a `Tuple` handle, and
+  the label machinery is type-agnostic — `namedArg('marketParams', MarketParams)` yields a
+  `Tuple` handle in the callback, a named tuple ABI input, and the viem-inferred label.
+- **`s.fn` composite params stay deferred** (the 16.2/20 narrowing is NOT lifted here):
+  `defineFn` now rejects a composite param — bare or named — with an explicit
+  `UNSUPPORTED_V0` ("composite (t.struct/t.tuple) params are not supported in v0", steering to
+  word/string params or top-level script args) instead of the misleading
+  `TYPE_MISMATCH: type must be a type string` it previously fell into.
+
+module-interfaces §M1 (signature + invariants + test obligations), api.md §2/§8, and the docs
+site (`guides/functions`, `reference/evscript`) are amended in place.
+
+- Status: **accepted**.
+
+---
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

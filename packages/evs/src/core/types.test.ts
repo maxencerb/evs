@@ -180,6 +180,40 @@ describe('namedArg()', () => {
     }
   });
 
+  test('accepts composite (t.struct/t.tuple) types — the full EvsType vocabulary (issue #25)', () => {
+    const MarketParams = t.struct({ loanToken: t.address, lltv: t.uint256 });
+    const named = namedArg('marketParams', MarketParams);
+    expect(named.name).toBe('marketParams');
+    expect(named.type).toBe(MarketParams); // the descriptor passes through untouched
+    expect(Object.isFrozen(named)).toBe(true);
+
+    const positional = t.tuple(t.address, t.uint24);
+    expect(namedArg('pair', positional).type).toBe(positional);
+    const structArray = t.array(MarketParams);
+    expect(namedArg('markets', structArray).type).toBe(structArray);
+  });
+
+  test('rejects malformed tuple descriptors with TYPE_MISMATCH + call-site loc (issue #25)', () => {
+    const bad = [
+      { type: 'tuple' }, // no components
+      { type: 'tuple', components: [{ name: 'x', type: 'uint7' }] }, // invalid member type
+      { notAType: true },
+      42n,
+    ];
+    for (const type of bad) {
+      let caught: unknown;
+      try {
+        namedArg('x', type as never);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvsTypeError);
+      const err = caught as EvsTypeError;
+      expect(err.code).toBe('TYPE_MISMATCH');
+      expect(err.loc?.file).toMatch(/types\.test\.ts/);
+    }
+  });
+
   test('rejects deferred fixed-size-array Solidity types with UNSUPPORTED_V0', () => {
     // fixed-size arrays `T[N]` stay deferred (nested dynamic arrays + tuples are now in the
     // string/tuple vocabulary, so they are no longer rejected by namedArg()).

@@ -2430,9 +2430,10 @@ export class Recorder {
     const seen = new Set<string>();
     const params = declsIn.map((decl: unknown, i) => {
       // a `namedArg` result is a `{ name, type }` object; a bare type is a string (a bare composite
-      // type is a TupleType object with no `name`, rejected as a composite param by assertV0Type).
-      // Detection mirrors `evscript`'s `isArgSpecValue` (name + type present, not an array) so the
-      // two arg/param surfaces classify declarators identically.
+      // type is a TupleType object with no `name`). Detection mirrors `evscript`'s `isArgSpecValue`
+      // (name + type present, not an array) so the two arg/param surfaces classify declarators
+      // identically. Composite (tuple) params — bare or via `namedArg`, whose bound admits every
+      // EvsType since #25 — stay a v0 deferral, rejected below with UNSUPPORTED_V0.
       let pName: string;
       let pType: unknown;
       if (
@@ -2463,6 +2464,13 @@ export class Recorder {
         );
       }
       seen.add(pName);
+      if (isTupleType(pType)) {
+        throw new EvsTypeError(
+          'UNSUPPORTED_V0',
+          `s.fn("${name}") param "${pName}": composite (t.struct/t.tuple) params are not supported in v0 — pass the members as separate word/string params (top-level SCRIPT args do accept structs)`,
+          { loc },
+        );
+      }
       assertV0Type(pType, `s.fn("${name}") param "${pName}"`, loc);
       return { name: pName, type: pType };
     });

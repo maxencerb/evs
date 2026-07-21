@@ -29,9 +29,10 @@ const clamp = evscript(
 - **Parameters** accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a
   single `namedArg(name, type)`, or a `readonly` list mixing named/bare. A `namedArg` labels the
   callback parameter (`(token) => …`); a bare param keeps the positional `arg{i}` name. A param may
-  be any string-encoded type (`namedArg()`'s bound is `StringType`) — a word, dynamic, or string array;
-  composite/tuple params are a deliberate v0 narrowing. Dynamic types pass as memref pointer words.
-  The body receives them as `Expr`s.
+  be any string-encoded type — a word, dynamic, or string array; composite/tuple params are a
+  deliberate v0 narrowing, rejected when the fn is defined (`UNSUPPORTED_V0`) whether declared bare
+  or via `namedArg` (which itself accepts struct types — for **script** args). Dynamic types pass
+  as memref pointer words. The body receives them as `Expr`s.
 - **Returns** can be a single `Expr`, a single `Tuple` handle (a struct/composite result — the call
   site then gets a `Tuple` with named field access, like `s.read`), a single `MutArray` handle (an
   array result — the call site gets an array `Expr`), a readonly tuple of any of those (use

@@ -18,6 +18,20 @@ test('ArgSpec inference: namedArg(name, type) is exactly ArgSpec<name, type>', (
   >();
 });
 
+test('namedArg accepts every EvsType — composite types included (issue #25)', () => {
+  const MarketParams = t.struct({ loanToken: t.address, lltv: t.uint256 });
+  expectTypeOf(namedArg('marketParams', MarketParams)).toEqualTypeOf<
+    ArgSpec<'marketParams', typeof MarketParams>
+  >();
+  const pair = t.tuple(t.address, t.uint24);
+  expectTypeOf(namedArg('pair', pair)).toEqualTypeOf<ArgSpec<'pair', typeof pair>>();
+  const markets = t.array(MarketParams);
+  expectTypeOf(namedArg('markets', markets)).toEqualTypeOf<ArgSpec<'markets', typeof markets>>();
+  // still rejects non-types
+  // @ts-expect-error — a number is not an EvsType
+  namedArg('x', 42);
+});
+
 test('t namespace literal types', () => {
   expectTypeOf(t.uint256).toEqualTypeOf<'uint256'>();
   expectTypeOf(t.bytes32).toEqualTypeOf<'bytes32'>();

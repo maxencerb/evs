@@ -192,12 +192,14 @@ const IDENT_RE = /^[A-Za-z_]\w*$/;
 /**
  * Names a **top-level** arg/param so the name surfaces in the resulting type (issue #9): in a
  * script's `args`, the viem `args` tuple element is labeled (`[token: …]`); in an `s.fn`'s params,
- * the callback parameter is labeled (`(token) => …`). The `type` bound is {@link StringType} (word/
- * dynamic/string-array) — composite (`t.struct`/`t.tuple`) types are passed bare; nested composite
- * fields are named via `t.struct` and keep their behaviour. A bare (unnamed) top-level arg keeps the
- * positional `arg{i}` fallback name.
+ * the callback parameter is labeled (`(token) => …`). The `type` bound is {@link EvsType} — the
+ * full parameter-type vocabulary (widened by #25 from `StringType`): words, `string`/`bytes`,
+ * arrays, and composite `t.struct`/`t.tuple` descriptors (a named struct arg arrives as a `Tuple`
+ * handle, exactly like a bare one). Nested composite fields are named via `t.struct` and keep
+ * their behaviour; `s.fn` composite params remain a v0 deferral, rejected at record time. A bare
+ * (unnamed) top-level arg keeps the positional `arg{i}` fallback name.
  */
-export function namedArg<const name extends string, const type extends StringType>(
+export function namedArg<const name extends string, const type extends EvsType>(
   name: name,
   type: type,
 ): ArgSpec<name, type> {
@@ -208,7 +210,15 @@ export function namedArg<const name extends string, const type extends StringTyp
       { loc: captureLoc() },
     );
   }
-  assertEvsType(type, `argument "${name}"`);
+  if (typeof type === 'string') {
+    assertEvsType(type, `argument "${name}"`);
+  } else if (!isEvsValueType(type)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `argument "${name}": expected a type (use the \`t\` namespace), got ${describeTypeInput(type)}`,
+      { loc: captureLoc() },
+    );
+  }
   return Object.freeze({ name, type });
 }
 
@@ -658,6 +668,7 @@ function describeTypeInput(v: unknown): string {
   if (v === undefined) return 'undefined';
   if (v === null) return 'null';
   if (typeof v === 'object') return 'an object';
+  if (typeof v === 'bigint') return `${v}n`;
   return JSON.stringify(v);
 }
 

@@ -52,9 +52,11 @@ export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
   ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
   : readonly [ToArgSpec<a>];
 
-// names a TOP-LEVEL arg so the name surfaces in the type (issue #9). `type` is a `StringType`
-// (word/dynamic/string-array) — composite (`t.struct`/`t.tuple`) args are passed bare.
-export function namedArg<const name extends string, const type extends StringType>(
+// names a TOP-LEVEL arg so the name surfaces in the type (issue #9). `type` is any `EvsType`
+// (amended by #25 — was `StringType`): words, dynamics, arrays, AND composite
+// `t.struct`/`t.tuple` descriptors (a named composite arg arrives as a `Tuple` handle, like a
+// bare one). `s.fn` composite params stay a v0 deferral, rejected at record time (§8).
+export function namedArg<const name extends string, const type extends EvsType>(
   name: name,
   type: type,
 ): ArgSpec<name, type>;
@@ -103,9 +105,10 @@ strings are accepted everywhere `t.*` is (the `t` namespace is autocomplete suga
 **Named top-level args (`namedArg`, issue #9).** Wrapping a top-level arg in `namedArg("token",
 t.address)` makes the name surface in the resulting type: the viem `args` tuple element is labeled
 (`args: readonly [token: \`0x${string}\`]`instead of`[arg0: …]`), and the body callback parameter
-is labeled. A **bare** (unnamed) arg keeps the positional `arg0`/`arg1`/… fallback name. Only
-top-level fields can be named; nested composite fields are named via `t.struct`and keep their
-existing behaviour. Note that TypeScript tuple/parameter labels are **cosmetic** (they aid
+is labeled. A **bare** (unnamed) arg keeps the positional `arg0`/`arg1`/… fallback name. Every
+`EvsType`can be named (amended by #25):`namedArg("marketParams", MarketParams)`yields a`Tuple`handle in the body and a`{ name: 'marketParams', type: 'tuple', components: […] }`ABI
+input. Only top-level fields can be named; nested composite fields are named via`t.struct` and
+keep their existing behaviour. Note that TypeScript tuple/parameter labels are **cosmetic** (they aid
 autocomplete/hover but are not part of type identity); the name is also carried, observably, in the
 script's ABI input`name` (and the IR), which is what viem derives the args label from.
 
@@ -687,9 +690,10 @@ export type EvsFn<params extends readonly ArgSpec[], r extends FnReturn> =
 // void. The dispatch is on the RESULT TYPE, so it matches the runtime `s.call` wrap.
 ```
 
-- The body runs **once at definition** in an isolated scope. **Params** stay word/string-typed
-  (`namedArg()`'s bound is `StringType`, and a bare `t.*` param is restricted to a string type at
-  record time — composite params are a deliberate v0 narrowing, amendments 16.2/20). A `namedArg`
+- The body runs **once at definition** in an isolated scope. **Params** stay word/string-typed —
+  composite params are a deliberate v0 narrowing (amendments 16.2/20/23), rejected at record time
+  with `UNSUPPORTED_V0` whether declared bare or via `namedArg` (whose bound admits every
+  `EvsType` since #25). A `namedArg`
   param surfaces as a labeled callback parameter (`(token) => …`); a bare param keeps the positional
   `arg{i}` fallback. **No capture** of outer Exprs/Cells (`EvsScopeError`).
 - Calling the `EvsFn` records one statement and returns fresh handles; two calls never alias. A
