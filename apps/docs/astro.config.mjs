@@ -46,7 +46,8 @@ export default defineConfig({
             { label: 'npm package', url: 'https://www.npmjs.com/package/@maxencerb/evs' },
           ],
         }),
-        starlightLinksValidator(),
+        // /playground is a custom (non-Starlight) page the validator can't see.
+        starlightLinksValidator({ exclude: ['/playground/'] }),
       ],
       sidebar: [
         {
@@ -55,6 +56,7 @@ export default defineConfig({
             { label: 'Why evs?', slug: 'getting-started/why-evs' },
             { label: 'Installation', slug: 'getting-started/installation' },
             { label: 'Quick start', slug: 'getting-started/quick-start' },
+            { label: 'Playground', link: '/playground' },
           ],
         },
         {
