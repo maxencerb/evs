@@ -1,0 +1,344 @@
+/*
+ * Playground — an instrument panel in the docs site's Rapide palette (warm
+ * near-black neutrals, sage-green accent). One signature element: the bytecode
+ * seam between editor and output, which fills with the compiled runtime hex.
+ */
+
+.pg {
+  /* dark (default) — hue-17 warm neutrals + hue-164 sage, hexed from the
+     Rapide theme's oklch values */
+  --pg-bg: #151413;
+  --pg-panel: #1b1a19;
+  --pg-line: #34322f;
+  --pg-text: #e7e3df;
+  --pg-dim: #a29d97;
+  --pg-faint: #6e6a65;
+  --pg-accent: #3fc08d;
+  --pg-accent-dim: #2e7d62;
+  --pg-red: #e8796b;
+  --pg-mono: ui-monospace, 'SF Mono', 'Cascadia Code', Menlo, Consolas, monospace;
+
+  height: 100dvh;
+  display: flex;
+  flex-direction: column;
+  background: var(--pg-bg);
+  color: var(--pg-text);
+  font-family: var(--pg-mono);
+  font-size: 13px;
+}
+
+.pg[data-theme='light'] {
+  --pg-bg: #faf9f8;
+  --pg-panel: #f2f1ef;
+  --pg-line: #dddad6;
+  --pg-text: #33302c;
+  --pg-dim: #6e6a64;
+  --pg-faint: #a5a09a;
+  --pg-accent: #1f8a64;
+  --pg-accent-dim: #5aa88a;
+  --pg-red: #c24a3c;
+}
+
+/* ------------------------------------------------------------------ bar --- */
+
+.pg-bar {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 0 16px;
+  height: 52px;
+  flex: none;
+  border-bottom: 1px solid var(--pg-line);
+  background: var(--pg-bg);
+}
+
+.pg-brand {
+  color: var(--pg-text);
+  text-decoration: none;
+  font-weight: 700;
+  letter-spacing: 0.02em;
+}
+
+.pg-brand:hover {
+  color: var(--pg-accent);
+}
+
+.pg-crumb {
+  color: var(--pg-faint);
+  margin-left: -12px;
+  user-select: none;
+}
+
+.pg-tabs {
+  display: flex;
+  gap: 2px;
+  min-width: 0;
+  overflow-x: auto;
+}
+
+.pg-tabs button {
+  appearance: none;
+  border: 0;
+  background: none;
+  font: inherit;
+  color: var(--pg-dim);
+  padding: 6px 10px;
+  cursor: pointer;
+  border-radius: 4px;
+  white-space: nowrap;
+}
+
+.pg-tabs button:hover {
+  color: var(--pg-text);
+  background: var(--pg-panel);
+}
+
+.pg-tabs button[aria-pressed='true'] {
+  color: var(--pg-accent);
+  box-shadow: inset 0 -2px 0 var(--pg-accent);
+  border-radius: 4px 4px 0 0;
+}
+
+.pg-rpc {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-left: auto;
+  min-width: 0;
+  flex: 0 1 420px;
+}
+
+.pg-rpc label {
+  color: var(--pg-faint);
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.12em;
+  user-select: none;
+}
+
+.pg-rpc input {
+  flex: 1;
+  min-width: 0;
+  font: inherit;
+  font-size: 12px;
+  color: var(--pg-text);
+  background: var(--pg-panel);
+  border: 1px solid var(--pg-line);
+  border-radius: 6px;
+  padding: 7px 10px;
+}
+
+.pg-rpc input::placeholder {
+  color: var(--pg-faint);
+}
+
+.pg-rpc input:focus-visible {
+  outline: none;
+  border-color: var(--pg-accent-dim);
+}
+
+.pg-run {
+  appearance: none;
+  border: 0;
+  font: inherit;
+  font-weight: 600;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: var(--pg-bg);
+  background: var(--pg-accent);
+  border-radius: 6px;
+  padding: 7px 14px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
+.pg-run:hover {
+  filter: brightness(1.08);
+}
+
+.pg-run:disabled {
+  opacity: 0.55;
+  cursor: default;
+}
+
+.pg-run .kbd {
+  font-size: 10.5px;
+  font-weight: 400;
+  opacity: 0.75;
+}
+
+/* ----------------------------------------------------------------- main --- */
+
+.pg-main {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.4fr) 30px minmax(320px, 1fr);
+}
+
+.pg-editor {
+  min-width: 0;
+  min-height: 0;
+  background: var(--pg-panel);
+}
+
+/* ----------------------------------------------------------------- seam --- */
+
+.pg-seam {
+  position: relative;
+  overflow: hidden;
+  background: var(--pg-bg);
+  border-left: 1px solid var(--pg-line);
+  border-right: 1px solid var(--pg-line);
+}
+
+.pg-seam-bytes {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 1;
+  padding: 6px 0 10px;
+  text-align: center;
+  font-size: 9px;
+  letter-spacing: 0.04em;
+  color: var(--pg-accent);
+  background: linear-gradient(var(--pg-bg) 60%, transparent);
+  white-space: nowrap;
+}
+
+.pg-seam-hex {
+  position: absolute;
+  inset: 0;
+  padding-top: 34px;
+  writing-mode: vertical-rl;
+  word-break: break-all;
+  font-size: 8.5px;
+  line-height: 10px;
+  letter-spacing: 0.18em;
+  color: var(--pg-accent-dim);
+  opacity: 0.75;
+  user-select: none;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .pg-seam-hex {
+    transition: opacity 0.6s ease;
+  }
+
+  .pg-seam-hex:empty {
+    opacity: 0;
+  }
+}
+
+/* --------------------------------------------------------------- output --- */
+
+.pg-out {
+  min-width: 0;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--pg-bg);
+}
+
+.pg-status {
+  flex: none;
+  padding: 12px 16px;
+  border-bottom: 1px solid var(--pg-line);
+  font-size: 12px;
+  color: var(--pg-dim);
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+}
+
+.pg-status::before {
+  content: '';
+  align-self: center;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex: none;
+  background: var(--pg-faint);
+}
+
+.pg-status[data-kind='running']::before {
+  background: var(--pg-accent-dim);
+}
+
+.pg-status[data-kind='ok']::before {
+  background: var(--pg-accent);
+}
+
+.pg-status[data-kind='error']::before {
+  background: var(--pg-red);
+}
+
+.pg-console {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 14px 16px;
+}
+
+.pg-line {
+  white-space: pre-wrap;
+  word-break: break-word;
+  line-height: 1.7;
+}
+
+.pg-line-warn {
+  color: #e0a458;
+}
+
+.pg-line-error {
+  color: var(--pg-red);
+}
+
+.pg-line-dim {
+  color: var(--pg-faint);
+}
+
+/* --------------------------------------------------------------- mobile --- */
+
+@media (max-width: 860px) {
+  .pg-bar {
+    flex-wrap: wrap;
+    height: auto;
+    padding: 10px 12px;
+    row-gap: 8px;
+  }
+
+  .pg-rpc {
+    order: 3;
+    flex: 1 1 100%;
+    margin-left: 0;
+  }
+
+  .pg-main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(0, 1.2fr) 24px minmax(0, 1fr);
+  }
+
+  .pg-seam {
+    border: 0;
+    border-top: 1px solid var(--pg-line);
+    border-bottom: 1px solid var(--pg-line);
+  }
+
+  .pg-seam-bytes {
+    right: auto;
+    bottom: 0;
+    padding: 0 10px;
+    display: flex;
+    align-items: center;
+    background: linear-gradient(90deg, var(--pg-bg) 60%, transparent);
+  }
+
+  .pg-seam-hex {
+    writing-mode: horizontal-tb;
+    padding: 3px 10px 0 64px;
+    line-height: 18px;
+  }
+}

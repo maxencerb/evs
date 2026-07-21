@@ -1,0 +1,75 @@
+---
+// Standalone full-viewport page — deliberately outside the Starlight layout
+// (the editor needs the whole viewport). Theme follows the docs site's toggle.
+---
+
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Playground — evs</title>
+    <meta
+      name="description"
+      content="Write a typed EVM read script, compile it to bytecode in your browser, and run it as one eth_call against any RPC."
+    />
+    <link rel="icon" href="/favicon.svg" />
+    <script is:inline>
+      // Set the theme before first paint — same source as the docs toggle.
+      (() => {
+        const stored = localStorage.getItem('starlight-theme');
+        const theme =
+          stored === 'dark' || stored === 'light'
+            ? stored
+            : matchMedia('(prefers-color-scheme: light)').matches
+              ? 'light'
+              : 'dark';
+        document.addEventListener('DOMContentLoaded', () => {
+          document.querySelector('.pg')?.setAttribute('data-theme', theme);
+        });
+      })();
+    </script>
+  </head>
+  <body style="margin: 0">
+    <div class="pg" data-theme="dark">
+      <header class="pg-bar">
+        <a class="pg-brand" href="/">evs</a>
+        <span class="pg-crumb">/ playground</span>
+        <nav id="tabs" class="pg-tabs" aria-label="Example scripts"></nav>
+        <div class="pg-rpc">
+          <label for="rpc">rpc</label>
+          <input id="rpc" type="url" spellcheck="false" autocomplete="off" />
+        </div>
+        <button id="run" class="pg-run" type="button">
+          Run<span class="kbd">⌘⏎</span>
+        </button>
+      </header>
+      <main class="pg-main">
+        <section id="editor" class="pg-editor" aria-label="Script editor"></section>
+        <div class="pg-seam" aria-hidden="true">
+          <span id="seam-bytes" class="pg-seam-bytes"></span>
+          <div id="seam-hex" class="pg-seam-hex"></div>
+        </div>
+        <section class="pg-out" aria-label="Run output">
+          <div id="status" class="pg-status" data-kind="idle" role="status"></div>
+          <div id="console" class="pg-console" aria-live="polite"></div>
+        </section>
+      </main>
+    </div>
+    <script is:inline>
+      // Surface boot failures in the output panel instead of only the console.
+      window.addEventListener('error', (event) => {
+        const target = document.getElementById('console');
+        if (target && target.childElementCount === 0) {
+          const line = document.createElement('div');
+          line.className = 'pg-line pg-line-error';
+          line.textContent = `Playground failed to load: ${event.message}`;
+          target.appendChild(line);
+        }
+      });
+    </script>
+    <script>
+      import '../playground/main.ts';
+    </script>
+  </body>
+</html>

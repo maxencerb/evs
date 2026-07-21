@@ -4,6 +4,9 @@ coverage/
 packages/contracts/out/
 packages/contracts/cache/
 packages/evs/test/generated/
+apps/docs/public/playground/
+apps/docs/src/generated/
+apps/docs/scripts/.playground-entries/
 *.tgz
 
 # local env / editor / OS noise
