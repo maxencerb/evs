@@ -1,7 +1,8 @@
 /**
- * The playground run path: TypeScript worker emit → bare-import rewrite to the
- * prebuilt runtime bundles → blob-module import with console capture and RPC
- * instrumentation. Mirrored headlessly by `scripts/check-playground-examples.ts`.
+ * The playground run path: TypeScript worker emit → import rewrite to a global
+ * module registry (see rewrite.ts) → self-contained blob-module import with
+ * console capture and RPC instrumentation. Mirrored headlessly by
+ * `scripts/check-playground-examples.ts`.
  */
 
 import type * as monaco from 'monaco-editor';
@@ -10,10 +11,33 @@ import {
   type TsDiagnosticMessageChain,
 } from 'monaco-editor/language/typescript/monaco.contribution.js';
 
-const MODULES: Record<string, string> = {
-  '@maxencerb/evs': '/playground/evs.js',
-  viem: '/playground/viem.js',
-};
+import { MODULE_URLS, REGISTRY_KEY, rewriteImports } from './rewrite.ts';
+
+/**
+ * Import the runtime bundles as ordinary same-origin modules and park them on
+ * the global registry the rewritten user code destructures from. Doing this
+ * outside the blob graph means a failing fetch names the actual URL instead of
+ * the browser's opaque "failed to fetch blob:" (which is all we got when a
+ * static import inside the blob module failed in production).
+ */
+async function loadRuntimeModules(): Promise<void> {
+  const host = globalThis as Record<string, unknown>;
+  if (host[REGISTRY_KEY]) return;
+  const registry: Record<string, unknown> = {};
+  for (const [specifier, path] of Object.entries(MODULE_URLS)) {
+    const url = `${location.origin}${path}`;
+    try {
+      registry[specifier] = await import(/* @vite-ignore */ url);
+    } catch (thrown) {
+      throw new Error(
+        `Could not load the '${specifier}' runtime bundle (${url}): ${
+          thrown instanceof Error ? thrown.message : String(thrown)
+        } — try a hard reload; if it persists the deployment is missing /playground assets.`,
+      );
+    }
+  }
+  host[REGISTRY_KEY] = registry;
+}
 
 export interface ConsoleLine {
   level: 'log' | 'warn' | 'error';
@@ -54,20 +78,6 @@ export function formatValue(value: unknown, depth = 0): string {
 function flattenMessage(message: string | TsDiagnosticMessageChain): string {
   if (typeof message === 'string') return message;
   return flattenMessage(message.messageText);
-}
-
-function rewriteImports(js: string): string {
-  return js.replace(
-    /(\bfrom\s*|\bimport\s*\(\s*|\bimport\s+)(["'])([^"']+)\2/g,
-    (full, prefix: string, quote: string, specifier: string) => {
-      const mapped = MODULES[specifier];
-      if (mapped) return `${prefix}${quote}${location.origin}${mapped}${quote}`;
-      if (/^(\.|\/|https?:|blob:|data:)/.test(specifier)) return full;
-      throw new Error(
-        `Cannot import '${specifier}' — only '@maxencerb/evs' and 'viem' are available in the playground.`,
-      );
-    },
-  );
 }
 
 /** Duck-type the user module's exports for compiled evs scripts (compile is pure). */
@@ -174,6 +184,7 @@ export async function runScript(
 
   let blobUrl: string | undefined;
   try {
+    await loadRuntimeModules();
     const rewritten = rewriteImports(js);
     blobUrl = URL.createObjectURL(new Blob([rewritten], { type: 'text/javascript' }));
     const moduleExports = (await Promise.race([

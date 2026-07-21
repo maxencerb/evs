@@ -19,8 +19,11 @@ import { tmpdir } from 'node:os';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import ts from 'typescript';
+
 import payload from '../src/generated/playground-dts.json';
 import { examples } from '../src/playground/examples.ts';
+import { REGISTRY_KEY, rewriteImports } from '../src/playground/rewrite.ts';
 
 const docsRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const work = mkdtempSync(join(tmpdir(), 'evs-playground-check-'));
@@ -67,14 +70,20 @@ try {
   if (process.argv.includes('--run')) {
     const bundles = join(docsRoot, 'public/playground');
     for (const example of examples) {
-      const rewritten = example.code
-        .replaceAll(`'@maxencerb/evs'`, `'${join(bundles, 'evs.js')}'`)
-        .replaceAll(`'viem'`, `'${join(bundles, 'viem.js')}'`);
-      const file = join(work, `${example.id}.run.ts`);
-      writeFileSync(
-        file,
-        `(globalThis as Record<string, unknown>).__EVS_PLAYGROUND_RPC__ = 'https://ethereum-rpc.publicnode.com';\n${rewritten}`,
-      );
+      // Mirror the browser run path exactly: tsc emit → rewriteImports → execute
+      // with the runtime bundles parked on the global registry.
+      const emitted = ts.transpileModule(example.code, {
+        compilerOptions: { target: ts.ScriptTarget.ES2020, module: ts.ModuleKind.ESNext },
+      }).outputText;
+      const rewritten = rewriteImports(emitted);
+      const prelude = [
+        `import * as __evs from '${join(bundles, 'evs.js')}';`,
+        `import * as __viem from '${join(bundles, 'viem.js')}';`,
+        `globalThis.${REGISTRY_KEY} = { '@maxencerb/evs': __evs, viem: __viem };`,
+        `globalThis.__EVS_PLAYGROUND_RPC__ = 'https://ethereum-rpc.publicnode.com';`,
+      ].join('\n');
+      const file = join(work, `${example.id}.run.mjs`);
+      writeFileSync(file, `${prelude}\n${rewritten}`);
       const run = spawnSync('bun', [file], { encoding: 'utf8', timeout: 60_000 });
       if (run.status !== 0) {
         console.error(run.stdout);
