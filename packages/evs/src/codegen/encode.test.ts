@@ -13,6 +13,9 @@
  * arrays (`string[]` / `uint256[][]` / `tuple[]`), and mixed multi-arg tuples that exercise the
  * head/tail offset math; packed-mode cases cover its unpadded-word + padded-array-element rules.
  * One case re-runs on every evmVersion (the pre-cancun `@memcpy` unaligned-copy path).
+ * `s.keccak256` defaults to the STANDARD encoding (#24): every case checks
+ * `keccak256(abi.encode(...))` (raw payload hash for a single bytes/string value), and packed
+ * cases additionally pin the explicit `s.keccak256(s.encodePacked(...))` composition.
  */
 
 import type { AbiParameter } from 'abitype';
@@ -22,6 +25,7 @@ import {
   encodeFunctionData,
   encodePacked,
   keccak256,
+  stringToHex,
 } from 'viem';
 import { describe, expect, test } from 'vitest';
 
@@ -254,11 +258,14 @@ function buildCaseScript(c: EncodeCase) {
       const args = rawArgs as unknown as [Expr, ...Expr[]];
       const rets: Record<string, Expr> = {
         e: s.encode(...args),
+        // #24: the default IS the standard-encoding hash (single bytes/string → raw payload hash)
+        h: s.keccak256(...args),
+        // …and the explicit composition hashes the same bytes
         he: s.keccak256(s.encode(...args)),
       };
       if (c.packedTypes !== undefined) {
         rets['p'] = s.encodePacked(...args);
-        rets['h'] = s.keccak256(...args);
+        rets['hp'] = s.keccak256(s.encodePacked(...args)); // the explicit packed hash (#24)
       }
       return s.return(rets);
     },
@@ -284,6 +291,21 @@ async function expectCase(c: EncodeCase, evmVersion?: 'paris' | 'shanghai' | 'ca
 
   const expectedE = encodeAbiParameters(c.params as AbiParameter[], c.values as never);
   expect(out['e'], `${c.name}: abi encode`).toBe(expectedE);
+  // #24: s.keccak256 defaults to keccak256(abi.encode(...)); a SINGLE bytes/string value is
+  // hashed raw (Solidity's keccak256(bytes)), so those cases expect the payload hash instead.
+  const singleRaw =
+    c.types.length === 1 && (c.types[0] === 'bytes' || c.types[0] === 'string')
+      ? c.types[0]
+      : undefined;
+  const expectedH =
+    singleRaw === undefined
+      ? keccak256(expectedE)
+      : keccak256(
+          singleRaw === 'bytes' ? (c.values[0] as Hex) : stringToHex(c.values[0] as string),
+        );
+  expect(out['h'], `${c.name}: keccak256 (standard default)`).toBe(expectedH);
+  // the explicit composition always hashes the encoding bytes (even for one bytes/string value,
+  // where s.encode wraps the payload in offset+length words first)
   expect(out['he'], `${c.name}: keccak256(abi encode)`).toBe(keccak256(expectedE));
   // packed cases carry `packedTypes`; on non-packed cases both sides are undefined, so the
   // comparison stays unconditional (lint: no-conditional-expect).
@@ -292,7 +314,7 @@ async function expectCase(c: EncodeCase, evmVersion?: 'paris' | 'shanghai' | 'ca
       ? undefined
       : encodePacked(c.packedTypes as string[], c.values as never);
   expect(out['p'], `${c.name}: packed encode`).toBe(expectedP);
-  expect(out['h'], `${c.name}: keccak256(packed)`).toBe(
+  expect(out['hp'], `${c.name}: keccak256(packed) — explicit composition`).toBe(
     expectedP === undefined ? undefined : keccak256(expectedP),
   );
 
@@ -342,11 +364,18 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
     expect(out.h).toBe('0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
   });
 
-  test('single-word keccak256 follows keccak256(abi.encodePacked(x)) — width-dependent', async () => {
-    // uint8 hashes ONE byte; uint256/bytes32 hash the full word (documented Solidity semantics)
+  test('single-word keccak256 follows keccak256(abi.encode(x)) — width-independent (#24)', async () => {
+    // every word hashes its FULL 32-byte standard encoding (a uint8 no longer hashes one byte);
+    // the packed one-byte hash is the explicit s.keccak256(s.encodePacked(x)) composition
     const script = evscript(
       { name: 'wordHash', args: [t.uint8, t.uint256, t.bytes32] },
-      (s, a, b, c) => s.return({ ha: s.keccak256(a), hb: s.keccak256(b), hc: s.keccak256(c) }),
+      (s, a, b, c) =>
+        s.return({
+          ha: s.keccak256(a),
+          hb: s.keccak256(b),
+          hc: s.keccak256(c),
+          hap: s.keccak256(s.encodePacked(a)),
+        }),
       { locations: false },
     );
     const compiled = compile(script);
@@ -362,9 +391,10 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
       abi: compiled.abi,
       functionName: 'wordHash',
       data: res.data,
-    }) as { ha: Hex; hb: Hex; hc: Hex };
-    expect(out.ha).toBe(keccak256('0x07'));
-    expect(out.hb).toBe(keccak256(encodePacked(['uint256'], [123n])));
-    expect(out.hc).toBe(keccak256(word));
+    }) as { ha: Hex; hb: Hex; hc: Hex; hap: Hex };
+    expect(out.ha).toBe(keccak256(encodeAbiParameters([{ type: 'uint8' }], [7])));
+    expect(out.hb).toBe(keccak256(encodeAbiParameters([{ type: 'uint256' }], [123n])));
+    expect(out.hc).toBe(keccak256(word)); // bytes32: abi.encode(x) IS the word
+    expect(out.hap).toBe(keccak256('0x07')); // explicit packed: one byte
   });
 });

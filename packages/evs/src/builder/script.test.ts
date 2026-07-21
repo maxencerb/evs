@@ -666,7 +666,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     expect(script.ir.returns[0]?.type).toBe('bytes');
   });
 
-  test('s.encodePacked records encode(packed); s.keccak256 packs then hashes', () => {
+  test('s.encodePacked records encode(packed); s.keccak256 standard-encodes then hashes (#24)', () => {
     const script = evscript(
       { name: 'hashes', args: [t.uint256, t.string] },
       (s, x, str) => {
@@ -680,9 +680,9 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     expect(() => validateIr(script.ir)).not.toThrow();
     const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
     expect(encs).toHaveLength(2);
-    expect(encs.every((s) => s.k === 'encode' && s.mode === 'packed')).toBe(true);
+    expect(encs.map((s) => s.k === 'encode' && s.mode)).toEqual(['packed', 'abi']);
     const hash = allStmts(script.ir).find((s) => s.k === 'keccak256');
-    // the hash consumes the second packed encode's out value
+    // the hash consumes the standard (abi) encode's out value
     expect(hash?.k === 'keccak256' && hash.a).toBe(encs[1]?.k === 'encode' && encs[1].out);
     expect(script.ir.returns.find((r) => r.name === 'h')?.type).toBe('bytes32');
   });
@@ -701,7 +701,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     expect(hashes.map((s) => s.k === 'keccak256' && s.a)).toEqual([0, 1]);
   });
 
-  test('s.keccak256 of a single word packs it first (Solidity encodePacked semantics)', () => {
+  test('s.keccak256 of a single word standard-encodes it first (keccak256(abi.encode(x)) — #24)', () => {
     const script = evscript(
       { name: 'word', args: [t.uint8] },
       (s, x) => s.return({ h: s.keccak256(x) }),
@@ -709,7 +709,22 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     const enc = allStmts(script.ir).find((s) => s.k === 'encode');
-    expect(enc?.k === 'encode' && enc.mode).toBe('packed');
+    expect(enc?.k === 'encode' && enc.mode).toBe('abi');
+  });
+
+  test('s.keccak256 accepts structs and composite arrays directly (#24)', () => {
+    const script = evscript(
+      { name: 'structHash', args: [t.array(t.string)] },
+      (s, strs) => {
+        const pair = s.tuple(Pair, { fee: 500n });
+        return s.return({ hp: s.keccak256(pair), hs: s.keccak256(strs, pair) });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
+    expect(encs.map((s) => s.k === 'encode' && s.mode)).toEqual(['abi', 'abi']);
+    expect(allStmts(script.ir).filter((s) => s.k === 'keccak256')).toHaveLength(2);
   });
 
   test('rejects zero values and raw literals with a steering message', () => {
@@ -744,16 +759,16 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     expect(() =>
       evscript({ name: 'bad4', args: [t.array(t.string)] }, (s, strs) =>
         // string[] is a valid PackedValue at the type level; the record-time guard rejects it
-        s.return({ x: s.keccak256(strs) }),
+        s.return({ x: s.encodePacked(strs) }),
       ),
     ).toThrowError(/cannot be packed-encoded/);
-    // …while s.encode accepts the same values (standard ABI covers composites)
+    // …while s.encode / s.keccak256 accept the same values (standard ABI covers composites — #24)
     expect(() =>
       evscript(
         { name: 'ok', args: [t.array(t.string)] },
         (s, strs) => {
           const pair = s.tuple(Pair);
-          return s.return({ x: s.encode(pair, strs) });
+          return s.return({ x: s.encode(pair, strs), h: s.keccak256(pair, strs) });
         },
         NO_LOC,
       ),

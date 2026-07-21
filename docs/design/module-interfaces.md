@@ -726,14 +726,16 @@ export declare const returnBrand: unique symbol;
 export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
 }
-// ABI encoding + hashing (added by #17 — api.md §4.1): `ScriptBuilder` gains
+// ABI encoding + hashing (added by #17, keccak256 amended by #24 — api.md §4.1):
+// `ScriptBuilder` gains
 //   encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>        // abi.encode
 //   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>  // abi.encodePacked
-//   keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>   // packed-then-hash
+//   keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>   // standard-encode-then-hash (#24)
 // with EncodeValue = Expr | AnyTuple | AnyMutArray and PackedValue = Expr | AnyMutArray (both
 // exported — index.ts §M9). Handles only (literals via s.lit); ≥1 value; packed mode enforces
 // core's isPackedEncodable at record time. s.keccak256 hashes a single bytes/string value
-// directly (no encode stmt); otherwise records encode(packed) then keccak256.
+// directly (no encode stmt); otherwise records encode(abi) then keccak256 (#24 — the packed
+// hash is the explicit composition s.keccak256(s.encodePacked(…))).
 export type EncodeValue = Expr | AnyTuple | AnyMutArray;
 export type PackedValue = Expr | AnyMutArray;
 // call-surface mutability buckets (added by #1 — see §19): `SubcallParams` is generic over `mut`,

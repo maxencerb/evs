@@ -89,7 +89,7 @@ export type {
   ArgsInput,
   Cell,
   ComponentToType,
-  EncodeValue, // issue #17: what s.encode accepts per value (any staged handle)
+  EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
   EvsScript,
   Field,
   IntoArray, // issue #5: array-typed slot accepts an Expr/literal or a bare MutArray
@@ -98,7 +98,7 @@ export type {
   LoopCtl,
   MutArray,
   NormalizeArgs,
-  PackedValue, // issue #17: what s.encodePacked / s.keccak256 accept per value
+  PackedValue, // issue #17: what s.encodePacked accepts per value
   ReturnValue,
   ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
   ScriptBuilder,

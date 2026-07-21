@@ -9,7 +9,7 @@ evs mirrors Solidity's three encoding-and-hashing primitives on the builder, byt
 | ------------------------ | ------------------------------------ | ---------------- |
 | `s.encode(...values)`       | `abi.encode(...)`                    | `Expr<'bytes'>`  |
 | `s.encodePacked(...values)` | `abi.encodePacked(...)`              | `Expr<'bytes'>`  |
-| `s.keccak256(...values)`    | `keccak256(abi.encodePacked(...))`   | `Expr<'bytes32'>` |
+| `s.keccak256(...values)`    | `keccak256(abi.encode(...))`         | `Expr<'bytes32'>` |
 
 All three take **staged values** — `Expr`s, `Tuple` handles, `MutArray` handles — and at least one of them. A raw literal has no unambiguous ABI type, so lift it with `s.lit` first:
 
@@ -22,11 +22,28 @@ const transferTopic = evscript({ name: 'transferTopic', args: [] }, (s) => {
 });
 ```
 
-## `s.keccak256` — the packed default
+## `s.keccak256` — the standard-encoding default
 
-`s.keccak256(...values)` hashes the **packed** encoding of its values — Solidity's idiomatic `keccak256(abi.encodePacked(...))`. A single `bytes` or `string` value is hashed directly (identical bytes, no copy), which is exactly Solidity's `keccak256(someBytes)`.
+`s.keccak256(...values)` hashes the **standard** ABI encoding of its values — `keccak256(abi.encode(...))`. It accepts everything `s.encode` accepts, so structs, nested arrays, and `string[]` hash directly; a struct value gives the EIP-712-style leaf hash:
 
-Because packing is the default, a single **word** hashes at its packed width: a `uint8` hashes one byte, a `uint256` or `bytes32` the full 32-byte word — the same result Solidity gives for `keccak256(abi.encodePacked(x))`.
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const structHash = evscript({ name: 'structHash', args: [Pair] }, (s, pair) => {
+  // keccak256(abi.encode(pair)) — the EIP-712-style leaf hash, no composition needed
+  return s.return({ h: s.keccak256(pair) });
+});
+```
+
+One exception: a **single `bytes` or `string` value** is hashed directly — its raw payload, no encoding, no copy — which is exactly Solidity's `keccak256(someBytes)`. That rule is what makes the explicit compositions below hash precisely the bytes they name (`s.keccak256(s.encode(...))` never double-encodes).
+
+A single **word** hashes its full 32-byte standard encoding regardless of width: a `uint8` and a `uint256` both hash 32 padded bytes, matching `keccak256(abi.encode(x))` in Solidity.
+
+## Packed hashing is explicit
+
+`abi.encodePacked` is non-standard, and hashing it implicitly is a footgun (see the ambiguity caveat below) — so evs never packs unless you say so. The packed hash is the composition:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -35,23 +52,14 @@ const pairKey = evscript(
   { name: 'pairKey', args: [t.address, t.address, t.uint24] },
   (s, tokenA, tokenB, fee) => {
     // keccak256(abi.encodePacked(tokenA, tokenB, fee)) — 20 + 20 + 3 bytes
-    const key = s.keccak256(tokenA, tokenB, fee);
+    const key = s.keccak256(s.encodePacked(tokenA, tokenB, fee));
     // bytes32 → uint256 view when you need a number
     return s.return({ key, keyAsUint: key.asUint256() });
   },
 );
 ```
 
-To hash the **standard** ABI encoding instead, compose explicitly — the composition is the documentation:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const structHash = evscript({ name: 'structHash', args: [t.uint256, t.string] }, (s, id, label) => {
-  // keccak256(abi.encode(id, label)) — EIP-712-style leaf hashing
-  return s.return({ h: s.keccak256(s.encode(id, label)) });
-});
-```
+This works because `s.encodePacked(...)` produces a `bytes` value and a single `bytes` value hashes raw — the hash covers exactly the packed encoding.
 
 ## `s.encode` — standard ABI encoding
 
@@ -92,7 +100,7 @@ const packed = evscript({ name: 'packed', args: [t.uint8, t.string, t.address] }
 });
 ```
 
-Note the usual packed caveat (inherited from Solidity, not fixed by evs): packed encoding is **ambiguous** for adjacent dynamic values — `encodePacked("ab", "c")` equals `encodePacked("a", "bc")`. Don't hash attacker-controlled adjacent dynamic values with `s.keccak256`'s packed default; hash `s.encode(...)` instead.
+Note the usual packed caveat (inherited from Solidity, not fixed by evs): packed encoding is **ambiguous** for adjacent dynamic values — `encodePacked("ab", "c")` equals `encodePacked("a", "bc")`. This is why packed hashing is opt-in: don't hash attacker-controlled adjacent dynamic values with `s.keccak256(s.encodePacked(...))`; the `s.keccak256(...)` default (standard encoding) is unambiguous.
 
 ## Costs and placement
 

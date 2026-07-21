@@ -114,8 +114,8 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   // ABI encoding + hashing (issue #17). `encode` materializes the standard (`abi.encode`) or
   // packed (`abi.encodePacked`) encoding of its args into a fresh `bytes` memref; `keccak256`
   // hashes a `bytes`/`string` memref's payload into a `bytes32` word. `s.keccak256(...args)`
-  // records packed-encode-then-hash (the Solidity `keccak256(abi.encodePacked(...))` idiom),
-  // skipping the encode when the single arg is already `bytes`/`string` (byte-identical).
+  // records standard-encode-then-hash (`keccak256(abi.encode(...))` — issue #24), skipping the
+  // encode when the single arg is already `bytes`/`string` (Solidity's `keccak256(bytes)`).
   | { k: 'encode'; mode: 'abi' | 'packed'; args: readonly ValueId[]; out: ValueId }
   | { k: 'keccak256'; a: ValueId; out: ValueId }
   | { k: 'cellnew'; cell: CellId; init: ValueId }

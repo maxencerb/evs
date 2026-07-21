@@ -6,9 +6,10 @@
  * equivalent evs script are driven with the same corpus over eth_call; the decoded results
  * must be BYTE-IDENTICAL. The evs side runs in the default deployless `toViem()` mode, so the
  * whole calldata-decode → encode/hash → return-encode pipeline is exercised end to end.
- * Covers both the pre-encoded path (`hashBytes` — hash a bytes value directly) and the
- * raw-args paths (`hashPacked` — keccak256 over packed args; `hashEncoded` —
- * `s.keccak256(s.encode(...))`).
+ * Covers the pre-encoded path (`hashBytes` — hash a bytes value directly) and the raw-args
+ * paths: `hashEncoded`/`hashStruct` — `s.keccak256(...)`'s standard-encoding default (#24),
+ * pinned both direct and as the explicit `s.keccak256(s.encode(...))` composition — and
+ * `hashPacked` — the explicit packed composition `s.keccak256(s.encodePacked(...))`.
  */
 
 import type { Abi } from 'viem';
@@ -25,7 +26,9 @@ const Order = t.struct({ id: t.uint256, label: t.string, amounts: t.array(t.uint
 const beef = '0x00000000000000000000000000000000deadbeef';
 const cafe = '0x00000000000000000000000000000000cafebabe';
 
-type Op = 'encode' | 'encodePacked' | 'keccak256' | 'keccakOfEncode';
+// keccak256 — the default (standard-encoding hash; raw hash for a single bytes/string value);
+// keccakPacked — s.keccak256(s.encodePacked(...)); keccakOfEncode — s.keccak256(s.encode(...)).
+type Op = 'encode' | 'encodePacked' | 'keccak256' | 'keccakPacked' | 'keccakOfEncode';
 
 interface Case {
   fn: string;
@@ -113,7 +116,7 @@ const CASES: readonly Case[] = [
   },
   {
     fn: 'hashPacked',
-    op: 'keccak256',
+    op: 'keccakPacked',
     args: [t.uint8, t.uint256, t.string],
     corpus: [
       [0n, 0n, ''],
@@ -121,6 +124,17 @@ const CASES: readonly Case[] = [
     ],
   },
   {
+    // #24: the default IS keccak256(abi.encode(...)) — pinned direct…
+    fn: 'hashEncoded',
+    op: 'keccak256',
+    args: [t.uint256, t.string],
+    corpus: [
+      [0n, ''],
+      [42n, 'héllo ✓'],
+    ],
+  },
+  {
+    // …and via the explicit composition (same solc reference, same bytes)
     fn: 'hashEncoded',
     op: 'keccakOfEncode',
     args: [t.uint256, t.string],
@@ -128,6 +142,13 @@ const CASES: readonly Case[] = [
       [0n, ''],
       [42n, 'héllo ✓'],
     ],
+  },
+  {
+    // #24 acceptance: a struct hashes directly — keccak256(abi.encode(struct))
+    fn: 'hashStruct',
+    op: 'keccak256',
+    args: [Pair],
+    corpus: [[{ token: beef, fee: 500n }], [{ token: cafe, fee: 0n }]],
   },
 ];
 
@@ -141,7 +162,9 @@ function buildScript(c: Case) {
           ? s.encodePacked(...args)
           : c.op === 'keccak256'
             ? s.keccak256(...args)
-            : s.keccak256(s.encode(...args));
+            : c.op === 'keccakPacked'
+              ? s.keccak256(s.encodePacked(...args))
+              : s.keccak256(s.encode(...args));
     return s.return({ r });
   });
 }
@@ -153,7 +176,7 @@ beforeAll(async () => {
 });
 
 describe('encode/encodePacked/keccak256: evs vs solc 0.8.30 (EvsReference)', () => {
-  test.each(CASES.map((c) => [c.fn, c] as const))('%s', async (_name, c) => {
+  test.each(CASES.map((c) => [`${c.fn} (${c.op})`, c] as const))('%s', async (_name, c) => {
     const compiled = compile(buildScript(c));
     const deployless = compiled.toViem();
 

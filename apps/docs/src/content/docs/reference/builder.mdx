@@ -263,16 +263,17 @@ per-type lane semantics: [arithmetic](/guides/arithmetic/).
 ```ts nocheck
 encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>;        // abi.encode
 encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;  // abi.encodePacked
-keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>;   // keccak256(abi.encodePacked(...))
+keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>;   // keccak256(abi.encode(...))
 ```
 
 Byte-exact mirrors of Solidity's encoding and hashing primitives. `EncodeValue` is any staged
 handle (`Expr` | `Tuple` | `MutArray`); `PackedValue` excludes `Tuple` (packed mode carries
 Solidity's restrictions — words, `string`/`bytes`, and word-element arrays only). At least one
 value is required, and literals must be lifted with `s.lit`. `s.keccak256` hashes the
-**packed** encoding (a lone `bytes`/`string` value is hashed directly); hash a standard
-encoding with `s.keccak256(s.encode(...))`. Semantics, packed rules, and the single-word
-hashing case: [hashing & ABI encoding](/guides/hashing-encoding/).
+**standard** encoding — `keccak256(abi.encode(...))`, structs included — except that a lone
+`bytes`/`string` value is hashed directly (Solidity's `keccak256(b)`); the non-standard packed
+hash is always the explicit `s.keccak256(s.encodePacked(...))` composition. Semantics and the
+packed rules: [hashing & ABI encoding](/guides/hashing-encoding/).
 
 ## s.if
 
