@@ -1524,7 +1524,9 @@ testing.md §4.4 are amended in place.
 
 ### 21.1 Semantics decisions (the issue's open questions, settled)
 
-- **`s.keccak256` defaults to PACKED encoding** — Solidity's idiomatic
+- **`s.keccak256` defaults to PACKED encoding** — **SUPERSEDED by §22 (issue #24): the default
+  is now the STANDARD encoding, `keccak256(abi.encode(...))`.** Original #17 decision, kept as
+  history: Solidity's idiomatic
   `keccak256(abi.encodePacked(...))`. A single `bytes`/`string` value is hashed directly
   (byte-identical to packing it, no copy — this IS Solidity's `keccak256(bytes)`); a single
   WORD therefore hashes at its packed width (`uint8` → 1 byte, `uint256`/`bytes32` → the full
@@ -1559,6 +1561,34 @@ raw payload / `32·len` array-body copies via `emitMemCopy`, one trailing zero-p
 also heals the pre-cancun `@memcpy` whole-word over-copy). `keccak256` lowers to
 `KECCAK256(ptr+32, MLOAD(ptr))` — the opcode was already in the §M4 table. Both statements'
 templates stay net-zero on the stack via the ordinary out-slot store.
+
+- Status: **accepted**.
+
+---
+
+## 22. `s.keccak256` defaults to the STANDARD encoding (issue #24)
+
+Supersedes the §21.1 packed-default decision (BREAKING vs #17, pre-publish). `s.keccak256`'s
+packed default made it reject exactly the values users most want to hash (structs — the
+EIP-712-style leaf `keccak256(abi.encode(struct))`), and packed encoding is non-standard AND
+ambiguous for adjacent dynamic values — the wrong thing to reach for implicitly. Decision:
+
+- **`s.keccak256(...values)` ≡ `keccak256(abi.encode(...values))`** — the value bound widens
+  from `PackedValue` to `EncodeValue` (structs, nested arrays, `string[]`/`bytes[]` all
+  accepted; always solc-expressible). The recorder lowers to `encode(mode: 'abi')` +
+  `keccak256` — no IR/codegen changes.
+- **The single-`bytes`/`string` exception is KEPT**: one `bytes`/`string` value hashes its raw
+  payload directly (Solidity's `keccak256(b)`, no encode stmt). This is load-bearing — it is
+  what makes the explicit compositions hash their exact bytes rather than double-encoding.
+- **Packed hashing is explicit-only**: `s.keccak256(s.encodePacked(...))`. `s.encodePacked`
+  itself is unchanged (solc's packed restrictions still enforced at record time).
+- Hash-visible consequences vs #17: a single word now hashes its full 32-byte standard
+  encoding (a `uint8` no longer hashes one byte), and multi-value lists standard-encode
+  (padded words + head/tail dynamics) instead of packing.
+
+api.md §4/§4.1, module-interfaces §M5/§M9 comments, architecture §5/§8.4, and testing.md §4.4
+are amended in place; the differential suites pin the default (viem oracle per corpus case,
+solc `EvsReference` incl. a new direct-struct-hash reference) plus both explicit compositions.
 
 - Status: **accepted**.
 

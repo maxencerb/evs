@@ -1899,23 +1899,24 @@ export class Recorder {
   }
 
   /**
-   * `s.keccak256(...)`: hash with Solidity's idiomatic `keccak256(abi.encodePacked(...))`
-   * semantics — the values are packed-encoded, then hashed. A single `bytes`/`string` value is
-   * hashed directly (byte-identical — packed-encoding one bytes/string value IS its payload —
-   * but skips the copy). For standard ABI encoding, hash explicitly: `s.keccak256(s.encode(…))`.
+   * `s.keccak256(...)`: hash the STANDARD ABI encoding of the values — `keccak256(abi.encode(...))`
+   * (issue #24; supersedes the #17 packed default) — so it accepts everything `s.encode` accepts,
+   * structs included. A single `bytes`/`string` value is hashed directly (byte-identical to
+   * Solidity's `keccak256(bytes)`, no copy), which is what makes the explicit compositions hash
+   * their exact bytes: the non-standard packed hash is always `s.keccak256(s.encodePacked(…))`.
    */
   keccakOp(values: readonly unknown[], what: string): Expr {
     const loc = captureLoc();
     this.assertOpen(what, loc);
-    const ids = this.encodeArgIds('packed', values, what, loc);
+    const ids = this.encodeArgIds('abi', values, what, loc);
     let a: ValueId;
     const single = ids.length === 1 ? ids[0] : undefined;
     const singleType = single === undefined ? null : this.typeOfValue(single);
     if (single !== undefined && (singleType === 'bytes' || singleType === 'string')) {
       a = single;
     } else {
-      a = this.newValue('bytes', loc, 's.keccak256(…) packed bytes');
-      this.appendStmt({ k: 'encode', mode: 'packed', args: ids, out: a }, loc);
+      a = this.newValue('bytes', loc, 's.keccak256(…) encoded bytes');
+      this.appendStmt({ k: 'encode', mode: 'abi', args: ids, out: a }, loc);
     }
     const out = this.newValue('bytes32', loc, 's.keccak256(…)');
     this.appendStmt({ k: 'keccak256', a, out }, loc);

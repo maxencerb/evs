@@ -284,4 +284,10 @@ contract EvsReference {
     function hashEncoded(uint256 x, string calldata s) external pure returns (bytes32) {
         return keccak256(abi.encode(x, s));
     }
+
+    // issue #24: s.keccak256 defaults to the STANDARD encoding — keccak256(abi.encode(...)) —
+    // so a struct hashes directly (the EIP-712-style leaf shape).
+    function hashStruct(EncPair calldata pair) external pure returns (bytes32) {
+        return keccak256(abi.encode(pair));
+    }
 }

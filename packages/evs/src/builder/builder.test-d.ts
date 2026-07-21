@@ -826,8 +826,12 @@ test('#17 encode/encodePacked/keccak256 result types and value bounds', () => {
     expectTypeOf(s.encode(x, str, arr, pair, words)).toEqualTypeOf<Expr<'bytes'>>();
     expectTypeOf(s.encodePacked(x, str, arr)).toEqualTypeOf<Expr<'bytes'>>();
     expectTypeOf(s.keccak256(x, str)).toEqualTypeOf<Expr<'bytes32'>>();
-    // a single bytes-typed value hashes directly; the composed standard form typechecks too
+    // s.keccak256 takes EncodeValue (#24): Tuple handles (structs) are accepted directly
+    expectTypeOf(s.keccak256(pair)).toEqualTypeOf<Expr<'bytes32'>>();
+    expectTypeOf(s.keccak256(x, pair, words)).toEqualTypeOf<Expr<'bytes32'>>();
+    // a single bytes-typed value hashes directly; the explicit compositions typecheck too
     expectTypeOf(s.keccak256(s.encode(x, pair))).toEqualTypeOf<Expr<'bytes32'>>();
+    expectTypeOf(s.keccak256(s.encodePacked(x, str))).toEqualTypeOf<Expr<'bytes32'>>();
     // the bytes32 hash chains into the existing word ops
     expectTypeOf(s.keccak256(str).asUint256()).toEqualTypeOf<Expr<'uint256'>>();
 

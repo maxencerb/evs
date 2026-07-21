@@ -403,15 +403,16 @@ export declare const mutArrayBrand: unique symbol;
 export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
 
 /**
- * What `s.encode(...)` accepts per value (issue #17): any staged handle — an {@link Expr} of any
- * v0 type, a {@link Tuple}, or a {@link MutArray} (bare handles contribute their memref, like
- * `s.return`). Literals must be lifted with `s.lit(type, value)` (an untyped literal is ambiguous).
+ * What `s.encode(...)` / `s.keccak256(...)` accept per value (issue #17; keccak widened by #24):
+ * any staged handle — an {@link Expr} of any v0 type, a {@link Tuple}, or a {@link MutArray} (bare
+ * handles contribute their memref, like `s.return`). Literals must be lifted with
+ * `s.lit(type, value)` (an untyped literal is ambiguous).
  */
 export type EncodeValue = Expr | AnyTuple | AnyMutArray;
 
 /**
- * What `s.encodePacked(...)` / `s.keccak256(...)` accept per value (issue #17): an {@link Expr}
- * or a bare {@link MutArray}. Packed mode carries Solidity's `abi.encodePacked` restrictions —
+ * What `s.encodePacked(...)` accepts per value (issue #17): an {@link Expr} or a bare
+ * {@link MutArray}. Packed mode carries Solidity's `abi.encodePacked` restrictions —
  * words, `string`/`bytes`, and word-element arrays only; structs, nested arrays, and
  * `string[]`/`bytes[]` are rejected at record time (matching solc's compile error).
  */
@@ -755,12 +756,13 @@ export interface ScriptBuilder {
   shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
   shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
 
-  // ABI encoding + hashing (issue #17; api.md §4.1). `keccak256` hashes with Solidity's
-  // idiomatic `keccak256(abi.encodePacked(...))` semantics (a single bytes/string value is
-  // hashed directly); hash a standard encoding with s.keccak256(s.encode(…)).
+  // ABI encoding + hashing (issue #17, amended by #24; api.md §4.1). `keccak256` hashes the
+  // STANDARD encoding — `keccak256(abi.encode(...))` — of any encodable values (a single
+  // bytes/string value is hashed directly, Solidity's `keccak256(bytes)`); the non-standard
+  // packed hash is the explicit composition s.keccak256(s.encodePacked(…)).
   encode(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes'>;
   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;
-  keccak256(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes32'>;
+  keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>;
 
   // control flow (combinators — api.md §7)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;

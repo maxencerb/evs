@@ -177,9 +177,12 @@ function (deployed on the harness from `deployedBytecode`) and the equivalent ev
 asserts identical success/revert outcomes and identical `Panic(code)` payloads. This pins the
 architecture §6 table to solc ground truth.
 
-### 4.4 ABI encoding + keccak256 vs viem AND solc (issue #17)
+### 4.4 ABI encoding + keccak256 vs viem AND solc (issue #17; keccak256 default amended by #24)
 
-Two complementary oracles pin `s.encode` / `s.encodePacked` / `s.keccak256` byte-exact:
+Two complementary oracles pin `s.encode` / `s.encodePacked` / `s.keccak256` byte-exact.
+`s.keccak256`'s default is the STANDARD encoding (`keccak256(abi.encode(…))`, raw payload hash
+for a single `bytes`/`string` value — #24), so every corpus case pins the default hash; packed
+hashing is pinned via the explicit `s.keccak256(s.encodePacked(…))` composition:
 
 - **viem oracle (unit)** — `packages/evs/src/codegen/encode.test.ts`: a corpus across every
   type kind (all `uintN`/`intN`/`bytesN` widths, `address`, `bool`; `bytes`/`string` incl.
@@ -191,8 +194,9 @@ Two complementary oracles pin `s.encode` / `s.encodePacked` / `s.keccak256` byte
   composite case re-run on every `evmVersion` (the pre-cancun `@memcpy` unaligned-copy path).
 - **solc oracle (integration)** — `EvsReference.sol` gains `abi.encode` / `abi.encodePacked` /
   `keccak256` reference functions (words, dynamics, structs, composite arrays, packed mixes,
-  and both the pre-encoded `keccak256(bytes)` and raw-args `keccak256(abi.encodePacked(…))` /
-  `keccak256(abi.encode(…))` paths); `test/integration/encode.test.ts` drives the deployed
+  the pre-encoded `keccak256(bytes)` path, the raw-args `keccak256(abi.encode(…))` default —
+  incl. a direct struct hash, #24 — and the packed `keccak256(abi.encodePacked(…))`
+  composition); `test/integration/encode.test.ts` drives the deployed
   contract and the equivalent evs scripts (default deployless mode) with the same corpus on
   anvil and asserts byte-identical decoded results.
 

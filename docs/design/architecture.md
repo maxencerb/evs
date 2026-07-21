@@ -294,7 +294,7 @@ Prologue: `PUSH2 frameEnd PUSH1 0x40 MSTORE`.
   allocations grow memory monotonically; `compile()` emits a `LOOP_ALLOCATION` diagnostic via
   the pinned `onDiagnostic` callback (§13.3) when an allocating statement — a `call` with
   outputs, `arrnew`, `tuplenew` (`s.tuple`), an `encode` (`s.encode`/`s.encodePacked`/the
-  `s.keccak256` packed pre-encode — #17), or a dynamic literal materialization — or a
+  `s.keccak256` standard pre-encode — #17/#24), or a dynamic literal materialization — or a
   `fncall` whose callee transitively allocates sits inside a loop body **or header** (`while`
   or `for`; amendments 10.7, 14.6).
 
@@ -630,9 +630,10 @@ which the `encode` statement template stores to its out slot):
   solc accepts in `abi.encodePacked`.
 
 `keccak256` lowers to `KECCAK256(ptr + 32, MLOAD(ptr))` over a `bytes`/`string` memref — the
-`s.keccak256(...args)` builder records packed-encode-then-hash (Solidity's
-`keccak256(abi.encodePacked(...))` idiom), skipping the encode when the single arg is already
-`bytes`/`string`. Neither statement can revert (no panics; memory growth is gas-bounded).
+`s.keccak256(...args)` builder records standard-encode-then-hash (`keccak256(abi.encode(...))`
+— amended by #24; the packed hash is the explicit `s.keccak256(s.encodePacked(...))`
+composition), skipping the encode when the single arg is already `bytes`/`string` (Solidity's
+`keccak256(bytes)`). Neither statement can revert (no panics; memory growth is gas-bounded).
 Differential anchors: viem `encodeAbiParameters`/`encodePacked`/`keccak256` at the unit tier
 and solc 0.8.30 `EvsReference` on anvil (testing.md §4.4).
 
