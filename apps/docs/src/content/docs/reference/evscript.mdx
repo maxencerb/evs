@@ -135,14 +135,14 @@ interface EvsScript<
 ## namedArg() and ArgSpec
 
 ```ts
-import type { ArgType, StringType } from '@maxencerb/evs';
+import type { ArgType, EvsType } from '@maxencerb/evs';
 
 interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
   readonly name: name;
   readonly type: type;
 }
 
-declare function namedArg<const name extends string, const type extends StringType>(
+declare function namedArg<const name extends string, const type extends EvsType>(
   name: name,
   type: type,
 ): ArgSpec<name, type>;
@@ -156,20 +156,29 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
 `arg0`/`arg1`/… fallback name. `namedArg` validates at the call site and returns a frozen object:
 
 - `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
-- `type` must be a `StringType`: any word type, `string`, `bytes`, or a string array. Composite
-  (`t.struct`/`t.tuple`) types are passed bare — only top-level fields are named; nested composite
-  fields are named via `t.struct`. (`ArgType`, the `ArgSpec` type parameter shown above, is an alias
-  of `EvsType` and is intentionally wider than `namedArg`'s actual `StringType` bound.) Shapes
-  outside `StringType` throw `EvsTypeError` with code `UNSUPPORTED_V0`.
+- `type` is any `EvsType` — a word type, `string`, `bytes`, an array, or a composite
+  `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
+  one). Only top-level args are named as a whole; nested composite fields are named via
+  `t.struct`. Deferred Solidity shapes (fixed-size `T[N]` arrays) throw `EvsTypeError` with
+  code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. Note `s.fn` params remain
+  word/string-typed — a composite param is rejected when the fn is defined (see
+  [functions](/guides/functions/)).
 
 ```ts twoslash
-import { namedArg, t } from '@maxencerb/evs';
+import { evscript, namedArg, t } from '@maxencerb/evs';
 
 const token = namedArg('token', t.address);
 //    ^?
 const fees = namedArg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
 const amount = namedArg('amount', 'uint128'); // raw type strings work everywhere t.* does
-void [token, fees, amount];
+
+// composite types can be named too — the callback receives a Tuple handle
+const MarketParams = t.struct({ loanToken: t.address, lltv: t.uint256 });
+const position = evscript(
+  { name: 'position', args: [namedArg('marketParams', MarketParams)] },
+  (s, marketParams) => s.return({ loan: marketParams.loanToken.get() }),
+);
+void [token, fees, amount, position];
 ```
 
 Used in a script's `args`, the name flows into the ABI input and surfaces as the viem `args` label —

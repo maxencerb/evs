@@ -81,8 +81,10 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
   readonly name: name
   readonly type: type
 }
-export function namedArg<const name extends string, const type extends StringType>(  // #9: arg→namedArg
-  name: name, type: type): ArgSpec<name, type>          // amended by #2: param type is StringType
+export function namedArg<const name extends string, const type extends EvsType>(  // #9: arg→namedArg
+  name: name, type: type): ArgSpec<name, type>          // amended by #25: the full EvsType vocabulary
+  // (words/dynamics/arrays AND t.struct/t.tuple — was StringType per #2; `s.fn` composite params
+  // stay a v0 deferral, rejected at record time with UNSUPPORTED_V0)
 // the `t` namespace gains `struct`/`tuple` and a tuple `array` overload (amended by #2); plus
 // `fromOutputs`/`fromAbiParameter` ABI→type derivations (amended by #5 ask #4):
 export const t: { /* every WordType|DynType key */ } & {
@@ -123,7 +125,8 @@ export function abiParamToType(p: { type: string; components?: readonly NamedTyp
 export function typeToAbiParam(name: string, ty: EvsType): NamedType        // inverse
 ```
 
-Invariants: `namedArg()` validates name (`/^[A-Za-z_]\w*$/`) and type (via `assertEvsType`), throws
+Invariants: `namedArg()` validates name (`/^[A-Za-z_]\w*$/`) and type (string types via
+`assertEvsType`; tuple descriptors via `isEvsValueType` — #25), throws
 `EvsTypeError` with `captureLoc()`, returns frozen object. `t.struct`/`t.tuple`/`t.array` validate
 and freeze their result; `t` is frozen.
 
@@ -192,8 +195,10 @@ raw `'tuple'` strings; `t.struct`/`t.tuple`/`t.array`, the guards, and `typesEqu
 structural-equality matrix (amended by #2); `namedArg()` validation matrix with loc assertions; error
 class construction; loc capture under bun- and node-format stack traces.
 **Type tests**: `ArgSpec` inference via `namedArg('pool', t.address)` is exactly
-`ArgSpec<'pool','address'>`; `IntoExpr<'uint8'>` accepts `5`, `5n`, `Expr<'uint8'>`, rejects
-`'0x'`/`Expr<'uint16'>`; `LitOf` of a `t.struct` is the named object (amended by #2).
+`ArgSpec<'pool','address'>`, and via `namedArg('marketParams', MarketParams)` exactly
+`ArgSpec<'marketParams', typeof MarketParams>` (#25); `IntoExpr<'uint8'>` accepts `5`, `5n`,
+`Expr<'uint8'>`, rejects `'0x'`/`Expr<'uint16'>`; `LitOf` of a `t.struct` is the named object
+(amended by #2).
 
 ---
 

@@ -5,7 +5,7 @@
  * `ScriptReturn` inference through `evscript`. Runs under the vitest `types` project (typecheck
  * only — nothing executes).
  */
-import type { Abi } from 'abitype';
+import type { Abi, AbiParametersToPrimitiveTypes } from 'abitype';
 import type { ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vitest';
 
@@ -177,6 +177,33 @@ test('namedArg in evscript args: handle types preserved; ABI inputs carry the us
       { readonly name: 'token'; readonly type: 'address' },
       { readonly name: 'arg1'; readonly type: 'uint24' },
     ]
+  >();
+});
+
+test('namedArg struct arg (issue #25): Tuple handle in the body; named tuple ABI input', () => {
+  const MarketParams = t.struct({ loanToken: t.address, lltv: t.uint256 });
+  const script = evscript(
+    { name: 'position', args: [namedArg('marketParams', MarketParams)] },
+    (s, marketParams) => {
+      // the named composite arg arrives as a Tuple handle, exactly like a bare one
+      expectTypeOf(marketParams).toEqualTypeOf<Tuple<typeof MarketParams>>();
+      expectTypeOf(marketParams.loanToken.get()).toEqualTypeOf<Expr<'address'>>();
+      return s.return({ loan: marketParams.loanToken.get() });
+    },
+  );
+  // the ABI input carries the user name + the tuple components (viem labels derive from it)
+  expectTypeOf(script.abi[0].inputs).toEqualTypeOf<
+    readonly [
+      {
+        readonly name: 'marketParams';
+        readonly type: 'tuple';
+        readonly components: (typeof MarketParams)['components'];
+      },
+    ]
+  >();
+  // viem's inferred args tuple is the struct object
+  expectTypeOf<AbiParametersToPrimitiveTypes<(typeof script.abi)[0]['inputs']>>().toEqualTypeOf<
+    readonly [{ loanToken: `0x${string}`; lltv: bigint }]
   >();
 });
 

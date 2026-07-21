@@ -189,6 +189,46 @@ describe('named args (namedArg)', () => {
     expect(code).toBe('ABI_SHAPE');
   });
 
+  test('a namedArg struct arg: Tuple handle in the callback, named tuple ABI input (issue #25)', () => {
+    const MarketParams = t.struct({ loanToken: t.address, lltv: t.uint256 });
+    const script = evscript(
+      { name: 'position', args: [namedArg('marketParams', MarketParams)] },
+      (s, marketParams) => s.return({ loan: marketParams.loanToken.get() }),
+      NO_LOC,
+    );
+    expect(script.ir.args).toEqual([{ name: 'marketParams', type: MarketParams }]);
+    expect(script.abi[0].inputs).toEqual([
+      {
+        name: 'marketParams',
+        type: 'tuple',
+        components: [
+          { name: 'loanToken', type: 'address' },
+          { name: 'lltv', type: 'uint256' },
+        ],
+      },
+    ]);
+    expect(script.ir.values[0]).toMatchObject({ debugName: 'args.marketParams' });
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('s.fn composite params stay deferred: UNSUPPORTED_V0 for namedArg and bare (issue #25)', () => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    for (const param of [namedArg('pair', Pair), Pair]) {
+      let code: string | undefined;
+      let message = '';
+      try {
+        evscript({ name: 'fnc', args: [] }, (s) => {
+          s.fn('f', param, () => undefined);
+          return s.return({ x: s.lit(t.uint256, 1n) });
+        });
+      } catch (e) {
+        if (e instanceof EvsError) ({ code, message } = e);
+      }
+      expect(code).toBe('UNSUPPORTED_V0');
+      expect(message).toContain('composite (t.struct/t.tuple) params are not supported in v0');
+    }
+  });
+
   test('s.fn: bare-type and lone-namedArg shorthand; names land in the fn IR params', () => {
     const script = evscript(
       { name: 'fnnames', args: [t.uint256] },

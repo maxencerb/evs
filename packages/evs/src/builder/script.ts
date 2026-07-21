@@ -651,9 +651,9 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
 /**
  * What an `s.fn` body may return (widened by issue #5 ask #1): a single {@link Expr}, a single
  * {@link Tuple}/{@link MutArray} handle (a composite/array result — byte-identical IR to `.expr()`),
- * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed
- * (composite params are a separate v0 deferral — `namedArg()`'s bound is `StringType`, and a bare
- * `t.*` param is restricted to a string type at record time).
+ * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed —
+ * composite params are a separate v0 deferral, rejected at record time with `UNSUPPORTED_V0`
+ * whether declared bare or via `namedArg` (whose bound admits every `EvsType` since #25).
  */
 export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
 /** One element of an `s.fn` body's `[many]`-shape return. */
