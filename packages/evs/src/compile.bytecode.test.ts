@@ -14,7 +14,7 @@ import { describe, expect, test } from 'vitest';
 
 import { evscript } from './builder/script.js';
 import { compile } from './compile.js';
-import { t } from './core/types.js';
+import { namedArg, t } from './core/types.js';
 
 const erc20Abi = [
   {
@@ -157,5 +157,29 @@ describe('runtime bytecode is byte-stable', () => {
       return s.return({ symbol });
     });
     expect(compile(script, { evmVersion: 'paris' }).runtimeBytecode).toMatchSnapshot();
+  });
+});
+
+describe('custom errors are byte-stable (issue #15)', () => {
+  test('throw: named args, zero-arg, and a string param (dynamic encode)', () => {
+    const NoBalance = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+    const NotOwner = t.error('NotOwner');
+    const Reason = t.error('Reason', [namedArg('note', t.string)]);
+    const script = evscript(
+      { name: 'guard', args: [t.uint256], errors: [NoBalance, NotOwner, Reason] },
+      (s, x) => {
+        s.if(x.lt(10n), () => {
+          s.throw(NoBalance, { balance: x });
+        });
+        s.if(x.eq(999n), () => {
+          s.throw(NotOwner);
+        });
+        s.if(x.eq(1000n), () => {
+          s.throw(Reason, { note: s.lit(t.string, 'nope') });
+        });
+        return s.return({ x });
+      },
+    );
+    expect(compile(script).runtimeBytecode).toMatchSnapshot();
   });
 });

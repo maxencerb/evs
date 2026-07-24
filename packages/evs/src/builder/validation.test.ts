@@ -1250,3 +1250,198 @@ describe('staging traps', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// custom errors — t.error / errors: [...] / s.throw (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('custom errors (issue #15)', () => {
+  const NoBalance = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+  const NotOwner = t.error('NotOwner');
+  const BadPair = t.error('BadPair', [t.address, t.address]);
+
+  /** records a throwaway script DECLARING the three errors above. */
+  function recErr(body: (s: AnyBuilder, a: Args) => unknown): void {
+    evscript(
+      {
+        name: 'tstErr',
+        args: [t.uint256, t.address, t.bool, t.array(t.uint64), t.int8],
+        errors: [NoBalance, NotOwner, BadPair],
+      },
+      ((
+        s: AnyBuilder,
+        x: Args['x'],
+        who: Args['who'],
+        flag: Args['flag'],
+        xs: Args['xs'],
+        s8: Args['s8'],
+      ) => body(s, { x, who, flag, xs, s8 })) as never,
+    );
+  }
+
+  test('t.error: invalid / reserved names are ERROR_DECL', () => {
+    expectEvs(() => t.error('' as never), EvsTypeError, 'ERROR_DECL', /non-empty identifier/);
+    expectEvs(() => t.error('has space' as never), EvsTypeError, 'ERROR_DECL', /identifier/);
+    for (const name of ['Panic', 'Error', 'EvsDecodeError', 'EvsInvalidCalldata', '_'] as const) {
+      expectEvs(() => t.error(name as never), EvsTypeError, 'ERROR_DECL', /reserved/);
+    }
+  });
+
+  test('t.error: bad param types / duplicate param names rejected', () => {
+    expectEvs(
+      () => t.error('X', ['uint7' as never]),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /unknown type/,
+    );
+    expectEvs(
+      () => t.error('X', [namedArg('a', t.uint256), namedArg('a', t.address)] as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /duplicate param name "a"/,
+    );
+    // a bare param at position 1 resolves to arg1 — colliding with an explicit "arg1" name
+    expectEvs(
+      () => t.error('X', [namedArg('arg1', t.uint256), t.address] as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /duplicate param name "arg1"/,
+    );
+  });
+
+  test('def errors: a non-t.error value is ERROR_DECL', () => {
+    expectEvs(
+      () =>
+        evscript({ name: 'bad', errors: [{ nope: true }] as never }, ((s: AnyBuilder) =>
+          s.return({ ok: s.lit(t.bool, true) })) as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /expected an error declared with t\.error/,
+    );
+  });
+
+  test('def errors: duplicate names are ERROR_DECL', () => {
+    const dup = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+    expectEvs(
+      () =>
+        evscript({ name: 'bad', errors: [NoBalance, dup] as never }, ((s: AnyBuilder) =>
+          s.return({ ok: s.lit(t.bool, true) })) as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /duplicate error name "NoBalance"/,
+    );
+  });
+
+  test('s.throw of an UNDECLARED error is ERROR_UNDECLARED (record-time backstop)', () => {
+    const Other = t.error('Other', [t.uint256]);
+    expectEvs(
+      () => rec((s, a) => (s.throw as (...args: unknown[]) => void)(Other, [a.x])),
+      EvsTypeError,
+      'ERROR_UNDECLARED',
+      /error "Other" is not declared by script "tst"/,
+    );
+  });
+
+  test('s.throw of a same-name but different-shape error names the mismatch', () => {
+    const impostor = t.error('NoBalance', [namedArg('balance', t.address)]);
+    expectEvs(
+      () =>
+        recErr((s, a) => (s.throw as (...args: unknown[]) => void)(impostor, { balance: a.who })),
+      EvsTypeError,
+      'ERROR_UNDECLARED',
+      /declared, but with different params/,
+    );
+  });
+
+  test('s.throw of a non-error value is TYPE_MISMATCH', () => {
+    expectEvs(
+      () => recErr((s) => (s.throw as (...args: unknown[]) => void)('NoBalance')),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /expected an error declared with t\.error/,
+    );
+  });
+
+  test('s.throw: a structurally-equal re-created error IS accepted', () => {
+    const clone = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+    expect(() =>
+      recErr((s, a) => {
+        s.throw(clone, { balance: a.x });
+        return s.return({ x: a.x });
+      }),
+    ).not.toThrow();
+  });
+
+  test('s.throw named-record args: missing / unknown / wrong-typed members rejected', () => {
+    expectEvs(
+      () => recErr((s) => (s.throw as (...args: unknown[]) => void)(NoBalance, {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /missing arg "balance"/,
+    );
+    expectEvs(
+      () =>
+        recErr((s, a) =>
+          (s.throw as (...args: unknown[]) => void)(NoBalance, { balance: a.x, extra: 1n }),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /unknown arg "extra"/,
+    );
+    expectEvs(
+      () =>
+        recErr((s, a) => (s.throw as (...args: unknown[]) => void)(NoBalance, { balance: a.who })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /arg "balance"/,
+    );
+    expectEvs(
+      () => recErr((s, a) => (s.throw as (...args: unknown[]) => void)(NoBalance, [a.x])),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /named args record/,
+    );
+  });
+
+  test('s.throw positional args: wrong arity / shape rejected', () => {
+    expectEvs(
+      () => recErr((s, a) => (s.throw as (...args: unknown[]) => void)(BadPair, [a.who])),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /expects 2 arg\(s\), got 1/,
+    );
+    expectEvs(
+      () => recErr((s, a) => (s.throw as (...args: unknown[]) => void)(BadPair, { a: a.who })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /positional args tuple/,
+    );
+  });
+
+  test('s.throw zero-param error rejects args', () => {
+    expectEvs(
+      () => recErr((s) => (s.throw as (...args: unknown[]) => void)(NotOwner, {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /declares no parameters/,
+    );
+  });
+
+  test('s.throw after s.return is RECORDING_CLOSED', () => {
+    expectEvs(
+      () =>
+        recErr((s, a) => {
+          const ret = s.return({ x: a.x });
+          s.throw(NotOwner as never);
+          return ret;
+        }),
+      EvsScopeError,
+      'RECORDING_CLOSED',
+      /sealed/,
+    );
+  });
+
+  test('a declared-but-never-thrown error is allowed (Solidity parity)', () => {
+    expect(() => recErr((s, a) => s.return({ x: a.x }))).not.toThrow();
+  });
+});

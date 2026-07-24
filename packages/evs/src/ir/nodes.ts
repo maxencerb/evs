@@ -30,6 +30,10 @@ export interface ScriptIr {
   readonly fns: readonly FnIr[]; // indexed by FnId, topologically recorded
   readonly body: readonly Stmt[];
   readonly returns: readonly { name: string; type: EvsType; value: ValueId }[];
+  // declared custom errors (issue #15), indexed by `throw` stmts' `error` field. OPTIONAL and
+  // omitted when empty, so pre-#15 serialized IR round-trips byte-identically (the `call.kind`
+  // precedent); absent ⇒ no error may be thrown.
+  readonly errors?: readonly PlainAbiError[];
   readonly loc: SourceLoc | null;
 }
 
@@ -93,6 +97,15 @@ export interface PlainAbiFunction {
   readonly outputs: readonly PlainAbiParam[];
 }
 
+/** A declared custom error (issue #15) — the IR mirror of a `t.error` value: resolved
+ *  (non-empty, unique) input names, plus the precomputed 4-byte selector (like
+ *  {@link PlainAbiFunction} — lowering and explainRevert never recompute keccak). */
+export interface PlainAbiError {
+  readonly name: string;
+  readonly selector: Hex;
+  readonly inputs: readonly PlainAbiParam[];
+}
+
 export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'const'; out: ValueId; data: ConstData; type: EvsType }
   | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
@@ -118,6 +131,10 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   // encode when the single arg is already `bytes`/`string` (Solidity's `keccak256(bytes)`).
   | { k: 'encode'; mode: 'abi' | 'packed'; args: readonly ValueId[]; out: ValueId }
   | { k: 'keccak256'; a: ValueId; out: ValueId }
+  // custom-error revert (issue #15): terminates with `selector ‖ abi.encode(args)` revert data.
+  // `error` indexes `ir.errors`; `args` match the error's inputs positionally (arity + types
+  // enforced by validateIr). No out — the statement never falls through.
+  | { k: 'throw'; error: number; args: readonly ValueId[] }
   | { k: 'cellnew'; cell: CellId; init: ValueId }
   | { k: 'cellget'; cell: CellId; out: ValueId }
   | { k: 'cellset'; cell: CellId; value: ValueId }
@@ -226,6 +243,12 @@ export function deserializeIr(json: string): ScriptIr {
   if (version !== 1) {
     fail('ir.irVersion', `unsupported ScriptIr version ${JSON.stringify(version)} (expected 1)`);
   }
+  // `errors` is OPTIONAL (absent in pre-#15 IR and whenever no error is declared)
+  const rawErrors: unknown = o['errors'];
+  const errors =
+    rawErrors === undefined
+      ? undefined
+      : asArray(rawErrors, 'ir.errors').map((e, i) => decodeAbiError(e, `ir.errors[${i}]`));
   const ir: ScriptIr = {
     irVersion: 1,
     name: asString(o['name'], 'ir.name'),
@@ -235,6 +258,7 @@ export function deserializeIr(json: string): ScriptIr {
     fns: asArray(o['fns'], 'ir.fns').map((f, i) => decodeFn(f, `ir.fns[${i}]`)),
     body: decodeStmts(o['body'], 'ir.body'),
     returns: asArray(o['returns'], 'ir.returns').map((r, i) => decodeReturn(r, `ir.returns[${i}]`)),
+    ...(errors === undefined ? {} : { errors }),
     loc: decodeLoc(o['loc'], 'ir.loc'),
   };
   deepFreeze(ir);
@@ -400,6 +424,17 @@ function decodeAbiParam(v: unknown, path: string): PlainAbiParam {
     type,
     components: asArray(components, `${path}.components`).map((c, i) =>
       decodeAbiParam(c, `${path}.components[${i}]`),
+    ),
+  };
+}
+
+function decodeAbiError(v: unknown, path: string): PlainAbiError {
+  const o = asRecord(v, path);
+  return {
+    name: asString(o['name'], `${path}.name`),
+    selector: asHex(o['selector'], `${path}.selector`),
+    inputs: asArray(o['inputs'], `${path}.inputs`).map((p, i) =>
+      decodeAbiParam(p, `${path}.inputs[${i}]`),
     ),
   };
 }
@@ -589,6 +624,14 @@ function decodeStmt(v: unknown, path: string): Stmt {
     }
     case 'keccak256':
       return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+    case 'throw':
+      return {
+        loc,
+        site,
+        k,
+        error: asId(o['error'], `${path}.error`),
+        args: decodeIdArray(o['args'], `${path}.args`),
+      };
     case 'cellnew':
       return {
         loc,

@@ -533,6 +533,16 @@ class Interp {
         this.values.set(s.out, BigInt(viemKeccak256(bytesToHex(m.bytes))));
         return;
       }
+      case 'throw': {
+        // custom-error revert (issue #15): `selector ‖ abi.encode(args)`, byte-exact vs codegen
+        const err = (this.ir.errors ?? [])[s.error];
+        if (err === undefined) {
+          throw new EvsInternalError('INTERNAL', `interpret: throw with unknown error #${s.error}`);
+        }
+        const items = s.args.map((id) => ({ type: this.typeOf(id), value: this.getValue(id) }));
+        const payload = items.length === 0 ? new Uint8Array(0) : encodeParamsBlock(items);
+        throw new RevertSignal(concatBytes([hexToBytes(err.selector), payload]));
+      }
       case 'cellnew': {
         this.cells.set(s.cell, this.getValue(s.init));
         return;
@@ -1606,6 +1616,8 @@ function noteOf(s: Stmt): string {
       return `encode ${s.mode}`;
     case 'keccak256':
       return 'keccak256';
+    case 'throw':
+      return `throw errors[${s.error}]`;
     case 'cellnew':
       return `cellnew #${s.cell}`;
     case 'cellget':

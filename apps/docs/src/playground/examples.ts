@@ -140,8 +140,54 @@ console.log('unlocked:', res.slot0.unlocked);
 console.log('fee:', res.fee);
 `;
 
+const customErrors = `import { evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+
+// Declare-and-throw custom errors: only errors listed on the def can be thrown
+// (your editor rejects the rest), they ride in the compiled ABI so viem decodes
+// them natively, and matchScriptError gives an EXHAUSTIVE switch on the catch side.
+const InsufficientBalance = t.error('InsufficientBalance', [
+  namedArg('balance', t.uint256),
+  namedArg('required', t.uint256),
+]);
+
+export const requireBalance = evscript(
+  { name: 'requireBalance', args: [t.address, t.address, t.uint256], errors: [InsufficientBalance] },
+  (s, token, owner, required) => {
+    const balance = s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [owner] });
+    s.if(balance.lt(required), () => {
+      s.throw(InsufficientBalance, { balance, required });
+    });
+    return s.return({ balance });
+  },
+);
+
+const client = createPublicClient({ transport: http() });
+
+try {
+  const res = await client.readContract({
+    ...requireBalance.compile().toViem(),
+    functionName: 'requireBalance',
+    args: [
+      '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+      '0xD8Da6bF26964AF9d7Eed9e03E51415D2B0eF2141', // vitalik.eth
+      1_000_000_000_000n * 10n ** 6n, // a trillion USDC — expect the throw
+    ],
+  });
+  console.log('balance:', res.balance);
+} catch (e) {
+  const message = matchScriptError(requireBalance, e, {
+    InsufficientBalance: ({ balance, required }) =>
+      \`insufficient balance: have \${balance}, need \${required}\`,
+    _: (other) => \`unexpected revert: \${other.name}\`,
+  });
+  console.log(message);
+}
+`;
+
 export const examples: readonly PlaygroundExample[] = [
   { id: 'dependent-reads', label: 'dependent reads', code: dependentReads },
   { id: 'batch-balances', label: 'batch balances', code: batchBalances },
   { id: 'struct-reads', label: 'struct reads', code: structReads },
+  { id: 'custom-errors', label: 'custom errors', code: customErrors },
 ];

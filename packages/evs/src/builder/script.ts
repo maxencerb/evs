@@ -15,29 +15,38 @@ import type {
 } from 'abitype';
 import type { ContractFunctionName } from 'viem';
 
-import { buildScriptAbi, type ResolveArgName, type ScriptAbi } from '../abi/artifact.js';
+import {
+  buildScriptAbi,
+  errorSelectorOf,
+  selectorOf,
+  type ResolveArgName,
+  type ScriptAbi,
+} from '../abi/artifact.js';
 import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc, setLocCapture } from '../core/loc.js';
-import { isEvsValueType } from '../core/types.js';
+import { isEvsValueType, typeToAbiParam } from '../core/types.js';
 import type {
   AbiParamsToComponents,
+  ArgsInput,
   ArgSpec,
   ArrayType,
   BitsType,
+  EvsErrorType,
   EvsType,
   Expr,
   IntoExpr,
   LitOf,
   NamedType,
+  NormalizeArgs,
   NumericType,
   StringType,
   TupleType,
   WordType,
 } from '../core/types.js';
-import type { ScriptIr } from '../ir/nodes.js';
-import { assertV0Type, Recorder } from './expr.js';
+import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
+import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
 
 // ---------------------------------------------------------------------------
 // entry point (api.md §1)
@@ -47,37 +56,54 @@ export interface EvsScript<
   name extends string = string,
   args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
+  // declared custom errors (issue #15) — trailing param with a wide default, so pre-#15
+  // `EvsScript<n, a, r>` instantiations keep compiling and stay supertypes of concrete scripts
+  errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
 > {
   readonly name: name;
   readonly ir: ScriptIr; // frozen, JSON-serializable
-  readonly abi: ScriptAbi<name, args, ret>; // literal-typed value, exists pre-compile
-  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>; // sugar for compile()
+  readonly abi: ScriptAbi<name, args, ret, errs>; // literal-typed value, exists pre-compile
+  readonly errors: errs; // the declared `t.error` values (frozen; [] when none)
+  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret, errs>; // sugar for compile()
 }
 
-/**
- * One top-level arg/param declarator (api.md §2; issue #9): a bare `t.*` type, or a
- * {@link namedArg}-produced {@link ArgSpec} that labels the arg.
- */
-export type ArgInput = EvsType | ArgSpec;
+// `ArgInput` / `ArgsInput` / `ToArgSpec` / `NormalizeArgs` moved to M1 core/types.ts (issue #15
+// — `t.error` params take the same shorthand and core takes no builder import); re-exported
+// verbatim so the frozen M5 surface is unchanged.
+export type { ArgInput, ArgsInput, NormalizeArgs, ToArgSpec } from '../core/types.js';
 
 /**
- * Args/params input: a single {@link ArgInput} (a bare type or a {@link namedArg}), or a `readonly`
- * list of them (mixing named and bare). A lone declarator is sugar for a one-element list
- * (`args: t.uint256` ≡ `args: [t.uint256]`; `args: namedArg('x', t.uint256)` ≡ `args:
- * [namedArg('x', t.uint256)]`) — shared by `evscript` args and `s.fn` params.
+ * `errors` input on the script def (issue #15): a single `t.error` value or a `readonly` list
+ * of them (a lone declaration is sugar for a one-element list, like `args`).
  */
-export type ArgsInput = ArgInput | readonly ArgInput[];
+export type ErrorsInput = EvsErrorType | readonly EvsErrorType[];
 
-/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a bare type
- *  becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
- *  downstream (`ResolveArgName` / the recorder). */
-export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+/** Normalizes {@link ErrorsInput} to the canonical `readonly EvsErrorType[]`. */
+export type NormalizeErrors<e extends ErrorsInput> = e extends readonly EvsErrorType[]
+  ? e
+  : readonly [e];
 
-/** Normalizes {@link ArgsInput} to the canonical `readonly ArgSpec[]` (lone declarator → one-tuple;
- *  homomorphic over a list so order/positions are preserved). */
-export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
-  ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
-  : readonly [ToArgSpec<a>];
+/** The named-record args form of `s.throw` (every param named): one REQUIRED member per param
+ *  (no zero-defaulting — Solidity parity), each taking the param type's {@link IntoMember}. */
+export type ThrowArgRecord<params extends readonly ArgSpec[]> = {
+  readonly [p in params[number] as p['name'] & string]: IntoMember<Extract<p['type'], EvsType>>;
+};
+
+/** The positional args form of `s.throw` (any bare param): a full tuple, one entry per param. */
+export type ThrowArgTuple<params extends readonly ArgSpec[]> = {
+  readonly [i in keyof params]: IntoMember<Extract<params[i]['type'], EvsType>>;
+};
+
+/**
+ * The rest-args shape of `s.throw(error, ...)` for one declared error: nothing for a
+ * zero-param error; ONE name-keyed record when every param is named; ONE positional tuple
+ * otherwise (mirrors the `s.tuple` init split, but with required members).
+ */
+export type ThrowArgs<e extends EvsErrorType> = e['params'] extends readonly []
+  ? readonly []
+  : [Extract<e['params'][number]['name'], ''>] extends [never]
+    ? readonly [args: ThrowArgRecord<e['params']>]
+    : readonly [args: ThrowArgTuple<e['params']>];
 
 /**
  * The body-callback handle for one normalized arg type: a tuple/struct arg arrives as a
@@ -140,15 +166,126 @@ function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type
   );
 }
 
+/** A `t.error`-produced value (issue #15): the `kind: 'error'` discriminant plus the frozen
+ *  shape `t.error` builds. Param/type validity is re-checked below — a hand-built value
+ *  cannot smuggle junk into the IR or the ABI. */
+function isEvsErrorValue(v: unknown): v is EvsErrorType {
+  if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
+  const o = v as { kind?: unknown; name?: unknown; params?: unknown };
+  return o.kind === 'error' && typeof o.name === 'string' && Array.isArray(o.params);
+}
+
+// the four built-in selectors a declared error may not collide with (issue #15): Solidity's
+// Panic/Error plus the evs runtime errors. Name shadowing is rejected separately (t.error +
+// buildScriptAbi); this catches the astronomically-unlikely selector collision under a
+// DIFFERENT name, which would corrupt every decode path.
+const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
+  [selectorOf('Panic', ['uint256']), 'Panic(uint256)'],
+  [selectorOf('Error', ['string']), 'Error(string)'],
+  [selectorOf('EvsDecodeError', ['uint256']), 'EvsDecodeError(uint256)'],
+  [selectorOf('EvsInvalidCalldata', []), 'EvsInvalidCalldata()'],
+]);
+
+/** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry
+ *  must be a `t.error` value with v0 param types; names and selectors must be unique (and
+ *  selector-disjoint from the built-ins). */
+function normalizeErrorDecls(
+  scriptName: string,
+  errorsIn: unknown,
+  entryLoc: ReturnType<typeof captureLoc>,
+): readonly RecErrorDecl[] {
+  let list: readonly unknown[];
+  if (errorsIn === undefined) {
+    list = [];
+  } else if (Array.isArray(errorsIn)) {
+    list = errorsIn;
+  } else {
+    list = [errorsIn];
+  }
+  const seenNames = new Set<string>();
+  const seenSelectors = new Map<string, string>();
+  return list.map((e, i): RecErrorDecl => {
+    const ctx = `evscript "${scriptName}" errors[${i}]`;
+    if (!isEvsErrorValue(e)) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `${ctx}: expected an error declared with t.error(...), got ${typeof e === 'object' && e !== null ? 'a non-error object' : String(e)}`,
+        { loc: entryLoc },
+      );
+    }
+    if (!IDENT_RE.test(e.name)) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `${ctx}: invalid error name ${JSON.stringify(e.name)} (must be a non-empty identifier)`,
+        { loc: entryLoc },
+      );
+    }
+    if (seenNames.has(e.name)) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `${ctx}: duplicate error name "${e.name}" — each declared error needs a distinct name (the client-side switch is keyed by name)`,
+        { loc: entryLoc },
+      );
+    }
+    seenNames.add(e.name);
+    // re-validate the params (a t.error value is trusted-shaped, a hand-built one is not),
+    // then rebuild the canonical inputs — never trust a carried `abi` blob.
+    const params = (e.params as readonly unknown[]).map((p, j) => {
+      if (
+        !isArgSpecValue(p) ||
+        (p.name !== '' && !IDENT_RE.test(p.name)) ||
+        !isEvsValueType(p.type)
+      ) {
+        throw new EvsTypeError(
+          'ERROR_DECL',
+          `${ctx} ("${e.name}"): param #${j} is not a valid t.error param`,
+          { loc: entryLoc },
+        );
+      }
+      return { name: p.name, type: p.type };
+    });
+    const inputs = Object.freeze(
+      params.map((p, j) => typeToAbiParam(p.name === '' ? `arg${j}` : p.name, p.type)),
+    );
+    const selector = errorSelectorOf(e.name, inputs);
+    const builtin = BUILTIN_ERROR_SELECTORS.get(selector);
+    if (builtin !== undefined) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `${ctx}: error "${e.name}" has the same 4-byte selector (${selector}) as the built-in ${builtin} — rename it or change its params`,
+        { loc: entryLoc },
+      );
+    }
+    const clash = seenSelectors.get(selector);
+    if (clash !== undefined) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `${ctx}: error "${e.name}" has the same 4-byte selector (${selector}) as declared error "${clash}"`,
+        { loc: entryLoc },
+      );
+    }
+    seenSelectors.set(selector, e.name);
+    return {
+      value: e,
+      params: Object.freeze(params),
+      ir: Object.freeze({ name: e.name, selector, inputs }) satisfies PlainAbiError,
+    };
+  });
+}
+
 export function evscript<
   const name extends string,
   const args extends ArgsInput = readonly [],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
+  const errs extends ErrorsInput = readonly [],
 >(
-  def: { name: name; args?: args },
-  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
+  def: { name: name; args?: args; errors?: errs },
+  body: (
+    s: ScriptBuilder<NormalizeErrors<errs>>,
+    ...args: ArgHandles<NormalizeArgs<args>>
+  ) => ScriptReturn<ret>,
   opts?: { locations?: boolean }, // default true: capture source locations
-): EvsScript<name, NormalizeArgs<args>, ret> {
+): EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
   const entryLoc = captureLoc();
   if (typeof def !== 'object' || def === null) {
     throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args? }`, {
@@ -193,12 +330,16 @@ export function evscript<
     return { name: `arg${i}`, type: d };
   });
 
+  // declared custom errors (issue #15): normalized + validated before recording starts, so a
+  // bad declaration fails fast (and s.throw checks against the same decls).
+  const errorDecls = normalizeErrorDecls(def.name, def.errors, entryLoc);
+
   const locations = opts?.locations ?? true;
   if (!locations) setLocCapture(false); // scoped per recorder; restored below
   let recorder: Recorder;
   let callbackResult: unknown;
   try {
-    recorder = new Recorder(def.name, argSpecs, locations ? entryLoc : null);
+    recorder = new Recorder(def.name, argSpecs, locations ? entryLoc : null, errorDecls);
     const s = makeBuilder(recorder);
     // the engine yields Expr|Tuple handles positionally; the typed surface (ArgHandles) is
     // enforced at the call site (`as unknown as` — the recorder is intentionally untyped).
@@ -213,16 +354,22 @@ export function evscript<
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so
   // the ABI inputs are labeled accordingly (issue #9).
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement is pinned by M3 tests
-  const abi = buildScriptAbi(def.name, ir.args, returns) as unknown as ScriptAbi<
-    name,
-    NormalizeArgs<args>,
-    ret
-  >;
-  const script: EvsScript<name, NormalizeArgs<args>, ret> = {
+  const abi = buildScriptAbi(
+    def.name,
+    ir.args,
+    returns,
+    errorDecls.map((d) => d.ir),
+  ) as unknown as ScriptAbi<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- decls carry the original t.error values verbatim
+  const errors = Object.freeze(errorDecls.map((d) => d.value)) as unknown as NormalizeErrors<errs>;
+  const script: EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> = {
     name: def.name,
     ir,
     abi,
-    compile(options?: CompileOptions): CompiledEvsScript<name, NormalizeArgs<args>, ret> {
+    errors,
+    compile(
+      options?: CompileOptions,
+    ): CompiledEvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
       // namespace access keeps this tolerant of the M9 module landing separately
       const compileFn: unknown = (compileModule as Record<string, unknown>)['compile'];
       if (typeof compileFn !== 'function') {
@@ -237,7 +384,7 @@ export function evscript<
         compileFn as (
           sc: unknown,
           o?: CompileOptions,
-        ) => CompiledEvsScript<name, NormalizeArgs<args>, ret>;
+        ) => CompiledEvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
       return typedCompile(script, options);
     },
   };
@@ -720,7 +867,13 @@ export type EvsFn<
 // the builder (api.md §4 — full surface)
 // ---------------------------------------------------------------------------
 
-export interface ScriptBuilder {
+export interface ScriptBuilder<
+  // the script's DECLARED custom errors (issue #15): `s.throw` only accepts members of this
+  // tuple, so throwing an undeclared error is a type error at the site. Wide default keeps
+  // pre-#15 `ScriptBuilder` references compiling (and accepts any error, backstopped at
+  // record time).
+  errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
+> {
   // values & state
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
@@ -795,6 +948,13 @@ export interface ScriptBuilder {
     body: (...args: FnArgHandles<NormalizeArgs<params>>) => r,
   ): EvsFn<NormalizeArgs<params>, r>;
 
+  // custom errors (issue #15) — revert with `selector ‖ abi.encode(args)`. Only DECLARED
+  // errors (the def's `errors: [...]`) are accepted; args are a required name-keyed record
+  // (all params named), a positional tuple (any bare param), or absent (zero params).
+  // Recording continues after a throw (it is usually conditional, inside s.if); statements
+  // recorded after an UNCONDITIONAL throw in the same block are dead in the emitted program.
+  throw<const e extends errs[number]>(error: e, ...args: ThrowArgs<e>): void;
+
   // return (api.md §9) — accepts an `Expr` OR a `Tuple` handle directly per component (the
   // `.expr()` on a tuple is optional; the bare handle returns the same memref).
   return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>;
@@ -865,6 +1025,10 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     trySimulate: tryVerb('simulate'),
 
     fn: (name: unknown, params: unknown, body: unknown) => r.defineFn(name, params, body),
+
+    throw: (error: unknown, ...args: unknown[]) => {
+      r.throwStmt(error, args, 's.throw()');
+    },
 
     return: (values: unknown) => r.ret(values),
   };

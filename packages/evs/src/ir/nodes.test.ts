@@ -193,6 +193,20 @@ const KITCHEN_SINK: ScriptIr = ir({
     mk({ k: 'bin', op: 'eq', a: 6, b: 10, out: 22 }, 20),
     mk({ k: 'bin', op: 'bitand', a: 4, b: 3, out: 23 }, 21),
     mk({ k: 'bin', op: 'shl', a: 23, b: 3, out: 24 }, 22),
+    // custom errors (issue #15): a with-args and a zero-arg throw, guarded by the flag
+    mk(
+      {
+        k: 'if',
+        cond: 1,
+        then: [mk({ k: 'throw', error: 0, args: [4] })],
+        else: [mk({ k: 'throw', error: 1, args: [] })],
+      },
+      23,
+    ),
+  ],
+  errors: [
+    { name: 'NoBalance', selector: '0xa6cccb45', inputs: [{ name: 'balance', type: 'uint256' }] },
+    { name: 'NotOwner', selector: '0x30cd7471', inputs: [] },
   ],
   returns: [
     { name: 'sum', type: 'uint256', value: 4 },

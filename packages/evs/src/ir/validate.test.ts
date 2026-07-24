@@ -187,6 +187,20 @@ const KITCHEN_SINK: ScriptIr = ir({
     mk({ k: 'bin', op: 'eq', a: 6, b: 10, out: 22 }, 20),
     mk({ k: 'bin', op: 'bitand', a: 4, b: 3, out: 23 }, 21),
     mk({ k: 'bin', op: 'shl', a: 23, b: 3, out: 24 }, 22),
+    // custom errors (issue #15): a with-args and a zero-arg throw, guarded by the flag
+    mk(
+      {
+        k: 'if',
+        cond: 1,
+        then: [mk({ k: 'throw', error: 0, args: [4] })],
+        else: [mk({ k: 'throw', error: 1, args: [] })],
+      },
+      23,
+    ),
+  ],
+  errors: [
+    { name: 'NoBalance', selector: '0xa6cccb45', inputs: [{ name: 'balance', type: 'uint256' }] },
+    { name: 'NotOwner', selector: '0x30cd7471', inputs: [] },
   ],
   returns: [
     { name: 'sum', type: 'uint256', value: 4 },
@@ -1555,5 +1569,105 @@ describe('validateIr — error shape', () => {
     expect(err.message).toContain('bug in evs, please report');
     expect(err.message).toContain('invalid ScriptIr "fixture"');
     expect(err.loc).toEqual(LOC);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// custom errors (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('validateIr — custom errors (issue #15)', () => {
+  const ERRORS = [
+    { name: 'NoBalance', selector: '0xa6cccb45', inputs: [{ name: 'balance', type: 'uint256' }] },
+    { name: 'NotOwner', selector: '0x30cd7471', inputs: [] },
+  ] as const;
+
+  test('valid throws accept (with-args and zero-arg)', () => {
+    expect(() =>
+      validateIr(
+        ir({
+          args: [{ name: 'x', type: 'uint256' }],
+          values: [vi('uint256', 'x')],
+          errors: ERRORS,
+          body: [
+            mk({ k: 'throw', error: 0, args: [0] }),
+            mk({ k: 'throw', error: 1, args: [] }, 1),
+          ],
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('throw with an unknown error index is rejected', () => {
+    expectInvalid(
+      ir({ errors: ERRORS, body: [mk({ k: 'throw', error: 5, args: [] })] }),
+      /unknown error index 5/,
+    );
+  });
+
+  test('throw with no errors table at all is rejected', () => {
+    expectInvalid(ir({ body: [mk({ k: 'throw', error: 0, args: [] })] }), /unknown error index 0/);
+  });
+
+  test('throw arity mismatch is rejected', () => {
+    expectInvalid(
+      ir({ errors: ERRORS, body: [mk({ k: 'throw', error: 0, args: [] })] }),
+      /arity mismatch — 0 args for 1 declared inputs/,
+    );
+  });
+
+  test('throw arg type mismatch is rejected', () => {
+    expectInvalid(
+      ir({
+        values: [vi('bool')],
+        errors: ERRORS,
+        body: [boolConst(0, true), mk({ k: 'throw', error: 0, args: [0] }, 1)],
+      }),
+      /throw "NoBalance".*arg 0/,
+    );
+  });
+
+  test('duplicate error names are rejected', () => {
+    expectInvalid(ir({ errors: [ERRORS[1], ERRORS[1]] }), /duplicate error name "NotOwner"/);
+  });
+
+  test('a malformed selector is rejected', () => {
+    expectInvalid(
+      ir({ errors: [{ name: 'X', selector: '0x1234', inputs: [] }] }),
+      /selector must be a 4-byte hex string/,
+    );
+  });
+
+  test('an empty/duplicate input name is rejected (decode utilities key args by name)', () => {
+    expectInvalid(
+      ir({
+        errors: [{ name: 'X', selector: '0xa6cccb45', inputs: [{ name: '', type: 'uint256' }] }],
+      }),
+      /input #0 has an invalid name/,
+    );
+    expectInvalid(
+      ir({
+        errors: [
+          {
+            name: 'X',
+            selector: '0xa6cccb45',
+            inputs: [
+              { name: 'a', type: 'uint256' },
+              { name: 'a', type: 'address' },
+            ],
+          },
+        ],
+      }),
+      /duplicate input name "a"/,
+    );
+  });
+
+  test('a non-v0 input type is rejected', () => {
+    expectInvalid(
+      ir({
+        errors: [{ name: 'X', selector: '0xa6cccb45', inputs: [{ name: 'a', type: 'uint7' }] }],
+      }),
+      /type outside the supported set/,
+    );
   });
 });
