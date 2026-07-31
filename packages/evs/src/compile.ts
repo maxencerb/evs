@@ -13,7 +13,13 @@
 
 import type { Address } from 'abitype';
 
-import { canonicalTypeSignature, selectorOf, type ScriptAbi } from './abi/artifact.js';
+import {
+  canonicalTypeSignature,
+  decodeErrorArgsRecord,
+  PANIC_MEANINGS,
+  selectorOf,
+  type ScriptAbi,
+} from './abi/artifact.js';
 import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
 import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
@@ -27,7 +33,7 @@ import {
   type EvsDiagnostic,
   type SourceLoc,
 } from './core/errors.js';
-import type { ArgSpec, Hex } from './core/types.js';
+import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
 
@@ -46,19 +52,21 @@ export interface CompiledEvsScript<
   name extends string = string,
   args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
+  // declared custom errors (issue #15) — trailing, wide-defaulted like EvsScript's
+  errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
 > {
-  readonly abi: ScriptAbi<name, args, ret>; // literal-typed: [function, EvsInvalidCalldata, EvsDecodeError]
+  readonly abi: ScriptAbi<name, args, ret, errs>; // literal-typed: [function, EvsInvalidCalldata, EvsDecodeError, ...declared]
   readonly runtimeBytecode: Hex; // ≤ 24,576 bytes (EIP-170), enforced
   readonly initBytecode: Hex; // 61RRRR80600A5F395FF3 ++ runtime (paris: 5F→3D)
   readonly sourceMap: SourceMap;
   readonly ir: ScriptIr;
   readonly options: Readonly<Required<CompileOptions>>;
-  toViem(): { abi: ScriptAbi<name, args, ret>; code: Hex }; // deployless (default)
-  toViem(o: { mode: 'deployless' }): { abi: ScriptAbi<name, args, ret>; code: Hex };
+  toViem(): { abi: ScriptAbi<name, args, ret, errs>; code: Hex }; // deployless (default)
+  toViem(o: { mode: 'deployless' }): { abi: ScriptAbi<name, args, ret, errs>; code: Hex };
   // NOTE: the stateOverride tuple is mutable (not `readonly`) because viem's `StateOverride`
   // is a mutable `Array` type — a readonly tuple would not spread into `readContract`.
   toViem(o: { mode: 'stateOverride'; address?: Address }): {
-    abi: ScriptAbi<name, args, ret>;
+    abi: ScriptAbi<name, args, ret, errs>;
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
   };
@@ -67,9 +75,18 @@ export interface CompiledEvsScript<
 }
 
 export interface RevertExplanation {
-  kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
+  kind:
+    | 'panic'
+    | 'evs-decode'
+    | 'evs-invalid-calldata'
+    | 'error-string'
+    | 'script-error' // a DECLARED custom error thrown by s.throw (issue #15)
+    | 'custom'
+    | 'empty';
   message: string;
   panicCode?: bigint;
+  errorName?: string; // script-error only: the declared error's name
+  errorArgs?: Readonly<Record<string, unknown>>; // script-error only: name-keyed decoded args
   site?: { id: SiteId; loc: SourceLoc | null; detail: string };
   candidateSites?: readonly { id: SiteId; loc: SourceLoc | null; detail: string }[]; // Panic only
   raw: Hex;
@@ -79,9 +96,10 @@ export type CompiledOf<s> =
   s extends EvsScript<
     infer n extends string,
     infer a extends readonly ArgSpec[],
-    infer r extends Record<string, ReturnValue>
+    infer r extends Record<string, ReturnValue>,
+    infer e extends readonly EvsErrorType[]
   >
-    ? CompiledEvsScript<n, a, r>
+    ? CompiledEvsScript<n, a, r, e>
     : never;
 
 // DEVIATION (recorded): the law writes `compile<s extends EvsScript>`, but a concrete
@@ -279,18 +297,8 @@ const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']); // 0x08c379a0
 const DECODE_ERROR_SELECTOR = selectorOf('EvsDecodeError', ['uint256']);
 const INVALID_CALLDATA_SELECTOR = selectorOf('EvsInvalidCalldata', []);
 
-const PANIC_MEANINGS: Readonly<Record<string, string>> = {
-  '0x00': 'generic compiler panic',
-  '0x01': 'assertion failure (assert)',
-  '0x11': 'arithmetic overflow or underflow',
-  '0x12': 'division or modulo by zero',
-  '0x21': 'invalid enum conversion',
-  '0x22': 'corrupted storage byte array',
-  '0x31': 'pop on an empty array',
-  '0x32': 'array index out of bounds',
-  '0x41': 'allocation too large (out of memory)',
-  '0x51': 'call to a zero-initialized internal function',
-};
+// PANIC_MEANINGS moved to abi/artifact.ts (issue #15) — shared with the client-side
+// decodeScriptError; imported above.
 
 type SiteRef = { id: SiteId; loc: SourceLoc | null; detail: string };
 
@@ -425,6 +433,36 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
     }
   }
 
+  // a DECLARED custom error (issue #15) — matched against the script's own error table. The
+  // callee-forgery hedge applies exactly as for the evs selectors: the selector is public.
+  const declared = (ir.errors ?? []).find((e) => e.selector === selector);
+  if (declared !== undefined) {
+    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
+    const payload: Hex = `0x${raw.slice(2 + 8)}`;
+    const args = decodeErrorArgsRecord(declared.inputs, payload);
+    if (args === null) {
+      return {
+        kind: 'script-error',
+        message:
+          `declared error ${declared.name} (selector ${selector}) with a MALFORMED argument ` +
+          `payload (${bytes.length - 4} bytes) — the payload does not decode against its ` +
+          `declared inputs, so it was likely bubbled verbatim from a callee`,
+        errorName: declared.name,
+        raw,
+      };
+    }
+    const shown = Object.entries(args)
+      .map(([k, v]) => `${k}: ${fmtErrorArg(v)}`)
+      .join(', ');
+    return {
+      kind: 'script-error',
+      message: `script error ${declared.name}(${shown}) — thrown by s.throw${hedge}`,
+      errorName: declared.name,
+      errorArgs: args,
+      raw,
+    };
+  }
+
   return {
     kind: 'custom',
     message:
@@ -432,6 +470,12 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
       `— decode it against the callee's ABI`,
     raw,
   };
+}
+
+/** Message rendering of one decoded error arg — bigints (top-level or nested in a decoded
+ *  struct/array arg) stringify as `123n`. */
+function fmtErrorArg(v: unknown): string {
+  return JSON.stringify(v, (_k, x: unknown) => (typeof x === 'bigint' ? `${x}n` : x));
 }
 
 /** Permissive `Error(string)` payload decode; returns null on any structural mismatch. */

@@ -2525,3 +2525,95 @@ function abiEchoMock(): Hex {
   for (const b of bytecode) hex += b.toString(16).padStart(2, '0');
   return `0x${hex}`;
 }
+
+// ---------------------------------------------------------------------------
+// 14. custom errors — s.throw revert payloads (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('custom errors (issue #15)', () => {
+  const NoBalance = t.error('NoBalance', [
+    namedArg('balance', t.uint256),
+    namedArg('who', t.address),
+  ]);
+  const NotOwner = t.error('NotOwner');
+  const Tagged = t.error('Tagged', [
+    namedArg('note', t.string),
+    namedArg('xs', t.array(t.uint256)),
+  ]);
+
+  function guardScript() {
+    return evscript(
+      {
+        name: 'guard',
+        args: [namedArg('x', t.uint256), namedArg('who', t.address)],
+        errors: [NoBalance, NotOwner],
+      },
+      (s, x, who) => {
+        s.if(x.lt(10n), () => {
+          s.throw(NoBalance, { balance: x, who });
+        });
+        s.if(x.eq(999n), () => {
+          s.throw(NotOwner);
+        });
+        return s.return({ doubled: x.mul(2n) });
+      },
+    );
+  }
+
+  const WHO = '0xb000000000000000000000000000000000000002' as const;
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`throw payloads agree byte-for-byte (with-args / zero-arg / success) [${evmVersion}]`, async () => {
+      const outcomes = await expectAgreement(
+        guardScript(),
+        [
+          [5n, WHO], // NoBalance(5, WHO)
+          [0n, WHO], // NoBalance(0, WHO)
+          [999n, WHO], // NotOwner()
+          [21n, WHO], // success
+        ],
+        {},
+        evmVersion,
+      );
+      expect(outcomes[0]?.kind).toBe('revert');
+      expect(outcomes[2]?.kind).toBe('revert');
+      expect(outcomes[2]?.data.length).toBe(2 + 8); // bare selector
+      expect(outcomes[3]?.kind).toBe('return');
+    });
+
+    test(`dynamic error args (string + uint256[]) agree [${evmVersion}]`, async () => {
+      const script = evscript(
+        { name: 'dynErr', args: [namedArg('n', t.uint256)], errors: [Tagged] },
+        (s, n) => {
+          const xs = s.newArray(t.uint256, n);
+          s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+            xs.set(i, i.mul(3n));
+          });
+          s.if(n.gt(0n), () => {
+            s.throw(Tagged, { note: s.lit(t.string, 'boom'), xs });
+          });
+          return s.return({ n });
+        },
+      );
+      const outcomes = await expectAgreement(script, [[3n], [0n]], {}, evmVersion);
+      expect(outcomes[0]?.kind).toBe('revert');
+      expect(outcomes[1]?.kind).toBe('return');
+    });
+
+    test(`a throw inside an s.fn body agrees [${evmVersion}]`, async () => {
+      const Boom = t.error('Boom', [namedArg('x', t.uint256)]);
+      const script = evscript({ name: 'fnThrow', args: [t.uint256], errors: [Boom] }, (s, x) => {
+        const check = s.fn('check', t.uint256, (v) => {
+          s.if(s.gt(v, 100n), () => {
+            s.throw(Boom, { x: v });
+          });
+          return s.add(v, 1n);
+        });
+        return s.return({ out: check(x) });
+      });
+      const outcomes = await expectAgreement(script, [[500n], [1n]], {}, evmVersion);
+      expect(outcomes[0]?.kind).toBe('revert');
+      expect(outcomes[1]?.kind).toBe('return');
+    });
+  }
+});

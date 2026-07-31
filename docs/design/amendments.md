@@ -1624,6 +1624,51 @@ site (`guides/functions`, `reference/evscript`) are amended in place.
 
 ---
 
+## 24. Custom errors: `t.error` / `errors:` / `s.throw` + client decode utilities (issue #15)
+
+Design contract: `docs/design/proposals/custom-errors.md` (ACCEPTED — the binding spec for
+this change; decisions locked in the issue-#15 discussion). Summary of the law amendments:
+
+- **M1** — `EvsErrorCode` gains `ERROR_DECL` / `ERROR_UNDECLARED`. `core/types.ts` gains
+  `EvsErrorType`/`EvsErrorAbiEntry` + `t.error(name, params?)` (params take the `ArgsInput`
+  shorthand). `ArgInput`/`ArgsInput`/`ToArgSpec`/`NormalizeArgs` (from M5) and
+  `ArgName`/`ResolveArgName`/`ArgsToInputs` (from M3) MOVED into M1 — `t.error` needs them and
+  core takes no non-abitype import; M3/M5 re-export them verbatim, so both frozen surfaces are
+  unchanged.
+- **Deviation from the proposal**: `EvsErrorType` carries NO `selector` field — computing it
+  needs keccak (viem), which M1 may not import. Selectors are derived downstream
+  (`errorSelectorOf`, M3) and recorded on the IR `PlainAbiError`, so nothing recomputes at
+  lowering/explain time.
+- **M2** — `ScriptIr` gains OPTIONAL `errors?: readonly PlainAbiError[]` (omitted when empty —
+  pre-#15 serialized IR round-trips byte-identically, the `call.kind` precedent) and the
+  `throw` Stmt (`{ error: index, args }`). `validateIr` checks the error table (names,
+  selectors, resolved input names) and throw arity/types.
+- **M3** — `ScriptAbi` gains trailing `errs` param (wide default): declared entries appended
+  AFTER the built-ins (`[fn, EvsInvalidCalldata, EvsDecodeError, ...declared]`).
+  `buildScriptAbi` gains an optional 4th `errors` param. New exports: `errorSelectorOf`,
+  `decodeErrorArgsRecord`, `ErrorsToAbi`, and `PANIC_MEANINGS` (moved from compile.ts).
+- **M5** — the def gains `errors?`; `ScriptBuilder<errs>` gains `throw` (typed against the
+  declared tuple — an undeclared throw is a type error, backstopped by `ERROR_UNDECLARED` at
+  record time); `EvsScript` gains `errors` + trailing `errs` param. `s.throw` args: required
+  name-keyed record (all params named) / positional tuple (any bare) / none (zero params).
+- **M6/M8** — interp models `throw` as `selector ‖ abi.encode(args)` revert (differential-
+  tested per fork); lowering emits the throw INLINE (standard-encode emitter + selector MSTORE
+  into the dead length word + `REVERT(ptr+28, len+4)`; zero-param = the selector-store tail
+  shape). Inline `REVERT` is verifier-safe (terminator; the call.ts bubble precedent) — the
+  "panics never revert inline" invariant note now reads "panic exits", which throw is not.
+- **M9** — `CompiledEvsScript` gains trailing `errs`; `RevertExplanation` gains
+  `kind: 'script-error'` + `errorName`/`errorArgs`; `explainRevert` matches `ir.errors` before
+  the `custom` fallback (with the callee-forgery hedge). `viem.ts` gains the client-side
+  utilities `decodeScriptError` / `matchScriptError` (+ `DecodedScriptError`,
+  `DecodedBuiltinError`, `ErrorArgsOf`, `ScriptErrorHandlers`, `HandlerResult`) — NO call
+  wrappers, per the issue-#15 discussion. `matchScriptError` infers the whole handlers object
+  (a single-`r` signature broke contextual arg typing and forced one shared return type).
+- Reserved error names: `Panic`, `Error`, `EvsDecodeError`, `EvsInvalidCalldata`, and `_`
+  (the match default-arm key). Declared-but-unthrown errors are allowed (Solidity parity).
+- Status: **accepted**. Pinned by unit (validation/compile/viem/nodes/validate), bytecode
+  goldens, differential corpus (all three forks), type tests, and the anvil integration tier
+  (`test/integration/errors.test.ts`).
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

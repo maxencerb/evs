@@ -222,6 +222,90 @@ export function namedArg<const name extends string, const type extends EvsType>(
   return Object.freeze({ name, type });
 }
 
+// ---------------------------------------------------------------------------
+// args-input normalization (shared by `evscript` args, `s.fn` params, `t.error` params)
+// ---------------------------------------------------------------------------
+// These lived in builder/script.ts (M5) until issue #15; they are pure M1 material (EvsType +
+// ArgSpec only) and `t.error` needs them, so they moved here. script.ts re-exports them
+// verbatim — the frozen M5 surface is unchanged.
+
+/**
+ * One top-level arg/param declarator (api.md §2; issue #9): a bare `t.*` type, or a
+ * {@link namedArg}-produced {@link ArgSpec} that labels the arg.
+ */
+export type ArgInput = EvsType | ArgSpec;
+
+/**
+ * Args/params input: a single {@link ArgInput} (a bare type or a {@link namedArg}), or a `readonly`
+ * list of them (mixing named and bare). A lone declarator is sugar for a one-element list
+ * (`args: t.uint256` ≡ `args: [t.uint256]`; `args: namedArg('x', t.uint256)` ≡ `args:
+ * [namedArg('x', t.uint256)]`) — shared by `evscript` args, `s.fn` params, and `t.error` params.
+ */
+export type ArgsInput = ArgInput | readonly ArgInput[];
+
+/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a bare type
+ *  becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
+ *  downstream (`ResolveArgName` / the recorder). */
+export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+
+/** Normalizes {@link ArgsInput} to the canonical `readonly ArgSpec[]` (lone declarator → one-tuple;
+ *  homomorphic over a list so order/positions are preserved). */
+export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
+  ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
+  : readonly [ToArgSpec<a>];
+
+// The positional fallback name for arg position `i`: `arg{i}` for a concrete tuple index (a
+// numeric-string key), but a plain `string` for the open `number` index of the default
+// `readonly ArgSpec[]` instantiation — so `arg0`/`arg1` literals stay assignable to it (vs.
+// collapsing to `never`, which would reject every concrete script).
+export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+
+// The surfaced name of an arg at position `i`: its user-provided {@link namedArg} name, or the
+// positional `arg{i}` fallback when the arg was passed bare (an empty sentinel name). issue #9.
+export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i> : name;
+
+// A normalized ArgSpec tuple → labeled abitype input components: each entry is labeled with its
+// user name (`namedArg`) or the positional `arg0`/`arg1`/… fallback, and a tuple arg expands to
+// `{ name, type: 'tuple', components }` via {@link TypeToComponent}. A purely HOMOMORPHIC mapped
+// type — order/labels preserved structurally (no `UnionToTuple`), and no conditional over `args`
+// itself, so `args` stays a COVARIANT type parameter. (Moved from abi/artifact.ts — issue #15 —
+// which re-exports it; `t.error` uses it for the literal error-ABI inputs.)
+export type ArgsToInputs<args extends readonly ArgSpec[]> = {
+  readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
+};
+
+// ---------------------------------------------------------------------------
+// custom error declarations — `t.error` (issue #15)
+// ---------------------------------------------------------------------------
+
+/** The literal `{ type: 'error', name, inputs }` ABI entry carried by an {@link EvsErrorType}
+ *  (spreadable into any viem ABI; appended to the script ABI by `buildScriptAbi`). */
+export interface EvsErrorAbiEntry<
+  name extends string = string,
+  params extends readonly ArgSpec[] = readonly ArgSpec[],
+> {
+  readonly type: 'error';
+  readonly name: name;
+  readonly inputs: ArgsToInputs<params>;
+}
+
+/**
+ * A declared custom error (issue #15): a module-level value created by {@link t.error},
+ * declared on a script def (`errors: [...]`) and thrown with `s.throw`. Carries the normalized
+ * param specs and the literal ABI entry; the 4-byte selector is derived downstream (M3
+ * `selectorOf` — core stays viem-free), byte-identical to Solidity's over the canonical
+ * signature.
+ */
+export interface EvsErrorType<
+  name extends string = string,
+  params extends readonly ArgSpec[] = readonly ArgSpec[],
+> {
+  readonly kind: 'error'; // runtime discriminant (an EvsType is a string or TupleType)
+  readonly name: name;
+  readonly params: params; // normalized ArgSpecs (namedArg names or '' sentinels)
+  readonly abi: EvsErrorAbiEntry<name, params>;
+}
+
 // -- type-level record→ordered-components machinery (abitype §4.2) -----------------------------
 // A struct record is unordered at the type level; recovering an order needs `UnionToTuple`,
 // whose order is TS-internal-id order, NOT declaration order. That is SAFE here because a struct
@@ -332,6 +416,13 @@ type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>;
   struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>;
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>;
+  // declare a custom error (issue #15): params take the same shorthand as `evscript` args /
+  // `s.fn` params — a bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing
+  // named and bare (bare params get the positional `arg{i}` fallback name).
+  error<const name extends string, const params extends ArgsInput = readonly []>(
+    name: name,
+    params?: params,
+  ): EvsErrorType<name, NormalizeArgs<params>>;
   // derive a `t.*` type from an ABI function's outputs / a single ABI parameter (issue #5 ask #4):
   fromOutputs<const abi extends Abi | readonly unknown[], const name extends string>(
     abi: abi,
@@ -484,6 +575,9 @@ export const t: TypeNamespace = Object.freeze({
   },
   tuple(...items: unknown[]): unknown {
     return tupleTypeRT(items);
+  },
+  error(name: unknown, params?: unknown): unknown {
+    return errorTypeRT(name, params);
   },
   fromOutputs(abi: unknown, name: unknown): unknown {
     return fromOutputsRT(abi, name);
@@ -868,6 +962,109 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
   const single = components[0];
   if (components.length === 1 && single !== undefined) return abiParamToType(single);
   return Object.freeze({ type: 'tuple', components });
+}
+
+// ---------------------------------------------------------------------------
+// `t.error` runtime (issue #15)
+// ---------------------------------------------------------------------------
+
+/** Names whose selectors/semantics belong to Solidity or the evs runtime — a user error may
+ *  not shadow them (they get dedicated decode arms and would break the client-side switch).
+ *  '_' is the matchScriptError default-arm key. */
+const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'Panic',
+  'Error',
+  'EvsDecodeError',
+  'EvsInvalidCalldata',
+  '_',
+]);
+
+/** A {@link namedArg}-produced {@link ArgSpec} value (a bare type is a string; a bare composite
+ *  type is a {@link TupleType}, which has no `name`). Mirror of the builder's declarator check. */
+function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
+  return isRecordObject(v) && typeof (v as { name?: unknown }).name === 'string' && 'type' in v;
+}
+
+function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
+  if (typeof name !== 'string' || !IDENT_RE.test(name)) {
+    throw new EvsTypeError(
+      'ERROR_DECL',
+      `t.error(): error name must be a non-empty identifier, got ${describeTypeInput(name)}`,
+      { loc: captureLoc() },
+    );
+  }
+  if (RESERVED_ERROR_NAMES.has(name)) {
+    throw new EvsTypeError(
+      'ERROR_DECL',
+      `t.error("${name}"): the name is reserved (Panic/Error are Solidity built-ins; EvsDecodeError/EvsInvalidCalldata belong to the evs runtime) — pick another name`,
+      { loc: captureLoc() },
+    );
+  }
+  let decls: readonly unknown[];
+  if (paramsIn === undefined) {
+    decls = [];
+  } else if (Array.isArray(paramsIn)) {
+    decls = paramsIn;
+  } else {
+    decls = [paramsIn];
+  }
+  const params = decls.map((d, i): { name: string; type: EvsType } => {
+    const ctx = `t.error("${name}") param #${i}`;
+    if (isArgSpecValue(d)) {
+      if (d.name !== '' && !IDENT_RE.test(d.name)) {
+        throw new EvsTypeError(
+          'ERROR_DECL',
+          `${ctx}: invalid param name ${JSON.stringify(d.name)} (must be a non-empty identifier)`,
+          { loc: captureLoc() },
+        );
+      }
+      const ty: unknown = d.type;
+      if (typeof ty === 'string') {
+        assertEvsType(ty, `${ctx} ("${d.name}")`);
+        return { name: d.name, type: ty };
+      }
+      if (!isEvsValueType(ty)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${ctx} ("${d.name}"): expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
+          { loc: captureLoc() },
+        );
+      }
+      return { name: d.name, type: ty };
+    }
+    if (typeof d === 'string') {
+      assertEvsType(d, ctx);
+      return { name: '', type: d };
+    }
+    if (isTupleType(d) && isEvsValueType(d)) return { name: '', type: d };
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${ctx}: expected a type or namedArg(...), got ${describeTypeInput(d)}`,
+      { loc: captureLoc() },
+    );
+  });
+  // resolved (arg{i}-fallback) input names must be unique — the decode utilities key args by name
+  const seen = new Set<string>();
+  const inputs = params.map((p, i) => {
+    const resolved = p.name === '' ? `arg${i}` : p.name;
+    if (seen.has(resolved)) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `t.error("${name}"): duplicate param name "${resolved}"`,
+        { loc: captureLoc() },
+      );
+    }
+    seen.add(resolved);
+    return typeToAbiParam(resolved, p.type);
+  });
+  const abi = Object.freeze({
+    type: 'error',
+    name,
+    inputs: Object.freeze(inputs),
+  });
+  const specs = Object.freeze(params.map((p) => Object.freeze(p)));
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the literal type is the overload's authority; the runtime shape is built to match
+  return Object.freeze({ kind: 'error', name, params: specs, abi }) as unknown as EvsErrorType;
 }
 
 /**

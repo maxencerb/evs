@@ -15,7 +15,7 @@ import { siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile } from './compile.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
-import { t, type Hex } from './core/types.js';
+import { namedArg, t, type Hex } from './core/types.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -593,5 +593,143 @@ describe('compile — IR validation wiring', () => {
       Error,
     );
     expect(err.message).toContain('invalid ScriptIr');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// custom errors — end to end on the local EVM harness (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('custom errors (issue #15)', () => {
+  const NoBalance = t.error('NoBalance', [
+    namedArg('balance', t.uint256),
+    namedArg('who', t.address),
+  ]);
+  const NotOwner = t.error('NotOwner');
+
+  function throwScript() {
+    return evscript(
+      { name: 'guard', args: [t.uint256, t.address], errors: [NoBalance, NotOwner] },
+      (s, x, who) => {
+        s.if(x.lt(10n), () => {
+          s.throw(NoBalance, { balance: x, who });
+        });
+        s.if(x.eq(999n), () => {
+          s.throw(NotOwner);
+        });
+        return s.return({ doubled: x.mul(2n) });
+      },
+    );
+  }
+
+  const WHO = '0xb000000000000000000000000000000000000002' as const;
+  function guardCalldata(x: bigint): Hex {
+    return encodeFunctionData({ abi: throwScript().abi, functionName: 'guard', args: [x, WHO] });
+  }
+
+  test('the artifact ABI carries the declared error entries after the built-ins', () => {
+    const compiled = compile(throwScript());
+    const errors = compiled.abi.filter((e) => e.type === 'error').map((e) => e.name);
+    expect(errors).toEqual(['EvsInvalidCalldata', 'EvsDecodeError', 'NoBalance', 'NotOwner']);
+  });
+
+  test('a with-args throw reverts with selector ‖ abi.encode(args), byte-exact vs viem', async () => {
+    const compiled = compile(throwScript());
+    const res = await execRuntime(compiled.runtimeBytecode, guardCalldata(5n));
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(
+      encodeErrorResult({ abi: compiled.abi, errorName: 'NoBalance', args: [5n, WHO] }),
+    );
+    const explained = compiled.explainRevert(res.data);
+    expect(explained.kind).toBe('script-error');
+    expect(explained.errorName).toBe('NoBalance');
+    expect(explained.errorArgs).toEqual({ balance: 5n, who: WHO });
+    expect(explained.message).toMatch(/NoBalance/);
+    expect(explained.raw).toBe(res.data);
+  });
+
+  test('a zero-arg throw reverts with the bare 4-byte selector', async () => {
+    const compiled = compile(throwScript());
+    const res = await execRuntime(compiled.runtimeBytecode, guardCalldata(999n));
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(encodeErrorResult({ abi: compiled.abi, errorName: 'NotOwner' }));
+    expect(res.data.length).toBe(2 + 8); // selector only
+    const explained = compiled.explainRevert(res.data);
+    expect(explained.kind).toBe('script-error');
+    expect(explained.errorName).toBe('NotOwner');
+    expect(explained.errorArgs).toEqual({});
+  });
+
+  test('the success path is untouched by declared errors', async () => {
+    const compiled = compile(throwScript());
+    const res = await execRuntime(compiled.runtimeBytecode, guardCalldata(21n));
+    expect(res.success).toBe(true);
+    const decoded = decodeFunctionResult({
+      abi: compiled.abi,
+      functionName: 'guard',
+      data: res.data,
+    });
+    expect(decoded).toEqual({ doubled: 42n });
+  });
+
+  test('a declared selector with a malformed payload is flagged, not decoded', () => {
+    const compiled = compile(throwScript());
+    const selector = compiled.ir.errors?.[0]?.selector ?? '0x';
+    const explained = compiled.explainRevert(`0x${selector.slice(2)}ff`);
+    expect(explained.kind).toBe('script-error');
+    expect(explained.errorName).toBe('NoBalance');
+    expect(explained.errorArgs).toBeUndefined();
+    expect(explained.message).toMatch(/MALFORMED/);
+  });
+
+  test('a throw inside an s.fn body reverts the whole script', async () => {
+    const Boom = t.error('Boom', [namedArg('x', t.uint256)]);
+    const script = evscript({ name: 'fnThrow', args: [t.uint256], errors: [Boom] }, (s, x) => {
+      const check = s.fn('check', t.uint256, (v) => {
+        s.if(s.gt(v, 100n), () => {
+          s.throw(Boom, { x: v });
+        });
+        return s.add(v, 1n);
+      });
+      return s.return({ out: check(x) });
+    });
+    const compiled = compile(script);
+    const res = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({ abi: compiled.abi, functionName: 'fnThrow', args: [500n] }),
+    );
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(
+      encodeErrorResult({ abi: compiled.abi, errorName: 'Boom', args: [500n] }),
+    );
+  });
+
+  test('a struct-param error encodes like Solidity (dynamic tail)', async () => {
+    const Detail = t.error('Detail', [
+      namedArg('info', t.struct({ code: t.uint256, note: t.string })),
+    ]);
+    const script = evscript({ name: 'structErr', args: [t.uint256], errors: [Detail] }, (s, x) => {
+      const info = s.tuple(t.struct({ code: t.uint256, note: t.string }), {
+        code: x,
+        note: s.lit(t.string, 'nope'),
+      });
+      s.if(x.gt(0n), () => {
+        s.throw(Detail, { info });
+      });
+      return s.return({ x });
+    });
+    const compiled = compile(script);
+    const res = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({ abi: compiled.abi, functionName: 'structErr', args: [7n] }),
+    );
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(
+      encodeErrorResult({
+        abi: compiled.abi,
+        errorName: 'Detail',
+        args: [{ code: 7n, note: 'nope' }],
+      }),
+    );
   });
 });

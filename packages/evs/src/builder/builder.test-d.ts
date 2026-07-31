@@ -879,3 +879,66 @@ test('#17 encode/encodePacked/keccak256 result types and value bounds', () => {
     return s.return({ h: s.keccak256(x) });
   });
 });
+
+// ---------------------------------------------------------------------------
+// custom errors — s.throw typing (issue #15)
+// ---------------------------------------------------------------------------
+
+const NoBalanceT = t.error('NoBalance', [
+  namedArg('balance', t.uint256),
+  namedArg('who', t.address),
+]);
+const NotOwnerT = t.error('NotOwner');
+const BadPairT = t.error('BadPair', [t.address, t.uint256]);
+const UndeclaredT = t.error('Undeclared', [t.uint256]);
+
+test('s.throw accepts declared errors with their exact args shapes', () => {
+  evscript(
+    { name: 'errs', args: [t.uint256, t.address], errors: [NoBalanceT, NotOwnerT, BadPairT] },
+    (s, x, who) => {
+      s.throw(NoBalanceT, { balance: x, who }); // named record — all params named
+      s.throw(NoBalanceT, { balance: 5n, who: '0x0000000000000000000000000000000000000001' }); // literals coerce
+      s.throw(NotOwnerT); // zero-param — no args
+      s.throw(BadPairT, [who, x]); // positional tuple — bare params
+      expectTypeOf(s.throw(NotOwnerT)).toBeVoid();
+      return s.return({ x });
+    },
+  );
+});
+
+test('s.throw rejects undeclared errors and malformed args', () => {
+  evscript(
+    { name: 'errsBad', args: [t.uint256, t.address], errors: [NoBalanceT, NotOwnerT] },
+    (s, x, who) => {
+      // @ts-expect-error — Undeclared is not in the def's errors list
+      s.throw(UndeclaredT, [x]);
+      // @ts-expect-error — missing required member `who`
+      s.throw(NoBalanceT, { balance: x });
+      // @ts-expect-error — wrong member type (address expected)
+      s.throw(NoBalanceT, { balance: x, who: x });
+      // @ts-expect-error — a zero-param error takes no args
+      s.throw(NotOwnerT, {});
+      // @ts-expect-error — a named-params error takes a record, not a tuple
+      s.throw(NoBalanceT, [x, who]);
+      expectTypeOf(s).not.toBeNever();
+      return s.return({ x });
+    },
+  );
+});
+
+test('a zero-errors script rejects every throw', () => {
+  evscript({ name: 'noErrs', args: [t.uint256] }, (s, x) => {
+    // @ts-expect-error — errs is readonly [], so errs[number] is never
+    s.throw(NotOwnerT);
+    expectTypeOf(s).not.toBeNever();
+    return s.return({ x });
+  });
+});
+
+test('the declared errors surface on the script value', () => {
+  const script = evscript({ name: 'carry', args: [t.uint256], errors: [NoBalanceT] }, (s, x) =>
+    s.return({ x }),
+  );
+  expectTypeOf(script.errors).toEqualTypeOf<readonly [typeof NoBalanceT]>();
+  expectTypeOf(script.errors[0].name).toEqualTypeOf<'NoBalance'>();
+});

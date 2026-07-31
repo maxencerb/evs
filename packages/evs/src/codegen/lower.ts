@@ -30,7 +30,7 @@
 import { layoutOfType } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { HEX_BYTES_RE, hexToBytes, padWordAligned } from '../core/bytes.js';
+import { HEX_BYTES_RE, hexToBytes, padWordAligned, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import {
   bitsOf,
@@ -304,6 +304,9 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       return;
     case 'keccak256':
       lowerKeccak256(w, s, ctx);
+      return;
+    case 'throw':
+      lowerThrow(w, s, ctx);
       return;
     case 'field':
       lowerField(w, s, ctx);
@@ -988,6 +991,54 @@ function lowerEncode(w: AsmWriter, s: Extract<Stmt, { k: 'encode' }>, ctx: Lower
     emitPackedEncodeToBytes(w, items, ctx.tails, ctx.opts, m); // [ptr]
   }
   storeOut(w, ctx, s.out); // []
+}
+
+/**
+ * `throw` — custom-error revert (issue #15): `REVERT` with `selector ‖ abi.encode(args)`,
+ * byte-identical to solc's custom-error revert data. Emitted INLINE at the throw site (the
+ * shared-tail pattern only fits fixed payloads; the verifier treats `REVERT` as a terminator,
+ * so the template need not be net-zero — the `call.ts` bubble-revert precedent).
+ *
+ * With params: the standard-encode emitter materializes `abi.encode(args)` as a fresh
+ * `[len | payload…]` memref at `ptr`; the selector word is then MSTOREd AT `ptr`, landing its
+ * 4 bytes in `[ptr+28, ptr+32)` — clobbering the low bytes of the length word, which is dead
+ * at this point — and the frame reverts with `(ptr+28, len+4)`. Zero params: the shared-tail
+ * selector-store shape (`sel << 224` at offset 0, revert(0, 4)) — memory is dead pre-revert.
+ */
+function lowerThrow(w: AsmWriter, s: Extract<Stmt, { k: 'throw' }>, ctx: LowerCtx): void {
+  const err = (ctx.ir.errors ?? [])[s.error];
+  if (err === undefined) throw internal(`throw with unknown error #${s.error} survived validateIr`);
+  const m = meta(ctx, s, `throw ${err.name}`);
+  const sel = selectorBytes(err.selector, 'codegen/lower throw');
+  if (s.args.length === 0) {
+    w.pushBytes(sel, m); // [sel]
+    w.push(0xe0);
+    w.op('SHL'); // [selWord]
+    w.push(0);
+    w.op('MSTORE'); // []           mem[0..4) = selector
+    w.push(4);
+    w.push(0);
+    w.op('REVERT', { note: `${err.name}()` }); // revert(0, 4)
+    return;
+  }
+  const items = s.args.map((a) => ({
+    param: typeToAbiParam('', typeOf(ctx, a)),
+    pushSrc: (): void => {
+      loadOperand(w, ctx, a);
+    },
+  }));
+  emitAbiEncodeToBytes(w, items, ctx.tails, ctx.opts, m); // [ptr]
+  w.op('DUP1');
+  w.op('MLOAD'); // [len, ptr]
+  w.push(4);
+  w.op('ADD'); // [len+4, ptr]
+  w.op('SWAP1'); // [ptr, len+4]
+  w.pushBytes(sel); // [sel, ptr, len+4]
+  w.op('DUP2'); // [ptr, sel, ptr, len+4]
+  w.op('MSTORE'); // [ptr, len+4]   mem[ptr+28..ptr+32) = selector
+  w.push(28);
+  w.op('ADD'); // [ptr+28, len+4]
+  w.op('REVERT', { note: `${err.name}(…) — selector ‖ abi.encode(args)` }); // revert(ptr+28, len+4)
 }
 
 /** `keccak256` — hash a `bytes`/`string` memref's payload: `KECCAK256(ptr + 32, MLOAD(ptr))`. */

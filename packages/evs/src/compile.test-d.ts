@@ -16,8 +16,14 @@ import { expectTypeOf, test } from 'vitest';
 
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
-import { t, type Hex } from './core/types.js';
-import { toCreationBytecode, toViemDeployless, toViemStateOverride } from './viem.js';
+import { namedArg, t, type Hex } from './core/types.js';
+import {
+  decodeScriptError,
+  matchScriptError,
+  toCreationBytecode,
+  toViemDeployless,
+  toViemStateOverride,
+} from './viem.js';
 
 // ---------------------------------------------------------------------------
 // the flagship-shaped script (api.md E1, trimmed): full inference end to end
@@ -230,4 +236,79 @@ test('a Tuple handle returned directly infers the struct object (not unknown), s
   expectTypeOf<Direct>().toEqualTypeOf<{ tick: number; slot0: Slot0Struct }>();
   // the direct form and the `.expr()` form infer the SAME return type
   expectTypeOf<Direct>().toEqualTypeOf<ViaExpr>();
+});
+
+// ---------------------------------------------------------------------------
+// custom errors — ABI literal + decode utilities typing (issue #15)
+// ---------------------------------------------------------------------------
+
+const NoBalanceE = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+const NotOwnerE = t.error('NotOwner');
+
+const guardScript = evscript(
+  { name: 'guard', args: [t.uint256], errors: [NoBalanceE, NotOwnerE] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(NoBalanceE, { balance: x });
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+);
+
+test('the declared error entries appear literally in the script ABI', () => {
+  type ErrorNames = Extract<(typeof guardScript.abi)[number], { type: 'error' }>['name'];
+  expectTypeOf<ErrorNames>().toEqualTypeOf<
+    'EvsInvalidCalldata' | 'EvsDecodeError' | 'NoBalance' | 'NotOwner'
+  >();
+});
+
+test('a script WITH errors is still assignable to the default-instantiated types', () => {
+  const script = guardScript satisfies EvsScript;
+  void script;
+  const artifact = compile(guardScript) satisfies CompiledEvsScript;
+  void artifact;
+  expectTypeOf(guardScript).toMatchTypeOf<EvsScript>();
+});
+
+test('decodeScriptError yields a name-discriminated union with typed args', () => {
+  const decoded = decodeScriptError(guardScript, undefined as unknown);
+  if (decoded !== undefined && decoded.name === 'NoBalance') {
+    expectTypeOf(decoded.args).toEqualTypeOf<{ readonly balance: bigint }>();
+  }
+  if (decoded !== undefined && decoded.name === 'Panic') {
+    expectTypeOf(decoded.code).toEqualTypeOf<bigint>();
+  }
+  if (decoded !== undefined && decoded.name === 'EvsDecodeError') {
+    expectTypeOf(decoded.args).toEqualTypeOf<{ readonly site: bigint }>();
+  }
+});
+
+test('matchScriptError requires every declared handler plus _, and types the args', () => {
+  const out = matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: ({ balance }) => {
+      expectTypeOf(balance).toEqualTypeOf<bigint>();
+      return balance;
+    },
+    NotOwner: () => 'owner' as const,
+    _: (other) => {
+      // declared arms are excluded from the default union
+      expectTypeOf(other.name).toEqualTypeOf<
+        'EvsInvalidCalldata' | 'EvsDecodeError' | 'Panic' | 'Error' | 'unknown' | 'empty'
+      >();
+      return null;
+    },
+  });
+  expectTypeOf<bigint | 'owner' | null>(out);
+
+  // @ts-expect-error — missing the NotOwner handler (exhaustiveness over declared errors)
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    _: () => 0,
+  });
+
+  // @ts-expect-error — the `_` default arm is always required
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+  });
 });

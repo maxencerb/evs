@@ -165,6 +165,36 @@ class IrValidator {
         }
       });
     });
+    // declared custom errors (issue #15): unique identifier names, 4-byte selectors, and
+    // resolved (non-empty, per-error-unique) input names over v0 types.
+    const errorNames = new Set<string>();
+    (ir.errors ?? []).forEach((e, i) => {
+      if (!IDENT_RE.test(e.name)) {
+        this.fail(`errors[${i}] has an invalid name ${JSON.stringify(e.name)}`, ir.loc);
+      }
+      if (errorNames.has(e.name)) this.fail(`duplicate error name "${e.name}"`, ir.loc);
+      errorNames.add(e.name);
+      if (!SELECTOR_RE.test(e.selector)) {
+        this.fail(
+          `errors[${i}] ("${e.name}") selector must be a 4-byte hex string, got ${JSON.stringify(e.selector)}`,
+          ir.loc,
+        );
+      }
+      const inputNames = new Set<string>();
+      e.inputs.forEach((p, j) => {
+        if (!IDENT_RE.test(p.name)) {
+          this.fail(
+            `errors[${i}] ("${e.name}") input #${j} has an invalid name ${JSON.stringify(p.name)}`,
+            ir.loc,
+          );
+        }
+        if (inputNames.has(p.name)) {
+          this.fail(`errors[${i}] ("${e.name}") has a duplicate input name "${p.name}"`, ir.loc);
+        }
+        inputNames.add(p.name);
+        this.checkAbiParam(p, `errors[${i}] ("${e.name}") input #${j}`, ir.loc);
+      });
+    });
   }
 
   // -------------------------------------------------------------------------
@@ -523,6 +553,25 @@ class IrValidator {
           this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`, s.loc);
         }
         this.define(s.out, 'bytes32', what, s.loc);
+        return;
+      }
+      case 'throw': {
+        const err = (this.ir.errors ?? [])[s.error];
+        if (err === undefined) {
+          this.fail(`${path} (throw): unknown error index ${s.error}`, s.loc);
+        }
+        const what = `${path} (throw "${err.name}")`;
+        if (s.args.length !== err.inputs.length) {
+          this.fail(
+            `${what}: arity mismatch — ${s.args.length} args for ${err.inputs.length} declared inputs`,
+            s.loc,
+          );
+        }
+        s.args.forEach((a, i) => {
+          const p = err.inputs[i];
+          if (p === undefined) return; // unreachable: lengths checked above
+          this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`, s.loc);
+        });
         return;
       }
       case 'cellnew': {

@@ -15,7 +15,7 @@
  */
 
 import type { Abi, AbiFunction, AbiParameter } from 'abitype';
-import { encodeAbiParameters, toFunctionSelector } from 'viem';
+import { decodeAbiParameters, encodeAbiParameters, toFunctionSelector } from 'viem';
 
 import type { ReturnValue, TypeOfReturn } from '../builder/script.js';
 import { EvsTypeError } from '../core/errors.js';
@@ -27,8 +27,10 @@ import {
   isWordType,
   typeToAbiParam,
   type ArgSpec,
+  type ArgsToInputs,
   type ArrayType,
   type DynType,
+  type EvsErrorType,
   type EvsType,
   type Hex,
   type TupleType,
@@ -84,31 +86,28 @@ export type ReturnSpecToComponents<ret extends Record<string, ReturnValue>> =
     ? readonly { readonly name: string; readonly type: EvsType }[]
     : MapComponents<UnionToTuple<keyof ret>, ret>;
 
-// The positional fallback name for arg position `i`: `arg{i}` for a concrete tuple index (a
-// numeric-string key), but a plain `string` for the open `number` index of the default
-// `readonly ArgSpec[]` instantiation — so `arg0`/`arg1` literals stay assignable to it (vs.
-// collapsing to `never`, which would reject every concrete script).
-export type ArgName<i> = i extends `${number}` ? `arg${i}` : string;
+// `ArgName` / `ResolveArgName` / `ArgsToInputs` (the input-labeling machinery) moved to M1
+// core/types.ts (issue #15 — `t.error` types its ABI inputs with them and core takes no
+// non-abitype imports); re-exported here verbatim so the frozen M3 surface is unchanged.
+export type { ArgName, ArgsToInputs, ResolveArgName } from '../core/types.js';
 
-// The surfaced name of an arg at position `i`: its user-provided {@link namedArg} name, or the
-// positional `arg{i}` fallback when the arg was passed bare (an empty sentinel name). issue #9.
-export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i> : name;
-
-// inputs are labeled by their user name (`namedArg`) or the positional `arg0`/`arg1`/… fallback;
-// viem infers `args` positionally regardless, but the label surfaces in the args tuple (issue #9).
-// A tuple arg expands to `{ name, type: 'tuple', components }` via {@link TypeToComponent}; a scalar
-// arg to `{ name, type }`. A purely HOMOMORPHIC mapped type over the arg SPEC tuple — order/labels
-// preserved structurally (no `UnionToTuple`), and no conditional over `args` itself, so `args` stays
-// a COVARIANT type parameter (a concrete `ScriptAbi`/`EvsScript`/`CompiledEvsScript` is assignable to
-// the default-instantiated one, just like the `ret` relaxation — pinned by compile.test-d).
-export type ArgsToInputs<args extends readonly ArgSpec[]> = {
-  readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
+/** The literal-typed error entries appended to {@link ScriptAbi} for the DECLARED errors
+ *  (issue #15): each `t.error` value's `{ type: 'error', name, inputs }` shape, order-preserving
+ *  (homomorphic). The wide default instantiation degrades to a plain readonly array, keeping the
+ *  default-instantiation-supertype property. */
+export type ErrorsToAbi<errs extends readonly EvsErrorType[]> = {
+  readonly [i in keyof errs]: errs[i]['abi'];
 };
 
 export type ScriptAbi<
   name extends string,
   args extends readonly ArgSpec[],
   ret extends Record<string, ReturnValue>,
+  // declared custom errors (issue #15) — appended AFTER the evs built-ins so the existing
+  // [function, EvsInvalidCalldata, EvsDecodeError] prefix stays stable. Trailing param with a
+  // wide default: pre-#15 instantiations `ScriptAbi<n, a, r>` keep compiling, and a concrete
+  // errs tuple stays assignable to the default (the ...spread degrades to a readonly array).
+  errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
 > = readonly [
   {
     readonly type: 'function';
@@ -125,6 +124,7 @@ export type ScriptAbi<
   },
   (typeof EVS_ERROR_ABI)[0],
   (typeof EVS_ERROR_ABI)[1],
+  ...ErrorsToAbi<errs>,
 ];
 
 // ---------------------------------------------------------------------------
@@ -183,10 +183,22 @@ function assertStructFieldNames(type: EvsType, where: string): void {
  * encode/decode source of truth — abitype-typing §4.2). Every arg/return type is validated through
  * the tuple-aware layout, and struct field names are re-checked.
  */
+/** Declared-error names that would shadow the Solidity built-ins / the evs runtime errors
+ *  (or the matchScriptError '_' default-arm key) — rejected at declaration (`t.error`) and
+ *  re-checked here for hand-built inputs. */
+const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
+  'Panic',
+  'Error',
+  'EvsDecodeError',
+  'EvsInvalidCalldata',
+  '_',
+]);
+
 export function buildScriptAbi(
   name: string,
   args: readonly { name: string; type: EvsType }[],
   returns: readonly { name: string; type: EvsType }[],
+  errors: readonly { name: string; inputs: readonly PlainAbiParam[] }[] = [],
 ): Abi {
   if (!IDENT_RE.test(name)) {
     throw new EvsTypeError(
@@ -248,7 +260,54 @@ export function buildScriptAbi(
       Object.freeze({ name: 'result', type: 'tuple', components: Object.freeze(components) }),
     ]),
   });
-  const abi: Abi = Object.freeze([fn, EVS_ERROR_ABI[0], EVS_ERROR_ABI[1]]);
+  // declared custom errors (issue #15): appended AFTER the built-ins (stable prefix). Every
+  // input type is re-validated through the tuple-aware layout — a hand-built (deserialized)
+  // error cannot smuggle a non-v0 or degenerate-struct shape into the ABI.
+  const seenErrors = new Set<string>();
+  const errorEntries = errors.map((e) => {
+    if (!IDENT_RE.test(e.name)) {
+      throw new EvsTypeError(
+        'ERROR_DECL',
+        `buildScriptAbi: invalid error name ${JSON.stringify(e.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        { loc: captureLoc() },
+      );
+    }
+    if (RESERVED_ERROR_NAMES.has(e.name)) {
+      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: error name "${e.name}" is reserved`, {
+        loc: captureLoc(),
+      });
+    }
+    if (seenErrors.has(e.name)) {
+      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: duplicate error name "${e.name}"`, {
+        loc: captureLoc(),
+      });
+    }
+    seenErrors.add(e.name);
+    const seenParams = new Set<string>();
+    e.inputs.forEach((p, i) => {
+      const where = `error "${e.name}" input #${i} ("${p.name}")`;
+      if (!IDENT_RE.test(p.name)) {
+        throw new EvsTypeError(
+          'ERROR_DECL',
+          `buildScriptAbi: ${where}: invalid input name (must be a non-empty identifier — the decode utilities key args by name)`,
+          { loc: captureLoc() },
+        );
+      }
+      if (seenParams.has(p.name)) {
+        throw new EvsTypeError(
+          'ERROR_DECL',
+          `buildScriptAbi: error "${e.name}" has a duplicate input name "${p.name}"`,
+          { loc: captureLoc() },
+        );
+      }
+      seenParams.add(p.name);
+      const ty = abiParamToType(p);
+      validateV0Type(ty, where);
+      assertStructFieldNames(ty, where);
+    });
+    return Object.freeze({ type: 'error', name: e.name, inputs: Object.freeze(e.inputs) });
+  });
+  const abi: Abi = Object.freeze([fn, EVS_ERROR_ABI[0], EVS_ERROR_ABI[1], ...errorEntries]);
   return abi;
 }
 
@@ -273,6 +332,63 @@ export function canonicalTypeSignature(ty: EvsType): string {
   const inner = ty.components.map((c) => canonicalTypeSignature(abiParamToType(c))).join(',');
   return `(${inner})${suffix}`;
 }
+
+/**
+ * The 4-byte selector of a declared custom error (issue #15): keccak over the canonical
+ * Solidity signature (`Name(t1,t2,…)`, tuples expanded), byte-identical to solc's. Computed
+ * here — not on the `t.error` value — because M1 core takes no viem import.
+ */
+export function errorSelectorOf(name: string, inputs: readonly PlainAbiParam[]): Hex {
+  return selectorOf(
+    name,
+    inputs.map((c) => canonicalTypeSignature(abiParamToType(c))),
+  );
+}
+
+/**
+ * Decodes a custom error's argument payload (the revert data AFTER the 4-byte selector)
+ * against its declared inputs into a name-keyed record (resolved names — `namedArg` or the
+ * `arg{i}` fallback — are always non-empty and unique, enforced by `buildScriptAbi`).
+ * Returns `null` on any structural mismatch (truncated/malformed payload) instead of throwing —
+ * the callers (explainRevert / decodeScriptError) surface that as a diagnostic, not a crash.
+ */
+export function decodeErrorArgsRecord(
+  inputs: readonly PlainAbiParam[],
+  payload: Hex,
+): Readonly<Record<string, unknown>> | null {
+  if (inputs.length === 0) {
+    return payload === '0x' ? Object.freeze({}) : null;
+  }
+  let decoded: readonly unknown[];
+  try {
+    // PlainAbiParam is structurally an AbiParameter (name + type + optional components)
+    decoded = decodeAbiParameters(inputs, payload);
+  } catch {
+    return null;
+  }
+  const record: Record<string, unknown> = {};
+  inputs.forEach((p, i) => {
+    record[p.name === '' ? `arg${i}` : p.name] = decoded[i];
+  });
+  return Object.freeze(record);
+}
+
+/**
+ * Solidity `Panic(uint256)` code meanings (shared by `explainRevert` and the client-side
+ * `decodeScriptError` — issue #15 moved the table here from compile.ts, which re-uses it).
+ */
+export const PANIC_MEANINGS: Readonly<Record<string, string>> = Object.freeze({
+  '0x00': 'generic compiler panic',
+  '0x01': 'assertion failure (assert)',
+  '0x11': 'arithmetic overflow or underflow',
+  '0x12': 'division or modulo by zero',
+  '0x21': 'invalid enum conversion',
+  '0x22': 'corrupted storage byte array',
+  '0x31': 'pop on an empty array',
+  '0x32': 'array index out of bounds',
+  '0x41': 'allocation too large (out of memory)',
+  '0x51': 'call to a zero-initialized internal function',
+});
 
 /**
  * One `AbiParameter` → `PlainAbiParam`, recursing through tuple components so `s.call` accepts

@@ -59,12 +59,25 @@ import type {
   EnvOp,
   FnId,
   FnIr,
+  PlainAbiError,
   PlainAbiParam,
   ScriptIr,
   Stmt,
   ValueId,
   ValueInfo,
 } from '../ir/nodes.js';
+
+/**
+ * A normalized declared-error entry the recorder checks `s.throw` against (issue #15): the
+ * original `t.error` VALUE (identity match), the '' -sentinel param specs (named-record vs
+ * positional dispatch), and the IR {@link PlainAbiError} (resolved input names + selector,
+ * computed by script.ts — the recorder never touches viem).
+ */
+export interface RecErrorDecl {
+  readonly value: object;
+  readonly params: readonly { readonly name: string; readonly type: EvsType }[];
+  readonly ir: PlainAbiError;
+}
 
 // ---------------------------------------------------------------------------
 // module-private handle internals (M5 invariant 1)
@@ -754,15 +767,19 @@ export class Recorder {
   private returnToken: object | null = null;
   /** positional arg handles, spread into the body callback after `s` (a tuple arg → a Tuple). */
   private readonly argHandleList: readonly (Expr | object)[];
+  /** declared custom errors (issue #15) — the `s.throw` allow-list, in declaration order. */
+  private readonly errorDecls: readonly RecErrorDecl[];
 
   constructor(
     name: string,
     args: readonly { name: string; type: EvsType }[],
     scriptLoc: SourceLoc | null,
+    errors: readonly RecErrorDecl[] = [],
   ) {
     this.name = name;
     this.scriptLoc = scriptLoc;
     this.argsList = args;
+    this.errorDecls = errors;
     this.mainScope = newScope('main');
     this.stack = [this.mainScope];
     // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple (NOT
@@ -1966,6 +1983,131 @@ export class Recorder {
     });
   }
 
+  // -- custom errors (issue #15) ----------------------------------------------------------
+
+  /**
+   * `s.throw(error, args?)`: records a `throw` stmt reverting with `selector ‖ abi.encode(args)`.
+   * The error must be DECLARED on the script def (`errors: [...]`) — the typed surface enforces
+   * it statically; this is the record-time backstop for untyped callers. Args are a name-keyed
+   * record when every param is named, a positional tuple otherwise, and absent for a
+   * zero-param error; each member takes the param type's usual coercions (literal / Expr /
+   * Tuple / MutArray handle).
+   */
+  throwStmt(error: unknown, argsIn: readonly unknown[], what: string): void {
+    const loc = captureLoc();
+    this.assertOpen(what, loc);
+    const decl = this.findErrorDecl(error, what, loc);
+    const index = this.errorDecls.indexOf(decl);
+    const n = decl.params.length;
+    let ids: ValueId[] = [];
+    if (n === 0) {
+      if (argsIn.length > 0 && argsIn[0] !== undefined) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: error "${decl.ir.name}" declares no parameters — throw it without args`,
+          { loc },
+        );
+      }
+    } else if (decl.params.every((p) => p.name !== '')) {
+      // fully-named params → ONE name-keyed record (mirrors the s.tuple init shape, but every
+      // member is REQUIRED — Solidity has no zero-defaulting on error args)
+      const a = argsIn[0];
+      if (!isRecordObj(a) || Array.isArray(a)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: error "${decl.ir.name}" takes a named args record — s.throw(${decl.ir.name}, { ${decl.params.map((p) => p.name).join(', ')} })`,
+          { loc },
+        );
+      }
+      const known = new Set(decl.params.map((p) => p.name));
+      for (const key of Object.keys(a)) {
+        if (!known.has(key)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${what}: unknown arg ${JSON.stringify(key)} for error "${decl.ir.name}" (expected: ${[...known].join(', ')})`,
+            { loc },
+          );
+        }
+      }
+      ids = decl.params.map((p) => {
+        if (!(p.name in a)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${what}: missing arg "${p.name}" for error "${decl.ir.name}" — every declared param is required`,
+            { loc },
+          );
+        }
+        return this.coerceToId(a[p.name], p.type, `${what} arg "${p.name}"`, loc);
+      });
+    } else {
+      // any bare (unnamed) param → ONE positional tuple
+      const a = argsIn[0];
+      if (!Array.isArray(a)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: error "${decl.ir.name}" takes a positional args tuple of ${n} value(s)`,
+          { loc },
+        );
+      }
+      if (a.length !== n) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: error "${decl.ir.name}" expects ${n} arg(s), got ${a.length}`,
+          { loc },
+        );
+      }
+      ids = decl.params.map((p, i) =>
+        this.coerceToId(
+          a[i],
+          p.type,
+          `${what} arg #${i}${p.name === '' ? '' : ` ("${p.name}")`}`,
+          loc,
+        ),
+      );
+    }
+    this.appendStmt({ k: 'throw', error: index, args: ids }, loc);
+  }
+
+  /** Resolves a thrown value against the declared set: identity first, then a structural
+   *  name+shape match (a re-created but equal `t.error` value is accepted). */
+  private findErrorDecl(error: unknown, what: string, loc: SourceLoc | null): RecErrorDecl {
+    for (const d of this.errorDecls) {
+      if (d.value === error) return d;
+    }
+    if (
+      !isRecordObj(error) ||
+      error['kind'] !== 'error' ||
+      typeof error['name'] !== 'string' ||
+      !Array.isArray(error['params'])
+    ) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: expected an error declared with t.error(...), got ${describeHost(error)}`,
+        { loc },
+      );
+    }
+    const name = error['name'];
+    const params: readonly unknown[] = error['params'];
+    const sameName = this.errorDecls.find((d) => d.ir.name === name);
+    if (sameName !== undefined && sameName.params.length === params.length) {
+      const structurallyEqual = sameName.params.every((p, i) => {
+        const q = params[i];
+        return (
+          isRecordObj(q) &&
+          q['name'] === p.name &&
+          isEvsValueType(q['type']) &&
+          typesEqual(q['type'], p.type)
+        );
+      });
+      if (structurallyEqual) return sameName;
+    }
+    throw new EvsTypeError(
+      'ERROR_UNDECLARED',
+      `${what}: error "${name}" is not declared by script "${this.name}" — add it to the def's errors: [...] list${sameName !== undefined ? ` (an error named "${name}" IS declared, but with different params)` : ''}`,
+      { loc, relatedLocs: [{ label: 'script defined at', loc: this.scriptLoc }] },
+    );
+  }
+
   // -- control flow ---------------------------------------------------------------------
 
   ifStmt(cond: unknown, thenFn: unknown, elseFn: unknown): void {
@@ -2693,6 +2835,8 @@ export class Recorder {
       fns,
       body: this.mainScope.stmts,
       returns: this.returnsList,
+      // omitted when no error is declared — pre-#15 scripts serialize byte-identically
+      ...(this.errorDecls.length === 0 ? {} : { errors: this.errorDecls.map((d) => d.ir) }),
       loc: this.scriptLoc,
     };
     deepFreeze(ir);

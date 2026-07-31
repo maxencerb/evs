@@ -37,6 +37,8 @@ export type {
   BytesNType,
   BytesSize,
   DynType,
+  EvsErrorAbiEntry, // issue #15: the literal { type: 'error', … } entry a t.error value carries
+  EvsErrorType, // issue #15: a t.error-declared custom error
   EvsType,
   Expr,
   FromAbiOutputs, // issue #5: the return type of `t.fromOutputs(abi, name)`
@@ -90,6 +92,7 @@ export type {
   Cell,
   ComponentToType,
   EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
+  ErrorsInput, // issue #15: the def's `errors` input (one t.error value or a readonly list)
   EvsScript,
   Field,
   IntoArray, // issue #5: array-typed slot accepts an Expr/literal or a bare MutArray
@@ -98,6 +101,7 @@ export type {
   LoopCtl,
   MutArray,
   NormalizeArgs,
+  NormalizeErrors, // issue #15
   PackedValue, // issue #17: what s.encodePacked accepts per value
   ReturnValue,
   ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
@@ -108,6 +112,7 @@ export type {
   SubcallParams,
   SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
   SubcallVerb,
+  ThrowArgs, // issue #15: the rest-args shape of s.throw (record / tuple / none)
   TryReadVerb,
   TrySubcallVerb,
   TryWriteVerb,
@@ -121,4 +126,10 @@ export type {
 // compile + viem
 export { compile } from './compile.js';
 export type { CompiledEvsScript, CompileOptions, RevertExplanation } from './compile.js';
-export { DEFAULT_SCRIPT_ADDRESS } from './viem.js';
+export { decodeScriptError, DEFAULT_SCRIPT_ADDRESS, matchScriptError } from './viem.js';
+export type {
+  DecodedBuiltinError, // issue #15: the Panic/Error/unknown/empty decode arms
+  DecodedScriptError, // issue #15: the name-discriminated union decodeScriptError yields
+  ErrorArgsOf, // issue #15: one error entry's decoded args record
+  ScriptErrorHandlers, // issue #15: the matchScriptError handler record (declared + `_`)
+} from './viem.js';

@@ -89,7 +89,49 @@ covered in [executing scripts](/guides/execution/)).
 
 ## Runtime reverts
 
-At run time a script reverts with one of three payload families.
+At run time a script reverts with one of four payload families.
+
+### Declared custom errors — `t.error` and `s.throw`
+
+Scripts can declare and throw Solidity-style custom errors — a 4-byte selector plus
+ABI-encoded parameters. Errors are module-level values created with `t.error`, **declared on
+the script def**, and thrown with `s.throw`; throwing an error that is not in the def's
+`errors` list is a *type error in your editor* (and a record-time error for untyped callers):
+
+```ts
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+// params take the same shorthand as script args: bare types, namedArg, or a mixed list
+const NoBalance = t.error('NoBalance', [
+  namedArg('balance', t.uint256),
+  namedArg('who', t.address),
+]);
+const NotOwner = t.error('NotOwner');
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256, t.address], errors: [NoBalance, NotOwner] },
+  (s, x, who) => {
+    s.if(x.lt(10n), () => {
+      s.throw(NoBalance, { balance: x, who }); // named record — every param is required
+    });
+    s.if(x.eq(999n), () => {
+      s.throw(NotOwner); // zero-param — no args
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+);
+```
+
+The revert data is exactly Solidity's: `selector ‖ abi.encode(params)`, with the selector
+derived from the canonical signature (`NoBalance(uint256,address)`). Fully-named params are
+thrown with a record; if any param is declared bare (`t.error('BadPair', [t.address,
+t.address])`), the throw takes a positional tuple instead. Struct and array params work like
+everywhere else in evs.
+
+Declared errors are appended to the compiled script's `abi`, so **viem decodes them natively**
+— no wrappers, no extra plumbing (see [decoding script errors](#decoding-script-errors-on-the-client)
+below). Errors thrown inside an [`s.fn`](/guides/functions/) body are checked against the same
+declared set — one error namespace per script.
 
 ### Panics — `Panic(uint256)`
 
@@ -128,6 +170,57 @@ When a contract called via `s.read` reverts, the script reverts with the callee'
 wrapped or rewritten, so you can decode the payload against the callee's ABI as if you had
 called it directly. If you want a failed sub-call to produce zeros instead of reverting, use
 `s.tryRead` — see [calling contracts](/guides/calls/).
+
+## Decoding script errors on the client
+
+Because the declared errors ride in the artifact ABI, a plain `readContract` already throws a
+decoded `ContractFunctionRevertedError` (`errorName` + `args`). For an exhaustive, typed
+switch over *your* error set, pass the **caught error itself** (or raw revert bytes) to
+`matchScriptError` — it requires one handler per declared error plus a `_` default arm for
+everything else (panics, bubbled callee errors, unknown selectors):
+
+```ts
+import { compile, evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+
+const NoBalance = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+const NotOwner = t.error('NotOwner');
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [NoBalance, NotOwner] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(NoBalance, { balance: x });
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+);
+
+const compiled = compile(guard);
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+
+try {
+  await client.readContract({ ...compiled.toViem(), functionName: 'guard', args: [5n] });
+} catch (e) {
+  const message = matchScriptError(compiled, e, {
+    NoBalance: ({ balance }) => `insufficient balance: ${balance}`, // args typed from the declaration
+    NotOwner: () => 'caller is not the owner',
+    _: (other) => `unexpected revert: ${other.name}`, // Panic | Error | Evs* | unknown | empty
+  });
+}
+```
+
+Adding an error to the script without updating the switch is a **type error** — the handler
+record is exhaustive over the declared set. If the caught value carries no revert data at all
+(a network error, a timeout), `matchScriptError` **rethrows it** instead of routing it to `_`
+— transport failures never masquerade as script errors.
+
+Under the sugar sits `decodeScriptError(script, errorOrHex)`, which returns a
+`name`-discriminated union you can `switch` on directly — one arm per ABI error entry
+(declared errors with a name-keyed, abitype-typed `args` record, plus the evs built-ins) and
+built-in arms for `Panic` (code + meaning), `Error` (reason), `unknown` (selector + raw — e.g.
+a callee error bubbled verbatim), and `empty`. It returns `undefined` when the input is not
+revert-shaped.
 
 ## `explainRevert` — from a viem error to your source line
 
@@ -181,6 +274,7 @@ The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` a
 | `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
 | `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode, with its recorded loc  |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
+| `'script-error'`         | a DECLARED custom error          | `errorName` + `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
 | `'error-string'`         | `Error(string)`                  | none — bubbled verbatim from a callee                                                 |
 | `'custom'`               | any other selector               | none — decode it against the callee's ABI                                             |
 | `'empty'`                | zero-length returndata           | none — a bare `revert()`/`require(false)` bubbled, or the frame failed without reason |

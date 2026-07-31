@@ -4,16 +4,20 @@
  * silent-failure fence (field naming), and both toViem helper shapes.
  */
 
+import { BaseError, ContractFunctionRevertedError, encodeErrorResult } from 'viem';
 import { describe, expect, test } from 'vitest';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { RUNTIME_42, RUNTIME_WHOAMI } from '../test/harness/fixtures.js';
+import { evscript } from './builder/script.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
-import type { Hex } from './core/types.js';
+import { namedArg, t, type Hex } from './core/types.js';
 import {
+  decodeScriptError,
   DEFAULT_SCRIPT_ADDRESS,
   INIT_CODE_PREFIX_SHANGHAI,
   toCreationBytecode,
+  matchScriptError,
   toViemDeployless,
   toViemStateOverride,
 } from './viem.js';
@@ -119,5 +123,134 @@ describe('toViem shapes (viem-integration §5)', () => {
     );
     expect(shape.address).toBe(address);
     expect(shape.stateOverride).toEqual([{ address, code: RUNTIME_42 }]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// decodeScriptError / matchScriptError (issue #15)
+// ---------------------------------------------------------------------------
+
+describe('decodeScriptError / matchScriptError (issue #15)', () => {
+  const NoBalance = t.error('NoBalance', [namedArg('balance', t.uint256)]);
+  const NotOwner = t.error('NotOwner');
+  const script = evscript(
+    { name: 'guard', args: [t.uint256], errors: [NoBalance, NotOwner] },
+    (s, x) => {
+      s.if(x.lt(10n), () => {
+        s.throw(NoBalance, { balance: x });
+      });
+      return s.return({ x });
+    },
+  );
+
+  const NO_BALANCE_DATA = encodeErrorResult({
+    abi: script.abi,
+    errorName: 'NoBalance',
+    args: [5n],
+  });
+  const NOT_OWNER_DATA = encodeErrorResult({ abi: script.abi, errorName: 'NotOwner' });
+  const PANIC_DATA = encodeErrorResult({
+    abi: [{ type: 'error', name: 'Panic', inputs: [{ name: 'code', type: 'uint256' }] }] as const,
+    errorName: 'Panic',
+    args: [0x11n],
+  });
+  const ERROR_STRING_DATA = encodeErrorResult({
+    abi: [{ type: 'error', name: 'Error', inputs: [{ name: 'reason', type: 'string' }] }] as const,
+    errorName: 'Error',
+    args: ['nope'],
+  });
+
+  test('raw hex: a declared error decodes to a name-keyed args record', () => {
+    const d = decodeScriptError(script, NO_BALANCE_DATA);
+    expect(d).toEqual({ name: 'NoBalance', args: { balance: 5n }, raw: NO_BALANCE_DATA });
+  });
+
+  test('raw hex: zero-arg declared error / Panic / Error / evs built-ins / unknown / empty', () => {
+    expect(decodeScriptError(script, NOT_OWNER_DATA)).toEqual({
+      name: 'NotOwner',
+      args: {},
+      raw: NOT_OWNER_DATA,
+    });
+    expect(decodeScriptError(script, PANIC_DATA)).toEqual({
+      name: 'Panic',
+      code: 0x11n,
+      meaning: 'arithmetic overflow or underflow',
+      raw: PANIC_DATA,
+    });
+    expect(decodeScriptError(script, ERROR_STRING_DATA)).toEqual({
+      name: 'Error',
+      reason: 'nope',
+      raw: ERROR_STRING_DATA,
+    });
+    const decodeErr = encodeErrorResult({
+      abi: script.abi,
+      errorName: 'EvsDecodeError',
+      args: [7n],
+    });
+    expect(decodeScriptError(script, decodeErr)).toEqual({
+      name: 'EvsDecodeError',
+      args: { site: 7n },
+      raw: decodeErr,
+    });
+    expect(decodeScriptError(script, '0xdeadbeef')).toEqual({
+      name: 'unknown',
+      selector: '0xdeadbeef',
+      raw: '0xdeadbeef',
+    });
+    expect(decodeScriptError(script, '0x')).toEqual({ name: 'empty', raw: '0x' });
+  });
+
+  test('a declared selector with a malformed payload yields the unknown arm (never lies)', () => {
+    const truncated: Hex = `0x${NO_BALANCE_DATA.slice(2, 10)}ff`;
+    const d = decodeScriptError(script, truncated);
+    expect(d?.name).toBe('unknown');
+  });
+
+  test('a viem error tree (ContractFunctionRevertedError, wrapped) decodes', () => {
+    const revertedErr = new ContractFunctionRevertedError({
+      abi: script.abi,
+      data: NO_BALANCE_DATA,
+      functionName: 'guard',
+    });
+    expect(decodeScriptError(script, revertedErr)).toEqual({
+      name: 'NoBalance',
+      args: { balance: 5n },
+      raw: NO_BALANCE_DATA,
+    });
+    // wrapped one level down (the readContract shape: ContractFunctionExecutionError → cause)
+    const wrapped = new BaseError('call reverted', { cause: revertedErr });
+    expect(decodeScriptError(script, wrapped)?.name).toBe('NoBalance');
+  });
+
+  test('a non-revert error (transport failure) yields undefined', () => {
+    expect(decodeScriptError(script, new BaseError('timeout'))).toBeUndefined();
+    expect(decodeScriptError(script, new Error('boom'))).toBeUndefined();
+    expect(decodeScriptError(script, 'not hex')).toBeUndefined();
+    expect(decodeScriptError(script, undefined)).toBeUndefined();
+  });
+
+  test('matchScriptError dispatches declared errors with typed args, everything else to _', () => {
+    const handle = (data: unknown): string =>
+      matchScriptError(script, data, {
+        NoBalance: ({ balance }) => `short by ${balance}`,
+        NotOwner: () => 'not owner',
+        _: (other) => `other: ${other.name}`,
+      });
+    expect(handle(NO_BALANCE_DATA)).toBe('short by 5');
+    expect(handle(NOT_OWNER_DATA)).toBe('not owner');
+    expect(handle(PANIC_DATA)).toBe('other: Panic');
+    expect(handle('0xdeadbeef')).toBe('other: unknown');
+    expect(handle('0x')).toBe('other: empty');
+  });
+
+  test('matchScriptError rethrows when the input carries no revert data', () => {
+    const original = new Error('socket hang up');
+    expect(() =>
+      matchScriptError(script, original, {
+        NoBalance: () => 'x',
+        NotOwner: () => 'y',
+        _: () => 'z',
+      }),
+    ).toThrowError(original);
   });
 });

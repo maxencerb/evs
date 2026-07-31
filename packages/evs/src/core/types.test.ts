@@ -238,9 +238,9 @@ describe('t namespace', () => {
     for (const s of [...WORD_TYPES, ...DYN_TYPES]) {
       expect((t as Record<string, unknown>)[s]).toBe(s);
     }
-    // 98 word types + string + bytes + array() + struct() + tuple() + fromOutputs() +
-    // fromAbiParameter() = 105 keys
-    expect(Object.keys(t)).toHaveLength(105);
+    // 98 word types + string + bytes + array() + struct() + tuple() + error() +
+    // fromOutputs() + fromAbiParameter() = 106 keys
+    expect(Object.keys(t)).toHaveLength(106);
   });
 
   test('is frozen', () => {
@@ -496,5 +496,51 @@ describe('staging traps (installStagingTraps)', () => {
   test('traps are non-enumerable (the handle still JSON-walks its data props only)', () => {
     const x = makeHandle();
     expect(Object.keys(x)).toEqual(['type']);
+  });
+});
+
+describe('t.error (issue #15)', () => {
+  test('builds a frozen error value with normalized params and a literal ABI entry', () => {
+    const e = t.error('NoBalance', [namedArg('balance', t.uint256), t.address]);
+    expect(e.kind).toBe('error');
+    expect(e.name).toBe('NoBalance');
+    expect(e.params).toEqual([
+      { name: 'balance', type: 'uint256' },
+      { name: '', type: 'address' },
+    ]);
+    // bare params get the positional arg{i} fallback in the ABI inputs
+    expect(e.abi).toEqual({
+      type: 'error',
+      name: 'NoBalance',
+      inputs: [
+        { name: 'balance', type: 'uint256' },
+        { name: 'arg1', type: 'address' },
+      ],
+    });
+    expect(Object.isFrozen(e)).toBe(true);
+    expect(Object.isFrozen(e.abi)).toBe(true);
+    expect(Object.isFrozen(e.params)).toBe(true);
+  });
+
+  test('zero-param and lone-declarator sugar', () => {
+    expect(t.error('NotOwner').params).toEqual([]);
+    expect(t.error('One', t.uint256).abi.inputs).toEqual([{ name: 'arg0', type: 'uint256' }]);
+    expect(t.error('Named', namedArg('x', t.uint256)).abi.inputs).toEqual([
+      { name: 'x', type: 'uint256' },
+    ]);
+  });
+
+  test('struct params expand to named tuple components', () => {
+    const e = t.error('Detail', [namedArg('info', t.struct({ code: t.uint256, note: t.string }))]);
+    expect(e.abi.inputs).toEqual([
+      {
+        name: 'info',
+        type: 'tuple',
+        components: [
+          { name: 'code', type: 'uint256' },
+          { name: 'note', type: 'string' },
+        ],
+      },
+    ]);
   });
 });
