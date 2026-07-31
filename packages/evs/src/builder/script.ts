@@ -31,6 +31,7 @@ import type {
   AbiParamsToComponents,
   ArgsInput,
   ArgSpec,
+  ArrayElemOf,
   ArrayType,
   BitsType,
   EvsErrorType,
@@ -106,10 +107,16 @@ export type ThrowArgs<e extends EvsErrorType> = e['params'] extends readonly []
     : readonly [args: ThrowArgTuple<e['params']>];
 
 /**
- * The body-callback handle for one normalized arg type: a tuple/struct arg arrives as a
- * {@link Tuple} handle, every scalar arg as an {@link Expr}.
+ * The body-callback handle for one normalized arg type: a plain tuple/struct arg arrives as a
+ * {@link Tuple} handle, a composite ARRAY (`tuple[]`) and every scalar arg as an {@link Expr} —
+ * the same dispatch as the runtime `valueHandle` (fixed by #12; the pre-#12 type wrongly mapped
+ * `tuple[]` args to `Tuple`, disagreeing with the runtime handle).
  */
-export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+export type ArgHandle<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple'
+    ? Tuple<t>
+    : Expr<t>
+  : Expr<t>;
 
 /**
  * A LABEL-carrying tuple built from an {@link ArgSpec} list (issue #9): abitype's named-tuple
@@ -527,9 +534,13 @@ export type TupleArrayElem<C extends TupleType> = {
 // `core/types.ts` only matches string-element arrays; this augmentation adds the tuple-array case
 // where `Tuple`/`Field`/`ComponentToType` are in scope. Overload resolution picks the `this`-matching
 // signature, so a `string[]`/`uint256[][]` Expr keeps returning an `Expr` element.
+// `.length()` gets the matching tuple-ARRAY overload (issue #12 — the base bound is
+// `DynType | ArrayType`, which a `tuple[]` arg/handle Expr is not; the runtime `lenOp`
+// already accepts every dynamic memref).
 declare module '../core/types.js' {
   interface Expr<t extends EvsType = EvsType> {
     at<C extends TupleType>(this: Expr<C>, i: IntoExpr<'uint256'>): Tuple<TupleArrayElem<C>>;
+    length(this: Expr<TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>): Expr<'uint256'>;
   }
 }
 
@@ -920,9 +931,35 @@ export interface ScriptBuilder<
   // control flow (combinators — api.md §7)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
+  // `range.type` is optional (issue #12): the first overload matches a type-less range and
+  // types the counter as uint256; the explicit-type overload keeps the pre-#12 behaviour.
+  for(
+    range: {
+      type?: undefined;
+      from: IntoExpr<'uint256'>;
+      until: IntoExpr<'uint256'>;
+      step?: IntoExpr<'uint256'>;
+    },
+    body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void;
   for<const t extends NumericType>(
     range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
     body: (i: Expr<t>, loop: LoopCtl) => void,
+  ): void;
+  // forEach over an array value (issue #12): the counter loop with `until` = the array's
+  // length (snapshot ONCE) and `elem` = the bounds-checked `array.at(i)` — a `tuple[]` array
+  // hands the body a `Tuple` element handle, a string-element array an `Expr` of the element.
+  // Staged handles only: a MutArray iterates through its `.expr()` memref. The tuple overload
+  // mirrors the `.at` tuple-array augmentation (any TupleType — `TupleArrayOf`'s `type` field
+  // resolves against its constraint, so a narrower bound rejects it; a plain `tuple` is
+  // backstopped at record time).
+  forEach<C extends TupleType>(
+    array: Expr<C>,
+    body: (elem: Tuple<TupleArrayElem<C>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void;
+  forEach<a extends ArrayType>(
+    array: Expr<a>,
+    body: (elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
 
@@ -1014,6 +1051,9 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     },
     for: (range: unknown, body: unknown) => {
       r.forStmt(range, body);
+    },
+    forEach: (array: unknown, body: unknown) => {
+      r.forEachStmt(array, body);
     },
     select: (cond: unknown, a: unknown, b: unknown) => r.select(cond, a, b),
 

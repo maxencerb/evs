@@ -460,6 +460,12 @@ test('Cell / MutArray / env / for typing', () => {
       expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
     });
 
+    // issue #12: `type` omitted → the counter defaults to uint256
+    s.for({ from: 0n, until: n }, (i, loop) => {
+      expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
+    });
+
     s.while(
       () => c.get().lt(5n),
       (loop) => {
@@ -470,6 +476,41 @@ test('Cell / MutArray / env / for typing', () => {
 
     return s.return({ n });
   });
+});
+
+test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays (issue #12)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  evscript(
+    { name: 'each', args: [t.array(t.address), t.array(t.array(t.uint256)), t.array(Pair)] },
+    (s, addrs, matrix, pairs) => {
+      s.forEach(addrs, (elem, i, loop) => {
+        expectTypeOf(elem).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+        expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
+      });
+
+      // a nested word array yields the one-level-peeled element
+      s.forEach(matrix, (row) => {
+        expectTypeOf(row).toEqualTypeOf<Expr<'uint256[]'>>();
+      });
+
+      // a tuple[] array hands the body a Tuple element with named Fields
+      s.forEach(pairs, (pair, i) => {
+        expectTypeOf(pair.token.get()).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(pair.fee.get()).toEqualTypeOf<Expr<'uint24'>>();
+        expectTypeOf(pair.expr()).toEqualTypeOf<Expr<typeof Pair>>();
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      });
+
+      const n = s.lit(t.uint256, 1n);
+      // @ts-expect-error — a non-array Expr is not iterable
+      s.forEach(n, () => {});
+      // @ts-expect-error — a bare MutArray is not accepted; iterate via .expr()
+      s.forEach(s.newArray(t.uint256, 3n), () => {});
+
+      return s.return({ n });
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

@@ -91,6 +91,51 @@ for (const [i, bal] of res.balances.entries()) {
 }
 `;
 
+const forEachLoops = `import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, formatUnits, http } from 'viem';
+
+// s.forEach iterates an array value directly — element, index, and loop control,
+// no manual until/length/at() pairing. Here: per-token balances AND their sum,
+// collected in ONE eth_call.
+export const stableTotal = evscript(
+  { name: 'stableTotal', args: [t.array(t.address), t.address] },
+  (s, tokens, owner) => {
+    const out = s.newArray(t.uint256, tokens.length());
+    const total = s.let(t.uint256, 0n);
+    s.forEach(tokens, (token, i) => {
+      const bal = s.read({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [owner],
+      });
+      out.set(i, bal);
+      total.set(total.get().add(bal)); // checked: Panic 0x11 on overflow
+    });
+    return s.return({ balances: out, total: total.get() });
+  },
+);
+
+const tokens = [
+  '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC (6 decimals)
+  '0xdAC17F958D2ee523a2206206994597C13D831ec7', // USDT (6 decimals)
+] as const;
+const owner = '0xF977814e90dA44bFA03b6295A0616a897441aceC'; // Binance 8
+
+const client = createPublicClient({ transport: http() });
+
+const res = await client.readContract({
+  ...stableTotal.compile().toViem(),
+  functionName: 'stableTotal',
+  args: [tokens, owner],
+});
+
+for (const [i, bal] of res.balances.entries()) {
+  console.log(tokens[i], '→', formatUnits(bal, 6));
+}
+console.log('total:', formatUnits(res.total, 6), 'USD');
+`;
+
 const structReads = `import { evscript, t } from '@maxencerb/evs';
 import { createPublicClient, http } from 'viem';
 
@@ -188,6 +233,7 @@ try {
 export const examples: readonly PlaygroundExample[] = [
   { id: 'dependent-reads', label: 'dependent reads', code: dependentReads },
   { id: 'batch-balances', label: 'batch balances', code: batchBalances },
+  { id: 'foreach-loops', label: 'forEach loops', code: forEachLoops },
   { id: 'struct-reads', label: 'struct reads', code: structReads },
   { id: 'custom-errors', label: 'custom errors', code: customErrors },
 ];

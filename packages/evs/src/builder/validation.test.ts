@@ -454,7 +454,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
-  test('for: range.type must be numeric; from/until required', () => {
+  test('for: range.type must be numeric; from/until required (type itself is optional)', () => {
     expectEvs(
       () => rec((s) => s.for({ type: t.address, from: 0n, until: 1n } as never, () => {})),
       EvsTypeError,
@@ -466,6 +466,42 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
       EvsTypeError,
       'TYPE_MISMATCH',
       /range\.from and range\.until/,
+    );
+    // omitting `type` defaults to uint256, so from/until are still validated against it
+    expectEvs(
+      () => rec((s) => s.for({ from: 0n } as never, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /range\.from and range\.until/,
+    );
+  });
+
+  test('forEach: array must be a T[] Expr; body must be a callback (issue #12)', () => {
+    expectEvs(
+      () => rec((s, a) => s.forEach(a.x as never, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /expected an Expr of a T\[\] array type/,
+    );
+    // a raw JS array is not a staged handle
+    expectEvs(
+      () => rec((s) => s.forEach([1n, 2n] as never, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /expected an Expr of a T\[\] array type/,
+    );
+    // a bare MutArray handle is steered to .expr()
+    expectEvs(
+      () => rec((s) => s.forEach(s.newArray(t.uint256, 3n) as never, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a MutArray is not an Expr/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.forEach(a.xs, 42 as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /body must be a callback/,
     );
   });
 

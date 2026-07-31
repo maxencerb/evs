@@ -321,19 +321,60 @@ const log2 = evscript({ name: 'log2', args: [t.uint256] }, (s, x) => {
 ## s.for
 
 ```ts nocheck
+for(
+  range: { from: IntoExpr<'uint256'>; until: IntoExpr<'uint256'>; step?: IntoExpr<'uint256'> },
+  body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
+): void;
 for<const t extends NumericType>(
   range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
   body: (i: Expr<t>, loop: LoopCtl) => void,
 ): void;
 ```
 
-Counted-loop sugar over `s.while` plus an internal cell, generic over any numeric word type.
+Counted-loop sugar over `s.while` plus an internal cell. `type` is optional and defaults to
+`uint256` — `s.for({ from: 0n, until: n }, (i) => …)` gives an `Expr<'uint256'>` counter; pass
+an explicit numeric word type to loop over any other width (including signed types).
 Iterates while `i < until`; `step` defaults to `1`. `until` and `step` are snapshot **once**,
 before the loop. The step increment uses checked arithmetic — if the counter would overflow its
 type before reaching `until`, the script panics `0x11`. `loop.continue()` executes the step
 first, then jumps to the header.
 
 See the [s.newArray](#snewarray) example above for the canonical collect-into-array loop.
+
+## s.forEach
+
+```ts nocheck
+forEach<C extends TupleType>(
+  array: Expr<C>, // a tuple[] array value
+  body: (elem: Tuple<...>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+): void;
+forEach<a extends ArrayType>(
+  array: Expr<a>, // any T[] array value
+  body: (elem: Expr<...element...>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+): void;
+```
+
+Iteration sugar over the counter loop: `until` is the array's length (snapshot **once**, before
+the loop) and each iteration binds `elem` to the bounds-checked `array.at(i)` element — a
+[`Tuple`](#tuple) handle for a `tuple[]` element, an `Expr` of the element type otherwise —
+alongside the `uint256` index `i` and the usual [`LoopCtl`](#loopctl). It records exactly the
+IR the manual `s.for` + `array.at(i)` spelling would.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(xs, (x) => {
+    total.set(total.get().add(x));
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+The array must be a staged `Expr` handle (a script arg, a decoded call output, an `s.lit` data
+segment, …). A [`MutArray`](#mutarray) iterates through its `.expr()` memref —
+`s.forEach(arr.expr(), …)` — with reference semantics: the loop sees earlier `set` calls.
 
 ## s.select
 

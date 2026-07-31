@@ -1669,6 +1669,36 @@ this change; decisions locked in the issue-#15 discussion). Summary of the law a
   goldens, differential corpus (all three forks), type tests, and the anvil integration tier
   (`test/integration/errors.test.ts`).
 
+## 25. Loop ergonomics: `s.forEach` + optional `for` type (issue #12)
+
+- **M5 (surface)** — `ScriptBuilder.for`'s `range.type` is now OPTIONAL, defaulting the
+  counter to `uint256`: a type-less overload (`{ type?: undefined; from; until; step? }` →
+  `i: Expr<'uint256'>`) sits before the original generic overload, which is unchanged.
+  `ScriptBuilder` gains `s.forEach(array, (elem, i, loop) => …)` — two overloads mirroring the
+  `.at` element split: a `TupleType` array hands the body a `Tuple<TupleArrayElem<C>>` element,
+  an `ArrayType` array an `Expr<ArrayElemOf<a>>`; `i` is always `Expr<'uint256'>`, plus the
+  existing `LoopCtl`. Staged handles only (an `Expr` of a `T[]` type); a `MutArray` iterates
+  through its `.expr()` memref, and a bare handle / raw literal is a record-time
+  `EvsTypeError(TYPE_MISMATCH)`.
+- **M5 (recording)** — `forStmt` and the new `forEachStmt` share one private `counterLoop`
+  core (cell + `i < until` header + step before every `continue` and at the natural body end —
+  behaviour unchanged). `forEach` records: one `len` snapshot BEFORE the loop (the `until`
+  snapshot rule), then per iteration a `cellget` + `index` (the bounds-checked `array.at(i)`,
+  Panic 0x32 unreachable in-bounds) whose out value is wrapped by the same `valueHandle` as
+  `.at` (a Tuple for a `tuple[]` element). **No new IR** — `len`/`while`/`index` only, so M2/
+  M6/M7/M8 are untouched and pre-#12 serialized IR is unaffected.
+- **ArgHandle bug fix** — `ArgHandle<t>` (M5, frozen) wrongly mapped EVERY `TupleType` —
+  including `tuple[]`/`tuple[][]` args — to a `Tuple<t>` handle, while the runtime
+  (`Recorder`'s `valueHandle`) yields an `Expr` for composite ARRAYS and a `Tuple` only for a
+  plain `tuple`. Surfaced by typing a `t.array(t.struct(...))` script arg for `forEach`; fixed
+  to dispatch on `t['type'] extends 'tuple'`, matching the runtime and `HandleOfType`.
+- Status: **accepted**. Pinned by unit (IR shape: single `len`, per-iteration `index`, step
+  tail, continue-emits-step; typed-vs-defaulted `for` IR equality), validation (non-array /
+  raw-literal / MutArray / non-callback), type tests (defaulted `uint256` counter; word,
+  nested-array, and `tuple[]` element handles; rejected non-arrays), a differential corpus
+  case (break/continue/Panic 0x11 agreement across interp + compiled bytecode), and the anvil
+  integration tier (`test/integration/issue12.test.ts`).
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

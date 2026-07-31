@@ -1,6 +1,6 @@
 ---
 title: Control flow & cells
-description: Branch and loop over runtime EVM values with s.if, s.while, s.for, cells, and mutable arrays — native JS control flow cannot.
+description: Branch and loop over runtime EVM values with s.if, s.while, s.for, s.forEach, cells, and mutable arrays — native JS control flow cannot.
 ---
 
 The builder callback runs **once, at recording time** — before any bytecode exists, before any
@@ -183,21 +183,24 @@ the answer out through cells.
 
 ## s.for
 
-`s.for({ type, from, until, step? }, body)` is sugar over `s.while` plus an internal counter
-cell, generic over any numeric word type. It iterates while `i < until`; `step` defaults to 1;
-the counter arithmetic is checked like all evs arithmetic.
+`s.for({ type?, from, until, step? }, body)` is sugar over `s.while` plus an internal counter
+cell. It iterates while `i < until`; `step` defaults to 1; the counter arithmetic is checked
+like all evs arithmetic. `type` is optional — omit it and the counter is a `uint256`:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
 
-const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
+const sumTo = evscript({ name: 'sumTo', args: [t.uint256] }, (s, n) => {
   const total = s.let(t.uint256, 0n);
-  s.for({ type: t.uint256, from: 0n, until: xs.length() }, (i) => {
-    total.set(total.get().add(xs.at(i))); // add is checked: Panic 0x11 on overflow
+  s.for({ from: 0n, until: n }, (i) => {
+    total.set(total.get().add(i)); // i: Expr<'uint256'>; add is checked (Panic 0x11)
   });
   return s.return({ total: total.get() });
 });
 ```
+
+Pass an explicit `type` to count in any other numeric word type, signed included:
+`s.for({ type: t.int24, from: -10n, until: 10n }, (i) => …)` gives an `Expr<'int24'>` counter.
 
 :::note
 `until` and `step` are snapshot **once**, before the loop starts — mutating what they were
@@ -205,13 +208,62 @@ computed from mid-loop does not change the iteration bounds. The loop variable `
 read-only `Expr` each iteration.
 :::
 
+## s.forEach
+
+`s.forEach(array, (elem, i, loop) => { ... })` iterates an array value directly — no manual
+`until: array.length()` + `array.at(i)` pairing. The body receives the current element, the
+`uint256` index, and the usual `LoopCtl`; the array's length is snapshot once before the loop,
+and each element read is the same bounds-checked `array.at(i)`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(xs, (x) => {
+    total.set(total.get().add(x)); // add is checked: Panic 0x11 on overflow
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+It works over any `T[]` array value, composite elements included — iterating a `tuple[]` hands
+the body a [`Tuple` element handle](/guides/values-and-types/#composite-arrays-tuple-t-string)
+with named field access:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Query = t.struct({ token: t.address, owner: t.address });
+
+const balances = evscript({ name: 'balances', args: [t.array(Query)] }, (s, queries) => {
+  const out = s.newArray(t.uint256, queries.length());
+  s.forEach(queries, (q, i) => {
+    const bal = s.read({
+      address: q.token.get(),
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [q.owner.get()],
+    });
+    out.set(i, bal);
+  });
+  return s.return({ balances: out });
+});
+```
+
+The array must be a staged `Expr` handle (a script arg, a decoded call output, an `s.lit` data
+segment, …). A `MutArray` iterates through its `.expr()` memref: `s.forEach(arr.expr(), …)`.
+
 ## break and continue
 
-Loop bodies receive a `LoopCtl` handle with two methods:
+Loop bodies receive a `LoopCtl` handle with two methods — the last callback parameter in all
+three loop forms (`(loop)` in `s.while`, `(i, loop)` in `s.for`, `(elem, i, loop)` in
+`s.forEach`):
 
 - `loop.break()` — jump past the owning loop.
-- `loop.continue()` — jump to the owning loop's header; in `s.for`, to the step, so the
-  counter still advances.
+- `loop.continue()` — jump to the owning loop's header; in `s.for` and `s.forEach`, to the
+  step, so the counter still advances.
 
 `LoopCtl` is scoped to its own loop's body recording. Using it outside — including using an
 outer loop's handle inside an inner loop in place of the inner loop's own — throws

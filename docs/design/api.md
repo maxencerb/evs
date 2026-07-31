@@ -349,12 +349,31 @@ export interface ScriptBuilder {
   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>  // abi.encodePacked
   keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>   // keccak256(abi.encode(...))
 
-  // control flow (combinators — §7)
+  // control flow (combinators — §7; loops amended by #12)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void
+  // `range.type` is OPTIONAL (issue #12): the type-less overload defaults the counter to
+  // uint256; the explicit-type overload keeps the original generic behaviour.
+  for(
+    range: { type?: undefined; from: IntoExpr<'uint256'>; until: IntoExpr<'uint256'>; step?: IntoExpr<'uint256'> },
+    body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void
   for<const t extends NumericType>(
     range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
     body: (i: Expr<t>, loop: LoopCtl) => void,
+  ): void
+  // forEach over an array value (issue #12): sugar over the counter loop with `until` = the
+  // array's length (snapshot once) and `elem` = array.at(i). A `tuple[]` array hands the body
+  // a Tuple element handle (the TupleType overload mirrors the `.at` tuple-array augmentation);
+  // a string-element array an Expr of the element. Staged handles only — a MutArray iterates
+  // through its `.expr()` memref.
+  forEach<C extends TupleType>(
+    array: Expr<C>,
+    body: (elem: Tuple<TupleArrayElem<C>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void
+  forEach<a extends ArrayType>(
+    array: Expr<a>,
+    body: (elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>
 
@@ -660,10 +679,17 @@ trampoline) for the mechanism.
 - `s.while(() => cond, (loop) => { ... })` — the condition is a **thunk**; its recorded ops
   land in the loop header and re-execute every iteration. Values recorded in the header are
   visible in the body; nothing recorded inside the loop is visible after it (use cells).
-- `s.for({ type, from, until, step? }, (i, loop) => { ... })` — sugar over `while` + an internal
-  cell, generic over any numeric word type. `until` and `step` are snapshot **once** before the
-  loop (documented). Iterates while `i < until`; `step` defaults to 1; checked arithmetic
-  applies.
+- `s.for({ type?, from, until, step? }, (i, loop) => { ... })` — sugar over `while` + an internal
+  cell, generic over any numeric word type; `type` is optional and defaults to `uint256`
+  (amended by #12). `until` and `step` are snapshot **once** before the loop (documented).
+  Iterates while `i < until`; `step` defaults to 1; checked arithmetic applies.
+- `s.forEach(array, (elem, i, loop) => { ... })` (added by #12) — the counter loop over an
+  array value (any `T[]` `Expr`, composite elements included): `until` is the array's length,
+  snapshot **once** before the loop; each iteration binds `elem` to the bounds-checked
+  `array.at(i)` element (a `Tuple` handle for a `tuple[]` element, an `Expr` otherwise) and `i`
+  to the `uint256` counter. Sugar only — records the same `len`/`while`/`index` IR the manual
+  `s.for` + `.at(i)` spelling would. Staged handles only: a `MutArray` iterates through its
+  `.expr()` memref (reference semantics — the loop sees later `set` calls).
 - `s.select(cond, a, b)` — **eager both sides** (they are already-computed values). For
   conditional execution use `s.if` + a cell.
 - `loop.break()` / `loop.continue()` — see §5.

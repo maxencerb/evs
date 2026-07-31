@@ -595,6 +595,31 @@ describe('control flow', () => {
     const max64 = (1n << 64n) - 1n;
     await expectAgreement(script, [[[]], [[1n, 2n, 3n]], [[max64, 0n, 5n]]]);
   });
+
+  test('forEach over a runtime array arg with break/continue (issue #12)', async () => {
+    const script = evscript({ name: 'sumSome', args: [t.array(t.uint256)] }, (s, xs) => {
+      const out = s.newArray(t.uint256, xs.length());
+      const total = s.let(t.uint256, 0n);
+      const stopAt = s.let(t.uint256, 0n);
+      s.forEach(xs, (x, i, loop) => {
+        out.set(i, x.mul(2n)); // checked: Panic 0x11 when 2x overflows
+        s.if(x.eq(7n), () => loop.continue()); // skipped from the total, still doubled
+        s.if(x.gt(1000n), () => {
+          stopAt.set(i);
+          loop.break();
+        });
+        total.set(total.get().add(x));
+      });
+      return s.return({ out: out.expr(), total: total.get(), stopAt: stopAt.get() });
+    });
+    await expectAgreement(script, [
+      [[]],
+      [[1n, 2n, 3n]],
+      [[1n, 7n, 3n]], // continue skips the 7
+      [[1n, 2000n, 3n]], // break stops before the 3
+      [[1n, (1n << 255n) + 1n]], // mul overflow inside the body → Panic 0x11
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -2197,13 +2197,18 @@ export class Recorder {
     if (typeof range !== 'object' || range === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.for(): range must be { type, from, until, step? }`,
+        `s.for(): range must be { type?, from, until, step? }`,
         { loc },
       );
     }
     const r = range as { type?: unknown; from?: unknown; until?: unknown; step?: unknown };
-    assertV0Type(r.type, 's.for() range.type', loc);
-    const ty = r.type;
+    let ty: StringType;
+    if (r.type === undefined) {
+      ty = 'uint256'; // `type` is optional (issue #12) — the counter defaults to uint256
+    } else {
+      assertV0Type(r.type, 's.for() range.type', loc);
+      ty = r.type;
+    }
     if (!isNumeric(ty)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -2220,9 +2225,59 @@ export class Recorder {
     const cellId = this.makeCell(ty, r.from, loc);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until', loc);
     const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step', loc);
+    this.counterLoop(ty, cellId, untilId, stepId, loc, (iSnap, _iId, loop) => {
+      unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, loop);
+    });
+  }
 
-    // continue() must execute the step first (api.md §5: "for-loops: to the step"), so the
-    // step is recorded before every `continue` and once at the natural end of the body.
+  /** `s.forEach(array, (elem, i, loop) => …)` (issue #12): the counter loop over an array
+   *  value — `until` is the array's length (snapshot ONCE before the loop, like `s.for`'s
+   *  `until`), and each iteration binds `elem` to the bounds-checked `array.at(i)` element
+   *  handle (a `Tuple` for a `tuple[]` element, an `Expr` otherwise). */
+  forEachStmt(arr: unknown, bodyFn: unknown): void {
+    const loc = captureLoc();
+    this.assertOpen('s.forEach()', loc);
+    if (typeof bodyFn !== 'function') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.forEach(): body must be a callback (elem, i, loop) => …`,
+        { loc },
+      );
+    }
+    const c = this.classify(arr, 's.forEach() array', loc);
+    if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(arr)} — iterate a MutArray through its .expr() handle`,
+        { loc },
+      );
+    }
+    const elemTy = elemTypeOf(c.type);
+    const lenId = this.newValue('uint256', loc, 's.forEach(…) length');
+    this.appendStmt({ k: 'len', a: c.id, out: lenId }, loc);
+    const cellId = this.makeCell('uint256', 0, loc);
+    const stepId = this.wordConst('uint256', 1n, loc);
+    this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
+      const out = this.newValue(elemTy, loc, 's.forEach(…) element');
+      this.appendStmt({ k: 'index', arr: c.id, i: iId, out }, loc);
+      const elem = this.valueHandle(out, elemTy);
+      unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
+    });
+  }
+
+  /**
+   * The shared counter-loop core of `s.for` / `s.forEach`: an internal cell, `i < until` in
+   * the loop header, and the step recorded before every `continue` and once at the natural end
+   * of the body — continue() must execute the step first (api.md §5: "for-loops: to the step").
+   */
+  private counterLoop(
+    ty: StringType,
+    cellId: CellId,
+    untilId: ValueId,
+    stepId: ValueId,
+    loc: SourceLoc | null,
+    invokeBody: (iSnap: Expr, iId: ValueId, loop: LoopCtlShape) => void,
+  ): void {
     const emitStep = (stepLoc: SourceLoc | null): void => {
       const cur = this.cellGetId(cellId, stepLoc);
       const sum = this.newValue(ty, stepLoc);
@@ -2239,7 +2294,8 @@ export class Recorder {
         return cond;
       },
       (rawLoop) => {
-        const iSnap = makeExpr(this, this.cellGetId(cellId, loc));
+        const iId = this.cellGetId(cellId, loc);
+        const iSnap = makeExpr(this, iId);
         const wrapped: LoopCtlShape = {
           break: () => {
             rawLoop.break();
@@ -2251,7 +2307,7 @@ export class Recorder {
             rawLoop.emit('continue', cloc);
           },
         };
-        unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, wrapped);
+        invokeBody(iSnap, iId, wrapped);
         emitStep(loc);
       },
     );

@@ -637,7 +637,12 @@ export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'
 export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
   ? { readonly [i in keyof a]: ToArgSpec<a[i]> }
   : readonly [ToArgSpec<a>]; // → readonly ArgSpec[]
-export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+// amended by #12 (bug fix): a `tuple[]`/`tuple[][]` arg is an Expr, matching the runtime
+// `valueHandle` (only a PLAIN `tuple` arg is a Tuple handle) — the pre-#12 type wrongly
+// mapped every TupleType to `Tuple<t>`.
+export type ArgHandle<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple' ? Tuple<t> : Expr<t>
+  : Expr<t>;
 // LabelCarrier is module-private: a label-carrying tuple via abitype's public
 // AbiParametersToPrimitiveTypes<…,'inputs',true>; ArgHandles maps over it (a type PARAMETER) to
 // surface the names as the callback param labels while drawing element handles from `specs`.
@@ -672,7 +677,14 @@ export interface ScriptBuilder {
                             trampoline (the write is rolled back + isolated, the return value is read
                             back). Mutability is filtered at the `functionName` TYPE level per verb
                             (a wrong bucket is a compile error steered to the right verb; the recorder
-                            mirrors it with EvsTypeError(ABI_SHAPE)). */
+                            mirrors it with EvsTypeError(ABI_SHAPE)).
+     Amended by #12 (loops): `s.for`'s `range.type` is OPTIONAL, defaulting the counter to
+     uint256 (a type-less overload + the original generic overload), and the surface gains
+     `s.forEach(array, (elem, i, loop) => …)` — the counter loop over an array value with
+     `until` = the array's length (snapshot once) and `elem` = the bounds-checked `array.at(i)`
+     (a Tuple handle for a `tuple[]` element, an Expr otherwise; two overloads mirroring the
+     `.at` tuple-array augmentation). Records existing IR only (`len`/`while`/`index` — no new
+     Stmt kinds); see api.md §4/§7. */
 }
 export interface Cell<t extends EvsType> {
   /* api.md §5 */

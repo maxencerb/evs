@@ -969,6 +969,107 @@ describe('s.for', () => {
     );
     expect(() => validateIr(script3.ir)).not.toThrow();
   });
+
+  test('range.type is optional and defaults to uint256 — IR identical to the typed form (issue #12)', () => {
+    const typed = evscript(
+      { name: 'fordef', args: [t.uint256] },
+      (s, n) => {
+        const acc = s.let(t.uint256, 0n);
+        s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+          acc.set(acc.get().add(i));
+        });
+        return s.return({ acc: acc.get() });
+      },
+      NO_LOC,
+    );
+    const untyped = evscript(
+      { name: 'fordef', args: [t.uint256] },
+      (s, n) => {
+        const acc = s.let(t.uint256, 0n);
+        s.for({ from: 0n, until: n }, (i) => {
+          acc.set(acc.get().add(i));
+        });
+        return s.return({ acc: acc.get() });
+      },
+      NO_LOC,
+    );
+    expect(serializeIr(untyped.ir)).toEqual(serializeIr(typed.ir));
+    expect(() => validateIr(untyped.ir)).not.toThrow();
+  });
+});
+
+describe('s.forEach', () => {
+  const script = evscript(
+    { name: 'summed', args: [t.array(t.uint256)] },
+    (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x, i) => {
+        total.set(total.get().add(x).add(i));
+      });
+      return s.return({ total: total.get() });
+    },
+    NO_LOC,
+  );
+
+  test('IR snapshot (one len snapshot before the loop; index per iteration; step tail)', () => {
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const stmts = allStmts(script.ir);
+    // the array length is snapshot ONCE, outside the while
+    expect(stmts.filter((s) => s.k === 'len')).toHaveLength(1);
+    const wh = stmts.find((s) => s.k === 'while');
+    if (wh?.k !== 'while') throw new Error('expected a while statement');
+    expect(wh.header.some((s) => s.k === 'len')).toBe(false);
+    expect(wh.body.some((s) => s.k === 'index')).toBe(true);
+    // the counter step at the natural end of the body: cellget + add + cellset
+    expect(wh.body.slice(-3).map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset']);
+  });
+
+  test('loop.continue() records the step before the continue; loop.break() works', () => {
+    const script2 = evscript(
+      { name: 'ctl', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const total = s.let(t.uint256, 0n);
+        s.forEach(xs, (x, i, loop) => {
+          s.if(i.eq(0n), () => {
+            loop.continue();
+          });
+          s.if(x.gt(100n), () => {
+            loop.break();
+          });
+          total.set(total.get().add(x));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script2.ir)).not.toThrow();
+    const wh = allStmts(script2.ir).find((s) => s.k === 'while');
+    if (wh?.k !== 'while') throw new Error('expected a while statement');
+    const [contIf, breakIf] = wh.body.filter((s) => s.k === 'if');
+    if (contIf?.k !== 'if' || breakIf?.k !== 'if') throw new Error('expected two if statements');
+    expect(contIf.then.map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset', 'continue']);
+    expect(breakIf.then.map((s) => s.k)).toEqual(['break']);
+  });
+
+  test('a tuple[] array hands the body a Tuple element handle', () => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    const script3 = evscript(
+      { name: 'pairs', args: [t.array(Pair)] },
+      (s, pairs) => {
+        const last = s.let(t.address, '0x0000000000000000000000000000000000000000');
+        s.forEach(pairs, (pair) => {
+          last.set(pair.token.get());
+        });
+        return s.return({ last: last.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script3.ir)).not.toThrow();
+    // the element arrives as a Tuple: reading .token records a field stmt off the index out
+    expect(allStmts(script3.ir).filter((s) => s.k === 'field')).toHaveLength(1);
+    expect(allStmts(script3.ir).filter((s) => s.k === 'index')).toHaveLength(1);
+  });
 });
 
 describe('s.select', () => {
