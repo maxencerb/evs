@@ -102,7 +102,10 @@ export const t: { /* every WordType|DynType key */ } & {
 export type TypeToComponent<name extends string, ty extends EvsType> = /* see core/types.ts */
 export type StructTypeOf<spec extends Record<string, EvsType>>                // named-components tuple
 export type TupleTypeOf<items extends readonly EvsType[]>                     // positional tuple
-export type TupleArrayOf<e extends TupleType>                                 // one `[]` deeper
+export type TupleArrayOf<e extends TupleType>  // one `[]` deeper. Amended by #12: the `type`
+  // tag is computed by CONDITIONAL (concrete 'tuple' → the LITERAL 'tuple[]'), not by
+  // template-and-intersect, which left the tag as the constraint-widened 'tuple[]'|'tuple[][]'
+  // union and made tuple[] and tuple[][] values indistinguishable to the element dispatch.
 
 // runtime type predicates / metadata (single source of truth for all modules; amended by #2 —
 // the value-type guards accept `string | TupleType`, and tuple-aware helpers are added):

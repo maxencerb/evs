@@ -481,8 +481,16 @@ test('Cell / MutArray / env / for typing', () => {
 test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays (issue #12)', () => {
   const Pair = t.struct({ token: t.address, fee: t.uint24 });
   evscript(
-    { name: 'each', args: [t.array(t.address), t.array(t.array(t.uint256)), t.array(Pair)] },
-    (s, addrs, matrix, pairs) => {
+    {
+      name: 'each',
+      args: [
+        t.array(t.address),
+        t.array(t.array(t.uint256)),
+        t.array(Pair),
+        t.array(t.array(Pair)),
+      ],
+    },
+    (s, addrs, matrix, pairs, nestedPairs) => {
       s.forEach(addrs, (elem, i, loop) => {
         expectTypeOf(elem).toEqualTypeOf<Expr<'address'>>();
         expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
@@ -502,11 +510,26 @@ test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays
         expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
       });
 
+      // a tuple[][] array hands the body an Expr<tuple[]> element — NOT a named-field Tuple
+      // (runtime parity, issue #12 follow-up); the row's own .at/.length keep working.
+      s.forEach(nestedPairs, (row, i) => {
+        expectTypeOf(row.length()).toEqualTypeOf<Expr<'uint256'>>();
+        expectTypeOf(row.at(0n).token.get()).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(row).not.toHaveProperty('token'); // an Expr, not a Tuple: no named fields
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      });
+
       const n = s.lit(t.uint256, 1n);
       // @ts-expect-error — a non-array Expr is not iterable
       s.forEach(n, () => {});
       // @ts-expect-error — a bare MutArray is not accepted; iterate via .expr()
       s.forEach(s.newArray(t.uint256, 3n), () => {});
+
+      const pos = s.tuple(Pair);
+      // @ts-expect-error — a plain tuple memref is not an array (record-time rejection mirrored)
+      s.forEach(pos.expr(), () => {});
+      // @ts-expect-error — .at on a plain-tuple Expr is a compile error too (issue #12 follow-up)
+      pos.expr().at(0n);
 
       return s.return({ n });
     },

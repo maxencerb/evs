@@ -529,17 +529,37 @@ export type TupleArrayElem<C extends TupleType> = {
   readonly components: C['components'];
 };
 
-// `.at(i)` on a `tuple[]` Expr yields a typed {@link Tuple} element (the runtime `atOp` returns a
-// Tuple handle bound to the `index` out ValueId — §12.8). The base `Expr.at` overload in
-// `core/types.ts` only matches string-element arrays; this augmentation adds the tuple-array case
-// where `Tuple`/`Field`/`ComponentToType` are in scope. Overload resolution picks the `this`-matching
-// signature, so a `string[]`/`uint256[][]` Expr keeps returning an `Expr` element.
-// `.length()` gets the matching tuple-ARRAY overload (issue #12 — the base bound is
-// `DynType | ArrayType`, which a `tuple[]` arg/handle Expr is not; the runtime `lenOp`
-// already accepts every dynamic memref).
+/**
+ * The element handle `.at(i)` / `s.forEach` yield for a tuple-array {@link Expr} (issue #12
+ * follow-up): a `tuple[]` → a {@link Tuple} element with named fields; a `tuple[][]` → an
+ * {@link Expr} of the one-level-peeled `tuple[]` descriptor. This matches the runtime
+ * `valueHandle`, which wraps ONLY a plain-`tuple` element in a Tuple handle — the pre-fix
+ * typing handed a `tuple[][]` element out as a `Tuple`, so a field access compiled but hit a
+ * raw `TypeError` at recording.
+ */
+export type TupleArrayElemHandle<C extends TupleType> = C['type'] extends 'tuple[]'
+  ? Tuple<TupleArrayElem<C>>
+  : C['type'] extends 'tuple[][]'
+    ? Expr<{ readonly type: 'tuple[]'; readonly components: C['components'] }>
+    : never;
+
+// `.at(i)` on a tuple-ARRAY Expr yields the element handle (the runtime `atOp` returns a Tuple
+// handle bound to the `index` out ValueId for a plain-tuple element, an Expr otherwise — §12.8).
+// The base `Expr.at` overload in `core/types.ts` only matches string-element arrays; this
+// augmentation adds the tuple-array case where `Tuple`/`Field`/`ComponentToType` are in scope.
+// Overload resolution picks the `this`-matching signature, so a `string[]`/`uint256[][]` Expr
+// keeps returning an `Expr` element. Sharpened by the issue-#12 follow-up: the receiver is
+// pinned to ARRAY tags (a plain-`tuple` Expr is now a compile error, matching the record-time
+// rejection) and the element comes from {@link TupleArrayElemHandle} (a `tuple[][]` element is
+// an `Expr<tuple[]>`, matching the runtime — it was wrongly a named-field `Tuple` before).
+// `.length()` gets the matching tuple-ARRAY overload (the base bound is `DynType | ArrayType`,
+// which a `tuple[]` Expr is not; the runtime `lenOp` accepts every dynamic memref).
 declare module '../core/types.js' {
   interface Expr<t extends EvsType = EvsType> {
-    at<C extends TupleType>(this: Expr<C>, i: IntoExpr<'uint256'>): Tuple<TupleArrayElem<C>>;
+    at<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
+      this: Expr<C>,
+      i: IntoExpr<'uint256'>,
+    ): TupleArrayElemHandle<C>;
     length(this: Expr<TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>): Expr<'uint256'>;
   }
 }
@@ -948,14 +968,13 @@ export interface ScriptBuilder<
   ): void;
   // forEach over an array value (issue #12): the counter loop with `until` = the array's
   // length (snapshot ONCE) and `elem` = the bounds-checked `array.at(i)` — a `tuple[]` array
-  // hands the body a `Tuple` element handle, a string-element array an `Expr` of the element.
-  // Staged handles only: a MutArray iterates through its `.expr()` memref. The tuple overload
-  // mirrors the `.at` tuple-array augmentation (any TupleType — `TupleArrayOf`'s `type` field
-  // resolves against its constraint, so a narrower bound rejects it; a plain `tuple` is
-  // backstopped at record time).
-  forEach<C extends TupleType>(
+  // hands the body a `Tuple` element handle, a `tuple[][]` an `Expr<tuple[]>` element, a
+  // string-element array an `Expr` of the element (the same {@link TupleArrayElemHandle}
+  // dispatch as the `.at` augmentation; a plain `tuple` is a compile error, mirrored at record
+  // time). Staged handles only: a MutArray iterates through its `.expr()` memref.
+  forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
     array: Expr<C>,
-    body: (elem: Tuple<TupleArrayElem<C>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+    body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
   forEach<a extends ArrayType>(
     array: Expr<a>,

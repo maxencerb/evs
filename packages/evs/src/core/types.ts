@@ -343,9 +343,17 @@ export type TupleTypeOf<items extends readonly EvsType[]> = {
   readonly type: 'tuple';
   readonly components: { readonly [i in keyof items]: TypeToComponent<'', items[i]> };
 };
-/** `t.array(tupleType)` → an array-of-tuple type (one `[]` deeper). */
+/** `t.array(tupleType)` → an array-of-tuple type (one `[]` deeper). The `type` tag is computed
+ *  by CONDITIONAL, not template, so a concrete element yields the literal (`'tuple'` →
+ *  `'tuple[]'`) — the template-and-intersect form left the tag as the constraint-widened union
+ *  `'tuple[]' | 'tuple[][]'`, which made `tuple[]` and `tuple[][]` values indistinguishable to
+ *  the element-handle dispatch (issue #12 follow-up). A non-concrete `e` keeps the old union. */
 export type TupleArrayOf<e extends TupleType> = {
-  readonly type: `${e['type']}[]` & TupleType['type'];
+  readonly type: e['type'] extends 'tuple'
+    ? 'tuple[]'
+    : e['type'] extends 'tuple[]'
+      ? 'tuple[][]'
+      : `${e['type']}[]` & TupleType['type'];
   readonly components: e['components'];
 };
 

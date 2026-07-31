@@ -1070,6 +1070,19 @@ describe('s.forEach', () => {
     expect(allStmts(script3.ir).filter((s) => s.k === 'field')).toHaveLength(1);
     expect(allStmts(script3.ir).filter((s) => s.k === 'index')).toHaveLength(1);
   });
+
+  test('a tuple[][] arg stays UNSUPPORTED_V0 — the Expr<tuple[]> row typing is forward-looking', () => {
+    // A tuple[][] Expr is unconstructible in v0 (args, newArray, and call outputs all reject
+    // the shape), so `TupleArrayElemHandle`'s Expr<tuple[]> row arm cannot be exercised at
+    // runtime today — this pins the rejection the type-level dispatch is anticipating.
+    expect(() =>
+      evscript(
+        { name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] },
+        (s) => s.return({ z: s.lit(t.uint256, 0n) }),
+        NO_LOC,
+      ),
+    ).toThrowError(/tuple\[\]\[\]" is not supported in evs v0/);
+  });
 });
 
 describe('s.select', () => {

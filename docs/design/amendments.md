@@ -1692,6 +1692,21 @@ this change; decisions locked in the issue-#15 discussion). Summary of the law a
   (`Recorder`'s `valueHandle`) yields an `Expr` for composite ARRAYS and a `Tuple` only for a
   plain `tuple`. Surfaced by typing a `t.array(t.struct(...))` script arg for `forEach`; fixed
   to dispatch on `t['type'] extends 'tuple'`, matching the runtime and `HandleOfType`.
+- **`TupleArrayOf` sharpened (M1) + element-handle dispatch fixed (M5)** — post-review
+  follow-up. `TupleArrayOf`'s `type` tag was `` `${e['type']}[]` & TupleType['type'] ``, which
+  TS left as the constraint-widened union `'tuple[]' | 'tuple[][]'` even for a concrete
+  element — `t.array(P)` and `t.array(t.array(P))` were indistinguishable at the type level,
+  so the `.at` augmentation typed a `tuple[][]` element as a named-field `Tuple` while the
+  runtime hands back an `Expr<tuple[]>` (field access compiled, then died in a raw `TypeError`
+  mid-recording). Fixed by computing the tag CONDITIONALLY (concrete `'tuple'` → literal
+  `'tuple[]'`; non-concrete inputs keep the old union). On top of that, the `.at` augmentation
+  and `s.forEach`'s tuple overload now (a) pin the receiver to ARRAY tags — a plain-`tuple`
+  Expr is a COMPILE error, mirroring the record-time rejection — and (b) type the element via
+  the new exported `TupleArrayElemHandle<C>` (`'tuple[]'` → `Tuple<TupleArrayElem<C>>`;
+  `'tuple[][]'` → `Expr<tuple[]>`), matching `valueHandle` exactly. NOTE: a `tuple[][]` value
+  is UNCONSTRUCTIBLE in v0 (args, `s.newArray`, and call outputs all reject the shape —
+  pinned by a unit test), so the `Expr<tuple[]>` arm is forward-looking; the practical fix
+  today is the compile-time rejection replacing the mid-recording `TypeError`.
 - Status: **accepted**. Pinned by unit (IR shape: single `len`, per-iteration `index`, step
   tail, continue-emits-step; typed-vs-defaulted `for` IR equality), validation (non-array /
   raw-literal / MutArray / non-callback), type tests (defaulted `uint256` counter; word,

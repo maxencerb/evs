@@ -364,12 +364,13 @@ export interface ScriptBuilder {
   ): void
   // forEach over an array value (issue #12): sugar over the counter loop with `until` = the
   // array's length (snapshot once) and `elem` = array.at(i). A `tuple[]` array hands the body
-  // a Tuple element handle (the TupleType overload mirrors the `.at` tuple-array augmentation);
-  // a string-element array an Expr of the element. Staged handles only — a MutArray iterates
-  // through its `.expr()` memref.
-  forEach<C extends TupleType>(
+  // a Tuple element handle, a `tuple[][]` an Expr<tuple[]> element (TupleArrayElemHandle — the
+  // same dispatch as the sharpened `.at` augmentation; a plain `tuple` is a compile error,
+  // mirrored at record time); a string-element array an Expr of the element. Staged handles
+  // only — a MutArray iterates through its `.expr()` memref.
+  forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
     array: Expr<C>,
-    body: (elem: Tuple<TupleArrayElem<C>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+    body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void
   forEach<a extends ArrayType>(
     array: Expr<a>,
