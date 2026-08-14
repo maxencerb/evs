@@ -1876,9 +1876,15 @@ export class Recorder {
         { loc },
       );
     }
-    const out = this.newValue('uint256', loc);
-    this.appendStmt({ k: 'len', a: c.id, out }, loc);
-    return makeExpr(this, out);
+    return makeExpr(this, this.lenId(c.id, loc));
+  }
+
+  /** The shared `len` tail of `.length()` and `s.forEach`'s `until` snapshot — one recording
+   *  path, so the documented forEach-vs-manual IR equivalence holds by construction. */
+  private lenId(a: ValueId, loc: SourceLoc | null, debugName?: string): ValueId {
+    const out = this.newValue('uint256', loc, debugName);
+    this.appendStmt({ k: 'len', a, out }, loc);
+    return out;
   }
 
   atOp(a: unknown, i: unknown, what: string): Expr | object {
@@ -1893,12 +1899,23 @@ export class Recorder {
       );
     }
     const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    const elem = elemTypeOf(c.type);
-    const out = this.newValue(elem, loc);
-    this.appendStmt({ k: 'index', arr: c.id, i: iId, out }, loc);
-    // a composite element yields its handle: a `tuple[]` element → a `Tuple` handle bound to the
-    // `index` out ValueId (same `TUPLE_INTERNALS` as a decoded tuple); a `T[][]`/`string[]` element
-    // → an Expr (whose `.at`/`.length` keep working recursively); a word element → an Expr.
+    return this.indexElem(c.id, elemTypeOf(c.type), iId, loc);
+  }
+
+  /** The shared bounds-checked `index` tail of `.at(i)` and `s.forEach`'s element load — one
+   *  recording path (see `lenId`). A composite element yields its handle: a `tuple[]` element →
+   *  a `Tuple` handle bound to the `index` out ValueId (same `TUPLE_INTERNALS` as a decoded
+   *  tuple); a `T[][]`/`string[]` element → an Expr (whose `.at`/`.length` keep working
+   *  recursively); a word element → an Expr. */
+  private indexElem(
+    arr: ValueId,
+    elem: EvsType,
+    i: ValueId,
+    loc: SourceLoc | null,
+    debugName?: string,
+  ): Expr | object {
+    const out = this.newValue(elem, loc, debugName);
+    this.appendStmt({ k: 'index', arr, i, out }, loc);
     return this.valueHandle(out, elem);
   }
 
@@ -2197,13 +2214,18 @@ export class Recorder {
     if (typeof range !== 'object' || range === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.for(): range must be { type, from, until, step? }`,
+        `s.for(): range must be { type?, from, until, step? }`,
         { loc },
       );
     }
     const r = range as { type?: unknown; from?: unknown; until?: unknown; step?: unknown };
-    assertV0Type(r.type, 's.for() range.type', loc);
-    const ty = r.type;
+    let ty: StringType;
+    if (r.type === undefined) {
+      ty = 'uint256'; // `type` is optional (issue #12) — the counter defaults to uint256
+    } else {
+      assertV0Type(r.type, 's.for() range.type', loc);
+      ty = r.type;
+    }
     if (!isNumeric(ty)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -2220,9 +2242,62 @@ export class Recorder {
     const cellId = this.makeCell(ty, r.from, loc);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until', loc);
     const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step', loc);
+    this.counterLoop(ty, cellId, untilId, stepId, loc, (iSnap, _iId, loop) => {
+      unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, loop);
+    });
+  }
 
-    // continue() must execute the step first (api.md §5: "for-loops: to the step"), so the
-    // step is recorded before every `continue` and once at the natural end of the body.
+  /** `s.forEach(array, (elem, i, loop) => …)` (issue #12): the counter loop over an array
+   *  value — `until` is the array's length (snapshot ONCE before the loop, like `s.for`'s
+   *  `until`), and each iteration binds `elem` to the bounds-checked `array.at(i)` element
+   *  handle (a `Tuple` for a `tuple[]` element, an `Expr` otherwise). */
+  forEachStmt(arr: unknown, bodyFn: unknown): void {
+    const loc = captureLoc();
+    this.assertOpen('s.forEach()', loc);
+    if (typeof bodyFn !== 'function') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.forEach(): body must be a callback (elem, i, loop) => …`,
+        { loc },
+      );
+    }
+    const c = this.classify(arr, 's.forEach() array', loc);
+    if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
+      // no MutArray steering here — classify already threw its own `.expr()` hint for one
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(arr)}`,
+        { loc },
+      );
+    }
+    const elemTy = elemTypeOf(c.type);
+    const lenId = this.lenId(c.id, loc, 's.forEach(…) length');
+    const cellId = this.makeCell('uint256', 0, loc);
+    const stepId = this.wordConst('uint256', 1n, loc);
+    // the element load is recorded only when the body declares `elem` — v0 has no DCE, so an
+    // unconditional load would execute its bounds check + reads every iteration for nothing
+    const wantsElem = bodyFn.length >= 1;
+    this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
+      const elem = wantsElem
+        ? this.indexElem(c.id, elemTy, iId, loc, 's.forEach(…) element')
+        : undefined;
+      unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
+    });
+  }
+
+  /**
+   * The shared counter-loop core of `s.for` / `s.forEach`: an internal cell, `i < until` in
+   * the loop header, and the step recorded before every `continue` and once at the natural end
+   * of the body — continue() must execute the step first (api.md §5: "for-loops: to the step").
+   */
+  private counterLoop(
+    ty: StringType,
+    cellId: CellId,
+    untilId: ValueId,
+    stepId: ValueId,
+    loc: SourceLoc | null,
+    invokeBody: (iSnap: Expr, iId: ValueId, loop: LoopCtlShape) => void,
+  ): void {
     const emitStep = (stepLoc: SourceLoc | null): void => {
       const cur = this.cellGetId(cellId, stepLoc);
       const sum = this.newValue(ty, stepLoc);
@@ -2230,16 +2305,20 @@ export class Recorder {
       this.appendStmt({ k: 'cellset', cell: cellId, value: sum }, stepLoc);
     };
 
+    // the body's `i` snapshot REUSES the header's cellget: the header dominates the body
+    // (validate.ts scoping) and nothing runs between the compare and the body start, so the
+    // header read IS the per-iteration counter — no second cellget per iteration
+    let iId!: ValueId;
     this.whileInternal(
       loc,
       () => {
-        const iv = this.cellGetId(cellId, loc);
+        iId = this.cellGetId(cellId, loc);
         const cond = this.newValue('bool', loc);
-        this.appendStmt({ k: 'bin', op: 'lt', a: iv, b: untilId, out: cond }, loc);
+        this.appendStmt({ k: 'bin', op: 'lt', a: iId, b: untilId, out: cond }, loc);
         return cond;
       },
       (rawLoop) => {
-        const iSnap = makeExpr(this, this.cellGetId(cellId, loc));
+        const iSnap = makeExpr(this, iId);
         const wrapped: LoopCtlShape = {
           break: () => {
             rawLoop.break();
@@ -2251,7 +2330,7 @@ export class Recorder {
             rawLoop.emit('continue', cloc);
           },
         };
-        unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, wrapped);
+        invokeBody(iSnap, iId, wrapped);
         emitStep(loc);
       },
     );

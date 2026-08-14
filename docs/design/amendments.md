@@ -1669,6 +1669,77 @@ this change; decisions locked in the issue-#15 discussion). Summary of the law a
   goldens, differential corpus (all three forks), type tests, and the anvil integration tier
   (`test/integration/errors.test.ts`).
 
+## 25. Loop ergonomics: `s.forEach` + optional `for` type (issue #12)
+
+- **M5 (surface)** — `ScriptBuilder.for`'s `range.type` is now OPTIONAL, defaulting the
+  counter to `uint256`: a type-less overload (`{ type?: undefined; from; until; step? }` →
+  `i: Expr<'uint256'>`) sits before the original generic overload, which is unchanged.
+  `ScriptBuilder` gains `s.forEach(array, (elem, i, loop) => …)` — two overloads mirroring the
+  `.at` element split: a `TupleType` array hands the body a `Tuple<TupleArrayElem<C>>` element,
+  an `ArrayType` array an `Expr<ArrayElemOf<a>>`; `i` is always `Expr<'uint256'>`, plus the
+  existing `LoopCtl`. Staged handles only (an `Expr` of a `T[]` type); a `MutArray` iterates
+  through its `.expr()` memref, and a bare handle / raw literal is a record-time
+  `EvsTypeError(TYPE_MISMATCH)`.
+- **M5 (recording)** — `forStmt` and the new `forEachStmt` share one private `counterLoop`
+  core (cell + `i < until` header + step before every `continue` and at the natural body end —
+  behaviour unchanged). `forEach` records: one `len` snapshot BEFORE the loop (the `until`
+  snapshot rule), then per iteration a `cellget` + `index` (the bounds-checked `array.at(i)`,
+  Panic 0x32 unreachable in-bounds) whose out value is wrapped by the same `valueHandle` as
+  `.at` (a Tuple for a `tuple[]` element). **No new IR** — `len`/`while`/`index` only, so M2/
+  M6/M7/M8 are untouched and pre-#12 serialized IR is unaffected.
+- **ArgHandle bug fix** — `ArgHandle<t>` (M5, frozen) wrongly mapped EVERY `TupleType` —
+  including `tuple[]`/`tuple[][]` args — to a `Tuple<t>` handle, while the runtime
+  (`Recorder`'s `valueHandle`) yields an `Expr` for composite ARRAYS and a `Tuple` only for a
+  plain `tuple`. Surfaced by typing a `t.array(t.struct(...))` script arg for `forEach`; fixed
+  to dispatch on `t['type'] extends 'tuple'`, matching the runtime and `HandleOfType`.
+- **`TupleArrayOf` sharpened (M1) + element-handle dispatch fixed (M5)** — post-review
+  follow-up. `TupleArrayOf`'s `type` tag was `` `${e['type']}[]` & TupleType['type'] ``, which
+  TS left as the constraint-widened union `'tuple[]' | 'tuple[][]'` even for a concrete
+  element — `t.array(P)` and `t.array(t.array(P))` were indistinguishable at the type level,
+  so the `.at` augmentation typed a `tuple[][]` element as a named-field `Tuple` while the
+  runtime hands back an `Expr<tuple[]>` (field access compiled, then died in a raw `TypeError`
+  mid-recording). Fixed by computing the tag CONDITIONALLY (concrete `'tuple'` → literal
+  `'tuple[]'`; non-concrete inputs keep the old union). On top of that, the `.at` augmentation
+  and `s.forEach`'s tuple overload now (a) pin the receiver to ARRAY tags — a plain-`tuple`
+  Expr is a COMPILE error, mirroring the record-time rejection — and (b) type the element via
+  the new exported `TupleArrayElemHandle<C>` (`'tuple[]'` → `Tuple<TupleArrayElem<C>>`;
+  `'tuple[][]'` → `Expr<tuple[]>`), matching `valueHandle` exactly. NOTE: a `tuple[][]` value
+  is UNCONSTRUCTIBLE in v0 (args, `s.newArray`, and call outputs all reject the shape —
+  pinned by a unit test), so the `Expr<tuple[]>` arm is forward-looking; the practical fix
+  today is the compile-time rejection replacing the mid-recording `TypeError`.
+- **Post-review pass (PR review of this amendment)** — six fixes, no new surface beyond one
+  export:
+  (a) `Field.get()` now returns `ArgHandle<t>`: a `tuple[]` STRUCT MEMBER's `.get()` types as
+  an `Expr` (runtime `fieldGet` → `valueHandle` parity) — the pre-fix
+  `t extends TupleType ? Tuple<t> : Expr<t>` had exactly the bug this amendment fixed in
+  `ArgHandle` (a field access on the member compiled, then died in a raw `TypeError`; `forEach`
+  over it was wrongly a compile error).
+  (b) The `valueHandle`-parity dispatch is defined ONCE: the file-private `HandleOfType`
+  (character-identical to the fixed `ArgHandle`) is gone — `RebuildFnResult`, `Field.get`, and
+  `TupleArrayElemHandle` (now `ArgHandle` of the one-`[]`-peeled descriptor) all derive from
+  `ArgHandle`, so the next `valueHandle` change lands in one conditional. A NON-literal
+  (constraint-widened) tuple tag yields the honest union `Tuple<t> | Expr<t>` (no single
+  runtime answer exists for it).
+  (c) `TupleArrayElemHandle` is actually EXPORTED from the single entry point (M9) — it is
+  named by the public `Expr.at` / `s.forEach` signatures.
+  (d) `forEachStmt` records its `len` / `index` through the same private cores as
+  `.length()` / `.at(i)` (`lenId` / `indexElem`) — the documented manual-spelling equivalence
+  holds by construction and is pinned by a debugName-stripped `serializeIr` equality test.
+  (e) The element load is recorded only when the body callback declares `elem` (v0 has no
+  DCE — an unconditional load would execute its bounds check + reads every iteration for
+  nothing).
+  (f) `counterLoop` reuses the header's `cellget` as the body's `i` snapshot (the header
+  dominates the body) — one fewer `cellget` per iteration for `s.for` AND `s.forEach`; and the
+  forEach type-mismatch message drops its unreachable MutArray `.expr()` hint (`classify`
+  throws first for an actual MutArray, with its own steering).
+- Status: **accepted**. Pinned by unit (IR shape: single `len`, per-iteration `index`, step
+  tail, continue-emits-step; typed-vs-defaulted `for` IR equality; forEach-vs-manual IR
+  equality; elem-omitted → no `index`), validation (non-array / raw-literal / MutArray /
+  non-callback), type tests (defaulted `uint256` counter; word, nested-array, and `tuple[]`
+  element handles; `tuple[]` struct-member `.get()` → Expr; rejected non-arrays), a
+  differential corpus case (break/continue/Panic 0x11 agreement across interp + compiled
+  bytecode), and the anvil integration tier (`test/integration/issue12.test.ts`).
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

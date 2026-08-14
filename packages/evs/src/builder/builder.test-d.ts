@@ -12,6 +12,7 @@ import { expectTypeOf, test } from 'vitest';
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
 import {
   evscript,
+  type ArgHandle,
   type Cell,
   type EvsFn,
   type EvsScript,
@@ -460,6 +461,12 @@ test('Cell / MutArray / env / for typing', () => {
       expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
     });
 
+    // issue #12: `type` omitted → the counter defaults to uint256
+    s.for({ from: 0n, until: n }, (i, loop) => {
+      expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
+    });
+
     s.while(
       () => c.get().lt(5n),
       (loop) => {
@@ -470,6 +477,96 @@ test('Cell / MutArray / env / for typing', () => {
 
     return s.return({ n });
   });
+});
+
+test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays (issue #12)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  evscript(
+    {
+      name: 'each',
+      args: [
+        t.array(t.address),
+        t.array(t.array(t.uint256)),
+        t.array(Pair),
+        t.array(t.array(Pair)),
+      ],
+    },
+    (s, addrs, matrix, pairs, nestedPairs) => {
+      s.forEach(addrs, (elem, i, loop) => {
+        expectTypeOf(elem).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+        expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
+      });
+
+      // a nested word array yields the one-level-peeled element
+      s.forEach(matrix, (row) => {
+        expectTypeOf(row).toEqualTypeOf<Expr<'uint256[]'>>();
+      });
+
+      // a tuple[] array hands the body a Tuple element with named Fields
+      s.forEach(pairs, (pair, i) => {
+        expectTypeOf(pair.token.get()).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(pair.fee.get()).toEqualTypeOf<Expr<'uint24'>>();
+        expectTypeOf(pair.expr()).toEqualTypeOf<Expr<typeof Pair>>();
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      });
+
+      // a tuple[][] array hands the body an Expr<tuple[]> element — NOT a named-field Tuple
+      // (runtime parity, issue #12 follow-up); the row's own .at/.length keep working.
+      s.forEach(nestedPairs, (row, i) => {
+        expectTypeOf(row.length()).toEqualTypeOf<Expr<'uint256'>>();
+        expectTypeOf(row.at(0n).token.get()).toEqualTypeOf<Expr<'address'>>();
+        expectTypeOf(row).not.toHaveProperty('token'); // an Expr, not a Tuple: no named fields
+        expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+      });
+
+      const n = s.lit(t.uint256, 1n);
+      // @ts-expect-error — a non-array Expr is not iterable
+      s.forEach(n, () => {});
+      // @ts-expect-error — a bare MutArray is not accepted; iterate via .expr()
+      s.forEach(s.newArray(t.uint256, 3n), () => {});
+
+      const pos = s.tuple(Pair);
+      // @ts-expect-error — a plain tuple memref is not an array (record-time rejection mirrored)
+      s.forEach(pos.expr(), () => {});
+      // @ts-expect-error — .at on a plain-tuple Expr is a compile error too (issue #12 follow-up)
+      pos.expr().at(0n);
+
+      return s.return({ n });
+    },
+  );
+});
+
+test('a tuple[] STRUCT MEMBER .get() is an Expr, not a Tuple (issue #12 post-review)', () => {
+  const Item = t.struct({ x: t.uint256 });
+  const Book = t.struct({
+    owner: t.address,
+    meta: t.struct({ tag: t.uint8 }),
+    items: t.array(Item),
+  });
+  evscript({ name: 'book', args: [Book] }, (s, book) => {
+    // runtime `fieldGet` → `valueHandle` parity: the composite-ARRAY member arrives as an Expr
+    // (no named fields), so `.length()`/`.at()`/`s.forEach` work on it directly
+    const items = book.items.get();
+    expectTypeOf(items).not.toHaveProperty('x');
+    expectTypeOf(items.length()).toEqualTypeOf<Expr<'uint256'>>();
+    s.forEach(items, (item, i) => {
+      expectTypeOf(item.x.get()).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+    });
+    // a nested PLAIN-tuple member still hands back a named-field Tuple; a scalar an Expr
+    expectTypeOf(book.meta.get().tag.get()).toEqualTypeOf<Expr<'uint8'>>();
+    expectTypeOf(book.owner.get()).toEqualTypeOf<Expr<'address'>>();
+    return s.return({ n: s.lit(t.uint256, 1n) });
+  });
+});
+
+test('ArgHandle over a NON-literal TupleType tag is the honest union (issue #12 post-review)', () => {
+  // a constraint-widened tag ('tuple' | 'tuple[]' | 'tuple[][]') has no single runtime answer —
+  // generic consumers of the exported ArgHandle get Tuple | Expr instead of a silent wrong pick
+  expectTypeOf<ArgHandle<TupleType>>().toEqualTypeOf<Tuple<TupleType> | Expr<TupleType>>();
+  // literal tags stay precise
+  expectTypeOf<ArgHandle<'uint256'>>().toEqualTypeOf<Expr<'uint256'>>();
 });
 
 // ---------------------------------------------------------------------------

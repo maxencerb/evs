@@ -31,6 +31,7 @@ import type {
   AbiParamsToComponents,
   ArgsInput,
   ArgSpec,
+  ArrayElemOf,
   ArrayType,
   BitsType,
   EvsErrorType,
@@ -106,10 +107,22 @@ export type ThrowArgs<e extends EvsErrorType> = e['params'] extends readonly []
     : readonly [args: ThrowArgTuple<e['params']>];
 
 /**
- * The body-callback handle for one normalized arg type: a tuple/struct arg arrives as a
- * {@link Tuple} handle, every scalar arg as an {@link Expr}.
+ * The handle the runtime `valueHandle` yields for a value of type `t`: a plain tuple/struct
+ * arrives as a {@link Tuple} handle, a composite ARRAY (`tuple[]`/`tuple[][]`) and every scalar
+ * as an {@link Expr} (fixed by #12; the pre-#12 type wrongly mapped `tuple[]` args to `Tuple`,
+ * disagreeing with the runtime handle). THE single type-level mirror of that dispatch — arg
+ * handles, `s.fn` results ({@link RebuildFnResult}), tuple-array elements
+ * ({@link TupleArrayElemHandle}) and `Field.get` all derive from it, so the static types cannot
+ * drift from `valueHandle` one surface at a time. A NON-literal (constraint-widened) tuple tag
+ * has no single runtime answer, so it yields the honest union `Tuple<t> | Expr<t>`.
  */
-export type ArgHandle<t extends EvsType> = t extends TupleType ? Tuple<t> : Expr<t>;
+export type ArgHandle<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple'
+    ? Tuple<t>
+    : 'tuple' extends t['type']
+      ? Tuple<t> | Expr<t>
+      : Expr<t>
+  : Expr<t>;
 
 /**
  * A LABEL-carrying tuple built from an {@link ArgSpec} list (issue #9): abitype's named-tuple
@@ -483,12 +496,16 @@ export type IntoMember<t extends EvsType> = t extends TupleType
     : IntoExpr<t>;
 
 /**
- * A field handle over one tuple member (Cell-like). A composite member's `.get()` follows the
- * pointer and yields a {@link Tuple} handle; a scalar member's `.get()` yields an {@link Expr}.
+ * A field handle over one tuple member (Cell-like). A composite (plain `tuple`) member's `.get()`
+ * follows the pointer and yields a {@link Tuple} handle; a `tuple[]`/scalar member's `.get()`
+ * yields an {@link Expr} — the {@link ArgHandle} dispatch, matching the runtime `fieldGet` →
+ * `valueHandle` (fixed by the #12 post-review pass: a `tuple[]` member wrongly typed as a
+ * named-field `Tuple`, so a field access on it compiled but died in a raw `TypeError` at record
+ * time, while `s.forEach` over the member was wrongly a compile error).
  */
 export interface Field<t extends EvsType> {
   readonly type: t;
-  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  get(): ArgHandle<t>;
   set(value: IntoMember<t>): void;
 }
 
@@ -522,14 +539,41 @@ export type TupleArrayElem<C extends TupleType> = {
   readonly components: C['components'];
 };
 
-// `.at(i)` on a `tuple[]` Expr yields a typed {@link Tuple} element (the runtime `atOp` returns a
-// Tuple handle bound to the `index` out ValueId — §12.8). The base `Expr.at` overload in
-// `core/types.ts` only matches string-element arrays; this augmentation adds the tuple-array case
-// where `Tuple`/`Field`/`ComponentToType` are in scope. Overload resolution picks the `this`-matching
-// signature, so a `string[]`/`uint256[][]` Expr keeps returning an `Expr` element.
+/** One `[]` peeled off a tuple-ARRAY descriptor: `tuple[]` → its plain `tuple` element
+ *  (= {@link TupleArrayElem}), `tuple[][]` → its `tuple[]` row; a non-array `tuple` → `never`. */
+type PeelTupleArray<C extends TupleType> = C['type'] extends `${infer inner}[]`
+  ? { readonly type: inner & TupleType['type']; readonly components: C['components'] }
+  : never;
+
+/**
+ * The element handle `.at(i)` / `s.forEach` yield for a tuple-array {@link Expr} (issue #12
+ * follow-up): the one-`[]`-peeled element descriptor run through the SAME {@link ArgHandle}
+ * dispatch as the runtime `valueHandle` — a `tuple[]` element is a named-field {@link Tuple},
+ * a `tuple[][]` element an {@link Expr} of the peeled `tuple[]` descriptor. The pre-fix typing
+ * hand-rolled this dispatch and drifted (it handed a `tuple[][]` element out as a `Tuple`, so a
+ * field access compiled but hit a raw `TypeError` at recording); deriving from {@link ArgHandle}
+ * keeps the runtime parity in one place.
+ */
+export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray<C>>;
+
+// `.at(i)` on a tuple-ARRAY Expr yields the element handle (the runtime `atOp` returns a Tuple
+// handle bound to the `index` out ValueId for a plain-tuple element, an Expr otherwise — §12.8).
+// The base `Expr.at` overload in `core/types.ts` only matches string-element arrays; this
+// augmentation adds the tuple-array case where `Tuple`/`Field`/`ComponentToType` are in scope.
+// Overload resolution picks the `this`-matching signature, so a `string[]`/`uint256[][]` Expr
+// keeps returning an `Expr` element. Sharpened by the issue-#12 follow-up: the receiver is
+// pinned to ARRAY tags (a plain-`tuple` Expr is now a compile error, matching the record-time
+// rejection) and the element comes from {@link TupleArrayElemHandle} (a `tuple[][]` element is
+// an `Expr<tuple[]>`, matching the runtime — it was wrongly a named-field `Tuple` before).
+// `.length()` gets the matching tuple-ARRAY overload (the base bound is `DynType | ArrayType`,
+// which a `tuple[]` Expr is not; the runtime `lenOp` accepts every dynamic memref).
 declare module '../core/types.js' {
   interface Expr<t extends EvsType = EvsType> {
-    at<C extends TupleType>(this: Expr<C>, i: IntoExpr<'uint256'>): Tuple<TupleArrayElem<C>>;
+    at<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
+      this: Expr<C>,
+      i: IntoExpr<'uint256'>,
+    ): TupleArrayElemHandle<C>;
+    length(this: Expr<TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>): Expr<'uint256'>;
   }
 }
 
@@ -806,26 +850,20 @@ export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | voi
 /** One element of an `s.fn` body's `[many]`-shape return. */
 export type FnResult = Expr | AnyTuple | AnyMutArray;
 
-/** An {@link EvsType} → the call-site handle the runtime `wrap`/`handleFor` yields for it: a plain
- *  `tuple` → a {@link Tuple} handle (named field access); any array/scalar → an {@link Expr}. */
-type HandleOfType<c extends EvsType> = c extends TupleType
-  ? c['type'] extends 'tuple'
-    ? Tuple<c>
-    : Expr<c>
-  : Expr<c>;
-
 /**
  * One fn result → the handle the CALL SITE receives, recovering the precise `EvsType` from the
- * result's static form and applying {@link HandleOfType}. CRUCIAL: this must agree with the runtime
- * `fnCall` `wrap` (which dispatches on the RESULT TYPE, not the body's static form), so a body that
- * returns `s.tuple(...).expr()` (an `Expr<tuple>`) and one that returns the bare `Tuple` both yield
- * a `Tuple<C>` at the call site — and an array result (`Expr<tuple[]>`, `MutArray`) yields an `Expr`.
+ * result's static form and applying {@link ArgHandle} (the single `valueHandle`-parity dispatch —
+ * the former file-private `HandleOfType` was character-for-character the same conditional).
+ * CRUCIAL: this must agree with the runtime `fnCall` `wrap` (which dispatches on the RESULT TYPE,
+ * not the body's static form), so a body that returns `s.tuple(...).expr()` (an `Expr<tuple>`) and
+ * one that returns the bare `Tuple` both yield a `Tuple<C>` at the call site — and an array result
+ * (`Expr<tuple[]>`, `MutArray`) yields an `Expr`.
  */
 export type RebuildFnResult<r> =
   r extends Expr<infer t>
-    ? HandleOfType<t>
+    ? ArgHandle<t>
     : r extends { expr(): Expr<infer c extends EvsType> }
-      ? HandleOfType<c>
+      ? ArgHandle<c>
       : never;
 
 // RebuildExprs: the `[many]` list → element-wise rebuild; a single Expr/Tuple/MutArray → its
@@ -920,9 +958,36 @@ export interface ScriptBuilder<
   // control flow (combinators — api.md §7)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
+  // `range.type` is optional (issue #12): the first overload matches a type-less range and
+  // types the counter as uint256; the explicit-type overload keeps the pre-#12 behaviour.
+  for(
+    range: {
+      type?: undefined;
+      from: IntoExpr<'uint256'>;
+      until: IntoExpr<'uint256'>;
+      step?: IntoExpr<'uint256'>;
+    },
+    body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void;
   for<const t extends NumericType>(
     range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
     body: (i: Expr<t>, loop: LoopCtl) => void,
+  ): void;
+  // forEach over an array value (issue #12): the counter loop with `until` = the array's
+  // length (snapshot ONCE) and `elem` = the bounds-checked `array.at(i)` — a `tuple[]` array
+  // hands the body a `Tuple` element handle, a `tuple[][]` an `Expr<tuple[]>` element, a
+  // string-element array an `Expr` of the element (the same {@link TupleArrayElemHandle}
+  // dispatch as the `.at` augmentation; a plain `tuple` is a compile error, mirrored at record
+  // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
+  // load is recorded only when the body declares `elem` (v0 has no DCE — an unconditional load
+  // would execute its bounds check + reads every iteration for nothing).
+  forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
+    array: Expr<C>,
+    body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+  ): void;
+  forEach<a extends ArrayType>(
+    array: Expr<a>,
+    body: (elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
 
@@ -1014,6 +1079,9 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     },
     for: (range: unknown, body: unknown) => {
       r.forStmt(range, body);
+    },
+    forEach: (array: unknown, body: unknown) => {
+      r.forEachStmt(array, body);
     },
     select: (cond: unknown, a: unknown, b: unknown) => r.select(cond, a, b),
 

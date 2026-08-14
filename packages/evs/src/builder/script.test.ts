@@ -69,6 +69,12 @@ function allStmts(ir: ScriptIr): Stmt[] {
   return out;
 }
 
+/** Serialized IR with debugNames dropped — the only recorder-side delta between `s.forEach`
+ *  and its manual `s.for` + `.at(i)` spelling. */
+function stripDebugNames(ir: ScriptIr): unknown {
+  return JSON.parse(serializeIr(ir), (k, v: unknown) => (k === 'debugName' ? undefined : v));
+}
+
 function constHexOf(ir: ScriptIr, id: number): string | undefined {
   let hex: string | undefined;
   walkStmts(ir.body, (s) => {
@@ -968,6 +974,176 @@ describe('s.for', () => {
       NO_LOC,
     );
     expect(() => validateIr(script3.ir)).not.toThrow();
+  });
+
+  test('range.type is optional and defaults to uint256 — IR identical to the typed form (issue #12)', () => {
+    const typed = evscript(
+      { name: 'fordef', args: [t.uint256] },
+      (s, n) => {
+        const acc = s.let(t.uint256, 0n);
+        s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+          acc.set(acc.get().add(i));
+        });
+        return s.return({ acc: acc.get() });
+      },
+      NO_LOC,
+    );
+    const untyped = evscript(
+      { name: 'fordef', args: [t.uint256] },
+      (s, n) => {
+        const acc = s.let(t.uint256, 0n);
+        s.for({ from: 0n, until: n }, (i) => {
+          acc.set(acc.get().add(i));
+        });
+        return s.return({ acc: acc.get() });
+      },
+      NO_LOC,
+    );
+    expect(serializeIr(untyped.ir)).toEqual(serializeIr(typed.ir));
+    expect(() => validateIr(untyped.ir)).not.toThrow();
+  });
+});
+
+describe('s.forEach', () => {
+  const script = evscript(
+    { name: 'summed', args: [t.array(t.uint256)] },
+    (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x, i) => {
+        total.set(total.get().add(x).add(i));
+      });
+      return s.return({ total: total.get() });
+    },
+    NO_LOC,
+  );
+
+  test('IR snapshot (one len snapshot before the loop; index per iteration; step tail)', () => {
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const stmts = allStmts(script.ir);
+    // the array length is snapshot ONCE, outside the while
+    expect(stmts.filter((s) => s.k === 'len')).toHaveLength(1);
+    const wh = stmts.find((s) => s.k === 'while');
+    if (wh?.k !== 'while') throw new Error('expected a while statement');
+    expect(wh.header.some((s) => s.k === 'len')).toBe(false);
+    expect(wh.body.some((s) => s.k === 'index')).toBe(true);
+    // the counter step at the natural end of the body: cellget + add + cellset
+    expect(wh.body.slice(-3).map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset']);
+  });
+
+  test('sugar only — IR identical to the manual s.for + .at(i) spelling (post-review pin)', () => {
+    const manual = evscript(
+      { name: 'summed', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const total = s.let(t.uint256, 0n);
+        const len = xs.length();
+        s.for({ from: 0n, until: len }, (i) => {
+          const x = xs.at(i);
+          total.set(total.get().add(x).add(i));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(stripDebugNames(script.ir)).toEqual(stripDebugNames(manual.ir));
+  });
+
+  test('the element load is skipped when the body omits `elem` (v0 has no DCE — post-review)', () => {
+    const counted = evscript(
+      { name: 'counted', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const count = s.let(t.uint256, 0n);
+        s.forEach(xs, () => {
+          count.set(count.get().add(1n));
+        });
+        return s.return({ count: count.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(counted.ir)).not.toThrow();
+    expect(allStmts(counted.ir).some((s) => s.k === 'index')).toBe(false);
+    // the loop itself still records: one len snapshot + the while
+    expect(allStmts(counted.ir).filter((s) => s.k === 'len')).toHaveLength(1);
+    expect(allStmts(counted.ir).some((s) => s.k === 'while')).toBe(true);
+  });
+
+  test('a tuple[] STRUCT MEMBER .get() hands back an Expr the loop iterates (post-review fix)', () => {
+    const Book = t.struct({ owner: t.address, items: t.array(t.struct({ x: t.uint256 })) });
+    const script5 = evscript(
+      { name: 'book', args: [Book] },
+      (s, book) => {
+        const total = s.let(t.uint256, 0n);
+        s.forEach(book.items.get(), (item) => {
+          total.set(total.get().add(item.x.get()));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script5.ir)).not.toThrow();
+    // field (read .items off the arg tuple) + per-iteration field (read .x off the element)
+    expect(allStmts(script5.ir).filter((s) => s.k === 'field')).toHaveLength(2);
+    expect(allStmts(script5.ir).filter((s) => s.k === 'index')).toHaveLength(1);
+    expect(allStmts(script5.ir).filter((s) => s.k === 'len')).toHaveLength(1);
+  });
+
+  test('loop.continue() records the step before the continue; loop.break() works', () => {
+    const script2 = evscript(
+      { name: 'ctl', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const total = s.let(t.uint256, 0n);
+        s.forEach(xs, (x, i, loop) => {
+          s.if(i.eq(0n), () => {
+            loop.continue();
+          });
+          s.if(x.gt(100n), () => {
+            loop.break();
+          });
+          total.set(total.get().add(x));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script2.ir)).not.toThrow();
+    const wh = allStmts(script2.ir).find((s) => s.k === 'while');
+    if (wh?.k !== 'while') throw new Error('expected a while statement');
+    const [contIf, breakIf] = wh.body.filter((s) => s.k === 'if');
+    if (contIf?.k !== 'if' || breakIf?.k !== 'if') throw new Error('expected two if statements');
+    expect(contIf.then.map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset', 'continue']);
+    expect(breakIf.then.map((s) => s.k)).toEqual(['break']);
+  });
+
+  test('a tuple[] array hands the body a Tuple element handle', () => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    const script3 = evscript(
+      { name: 'pairs', args: [t.array(Pair)] },
+      (s, pairs) => {
+        const last = s.let(t.address, '0x0000000000000000000000000000000000000000');
+        s.forEach(pairs, (pair) => {
+          last.set(pair.token.get());
+        });
+        return s.return({ last: last.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script3.ir)).not.toThrow();
+    // the element arrives as a Tuple: reading .token records a field stmt off the index out
+    expect(allStmts(script3.ir).filter((s) => s.k === 'field')).toHaveLength(1);
+    expect(allStmts(script3.ir).filter((s) => s.k === 'index')).toHaveLength(1);
+  });
+
+  test('a tuple[][] arg stays UNSUPPORTED_V0 — the Expr<tuple[]> row typing is forward-looking', () => {
+    // A tuple[][] Expr is unconstructible in v0 (args, newArray, and call outputs all reject
+    // the shape), so `TupleArrayElemHandle`'s Expr<tuple[]> row arm cannot be exercised at
+    // runtime today — this pins the rejection the type-level dispatch is anticipating.
+    expect(() =>
+      evscript(
+        { name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] },
+        (s) => s.return({ z: s.lit(t.uint256, 0n) }),
+        NO_LOC,
+      ),
+    ).toThrowError(/tuple\[\]\[\]" is not supported in evs v0/);
   });
 });
 
