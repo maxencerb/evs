@@ -1707,12 +1707,38 @@ this change; decisions locked in the issue-#15 discussion). Summary of the law a
   is UNCONSTRUCTIBLE in v0 (args, `s.newArray`, and call outputs all reject the shape —
   pinned by a unit test), so the `Expr<tuple[]>` arm is forward-looking; the practical fix
   today is the compile-time rejection replacing the mid-recording `TypeError`.
+- **Post-review pass (PR review of this amendment)** — six fixes, no new surface beyond one
+  export:
+  (a) `Field.get()` now returns `ArgHandle<t>`: a `tuple[]` STRUCT MEMBER's `.get()` types as
+  an `Expr` (runtime `fieldGet` → `valueHandle` parity) — the pre-fix
+  `t extends TupleType ? Tuple<t> : Expr<t>` had exactly the bug this amendment fixed in
+  `ArgHandle` (a field access on the member compiled, then died in a raw `TypeError`; `forEach`
+  over it was wrongly a compile error).
+  (b) The `valueHandle`-parity dispatch is defined ONCE: the file-private `HandleOfType`
+  (character-identical to the fixed `ArgHandle`) is gone — `RebuildFnResult`, `Field.get`, and
+  `TupleArrayElemHandle` (now `ArgHandle` of the one-`[]`-peeled descriptor) all derive from
+  `ArgHandle`, so the next `valueHandle` change lands in one conditional. A NON-literal
+  (constraint-widened) tuple tag yields the honest union `Tuple<t> | Expr<t>` (no single
+  runtime answer exists for it).
+  (c) `TupleArrayElemHandle` is actually EXPORTED from the single entry point (M9) — it is
+  named by the public `Expr.at` / `s.forEach` signatures.
+  (d) `forEachStmt` records its `len` / `index` through the same private cores as
+  `.length()` / `.at(i)` (`lenId` / `indexElem`) — the documented manual-spelling equivalence
+  holds by construction and is pinned by a debugName-stripped `serializeIr` equality test.
+  (e) The element load is recorded only when the body callback declares `elem` (v0 has no
+  DCE — an unconditional load would execute its bounds check + reads every iteration for
+  nothing).
+  (f) `counterLoop` reuses the header's `cellget` as the body's `i` snapshot (the header
+  dominates the body) — one fewer `cellget` per iteration for `s.for` AND `s.forEach`; and the
+  forEach type-mismatch message drops its unreachable MutArray `.expr()` hint (`classify`
+  throws first for an actual MutArray, with its own steering).
 - Status: **accepted**. Pinned by unit (IR shape: single `len`, per-iteration `index`, step
-  tail, continue-emits-step; typed-vs-defaulted `for` IR equality), validation (non-array /
-  raw-literal / MutArray / non-callback), type tests (defaulted `uint256` counter; word,
-  nested-array, and `tuple[]` element handles; rejected non-arrays), a differential corpus
-  case (break/continue/Panic 0x11 agreement across interp + compiled bytecode), and the anvil
-  integration tier (`test/integration/issue12.test.ts`).
+  tail, continue-emits-step; typed-vs-defaulted `for` IR equality; forEach-vs-manual IR
+  equality; elem-omitted → no `index`), validation (non-array / raw-literal / MutArray /
+  non-callback), type tests (defaulted `uint256` counter; word, nested-array, and `tuple[]`
+  element handles; `tuple[]` struct-member `.get()` → Expr; rejected non-arrays), a
+  differential corpus case (break/continue/Panic 0x11 agreement across interp + compiled
+  bytecode), and the anvil integration tier (`test/integration/issue12.test.ts`).
 
 ## Spot-check summary (integration agent)
 

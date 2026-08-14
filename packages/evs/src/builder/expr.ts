@@ -1876,9 +1876,15 @@ export class Recorder {
         { loc },
       );
     }
-    const out = this.newValue('uint256', loc);
-    this.appendStmt({ k: 'len', a: c.id, out }, loc);
-    return makeExpr(this, out);
+    return makeExpr(this, this.lenId(c.id, loc));
+  }
+
+  /** The shared `len` tail of `.length()` and `s.forEach`'s `until` snapshot — one recording
+   *  path, so the documented forEach-vs-manual IR equivalence holds by construction. */
+  private lenId(a: ValueId, loc: SourceLoc | null, debugName?: string): ValueId {
+    const out = this.newValue('uint256', loc, debugName);
+    this.appendStmt({ k: 'len', a, out }, loc);
+    return out;
   }
 
   atOp(a: unknown, i: unknown, what: string): Expr | object {
@@ -1893,12 +1899,23 @@ export class Recorder {
       );
     }
     const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    const elem = elemTypeOf(c.type);
-    const out = this.newValue(elem, loc);
-    this.appendStmt({ k: 'index', arr: c.id, i: iId, out }, loc);
-    // a composite element yields its handle: a `tuple[]` element → a `Tuple` handle bound to the
-    // `index` out ValueId (same `TUPLE_INTERNALS` as a decoded tuple); a `T[][]`/`string[]` element
-    // → an Expr (whose `.at`/`.length` keep working recursively); a word element → an Expr.
+    return this.indexElem(c.id, elemTypeOf(c.type), iId, loc);
+  }
+
+  /** The shared bounds-checked `index` tail of `.at(i)` and `s.forEach`'s element load — one
+   *  recording path (see `lenId`). A composite element yields its handle: a `tuple[]` element →
+   *  a `Tuple` handle bound to the `index` out ValueId (same `TUPLE_INTERNALS` as a decoded
+   *  tuple); a `T[][]`/`string[]` element → an Expr (whose `.at`/`.length` keep working
+   *  recursively); a word element → an Expr. */
+  private indexElem(
+    arr: ValueId,
+    elem: EvsType,
+    i: ValueId,
+    loc: SourceLoc | null,
+    debugName?: string,
+  ): Expr | object {
+    const out = this.newValue(elem, loc, debugName);
+    this.appendStmt({ k: 'index', arr, i, out }, loc);
     return this.valueHandle(out, elem);
   }
 
@@ -2246,21 +2263,24 @@ export class Recorder {
     }
     const c = this.classify(arr, 's.forEach() array', loc);
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
+      // no MutArray steering here — classify already threw its own `.expr()` hint for one
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(arr)} — iterate a MutArray through its .expr() handle`,
+        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(arr)}`,
         { loc },
       );
     }
     const elemTy = elemTypeOf(c.type);
-    const lenId = this.newValue('uint256', loc, 's.forEach(…) length');
-    this.appendStmt({ k: 'len', a: c.id, out: lenId }, loc);
+    const lenId = this.lenId(c.id, loc, 's.forEach(…) length');
     const cellId = this.makeCell('uint256', 0, loc);
     const stepId = this.wordConst('uint256', 1n, loc);
+    // the element load is recorded only when the body declares `elem` — v0 has no DCE, so an
+    // unconditional load would execute its bounds check + reads every iteration for nothing
+    const wantsElem = bodyFn.length >= 1;
     this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
-      const out = this.newValue(elemTy, loc, 's.forEach(…) element');
-      this.appendStmt({ k: 'index', arr: c.id, i: iId, out }, loc);
-      const elem = this.valueHandle(out, elemTy);
+      const elem = wantsElem
+        ? this.indexElem(c.id, elemTy, iId, loc, 's.forEach(…) element')
+        : undefined;
       unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
     });
   }
@@ -2285,16 +2305,19 @@ export class Recorder {
       this.appendStmt({ k: 'cellset', cell: cellId, value: sum }, stepLoc);
     };
 
+    // the body's `i` snapshot REUSES the header's cellget: the header dominates the body
+    // (validate.ts scoping) and nothing runs between the compare and the body start, so the
+    // header read IS the per-iteration counter — no second cellget per iteration
+    let iId!: ValueId;
     this.whileInternal(
       loc,
       () => {
-        const iv = this.cellGetId(cellId, loc);
+        iId = this.cellGetId(cellId, loc);
         const cond = this.newValue('bool', loc);
-        this.appendStmt({ k: 'bin', op: 'lt', a: iv, b: untilId, out: cond }, loc);
+        this.appendStmt({ k: 'bin', op: 'lt', a: iId, b: untilId, out: cond }, loc);
         return cond;
       },
       (rawLoop) => {
-        const iId = this.cellGetId(cellId, loc);
         const iSnap = makeExpr(this, iId);
         const wrapped: LoopCtlShape = {
           break: () => {

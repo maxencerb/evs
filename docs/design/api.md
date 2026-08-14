@@ -689,8 +689,11 @@ trampoline) for the mechanism.
   snapshot **once** before the loop; each iteration binds `elem` to the bounds-checked
   `array.at(i)` element (a `Tuple` handle for a `tuple[]` element, an `Expr` otherwise) and `i`
   to the `uint256` counter. Sugar only — records the same `len`/`while`/`index` IR the manual
-  `s.for` + `.at(i)` spelling would. Staged handles only: a `MutArray` iterates through its
-  `.expr()` memref (reference semantics — the loop sees later `set` calls).
+  `s.for` + `.at(i)` spelling would (the element load is recorded only when the body declares
+  `elem`; v0 has no DCE). Staged handles only: a `MutArray` iterates through its `.expr()`
+  memref, with reference semantics: everything executes in recorded order, so the loop observes
+  `set` calls recorded before the loop and, in-loop, those already executed by earlier
+  iterations or earlier in the same body; a `set` recorded after the loop is never seen.
 - `s.select(cond, a, b)` — **eager both sides** (they are already-computed values). For
   conditional execution use `s.if` + a cell.
 - `loop.break()` / `loop.continue()` — see §5.

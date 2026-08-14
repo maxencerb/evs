@@ -11,6 +11,8 @@
  *   `AbiParamsToComponents`, `AbiParamToComponent` (the `t.fromOutputs`/`t.fromAbiParameter`
  *   derivations); `AnyTuple`, `AnyMutArray`, `ReturnValue`, `IntoMember`, `IntoTuple`, `IntoArray`
  *   (the widened return/member surface); `SubcallStruct` (the `s.read({ …, struct: true })` result).
+ * - `TupleArrayElemHandle` (issue #12 post-review, amendments §25) — the tuple-array element
+ *   handle named by the public `Expr.at` / `s.forEach` signatures.
  */
 
 // core
@@ -117,6 +119,7 @@ export type {
   TrySubcallVerb,
   TryWriteVerb,
   Tuple,
+  TupleArrayElemHandle, // issue #12 post-review: the `.at`/`s.forEach` tuple-array element handle
   TupleInit,
   ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
   WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket

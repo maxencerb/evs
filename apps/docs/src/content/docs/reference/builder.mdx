@@ -374,7 +374,10 @@ const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
 
 The array must be a staged `Expr` handle (a script arg, a decoded call output, an `s.lit` data
 segment, …). A [`MutArray`](#mutarray) iterates through its `.expr()` memref —
-`s.forEach(arr.expr(), …)` — with reference semantics: the loop sees earlier `set` calls.
+`s.forEach(arr.expr(), …)` — with reference semantics: everything executes in recorded order,
+so the loop observes `set` calls recorded before the loop (and, in-loop, those already executed
+by earlier iterations or earlier in the same body); a `set` recorded after the loop is never
+seen.
 
 ## s.select
 

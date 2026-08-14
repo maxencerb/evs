@@ -642,9 +642,13 @@ export type NormalizeArgs<a extends ArgsInput> = a extends readonly ArgInput[]
   : readonly [ToArgSpec<a>]; // → readonly ArgSpec[]
 // amended by #12 (bug fix): a `tuple[]`/`tuple[][]` arg is an Expr, matching the runtime
 // `valueHandle` (only a PLAIN `tuple` arg is a Tuple handle) — the pre-#12 type wrongly
-// mapped every TupleType to `Tuple<t>`.
+// mapped every TupleType to `Tuple<t>`. Amended by the #12 post-review pass: ArgHandle is THE
+// single type-level mirror of the `valueHandle` dispatch (fn results, `Field.get`, and
+// `TupleArrayElemHandle` all derive from it), and a NON-literal (constraint-widened) tuple tag
+// yields the honest union `Tuple<t> | Expr<t>` (no single runtime answer exists for it).
 export type ArgHandle<t extends EvsType> = t extends TupleType
-  ? t['type'] extends 'tuple' ? Tuple<t> : Expr<t>
+  ? t['type'] extends 'tuple' ? Tuple<t>
+  : 'tuple' extends t['type'] ? Tuple<t> | Expr<t> : Expr<t>
   : Expr<t>;
 // LabelCarrier is module-private: a label-carrying tuple via abitype's public
 // AbiParametersToPrimitiveTypes<…,'inputs',true>; ArgHandles maps over it (a type PARAMETER) to
@@ -687,7 +691,8 @@ export interface ScriptBuilder {
      `until` = the array's length (snapshot once) and `elem` = the bounds-checked `array.at(i)`
      (a Tuple handle for a `tuple[]` element, an Expr otherwise; two overloads mirroring the
      `.at` tuple-array augmentation). Records existing IR only (`len`/`while`/`index` — no new
-     Stmt kinds); see api.md §4/§7. */
+     Stmt kinds); the element load is recorded only when the body declares `elem` (#12
+     post-review — v0 has no DCE); see api.md §4/§7. */
 }
 export interface Cell<t extends EvsType> {
   /* api.md §5 */
@@ -704,10 +709,13 @@ export interface LoopCtl {
   break(): void;
   continue(): void;
 }
-// tuple / struct handles — added by #2 (api.md §5):
+// tuple / struct handles — added by #2 (api.md §5). Field.get amended by the #12 post-review
+// pass: a `tuple[]` member's `.get()` is an Expr (the ArgHandle/`valueHandle` dispatch) — the
+// pre-fix `t extends TupleType ? Tuple<t> : Expr<t>` wrongly handed a `tuple[]` member out as a
+// named-field Tuple (a field access compiled, then died in a raw TypeError at record time).
 export interface Field<t extends EvsType> {
   readonly type: t;
-  get(): t extends TupleType ? Tuple<t> : Expr<t>;
+  get(): ArgHandle<t>;
   set(value: IntoMember<t>): void;
 }
 export declare const tupleBrand: unique symbol; // phantom (amended): marks a Tuple in a return bound
@@ -717,6 +725,11 @@ export type Tuple<C extends TupleType> = {
 } & { at(i: number): Field</* element type */>; expr(): Expr<C> } & {
   readonly [tupleBrand]: TupleType; // erased (order-insensitive) so Tuple↔Tuple assignability holds
 };
+// added by the #12 post-review pass (amendments §25): the tuple-ARRAY element handle named by the
+// public `Expr.at` augmentation and `s.forEach` tuple overload — the one-`[]`-peeled element
+// descriptor run through the ArgHandle dispatch (`tuple[]` → Tuple element; `tuple[][]` →
+// Expr<tuple[]> row; a non-array `tuple` → never). Exported (it appears in public signatures).
+export type TupleArrayElemHandle<C extends TupleType> = /* ArgHandle<one-[]-peeled C> */;
 // amended by #5 ask #3: a composite INPUT slot also accepts ANY Tuple handle (the erased brand
 // makes a call-decoded `Tuple<C_abi>` assignable into a `t.struct`-typed slot whose `C` is
 // `UnionToTuple`-ordered; runtime `typesEqual` is the order-sensitive guard). Array slots also take
@@ -1091,6 +1104,8 @@ export function toViemStateOverride<const abi extends Abi>(
 //   s.read/s.tryRead — BREAKING).
 // Added by #17 (keccak256 + ABI encoding ops) — type-only additions to the public surface:
 //   EncodeValue, PackedValue. `ScriptBuilder` gains encode/encodePacked/keccak256 (§M5).
+// Added by the #12 post-review pass (amendments §25) — type-only addition to the public surface:
+//   TupleArrayElemHandle (named by the public `Expr.at` / `s.forEach` signatures).
 ```
 
 **Unit tests (M9)**: artifact shape; EIP-170 rejection on a synthetic huge script with region

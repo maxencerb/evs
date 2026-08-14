@@ -12,6 +12,7 @@ import { expectTypeOf, test } from 'vitest';
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
 import {
   evscript,
+  type ArgHandle,
   type Cell,
   type EvsFn,
   type EvsScript,
@@ -534,6 +535,38 @@ test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays
       return s.return({ n });
     },
   );
+});
+
+test('a tuple[] STRUCT MEMBER .get() is an Expr, not a Tuple (issue #12 post-review)', () => {
+  const Item = t.struct({ x: t.uint256 });
+  const Book = t.struct({
+    owner: t.address,
+    meta: t.struct({ tag: t.uint8 }),
+    items: t.array(Item),
+  });
+  evscript({ name: 'book', args: [Book] }, (s, book) => {
+    // runtime `fieldGet` → `valueHandle` parity: the composite-ARRAY member arrives as an Expr
+    // (no named fields), so `.length()`/`.at()`/`s.forEach` work on it directly
+    const items = book.items.get();
+    expectTypeOf(items).not.toHaveProperty('x');
+    expectTypeOf(items.length()).toEqualTypeOf<Expr<'uint256'>>();
+    s.forEach(items, (item, i) => {
+      expectTypeOf(item.x.get()).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+    });
+    // a nested PLAIN-tuple member still hands back a named-field Tuple; a scalar an Expr
+    expectTypeOf(book.meta.get().tag.get()).toEqualTypeOf<Expr<'uint8'>>();
+    expectTypeOf(book.owner.get()).toEqualTypeOf<Expr<'address'>>();
+    return s.return({ n: s.lit(t.uint256, 1n) });
+  });
+});
+
+test('ArgHandle over a NON-literal TupleType tag is the honest union (issue #12 post-review)', () => {
+  // a constraint-widened tag ('tuple' | 'tuple[]' | 'tuple[][]') has no single runtime answer —
+  // generic consumers of the exported ArgHandle get Tuple | Expr instead of a silent wrong pick
+  expectTypeOf<ArgHandle<TupleType>>().toEqualTypeOf<Tuple<TupleType> | Expr<TupleType>>();
+  // literal tags stay precise
+  expectTypeOf<ArgHandle<'uint256'>>().toEqualTypeOf<Expr<'uint256'>>();
 });
 
 // ---------------------------------------------------------------------------

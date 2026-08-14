@@ -69,6 +69,12 @@ function allStmts(ir: ScriptIr): Stmt[] {
   return out;
 }
 
+/** Serialized IR with debugNames dropped — the only recorder-side delta between `s.forEach`
+ *  and its manual `s.for` + `.at(i)` spelling. */
+function stripDebugNames(ir: ScriptIr): unknown {
+  return JSON.parse(serializeIr(ir), (k, v: unknown) => (k === 'debugName' ? undefined : v));
+}
+
 function constHexOf(ir: ScriptIr, id: number): string | undefined {
   let hex: string | undefined;
   walkStmts(ir.body, (s) => {
@@ -1023,6 +1029,62 @@ describe('s.forEach', () => {
     expect(wh.body.some((s) => s.k === 'index')).toBe(true);
     // the counter step at the natural end of the body: cellget + add + cellset
     expect(wh.body.slice(-3).map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset']);
+  });
+
+  test('sugar only — IR identical to the manual s.for + .at(i) spelling (post-review pin)', () => {
+    const manual = evscript(
+      { name: 'summed', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const total = s.let(t.uint256, 0n);
+        const len = xs.length();
+        s.for({ from: 0n, until: len }, (i) => {
+          const x = xs.at(i);
+          total.set(total.get().add(x).add(i));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(stripDebugNames(script.ir)).toEqual(stripDebugNames(manual.ir));
+  });
+
+  test('the element load is skipped when the body omits `elem` (v0 has no DCE — post-review)', () => {
+    const counted = evscript(
+      { name: 'counted', args: [t.array(t.uint256)] },
+      (s, xs) => {
+        const count = s.let(t.uint256, 0n);
+        s.forEach(xs, () => {
+          count.set(count.get().add(1n));
+        });
+        return s.return({ count: count.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(counted.ir)).not.toThrow();
+    expect(allStmts(counted.ir).some((s) => s.k === 'index')).toBe(false);
+    // the loop itself still records: one len snapshot + the while
+    expect(allStmts(counted.ir).filter((s) => s.k === 'len')).toHaveLength(1);
+    expect(allStmts(counted.ir).some((s) => s.k === 'while')).toBe(true);
+  });
+
+  test('a tuple[] STRUCT MEMBER .get() hands back an Expr the loop iterates (post-review fix)', () => {
+    const Book = t.struct({ owner: t.address, items: t.array(t.struct({ x: t.uint256 })) });
+    const script5 = evscript(
+      { name: 'book', args: [Book] },
+      (s, book) => {
+        const total = s.let(t.uint256, 0n);
+        s.forEach(book.items.get(), (item) => {
+          total.set(total.get().add(item.x.get()));
+        });
+        return s.return({ total: total.get() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script5.ir)).not.toThrow();
+    // field (read .items off the arg tuple) + per-iteration field (read .x off the element)
+    expect(allStmts(script5.ir).filter((s) => s.k === 'field')).toHaveLength(2);
+    expect(allStmts(script5.ir).filter((s) => s.k === 'index')).toHaveLength(1);
+    expect(allStmts(script5.ir).filter((s) => s.k === 'len')).toHaveLength(1);
   });
 
   test('loop.continue() records the step before the continue; loop.break() works', () => {
