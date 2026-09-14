@@ -10,12 +10,13 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { ATTACKER_RETURNERS } from '../test/harness/fixtures.js';
-import type { AsmNode } from './asm/assembler.js';
+import { assemble, type AsmNode } from './asm/assembler.js';
 import { lookupPc, siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
 import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
 import { compile } from './compile.js';
+import { bytesToHex } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
@@ -237,7 +238,7 @@ describe('pipeline hooks', () => {
 });
 
 // ---------------------------------------------------------------------------
-// optimize (issue #39)
+// optimize (issues #39 + #41)
 // ---------------------------------------------------------------------------
 
 /** The distinct source locations a source map carries (order-free). */
@@ -250,20 +251,56 @@ function mappedLocs(
   return [...new Set(keys)].toSorted();
 }
 
-describe('optimize: the built-in peephole pass (issue #39)', () => {
-  test('optimize: true is exactly `peephole: evsPeephole`; the default is untouched', () => {
+/** Four dependent temporaries: one slot under the liveness allocator, four by default. */
+function chainScript() {
+  return evscript({ name: 'chain', args: [t.uint256, t.uint256] }, (s, a, b) => {
+    const x1 = s.add(a, b);
+    const x2 = s.mul(x1, b);
+    const x3 = s.sub(x2, a);
+    const x4 = s.add(x3, b);
+    return s.return({ x4 });
+  });
+}
+
+describe('optimize: the built-in passes — frame allocator (#41) + peephole (#39)', () => {
+  test('optimize: true = packed-frame lowering + `evsPeephole`; the default is untouched', () => {
     const plain = compile(sumScript());
     const explicitOff = compile(sumScript(), { optimize: false });
     const optimized = compile(sumScript(), { optimize: true });
-    const viaHook = compile(sumScript(), { peephole: evsPeephole });
     expect(explicitOff.runtimeBytecode).toBe(plain.runtimeBytecode);
-    expect(optimized.runtimeBytecode).toBe(viaHook.runtimeBytecode);
     expect(optimized.runtimeBytecode).not.toBe(plain.runtimeBytecode);
     expect(optimized.runtimeBytecode.length).toBeLessThan(plain.runtimeBytecode.length);
+    // the same composition by hand: lower with the liveness frame, then the peephole pass
+    const lowered = lowerProgram(sumScript().ir, {
+      evmVersion: 'cancun',
+      locations: true,
+      optimize: true,
+    });
+    const byHand = assemble(lowered.nodes, {
+      evmVersion: 'cancun',
+      peephole: evsPeephole,
+      verify: true,
+    });
+    expect(optimized.runtimeBytecode).toBe(bytesToHex(byHand.bytecode));
+  });
+
+  test('the frame allocator is part of `optimize`: a peephole-only hook keeps one slot per value', () => {
+    const viaHook = compile(chainScript(), { peephole: evsPeephole });
+    const optimized = compile(chainScript(), { optimize: true });
+    expect(optimized.runtimeBytecode).not.toBe(viaHook.runtimeBytecode);
+    expect(optimized.runtimeBytecode.length).toBeLessThan(viaHook.runtimeBytecode.length);
+    const frameEndOf = (optimize: boolean): number =>
+      lowerProgram(chainScript().ir, { evmVersion: 'cancun', locations: true, optimize }).frameEnd;
+    expect(frameEndOf(false)).toBe(0x80 + 32 * 6); // 2 args + 4 temporaries
+    expect(frameEndOf(true)).toBe(0x80 + 32 * 3); // 2 args + 1 shared slot
   });
 
   test('the user peephole hook runs AFTER the built-in pass and sees its output', () => {
-    const lowered = lowerProgram(sumScript().ir, { evmVersion: 'cancun', locations: true }).nodes;
+    const lowered = lowerProgram(sumScript().ir, {
+      evmVersion: 'cancun',
+      locations: true,
+      optimize: true,
+    }).nodes;
     let seen: readonly AsmNode[] = [];
     const compiled = compile(sumScript(), {
       optimize: true,

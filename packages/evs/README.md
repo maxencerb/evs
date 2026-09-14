@@ -355,17 +355,21 @@ the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts mak
   stack-height simulation (the operand stack must be empty at every statement boundary),
   opcode/fork lints, and the EIP-170 size check. The artifact's `ir` stays the recorded IR;
   the differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`.
-  An opt-in peephole optimizer (`compile(script, { optimize: true })`, exported as `evsPeephole`)
-  sits between codegen and assembly: it folds store-then-reload slot pairs, constants and stack
-  identities, never crosses a `JUMPDEST`, keeps every source location, and its output goes
-  through the same verifiers. It is off by default so the default bytes stay the plain lowering.
+  An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
+  frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
+  params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
+  for the whole loop) and a peephole pass between codegen and assembly (exported as
+  `evsPeephole`) that folds store-then-reload slot pairs, constants and stack identities, never
+  crosses a `JUMPDEST` and keeps every source location. Both outputs go through the same
+  verifiers. It is off by default so the default bytes stay the plain lowering.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures point at), a **static frame from `0x80`**
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata
   snapshots, dynamic values, mutable arrays, the return tuple). Every word in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);
-  dynamic values and tuples are pointers. No slot reuse or fusion on purpose — the disassembly
-  stays legible and the stack invariant machine-checkable.
+  dynamic values and tuples are pointers. No slot reuse or fusion by default, on purpose — the
+  disassembly stays legible and the stack invariant machine-checkable; `optimize: true` packs
+  dead values' slots without changing the templates.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow, 0x12
   division by zero, 0x21 enum/narrowing, 0x32 out-of-bounds), verified differentially against a
   solc-compiled reference contract.
