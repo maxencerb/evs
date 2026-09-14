@@ -174,7 +174,7 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
         ),
       EvsTypeError,
       'UNSUPPORTED_V0',
-      /not supported in evs v0/,
+      /not supported yet/,
     );
   });
 
@@ -278,7 +278,7 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
       () => rec((s) => s.lit('uint256[][][]' as never, [] as never)),
       EvsTypeError,
       'UNSUPPORTED_V0',
-      /not supported in evs v0/,
+      /not supported yet/,
     );
   });
 });
@@ -686,12 +686,12 @@ describe('checklist: call-site ABI validation', () => {
     expect(e.message).toMatch(/prune the ABI/);
   });
 
-  test('v0-unsupported output type names the parameter', () => {
+  test('unsupported output type names the parameter', () => {
     const e = expectEvs(
       () => rec((s, a) => s.read({ address: a.who, abi: tupleAbi, functionName: 'observe' })),
       EvsTypeError,
       'UNSUPPORTED_V0',
-      /not supported in evs v0/,
+      /not supported yet/,
     );
     expect(e.message).toMatch(/output parameter "data"/);
     expect(e.message).toMatch(/"observe"/);
@@ -1154,7 +1154,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
       () => rec((s) => s.fn('d', [{ name: 'a', type: 'tuple' }] as never, () => {})),
       EvsTypeError,
       'UNSUPPORTED_V0',
-      /not supported in evs v0/,
+      /not supported yet/,
     );
   });
 

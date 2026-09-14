@@ -43,7 +43,7 @@ import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './
 
 export interface CompileOptions {
   evmVersion?: EvmVersion; // default 'cancun'
-  peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity (no optimizer in v0)
+  peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity (no optimizer ships yet, #39)
   onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION); never logged
   locations?: boolean; // default true
 }

@@ -317,26 +317,29 @@ describe('validateIr — accepts', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateIr — table rules', () => {
-  test('rejects a non-v0 value type', () => {
-    expectInvalid(ir({ values: [vi('uint7' as EvsType)] }), /values\[0\].*non-v0/);
+  test('rejects an unsupported value type', () => {
+    expectInvalid(ir({ values: [vi('uint7' as EvsType)] }), /values\[0\].*unsupported/);
   });
 
-  test('rejects a non-v0 cell type', () => {
-    expectInvalid(ir({ cells: [{ type: 'tuple' as EvsType, loc: null }] }), /cells\[0\].*non-v0/);
+  test('rejects an unsupported cell type', () => {
+    expectInvalid(
+      ir({ cells: [{ type: 'tuple' as EvsType, loc: null }] }),
+      /cells\[0\].*unsupported/,
+    );
   });
 
-  test('rejects a non-v0 fn param / result type', () => {
+  test('rejects an unsupported fn param / result type', () => {
     const fn = { name: 'f', params: [], results: [], body: [], resultValues: [], loc: null };
     expectInvalid(
       ir({
         values: [vi('uint256')],
         fns: [{ ...fn, params: [{ name: 'x', type: 'uint256[2]' as EvsType, value: 0 }] }],
       }),
-      /fns\[0\]\.params\[0\].*non-v0/,
+      /fns\[0\]\.params\[0\].*unsupported/,
     );
     expectInvalid(
       ir({ fns: [{ ...fn, results: [{ type: 'tuple' as EvsType }], resultValues: [0] }] }),
-      /fns\[0\]\.results\[0\].*non-v0/,
+      /fns\[0\]\.results\[0\].*unsupported/,
     );
   });
 
@@ -364,7 +367,7 @@ describe('validateIr — table rules', () => {
   test('rejects a non-v0 arg type', () => {
     expectInvalid(
       ir({ args: [{ name: 'a', type: 'uint7' as EvsType }], values: [vi('uint256')] }),
-      /args\[0\].*non-v0/,
+      /args\[0\].*unsupported/,
     );
   });
 
@@ -690,7 +693,7 @@ describe('validateIr — convert table', () => {
     ['bytes32', 'bytes4'],
   ];
   test.each(REJECTED)('rejects %s → %s', (from, to) => {
-    expectInvalid(convertIr(from, to), /no v0 conversion/);
+    expectInvalid(convertIr(from, to), /no conversion/);
   });
 });
 
@@ -1536,7 +1539,7 @@ describe('validateIr — return rules', () => {
   test('rejects unknown / mistyped / out-of-scope return values', () => {
     expectInvalid(retIr([{ name: 'x', type: 'uint256', value: 9 }]), /unknown ValueId 9/);
     expectInvalid(retIr([{ name: 'x', type: 'bool', value: 0 }]), /operand type mismatch/);
-    expectInvalid(retIr([{ name: 'x', type: 'uint7' as EvsType, value: 0 }]), /non-v0 type/);
+    expectInvalid(retIr([{ name: 'x', type: 'uint7' as EvsType, value: 0 }]), /unsupported type/);
     expectInvalid(
       ir({
         values: [vi('bool'), vi('uint256')],
@@ -1662,7 +1665,7 @@ describe('validateIr — custom errors (issue #15)', () => {
     );
   });
 
-  test('a non-v0 input type is rejected', () => {
+  test('an unsupported input type is rejected', () => {
     expectInvalid(
       ir({
         errors: [{ name: 'X', selector: '0xa6cccb45', inputs: [{ name: 'a', type: 'uint7' }] }],

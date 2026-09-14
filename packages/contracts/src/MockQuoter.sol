@@ -7,8 +7,8 @@ pragma solidity 0.8.30;
 ///         the canonical case for `s.call` (a real CALL frame for a non-view function that does not
 ///         usefully persist state). `quoteExactInput` returns the amount out normally (QuoterV2
 ///         style); `quoteExactInputReverting` reverts with the ABI-encoded result (QuoterV1 style),
-///         exercised through `s.tryCall` — decoding revert-data-as-result is a documented v0
-///         follow-up.
+///         exercised through `s.tryCall` — decoding revert-data-as-result is not supported yet
+///         (maxencerb/evs#35).
 contract MockQuoter {
     uint256 private _nonce; // written so the quote legitimately needs a non-static frame
 

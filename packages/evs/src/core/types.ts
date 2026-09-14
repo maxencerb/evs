@@ -193,7 +193,7 @@ const IDENT_RE = /^[A-Za-z_]\w*$/;
  * full parameter-type vocabulary (widened by #25 from `StringType`): words, `string`/`bytes`,
  * arrays, and composite `t.struct`/`t.tuple` descriptors (a named struct arg arrives as a `Tuple`
  * handle, exactly like a bare one). Nested composite fields are named via `t.struct` and keep
- * their behaviour; `s.fn` composite params remain a v0 deferral, rejected at record time. A bare
+ * their behaviour; `s.fn` composite params are not supported yet (#37), rejected at record time. A bare
  * (unnamed) top-level arg keeps the positional `arg{i}` fallback name.
  */
 export function namedArg<const name extends string, const type extends EvsType>(
@@ -643,7 +643,7 @@ export function isNumeric(s: EvsType): s is NumericType {
   return typeof s === 'string' && SETS.numeric.has(s);
 }
 
-/** `intN` → true; every other v0 type (incl. `intN[]`, tuples) → false. */
+/** `intN` → true; every other evs type (incl. `intN[]`, tuples) → false. */
 export function isSigned(s: EvsType): boolean {
   return typeof s === 'string' && SETS.signed.has(s);
 }
@@ -916,8 +916,8 @@ function isRecordObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * `t.fromOutputs(abi, name)` runtime: locate the single function named `name` (overloads are a v0
- * deferral, mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
+ * `t.fromOutputs(abi, name)` runtime: locate the single function named `name` (overloads are not
+ * supported yet — #4 — mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
  * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
  * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
  * does and round-trips with a `s.read({…, struct: true})` decode of the same function.
@@ -951,7 +951,7 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
   if (fns.length > 1) {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
-      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is deferred in v0; prune the ABI to the single intended entry`,
+      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
       { loc: captureLoc() },
     );
   }
@@ -1100,7 +1100,7 @@ function looksDeferred(s: string): boolean {
 
 /**
  * Eager type-string validation: throws `EvsTypeError` with the caller's loc, using
- * `UNSUPPORTED_V0` for valid-Solidity-but-deferred shapes and `TYPE_MISMATCH` otherwise.
+ * `UNSUPPORTED_V0` for valid-Solidity-but-not-yet-supported shapes (#4) and `TYPE_MISMATCH` otherwise.
  */
 function assertEvsType(s: string, context: string): asserts s is StringType {
   if (isStringType(s)) return;

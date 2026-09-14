@@ -475,9 +475,9 @@ const quoteV1 = evscript(
 ```
 
 :::note
-Decoding QuoterV1's *revert data* as the quote result is a documented v0 follow-up, not yet
-implemented — for now `s.tryCall` reports `success = false` and zeroes `value` on that revert. Use
-a QuoterV2-style contract with `s.call` to read the quote directly.
+Decoding QuoterV1's *revert data* as the quote result is not supported yet
+([#35](https://github.com/maxencerb/evs/issues/35)) — `s.tryCall` reports `success = false` and
+zeroes `value` on that revert. Use a QuoterV2-style contract with `s.call` to read the quote directly.
 :::
 
 ## Simulating writes (s.simulate / s.trySimulate)
@@ -538,8 +538,8 @@ and you want a flag instead of bubbling.
 
 :::note
 Nested `s.simulate`, an explicit gas cap on the inner `CALL`, and controlling `msg.sender` on the
-self-call hop are open follow-ups in v0. The trampoline self-call to `ADDRESS()` works in both
-execution modes.
+self-call hop are not supported yet ([#36](https://github.com/maxencerb/evs/issues/36)). The
+trampoline self-call to `ADDRESS()` works in both execution modes.
 :::
 
 :::caution[Frame dependence: `msg.sender` is the script]

@@ -7,14 +7,14 @@ import type { TupleType, WordType } from '../core/types.js';
 import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from './layout.js';
 
 // ---------------------------------------------------------------------------
-// the full v0 vocabulary, built independently of the implementation
+// the full evs type vocabulary, built independently of the implementation
 // ---------------------------------------------------------------------------
 
 const UINT_BITS = Array.from({ length: 32 }, (_, i) => 8 * (i + 1)); // 8..256
 const BYTES_SIZES = Array.from({ length: 32 }, (_, i) => i + 1); // 1..32
 
 // ---------------------------------------------------------------------------
-// golden table over every v0 type
+// golden table over every evs type
 // ---------------------------------------------------------------------------
 
 describe('layoutOf golden table', () => {
@@ -196,7 +196,7 @@ describe('headBytes', () => {
     ).toBe(96);
   });
 
-  test('static tuple params inline their whole head (cumulative walk); non-v0 types fail loudly', () => {
+  test('static tuple params inline their whole head (cumulative walk); unsupported types fail loudly', () => {
     // a STATIC inner tuple occupies headBytes(components) head words, NOT one offset word
     expect(
       headBytes([

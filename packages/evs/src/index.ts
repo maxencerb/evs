@@ -1,18 +1,7 @@
 /**
  * `@maxencerb/evs` — the complete public surface.
- * Nothing else is exported from the package; single entry point, no subpath exports in v0.
- *
- * Later additions to the public surface:
- * - `InterpEnvOverrides` — the `interpret` opts.env extension (frame-dependent env modeling);
- * - `AsmNode`, `LabelId`, `EvmVersion` (type-only) — referenced by the public `CompileOptions`
- *   but previously unreachable through the single entry point (the exports map blocks deep
- *   imports).
- * - issue #5 composite-ergonomics types: `FromAbiOutputs`, `AbiParamToEvsType`,
- *   `AbiParamsToComponents`, `AbiParamToComponent` (the `t.fromOutputs`/`t.fromAbiParameter`
- *   derivations); `AnyTuple`, `AnyMutArray`, `ReturnValue`, `IntoMember`, `IntoTuple`, `IntoArray`
- *   (the widened return/member surface); `SubcallStruct` (the `s.read({ …, struct: true })` result).
- * - `TupleArrayElemHandle` (issue #12 post-review) — the tuple-array element
- *   handle named by the public `Expr.at` / `s.forEach` signatures.
+ * Nothing else is exported from the package: single entry point, no subpath exports (the exports
+ * map blocks deep imports, so every type named by a public signature must be re-exported here).
  */
 
 // core

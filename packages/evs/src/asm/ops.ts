@@ -154,7 +154,7 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   SWAP14: { code: 0x9d, pops: 15, pushes: 15, since: 'frontier' },
   SWAP15: { code: 0x9e, pops: 16, pushes: 16, since: 'frontier' },
   SWAP16: { code: 0x9f, pops: 17, pushes: 17, since: 'frontier' },
-  // CALL is permitted in v0 ONLY for the mutable-call surface (s.call / s.simulate, issue #1):
+  // CALL is permitted ONLY for the mutable-call surface (s.call / s.simulate, issue #1):
   // a non-static subcall frame for non-view targets (Uniswap quoters, write dry-runs). Everything
   // still executes inside the top-level eth_call, so any state it touches is discarded when the
   // eth_call ends. CALLCODE/DELEGATECALL/CREATE*/SELFDESTRUCT stay FORBIDDEN.
@@ -168,8 +168,8 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
 /**
  * Bytes that must never appear as opcodes in evs output (the verifier's shape lint):
  * SLOAD, SSTORE, TLOAD, TSTORE, LOG0–LOG4, CREATE, CALLCODE, DELEGATECALL, CREATE2,
- * SELFDESTRUCT. Scripts never read/write their own storage (SLOAD/SSTORE are allowed nowhere in
- * v0). `CALL` (0xf1) was removed from this set by issue #1 — it is emitted ONLY by the
+ * SELFDESTRUCT. Scripts never read/write their own storage (SLOAD/SSTORE are allowed nowhere).
+ * `CALL` (0xf1) was removed from this set by issue #1 — it is emitted ONLY by the
  * `s.call`/`s.simulate` mutable-call surface; the verifier still rejects every
  * frame-escaping or state-persisting opcode below.
  */

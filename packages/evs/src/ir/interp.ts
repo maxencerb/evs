@@ -34,7 +34,7 @@
  * frame shape; `opts.env` overrides them per call so other frames — notably the DEFAULT
  * deployless mode, where `caller` is viem's internal wrapper contract and `address` is a
  * per-script counterfactual CREATE2 address — can be modeled and differential-tested
- * (a later extension of the `interpret` opts).
+ * (the `InterpEnvOverrides` opts).
  *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed

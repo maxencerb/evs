@@ -4,7 +4,7 @@
  * Every arg, cell, value and fn param/result gets one 32-byte slot in the static frame
  * starting at `0x80`; statement templates load operands (`PUSH slot MLOAD` / `PUSH const`),
  * compute, and `MSTORE` the result. No slot reuse, no liveness — `FrameLayout` is the
- * pluggable seam for a liveness-based allocator later.
+ * pluggable seam for a liveness-based allocator (#41).
  *
  * Slot order (deterministic):
  *   1. script args — ValueIds `0 … args.length−1` (the positional binding `ir/validate.ts`

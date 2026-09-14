@@ -159,7 +159,7 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
 - `type` is any `EvsType` — a word type, `string`, `bytes`, an array, or a composite
   `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
   one). Only top-level args are named as a whole; nested composite fields are named via
-  `t.struct`. Deferred Solidity shapes (fixed-size `T[N]` arrays) throw `EvsTypeError` with
+  `t.struct`. Not-yet-supported Solidity shapes (fixed-size `T[N]` arrays, [#4](https://github.com/maxencerb/evs/issues/4)) throw `EvsTypeError` with
   code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. Note `s.fn` params remain
   word/string-typed — a composite param is rejected when the fn is defined (see
   [functions](/guides/functions/)).
@@ -275,7 +275,7 @@ interface CompileOptions {
 | Option         | Default      | Effect                                                                                                                                                                       |
 | -------------- | ------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `evmVersion`   | `'cancun'`   | Target opcode set (`'paris'`, `'shanghai'`, or `'cancun'`). Anything else throws `EvsCompileError` (`EVM_VERSION`). See [EVM targets](/guides/evm-targets/).                  |
-| `peephole`     | identity     | Optimizer seam: transforms the assembler node stream before layout. No optimizer ships in v0. The mandatory verifiers run on the hook's output.                               |
+| `peephole`     | identity     | Optimizer seam: transforms the assembler node stream before layout. No optimizer ships yet ([#39](https://github.com/maxencerb/evs/issues/39)). The mandatory verifiers run on the hook's output. |
 | `onDiagnostic` | no-op        | Receives every compile-time warning (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`). evs never logs; without a callback, diagnostics are silently dropped.          |
 | `locations`    | `true`       | Whether source locations are carried into the emitted source map.                                                                                                             |
 

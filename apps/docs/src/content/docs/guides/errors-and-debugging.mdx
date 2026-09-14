@@ -41,7 +41,7 @@ Three classes can surface at recording:
 
 | Class             | Thrown for                                                                                                   |
 | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `EvsTypeError`    | type mismatches, literal range violations, overloaded ABI names, non-v0 types, folds that would certainly panic |
+| `EvsTypeError`    | type mismatches, literal range violations, overloaded ABI names, unsupported types, folds that would certainly panic |
 | `EvsStagingError` | using a handle as a plain JS value — `valueOf`, `toString`, template strings, `JSON.stringify`                |
 | `EvsScopeError`   | foreign handles, captures inside `s.fn`, `LoopCtl` outside its loop, builder calls after `s.return`           |
 

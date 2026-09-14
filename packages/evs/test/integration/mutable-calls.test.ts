@@ -160,7 +160,7 @@ describe('s.call for a non-view quoter (the canonical CALL use case)', () => {
 
   test('s.tryCall on a reverting (QuoterV1-style) quoter → success=false', async () => {
     // quoteExactInputReverting declares no outputs (it reverts with raw bytes); decoding
-    // revert-data-as-result is a documented v0 follow-up, so a strict s.call would bubble and
+    // revert-data-as-result is not supported yet (#35), so a strict s.call would bubble and
     // s.tryCall simply reports success=false.
     const quote = evscript({ name: 'tryQuote', args: [t.address, t.uint256] }, (s, q, amountIn) => {
       const r = s.tryCall({

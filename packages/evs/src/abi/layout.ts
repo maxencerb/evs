@@ -1,10 +1,10 @@
 /**
- * `abi/layout.ts` — type layouts over v0 ABI type strings / `PlainAbiParam` trees.
+ * `abi/layout.ts` — type layouts over evs ABI type strings / `PlainAbiParam` trees.
  *
- * Implements the memory model (canonical word invariant) and the ABI head/tail shapes.
- * v0-limited (no tuples, no `T[N]`, no nested arrays) but recursion-ready: `headBytes` walks
- * `PlainAbiParam` trees and the layout union has room for a future `tuple` member without
- * reshaping the existing ones.
+ * Implements the memory model (canonical word invariant) and the ABI head/tail shapes for the
+ * whole evs type vocabulary: words, `string`/`bytes`, one-level arrays over any of those or over a
+ * tuple (`T[]`, `string[]`, `T[][]`, `tuple[]`), and (nested) tuples. Still rejected with
+ * `UNSUPPORTED_V0` (#4): fixed-size `T[N]`, `tuple[][]`, and arrays nested deeper than `[][]`.
  */
 
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
@@ -34,14 +34,13 @@ export type TypeLayout =
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
   // a dynamic array `E[]`: `[len][p0]…[p_{len-1}]` where each slot is an inline word (word
   // element) OR a memref pointer to the element's block (composite/dynamic element).
-  // `elem` is widened to {@link TypeLayout} so the type ADMITS composite-element arrays for the
-  // composite-array codegen milestone; today `layoutOf`/`layoutOfType` still only ever PRODUCE a
-  // word-element array (composite elements throw `UNSUPPORTED_V0`), so every codegen consumer that
-  // assumes `elem.kind === 'word'` is still correct at runtime.
+  // `elem` is any {@link TypeLayout}: `layoutOf`/`layoutOfType` produce word-element arrays as well
+  // as one level of composite/dynamic-element arrays (`string[]`, `T[][]`, `tuple[]`); codegen
+  // dispatches on `elem.kind` before assuming a word element.
   | { kind: 'array'; abi: string; elem: TypeLayout }
   // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is.
   // `components` are the member layouts in declaration order; `abi` carries the tuple tag
-  // (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`, which is
+  // (`'tuple'`; a `tuple[]` is an `array` layout whose `elem` is this). Built via `layoutOfType`, which is
   // the only entry that handles the {@link TupleType} descriptor object.
   | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
 
@@ -57,7 +56,7 @@ function wordLayoutOf(abi: WordType): WordLayout {
 }
 
 /**
- * Valid-Solidity-but-deferred shapes get `UNSUPPORTED_V0`; anything else (not a type string
+ * Valid-Solidity-but-not-yet-supported shapes (#4) get `UNSUPPORTED_V0`; anything else (not a type string
  * at all) gets `TYPE_MISMATCH`. Mirrors the classification in `core/types.ts`.
  */
 function isDeferredSolidity(s: string): boolean {
@@ -71,7 +70,7 @@ function badTypeError(abiType: string): EvsTypeError {
   if (isDeferredSolidity(abiType)) {
     return new EvsTypeError(
       'UNSUPPORTED_V0',
-      `layoutOf: type ${JSON.stringify(abiType)} is not supported in evs v0 (tuples, fixed-size arrays \`T[N]\`, and nested/non-word arrays are deferred)`,
+      `layoutOf: type ${JSON.stringify(abiType)} is not supported yet (fixed-size arrays \`T[N]\` and arrays nested deeper than \`[][]\` are not supported; tuples must be \`t.struct\`/\`t.tuple\` descriptors)`,
       { loc: captureLoc() },
     );
   }
@@ -128,10 +127,9 @@ function computeLayoutOf(abiType: string): TypeLayout {
 /**
  * Layout of any {@link EvsType}: a {@link TupleType} descriptor → a `tuple` layout (recursing
  * over its components via `abiParamToType`); a string type → the existing string-keyed `layoutOf`.
- * A tuple is `dynamic` iff any component layout is dynamic. v0-limited: tuple *arrays*
- * (`'tuple[]'`/`'tuple[][]'`) are a follow-up and get `UNSUPPORTED_V0` here; component string
- * arrays remain word-element-only (nested string arrays inside a tuple are a follow-up too — they
- * fail through `layoutOf` with the usual code).
+ * A tuple is `dynamic` iff any component layout is dynamic. One level of tuple array (`'tuple[]'`)
+ * is an `array` layout over the tuple layout; `'tuple[][]'` is not supported yet (#4) and gets
+ * `UNSUPPORTED_V0` here. Component arrays go through `layoutOf` and share its limits.
  */
 export function layoutOfType(t: EvsType): TypeLayout {
   if (!isTupleType(t)) return layoutOf(t);
@@ -151,7 +149,7 @@ function computeTupleLayout(t: TupleType): TypeLayout {
   }
   throw new EvsTypeError(
     'UNSUPPORTED_V0',
-    `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported in evs v0 (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is deferred)`,
+    `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
     { loc: captureLoc() },
   );
 }
@@ -195,7 +193,7 @@ function layoutToParam(l: TypeLayout): PlainAbiParam {
  * head slot UNLESS it is a *static* tuple — an all-static inner tuple is inlined into the head as
  * its own components' head (no offset pointer), so it occupies `headBytes(components)` bytes. A
  * dynamic param (word-dynamic or a dynamic tuple) is a single offset-pointer slot. Each type is
- * validated through `layoutOfType` so non-v0 shapes fail loudly here instead of producing a
+ * validated through `layoutOfType` so unsupported shapes fail loudly here instead of producing a
  * silently-wrong head size.
  */
 export function headBytes(params: readonly PlainAbiParam[]): number {

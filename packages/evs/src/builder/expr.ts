@@ -1105,7 +1105,7 @@ export class Recorder {
       // composite); a still-deferred shape (`tuple[][]`) is rejected upstream by layout/validate.
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${what}: ${JSON.stringify(type.type)} literals are not supported in evs v0 (deferred)`,
+        `${what}: ${JSON.stringify(type.type)} literals are not supported yet`,
         { loc },
       );
     }
@@ -1165,7 +1165,7 @@ export class Recorder {
     if (type.type !== 'tuple') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${what}: tuple-array type ${JSON.stringify(type.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        `${what}: tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
         { loc },
       );
     }
@@ -1276,7 +1276,7 @@ export class Recorder {
     if (type.type !== 'tuple') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `s.tuple(): tuple-array type ${JSON.stringify(type.type)} is not supported in evs v0 (arrays of tuples are deferred)`,
+        `s.tuple(): tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
         { loc },
       );
     }
@@ -1504,7 +1504,7 @@ export class Recorder {
     if (typeof elem === 'string') {
       // classification (TYPE_MISMATCH vs UNSUPPORTED_V0 for `T[N]` etc.) is delegated to `layoutOfType`
       // on the resulting array type below; a non-StringType string still produces a string we can tag.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; the layout check below rejects non-v0 shapes with the right code.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; the layout check below rejects unsupported shapes with the right code.
       elemType = elem as EvsType;
     } else if (isTupleType(elem)) {
       if (elem.type !== 'tuple') {
@@ -1704,7 +1704,7 @@ export class Recorder {
       if (!isWordType(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: eq/neq compare word types only — memref ('${stringifyEvsType(ty)}') equality is not defined in v0`,
+          `${what}: eq/neq compare word types only — memref ('${stringifyEvsType(ty)}') equality is not supported`,
           { loc },
         );
       }
@@ -2273,7 +2273,7 @@ export class Recorder {
     const lenId = this.lenId(c.id, loc, 's.forEach(…) length');
     const cellId = this.makeCell('uint256', 0, loc);
     const stepId = this.wordConst('uint256', 1n, loc);
-    // the element load is recorded only when the body declares `elem` — v0 has no DCE, so an
+    // the element load is recorded only when the body declares `elem` — there is no DCE pass yet (#40), so an
     // unconditional load would execute its bounds check + reads every iteration for nothing
     const wantsElem = bodyFn.length >= 1;
     this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
@@ -2489,7 +2489,7 @@ export class Recorder {
     if (matching.length > 1) {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${label}: function "${fname}" is overloaded (${matching.length} ${allowedMuts.join('/')} overloads) — overload disambiguation is deferred in v0; prune the ABI to the single intended entry`,
+        `${label}: function "${fname}" is overloaded (${matching.length} ${allowedMuts.join('/')} overloads) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
         { loc },
       );
     }
@@ -2501,7 +2501,7 @@ export class Recorder {
         { loc },
       );
     }
-    // shape-checked above; toPlainAbiFunction validates the v0 types, naming the parameter
+    // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
     const plain = toPlainAbiFunction(unsafeCast<AbiFunction>(item));
     if (params.address === undefined) {
       throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`, { loc });
@@ -2523,7 +2523,7 @@ export class Recorder {
       // then routes through its tuple branch (a Tuple handle or a literal struct object).
       const ity = abiParamToType(inp);
       if (!isEvsValueType(ity)) {
-        throw new EvsInternalError('INTERNAL', `${label}: non-v0 input survived validation`);
+        throw new EvsInternalError('INTERNAL', `${label}: unsupported input survived validation`);
       }
       const argLabel = inp.name === '' ? `args[${i}]` : `args[${i}] ("${inp.name}")`;
       return this.coerceToId(rawArgs[i], ity, `${label} ${argLabel}`, loc);
@@ -2538,7 +2538,7 @@ export class Recorder {
     const outTypes = plain.outputs.map((o): EvsType => {
       const oty = abiParamToType(o);
       if (!isEvsValueType(oty)) {
-        throw new EvsInternalError('INTERNAL', `${label}: non-v0 output survived validation`);
+        throw new EvsInternalError('INTERNAL', `${label}: unsupported output survived validation`);
       }
       return oty;
     });
@@ -2653,7 +2653,7 @@ export class Recorder {
       // type is a TupleType object with no `name`). Detection mirrors `evscript`'s `isArgSpecValue`
       // (name + type present, not an array) so the two arg/param surfaces classify declarators
       // identically. Composite (tuple) params — bare or via `namedArg`, whose bound admits every
-      // EvsType since #25 — stay a v0 deferral, rejected below with UNSUPPORTED_V0.
+      // EvsType since #25 — are not supported yet (#37), rejected below with UNSUPPORTED_V0.
       let pName: string;
       let pType: unknown;
       if (
@@ -2687,7 +2687,7 @@ export class Recorder {
       if (isTupleType(pType)) {
         throw new EvsTypeError(
           'UNSUPPORTED_V0',
-          `s.fn("${name}") param "${pName}": composite (t.struct/t.tuple) params are not supported in v0 — pass the members as separate word/string params (top-level SCRIPT args do accept structs)`,
+          `s.fn("${name}") param "${pName}": composite (t.struct/t.tuple) params are not supported yet — pass the members as separate word/string params (top-level SCRIPT args do accept structs)`,
           { loc },
         );
       }
