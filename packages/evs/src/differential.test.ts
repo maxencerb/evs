@@ -1014,6 +1014,123 @@ describe('user functions', () => {
   });
 });
 
+describe('user functions — composite params (issue #37)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  const Inner = t.struct({ a: t.uint8, b: t.uint256 });
+  const Outer = t.struct({ inner: Inner, name: t.string, ids: t.array(t.uint256) });
+
+  for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+    test(`fn takes a struct and returns a member; a script-arg struct passes straight through [${evmVersion}]`, async () => {
+      const script = evscript(
+        { name: 'fnStruct', args: [namedArg('pair', Pair), t.uint24] },
+        (s, pair, fee) => {
+          const feeOf = s.fn('feeOf', [namedArg('p', Pair)] as const, (p) => p.fee.get());
+          const tokenOf = s.fn('tokenOf', Pair, (p) => p.token.get());
+          // (a) the script-arg Tuple handle passed by reference (no copy — the same memref);
+          // (b) a struct built in the script; (c) a literal object built at the call site;
+          // (d) a struct fn RESULT flowing into a struct fn PARAM (Tuple in, Tuple out).
+          const built = s.tuple(Pair, { token: TOKB, fee });
+          const echo = s.fn('echo', Pair, (p) => p);
+          return s.return({
+            argFee: feeOf(pair),
+            argToken: tokenOf(pair),
+            builtFee: feeOf(built),
+            litFee: feeOf({ token: TOKA, fee: 500 }),
+            echoedToken: tokenOf(echo(pair)),
+            echoed: echo(pair),
+          });
+        },
+      );
+      const pairA = { token: getAddress(TOKA), fee: 3000 } as const;
+      const pairZ = { token: getAddress(DEAD), fee: 0 } as const;
+      const [o] = await expectAgreement(
+        script,
+        [
+          [pairA, 100],
+          [pairZ, (1 << 24) - 1],
+        ],
+        {},
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'fnStruct',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        argFee: 3000,
+        argToken: pairA.token,
+        builtFee: 100,
+        litFee: 500,
+        echoedToken: pairA.token,
+        echoed: pairA,
+      });
+    });
+
+    test(`fn takes a struct with dynamic members (string, uint256[]) and a nested tuple [${evmVersion}]`, async () => {
+      const script = evscript(
+        { name: 'fnNested', args: [namedArg('outer', Outer), t.uint256] },
+        (s, outer, i) => {
+          const summary = s.fn(
+            'summary',
+            [namedArg('o', Outer), namedArg('idx', t.uint256)] as const,
+            (o, idx) => {
+              const inner = o.inner.get();
+              const ids = o.ids.get();
+              // (a, b) through the nested Tuple; the string member; the array member's length
+              // and a bounds-checked element read (Panic 0x32 on both sides when out of range).
+              return [
+                inner.a.get(),
+                inner.b.get(),
+                o.name.get(),
+                ids.length(),
+                ids.at(idx),
+                inner,
+              ] as const;
+            },
+          );
+          const [a, b, name, nIds, idAt, inner] = summary(outer, i);
+          // the nested Tuple returned by the fn flows into ANOTHER fn's struct param.
+          const bOf = s.fn('bOf', Inner, (p) => p.b.get());
+          return s.return({ a, b, name, nIds, idAt, bAgain: bOf(inner) });
+        },
+      );
+      const OUTER = {
+        inner: { a: 7, b: (1n << 200n) | 5n },
+        name: 'evs — composite fn params',
+        ids: [11n, 22n, 33n],
+      } as const;
+      const EMPTY = { inner: { a: 0, b: 0n }, name: '', ids: [] } as const;
+      const [o, , oob] = await expectAgreement(
+        script,
+        [
+          [OUTER, 2n],
+          [OUTER, 0n],
+          [EMPTY, 0n], // ids.at(0) on an empty array → Panic 0x32, agreed on both sides
+        ],
+        {},
+        evmVersion,
+      );
+      expect(o?.kind).toBe('return');
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'fnNested',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({
+        a: OUTER.inner.a,
+        b: OUTER.inner.b,
+        name: OUTER.name,
+        nIds: 3n,
+        idAt: 33n,
+        bAgain: OUTER.inner.b,
+      });
+      expect(oob).toEqual({ kind: 'revert', data: panicData(0x32n) });
+    });
+  }
+});
+
 // ---------------------------------------------------------------------------
 // 11. flagship corpus — E1 poolMeta and E2 balances, all three evm versions
 // ---------------------------------------------------------------------------

@@ -29,11 +29,10 @@ const clamp = evscript(
 - **Parameters** accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a
   single `namedArg(name, type)`, or a `readonly` list mixing named/bare. A `namedArg` labels the
   callback parameter (`(token) => …`); a bare param keeps the positional `arg{i}` name. A param may
-  be any string-encoded type — a word, dynamic, or string array; composite/tuple params are not
-  supported yet ([#37](https://github.com/maxencerb/evs/issues/37)) and are rejected when the fn is
-  defined (`UNSUPPORTED_V0`) whether declared bare
-  or via `namedArg` (which itself accepts struct types — for **script** args). Dynamic types pass
-  as memref pointer words. The body receives them as `Expr`s.
+  be **any evs type** — a word, `string`/`bytes`, an array, or a composite `t.struct`/`t.tuple` —
+  exactly the vocabulary script args accept. The body receives the same handles a script body
+  would: a struct/tuple param is a `Tuple` handle (named field access), everything else an
+  `Expr`. Dynamic and composite values pass as memref pointer words (no copy).
 - **Returns** can be a single `Expr`, a single `Tuple` handle (a struct/composite result — the call
   site then gets a `Tuple` with named field access, like `s.read`), a single `MutArray` handle (an
   array result — the call site gets an array `Expr`), a readonly tuple of any of those (use
@@ -44,6 +43,39 @@ const clamp = evscript(
 
 Each call returns **fresh** handles: two calls never alias, even with identical arguments —
 `minMax(a, b)` twice records two executions and yields two independent result tuples.
+
+## Struct params
+
+A `t.struct` / `t.tuple` param binds like a struct script arg: inside the body it is a `Tuple`
+handle with member-typed `.field.get()` / `.set()` access, and the call site accepts a `Tuple`
+handle (a script arg, an `s.tuple(...)`, another fn's struct result) or a plain literal object:
+
+```ts
+import { namedArg, evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const pairFees = evscript(
+  { name: 'pairFees', args: [namedArg('pair', Pair), t.uint24] },
+  (s, pair, fee) => {
+    // `p` is a Tuple handle inside the body — the same handle the script arg `pair` is
+    const feeOf = s.fn('feeOf', [namedArg('p', Pair)], (p) => p.fee.get());
+    const built = s.tuple(Pair, { token: '0x0000000000000000000000000000000000000002', fee });
+    return s.return({
+      fromArg: feeOf(pair), // the script-arg struct passes straight through, by reference
+      fromBuilt: feeOf(built),
+      fromLiteral: feeOf({ token: '0x0000000000000000000000000000000000000001', fee: 500 }),
+    });
+  },
+);
+```
+
+The param is passed **by reference**: the caller stores the struct's memref pointer into the
+callee's param slot, so a `.set()` inside the body is visible to the caller afterwards (as with
+any `Tuple` alias) and no bytes are copied. Member types are checked structurally at recording —
+a struct with the same layout but a different member name is a `TYPE_MISMATCH`, even though the
+erased `Tuple` brand lets it typecheck. Composite **arrays** (`t.array(Pair)`) arrive as an
+`Expr` with `.length()` / `.at(i)`, again like a script arg.
 
 ## Fn bodies are isolated — no capture
 

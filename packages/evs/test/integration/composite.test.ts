@@ -16,7 +16,7 @@
 import { encodeAbiParameters, encodeFunctionData, encodePacked, getAddress, keccak256 } from 'viem';
 import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
-import { evscript, t } from '../../src/index.js';
+import { evscript, namedArg, t } from '../../src/index.js';
 import { Composite } from '../generated/index.js';
 import { publicClient, testClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy, deployer } from './helpers.js';
@@ -245,6 +245,60 @@ describe('quote(QuoteParams): composite input encode + (uint256, Position) outpu
       posOperator: `0x${string}`;
       posLiquidity: bigint;
       posNonce: bigint;
+    }>();
+  });
+});
+
+// --- quote(QuoteParams) through an s.fn struct PARAM (issue #37) ---------------------------
+
+describe('quote(QuoteParams): a struct script arg passed straight through an s.fn param', () => {
+  const TOKEN_IN = getAddress('0x00000000000000000000000000000000000000a1');
+  const TOKEN_OUT = getAddress('0x00000000000000000000000000000000000000b2');
+  const PARAMS = { tokenIn: TOKEN_IN, tokenOut: TOKEN_OUT, fee: 3000, amountIn: 10n ** 18n };
+
+  // the struct arrives as a Tuple handle at the top level AND inside the fn body (the param is
+  // the same memref pointer word); the fn reads a member, calls the real contract with the whole
+  // struct, and returns a member of the decoded Position — nothing is rebuilt in between.
+  const quoteVia = evscript(
+    { name: 'quoteVia', args: [t.address, namedArg('params', QuoteParams)] },
+    (s, target, params) => {
+      const quoteFor = s.fn(
+        'quoteFor',
+        [namedArg('to', t.address), namedArg('p', QuoteParams)] as const,
+        (to, p) => {
+          const [amountOut, pos] = s.read({
+            address: to,
+            abi: Composite.abi,
+            functionName: 'quote',
+            args: [p],
+          });
+          return [amountOut, pos.liquidity.get(), p.fee.get(), p.tokenIn.get()] as const;
+        },
+      );
+      const [amountOut, posLiquidity, fee, tokenIn] = quoteFor(target, params);
+      return s.return({ amountOut, posLiquidity, fee, tokenIn });
+    },
+  );
+
+  test('the fn param aliases the arg memref; solc decodes the struct the fn forwards', async () => {
+    const compiled = quoteVia.compile();
+    const out = await publicClient.readContract({
+      ...compiled.toViem(),
+      functionName: 'quoteVia',
+      args: [composite, PARAMS],
+    });
+    const amountOut = (PARAMS.amountIn * BigInt(PARAMS.fee)) / 1_000_000n;
+    expect(out).toStrictEqual({
+      amountOut,
+      posLiquidity: amountOut & ((1n << 128n) - 1n),
+      fee: PARAMS.fee,
+      tokenIn: TOKEN_IN,
+    });
+    expectTypeOf(out).toEqualTypeOf<{
+      amountOut: bigint;
+      posLiquidity: bigint;
+      fee: number;
+      tokenIn: `0x${string}`;
     }>();
   });
 });

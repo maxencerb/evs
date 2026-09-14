@@ -1245,6 +1245,80 @@ describe('validateIr — fn rules', () => {
     );
   });
 
+  test('accepts a tuple-typed fn param; fncall arg types compare tuple descriptors structurally (#37)', () => {
+    const Pair: EvsType = {
+      type: 'tuple',
+      components: [
+        { name: 'token', type: 'address' },
+        { name: 'fee', type: 'uint24' },
+      ],
+    };
+    // a fresh (never reference-equal) descriptor with the same members must be accepted…
+    const PairAlike: EvsType = {
+      type: 'tuple',
+      components: [
+        { name: 'token', type: 'address' },
+        { name: 'fee', type: 'uint24' },
+      ],
+    };
+    // …while one differing in a member NAME or TYPE must not.
+    const Renamed: EvsType = {
+      type: 'tuple',
+      components: [
+        { name: 'token', type: 'address' },
+        { name: 'tick', type: 'uint24' },
+      ],
+    };
+    const Widened: EvsType = {
+      type: 'tuple',
+      components: [
+        { name: 'token', type: 'address' },
+        { name: 'fee', type: 'uint256' },
+      ],
+    };
+    const feeOf = {
+      name: 'feeOf',
+      params: [{ name: 'pair', type: Pair, value: 1 }],
+      results: [{ type: 'uint24' as const }],
+      body: [mk({ k: 'field', tuple: 1, index: 1, out: 2 })],
+      resultValues: [2],
+      loc: null,
+    };
+    const withArg = (argType: EvsType): ScriptIr =>
+      ir({
+        args: [{ name: 'p', type: argType }],
+        values: [vi(argType, 'args.p'), vi(Pair, 'feeOf(pair)'), vi('uint24'), vi('uint24')],
+        fns: [feeOf],
+        body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [3] })],
+        returns: [{ name: 'fee', type: 'uint24', value: 3 }],
+      });
+    expect(() => validateIr(withArg(Pair))).not.toThrow();
+    expect(() => validateIr(withArg(PairAlike))).not.toThrow();
+    expectInvalid(withArg(Renamed), /arg 0 \("pair"\).*operand type mismatch/);
+    expectInvalid(withArg(Widened), /arg 0 \("pair"\).*operand type mismatch/);
+    // a `tuple[]` param is a memref like any array; its element descriptor is compared too.
+    const pairs: EvsType = { type: 'tuple[]', components: Pair.components };
+    const renamedPairs: EvsType = { type: 'tuple[]', components: Renamed.components };
+    const lenOf = {
+      name: 'lenOf',
+      params: [{ name: 'ps', type: pairs, value: 1 }],
+      results: [{ type: 'uint256' as const }],
+      body: [mk({ k: 'len', a: 1, out: 2 })],
+      resultValues: [2],
+      loc: null,
+    };
+    const withArr = (argType: EvsType): ScriptIr =>
+      ir({
+        args: [{ name: 'ps', type: argType }],
+        values: [vi(argType, 'args.ps'), vi(pairs, 'lenOf(ps)'), vi('uint256'), vi('uint256')],
+        fns: [lenOf],
+        body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [3] })],
+        returns: [{ name: 'n', type: 'uint256', value: 3 }],
+      });
+    expect(() => validateIr(withArr(pairs))).not.toThrow();
+    expectInvalid(withArr(renamedPairs), /arg 0 \("ps"\).*operand type mismatch/);
+  });
+
   test('rejects a param whose backing value has a different type', () => {
     expectInvalid(
       ir({

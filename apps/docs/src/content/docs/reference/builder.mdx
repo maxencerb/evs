@@ -589,8 +589,8 @@ fn<
 >(
   name: string,
   params: params,
-  body: (...args: { [i in keyof params]: Expr<params[i]['type']> }) => r,
-): (...args: { [i in keyof params]: IntoExpr<params[i]['type']> }) => FreshHandles<r>;
+  body: (...args: { [i in keyof params]: ArgHandle<params[i]['type']> }) => r,
+): (...args: { [i in keyof params]: IntoMember<params[i]['type']> }) => FreshHandles<r>;
 ```
 
 Defines a reusable typed subroutine and returns a callable handle. A body may return a single
@@ -605,6 +605,12 @@ package-internal helper: `Expr` results come back as fresh `Expr`s, `Tuple` resu
 - `s.fn` params accept a bare `t.*` type, a single `namedArg(name, type)`, or a `readonly` list
   mixing named/bare (issue #9) — a `namedArg` labels the callback parameter, a bare param keeps the
   positional `arg{i}` name.
+- Params take **any evs type**, like script args: the body handle is the same
+  [`ArgHandle`](/reference/evscript/#evscript) dispatch — a `t.struct`/`t.tuple` param is a
+  [`Tuple`](#tuple) handle, a composite array or scalar an `Expr`. The call site accepts an
+  `IntoMember` of the param type: an `IntoExpr` for scalars, an array `Expr`/literal/`MutArray`
+  for arrays, and a `Tuple` handle or literal object for a struct (passed by reference — the
+  memref pointer word; members are checked structurally at recording).
 - Each call of the returned handle records one statement and returns fresh handles — two calls
   never alias.
 - Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled
