@@ -43,7 +43,6 @@ import type {
   NumericType,
   StringType,
   TupleType,
-  WordType,
 } from '../core/types.js';
 import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
 import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
@@ -934,8 +933,8 @@ export interface ScriptBuilder<
   gt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   lte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   gte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  eq<t extends WordType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  neq<t extends WordType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
+  eq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // memrefs: hash equality
+  neq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   and(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>;
   or(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>;
   not(a: IntoExpr<'bool'>): Expr<'bool'>;

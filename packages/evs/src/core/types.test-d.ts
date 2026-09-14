@@ -80,8 +80,11 @@ test('Expr this-parameter constraints', () => {
   expectTypeOf(str.length()).toEqualTypeOf<Expr<'uint256'>>();
   expectTypeOf(arr.at(0)).toEqualTypeOf<Expr<'address'>>();
 
-  // @ts-expect-error — eq on a memref type is not allowed (word types only)
-  str.eq('x');
+  // eq/neq on a memref type is hash equality (#38): same-typed handle or literal rhs
+  expectTypeOf(str.eq('x')).toEqualTypeOf<Expr<'bool'>>();
+  expectTypeOf(arr.neq(arr)).toEqualTypeOf<Expr<'bool'>>();
+  // @ts-expect-error — operand types must match (string vs address[])
+  str.eq(arr);
   // @ts-expect-error — arithmetic on a non-numeric type
   arr.add(1);
 });

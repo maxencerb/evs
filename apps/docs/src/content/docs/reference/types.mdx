@@ -273,7 +273,7 @@ is checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/
 | Method                     | Signature                            | Notes                                                                  |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
 | `lt`, `gt`, `lte`, `gte`   | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | Numeric types only; LT/GT vs SLT/SGT chosen from the static signedness |
-| `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any word type; no `string`/`bytes`/array equality (#38)                |
+| `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any type. Words compare directly; memrefs (`string`/`bytes`/`T[]`/structs) are **hash equality** — `keccak256(a) == keccak256(b)`, byte-for-byte for `string`/`bytes`, element-wise via `abi.encode` for arrays/structs (two keccaks) |
 
 ### Boolean logic
 

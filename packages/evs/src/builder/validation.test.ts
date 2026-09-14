@@ -317,12 +317,21 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
-  test('eq on a memref type', () => {
+  test('eq between a memref and a word (memref equality is same-type only — #38)', () => {
     expectEvs(
-      () => rec((s, a) => s.eq(a.xs as never, a.xs as never)),
+      () => rec((s, a) => s.eq(a.xs, a.x)),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /word types only/,
+      /operand types differ \(Expr<'uint64\[\]'> vs Expr<'uint256'>\)/,
+    );
+  });
+
+  test('eq between a memref and a literal of the wrong shape', () => {
+    expectEvs(
+      () => rec((s, a) => s.eq(a.xs, 'not-an-array' as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /uint64\[\] literal must be an array/,
     );
   });
 

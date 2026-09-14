@@ -104,8 +104,10 @@ export interface Expr<t extends EvsType = EvsType> {
   gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
   lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
   gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
-  eq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>; // word types only (typed)
-  neq(this: Expr<t & WordType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  // eq/neq: word equality, or HASH equality on memrefs — string/bytes byte-for-byte, arrays and
+  // tuples element-wise via their standard ABI encoding (lowered to keccak256(a) == keccak256(b))
+  eq(rhs: IntoExpr<t>): Expr<'bool'>;
+  neq(rhs: IntoExpr<t>): Expr<'bool'>;
 
   // bool logic — eager, NOT short-circuiting (use s.if for conditional execution)
   and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;

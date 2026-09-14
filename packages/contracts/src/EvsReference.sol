@@ -290,4 +290,44 @@ contract EvsReference {
     function hashStruct(EncPair calldata pair) external pure returns (bytes32) {
         return keccak256(abi.encode(pair));
     }
+
+    // ---------------------------------------------------------------- memref equality
+    // (issue #38): evs `eq`/`neq` on string/bytes/T[] is HASH equality. Solidity has no `==`
+    // on memory bytes either; these are the idiomatic oracles — keccak256 over the raw bytes
+    // for string/bytes, over abi.encode for arrays (packed is ambiguous for dynamic elements).
+    function eqString(string calldata a, string calldata b) external pure returns (bool) {
+        return keccak256(bytes(a)) == keccak256(bytes(b));
+    }
+
+    function neqString(string calldata a, string calldata b) external pure returns (bool) {
+        return keccak256(bytes(a)) != keccak256(bytes(b));
+    }
+
+    function eqBytes(bytes calldata a, bytes calldata b) external pure returns (bool) {
+        return keccak256(a) == keccak256(b);
+    }
+
+    function neqBytes(bytes calldata a, bytes calldata b) external pure returns (bool) {
+        return keccak256(a) != keccak256(b);
+    }
+
+    function eqUintArray(uint256[] calldata a, uint256[] calldata b) external pure returns (bool) {
+        return keccak256(abi.encode(a)) == keccak256(abi.encode(b));
+    }
+
+    function neqUintArray(uint256[] calldata a, uint256[] calldata b) external pure returns (bool) {
+        return keccak256(abi.encode(a)) != keccak256(abi.encode(b));
+    }
+
+    function eqStringArray(string[] calldata a, string[] calldata b) external pure returns (bool) {
+        return keccak256(abi.encode(a)) == keccak256(abi.encode(b));
+    }
+
+    function neqStringArray(string[] calldata a, string[] calldata b) external pure returns (bool) {
+        return keccak256(abi.encode(a)) != keccak256(abi.encode(b));
+    }
+
+    function eqPair(EncPair calldata a, EncPair calldata b) external pure returns (bool) {
+        return keccak256(abi.encode(a)) == keccak256(abi.encode(b));
+    }
 }

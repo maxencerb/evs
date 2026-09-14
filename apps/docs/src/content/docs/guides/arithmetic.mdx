@@ -21,7 +21,7 @@ Every method (except the conversions) also exists as a free function on the buil
 
 Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and-types/): `x.add(1n)`, `tick.lt(0n)`, `flag.and(true)`.
 
-`eq`/`neq` are restricted to word types — memref (`string`/`bytes`/`T[]`) equality is not supported ([#38](https://github.com/maxencerb/evs/issues/38)); compare hashes via `s.keccak256` instead. Boolean `and`/`or` are **eager**, not short-circuiting: both sides are already-computed values by the time you combine them. For conditional execution, use `s.if` ([control flow](/guides/control-flow/)).
+`eq`/`neq` also work on memref types (`string`, `bytes`, `T[]`, structs) as **hash equality**: `a.eq(b)` is recorded as `s.keccak256(a).eq(s.keccak256(b))`. For `string`/`bytes` that is byte-for-byte equality (the raw bytes are hashed, exactly like Solidity's `keccak256(bytes(a)) == keccak256(bytes(b))` idiom); for arrays and structs it is element-wise equality through their standard `abi.encode` (never the packed form, which is ambiguous for adjacent dynamic values). Both operands must have the same evs type — a word never compares with a memref, and `string` never compares with `bytes` or `string[]` — and the right-hand side takes the usual literals (`symbol.eq('WETH')`, `fees.neq([500n, 3000n])`). It costs two keccaks plus memory reads per comparison, so hoist a hash you compare repeatedly into one `s.keccak256(...)` value. Boolean `and`/`or` are **eager**, not short-circuiting: both sides are already-computed values by the time you combine them. For conditional execution, use `s.if` ([control flow](/guides/control-flow/)).
 
 ## Checked semantics
 

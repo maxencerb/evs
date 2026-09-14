@@ -274,13 +274,20 @@ test('IntoExpr accepts literals of the right shape and rejects the wrong ones', 
   });
 });
 
-test('this-parameter constraints: arithmetic on address / eq on memref are type errors', () => {
-  evscript({ name: 'thisParam', args: [t.address] }, (s, who) => {
+test('this-parameter constraints: arithmetic on address is a type error; eq on memref is hash equality', () => {
+  evscript({ name: 'thisParam', args: [t.address, t.array(t.uint256)] }, (s, who, arr) => {
     // @ts-expect-error — address is not numeric (this: Expr<t & NumericType> = never)
     who.add(1n);
     const str = s.read({ address: who, abi: erc20Fixture, functionName: 'symbol' });
-    // @ts-expect-error — eq is word-types-only (this: Expr<t & WordType> = never for 'string')
-    str.eq(str);
+    // memref equality (#38): same-typed Expr or literal rhs, free-function form included
+    expectTypeOf(str.eq(str)).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(str.neq('WETH')).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(arr.eq([1n, 2n])).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(s.eq(str, 'WETH')).toEqualTypeOf<Expr<'bool'>>();
+    // @ts-expect-error — operand types must match (string vs uint256[])
+    str.eq(arr);
+    // @ts-expect-error — a word never compares with a memref
+    who.eq(str);
     // address equality IS a word comparison — fine:
     expectTypeOf(who.eq('0x0000000000000000000000000000000000000000')).toEqualTypeOf<
       Expr<'bool'>

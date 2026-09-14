@@ -687,6 +687,225 @@ describe('dynamic values', () => {
 });
 
 // ---------------------------------------------------------------------------
+// 5b. memref equality — eq/neq on string/bytes/T[]/string[]/tuple (issue #38, hash equality)
+// ---------------------------------------------------------------------------
+
+describe('memref equality (#38): eq/neq lower to keccak256(a) == keccak256(b)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  const script = evscript(
+    {
+      name: 'memeq',
+      args: [
+        t.string,
+        t.string,
+        t.bytes,
+        t.bytes,
+        t.array(t.uint256),
+        t.array(t.uint256),
+        'string[]',
+        'string[]',
+      ],
+    },
+    (s, sa, sb, ba, bb, ua, ub, ta, tb) => {
+      const pair = s.tuple(Pair, { token: TOKA, fee: 500n });
+      return s.return({
+        sEq: sa.eq(sb),
+        sNeq: s.neq(sa, sb),
+        bEq: ba.eq(bb),
+        bNeq: bb.neq(ba),
+        uEq: ua.eq(ub),
+        uNeq: s.neq(ua, ub),
+        tEq: ta.eq(tb),
+        tNeq: ta.neq(tb),
+        // literal operands (record-time data consts / built literals)
+        sLit: sa.eq('hello'),
+        sEmpty: s.eq('', sa),
+        uLit: ua.eq([1n, 2n]),
+        tLit: ta.neq(['a', 'b']),
+        pairLit: pair.expr().eq({ token: TOKA, fee: 500 }),
+        pairOther: pair.expr().eq({ token: TOKA, fee: 3000 }),
+      });
+    },
+  );
+
+  const cases: readonly {
+    label: string;
+    args: readonly [string, string, Hex, Hex, bigint[], bigint[], string[], string[]];
+    want: Record<string, boolean>;
+  }[] = [
+    {
+      label: 'all equal (non-empty)',
+      args: [
+        'hello',
+        'hello',
+        '0xdeadbeef',
+        '0xdeadbeef',
+        [1n, 2n],
+        [1n, 2n],
+        ['a', 'b'],
+        ['a', 'b'],
+      ],
+      want: {
+        sEq: true,
+        sNeq: false,
+        bEq: true,
+        bNeq: false,
+        uEq: true,
+        uNeq: false,
+        tEq: true,
+        tNeq: false,
+        sLit: true,
+        sEmpty: false,
+        uLit: true,
+        tLit: false,
+      },
+    },
+    {
+      label: 'all empty',
+      args: ['', '', '0x', '0x', [], [], [], []],
+      want: {
+        sEq: true,
+        sNeq: false,
+        bEq: true,
+        bNeq: false,
+        uEq: true,
+        uNeq: false,
+        tEq: true,
+        tNeq: false,
+        sLit: false,
+        sEmpty: true,
+        uLit: false,
+        tLit: true,
+      },
+    },
+    {
+      label: 'empty vs non-empty',
+      args: ['', 'x', '0x', '0x00', [], [0n], [], ['']],
+      want: {
+        sEq: false,
+        sNeq: true,
+        bEq: false,
+        bNeq: true,
+        uEq: false,
+        uNeq: true,
+        tEq: false,
+        tNeq: true,
+        sLit: false,
+        sEmpty: true,
+        uLit: false,
+        tLit: true,
+      },
+    },
+    {
+      label: 'differ only in length (prefix / trailing element)',
+      args: [
+        'hello',
+        'hello!',
+        '0xdeadbeef',
+        '0xdeadbeef00',
+        [1n, 2n],
+        [1n, 2n, 0n],
+        ['a', 'b'],
+        ['a', 'b', ''],
+      ],
+      want: {
+        sEq: false,
+        sNeq: true,
+        bEq: false,
+        bNeq: true,
+        uEq: false,
+        uNeq: true,
+        tEq: false,
+        tNeq: true,
+        sLit: true,
+        sEmpty: false,
+        uLit: true,
+        tLit: false,
+      },
+    },
+    {
+      label: 'same length, differing content; string[] with the same concatenation is NOT equal',
+      args: [
+        'hellO',
+        'hello',
+        '0xdeadbeef',
+        '0xdeadbeee',
+        [1n, 2n],
+        [2n, 1n],
+        ['ab', ''],
+        ['a', 'b'],
+      ],
+      want: {
+        sEq: false,
+        sNeq: true,
+        bEq: false,
+        bNeq: true,
+        uEq: false,
+        uNeq: true,
+        tEq: false,
+        tNeq: true,
+        sLit: false,
+        sEmpty: false,
+        uLit: true,
+        tLit: true,
+      },
+    },
+    {
+      label: 'long values (> 32 bytes) equal',
+      args: [
+        'a long string deliberately exceeding thirty-two bytes ✓',
+        'a long string deliberately exceeding thirty-two bytes ✓',
+        `0x${'ab'.repeat(77)}`,
+        `0x${'ab'.repeat(77)}`,
+        [1n, 2n, 3n, 4n, 5n],
+        [1n, 2n, 3n, 4n, 5n],
+        ['a', 'b', 'a long string deliberately exceeding thirty-two bytes ✓'],
+        ['a', 'b', 'a long string deliberately exceeding thirty-two bytes ✓'],
+      ],
+      want: {
+        sEq: true,
+        sNeq: false,
+        bEq: true,
+        bNeq: false,
+        uEq: true,
+        uNeq: false,
+        tEq: true,
+        tNeq: false,
+        sLit: false,
+        sEmpty: false,
+        uLit: false,
+        tLit: true,
+      },
+    },
+  ];
+
+  for (const evmVersion of ['paris', 'cancun'] as const) {
+    test(`interp and bytecode agree, and match the expected booleans [${evmVersion}]`, async () => {
+      const outcomes = await expectAgreement(
+        script,
+        cases.map((c) => c.args),
+        {},
+        evmVersion,
+      );
+      cases.forEach((c, i) => {
+        const o = outcomes[i];
+        expect(o?.kind, `${c.label}: outcome`).toBe('return');
+        const decoded = decodeFunctionResult({
+          abi: script.abi,
+          functionName: 'memeq',
+          data: o?.data ?? '0x',
+        });
+        expect(decoded, `${c.label}: decoded booleans`).toMatchObject({
+          ...c.want,
+          pairLit: true,
+          pairOther: false,
+        });
+      });
+    });
+  }
+});
+
+// ---------------------------------------------------------------------------
 // 6. calls with mocks
 // ---------------------------------------------------------------------------
 
