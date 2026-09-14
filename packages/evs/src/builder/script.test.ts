@@ -11,6 +11,7 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
+import { eliminateDeadCode } from '../ir/dce.js';
 import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
@@ -1308,7 +1309,7 @@ describe('s.forEach', () => {
     expect(stripDebugNames(script.ir)).toEqual(stripDebugNames(manual.ir));
   });
 
-  test('the element load is skipped when the body omits `elem` (no DCE pass yet — post-review)', () => {
+  test('the element load is always recorded; a body that omits `elem` leaves it to DCE (#40)', () => {
     const counted = evscript(
       { name: 'counted', args: [t.array(t.uint256)] },
       (s, xs) => {
@@ -1321,10 +1322,14 @@ describe('s.forEach', () => {
       NO_LOC,
     );
     expect(() => validateIr(counted.ir)).not.toThrow();
-    expect(allStmts(counted.ir).some((s) => s.k === 'index')).toBe(false);
-    // the loop itself still records: one len snapshot + the while
-    expect(allStmts(counted.ir).filter((s) => s.k === 'len')).toHaveLength(1);
-    expect(allStmts(counted.ir).some((s) => s.k === 'while')).toBe(true);
+    // recorded unconditionally (no builder special case) …
+    expect(allStmts(counted.ir).filter((s) => s.k === 'index')).toHaveLength(1);
+    // … and dropped by the compile-time pass, loop intact: one len snapshot + the while
+    const optimized = eliminateDeadCode(counted.ir);
+    expect(() => validateIr(optimized)).not.toThrow();
+    expect(allStmts(optimized).some((s) => s.k === 'index')).toBe(false);
+    expect(allStmts(optimized).filter((s) => s.k === 'len')).toHaveLength(1);
+    expect(allStmts(optimized).some((s) => s.k === 'while')).toBe(true);
   });
 
   test('a tuple[] STRUCT MEMBER .get() hands back an Expr the loop iterates (post-review fix)', () => {

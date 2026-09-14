@@ -27,6 +27,12 @@ generated from the same table — and must agree **byte for byte** on:
 - revert payloads: `Panic(code)` bytes, `EvsDecodeError(site)` ids, callee reverts bubbled
   verbatim, and `tryCall` zeroing.
 
+The same corpus gates the dead-code elimination pass `compile()` runs
+([How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)): for every script,
+`interpret(script.ir)`, `interpret(eliminateDeadCode(script.ir))` and the compiled bytecode must
+agree byte for byte, the pass output must re-validate, and applying the pass twice must be a
+no-op.
+
 A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
 actually CREATEd and called from a wrapper address, and `interpret()` with matching
 environment overrides must agree byte-exactly — so the frame-dependence of

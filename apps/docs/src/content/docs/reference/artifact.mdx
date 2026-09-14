@@ -365,6 +365,26 @@ serializeIr(ir) === json; // true — the round trip is byte-stable
 compile(script).ir === script.ir; // true — the artifact carries the same IR object
 ```
 
+The bytecode itself is lowered from `eliminateDeadCode(script.ir)` — the pass `compile()`
+runs on every compile (see [How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)).
+It is exported (alias `dce`) so you can inspect exactly what was compiled: same tables, same
+site ids, dead statements gone, and a fixpoint — applying it twice changes nothing.
+
+```ts
+import { compile, eliminateDeadCode, evscript, serializeIr, t } from '@maxencerb/evs';
+
+const script = evscript({ name: 'guarded', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  const unused = a.mul(b); // never read — dropped, its overflow check with it
+  void unused;
+  return s.return({ sum: a.add(b) });
+});
+
+const compiled = compile(script);
+const lowered = eliminateDeadCode(compiled.ir); // what the bytecode was lowered from
+lowered.values === compiled.ir.values; // true — the value table is never renumbered
+serializeIr(eliminateDeadCode(lowered)) === serializeIr(lowered); // true — idempotent
+```
+
 Stability notes:
 
 - The format is versioned: `irVersion: 1`. `deserializeIr` rejects any other version, and the

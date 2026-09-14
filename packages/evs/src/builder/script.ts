@@ -1034,8 +1034,8 @@ export interface ScriptBuilder<
   // string-element array an `Expr` of the element (the same {@link TupleArrayElemHandle}
   // dispatch as the `.at` augmentation; a plain `tuple` is a compile error, mirrored at record
   // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
-  // load is recorded only when the body declares `elem` (there is no DCE pass yet, #40 — an unconditional load
-  // would execute its bounds check + reads every iteration for nothing).
+  // load is always recorded; a body that never reads `elem` leaves it dead and the compile-time
+  // DCE pass (ir/dce.ts) drops it, bounds check included.
   forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
     array: Expr<C>,
     body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,

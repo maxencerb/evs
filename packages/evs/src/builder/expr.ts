@@ -2338,13 +2338,10 @@ export class Recorder {
     const lenId = this.lenId(c.id, loc, 's.forEach(…) length');
     const cellId = this.makeCell('uint256', 0, loc);
     const stepId = this.wordConst('uint256', 1n, loc);
-    // the element load is recorded only when the body declares `elem` — there is no DCE pass yet (#40), so an
-    // unconditional load would execute its bounds check + reads every iteration for nothing
-    const wantsElem = bodyFn.length >= 1;
+    // the element load is recorded unconditionally; when the body never reads `elem` the
+    // compile-time DCE pass (ir/dce.ts) drops it, bounds check included
     this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
-      const elem = wantsElem
-        ? this.indexElem(c.id, elemTy, iId, loc, 's.forEach(…) element')
-        : undefined;
+      const elem = this.indexElem(c.id, elemTy, iId, loc, 's.forEach(…) element');
       unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
     });
   }

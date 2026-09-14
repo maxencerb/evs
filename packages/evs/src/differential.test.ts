@@ -40,8 +40,10 @@ import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
 import { namedArg, t, type Expr, type Hex, type NumericType } from './core/types.js';
+import { eliminateDeadCode } from './ir/dce.js';
 import { interpret, type MockChain } from './ir/interp.js';
-import type { ScriptIr } from './ir/nodes.js';
+import { serializeIr, type ScriptIr } from './ir/nodes.js';
+import { validateIr } from './ir/validate.js';
 
 // ---------------------------------------------------------------------------
 // shared callee table → (MockChain, EvmFixture) — the same table feeds both legs
@@ -175,7 +177,14 @@ async function expectAgreement(
   table: CalleeTable = {},
   evmVersion: EvmVersion = 'cancun',
 ): Promise<Outcome[]> {
+  // compile() lowers dce(ir) (issue #40): the corpus therefore also gates the DCE pass —
+  // interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir)) — plus idempotence and validity.
   const compiled: CompiledEvsScript = compile(script, { evmVersion });
+  const optimized = eliminateDeadCode(script.ir);
+  expect(() => validateIr(optimized), `${script.name}: dce output validates`).not.toThrow();
+  expect(serializeIr(eliminateDeadCode(optimized)), `${script.name}: dce idempotence`).toBe(
+    serializeIr(optimized),
+  );
   const fixture = fixtureOf(table);
   const chain = chainOf(table);
   const outcomes: Outcome[] = [];
@@ -183,6 +192,9 @@ async function expectAgreement(
     const label = `${script.name}(${args.map(String).join(', ')}) [${evmVersion}]`;
     const calldata = encodeFunctionData({ abi: compiled.abi, functionName: script.name, args });
     const fromInterp = interpret(script.ir, args, chain).outcome;
+    const fromDce = interpret(optimized, args, chain).outcome;
+    expect(fromDce.kind, `${label}: dce interp outcome`).toBe(fromInterp.kind);
+    expect(fromDce.data, `${label}: dce interp payload`).toBe(fromInterp.data);
     // oxlint-disable-next-line no-await-in-loop -- sequential by design: deterministic per-case labels
     const fromEvm = await execRuntime(compiled.runtimeBytecode, calldata, fixture);
     expect(fromEvm.success, `${label}: interp outcome is '${fromInterp.kind}'`).toBe(

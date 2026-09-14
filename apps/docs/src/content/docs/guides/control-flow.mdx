@@ -213,7 +213,9 @@ read-only `Expr` each iteration.
 `s.forEach(array, (elem, i, loop) => { ... })` iterates an array value directly — no manual
 `until: array.length()` + `array.at(i)` pairing. The body receives the current element, the
 `uint256` index, and the usual `LoopCtl`; the array's length is snapshot once before the loop,
-and each element read is the same bounds-checked `array.at(i)`:
+and each element read is the same bounds-checked `array.at(i)`. A body that never uses `elem`
+(`s.forEach(xs, () => { ... })`) costs nothing for it: the unused element load is dead code and
+`compile()` removes it (see [How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)).
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

@@ -1,9 +1,10 @@
 /**
  * `compile.ts` — pipeline orchestration:
  *
- *   validateIr → lowerProgram → peephole (user hook) → assemble(verify: jumpdests, stack,
- *   shapes) → EIP-170 check (per-region breakdown via labelNames) → merge sites into the
- *   sourceMap → build the artifact.
+ *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates) →
+ *   peephole (user hook) → assemble(verify: jumpdests, stack, shapes) → EIP-170 check
+ *   (per-region breakdown via labelNames) → merge sites into the sourceMap → build the
+ *   artifact.
  *
  * Diagnostics from lowering are forwarded to `options.onDiagnostic`; nothing is ever logged.
  * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
@@ -34,7 +35,9 @@ import {
   type SourceLoc,
 } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
+import { eliminateDeadCode } from './ir/dce.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
+import { validateIr } from './ir/validate.js';
 import {
   DEFAULT_SCRIPT_ADDRESS,
   toCreationBytecode,
@@ -64,7 +67,7 @@ export interface CompiledEvsScript<
   readonly runtimeBytecode: Hex; // ≤ 24,576 bytes (EIP-170), enforced
   readonly initBytecode: Hex; // 61RRRR80600A5F395FF3 ++ runtime (paris: 5F→3D)
   readonly sourceMap: SourceMap;
-  readonly ir: ScriptIr;
+  readonly ir: ScriptIr; // the recorded IR (same object as script.ir); bytecode is lowered from eliminateDeadCode(ir)
   readonly options: Readonly<Required<CompileOptions>>;
   toViem(): { abi: ScriptAbi<name, args, ret, errs>; code: Hex }; // deployless (default)
   toViem(o: { mode: 'deployless' }): { abi: ScriptAbi<name, args, ret, errs>; code: Hex };
@@ -175,8 +178,11 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   const resolved = resolveOptions(options);
   const ir = script.ir;
 
-  // lowerProgram runs validateIr as its first step — no separate validation pass here.
-  const lowered = lowerProgram(ir, {
+  // validateIr → dead-code elimination (ir/dce.ts, always on: it only drops pure work whose
+  // result nothing observable reads) → lowerProgram, which re-validates the DCE output as a
+  // self-check of the pass. The artifact keeps exposing the recorded `script.ir` unchanged.
+  validateIr(ir);
+  const lowered = lowerProgram(eliminateDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     locations: resolved.locations,
   });
