@@ -14,8 +14,8 @@
   },
   "dependencies": {
     "@astrojs/starlight": "catalog:docs",
+    "@expressive-code/plugin-collapsible-sections": "catalog:docs",
     "astro": "catalog:docs",
-    "expressive-code-twoslash": "catalog:docs",
     "monaco-editor": "catalog:docs",
     "starlight-links-validator": "catalog:docs",
     "starlight-llms-txt": "catalog:docs",

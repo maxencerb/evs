@@ -23,10 +23,9 @@ hero:
 
 import { Card, CardGrid } from '@astrojs/starlight/components';
 
-```ts twoslash
+```ts collapse={3-11}
 import { evscript, t, compile } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
-// ---cut-start---
 const poolAbi = [
   {
     type: 'function',
@@ -36,12 +35,11 @@ const poolAbi = [
     outputs: [{ name: '', type: 'address' }],
   },
 ] as const;
-// ---cut-end---
 // Two DEPENDENT reads, one eth_call: the second call's target IS the first
 // call's result — a chain multicall can't batch (it needs every address up front).
 const poolToken0 = evscript({ name: 'poolToken0', args: [t.address] }, (s, pool) => {
   const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
-  //    ^?
+  //    ^? Expr<'address'> — a runtime value, and the next call's target
   const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
   return s.return({ token0, symbol });
 });

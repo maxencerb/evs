@@ -1,7 +1,7 @@
 // @ts-check
 import starlight from '@astrojs/starlight';
+import { pluginCollapsibleSections } from '@expressive-code/plugin-collapsible-sections';
 import { defineConfig } from 'astro/config';
-import ecTwoSlash from 'expressive-code-twoslash';
 import starlightLinksValidator from 'starlight-links-validator';
 import starlightLlmsTxt from 'starlight-llms-txt';
 import starlightThemeRapide from 'starlight-theme-rapide';
@@ -20,18 +20,11 @@ export default defineConfig({
         { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/@maxencerb/evs' },
       ],
       editLink: { baseUrl: 'https://github.com/maxencerb/evs/edit/main/apps/docs/' },
-      // Twoslash renders real type-on-hover + inline errors for ```ts twoslash fences
-      // (issue #13). The plain ```ts fences stay untouched (explicitTrigger) so the
-      // bulk of the snippet-gate-checked examples are unaffected. We use the plugin's
-      // default compiler options (it resolves @maxencerb/evs + viem from this package's
-      // node_modules); every twoslash fence is ALSO checked by the stricter snippet gate
-      // (scripts/check-snippets.ts), so a fence that twoslashes is a valid standalone
-      // module and vice versa.
-      expressiveCode: {
-        // explicitTrigger (default true) keeps Twoslash to ```ts twoslash fences only, so the
-        // ~100 plain ```ts snippets are untouched by it (the snippet gate still checks them all).
-        plugins: [ecTwoSlash({ instanceConfigs: { twoslash: { explicitTrigger: true } } })],
-      },
+      // `collapse={a-b}` fence meta folds boilerplate (long ABIs) behind a "N collapsed lines"
+      // toggle; the snippet gate (scripts/check-snippets.ts) still typechecks the whole fence.
+      // (Twoslash type-on-hover was dropped on 2026-09-14: ~30s of the Cloudflare build for six
+      // fences — inferred types are written out as comments instead.)
+      expressiveCode: { plugins: [pluginCollapsibleSections()] },
       plugins: [
         starlightThemeRapide(),
         // /llms.txt + /llms-full.txt for LLM ingestion (issue #14); code fences kept intact.
