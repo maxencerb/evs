@@ -1,8 +1,8 @@
 /**
  * M4 `asm/ops.ts` — the opcode table for everything evs emits, plus the forbidden-byte set.
  *
- * Contract: docs/design/module-interfaces.md §M4 (frozen). Every entry is verified against
- * docs/research/evm-target.md §2 (hex code, stack in/out, fork gating). `since` is relative to
+ * Every entry carries hex code, stack in/out and fork gating, verified against the EVM opcode
+ * reference. `since` is relative to
  * the compiler's fork floor (`paris`): everything older than paris is recorded as `'frontier'`
  * (universally available); `PUSH0` is `'shanghai'` (EIP-3855) and `MCOPY` is `'cancun'`
  * (EIP-5656).
@@ -37,7 +37,7 @@ export interface OpInfo {
   readonly since: EvmVersion | 'frontier';
 }
 
-/** Exactly evm-target §2 — codes, stack in/out, and fork gating for every emitted opcode. */
+/** Codes, stack in/out, and fork gating for every emitted opcode. */
 export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   STOP: { code: 0x00, pops: 0, pushes: 0, since: 'frontier' },
   ADD: { code: 0x01, pops: 2, pushes: 1, since: 'frontier' },
@@ -166,11 +166,11 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
 } satisfies Record<Mnemonic, OpInfo>);
 
 /**
- * Bytes that must never appear as opcodes in evs output (architecture §10 shape lint):
+ * Bytes that must never appear as opcodes in evs output (the verifier's shape lint):
  * SLOAD, SSTORE, TLOAD, TSTORE, LOG0–LOG4, CREATE, CALLCODE, DELEGATECALL, CREATE2,
  * SELFDESTRUCT. Scripts never read/write their own storage (SLOAD/SSTORE are allowed nowhere in
  * v0). `CALL` (0xf1) was removed from this set by issue #1 — it is emitted ONLY by the
- * `s.call`/`s.simulate` mutable-call surface (architecture §7); the verifier still rejects every
+ * `s.call`/`s.simulate` mutable-call surface; the verifier still rejects every
  * frame-escaping or state-persisting opcode below.
  */
 export const FORBIDDEN: ReadonlySet<number> = new Set([

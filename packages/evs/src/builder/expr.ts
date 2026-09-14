@@ -1,9 +1,8 @@
 /**
  * M5 `builder/expr.ts` — the module-private recording engine.
  *
- * Contract: docs/design/module-interfaces.md §M5 (implementation invariants 1–7, binding) +
- * architecture.md §3 (value semantics, scope rule, staging traps, constant folding) +
- * api.md §3–§9. This file has no frozen exports of its own — the public surface lives in
+ * Implements the builder's recording invariants (value semantics, scope rule, staging traps,
+ * constant folding). This file has no frozen exports of its own — the public surface lives in
  * `builder/script.ts`; everything here is internal to the builder module.
  *
  * Key mechanisms:
@@ -20,7 +19,7 @@
  *   documented escape hatch (route one operand through a cell).
  */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the frozen IR schema names the if-statement branch field `then`. */
 
 import type { AbiFunction } from 'abitype';
 
@@ -126,7 +125,7 @@ type ScopeKind = 'main' | 'if-then' | 'if-else' | 'while-header' | 'while-body' 
 interface Scope {
   readonly kind: ScopeKind;
   readonly stmts: Stmt[];
-  /** per-scope `(kind:type:hex) → ValueId` const-dedup cache (architecture §4) */
+  /** per-scope `(kind:type:hex) → ValueId` const-dedup cache */
   readonly consts: Map<string, ValueId>;
 }
 
@@ -201,7 +200,7 @@ function rangeOf(type: WordType): readonly [bigint, bigint] {
   return [0n, (1n << bits) - 1n];
 }
 
-/** canonical 32-byte slot image of a logical value (architecture §5). */
+/** canonical 32-byte slot image of a logical value. */
 function canonicalHex(type: WordType, logical: bigint): Hex {
   const MASK_256 = (1n << 256n) - 1n;
   let x: bigint;
@@ -605,7 +604,7 @@ function arrInternalsOf(h: object): ArrInternals {
 }
 
 // ---------------------------------------------------------------------------
-// Tuple / Field handles (composite memrefs — architecture §5; api.md §5)
+// Tuple / Field handles (composite memrefs)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1064,7 +1063,7 @@ export class Recorder {
     return id;
   }
 
-  /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal rules of api.md §3). */
+  /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal coercion rules). */
   private coerceToId(v: unknown, type: EvsType, what: string, loc: SourceLoc | null): ValueId {
     // a tuple (NOT tuple-array) target: a Tuple handle (reuse its ValueId — reference) or a literal
     // struct object (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field
@@ -2238,7 +2237,7 @@ export class Recorder {
         loc,
       });
     }
-    // the loop cell + the ONE-TIME snapshots of `until` and `step` (api.md §7)
+    // the loop cell + the ONE-TIME snapshots of `until` and `step`
     const cellId = this.makeCell(ty, r.from, loc);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until', loc);
     const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step', loc);
@@ -2288,7 +2287,7 @@ export class Recorder {
   /**
    * The shared counter-loop core of `s.for` / `s.forEach`: an internal cell, `i < until` in
    * the loop header, and the step recorded before every `continue` and once at the natural end
-   * of the body — continue() must execute the step first (api.md §5: "for-loops: to the step").
+   * of the body — continue() must execute the step first (for-loops continue to the step).
    */
   private counterLoop(
     ty: StringType,
@@ -2751,9 +2750,9 @@ export class Recorder {
       index === null ? `s.fn("${fnName}") result` : `s.fn("${fnName}") result [${index}]`;
     // a Tuple / MutArray handle is returnable from a fn body DIRECTLY (composite/array result —
     // issue #5 ask #1): return its ValueId verbatim (byte-identical to `.expr()`) after owner +
-    // visibility checks. The fncall result is a single pointer word (architecture §5/§9), so the
-    // IR/codegen/validate layers carry it unchanged. classify() (below) still rejects these handles
-    // on the arithmetic paths with the "use .expr()" message.
+    // visibility checks. The fncall result is a single pointer word, so the IR/codegen/validate
+    // layers carry it unchanged. classify() (below) still rejects these handles on the arithmetic
+    // paths with the "use .expr()" message.
     const bare = this.bareHandleId(v, what, loc);
     if (bare !== null) return bare;
     const c = this.classify(v, what, loc);

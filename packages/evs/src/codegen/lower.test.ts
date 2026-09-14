@@ -1,9 +1,9 @@
 /**
  * M8 unit tests — `codegen/lower.ts` statement templates, executed on the M10 harness.
  *
- * - checked-op boundary matrix (architecture §6, NORMATIVE): for every width class,
+ * - checked-op boundary matrix: for every width class,
  *   `{0, 1, max−1, max, min, −1}` operands × {add,sub,mul,div,mod} against a bigint
- *   reference of the spec table, asserting exact `Panic(code)` payloads — including the
+ *   reference of the checked-op table, asserting exact `Panic(code)` payloads — including the
  *   uint192 mul wrap-past-2^256 case (`2^191 × (2^65+1)`), `int256 −2^255 / −1`, the
  *   int256 mul sdiv-back blind spot (`−1 × −2^255`) and `intN minN / −1`;
  * - comparisons (signed vs unsigned), bool logic, bitwise + shift canonicalization;
@@ -325,7 +325,7 @@ async function run(
   return execRuntime(compileIr(ir, evmVersion), calldataFor(ir, args), fixture);
 }
 
-/** Expected returndata: the §8.2 single named tuple (byte-identical to viem's encoder). Each
+/** Expected returndata: the single named tuple (byte-identical to viem's encoder). Each
  *  component type is a plain ABI type string (these tests are word/string/array only). */
 function tupleHex(
   components: readonly { name: string; type: string }[],
@@ -354,7 +354,7 @@ function fnAbi(
 const TARGET = '0x00000000000000000000000000000000000000aa' as const;
 
 // ---------------------------------------------------------------------------
-// checked arithmetic — boundary matrix (architecture §6)
+// checked arithmetic — boundary matrix
 // ---------------------------------------------------------------------------
 
 interface WidthClass {
@@ -389,7 +389,7 @@ function operandsOf(c: WidthClass): readonly bigint[] {
   return c.signed ? [min, -1n, 0n, 1n, max] : [0n, 1n, max - 1n, max];
 }
 
-/** bigint reference of the §6 checked-op table (solc ≥0.8 semantics). */
+/** bigint reference of the checked-op table (solc ≥0.8 semantics). */
 function refArith(op: ArithOp, c: WidthClass, a: bigint, b: bigint): bigint | number {
   const { min, max } = rangeOf(c);
   const check = (r: bigint): bigint | number => (r < min || r > max ? 0x11 : r);
@@ -565,7 +565,7 @@ describe('comparisons and logic', () => {
 });
 
 // ---------------------------------------------------------------------------
-// bitwise + shifts (canonical word invariant §5)
+// bitwise + shifts (canonical word invariant)
 // ---------------------------------------------------------------------------
 
 describe('bitwise and shifts', () => {
@@ -630,7 +630,7 @@ describe('bitwise and shifts', () => {
 });
 
 // ---------------------------------------------------------------------------
-// convert (§6: free widening / checked narrowing / cross-sign / asAddress / reinterpret)
+// convert (free widening / checked narrowing / cross-sign / asAddress / reinterpret)
 // ---------------------------------------------------------------------------
 
 describe('convert', () => {
@@ -797,7 +797,7 @@ describe('select and arrays', () => {
 // ---------------------------------------------------------------------------
 
 describe('control flow', () => {
-  /** §15.3: sum 0..n−1 with cells. */
+  /** while-loop worked example: sum 0..n−1 with cells. */
   function sumScript(): ScriptIr {
     const b = new IrB('sum', [['n', 'uint256']]);
     const zero = b.word('uint256', 0n);
@@ -886,7 +886,7 @@ describe('control flow', () => {
 });
 
 // ---------------------------------------------------------------------------
-// fncall (architecture §9)
+// fncall
 // ---------------------------------------------------------------------------
 
 describe('fncall', () => {

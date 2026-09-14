@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the anvil integration tier (testing.md §3).
+ * Shared helpers for the anvil integration tier.
  *
  * One anvil per vitest worker via the prool proxy (`harness/anvil.ts`). Files in a worker
  * run serially, so per-file deployments never race nonces.

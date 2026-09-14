@@ -1,5 +1,5 @@
 /**
- * testing.md §4.3: checked arithmetic vs solc — the reference contract differential.
+ * Checked arithmetic vs solc — the reference contract differential.
  *
  * For every EvsReference function (op × width class), the deployed solc 0.8.30 contract and
  * the equivalent evs script are driven with the same seeded boundary corpus; success values
@@ -53,7 +53,7 @@ function operandCorpus(c: Case): [bigint, bigint][] {
   if (c.signed) {
     pairs.push([min, -1n], [-1n, min], [min, 1n], [-1n, -1n], [min, min]);
   }
-  // The testing.md §4.3 named wrap-back cases, on their specific width classes:
+  // The named wrap-back cases, on their specific width classes:
   if (!c.signed && c.bits === 192n && c.op === 'mul') pairs.push([1n << 191n, (1n << 65n) + 1n]);
   if (c.signed && c.bits === 256n && c.op === 'div') pairs.push([-(1n << 255n), -1n]);
   if (c.signed && c.bits === 8n && c.op === 'div') pairs.push([-128n, -1n]);
@@ -92,7 +92,7 @@ describe('checked math: evs vs solc 0.8.30 (EvsReference)', () => {
   test.each(CASES)('$fn', async (c) => {
     const ty = `${c.signed ? 'int' : 'uint'}${c.bits}` as EvsType;
     // Width is dynamic over the matrix, so the script is built with widened types on
-    // purpose (graceful-widening path, api.md §3); runtime IR validation sees the real type.
+    // purpose (graceful-widening path); runtime IR validation sees the real type.
     const script = evscript({ name: c.fn, args: [ty as 'uint256', ty as 'uint256'] }, (s, a, b) =>
       s.return({ r: s[c.op](a, b) }),
     );

@@ -11,8 +11,8 @@ viem inference.
   release flow, docs-site deploy settings. Keep it accurate when you change any of those.
 - `apps/docs/src/content/docs/**` — the user documentation site (evs.maxencerb.com).
 - The former `docs/design/**` / `docs/research/**` design and research documents were
-  **retired on 2026-09-14** (folded into the README). Code comments that still cite
-  `docs/design/<file> §N` refer to git history before that date — the code is the truth.
+  **retired on 2026-09-14** (essentials folded into the README, citations swept from code
+  comments). Do not add references to them; the code and the README are the truth.
 
 ## Toolchain: Vite+ (`vp`) on top of Bun
 

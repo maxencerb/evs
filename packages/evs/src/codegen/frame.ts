@@ -1,14 +1,12 @@
 /**
- * M8 `codegen/frame.ts` — static frame layout (architecture §5).
- *
- * Contract: docs/design/module-interfaces.md §M8 (frozen) + architecture.md §5 (memory model).
+ * M8 `codegen/frame.ts` — static frame layout.
  *
  * Every arg, cell, value and fn param/result gets one 32-byte slot in the static frame
  * starting at `0x80`; statement templates load operands (`PUSH slot MLOAD` / `PUSH const`),
  * compute, and `MSTORE` the result. No slot reuse, no liveness — `FrameLayout` is the
  * pluggable seam for a liveness-based allocator later.
  *
- * Slot order (deterministic, mirrors the worked example in architecture §15.3):
+ * Slot order (deterministic):
  *   1. script args — ValueIds `0 … args.length−1` (the positional binding `ir/validate.ts`
  *      pins);
  *   2. cells, in CellId order;
@@ -22,7 +20,7 @@
  *      runs at stack baseline 0).
  *
  * Values, params and results of *uncalled* fns get no slots (uncalled fns are dropped from
- * the emitted program — architecture §9); querying them is a compiler bug and throws.
+ * the emitted program); querying them is a compiler bug and throws.
  */
 
 import { EvsInternalError } from '../core/errors.js';
@@ -42,7 +40,7 @@ export interface FrameLayout {
   frameEnd: number; // 0x80 + 32 × slotCount, ceil to 32
 }
 
-/** Start of the static frame (architecture §5 memory map). */
+/** Start of the static frame (just above the `0x60` zero slot). */
 const FRAME_BASE = 0x80;
 const SLOT_BYTES = 32;
 

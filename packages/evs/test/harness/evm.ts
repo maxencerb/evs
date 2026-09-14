@@ -1,13 +1,12 @@
 /**
  * M10 `test/harness/evm.ts` — in-process EVM execution harness (unit tier).
  *
- * Contract: docs/design/module-interfaces.md §M10 (frozen `execRuntime` signature) +
- * docs/design/testing.md §2. Runs compiled script runtime bytecode on `@ethereumjs/evm`
+ * Frozen `execRuntime` signature. Runs compiled script runtime bytecode on `@ethereumjs/evm`
  * (v10, catalog-pinned): the runtime is planted at a fixed SCRIPT address, fixture mocks
  * are planted at their own addresses (STATICCALL targets), and the call is executed with
- * `evm.runCall`. Default gas limit: 30,000,000 (anvil parity worst case, evm-target §4).
+ * `evm.runCall`. Default gas limit: 30,000,000 (anvil parity worst case).
  *
- * Resolved v10 API names (design open risk, resolved against the installed 10.1.2):
+ * Resolved v10 API names (resolved against the installed 10.1.2):
  * - `createEVM(opts?)` async constructor (`@ethereumjs/evm` `constructors.ts`); defaults to
  *   `new Common({ chain: Mainnet })` (default hardfork **Prague** — matches the pinned anvil
  *   hardfork of the integration tier) and a `SimpleStateManager`.
@@ -40,16 +39,16 @@ export const CALLER_ADDRESS: Address = '0x10000000000000000000000000000000000000
 /**
  * Stand-in for viem's deployless wrapper contract: `execRuntimeDeployless` CREATEs the
  * initBytecode from this address and then CALLs the created contract from it — the same
- * frame shape viem's `code` path produces (research/viem-integration.md §1.3/§3.1), where
+ * frame shape viem's `code` path produces, where
  * the script's `msg.sender` is the wrapper and `address(this)` is a created address.
  */
 export const DEPLOYLESS_WRAPPER_ADDRESS: Address = '0x2222222222222222222222222222222222222222';
 
-/** Default gas limit: 30M — anvil's eth_call default, the parity worst case (evm §4). */
+/** Default gas limit: 30M — anvil's eth_call default, the parity worst case. */
 export const DEFAULT_GAS_LIMIT = 30_000_000n;
 
 // ---------------------------------------------------------------------------
-// frozen interface (module-interfaces §M10)
+// frozen interface
 // ---------------------------------------------------------------------------
 
 export interface EvmFixture {
@@ -89,7 +88,7 @@ export async function execRuntime(
 }
 
 /**
- * Deployless-frame variant (NOT part of the frozen §M10 surface — see amendments): models
+ * Deployless-frame variant (NOT part of the frozen `execRuntime` surface): models
  * viem's default `toViem()` mode, which CREATE2-deploys the initBytecode and CALLs the fresh
  * contract from its wrapper. Here: CREATE(initBytecode) from `DEPLOYLESS_WRAPPER_ADDRESS`,
  * then CALL the created contract from the same address. The script therefore observes

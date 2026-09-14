@@ -1,5 +1,5 @@
 /**
- * Composite-types end-to-end integration (spec §9, testing.md §3/§7).
+ * Composite-types end-to-end integration.
  *
  * Runs builder-compiled read scripts against a REAL solc-0.8.30 `Composite` deployment on
  * anvil — the byte-exact differential oracle already proves codec parity, this tier proves
@@ -377,7 +377,7 @@ describe('composite arrays (read path) against real solc getters', () => {
 // --- composite arrays RETURN PATH: real-solc getters → return the WHOLE array -------------
 //
 // Each compiled evs script eth_calls a composite-array getter on the REAL deployment and returns
-// the WHOLE decoded array (§12.7 encode). The solc-derived ground truth is the SAME getter read
+// the WHOLE decoded array (array encode). The solc-derived ground truth is the SAME getter read
 // directly through viem; the evs-script result must deep-equal it across all three toViem paths.
 
 /** Loose returnable handle: a composite-array call output is an Expr at runtime (precise inference
@@ -495,7 +495,7 @@ describe('composite arrays (return path) against real solc getters', () => {
   });
 });
 
-// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc (§12.7/§12.8 M4) -------
+// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc (M4) -------------------
 //
 // (1) CONSTRUCT a Position[] inside the evs script (s.newArray + s.tuple + arrset), pass it as a
 //     CALL ARG to sumLiquidity(Position[]) on the real deployment, and assert the returned sum

@@ -1,5 +1,5 @@
 /**
- * testing.md §4.4: `s.encode` / `s.encodePacked` / `s.keccak256` vs solc — the on-chain
+ * `s.encode` / `s.encodePacked` / `s.keccak256` vs solc — the on-chain
  * differential (issue #17).
  *
  * For every EvsReference encode/hash function, the deployed solc 0.8.30 contract and the

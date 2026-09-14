@@ -1,5 +1,5 @@
 /**
- * M5 `builder/args.ts` — re-exports the `namedArg()`/`t` wiring (module-interfaces §M5).
+ * M5 `builder/args.ts` — re-exports the `namedArg()`/`t` wiring.
  *
  * The declarators themselves live in `core/types.ts` (single source of truth); this module
  * exists so the builder package-internally owns the user-facing args surface.

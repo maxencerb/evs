@@ -1,7 +1,7 @@
 /**
- * testing.md §7 — the flagship end-to-end release gate.
+ * The flagship end-to-end release gate.
  *
- * E1 `poolMeta` (api.md §11) against MockUniV3Pool + two MockERC20s through ALL THREE
+ * E1 `poolMeta` against MockUniV3Pool + two MockERC20s through ALL THREE
  * execution paths with full type inference; E2 `balances` over 50 tokens (loop + dynamic
  * arg + MutArray); then the failure half: EOA pool → decode error naming the originating
  * s.call, Malformed token → EvsDecodeError(site).
@@ -15,7 +15,7 @@ import { Malformed, MockERC20, MockUniV3Pool } from '../generated/index.js';
 import { publicClient, testClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 
-// --- E1: flagship pool metadata script (api.md §11 E1, verbatim semantics) ---------------
+// --- E1: flagship pool metadata script ---------------------------------------------------
 
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {
   const token0 = s.read({ address: pool, abi: MockUniV3Pool.abi, functionName: 'token0' });
@@ -84,7 +84,7 @@ describe('E1 poolMeta through all three paths', () => {
     });
     expect(out).toStrictEqual(expected());
 
-    // Full inference, pinned at the type level (testing.md §7): int24 → number,
+    // Full inference, pinned at the type level: int24 → number,
     // uint8-backed select → number, balance → bigint, strings, addresses.
     expectTypeOf(out).toEqualTypeOf<{
       token0: `0x${string}`;
@@ -120,7 +120,7 @@ describe('E1 poolMeta through all three paths', () => {
   });
 });
 
-// --- E2: batch balances over 50 tokens (api.md §11 E2) -----------------------------------
+// --- E2: batch balances over 50 tokens ---------------------------------------------------
 
 const balances = evscript(
   { name: 'balances', args: [t.array(t.address), t.address] },
@@ -181,7 +181,7 @@ describe('E2 balances over 50 tokens (multicall replacement)', () => {
   });
 });
 
-// --- Failure half (testing.md §7) ---------------------------------------------------------
+// --- Failure half -------------------------------------------------------------------------
 
 describe('failure half: explainRevert names the originating call', () => {
   test('EOA as pool → decode error at the token0 call site', async () => {

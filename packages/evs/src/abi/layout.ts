@@ -1,10 +1,10 @@
 /**
  * M3 `abi/layout.ts` — type layouts over v0 ABI type strings / `PlainAbiParam` trees.
  *
- * Contract: docs/design/module-interfaces.md §M3 (frozen) + architecture.md §5 (memory model,
- * canonical word invariant) and §8 (head/tail shapes). v0-limited (no tuples, no `T[N]`, no
- * nested arrays) but recursion-ready: `headBytes` walks `PlainAbiParam` trees and the layout
- * union has room for a future `tuple` member without reshaping the existing ones.
+ * Implements the memory model (canonical word invariant) and the ABI head/tail shapes.
+ * v0-limited (no tuples, no `T[N]`, no nested arrays) but recursion-ready: `headBytes` walks
+ * `PlainAbiParam` trees and the layout union has room for a future `tuple` member without
+ * reshaping the existing ones.
  */
 
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
@@ -39,10 +39,10 @@ export type TypeLayout =
   // word-element array (composite elements throw `UNSUPPORTED_V0`), so every codegen consumer that
   // assumes `elem.kind === 'word'` is still correct at runtime.
   | { kind: 'array'; abi: string; elem: TypeLayout }
-  // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is
-  // (architecture.md §5). `components` are the member layouts in declaration order; `abi` carries
-  // the tuple tag (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`,
-  // which is the only entry that handles the {@link TupleType} descriptor object.
+  // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is.
+  // `components` are the member layouts in declaration order; `abi` carries the tuple tag
+  // (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`, which is
+  // the only entry that handles the {@link TupleType} descriptor object.
   | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
 
 function wordLayoutOf(abi: WordType): WordLayout {
@@ -191,7 +191,7 @@ function layoutToParam(l: TypeLayout): PlainAbiParam {
 }
 
 /**
- * Size in bytes of the ABI head for `params` (architecture §8). Each param occupies one 32-byte
+ * Size in bytes of the ABI head for `params`. Each param occupies one 32-byte
  * head slot UNLESS it is a *static* tuple — an all-static inner tuple is inlined into the head as
  * its own components' head (no offset pointer), so it occupies `headBytes(components)` bytes. A
  * dynamic param (word-dynamic or a dynamic tuple) is a single offset-pointer slot. Each type is

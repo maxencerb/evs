@@ -1,7 +1,7 @@
 /**
- * M7 unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per
- * evm-target §5, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts (architecture
- * §11/§15.0), and the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`.
+ * M7 unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per solc's
+ * `Panic(uint256)` encoding, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts, and
+ * the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`.
  *
  * Everything assembles with full verification (jumpdests, stack heights, shapes) and runs on
  * the M10 in-process EVM harness.

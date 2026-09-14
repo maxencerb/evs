@@ -5,7 +5,7 @@
  * every test asserts through the expectEvs()/catchEvs() helpers (class + code + message + loc);
  * the rule only recognizes direct expect* calls. */
 /**
- * M5 unit tests — the recording-time validation checklist (module-interfaces §M5 invariant 5):
+ * M5 unit tests — the recording-time validation checklist:
  * every item asserts the error class, the error code, a message substring, AND the loc
  * (pointing into this file). Plus staging traps, foreign/cross-scope handles, and LoopCtl
  * scoping.

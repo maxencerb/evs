@@ -2,7 +2,6 @@
  * M5 `builder/script.ts` — the public builder surface: `evscript`, `EvsScript`,
  * `ScriptBuilder`, `Cell`, `MutArray`, `LoopCtl`, `ScriptReturn`.
  *
- * Contract: docs/design/module-interfaces.md §M5 (frozen signatures) + api.md §1/§4–§9.
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
  * in `builder/expr.ts`; this file owns the frozen types and wires the typed facade onto it.
  */
@@ -50,7 +49,7 @@ import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
 import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
 
 // ---------------------------------------------------------------------------
-// entry point (api.md §1)
+// entry point
 // ---------------------------------------------------------------------------
 
 export interface EvsScript<
@@ -405,7 +404,7 @@ export function evscript<
 }
 
 // ---------------------------------------------------------------------------
-// cells, mutable arrays, loop control (api.md §5)
+// cells, mutable arrays, loop control
 // ---------------------------------------------------------------------------
 
 export interface Cell<t extends EvsType> {
@@ -453,7 +452,7 @@ export interface LoopCtl {
 }
 
 // ---------------------------------------------------------------------------
-// tuple / struct handles (api.md §5; spec §5)
+// tuple / struct handles
 // ---------------------------------------------------------------------------
 
 /**
@@ -514,7 +513,7 @@ export interface Field<t extends EvsType> {
  * component name yields a {@link Field} over that member; `at(i)` is the positional accessor; and
  * `expr()` is the raw memref {@link Expr} (for returning the tuple or passing it as a call arg).
  * Typed via abitype over `C['components']`. Reference semantics: the handle is the pointer, so a
- * later `field.set()` is visible through every alias (api.md §5).
+ * later `field.set()` is visible through every alias.
  */
 export type Tuple<C extends TupleType> = {
   readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]: Field<
@@ -653,14 +652,14 @@ export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
 }
 
 // ---------------------------------------------------------------------------
-// env (api.md §4)
+// env
 // ---------------------------------------------------------------------------
 
 export type EnvKind = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
 export type EnvTypeOf<k extends EnvKind> = k extends 'address' | 'caller' ? 'address' : 'uint256';
 
 // ---------------------------------------------------------------------------
-// calls (api.md §6)
+// calls
 // ---------------------------------------------------------------------------
 
 /**
@@ -836,7 +835,7 @@ export type WriteVerb = SubcallVerb<WriteMutability>;
 export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
 
 // ---------------------------------------------------------------------------
-// user functions (api.md §8)
+// user functions
 // ---------------------------------------------------------------------------
 
 /**
@@ -902,7 +901,7 @@ export type EvsFn<
 ) => RebuildExprs<r>;
 
 // ---------------------------------------------------------------------------
-// the builder (api.md §4 — full surface)
+// the builder (full surface)
 // ---------------------------------------------------------------------------
 
 export interface ScriptBuilder<
@@ -947,7 +946,7 @@ export interface ScriptBuilder<
   shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
   shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
 
-  // ABI encoding + hashing (issue #17, amended by #24; api.md §4.1). `keccak256` hashes the
+  // ABI encoding + hashing (issue #17, amended by #24). `keccak256` hashes the
   // STANDARD encoding — `keccak256(abi.encode(...))` — of any encodable values (a single
   // bytes/string value is hashed directly, Solidity's `keccak256(bytes)`); the non-standard
   // packed hash is the explicit composition s.keccak256(s.encodePacked(…)).
@@ -955,7 +954,7 @@ export interface ScriptBuilder<
   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;
   keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>;
 
-  // control flow (combinators — api.md §7)
+  // control flow (combinators)
   if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
   while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
   // `range.type` is optional (issue #12): the first overload matches a type-less range and
@@ -991,7 +990,7 @@ export interface ScriptBuilder<
   ): void;
   select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
 
-  // calls (api.md §6) — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
+  // calls — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
   // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the
   // mutability bucket its `functionName`/arg/output handles are filtered by:
   //   read     / tryRead     → STATICCALL of view/pure          (the renamed frozen read surface)
@@ -1004,7 +1003,7 @@ export interface ScriptBuilder<
   simulate: WriteVerb;
   trySimulate: TryWriteVerb;
 
-  // functions (api.md §8) — `params` accepts the same shorthand as `evscript` args (issue #9): a
+  // functions — `params` accepts the same shorthand as `evscript` args (issue #9): a
   // bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing named/bare. Body params
   // are labeled by name; composite params stay a v0 deferral (rejected at record time).
   fn<const params extends ArgsInput, const r extends FnReturn>(
@@ -1020,7 +1019,7 @@ export interface ScriptBuilder<
   // recorded after an UNCONDITIONAL throw in the same block are dead in the emitted program.
   throw<const e extends errs[number]>(error: e, ...args: ThrowArgs<e>): void;
 
-  // return (api.md §9) — accepts an `Expr` OR a `Tuple` handle directly per component (the
+  // return — accepts an `Expr` OR a `Tuple` handle directly per component (the
   // `.expr()` on a tuple is optional; the bare handle returns the same memref).
   return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>;
 }
@@ -1100,7 +1099,7 @@ function makeBuilder(r: Recorder): ScriptBuilder {
 
     return: (values: unknown) => r.ret(values),
   };
-  // the facade implements the frozen api.md §4 surface; types are enforced at the surface,
+  // the facade implements the frozen `ScriptBuilder` surface; types are enforced at the surface,
   // the engine is dynamic
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
   return builder as unknown as ScriptBuilder;

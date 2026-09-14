@@ -1,8 +1,6 @@
 /**
  * M1 `core/loc.ts` — lazy source-location capture.
  *
- * Contract: docs/design/module-interfaces.md §M1 (frozen).
- *
  * `captureLoc()` eagerly stores `new Error().stack` (capture is the cheap part) and parses it
  * lazily on first property access — the returned `SourceLoc` fields are getters. Frames whose
  * filename is inside @maxencerb/evs (dist or src, or an installed copy under node_modules) are

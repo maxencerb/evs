@@ -1,7 +1,7 @@
 /**
- * M10 `test/harness/fixtures.ts` — hand-assembled bytecode fixtures (testing.md §2).
+ * M10 `test/harness/fixtures.ts` — hand-assembled bytecode fixtures.
  *
- * Seed corpus: the research fixtures from viem-integration Appendix A (`RUNTIME_42`,
+ * Seed corpus: the research seed fixtures (`RUNTIME_42`,
  * `RUNTIME_WHOAMI`, `RUNTIME_STATICCALL`), plus programmable returner/reverter builders and
  * the attacker-shaped returners used by the M7 decode-bounds suite (huge head offsets, huge
  * lengths, off-by-one truncations, dirty high bits, empty returndata).
@@ -16,7 +16,7 @@ import type { Hex } from '../../src/core/types.js';
 import { hexToBytes } from './evm.js';
 
 // ---------------------------------------------------------------------------
-// research seed corpus (viem-integration App. A, byte-for-byte)
+// research seed corpus (byte-for-byte)
 // ---------------------------------------------------------------------------
 
 /**
@@ -82,7 +82,7 @@ export const RUNTIME_STATICCALL: Hex =
 // ---------------------------------------------------------------------------
 
 /**
- * Echoes its full calldata back (sub-call arg-encoding differential, testing.md §4.2).
+ * Echoes its full calldata back (sub-call arg-encoding differential).
  *
  *   36      CALLDATASIZE
  *   5f      PUSH0
@@ -151,7 +151,7 @@ export function concatHex(...parts: readonly Hex[]): Hex {
 }
 
 // ---------------------------------------------------------------------------
-// attacker-shaped returners (decode-bounds suite seeds, testing.md §2)
+// attacker-shaped returners (decode-bounds suite seeds)
 // ---------------------------------------------------------------------------
 
 /**

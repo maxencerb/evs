@@ -60,7 +60,8 @@
     "publint": "^0.3.24",
     "typescript": "catalog:",
     "vite": "catalog:testing",
-    "vite-plus": "catalog:testing"
+    "vite-plus": "catalog:testing",
+    "wrangler": "catalog:docs"
   },
   "overrides": {
     "@expressive-code/core": "^0.44.2",

@@ -1,10 +1,9 @@
 /**
  * M6 `ir/interp.ts` — the reference interpreter over `ScriptIr` against a `MockChain`.
  *
- * Contract: docs/design/module-interfaces.md §M6 (frozen) + architecture.md §4 ("the
- * differential oracle"), §5 (canonical word invariant), §6 (checked-arithmetic table —
- * NORMATIVE), §7 (call semantics: bubbling, staticMinSize guard, decode bounds, normalization,
- * tryCall zeroing), §8 (ABI encode shapes).
+ * It is the differential oracle for the compiler and implements the canonical word invariant,
+ * the normative checked-arithmetic table, the call semantics (bubbling, staticMinSize guard,
+ * decode bounds, normalization, tryCall zeroing) and the ABI encode shapes.
  *
  * Binding invariant: bit-for-bit agreement with the compiled bytecode on both returndata and
  * revert payloads. Consequences baked in here:
@@ -13,9 +12,9 @@
  *   sign-extended two's complement, bool ∈ {0,1}, bytesN left-aligned, address 160-bit
  *   zero-extended) and every operation re-establishes the invariant exactly where the codegen
  *   templates do.
- * - Checked arithmetic implements architecture §6 via exact bigint math + range check on the
+ * - Checked arithmetic implements the op table via exact bigint math + range check on the
  *   true result. For canonical operands this is *provably identical* to the table's EVM-level
- *   checks: the §6 width cases (div-back for `uintN, N>128` MUL; the lone `int256 −1 × −2^255`
+ *   checks: the width cases (div-back for `uintN, N>128` MUL; the lone `int256 −1 × −2^255`
  *   case; SIGNEXTEND fixpoints; the explicit `int256 −2^255 / −1` SDIV check) are exactly the
  *   conditions under which the true result leaves the operand type's range. Panic codes:
  *   0x11 overflow, 0x12 div/mod by zero, 0x32 bounds, 0x41 over-allocation.
@@ -35,7 +34,7 @@
  * frame shape; `opts.env` overrides them per call so other frames — notably the DEFAULT
  * deployless mode, where `caller` is viem's internal wrapper contract and `address` is a
  * per-script counterfactual CREATE2 address — can be modeled and differential-tested
- * (extension of the frozen §M6 opts, recorded in docs/design/amendments.md).
+ * (a later extension of the `interpret` opts).
  *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
@@ -73,7 +72,7 @@ import type { CellId, PlainAbiFunction, ScriptIr, Stmt, ValueId } from './nodes.
 import { validateIr } from './validate.js';
 
 // ---------------------------------------------------------------------------
-// frozen interface (module-interfaces §M6)
+// public interface
 // ---------------------------------------------------------------------------
 
 export interface MockChain {
@@ -199,7 +198,7 @@ function resolveEnv(env: InterpEnvOverrides | undefined): ResolvedEnv {
   };
 }
 
-/** `Panic(uint256)` selector bytes — evm-target §5. */
+/** `Panic(uint256)` selector bytes. */
 const PANIC_SELECTOR = Uint8Array.of(0x4e, 0x48, 0x7b, 0x71);
 /** `EvsDecodeError(uint256)` selector — single source of truth is M3's selectorOf. */
 const DECODE_ERROR_SELECTOR = hexToBytes(selectorOf('EvsDecodeError', ['uint256']));
@@ -231,14 +230,14 @@ interface ArrayVal {
  * memref payload of a tuple/struct value — a flat-pointer block of one {@link Value} per member
  * (a word for a static member, a memref for a dynamic/composite one). Reference semantics: the
  * `fields` array is shared (like {@link ArrayVal}'s `words`); `tupleset` mutates `fields[i]` in
- * place, so every alias sees the write (architecture §5/§3).
+ * place, so every alias sees the write.
  */
 interface TupleVal {
   readonly kind: 'tuple';
   readonly fields: Value[];
 }
 
-/** a word value is its canonical 256-bit slot image (architecture §5). */
+/** a word value is its canonical 256-bit slot image. */
 type Value = bigint | BytesVal | ArrayVal | TupleVal;
 
 // ---------------------------------------------------------------------------
@@ -610,7 +609,7 @@ class Interp {
   }
 
   // -------------------------------------------------------------------------
-  // bin / un ops (architecture §6 — see module doc for the exact-math equivalence)
+  // bin / un ops (see module doc for the exact-math equivalence)
   // -------------------------------------------------------------------------
 
   private execBin(s: Extract<Stmt, { k: 'bin' }>): void {
@@ -654,7 +653,7 @@ class Interp {
   }
 
   // -------------------------------------------------------------------------
-  // calls (architecture §7)
+  // calls
   // -------------------------------------------------------------------------
 
   private execCall(s: Extract<Stmt, { k: 'call' }>): void {
@@ -765,7 +764,7 @@ class Interp {
   }
 
   // -------------------------------------------------------------------------
-  // return encoding (architecture §8.2) + JS value record
+  // return encoding + JS value record
   // -------------------------------------------------------------------------
 
   private encodeReturn(): { data: Uint8Array; values: Record<string, unknown> } {
@@ -781,7 +780,7 @@ class Interp {
 }
 
 // ---------------------------------------------------------------------------
-// checked arithmetic + word ops (architecture §6 — normative table)
+// checked arithmetic + word ops (the normative table)
 // ---------------------------------------------------------------------------
 
 function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {
@@ -898,7 +897,7 @@ function toSigned256(word: bigint): bigint {
 }
 
 /**
- * Normalize an arbitrary 256-bit word to the canonical slot image of `type` (architecture §5):
+ * Normalize an arbitrary 256-bit word to the canonical slot image of `type`:
  * uintN masked, intN SIGNEXTENDed, bool ISZERO ISZERO, address masked to 160 bits, bytesN
  * masked to its left-aligned lane. Used at the trust boundaries (returndata words, arg
  * coercion) and wherever an op can denormalize.
@@ -1177,7 +1176,7 @@ function tupleField(value: TupleVal, i: number): Value {
 }
 
 // ---------------------------------------------------------------------------
-// returndata decode (architecture §7.2, steps 3–5 — exact bounds + normalization)
+// returndata decode (steps 3–5 — exact bounds + normalization)
 // ---------------------------------------------------------------------------
 
 /** `null` = structural decode failure (the per-site `EvsDecodeError` / tryCall-zero trigger). */

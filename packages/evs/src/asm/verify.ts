@@ -1,5 +1,5 @@
 /**
- * M4 `asm/verify.ts` — the three always-on verification passes (architecture §10).
+ * M4 `asm/verify.ts` — the three always-on verification passes.
  *
  * 1. `verifyJumpdests` — consensus-identical JUMPDEST scan (PUSH immediates are not jumpdests).
  * 2. `verifyStack` — stack-height simulation with `checked` and `'any'` label classes.
@@ -26,7 +26,7 @@ const PUSH32_CODE = 0x7f;
 const JUMPDEST_CODE = 0x5b;
 
 /**
- * Validates every statically-known jump target against the consensus JUMPDEST rule [evm §3]:
+ * Validates every statically-known jump target against the consensus JUMPDEST rule:
  * a single linear scan from offset 0 in which PUSH immediates are skipped; a `0x5B`
  * encountered *as an opcode* is a valid destination, a `0x5B` inside push data is not.
  * `dataStart` is the offset of the INVALID guard byte (or `bytecode.length` when there is no
@@ -64,7 +64,7 @@ export function verifyJumpdests(
 // pass 2 — stack-height simulation
 // ---------------------------------------------------------------------------
 
-/** Max simulated depth inside a statement template (DUP/SWAP reach; architecture §5/§10). */
+/** Max simulated depth inside a statement template (DUP/SWAP reach). */
 const MAX_TEMPLATE_DEPTH = 16;
 
 function isZeroPush(node: AsmNode): boolean {
@@ -83,7 +83,7 @@ function labelName(
 }
 
 /**
- * Simulates stack heights across the node stream (architecture §10 pass 2).
+ * Simulates stack heights across the node stream (pass 2).
  *
  * Two label classes: `stack: n` (checked — every statically-known in-edge and the fallthrough
  * must agree with `n`; underflow and template depth > 16 are errors) and `stack: 'any'`
@@ -287,7 +287,7 @@ function isDup(node: AsmNode): boolean {
 }
 
 /**
- * Shape lints (architecture §7/§10):
+ * Shape lints:
  * (a) every RETURNDATACOPY is immediately preceded by the node window
  *     `RETURNDATASIZE, PUSH0, (PUSH0 | DUPn)` — the two intrinsically safe shapes
  *     `(0, 0, rds)` / `(base, 0, rds)`. A `push 0` node counts as PUSH0 (the assembler owns

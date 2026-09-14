@@ -1,7 +1,7 @@
 /**
- * M8 unit tests — `codegen/frame.ts` (static frame layout, architecture §5).
+ * M8 unit tests — `codegen/frame.ts` (static frame layout).
  *
- * Slot-order expectations mirror the worked example in architecture §15.3: args first
+ * Slot-order expectations mirror the while-loop worked example: args first
  * (0x80…), then cells, then non-folded values in id order, then per-reachable-fn result
  * regions + return-address spill slots. Folded word consts → `slotOfValue === null`;
  * returned word consts keep a slot; uncalled fns get no region and no value slots.
@@ -29,7 +29,7 @@ function st(body: StmtBody): Stmt {
   return { loc: null, site: nextSite++, ...body };
 }
 
-/** §15.3-shaped IR: arg n; cells total, i; folded consts 0/1; loop values v1…v7; final get. */
+/** Loop-example IR: arg n; cells total, i; folded consts 0/1; loop values v1…v7; final get. */
 function loopIr(): ScriptIr {
   return {
     irVersion: 1,

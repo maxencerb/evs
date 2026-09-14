@@ -1,5 +1,5 @@
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 /* oxlint-disable vitest/expect-expect --
  * several revert-path tests assert exclusively through the expectPanic() helper, which wraps
  * the expect(...).toEqual(...) pair on the outcome. */
@@ -1156,7 +1156,7 @@ describe('control flow', () => {
     expect(retOf(interpret(script, [false], deadChain))).toEqual({ r: 2n });
   });
 
-  /** architecture §15.3 — sum 0..n−1 with cells; header re-executed per iteration. */
+  /** sum 0..n−1 with cells; header re-executed per iteration. */
   const sumScript = ir({
     name: 'sum',
     args: [{ name: 'n', type: 'uint256' }],
@@ -1765,7 +1765,7 @@ describe('tryCall — zeroing', () => {
 // ---------------------------------------------------------------------------
 // call kind routing — STATICCALL vs the mutable `call` oracle (issue #1)
 //
-// The reference interpreter is STATELESS (architecture §4): a CALL and a STATICCALL observe the
+// The reference interpreter is STATELESS: a CALL and a STATICCALL observe the
 // same returndata and a simulate's rollback is invisible. So the ONLY interpreter-observable
 // difference between the three kinds is *which MockChain oracle answers the subcall*. These tests
 // pin that routing (the persistence/rollback semantics themselves live in the anvil tier).

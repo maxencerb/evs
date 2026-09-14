@@ -329,7 +329,7 @@ describe('toViem()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// explainRevert — every kind (architecture §11/§13)
+// explainRevert — every kind
 // ---------------------------------------------------------------------------
 
 describe('explainRevert', () => {

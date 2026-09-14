@@ -1,8 +1,6 @@
 /**
  * M2 `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
  *
- * Contract: docs/design/module-interfaces.md §M2 (frozen) + architecture.md §3/§4/§6.
- *
  * Re-checks everything the builder enforces so deserialized IR is as trustworthy as recorded
  * IR (`deserializeIr → validateIr` is the trust boundary): operand types per the op table,
  * def-before-use under the scope rule (a `while` header dominates its body; `if`/`else`
@@ -877,7 +875,7 @@ class IrValidator {
   }
 
   // -------------------------------------------------------------------------
-  // const payload checks (canonical word invariant — architecture §5)
+  // const payload checks (canonical word invariant)
   // -------------------------------------------------------------------------
 
   private checkConstData(
@@ -975,12 +973,12 @@ function stringifyType(t: EvsType): string {
   return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
-/** bitwise/shift operand domain per architecture §6: uintN, intN, bytesN. */
+/** bitwise/shift operand domain: uintN, intN, bytesN. */
 function isBitsOperand(s: EvsType): boolean {
   return isWordType(s) && s !== 'address' && s !== 'bool';
 }
 
-/** legal `convert` pairs per architecture §6. */
+/** legal `convert` pairs. */
 function convertOk(from: EvsType, to: EvsType): boolean {
   if (isNumeric(from) && isNumeric(to)) return true; // free widening / checked narrowing
   if ((from === 'uint256' || from === 'bytes32') && to === 'address') return true; // asAddress
@@ -989,7 +987,7 @@ function convertOk(from: EvsType, to: EvsType): boolean {
   return false;
 }
 
-/** canonical word invariant per architecture §5. */
+/** canonical word invariant. */
 function isCanonicalWord(type: WordType, x: bigint): boolean {
   if (type === 'bool') return x === 0n || x === 1n;
   if (type === 'address') return x < 1n << 160n;

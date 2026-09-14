@@ -1,15 +1,12 @@
 /**
  * M1 `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
  * predicates/metadata (single source of truth for all modules).
- *
- * Contract: docs/design/module-interfaces.md §M1 (frozen) + api.md §2/§3.
  */
 
 import { EvsStagingError, EvsTypeError, type SourceLoc } from './errors.js';
 import { captureLoc } from './loc.js';
 
-// re-exported per the module-interfaces conventions block ("`Address` is re-exported from
-// `abitype`"); type-only — abitype is the only import core may take.
+// `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
 
@@ -74,7 +71,7 @@ export type EvsType = WordType | DynType | ArrayType | TupleType;
  * infers its element, but a wide/non-array `t` (e.g. a loosely-typed `Expr<EvsType>`) collapses to
  * `never` instead of materializing the whole ~400-member union ("too complex to represent").
  *
- * Perf (amendments.md §18.1): {@link Expr.at} computes its element via this instead of reverse-
+ * Perf: {@link Expr.at} computes its element via this instead of reverse-
  * solving a generic `elem extends StringType` against `${elem}[]` — forward `infer` on the already-
  * concrete receiver type is ~free; reverse-matching a template against the union dominated check time.
  */
@@ -86,7 +83,7 @@ export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
 
 // ---------------------------------------------------------------------------
-// Expr — the branded staged-value handle (api.md §3, verbatim)
+// Expr — the branded staged-value handle
 // ---------------------------------------------------------------------------
 
 export declare const exprBrand: unique symbol;
@@ -134,7 +131,7 @@ export interface Expr<t extends EvsType = EvsType> {
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
   // element via FORWARD inference on the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
   // NOT a reverse-solved `elem extends StringType` against `${elem}[]` — same result type, but
-  // amendments.md §18.1 cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
+  // this cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
   // `t & ArrayType` still pins the receiver to the depth-bounded array vocabulary.
   at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
@@ -179,7 +176,7 @@ export type TupleAsParam<t extends TupleType> = {
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 
 // ---------------------------------------------------------------------------
-// namedArg() declarator + the `t` type namespace (api.md §2)
+// namedArg() declarator + the `t` type namespace
 // ---------------------------------------------------------------------------
 
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
@@ -230,7 +227,7 @@ export function namedArg<const name extends string, const type extends EvsType>(
 // verbatim — the frozen M5 surface is unchanged.
 
 /**
- * One top-level arg/param declarator (api.md §2; issue #9): a bare `t.*` type, or a
+ * One top-level arg/param declarator (issue #9): a bare `t.*` type, or a
  * {@link namedArg}-produced {@link ArgSpec} that labels the arg.
  */
 export type ArgInput = EvsType | ArgSpec;
@@ -1122,7 +1119,7 @@ function assertEvsType(s: string, context: string): asserts s is StringType {
 }
 
 /**
- * @internal Staging-misuse traps shared by every handle implementation (architecture.md §3).
+ * @internal Staging-misuse traps shared by every handle implementation.
  *
  * Installs throwing `valueOf` / `toString` / `toJSON` / `Symbol.toPrimitive` on `target`
  * (each throws `EvsStagingError` citing both the misuse site and where the handle was

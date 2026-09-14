@@ -1,7 +1,7 @@
 /* oxlint-disable vitest/expect-expect --
  * every test asserts through the shared `expectAgreement` runner. */
 /**
- * M9 differential suite — the anti-miscompilation core (testing.md §4.1).
+ * M9 differential suite — the anti-miscompilation core.
  *
  * For a corpus of builder scripts covering every op family, control flow, calls with mocks,
  * tryCall, and dynamic returns, `interpret(script.ir, args, mockChain)` must agree
@@ -44,7 +44,7 @@ import { interpret, type MockChain } from './ir/interp.js';
 import type { ScriptIr } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
-// shared callee table → (MockChain, EvmFixture) — testing.md §4.1's "same table"
+// shared callee table → (MockChain, EvmFixture) — the same table feeds both legs
 // ---------------------------------------------------------------------------
 
 type CalleeCase = { selector: Hex; kind: 'return' | 'revert'; data: Hex };
@@ -1267,7 +1267,7 @@ describe('composite types', () => {
 // encoding (encodeAbiParameters([{type:'tuple',components}],[obj])). `expectAgreement` already
 // asserts interp == in-process EVM runtime BYTE-FOR-BYTE; we then decode the agreed returndata
 // with viem to close the third leg (interp == EVM == viem). Every shape runs across
-// paris/shanghai/cancun. (testing.md §4.2 differential bar; impl-plan §6.)
+// paris/shanghai/cancun.
 // ---------------------------------------------------------------------------
 
 const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
@@ -1612,7 +1612,7 @@ describe('composite regression', () => {
 // and return a DERIVED WORD (no composite-array encode — that is the next milestone). The mock
 // callee returndata is viem's canonical encoding; `expectAgreement` asserts interp == in-process
 // EVM runtime byte-for-byte, closing interp == EVM; the interp itself is proven == viem. Every
-// shape runs across paris/shanghai/cancun. (impl-plan §12.6/§12.10.)
+// shape runs across paris/shanghai/cancun.
 // ---------------------------------------------------------------------------
 
 describe('composite arrays (read path)', () => {
@@ -1876,7 +1876,7 @@ describe('composite arrays (read path)', () => {
 // asserts interp == compiled EVM byte-for-byte (the interp's `encodeArrayTail` is proven == viem),
 // and each case additionally decodes the returned bytes through viem `decodeAbiParameters` and
 // asserts a round-trip to the original value. Every shape runs across paris/shanghai/cancun (the
-// pre-cancun `@memcpy` height contract is the load-bearing risk). (impl-plan §12.2/§12.7/§12.10.)
+// pre-cancun `@memcpy` height contract is the load-bearing risk).
 // ---------------------------------------------------------------------------
 
 /** Loose returnable handle: a composite-array call output is an `Expr` at runtime (precise
@@ -2071,7 +2071,7 @@ describe('composite arrays (return path)', () => {
 //     literals), RETURN the whole array; assert byte-exact vs viem `encodeAbiParameters`.
 // (c) LITERAL: a composite-array literal passed as an arg / returned.
 // Every shape runs across paris/shanghai/cancun (the scratch-frame `@memcpy` height contract is the
-// load-bearing risk for the dynamic-element encode loop). (impl-plan §12.2/§12.7/§12.8/§12.10.)
+// load-bearing risk for the dynamic-element encode loop).
 // ---------------------------------------------------------------------------
 
 describe('composite arrays (call-arg encode + construct + literal)', () => {

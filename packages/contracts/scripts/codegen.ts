@@ -3,8 +3,8 @@
  *
  * Runs `forge build`, then emits `{ abi, bytecode, deployedBytecode }` per contract as
  * literal-typed (`as const`) TS modules into `packages/evs/test/generated/`, plus an
- * `index.ts` barrel. JSON imports would widen the ABI types (prior-art §5 /
- * stack-testing §4) — `as const` emission keeps them literal for viem inference.
+ * `index.ts` barrel. JSON imports would widen the ABI types — `as const` emission keeps
+ * them literal for viem inference.
  *
  * Deterministic: ABI items and object keys are emitted in a stable order, so a file's
  * content changes only when the contracts change. Idempotent: unchanged files are not

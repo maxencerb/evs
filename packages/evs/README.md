@@ -399,7 +399,9 @@ Workers Builds** (not GitHub Actions): root directory `/`, build command
 `bun install --frozen-lockfile && bun run build && cd apps/docs && bun run check:snippets && bun run build`,
 deploy command `npx wrangler deploy -c apps/docs/wrangler.jsonc` (non-production branches:
 `npx wrangler versions upload …` for a preview URL), watch paths `apps/docs/**`,
-`packages/evs/src/**`, `bun.lock`. Every ` ```ts ` fence under `apps/docs/src/content/docs/`
+`packages/evs/src/**`, `bun.lock`. `wrangler` is a **root** devDependency on purpose: the deploy
+command runs `npx wrangler` from the repo root, and bun's isolated `node_modules` only exposes a
+workspace's own binaries there. Every ` ```ts ` fence under `apps/docs/src/content/docs/`
 must typecheck standalone against the built package (`bun run check:snippets`); ` ```ts nocheck `
 opts out. `astro build` also validates every internal link.
 

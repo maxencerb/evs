@@ -15,6 +15,7 @@
         "typescript": "catalog:",
         "vite": "catalog:testing",
         "vite-plus": "catalog:testing",
+        "wrangler": "catalog:docs",
       },
     },
     "apps/docs": {

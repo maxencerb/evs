@@ -2,15 +2,13 @@
  * M2 `ir/nodes.ts` — the ScriptIr node inventory, versioned JSON-safe (de)serialization, and
  * statement-tree traversal.
  *
- * Contract: docs/design/module-interfaces.md §M2 (frozen) + architecture.md §4.
- *
  * The IR is a structured statement tree over flat value/cell/fn tables — plain JSON-safe data
  * (words as 0x-hex), versioned (`irVersion: 1`), frozen after recording. `deserializeIr`
  * performs the structural (shape + version) check only; `ir/validate.ts` is the semantic trust
  * boundary (`deserialize → validate` for external IR).
  */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 
 import { isHexString } from '../core/bytes.js';
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
@@ -120,7 +118,7 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   // composite (tuple/struct) construction + member access. The out/tuple ValueId's
   // `values[id].type` carries the {@link TupleType} (with components); these nodes hold only the
   // member index. A tuple is a memref to a packed `[field0…fieldN]` block (one word per member,
-  // a nested pointer for dynamic/composite members) — architecture.md §5.
+  // a nested pointer for dynamic/composite members).
   | { k: 'tuplenew'; inits: readonly { index: number; value: ValueId }[]; out: ValueId }
   | { k: 'field'; tuple: ValueId; index: number; out: ValueId }
   | { k: 'tupleset'; tuple: ValueId; index: number; value: ValueId }
@@ -152,7 +150,7 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
       //                script (s.call/s.tryCall).
       //   'simulate' — CALL via a self-call + revert macro: a true write is dry-run and its return
       //                value read back, with the write's state rolled back and isolated from later
-      //                reads in the same script (s.simulate/s.trySimulate). architecture §7.
+      //                reads in the same script (s.simulate/s.trySimulate).
       // OPTIONAL/defaulting to 'static' so v1 serialized IR (no `kind`) deserializes unchanged.
       kind?: 'static' | 'call' | 'simulate';
       successOut?: ValueId;

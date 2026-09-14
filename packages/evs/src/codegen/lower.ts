@@ -1,8 +1,6 @@
 /**
- * M8 `codegen/lower.ts` — the statement templates (architecture §6 checked-op table —
- * NORMATIVE; §5 canonical word invariant; §3 control-flow shapes; §9 fncall convention).
- *
- * Contract: docs/design/module-interfaces.md §M8 (frozen `LowerCtx` / `lowerStmts`).
+ * M8 `codegen/lower.ts` — the statement templates (the checked-op table, the canonical word
+ * invariant, the control-flow shapes, the fncall convention).
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
  * - every statement template is net-zero on the operand stack; the stack is empty at every
@@ -10,21 +8,21 @@
  * - simulated depth stays ≤ 16 inside templates;
  * - panic exits jump to the shared `'any'` tails (`SharedTails`), never revert inline.
  *
- * Operand convention (architecture §15.1/§15.3): binary templates load the RIGHT operand
+ * Operand convention: binary templates load the RIGHT operand
  * first, then the left — the left operand sits on top, so `SUB`/`DIV`/`LT`/… compute
  * `op(a, b)` directly. Folded word constants (`FrameLayout.slotOfValue === null`) load as
  * PUSH immediates; everything else as `PUSH slot MLOAD`.
  *
- * fncall convention (architecture §9, one recorded refinement): the caller MSTOREs args into
+ * fncall convention: the caller MSTOREs args into
  * the callee's static param slots, pushes `@ret_k`, and jumps to the entry JUMPDEST
  * (annotated at stack height 1 — the return address). The callee then immediately SPILLS the
  * return address into its dedicated frame slot (`frame.ts` `fnReturnAddressSlot`) so the body
- * runs at stack baseline 0, and reloads it for the return JUMP. Rationale (recorded
- * deviation from §9's "return address stays on the stack during the body"): the frozen M7
- * emitters (`emitStaticCall`, `emitMemCopy`) pin checked labels at absolute height 0/1/4, so
- * a baseline-1 body could not contain calls; and nested fncalls would present two different
- * absolute heights to a single callee entry annotation, which the §10 verifier cannot
- * express. No recursion ⇒ one spill slot per fn is sound.
+ * runs at stack baseline 0, and reloads it for the return JUMP. Rationale (rather than keeping
+ * the return address on the stack during the body): the M7 emitters (`emitStaticCall`,
+ * `emitMemCopy`) pin checked labels at absolute height 0/1/4, so a baseline-1 body could not
+ * contain calls; and nested fncalls would present two different absolute heights to a single
+ * callee entry annotation, which the `asm/verify.ts` verifier cannot express. No recursion ⇒
+ * one spill slot per fn is sound.
  */
 
 import { layoutOfType } from '../abi/layout.js';
@@ -62,7 +60,7 @@ import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
 
 // ---------------------------------------------------------------------------
-// frozen contract (module-interfaces §M8)
+// contract
 // ---------------------------------------------------------------------------
 
 export interface LowerCtx {
@@ -120,7 +118,7 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
 
 /**
  * @internal Emits the subroutine bodies of every fn discovered through `fncall` statements
- * (architecture §9: JUMPDEST subroutine, entry at stack height 1, return address spilled to
+ * (JUMPDEST subroutine, entry at stack height 1, return address spilled to
  * the fn's frame slot, results copied to the fn's static result region, dynamic return
  * JUMP). Lowering a body may discover further fns; the worklist drains them all. Uncalled
  * fns are never emitted.
@@ -365,9 +363,9 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
     w.op('MSTORE');
     return;
   }
-  // dynamic literal: data segment + CODECOPY into a fresh allocation (architecture §3/§10).
+  // dynamic literal: data segment + CODECOPY into a fresh allocation.
   // The image is the memref `[len:32][payload…]`, zero-padded to a word boundary so the
-  // trailing partial word lands clean (memory above the free pointer is not zero — §5).
+  // trailing partial word lands clean (memory above the free pointer is not zero).
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
@@ -391,7 +389,7 @@ function literalBytes(hex: string, what: string): Uint8Array {
 }
 
 // ---------------------------------------------------------------------------
-// bin — checked arithmetic (architecture §6, NORMATIVE), comparisons, logic, bits
+// bin — checked arithmetic (solc ≥0.8 semantics), comparisons, logic, bits
 // ---------------------------------------------------------------------------
 
 function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): void {
@@ -429,7 +427,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
       return;
     case 'and':
     case 'or':
-      // eager bool logic on canonical 0/1 words (architecture §6)
+      // eager bool logic on canonical 0/1 words
       loadOperand(w, ctx, s.b, meta(ctx, s, `bool ${s.op}`));
       loadOperand(w, ctx, s.a);
       w.op(s.op === 'and' ? 'AND' : 'OR');
@@ -455,7 +453,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
   }
 }
 
-/** add / sub / mul — the width-dependent checked templates of architecture §6. */
+/** add / sub / mul — the width-dependent checked templates. */
 function lowerCheckedArith(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'bin' }>,
@@ -469,7 +467,7 @@ function lowerCheckedArith(
 
   if (s.op === 'add' && !signed) {
     if (bits === 256) {
-      // §15.1 verbatim: overflow ⇔ r < b
+      // uint256: overflow ⇔ r < b
       w.op('DUP2'); // [b, a, b]
       w.op('ADD'); // [r, b]
       w.op('DUP1'); // [r, r, b]
@@ -529,7 +527,7 @@ function lowerCheckedArith(
   }
 
   if (s.op === 'add' || s.op === 'sub') {
-    // int256: solc sign-case formula (architecture §6)
+    // int256: solc sign-case formula
     w.op('DUP2'); // [b, a, b]
     w.op('DUP2'); // [a, b, a, b]
     w.op(s.op === 'add' ? 'ADD' : 'SUB'); // [r, a, b]
@@ -575,7 +573,7 @@ function emitUnsignedDivBack(w: AsmWriter, ctx: LowerCtx): void {
 }
 
 /**
- * `[r, a, b] → [r, a, b]` or Panic 0x11 — int256 add/sub sign-case formulas (§6):
+ * `[r, a, b] → [r, a, b]` or Panic 0x11 — int256 add/sub sign-case formulas:
  *   add: or(and(iszero(slt(b,0)), slt(r,a)), and(slt(b,0), sgt(r,a)))
  *   sub: or(and(iszero(slt(b,0)), sgt(r,a)), and(slt(b,0), slt(r,a)))
  */
@@ -600,7 +598,7 @@ function emitSignedAddSubCheck(w: AsmWriter, ctx: LowerCtx, op: 'add' | 'sub'): 
 }
 
 /**
- * `[r, a, b] → [r, a, b]` or Panic 0x11 — int256 mul (§6): the sdiv-back test plus the lone
+ * `[r, a, b] → [r, a, b]` or Panic 0x11 — int256 mul: the sdiv-back test plus the lone
  * case it misses (`a == −1, b == −2^255`):
  *   or(and(eq(a, not(0)), eq(b, shl(255, 1))), and(iszero(iszero(a)), iszero(eq(sdiv(r, a), b))))
  */
@@ -629,7 +627,7 @@ function emitSignedMulCheck(w: AsmWriter, ctx: LowerCtx): void {
   w.op('JUMPI'); // [r, a, b]
 }
 
-/** div / mod — zero check first (Panic 0x12), then the §6 width templates. */
+/** div / mod — zero check first (Panic 0x12), then the width templates. */
 function lowerDivMod(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'bin' }>,
@@ -654,7 +652,7 @@ function lowerDivMod(
     return;
   }
   if (bits === 256) {
-    // EVM SDIV silently wraps −2^255 / −1 — explicit Panic 0x11 (§6)
+    // EVM SDIV silently wraps −2^255 / −1 — explicit Panic 0x11
     w.op('DUP1'); // [a, a, b]
     w.push(MIN_I256, { note: 'min int256' });
     w.op('EQ'); // [a == min, a, b]
@@ -670,11 +668,11 @@ function lowerDivMod(
     return;
   }
   w.op('SDIV'); // [r]
-  emitFixpointCheck(w, ctx, bits); // catches minN / −1 uniformly (§6)
+  emitFixpointCheck(w, ctx, bits); // catches minN / −1 uniformly
   storeOut(w, ctx, s.out);
 }
 
-/** shl / shr — Solidity shifts are unchecked; results re-canonicalized to the width (§6). */
+/** shl / shr — Solidity shifts are unchecked; results re-canonicalized to the width. */
 function lowerShift(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'bin' }>,
@@ -712,7 +710,7 @@ function lowerUn(w: AsmWriter, s: Extract<Stmt, { k: 'un' }>, ctx: LowerCtx): vo
     w.op('ISZERO'); // canonical 0/1 bool
   } else {
     // bitnot — NOT denormalizes uintN (high bits) and bytesN (low bits); it preserves
-    // sign-extension for intN, so only the unsigned lanes re-mask (§6).
+    // sign-extension for intN, so only the unsigned lanes re-mask.
     w.op('NOT');
     const wt = asWordType(type);
     if (!isSigned(wt) && wordNeedsNormalize(wt)) {
@@ -748,7 +746,7 @@ function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: LowerCtx): 
 }
 
 /**
- * convert (§6): free widening / free reinterpret where lossless; otherwise the logical value
+ * convert: free widening / free reinterpret where lossless; otherwise the logical value
  * is range-checked against the target (Panic 0x11) — matching the reference interpreter:
  * checked narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check.
  */
@@ -861,7 +859,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('ADD'); // [ptr+size, ptr, n]
   w.push(0x40);
   w.op('MSTORE'); // [ptr, n]
-  // zero-fill [ptr, ptr+size) — CALLDATACOPY from past the calldata end reads zeros (§5)
+  // zero-fill [ptr, ptr+size) — CALLDATACOPY from past the calldata end reads zeros
   w.op('DUP2');
   w.push(5);
   w.op('SHL');
@@ -899,7 +897,7 @@ function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: Lower
 }
 
 // ---------------------------------------------------------------------------
-// tuples / structs — FLAT-POINTER layout (architecture §5, spec §3): a tuple is a memref to a
+// tuples / structs — FLAT-POINTER layout: a tuple is a memref to a
 // packed `[w0][w1]…[w_{n-1}]` block of `n` words (NO length prefix). A static member's word is
 // canonical; a dynamic/composite member's word is a memref pointer.
 // ---------------------------------------------------------------------------
@@ -911,7 +909,7 @@ function tupleArity(ctx: LowerCtx, v: ValueId): number {
   return ty.components.length;
 }
 
-/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end, §5), MSTORE each
+/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end), MSTORE each
  *  provided member at `ptr + 32·i`. Omitted/literal-0 members need no MSTORE (the block is zero). */
 function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
   const n = tupleArity(ctx, s.out);
@@ -924,7 +922,7 @@ function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: L
   w.op('ADD'); // [ptr+size, ptr]
   w.push(0x40);
   w.op('MSTORE'); // [ptr]
-  // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros (§5). At stack
+  // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros. At stack
   // height exactly [ptr] here; the @memcpy contract is not used (no memref copy).
   w.push(size); // [size, ptr]
   w.op('CALLDATASIZE'); // [cds, size, ptr]
@@ -966,7 +964,7 @@ function lowerTupleSet(w: AsmWriter, s: Extract<Stmt, { k: 'tupleset' }>, ctx: L
 }
 
 // ---------------------------------------------------------------------------
-// ABI encoding + hashing — `s.encode` / `s.encodePacked` / `s.keccak256` (issue #17, §8.4)
+// ABI encoding + hashing — `s.encode` / `s.encodePacked` / `s.keccak256` (issue #17)
 // ---------------------------------------------------------------------------
 
 /** `encode` — materialize the standard/packed ABI encoding of the args into a fresh `bytes`
@@ -1068,7 +1066,7 @@ function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx)
     const data = state.consts.get(v);
     if (data !== undefined && ctx.frame.slotOfValue(v) === null) return { literal: data };
     // dynamic literals carry a slot (materialized memref) but still fold into the
-    // CalldataTemplate's const segments — architecture §7.1 const-merging
+    // CalldataTemplate's const segments — const-merging
     if (data !== undefined && data.kind === 'data') return { literal: data };
     return { slot: requireSlot(ctx, v, `call arg/target (site ${site})`), type: typeOf(ctx, v) };
   };
@@ -1116,7 +1114,7 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
   }
   const region = ctx.frame.fnRegion(s.fn);
 
-  // args → callee param slots (architecture §9)
+  // args → callee param slots
   s.args.forEach((a, i) => {
     const slot = region.params[i];
     if (slot === undefined) throw internal(`fns[${s.fn}] param region is missing slot #${i}`);
@@ -1168,7 +1166,7 @@ function lowerWhile(w: AsmWriter, s: Extract<Stmt, { k: 'while' }>, ctx: LowerCt
   const base = ctx.fnBaseline;
   const head = w.newLabel(`while_${s.site}`);
   const end = w.newLabel(`endwhile_${s.site}`);
-  w.label(head, base); // re-executed every iteration (architecture §15.3)
+  w.label(head, base); // re-executed every iteration
   lowerStmts(w, s.header, ctx);
   loadOperand(w, ctx, s.cond, meta(ctx, s, 'while cond')); // [cond]
   w.op('ISZERO');

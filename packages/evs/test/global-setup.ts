@@ -1,8 +1,7 @@
 /**
  * M10 `test/global-setup.ts` — vitest globalSetup for the `integration` project.
  *
- * Contract: docs/design/module-interfaces.md §M10 + testing.md §3 (verbatim): a prool
- * proxy server multiplexing one anvil instance per vitest worker on port 8545
+ * A prool proxy server multiplexing one anvil instance per vitest worker on port 8545
  * (`/<VITEST_POOL_ID>` routing, see `test/harness/anvil.ts`).
  */
 

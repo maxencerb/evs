@@ -1,5 +1,5 @@
 /**
- * testing.md §3 item 4: revert bubbling end-to-end through viem.
+ * Revert bubbling end-to-end through viem.
  *
  * For every Reverter flavor the script's bubbled revert payload must be BYTE-IDENTICAL to
  * what the callee reverts with when called directly — the expected bytes come from calling

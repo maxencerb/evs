@@ -1,7 +1,7 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * fixture builders cast hand-assembled (and deliberately malformed) structures on purpose. */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 /* oxlint-disable vitest/expect-expect --
  * several rejection tests assert exclusively through the reject() helper, which wraps the
  * expect(...).toThrowError(...) pair. */

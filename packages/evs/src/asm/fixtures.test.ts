@@ -1,8 +1,8 @@
 /**
- * The research fixtures `RUNTIME_42` and `RUNTIME_WHOAMI` (viem-integration App. A),
- * hand-assembled with the M4 writer/assembler and executed.
+ * The research fixtures `RUNTIME_42` and `RUNTIME_WHOAMI`, hand-assembled with the M4
+ * writer/assembler and executed.
  *
- * NOTE: module-interfaces.md asks for execution "on the M10 harness"
+ * NOTE: the original plan called for execution "on the M10 harness"
  * (`test/harness/evm.ts`); that module is not implemented yet, so these tests execute the
  * assembled runtime directly on `@ethereumjs/evm` (the same engine the harness is pinned to).
  * Once M10 lands, the integration-tier suites cover the harness path.

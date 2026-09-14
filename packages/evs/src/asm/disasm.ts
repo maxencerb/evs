@@ -1,5 +1,5 @@
 /**
- * M4 `asm/disasm.ts` — the disassembler (architecture §14).
+ * M4 `asm/disasm.ts` — the disassembler.
  *
  * Independent of the assembler: it consumes raw bytes (usable on foreign bytecode) and, when a
  * `SourceMap` is provided, annotates lines with labels, locs and notes. `assemble → disassemble`

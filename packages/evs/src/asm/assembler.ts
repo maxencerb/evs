@@ -1,9 +1,8 @@
 /**
- * M4 `asm/assembler.ts` — AsmNode stream, AsmWriter, and the two-pass assembler
- * (architecture §10).
+ * M4 `asm/assembler.ts` — AsmNode stream, AsmWriter, and the two-pass assembler.
  *
  * - `pushLabel` is ALWAYS `PUSH2` + a big-endian fixup patched after layout (EIP-170/3860 keep
- *   every offset < 2^16, so PUSH2 always suffices and widths never shift) [evm §3].
+ *   every offset < 2^16, so PUSH2 always suffices and widths never shift).
  * - `push 0` lowers to `PUSH0` on shanghai+ and to `PUSH1 00` on paris; all other `push`
  *   values use the minimal-width PUSHn. The assembler owns immediate selection; codegen owns
  *   sequence-level lowering (MCOPY).
@@ -142,7 +141,7 @@ export class AsmWriter {
   }
 
   /**
-   * The ONLY sanctioned RETURNDATACOPY emitter (architecture §7 shape invariant):
+   * The ONLY sanctioned RETURNDATACOPY emitter (the call shape invariant):
    * - `'zero'`          → `RETURNDATASIZE PUSH0 PUSH0 RETURNDATACOPY` — the bubble path
    *   `(dest=0, offset=0, size=rds)`.
    * - `{ dupDepth: n }` → `RETURNDATASIZE PUSH0 DUP<n+2> RETURNDATACOPY` — the snapshot path

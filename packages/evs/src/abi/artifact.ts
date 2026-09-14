@@ -2,15 +2,13 @@
  * M3 `abi/artifact.ts` — the literal-typed `ScriptAbi`, its runtime mirror, the evs error ABI,
  * selectors, and the recording-time literal encoders.
  *
- * Contract: docs/design/module-interfaces.md §M3 (frozen) + architecture.md §11 (error ABI)
- * + api.md §3 (literal coercion rules). `viem` is the sanctioned runtime peer here (selectors
- * + ABI encoding of literals; module-interfaces preamble).
+ * `viem` is the sanctioned runtime peer here (selectors + ABI encoding of literals).
  *
- * Type-level design per docs/research/abitype-typing.md: the return record becomes ONE output
- * of type `'tuple'` with fully-named components, so viem infers an *object* — immune to the
- * §4.2 `UnionToTuple` interning-order instability. Script inputs map over the normalized arg
- * SPEC tuple (`readonly ArgSpec[]`, order-preserving by construction), labeling each input with
- * its user-provided name (`namedArg`, issue #9) or the positional `arg0`/`arg1`/… fallback for a
+ * Type-level design: the return record becomes ONE output of type `'tuple'` with fully-named
+ * components, so viem infers an *object* — immune to the abitype `UnionToTuple`
+ * interning-order instability. Script inputs map over the normalized arg SPEC tuple
+ * (`readonly ArgSpec[]`, order-preserving by construction), labeling each input with its
+ * user-provided name (`namedArg`, issue #9) or the positional `arg0`/`arg1`/… fallback for a
  * bare arg — the labels are positional, so they never touch `UnionToTuple`.
  */
 
@@ -41,7 +39,7 @@ import type { PlainAbiFunction, PlainAbiParam } from '../ir/nodes.js';
 import { layoutOf, layoutOfType } from './layout.js';
 
 // ---------------------------------------------------------------------------
-// error ABI (architecture §11)
+// error ABI
 // ---------------------------------------------------------------------------
 
 export const EVS_ERROR_ABI = [
@@ -455,12 +453,12 @@ export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction {
 }
 
 // ---------------------------------------------------------------------------
-// literal encoders (recording-time trust boundary — architecture §5)
+// literal encoders (recording-time trust boundary)
 // ---------------------------------------------------------------------------
 
 const HEX_BODY_RE = /^[0-9a-fA-F]*$/;
 
-/** api.md §3 hex rules: `0x`-prefixed, even-length, optionally an exact byte size. */
+/** Hex literal rules: `0x`-prefixed, even-length, optionally an exact byte size. */
 function coerceHexLiteral(type: string, value: unknown, exactBytes: number | null): Hex {
   if (typeof value !== 'string' || !value.startsWith('0x')) {
     throw new EvsTypeError(
@@ -484,7 +482,7 @@ function coerceHexLiteral(type: string, value: unknown, exactBytes: number | nul
       { loc: captureLoc() },
     );
   }
-  // lowercase: checksum is NOT enforced (api.md §3, viem-permissive) and viem's encoder
+  // lowercase: checksum is NOT enforced (viem-permissive) and viem's encoder
   // rejects mixed-case non-checksummed addresses — bytes are case-insensitive anyway.
   return `0x${body.toLowerCase()}`;
 }
@@ -496,7 +494,7 @@ function describeValue(value: unknown): string {
   return String(value);
 }
 
-/** api.md §3 numeric rules: safe-integer numbers or bigints, range-checked against N. */
+/** Numeric literal rules: safe-integer numbers or bigints, range-checked against N. */
 function coerceNumericLiteral(type: WordType, value: unknown, where: string): bigint {
   let v: bigint;
   if (typeof value === 'bigint') {
@@ -551,7 +549,7 @@ function coerceWordLiteral(type: WordType, value: unknown, where = ''): bigint |
 }
 
 /**
- * Canonical 32-byte word (architecture §5: uintN zero-extended, intN sign-extended,
+ * Canonical 32-byte word (uintN zero-extended, intN sign-extended,
  * bool ∈ {0,1}, bytesN left-aligned, address zero-extended).
  */
 export function encodeLiteralWord(type: WordType, value: unknown): Hex {
@@ -567,7 +565,7 @@ export function encodeLiteralWord(type: WordType, value: unknown): Hex {
 }
 
 /**
- * Pre-encoded memref payload `[len:32][payload…]` (architecture §5): strings/bytes are raw
+ * Pre-encoded memref payload `[len:32][payload…]`: strings/bytes are raw
  * bytes zero-padded to a word boundary; arrays are one canonical word per element. This is
  * exactly the ABI tail of the type, i.e. viem's `encodeAbiParameters` output minus the
  * leading 32-byte head offset.

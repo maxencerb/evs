@@ -2,7 +2,7 @@
  * type-level tests conjure phantom values via assertions; nothing here runs. */
 /**
  * M3 type tests — `ScriptAbi` literal shape, viem `readContract` inference over it, and the
- * abitype §4.2 interning regression (docs/research/abitype-typing.md).
+ * abitype interning regression.
  *
  * ORDER OF DECLARATIONS IN THIS FILE IS LOAD-BEARING: `realisticPoolAbi` below deliberately
  * interns the string literal types `'tick'`, `'fee'`, and `'owner'` BEFORE any `ScriptAbi`
