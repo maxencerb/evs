@@ -595,6 +595,70 @@ test('EvsFn: params map to IntoExpr, results are rebuilt fresh Exprs', () => {
   });
 });
 
+test('EvsFn: a t.struct / t.tuple param is a Tuple handle in the body (ArgHandle parity, #37)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  const Pos = t.tuple(t.uint256, t.uint256);
+  const Outer = t.struct({ inner: Pair, name: t.string, ids: t.array(t.uint256) });
+  const Pairs = t.array(Pair);
+  evscript({ name: 'fnstructparam', args: [Pair, Outer, Pairs] }, (s, pair, outer, pairs) => {
+    // a named struct param → a Tuple handle with member-typed fields, exactly like the script arg.
+    const feeOf = s.fn('feeOf', [namedArg('p', Pair)] as const, (p) => {
+      expectTypeOf(p).toEqualTypeOf<Tuple<typeof Pair>>();
+      expectTypeOf(p).toEqualTypeOf<ArgHandle<typeof Pair>>();
+      expectTypeOf(p.fee.get()).toEqualTypeOf<Expr<'uint24'>>();
+      return p.fee.get();
+    });
+    expectTypeOf(feeOf).toEqualTypeOf<
+      EvsFn<readonly [ArgSpec<'p', typeof Pair>], Expr<'uint24'>>
+    >();
+    // the call site accepts the Tuple handle (script arg / s.tuple) and a literal object.
+    expectTypeOf(feeOf(pair)).toEqualTypeOf<Expr<'uint24'>>();
+    expectTypeOf(feeOf(s.tuple(Pair, { fee: 3000n }))).toEqualTypeOf<Expr<'uint24'>>();
+    expectTypeOf(
+      feeOf({ token: '0x0000000000000000000000000000000000000001', fee: 500 }),
+    ).toEqualTypeOf<Expr<'uint24'>>();
+    // @ts-expect-error — a word is not a struct
+    feeOf(1n);
+    // @ts-expect-error — an Expr of another type is not a struct
+    feeOf(s.lit(t.uint256, 1n));
+
+    // a bare (positional) t.tuple param → a positional Tuple handle
+    const first = s.fn('first', Pos, (pos) => {
+      expectTypeOf(pos).toEqualTypeOf<Tuple<typeof Pos>>();
+      return pos.at(0).get(); // positional members read through `.at(i)` (a Field over the member union)
+    });
+    expectTypeOf(first).toEqualTypeOf<EvsFn<readonly [ArgSpec<'', typeof Pos>], Expr<'uint256'>>>();
+    expectTypeOf(first([1n, 2n])).toEqualTypeOf<Expr<'uint256'>>();
+
+    // nested composite + dynamic members: the same Field dispatch as a script arg.
+    const nested = s.fn('nested', Outer, (o) => {
+      expectTypeOf(o).toEqualTypeOf<Tuple<typeof Outer>>();
+      expectTypeOf(o.inner.get()).toEqualTypeOf<Tuple<typeof Pair>>();
+      expectTypeOf(o.name.get()).toEqualTypeOf<Expr<'string'>>();
+      expectTypeOf(o.ids.get()).toEqualTypeOf<Expr<'uint256[]'>>();
+      return o.inner.get().fee.get();
+    });
+    expectTypeOf(nested(outer)).toEqualTypeOf<Expr<'uint24'>>();
+
+    // a composite ARRAY param stays an Expr (the runtime handle), mixing with scalar params.
+    const count = s.fn('count', [namedArg('ps', Pairs), t.uint8] as const, (ps, n) => {
+      expectTypeOf(ps).toEqualTypeOf<Expr<typeof Pairs>>();
+      expectTypeOf(ps).toEqualTypeOf<ArgHandle<typeof Pairs>>();
+      expectTypeOf(ps.at(0n)).toEqualTypeOf<Tuple<typeof Pair>>();
+      expectTypeOf(n).toEqualTypeOf<Expr<'uint8'>>();
+      return ps.length();
+    });
+    expectTypeOf(count(pairs, 1n)).toEqualTypeOf<Expr<'uint256'>>();
+
+    // a struct fn RESULT round-trips through a struct fn PARAM (Tuple in, Tuple out).
+    const echo = s.fn('echo', Pair, (p) => p);
+    expectTypeOf(echo(pair)).toEqualTypeOf<Tuple<typeof Pair>>();
+    expectTypeOf(feeOf(echo(pair))).toEqualTypeOf<Expr<'uint24'>>();
+
+    return s.return({ fee: feeOf(pair) });
+  });
+});
+
 // ---------------------------------------------------------------------------
 // ScriptReturn inference through evscript → literal-typed artifact
 // ---------------------------------------------------------------------------

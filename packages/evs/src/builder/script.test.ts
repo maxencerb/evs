@@ -217,22 +217,124 @@ describe('named args (namedArg)', () => {
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
-  test('s.fn composite params stay deferred: UNSUPPORTED_V0 for namedArg and bare (issue #25)', () => {
+  // -- s.fn composite params (issue #37): a struct/tuple param binds like a script arg ---------
+  test('s.fn accepts a t.struct param (namedArg and bare): the body gets a Tuple handle', () => {
     const Pair = t.struct({ token: t.address, fee: t.uint24 });
-    for (const param of [namedArg('pair', Pair), Pair]) {
-      let code: string | undefined;
-      let message = '';
-      try {
-        evscript({ name: 'fnc', args: [] }, (s) => {
-          s.fn('f', param, () => undefined);
-          return s.return({ x: s.lit(t.uint256, 1n) });
-        });
-      } catch (e) {
-        if (e instanceof EvsError) ({ code, message } = e);
-      }
-      expect(code).toBe('UNSUPPORTED_V0');
-      expect(message).toContain('composite (t.struct/t.tuple) params are not supported yet');
+    const script = evscript(
+      { name: 'fnc', args: [t.address, t.uint24] },
+      (s, token, fee) => {
+        const feeOf = s.fn('feeOf', namedArg('pair', Pair), (pair) => pair.fee.get());
+        const tokenOf = s.fn('tokenOf', Pair, (pair) => pair.token.get());
+        const built = s.tuple(Pair, { token, fee });
+        return s.return({ fee: feeOf(built), token: tokenOf(built) });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    // the param type is recorded as the full descriptor (named / positional `arg0` fallback).
+    expect(script.ir.fns[0]?.params).toEqual([{ name: 'pair', type: Pair, value: 2 }]);
+    expect(script.ir.fns[1]?.params).toEqual([{ name: 'arg0', type: Pair, value: 4 }]);
+    expect(script.ir.values[2]).toMatchObject({ type: Pair, debugName: 'feeOf(pair)' });
+    // the body's `pair.fee.get()` is a `field` read off the PARAM value — a memref pointer word.
+    expect(script.ir.fns[0]?.body).toEqual([
+      { k: 'field', tuple: 2, index: 1, out: 3, loc: null, site: expect.any(Number) },
+    ]);
+    expect(script.ir.fns[0]?.results).toEqual([{ type: 'uint24' }]);
+    expect(script.ir.returns.map((r) => r.type)).toEqual(['uint24', 'address']);
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+  });
+
+  test('s.fn struct param: a script-arg Tuple passes straight through; literal objects coerce', () => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    const script = evscript(
+      { name: 'fnpass', args: [namedArg('pair', Pair)] },
+      (s, pair) => {
+        const feeOf = s.fn('feeOf', [namedArg('p', Pair)] as const, (p) => p.fee.get());
+        // the script-arg Tuple handle is passed by reference (its ValueId, no copy)…
+        const fromArg = feeOf(pair);
+        // …and a literal object builds a fresh tuplenew at the call site.
+        const fromLit = feeOf({ token: '0x0000000000000000000000000000000000000001', fee: 500 });
+        return s.return({ fromArg, fromLit });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const calls = script.ir.body.filter((st) => st.k === 'fncall');
+    expect(calls).toHaveLength(2);
+    expect(calls[0]).toMatchObject({ k: 'fncall', fn: 0, args: [0] }); // ValueId 0 = args.pair
+    const lastCallArg = calls[1]?.k === 'fncall' ? calls[1].args[0] : undefined;
+    expect(script.ir.body.some((st) => st.k === 'tuplenew' && st.out === lastCallArg)).toBe(true);
+  });
+
+  test('s.fn param descriptors compare structurally: a different member layout is TYPE_MISMATCH', () => {
+    const Pair = t.struct({ token: t.address, fee: t.uint24 });
+    const Other = t.struct({ token: t.address, tick: t.uint24 }); // same shape, other name
+    let code: string | undefined;
+    let message = '';
+    try {
+      evscript({ name: 'fnmm', args: [Other] }, (s, other) => {
+        const feeOf = s.fn('feeOf', Pair, (pair) => pair.fee.get());
+        // a Tuple<Other> typechecks against the erased AnyTuple brand (issue #5 ask #3 — the
+        // runtime `typesEqual` is the order-/name-sensitive guard), so this must fail at recording.
+        return s.return({ fee: feeOf(other) });
+      });
+    } catch (e) {
+      if (e instanceof EvsError) ({ code, message } = e);
     }
+    expect(code).toBe('TYPE_MISMATCH');
+    expect(message).toContain('fn "feeOf" arg 0 ("arg0")');
+  });
+
+  test('s.fn accepts a tuple[] param (an Expr, like a script arg) and a nested/dynamic struct', () => {
+    const Inner = t.struct({ a: t.uint8, b: t.uint256 });
+    const Outer = t.struct({ inner: Inner, name: t.string, ids: t.array(t.uint256) });
+    const script = evscript(
+      { name: 'fnnest', args: [Outer, t.array(Inner)] },
+      (s, outer, inners) => {
+        const summary = s.fn(
+          'summary',
+          [namedArg('o', Outer), namedArg('is', t.array(Inner))],
+          (o, is) =>
+            [
+              o.inner.get().b.get(),
+              o.name.get(),
+              o.ids.get().length(),
+              is.length(),
+              is.at(0n).a.get(),
+            ] as const,
+        );
+        const [b, name, nIds, nInners, a0] = summary(outer, inners);
+        return s.return({ b, name, nIds, nInners, a0 });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.fns[0]?.params.map((p) => p.type)).toEqual([Outer, t.array(Inner)]);
+    expect(script.ir.returns.map((r) => r.type)).toEqual([
+      'uint256',
+      'string',
+      'uint256',
+      'uint256',
+      'uint8',
+    ]);
+  });
+
+  test('s.fn rejects a malformed composite param descriptor with a precise error', () => {
+    let code: string | undefined;
+    try {
+      evscript({ name: 'fnbad', args: [] }, (s) => {
+        s.fn(
+          'f',
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately smuggles a malformed descriptor past the type bound
+          { type: 'tuple', components: [{ name: 'x', type: 'uint256[2]' }] } as never,
+          () => undefined,
+        );
+        return s.return({ x: s.lit(t.uint256, 1n) });
+      });
+    } catch (e) {
+      if (e instanceof EvsError) ({ code } = e);
+    }
+    expect(code).toBe('TYPE_MISMATCH');
   });
 
   test('s.fn: bare-type and lone-namedArg shorthand; names land in the fn IR params', () => {
@@ -697,7 +799,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     const script = evscript(
       { name: 'enc', args: [t.uint256, t.string, t.array(t.uint256)] },
       (s, x, str, arr) => {
-        const pair = s.tuple(Pair, { fee: 500n });
+        const pair = s.tuple(Pair, { fee: 500 });
         const out = s.encode(x, str, arr, pair);
         return s.return({ out });
       },
@@ -762,7 +864,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     const script = evscript(
       { name: 'structHash', args: [t.array(t.string)] },
       (s, strs) => {
-        const pair = s.tuple(Pair, { fee: 500n });
+        const pair = s.tuple(Pair, { fee: 500 });
         return s.return({ hp: s.keccak256(pair), hs: s.keccak256(strs, pair) });
       },
       NO_LOC,

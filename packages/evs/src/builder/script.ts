@@ -841,9 +841,9 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
 /**
  * What an `s.fn` body may return (widened by issue #5 ask #1): a single {@link Expr}, a single
  * {@link Tuple}/{@link MutArray} handle (a composite/array result — byte-identical IR to `.expr()`),
- * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed —
- * composite params are not supported yet (#37), rejected at record time with `UNSUPPORTED_V0`
- * whether declared bare or via `namedArg` (whose bound admits every `EvsType` since #25).
+ * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS accept every `EvsType`
+ * like script args do — a composite (`t.struct`/`t.tuple`) param arrives in the body as a
+ * {@link Tuple} handle (issue #37), a composite array / scalar as an {@link Expr}.
  */
 export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
 /** One element of an `s.fn` body's `[many]`-shape return. */
@@ -874,21 +874,26 @@ export type RebuildExprs<r extends FnReturn> = r extends readonly FnResult[]
     : void;
 
 /**
- * The body-callback param tuple for an `s.fn`: each param as an {@link Expr}, LABELED by its
- * surfaced name (issue #9) — homomorphic over the {@link LabelCarrier} type parameter `L` (the only
- * way to synthesize tuple/param labels), with the element types from the parallel `specs`.
+ * The body-callback param tuple for an `s.fn`: each param as its {@link ArgHandle} (a plain
+ * tuple/struct param → a {@link Tuple} handle, else an {@link Expr} — the same `valueHandle`
+ * dispatch as script args, issue #37), LABELED by its surfaced name (issue #9) — homomorphic over
+ * the {@link LabelCarrier} type parameter `L` (the only way to synthesize tuple/param labels), with
+ * the element types from the parallel `specs`.
  */
 type FnArgHandles<
   specs extends readonly ArgSpec[],
   L extends readonly unknown[] = LabelCarrier<specs>,
 > = {
-  [i in keyof L]: i extends keyof specs ? Expr<Extract<specs[i]['type'], EvsType>> : never;
+  [i in keyof L]: i extends keyof specs ? ArgHandle<Extract<specs[i]['type'], EvsType>> : never;
 };
 
 /**
- * The call-site signature of an {@link EvsFn}: each param as an {@link IntoExpr}, LABELED by its
- * surfaced name (a {@link namedArg} name, or the `arg{i}` fallback for a bare param — issue #9).
- * The labels come from the {@link LabelCarrier} type parameter `L`; the element types from `params`.
+ * The call-site signature of an {@link EvsFn}: each param as an {@link IntoMember} — an
+ * {@link IntoExpr} for a scalar, an {@link IntoArray} for an array, an {@link IntoTuple} (a `Tuple`
+ * handle or a literal object) for a composite param — LABELED by its surfaced name (a
+ * {@link namedArg} name, or the `arg{i}` fallback for a bare param — issue #9). `IntoMember` is the
+ * type-level mirror of the runtime `coerceToId` acceptance that fn call args go through. The
+ * labels come from the {@link LabelCarrier} type parameter `L`; the element types from `params`.
  */
 export type EvsFn<
   params extends readonly ArgSpec[],
@@ -896,7 +901,9 @@ export type EvsFn<
   L extends readonly unknown[] = LabelCarrier<params>,
 > = (
   ...args: {
-    [i in keyof L]: i extends keyof params ? IntoExpr<Extract<params[i]['type'], EvsType>> : never;
+    [i in keyof L]: i extends keyof params
+      ? IntoMember<Extract<params[i]['type'], EvsType>>
+      : never;
   }
 ) => RebuildExprs<r>;
 
@@ -1005,7 +1012,8 @@ export interface ScriptBuilder<
 
   // functions — `params` accepts the same shorthand as `evscript` args (issue #9): a
   // bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing named/bare. Body params
-  // are labeled by name; composite params are not supported yet (#37, rejected at record time).
+  // are labeled by name and typed like script args: a composite (`t.struct`/`t.tuple`) param is
+  // a `Tuple` handle, a composite array / scalar an `Expr` (issue #37).
   fn<const params extends ArgsInput, const r extends FnReturn>(
     name: string,
     params: params,

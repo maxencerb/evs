@@ -192,9 +192,9 @@ const IDENT_RE = /^[A-Za-z_]\w*$/;
  * the callback parameter is labeled (`(token) => …`). The `type` bound is {@link EvsType} — the
  * full parameter-type vocabulary (widened by #25 from `StringType`): words, `string`/`bytes`,
  * arrays, and composite `t.struct`/`t.tuple` descriptors (a named struct arg arrives as a `Tuple`
- * handle, exactly like a bare one). Nested composite fields are named via `t.struct` and keep
- * their behaviour; `s.fn` composite params are not supported yet (#37), rejected at record time. A bare
- * (unnamed) top-level arg keeps the positional `arg{i}` fallback name.
+ * handle, exactly like a bare one — in a script's `args` and in an `s.fn`'s params alike). Nested
+ * composite fields are named via `t.struct` and keep their behaviour. A bare (unnamed) top-level
+ * arg keeps the positional `arg{i}` fallback name.
  */
 export function namedArg<const name extends string, const type extends EvsType>(
   name: name,

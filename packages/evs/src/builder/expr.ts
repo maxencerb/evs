@@ -2652,8 +2652,9 @@ export class Recorder {
       // a `namedArg` result is a `{ name, type }` object; a bare type is a string (a bare composite
       // type is a TupleType object with no `name`). Detection mirrors `evscript`'s `isArgSpecValue`
       // (name + type present, not an array) so the two arg/param surfaces classify declarators
-      // identically. Composite (tuple) params — bare or via `namedArg`, whose bound admits every
-      // EvsType since #25 — are not supported yet (#37), rejected below with UNSUPPORTED_V0.
+      // identically. Composite (tuple) params — bare or via `namedArg` — are accepted exactly like
+      // script args: a composite value is a memref pointer word at runtime, the same as a
+      // `string` / `T[]` param, so the caller MSTOREs the pointer into the callee's param slot.
       let pName: string;
       let pType: unknown;
       if (
@@ -2684,14 +2685,11 @@ export class Recorder {
         );
       }
       seen.add(pName);
-      if (isTupleType(pType)) {
-        throw new EvsTypeError(
-          'UNSUPPORTED_V0',
-          `s.fn("${name}") param "${pName}": composite (t.struct/t.tuple) params are not supported yet — pass the members as separate word/string params (top-level SCRIPT args do accept structs)`,
-          { loc },
-        );
+      // the same type gate as `evscript` args: a structurally valid composite descriptor passes
+      // as-is; anything else must be a supported type string (throws with a precise code).
+      if (!isEvsValueType(pType)) {
+        assertV0Type(pType, `s.fn("${name}") param "${pName}"`, loc);
       }
-      assertV0Type(pType, `s.fn("${name}") param "${pName}"`, loc);
       return { name: pName, type: pType };
     });
 
@@ -2710,8 +2708,10 @@ export class Recorder {
         const id = this.newValue(p.type, loc, `${name}(${p.name})`);
         return { name: p.name, type: p.type, value: id };
       });
-      const handles = paramEntries.map((p) => makeExpr(this, p.value));
-      const r: unknown = unsafeCast<(...a: Expr[]) => unknown>(bodyFn)(...handles);
+      // the same handle dispatch as script args (`valueHandle`): a plain tuple/struct param → a
+      // Tuple handle (named field access in the body); a composite ARRAY / scalar → an Expr.
+      const handles = paramEntries.map((p) => this.valueHandle(p.value, p.type));
+      const r: unknown = unsafeCast<(...a: unknown[]) => unknown>(bodyFn)(...handles);
       // results must be validated while the fn stack is still active
       if (r === undefined) {
         shape = 'void';
