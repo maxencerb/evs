@@ -83,10 +83,18 @@ import { validateIr } from './validate.js';
 // ---------------------------------------------------------------------------
 
 export interface MockChain {
-  staticcall(req: { to: Hex; data: Hex }): { success: boolean; data: Hex };
+  /**
+   * The STATICCALL oracle (`s.read` / `s.tryRead`; also the fallback for every other verb when
+   * {@link MockChain.call} is omitted). `req.gas` is the site's `gas` cap when one was given
+   * (absent = forward all) — the interpreter has no gas model, so it is informational: a mock
+   * MAY use it to emulate an out-of-gas target (`{ success: false, data: '0x' }`), and the
+   * compiled bytecode agrees byte-for-byte with whatever the mock answers.
+   */
+  staticcall(req: { to: Hex; data: Hex; gas?: bigint }): { success: boolean; data: Hex };
   /**
    * Optional mutable-subcall oracle for `s.call` / `s.simulate` (issue #1). Defaults to
-   * {@link MockChain.staticcall} when omitted.
+   * {@link MockChain.staticcall} when omitted. `req.gas` is the site's `gas` cap, as above —
+   * for `'simulate'` it bounds the INNER target call (the self-call hop forwards all gas).
    *
    * `req.kind` tells the mock which non-static verb is calling (`'call'` = a real CALL frame,
    * `'simulate'` = the self-call/revert dry-run) — but it is **informational only**. The reference
@@ -99,7 +107,10 @@ export interface MockChain {
    * for a user-built *stateful* mock that chooses to apply-then-roll-back itself; the canonical
    * persistence/rollback semantics are pinned in the integration tier (anvil) against real state.
    */
-  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate' }): { success: boolean; data: Hex };
+  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint }): {
+    success: boolean;
+    data: Hex;
+  };
 }
 
 export interface InterpResult {
@@ -665,7 +676,9 @@ class Interp {
 
   private execCall(s: Extract<Stmt, { k: 'call' }>): void {
     const target = this.word(s.target);
-    if (s.gas !== undefined) this.word(s.gas); // evaluated; the interpreter has no gas model
+    // the gas cap is evaluated (it is an ordinary uint256 operand) and handed to the oracle as
+    // information — the interpreter has no gas model of its own
+    const gas = s.gas === undefined ? undefined : this.word(s.gas);
     const calldata = this.encodeCalldata(s.fnAbi, s.args);
     const to: Hex = `0x${target.toString(16).padStart(40, '0')}`;
     // kind 'static' (or absent) → STATICCALL via `staticcall`; 'call'/'simulate' → the mutable
@@ -673,7 +686,7 @@ class Interp {
     // to `staticcall` when the host supplied none. Everything below is kind-INDEPENDENT: a stateless
     // oracle decodes/bubbles/zeroes the returndata identically however it was produced (the rollback
     // is unobservable here — pinned in the anvil tier).
-    const base = { to, data: bytesToHex(calldata) };
+    const base = { to, data: bytesToHex(calldata), ...(gas === undefined ? {} : { gas }) };
     let res: { success: boolean; data: Hex };
     let oracle: 'call' | 'staticcall';
     if ((s.kind === 'call' || s.kind === 'simulate') && this.chain.call !== undefined) {

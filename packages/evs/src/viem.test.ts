@@ -124,6 +124,45 @@ describe('toViem shapes', () => {
     expect(shape.address).toBe(address);
     expect(shape.stateOverride).toEqual([{ address, code: RUNTIME_42 }]);
   });
+
+  test('sender mode (issue #36): the runtime is installed AT the sender and `account` is set', () => {
+    const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
+    const shape = toViemStateOverride(
+      { abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 },
+      { sender },
+    );
+    expect(shape).toEqual({
+      abi: ERC20ISH_ABI,
+      address: sender,
+      stateOverride: [{ address: sender, code: RUNTIME_42 }],
+      account: sender,
+    });
+    // `address` may restate the sender (same knob) …
+    expect(
+      toViemStateOverride(
+        { abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 },
+        { sender, address: '0x70997970c51812dc3a010c7d01b50e0d17dc79c8' }, // lowercase spelling
+      ).account,
+    ).toBe(sender);
+    // … but a DIFFERENT address contradicts sender mode
+    expect(() =>
+      toViemStateOverride(
+        { abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 },
+        { sender, address: DEFAULT_SCRIPT_ADDRESS },
+      ),
+    ).toThrow(/sender.*address.*disagree/);
+    // a malformed sender is rejected up front (it would otherwise fail deep inside viem)
+    expect(() =>
+      toViemStateOverride(
+        { abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 },
+        { sender: '0x1234' }, // deliberately malformed
+      ),
+    ).toThrow(/20-byte 0x address/);
+    // no sender → the plain shape, with NO `account` key leaking in
+    expect(
+      toViemStateOverride({ abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 }),
+    ).not.toHaveProperty('account');
+  });
 });
 
 // ---------------------------------------------------------------------------

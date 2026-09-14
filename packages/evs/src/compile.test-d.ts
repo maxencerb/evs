@@ -130,6 +130,24 @@ test('stateOverride toViem() spreads into readContract (composable with account/
   void compiled.toViem({ mode: 'stateOverride', address: pool });
 });
 
+test('sender-mode toViem() (issue #36) carries `account` and still spreads into readContract', async () => {
+  const shape = compiled.toViem({ mode: 'stateOverride', sender: user });
+  expectTypeOf(shape.abi).toEqualTypeOf(compiled.abi);
+  expectTypeOf(shape.address).toEqualTypeOf<Address>();
+  expectTypeOf(shape.account).toEqualTypeOf<Address>();
+  expectTypeOf(shape.stateOverride).toMatchTypeOf<StateOverride>();
+  // the plain stateOverride overload has NO `account` key
+  expectTypeOf(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('account');
+
+  const out = await client.readContract({
+    ...compiled.toViem({ mode: 'stateOverride', sender: user }),
+    functionName: 'poolMeta',
+    args: [pool, user],
+    blockNumber: 22_000_000n,
+  });
+  expectTypeOf(out).toEqualTypeOf<ExpectedOut>();
+});
+
 test('omitting both address and code is a type error', () => {
   // @ts-expect-error — readContract needs either `address` (deployed/override) or `code` (deployless)
   void client.readContract({

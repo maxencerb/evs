@@ -513,7 +513,8 @@ that can't run under `STATICCALL` but don't usefully persist state: the canonica
 quoter. There is **no rollback** — a write done via `s.call` is visible to a later `s.read` in the
 same script (the same `eth_call` frame), though the `eth_call` result is still never committed
 on-chain. The target sees `msg.sender` = the **script's** address (frame-dependent — see
-[calls](/guides/calls/#mutable-calls-scall--strycall)). `s.tryCall` is the `{ success, value }`
+[calls](/guides/calls/#mutable-calls-scall--strycall)), or a chosen address in
+[sender mode](/guides/execution/#sender-mode). `s.tryCall` is the `{ success, value }`
 variant.
 
 **`revertReturns`** (the QuoterV1 pattern) — the output types carried by the target's **revert
@@ -595,8 +596,11 @@ isolated from later reads in the same script. It lowers to a self-call to `ADDRE
 own code) through a reserved trampoline entrypoint: the trampoline performs the real `CALL` to the
 target and then `REVERT`s, which unwinds the sub-frame and discards every state change — that revert
 *is* the rollback. The carried returndata is recognized by a magic word and decoded normally. As
-with `s.call`, the target sees `msg.sender` = the script's address. `s.trySimulate` is the
-`{ success, value }` variant. Full mechanism: [simulating writes](/guides/calls/#simulating-writes-ssimulate--strysimulate).
+with `s.call`, the target sees `msg.sender` = the script's address — or a chosen address in
+[sender mode](/guides/execution/#sender-mode). Simulate sites compose freely (inside `s.fn` bodies,
+one dry-run feeding the next), and the optional `gas` bounds the **inner** target call while the
+self-call hop forwards all gas. `s.trySimulate` is the `{ success, value }` variant. Full
+mechanism: [simulating writes](/guides/calls/#simulating-writes-ssimulate--strysimulate).
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

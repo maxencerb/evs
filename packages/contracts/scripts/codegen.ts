@@ -36,6 +36,7 @@ const CONTRACTS = [
   'EvsReference',
   'Malformed',
   'MockERC20',
+  'MockFrame',
   'MockQuoter',
   'MockUniV3Pool',
   'MockVault',

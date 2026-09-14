@@ -326,6 +326,19 @@ describe('toViem()', () => {
       stateOverride: [{ address, code: compiled.runtimeBytecode }],
     });
   });
+
+  test('stateOverride + sender (issue #36): script AT the sender, account = sender', () => {
+    const compiled = compile(sumScript());
+    const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
+    expect(compiled.toViem({ mode: 'stateOverride', sender })).toEqual({
+      abi: compiled.abi,
+      address: sender,
+      stateOverride: [{ address: sender, code: compiled.runtimeBytecode }],
+      account: sender,
+    });
+    // the plain stateOverride shape never carries `account` (the user composes it themselves)
+    expect(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('account');
+  });
 });
 
 // ---------------------------------------------------------------------------

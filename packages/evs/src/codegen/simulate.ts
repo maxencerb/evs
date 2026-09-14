@@ -14,13 +14,25 @@
  * address). The trampoline runs in its own frame and never touches the main frame's memory.
  *
  * Wire format (set by `emitSimulateCall` in `codegen/call.ts`):
- *   self-call calldata : [trampSel(4)][target(32)][ targetCalldata… ]   (target payload at 0x24)
+ *   self-call calldata : [trampSel(4)][target(32)][gas(32)][ targetCalldata… ]   (payload at 0x44)
  *   trampoline revert  : [MAGIC(32)][innerSuccess(32)][ target returndata… ]
  *
  * The magic word lets the outer frame tell an intentional simulate-revert from a genuine failure
  * (out-of-gas, codeless self) — the latter has no magic and is reported as a decode failure; the
  * `innerSuccess` word distinguishes a successful dry-run (decode the outputs) from a reverting
  * target (strict: bubble the target's revert; try: `success = false`).
+ *
+ * Gas: the self-call hop always forwards all gas (`GAS`); the `gas` word is the cap for the INNER
+ * target CALL — the site's `gas` option when given, else `2^256 − 1`, which the EVM clamps to the
+ * all-but-one-64th rule (EIP-150) exactly like `GAS` would. Capping the inner CALL rather than the
+ * hop keeps the trampoline's epilogue (the MAGIC-tagged REVERT) funded even when a gas-hungry
+ * target burns its whole allowance: the target's out-of-gas surfaces as `innerSuccess = 0`, never
+ * as a lost MAGIC.
+ *
+ * Re-entrancy: the trampoline is a self-contained dispatcher entrypoint that runs in its own
+ * frame with its own memory, so it composes freely — a simulate site inside an `s.fn` body, one
+ * simulate feeding the next, or a target that itself re-enters the script through the same
+ * selector all nest naturally (every hop is a fresh CALL frame that unwinds on its own REVERT).
  */
 
 import { AsmWriter, type LabelId } from '../asm/assembler.js';
@@ -43,6 +55,13 @@ export const SIMULATE_TRAMPOLINE_SELECTOR_NUM = 0xbbde5aa3;
  */
 export const SIMULATE_MAGIC = 0xe7dc6cc8acb6dfffe16c5466c82c888cde4d25c3f822bd2740efb87faa5dda3cn;
 
+/**
+ * Byte length of the self-call wire header `[trampSel(4)][target(32)][gas(32)]` — the calldata
+ * offset at which the target payload starts. Shared with `emitSimulateCall` (codegen/call.ts),
+ * which lays the header out on the outer side.
+ */
+export const SIMULATE_PAYLOAD_OFFSET = 68;
+
 /** PUSH20 0xff…ff — masks a raw word down to a canonical 20-byte address. */
 const ADDRESS_MASK = (1n << 160n) - 1n;
 
@@ -62,18 +81,19 @@ export function emitSimulateTrampoline(
   w.label(entry, 1, 'simulate_trampoline');
   w.op('POP'); // discard the leftover selector
 
-  // L = CALLDATASIZE − 36 (the target payload length; payload starts at calldata offset 0x24).
-  w.push(0x24, { note: 'payload offset' });
+  // L = CALLDATASIZE − 68 (the target payload length; payload starts at calldata offset 0x44,
+  // after [sel(4)][target(32)][gas(32)]).
+  w.push(SIMULATE_PAYLOAD_OFFSET, { note: 'payload offset' });
   w.op('CALLDATASIZE');
   w.op('SUB'); // [L]
 
-  // CALLDATACOPY(dest = 0x80, offset = 0x24, size = L) — copy the target payload into memory.
+  // CALLDATACOPY(dest = 0x80, offset = 0x44, size = L) — copy the target payload into memory.
   w.op('DUP1'); // [L, L]
-  w.push(0x24);
+  w.push(SIMULATE_PAYLOAD_OFFSET);
   w.push(0x80);
   w.op('CALLDATACOPY', { note: 'copy target payload' }); // [L]
 
-  // success = CALL(GAS, target, value = 0, argsOffset = 0x80, argsSize = L, retOffset = 0, retSize = 0)
+  // success = CALL(gas, target, value = 0, argsOffset = 0x80, argsSize = L, retOffset = 0, retSize = 0)
   // push bottom-up: retSize, retOffset, argsSize, argsOffset, value, addr, gas
   w.push(0); // [retSize=0, L]
   w.push(0); // [retOff=0, 0, L]
@@ -84,7 +104,10 @@ export function emitSimulateTrampoline(
   w.op('CALLDATALOAD'); // [target_raw, …]
   w.push(ADDRESS_MASK, { note: 'mask address' });
   w.op('AND'); // [target, …]
-  w.op('GAS'); // [gas, target, value, argsOff, argsSize, retOff, retSize, L]
+  // the inner gas cap travels in the wire header: the site's `gas` option, or 2^256−1 (= forward
+  // all under the EIP-150 clamp) when none was given — the hop itself always forwards GAS.
+  w.push(0x24);
+  w.op('CALLDATALOAD', { note: 'inner gas cap (2^256−1 = forward all)' }); // [gas, target, …]
   w.op('CALL', { note: 'CALL the write target (rolled back on REVERT below)' }); // [success, L]
 
   // Build the revert payload [MAGIC(32)][success(32)][returndata…] at 0x80 and REVERT it. The

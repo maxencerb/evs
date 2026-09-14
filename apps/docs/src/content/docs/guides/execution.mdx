@@ -1,6 +1,6 @@
 ---
 title: Executing scripts
-description: Run compiled scripts through viem — deployless eth_call by default, state-override mode for a controllable msg.sender, block pinning, and s.env caveats.
+description: Run compiled scripts through viem — deployless eth_call by default, state-override mode for a controllable msg.sender, sender mode for msg.sender-sensitive sub-calls, block pinning, and s.env caveats.
 ---
 
 A compiled script is bytecode that runs inside a single `eth_call` — nothing is ever deployed.
@@ -113,6 +113,60 @@ pass a custom `address`, pick one with no state on the target chain — injectin
 live contract's address leaves that contract's storage visible to the script.
 :::
 
+## Sender mode
+
+Sub-call targets (`s.read`, `s.call`, `s.simulate` and their `try*` variants) see
+`msg.sender` = **the address the script runs at** — the `account` parameter only changes the
+script's *own* caller. No EVM primitive can alter that inside a frame, so for `msg.sender`-sensitive
+targets (an ERC-4626 `withdraw` that burns the caller's shares, `onlyOwner` views, permit-style
+checks) state-override mode takes a `sender` option that installs the script **at** the sender's
+address and self-calls through it:
+
+```ts
+import { compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc4626Abi, http } from 'viem';
+
+const previewWithdraw = evscript(
+  { name: 'previewWithdraw', args: [t.address, t.uint256] },
+  (s, vault, assets) => {
+    // withdraw() checks and burns msg.sender's shares — it only succeeds AS the owner
+    const shares = s.simulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'withdraw',
+      args: [assets, s.env('caller'), s.env('caller')],
+    });
+    return s.return({ shares });
+  },
+);
+
+const compiled = compile(previewWithdraw);
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+
+const result = await client.readContract({
+  ...compiled.toViem({ mode: 'stateOverride', sender: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }),
+  // → { abi, address: sender, stateOverride: [{ address: sender, code }], account: sender }
+  functionName: 'previewWithdraw',
+  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n],
+});
+// result: { shares: bigint } — withdraw() ran with msg.sender = the owner, then rolled back
+```
+
+`toViem({ mode: 'stateOverride', sender })` returns `{ abi, address, stateOverride, account }` with
+`address` and `account` both set to `sender`: the script lives at the sender's address and is
+called *by* the sender, so every sub-call target sees `msg.sender = sender`, and
+`s.env('caller')` / `s.env('address')` both read `sender`. Passing your own `account` after the
+spread re-targets only the script's outer caller; the targets keep seeing `sender`. `sender` and
+`address` are the same knob — passing both with different values throws.
+
+:::caution
+Sender mode **replaces the code at `sender`** for the duration of the `eth_call`. An EOA sender is
+the normal case (its balance and nonce stay in place, so the targets' view of it is otherwise
+intact). A *contract* sender — a Safe, a vault — loses its own code for the call: targets that call
+back into `msg.sender` (an `onERC721Received` hook, an EIP-1271 signature check) will hit the script
+instead and revert.
+:::
+
 ## Choosing a mode
 
 |                   | Deployless (default)                                            | State override                                              |
@@ -120,8 +174,9 @@ live contract's address leaves that contract's storage visible to the script.
 | RPC requirement   | plain two-parameter `eth_call` — every provider                  | provider must support the third `eth_call` parameter        |
 | `address(this)`   | counterfactual CREATE2 address, different per compiled script    | `DEFAULT_SCRIPT_ADDRESS`, or the `address` you pass         |
 | `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted)      |
+| `msg.sender` seen by sub-call targets | the counterfactual script address — not controllable | the script address, or a chosen `sender` in [sender mode](#sender-mode) |
 | Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
-| Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state |
+| Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls |
 
 ## Block pinning
 

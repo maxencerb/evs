@@ -35,7 +35,12 @@ import {
 } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
-import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
+import {
+  DEFAULT_SCRIPT_ADDRESS,
+  toCreationBytecode,
+  toViemDeployless,
+  toViemStateOverride,
+} from './viem.js';
 
 // ---------------------------------------------------------------------------
 // public contract
@@ -69,6 +74,14 @@ export interface CompiledEvsScript<
     abi: ScriptAbi<name, args, ret, errs>;
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
+  };
+  // sender mode (issue #36): the runtime is installed AT `sender` and `account` is set to it, so
+  // every sub-call target sees `msg.sender = sender` (the script self-calls through that address).
+  toViem(o: { mode: 'stateOverride'; sender: Address }): {
+    abi: ScriptAbi<name, args, ret, errs>;
+    address: Address;
+    stateOverride: [{ address: Address; code: Hex }];
+    account: Address;
   };
   disassemble(): Disassembly; // .format() → annotated listing with source lines
   explainRevert(data: Hex): RevertExplanation;
@@ -202,13 +215,39 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
   };
+  function toViem(o: { mode: 'stateOverride'; sender: Address }): {
+    abi: typeof abi;
+    address: Address;
+    stateOverride: [{ address: Address; code: Hex }];
+    account: Address;
+  };
   function toViem(o?: {
     mode?: 'deployless' | 'stateOverride';
     address?: Address;
+    sender?: Address;
   }):
     | { abi: typeof abi; code: Hex }
-    | { abi: typeof abi; address: Address; stateOverride: [{ address: Address; code: Hex }] } {
+    | { abi: typeof abi; address: Address; stateOverride: [{ address: Address; code: Hex }] }
+    | {
+        abi: typeof abi;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+        account: Address;
+      } {
     if (o?.mode === 'stateOverride') {
+      if (o.sender !== undefined) {
+        // validation (address shape, sender/address agreement) lives in toViemStateOverride
+        const shape = toViemStateOverride(
+          { abi, runtimeBytecode },
+          o.address === undefined ? { sender: o.sender } : { sender: o.sender, address: o.address },
+        );
+        return {
+          abi,
+          address: shape.address,
+          stateOverride: [{ address: shape.address, code: runtimeBytecode }],
+          account: shape.account,
+        };
+      }
       const address = o.address ?? DEFAULT_SCRIPT_ADDRESS;
       return { abi, address, stateOverride: [{ address, code: runtimeBytecode }] };
     }

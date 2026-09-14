@@ -216,7 +216,9 @@ try {
 
 State-override mode places the runtime bytecode at a deterministic address
 (`DEFAULT_SCRIPT_ADDRESS` unless you pass one) and makes `msg.sender` controllable via the
-`account` call parameter — it is the only mode where `s.env('caller')` is meaningful. Pinning
+`account` call parameter — it is the only mode where `s.env('caller')` is meaningful (and its
+`sender` option runs the script *as* an address, so sub-call targets see that `msg.sender` too —
+see [sender mode](/guides/execution/#sender-mode)). Pinning
 `blockNumber` works in either mode because everything is plain `eth_call`. When a call
 reverts, pull the raw revert data off viem's `ContractFunctionRevertedError` and feed it to
 `compiled.explainRevert` — panics, the EVS error ABI, and bubbled callee reverts all decode

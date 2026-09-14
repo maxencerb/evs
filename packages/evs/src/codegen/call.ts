@@ -65,7 +65,11 @@ import {
   type SharedTails,
   type SlotRef,
 } from './abi.js';
-import { SIMULATE_MAGIC, SIMULATE_TRAMPOLINE_SELECTOR_NUM } from './simulate.js';
+import {
+  SIMULATE_MAGIC,
+  SIMULATE_PAYLOAD_OFFSET,
+  SIMULATE_TRAMPOLINE_SELECTOR_NUM,
+} from './simulate.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -1131,18 +1135,24 @@ export function emitStaticCall(
 
 /** Reserved 4-byte trampoline selector as a left-shifted 32-byte word (`sel << 224`). */
 const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
-/** Scratch slot holding the wrapper argsSize (36 + payload length) across the payload memcpy
+/** Scratch slot holding the wrapper argsSize (68 + payload length) across the payload memcpy
  *  (the pre-cancun `@memcpy` only clobbers scratch 0x00, so 0x20 survives it). */
 const SIM_ARGSIZE_SLOT = 0x20;
+/** Byte length of the wire header `[trampSel(4)][target(32)][gas(32)]` (= the payload offset). */
+const SIM_HEADER = SIMULATE_PAYLOAD_OFFSET;
 
 /**
  * Emits an `s.simulate` / `s.trySimulate` site. Builds the target's calldata
- * exactly like a normal call, wraps it as `[trampSel(4)][target(32)][payload…]` in transient
- * scratch above the buffer, self-`CALL`s `ADDRESS()` so the trampoline (codegen/simulate.ts)
- * performs the real write-`CALL` and `REVERT`s with `[MAGIC][innerSuccess][returndata]`, then
- * recognizes the magic, distinguishes a reverting target (strict: bubble; try: success=0), and
- * decodes the carried returndata via the shared memory tuple-decoder — so the write's state is
- * rolled back yet its return value is read back.
+ * exactly like a normal call, wraps it as `[trampSel(4)][target(32)][gas(32)][payload…]` in
+ * transient scratch above the buffer, self-`CALL`s `ADDRESS()` so the trampoline
+ * (codegen/simulate.ts) performs the real write-`CALL` and `REVERT`s with
+ * `[MAGIC][innerSuccess][returndata]`, then recognizes the magic, distinguishes a reverting
+ * target (strict: bubble; try: success=0), and decodes the carried returndata via the shared
+ * memory tuple-decoder — so the write's state is rolled back yet its return value is read back.
+ *
+ * The site's optional `gas` cap rides in the header's `gas` word and bounds the INNER target
+ * CALL (2^256−1 = forward all when absent); the self-call hop itself always forwards `GAS`, so
+ * the trampoline's MAGIC-tagged epilogue stays funded however much the target burns.
  */
 export function emitSimulateCall(
   w: AsmWriter,
@@ -1177,7 +1187,8 @@ export function emitSimulateCall(
   // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
 
-  // -- 2. wrap [trampSel(4)][target(32)][payload(L)] at W = buf + ceil32(L), above the buffer --
+  // -- 2. wrap [trampSel(4)][target(32)][gas(32)][payload(L)] at W = buf + ceil32(L), above the
+  // buffer --
   // L = payload length (static-regime const, else tail cursor − buf). The buffer stays at
   // MLOAD(0x40); the wrapper is transient scratch above it (dead after the self-call).
   if (template !== null && template.regime === 'static') {
@@ -1190,15 +1201,15 @@ export function emitSimulateCall(
     w.op('SWAP1');
     w.op('SUB'); // [L = tailEnd − buf]
   }
-  // argsSize = 36 + L → SIM_ARGSIZE_SLOT (survives the payload memcpy — @memcpy only clobbers 0x00).
+  // argsSize = 68 + L → SIM_ARGSIZE_SLOT (survives the payload memcpy — @memcpy only clobbers 0x00).
   // Consumes L: W and the memcpy len are recomputed from argsSize, so nothing stays on the stack.
-  w.push(36);
-  w.op('ADD'); // [argsSize = 36+L]
+  w.push(SIM_HEADER);
+  w.op('ADD'); // [argsSize = 68+L]
   w.push(SIM_ARGSIZE_SLOT);
   w.op('MSTORE'); // []   scratch[0x20] = argsSize
   // W = buf + ceil32(L). It is NOT kept on the stack across the payload memcpy (the pre-cancun
   // `@memcpy` requires the stack to be EXACTLY [dst, src, len]); instead it is recomputed from the
-  // stored argsSize as buf + ceil32(argsSize − 36) wherever needed.
+  // stored argsSize as buf + ceil32(argsSize − 68) wherever needed.
   const pushCeil32 = (): void => {
     w.push(31);
     w.op('ADD');
@@ -1209,9 +1220,9 @@ export function emitSimulateCall(
   const pushWrapperBase = (): void => {
     w.push(SIM_ARGSIZE_SLOT);
     w.op('MLOAD');
-    w.push(36);
+    w.push(SIM_HEADER);
     w.op('SWAP1');
-    w.op('SUB'); // [L = argsSize − 36]
+    w.op('SUB'); // [L = argsSize − 68]
     pushCeil32(); // [ceil32(L)]
     w.push(FREE_PTR);
     w.op('MLOAD');
@@ -1228,20 +1239,34 @@ export function emitSimulateCall(
   w.push(4);
   w.op('ADD'); // [W+4, target, W]
   w.op('MSTORE'); // [W]   mem[W+4] = target
-  // payload memcpy(dst = W+36, src = buf, len = L) — consumes W; leaves EXACTLY [dst, src, len]
+  // header word 2: MSTORE(W+36, innerGas) — the site's cap, or 2^256−1 (= forward all under the
+  // EIP-150 clamp, exactly what GAS would give) when no cap was given.
+  if (plan.gasRef === undefined) {
+    w.push(0);
+    w.op('NOT', { note: 'inner gas: forward all' }); // [2^256−1, W]
+  } else {
+    pushWordRef(w, plan.gasRef, `gas of ${fnAbi.name}`, 'inner gas cap'); // [gas, W]
+  }
+  w.op('DUP2');
   w.push(36);
-  w.op('ADD'); // [W+36]   (dst)
+  w.op('ADD'); // [W+36, gas, W]
+  w.op('MSTORE'); // [W]   mem[W+36] = inner gas
+  // payload memcpy(dst = W+68, src = buf, len = L) — consumes W; leaves EXACTLY [dst, src, len]
+  w.push(SIM_HEADER);
+  w.op('ADD'); // [W+68]   (dst)
   w.push(FREE_PTR);
-  w.op('MLOAD'); // [buf, W+36]   (src)
+  w.op('MLOAD'); // [buf, W+68]   (src)
   w.push(SIM_ARGSIZE_SLOT);
   w.op('MLOAD');
-  w.push(36);
+  w.push(SIM_HEADER);
   w.op('SWAP1');
-  w.op('SUB'); // [L, buf, W+36]   (len = argsSize − 36)
-  w.op('SWAP2'); // [W+36, buf, L]
-  emitMemCopy(w, tails, opts); // []   (W+36 > buf+L ⇒ non-overlapping, all forks)
+  w.op('SUB'); // [L, buf, W+68]   (len = argsSize − 68)
+  w.op('SWAP2'); // [W+68, buf, L]
+  emitMemCopy(w, tails, opts); // []   (W+68 > buf+L ⇒ non-overlapping, all forks)
 
-  // -- 3. self-CALL(gas, ADDRESS(), 0, W, argsSize, 0, 0) — W recomputed from argsSize ----------
+  // -- 3. self-CALL(GAS, ADDRESS(), 0, W, argsSize, 0, 0) — W recomputed from argsSize ----------
+  // The hop forwards ALL gas: the user's cap (if any) already rides in the header and bounds the
+  // inner CALL inside the trampoline, so the trampoline epilogue is never starved by the target.
   w.push(0); // [retSize=0]
   w.push(0); // [retOff=0, 0]
   w.push(SIM_ARGSIZE_SLOT);
@@ -1249,7 +1274,7 @@ export function emitSimulateCall(
   pushWrapperBase(); // [argsOff=W, argsSize, 0, 0]
   w.push(0, { note: 'value 0' }); // [value=0, …]
   w.op('ADDRESS', { note: 'self (the script holds the trampoline)' }); // [self, …]
-  pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
+  w.op('GAS');
   w.op('CALL', {
     loc: stmt.loc,
     note: `${stmt.mode} simulate ${fnAbi.name} (site ${siteId}) — self-call trampoline`,
