@@ -1,5 +1,5 @@
 /**
- * M7 `codegen/call.ts` — the STATICCALL site emitter.
+ * `codegen/call.ts` — the STATICCALL site emitter.
  *
  * `CallSitePlan` carries the call *target* location (and optional gas cap) alongside the args
  * — `targetRef` (required) and `gasRef` (optional) mirror `argRefs`'

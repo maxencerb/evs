@@ -1,5 +1,5 @@
 /**
- * M7 `codegen/abi.ts` — the ABI emitters: dispatch-time calldata decode, return-tuple encode,
+ * `codegen/abi.ts` — the ABI emitters: dispatch-time calldata decode, return-tuple encode,
  * and the fork-portable memory-copy primitive.
  *
  * Every emitted sequence is net-zero on the operand stack (the statement-boundary invariant)
@@ -136,7 +136,7 @@ function wordLayoutOf(type: WordType): Extract<TypeLayout, { kind: 'word' }> {
  */
 function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): WordType {
   if (layout.elem.kind !== 'word') {
-    throw internal('composite-element array codegen pending (§12.6/§12.7)');
+    throw internal('composite-element array codegen pending');
   }
   return layout.elem.abi;
 }

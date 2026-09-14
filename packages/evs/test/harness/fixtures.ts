@@ -1,9 +1,9 @@
 /**
- * M10 `test/harness/fixtures.ts` — hand-assembled bytecode fixtures.
+ * Hand-assembled bytecode fixtures.
  *
  * Seed corpus: the research seed fixtures (`RUNTIME_42`,
  * `RUNTIME_WHOAMI`, `RUNTIME_STATICCALL`), plus programmable returner/reverter builders and
- * the attacker-shaped returners used by the M7 decode-bounds suite (huge head offsets, huge
+ * the attacker-shaped returners used by the codegen decode-bounds suite (huge head offsets, huge
  * lengths, off-by-one truncations, dirty high bits, empty returndata).
  *
  * All builders emit PUSH0 (Shanghai+); the harness EVM runs Prague, matching the pinned
@@ -156,7 +156,7 @@ export function concatHex(...parts: readonly Hex[]): Hex {
 
 /**
  * Canned malicious callees. Each one is a complete runtime for `fixture.contracts`; the
- * decode-bounds suite (M7) asserts the script reverts with `EvsDecodeError(site)` — never
+ * codegen decode-bounds suite asserts the script reverts with `EvsDecodeError(site)` — never
  * an exceptional halt — when its STATICCALL target behaves like one of these.
  */
 export const ATTACKER_RETURNERS = {

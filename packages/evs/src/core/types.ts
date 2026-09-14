@@ -1,5 +1,5 @@
 /**
- * M1 `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
+ * `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
  * predicates/metadata (single source of truth for all modules).
  */
 
@@ -222,9 +222,9 @@ export function namedArg<const name extends string, const type extends EvsType>(
 // ---------------------------------------------------------------------------
 // args-input normalization (shared by `evscript` args, `s.fn` params, `t.error` params)
 // ---------------------------------------------------------------------------
-// These lived in builder/script.ts (M5) until issue #15; they are pure M1 material (EvsType +
+// These lived in builder/script.ts until issue #15; they are pure core/ material (EvsType +
 // ArgSpec only) and `t.error` needs them, so they moved here. script.ts re-exports them
-// verbatim — the frozen M5 surface is unchanged.
+// verbatim — the builder's public surface is unchanged.
 
 /**
  * One top-level arg/param declarator (issue #9): a bare `t.*` type, or a
@@ -289,9 +289,9 @@ export interface EvsErrorAbiEntry<
 /**
  * A declared custom error (issue #15): a module-level value created by {@link t.error},
  * declared on a script def (`errors: [...]`) and thrown with `s.throw`. Carries the normalized
- * param specs and the literal ABI entry; the 4-byte selector is derived downstream (M3
- * `selectorOf` — core stays viem-free), byte-identical to Solidity's over the canonical
- * signature.
+ * param specs and the literal ABI entry; the 4-byte selector is derived downstream
+ * (`selectorOf` in abi/artifact.ts — core stays viem-free), byte-identical to Solidity's over
+ * the canonical signature.
  */
 export interface EvsErrorType<
   name extends string = string,
@@ -303,7 +303,7 @@ export interface EvsErrorType<
   readonly abi: EvsErrorAbiEntry<name, params>;
 }
 
-// -- type-level record→ordered-components machinery (abitype §4.2) -----------------------------
+// -- type-level record→ordered-components machinery (UnionToTuple) -----------------------------
 // A struct record is unordered at the type level; recovering an order needs `UnionToTuple`,
 // whose order is TS-internal-id order, NOT declaration order. That is SAFE here because a struct
 // compiles to a single NAMED ABI `tuple` which abitype infers as an ORDER-INSENSITIVE object;
@@ -1088,7 +1088,7 @@ function fromAbiParameterRT(param: unknown): EvsType {
 }
 
 // ---------------------------------------------------------------------------
-// internal helpers (module-private to evs; not part of the frozen M1 surface)
+// internal helpers (module-private to evs; not part of the public surface)
 // ---------------------------------------------------------------------------
 
 /** Recognizably-Solidity types that are deliberately out of evs get the UNSUPPORTED_V0 code. */
@@ -1124,7 +1124,7 @@ function assertEvsType(s: string, context: string): asserts s is StringType {
  * Installs throwing `valueOf` / `toString` / `toJSON` / `Symbol.toPrimitive` on `target`
  * (each throws `EvsStagingError` citing both the misuse site and where the handle was
  * recorded), plus a NON-throwing `nodejs.util.inspect.custom` returning `describe()` —
- * printing is debugging, not misuse. The builder (M5) layers `Expr` methods on top.
+ * printing is debugging, not misuse. The builder layers `Expr` methods on top.
  */
 export function installStagingTraps(
   target: object,

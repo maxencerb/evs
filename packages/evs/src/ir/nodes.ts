@@ -1,5 +1,5 @@
 /**
- * M2 `ir/nodes.ts` — the ScriptIr node inventory, versioned JSON-safe (de)serialization, and
+ * `ir/nodes.ts` — the ScriptIr node inventory, versioned JSON-safe (de)serialization, and
  * statement-tree traversal.
  *
  * The IR is a structured statement tree over flat value/cell/fn tables — plain JSON-safe data

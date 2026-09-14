@@ -1,5 +1,5 @@
 /**
- * M8 unit tests — `codegen/frame.ts` (static frame layout).
+ * Unit tests — `codegen/frame.ts` (static frame layout).
  *
  * Slot-order expectations mirror the while-loop worked example: args first
  * (0x80…), then cells, then non-folded values in id order, then per-reachable-fn result
@@ -125,7 +125,7 @@ function fnIr(): ScriptIr {
 // tests
 // ---------------------------------------------------------------------------
 
-describe('layoutFrames — slot ordering (architecture §15.3)', () => {
+describe('layoutFrames — slot ordering', () => {
   const ir = loopIr();
   const frame = layoutFrames(ir);
 
@@ -175,7 +175,7 @@ describe('layoutFrames — slot ordering (architecture §15.3)', () => {
   });
 });
 
-describe('layoutFrames — fn regions (architecture §9)', () => {
+describe('layoutFrames — fn regions', () => {
   const ir = fnIr();
   const frame = layoutFrames(ir);
 
@@ -197,7 +197,7 @@ describe('layoutFrames — fn regions (architecture §9)', () => {
     expect(frame.frameEnd).toBe(0x140);
   });
 
-  test('uncalled fn: no region, no value slots (dropped per §9)', () => {
+  test('uncalled fn: no region, no value slots (dropped)', () => {
     expect(() => frame.fnRegion(1)).toThrow(EvsInternalError);
     expect(() => fnReturnAddressSlot(frame, 1)).toThrow(EvsInternalError);
     expect(() => frame.slotOfValue(3)).toThrow(EvsInternalError);

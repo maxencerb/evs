@@ -1,5 +1,5 @@
 /**
- * M1 `core/loc.ts` — lazy source-location capture.
+ * `core/loc.ts` — lazy source-location capture.
  *
  * `captureLoc()` eagerly stores `new Error().stack` (capture is the cheap part) and parses it
  * lazily on first property access — the returned `SourceLoc` fields are getters. Frames whose

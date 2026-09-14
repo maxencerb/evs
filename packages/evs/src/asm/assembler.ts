@@ -1,5 +1,5 @@
 /**
- * M4 `asm/assembler.ts` — AsmNode stream, AsmWriter, and the two-pass assembler.
+ * `asm/assembler.ts` — AsmNode stream, AsmWriter, and the two-pass assembler.
  *
  * - `pushLabel` is ALWAYS `PUSH2` + a big-endian fixup patched after layout (EIP-170/3860 keep
  *   every offset < 2^16, so PUSH2 always suffices and widths never shift).

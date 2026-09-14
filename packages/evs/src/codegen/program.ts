@@ -1,5 +1,5 @@
 /**
- * M8 `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
+ * `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
  * (the optimizer seam).
  *
  * Program layout:

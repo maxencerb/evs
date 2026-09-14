@@ -1,5 +1,5 @@
 /**
- * M10 `test/harness/evm.ts` — in-process EVM execution harness (unit tier).
+ * In-process EVM execution harness (unit tier).
  *
  * Frozen `execRuntime` signature. Runs compiled script runtime bytecode on `@ethereumjs/evm`
  * (v10, catalog-pinned): the runtime is planted at a fixed SCRIPT address, fixture mocks
@@ -30,7 +30,7 @@ import type { Hex } from '../../src/core/types.js';
 // fixed addresses
 // ---------------------------------------------------------------------------
 
-/** Where `execRuntime` plants the script runtime (mirrors `DEFAULT_SCRIPT_ADDRESS`, M9). */
+/** Where `execRuntime` plants the script runtime (mirrors `DEFAULT_SCRIPT_ADDRESS`). */
 export const SCRIPT_ADDRESS: Address = '0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530';
 
 /** Deterministic non-zero `msg.sender` / `tx.origin` of the top-level call. */

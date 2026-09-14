@@ -1,5 +1,5 @@
 /**
- * M8 unit tests — `codegen/lower.ts` statement templates, executed on the M10 harness.
+ * Unit tests — `codegen/lower.ts` statement templates, executed on the in-process EVM harness.
  *
  * - checked-op boundary matrix: for every width class,
  *   `{0, 1, max−1, max, min, −1}` operands × {add,sub,mul,div,mod} against a bigint
@@ -763,7 +763,7 @@ describe('select and arrays', () => {
     expect(ok.success).toBe(true);
   });
 
-  test('arrnew zero-fills memory dirtied by transient call scratch (§5)', async () => {
+  test('arrnew zero-fills memory dirtied by transient call scratch', async () => {
     // The all-literal sub-call builds 100B of calldata at MLOAD(0x40) WITHOUT bumping the
     // free pointer; only 32B of returndata snapshot are allocated afterwards, leaving dirty
     // bytes right where arrnew claims its buffer. CALLDATACOPY-from-past-the-end must zero it.

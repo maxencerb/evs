@@ -1,5 +1,5 @@
 /**
- * M10 `test/global-setup.ts` — vitest globalSetup for the `integration` project.
+ * vitest globalSetup for the `integration` project.
  *
  * A prool proxy server multiplexing one anvil instance per vitest worker on port 8545
  * (`/<VITEST_POOL_ID>` routing, see `test/harness/anvil.ts`).

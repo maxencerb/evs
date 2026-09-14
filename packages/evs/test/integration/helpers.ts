@@ -119,7 +119,7 @@ export async function callExpectRevert(params: {
   throw new Error('callExpectRevert: call unexpectedly succeeded');
 }
 
-/** Deterministic LCG so corpora are stable across runs (testing.md: seeded corpora only). */
+/** Deterministic LCG so corpora are stable across runs (seeded corpora only). */
 export function lcg(seed: bigint): () => bigint {
   let state = seed & ((1n << 64n) - 1n);
   return () => {

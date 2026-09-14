@@ -1,11 +1,11 @@
 /**
- * M7 `codegen/tails.ts` — shared tail emission: the panic tails, the `EvsInvalidCalldata()` /
+ * `codegen/tails.ts` — shared tail emission: the panic tails, the `EvsInvalidCalldata()` /
  * `EvsDecodeError(site)` revert tails, the per-site decode-fail stubs, and the pre-cancun
  * `@memcpy` word-loop subroutine.
  *
  * NOTE: the `SharedTails` labels `codegen/abi.ts` + `codegen/call.ts` jump to must be *defined*
  * somewhere; this module is the single place that emits the tail bodies (used directly by the
- * M7 unit tests, and by M8's `lowerProgram`, which places panic tails / dfail stubs /
+ * unit tests, and by `lowerProgram`, which places panic tails / dfail stubs /
  * `@decode_revert` / `@memcpy` after the program body).
  *
  * Tail shapes (byte-for-byte intent):
@@ -73,7 +73,7 @@ export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }
  *   @dfail_<site>: JUMPDEST PUSH<k> <site> PUSH2 @decode_revert JUMP   ('any')
  *
  * `emitStaticCall` only *references* `plan.dfailLabel` in strict mode; the program assembler
- * (M8 `lowerProgram`, or a test harness) must place one stub per strict call site.
+ * (`lowerProgram`, or a test harness) must place one stub per strict call site.
  */
 export function emitDecodeFailStub(
   w: AsmWriter,

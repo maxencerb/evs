@@ -200,7 +200,7 @@ describe('verifyStack — checked labels', () => {
   });
 });
 
-/** The §15.0 shared panic tail: relative counter, goes negative, terminates in REVERT. */
+/** The shared panic tail: relative counter, goes negative, terminates in REVERT. */
 const panicTailCorpus = (): readonly AsmNode[] => [
   // main: checked region with a conditional edge into the tail
   { k: 'push', value: 1n },

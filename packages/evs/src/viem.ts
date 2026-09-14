@@ -1,5 +1,5 @@
 /**
- * M9 `viem.ts` — the init-code wrapper and the two `toViem()` shapes.
+ * `viem.ts` — the init-code wrapper and the two `toViem()` shapes.
  *
  * - viem's deployless `code` parameter expects CREATION bytecode — passing runtime bytecode
  *   fails SILENTLY (empirically verified). The artifact therefore only

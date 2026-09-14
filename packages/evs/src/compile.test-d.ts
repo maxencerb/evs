@@ -1,5 +1,5 @@
 /**
- * M9 type tests — both `toViem()` shapes spread into viem's `readContract` and typecheck
+ * Type tests — both `toViem()` shapes spread into viem's `readContract` and typecheck
  * under tsc --strict; the generated literal ABI flows through `readContract` inference for
  * the flagship script; omitting both `address` and `code` is a type error.
  */
@@ -187,7 +187,7 @@ test('a concrete multi-return script is assignable to default-instantiated EvsSc
 
 // ---------------------------------------------------------------------------
 // returning a Tuple handle DIRECTLY (no .expr()) — the struct component still resolves
-// to the named object, identical to the `.expr()` form (composite types §6/§8)
+// to the named object, identical to the `.expr()` form
 // ---------------------------------------------------------------------------
 
 const slot0Abi = [

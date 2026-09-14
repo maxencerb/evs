@@ -1,5 +1,5 @@
 /**
- * M4 `asm/ops.ts` — the opcode table for everything evs emits, plus the forbidden-byte set.
+ * `asm/ops.ts` — the opcode table for everything evs emits, plus the forbidden-byte set.
  *
  * Every entry carries hex code, stack in/out and fork gating, verified against the EVM opcode
  * reference. `since` is relative to

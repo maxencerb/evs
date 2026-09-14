@@ -1,5 +1,5 @@
 /**
- * M7 unit tests — `codegen/abi.ts`: calldata decode + return encode, differential against
+ * Unit tests — `codegen/abi.ts`: calldata decode + return encode, differential against
  * viem `encodeAbiParameters` / `decodeFunctionResult`, the malformed /
  * attacker-shaped calldata matrix (→ `EvsInvalidCalldata()`, never an exceptional halt), the
  * dirty-word normalization rules, and the pre-cancun memcpy path.
@@ -24,7 +24,7 @@ import { createSharedTails, emitSharedTails } from './tails.js';
 // helpers
 // ---------------------------------------------------------------------------
 
-/** Arbitrary selector — the decoder never inspects it (the dispatcher does, M8). */
+/** Arbitrary selector — the decoder never inspects it (the dispatcher in `program.ts` does). */
 const SELECTOR: Hex = '0x01020304';
 const FRAME_BASE = 0x80;
 const INVALID_CALLDATA: Hex = selectorOf('EvsInvalidCalldata', []);
@@ -313,7 +313,7 @@ describe('dirty calldata words normalize instead of reverting', () => {
 // malformed / attacker-shaped calldata → EvsInvalidCalldata (never a halt)
 // ---------------------------------------------------------------------------
 
-describe('malformed calldata reverts EvsInvalidCalldata() — architecture §8.1', () => {
+describe('malformed calldata reverts EvsInvalidCalldata()', () => {
   interface BadCase {
     name: string;
     types: readonly EvsType[];

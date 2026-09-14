@@ -2,8 +2,8 @@
  * these helpers narrow word-typed args (`a.type as WordType`) after an `isDyn` guard; the
  * EvsType union now includes TupleType, but these fixtures are word/dyn/array only. */
 /**
- * M7 unit tests — `codegen/call.ts` (`emitStaticCall`) against mock
- * callee bytecode on the M10 harness:
+ * Unit tests — `codegen/call.ts` (`emitStaticCall`) against mock
+ * callee bytecode on the in-process EVM harness:
  *
  * - calldata template differential vs viem `encodeFunctionData` (literal / runtime / mixed
  *   args; const folding incl. the >96-byte → data-segment + CODECOPY path), observed through
@@ -644,7 +644,7 @@ describe('malformed returndata → EvsDecodeError(site) — strict mode', () => 
 // tryCall — success flag, zeroing block, rejoining
 // ---------------------------------------------------------------------------
 
-describe('tryCall (architecture §7.2 step 6)', () => {
+describe('tryCall', () => {
   const OUTS: readonly EvsType[] = ['uint256', 'string'];
   const COMPS = outComps(OUTS, true);
   const ZEROED = tuple(COMPS, { ok: false, o0: 0n, o1: '' });

@@ -1,6 +1,6 @@
 import type { Abi } from 'abitype';
 /**
- * M5 unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
+ * Builder unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
  * constant folding, scope positives, and recorded-IR validity (`validateIr` on every script).
  *
  * Snapshot scripts are recorded with `{ locations: false }` so the serialized IR is
@@ -1498,7 +1498,7 @@ describe('source locations', () => {
 });
 
 // ---------------------------------------------------------------------------
-// flagship-shaped smoke (api.md E1/E4 reduced)
+// flagship-shaped smoke (reduced flagship examples)
 // ---------------------------------------------------------------------------
 
 describe('integration-shaped recording', () => {

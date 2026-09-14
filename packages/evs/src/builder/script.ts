@@ -1,5 +1,5 @@
 /**
- * M5 `builder/script.ts` — the public builder surface: `evscript`, `EvsScript`,
+ * `builder/script.ts` — the public builder surface: `evscript`, `EvsScript`,
  * `ScriptBuilder`, `Cell`, `MutArray`, `LoopCtl`, `ScriptReturn`.
  *
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
@@ -67,9 +67,9 @@ export interface EvsScript<
   compile(options?: CompileOptions): CompiledEvsScript<name, args, ret, errs>; // sugar for compile()
 }
 
-// `ArgInput` / `ArgsInput` / `ToArgSpec` / `NormalizeArgs` moved to M1 core/types.ts (issue #15
+// `ArgInput` / `ArgsInput` / `ToArgSpec` / `NormalizeArgs` moved to core/types.ts (issue #15
 // — `t.error` params take the same shorthand and core takes no builder import); re-exported
-// verbatim so the frozen M5 surface is unchanged.
+// verbatim so the builder's public surface is unchanged.
 export type { ArgInput, ArgsInput, NormalizeArgs, ToArgSpec } from '../core/types.js';
 
 /**
@@ -365,7 +365,7 @@ export function evscript<
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so
   // the ABI inputs are labeled accordingly (issue #9).
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement is pinned by M3 tests
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement pinned by abi tests
   const abi = buildScriptAbi(
     def.name,
     ir.args,
@@ -382,7 +382,7 @@ export function evscript<
     compile(
       options?: CompileOptions,
     ): CompiledEvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
-      // namespace access keeps this tolerant of the M9 module landing separately
+      // namespace access keeps this tolerant of the compile module landing separately
       const compileFn: unknown = (compileModule as Record<string, unknown>)['compile'];
       if (typeof compileFn !== 'function') {
         throw new EvsInternalError(
@@ -390,7 +390,7 @@ export function evscript<
           'compile() is not available — the evs compile module failed to load',
         );
       }
-      // M9 frozen signature; the namespace-loaded compile is intentionally typed `unknown`.
+      // the `compile()` signature; the namespace-loaded compile is intentionally typed `unknown`.
       const typedCompile =
         // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
         compileFn as (
@@ -415,7 +415,7 @@ export interface Cell<t extends EvsType> {
 
 /** The `T[]` value type of a `MutArray<e>` element `e`: a string element → `${e}[]` (pinned to the
  *  depth-bounded {@link EvsType} array vocabulary); a `tuple` element → a `tuple[]` {@link TupleType}
- *  with the SAME components (§12.8 — a `MutArray` element is always a plain `tuple`, so the array tag
+ *  with the SAME components (a `MutArray` element is always a plain `tuple`, so the array tag
  *  is exactly `'tuple[]'`). One-level-deeper only — deeper string arrays are rejected at record time. */
 export type MutArrayValueOf<e extends EvsType> = e extends TupleType
   ? { readonly type: 'tuple[]'; readonly components: e['components'] }
@@ -430,7 +430,7 @@ export type MutArrayElem<e extends EvsType> = e extends TupleType
   : Expr<Extract<e, EvsType>>;
 
 /**
- * A mutable array (`s.newArray`) over element type `e` (§5; widened to composite elements in §12.8).
+ * A mutable array (`s.newArray`) over element type `e`.
  * `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a `tuple`. `set`
  * accepts the element's `IntoMember` (a `Tuple` handle / literal for a tuple element, an `IntoExpr`
  * otherwise); `get` yields the element handle; `expr()` is the raw memref of the SAME buffer.
@@ -509,7 +509,7 @@ export interface Field<t extends EvsType> {
 }
 
 /**
- * A tuple / struct memref handle (spec §5). For each NAMED component, a property keyed by the
+ * A tuple / struct memref handle. For each NAMED component, a property keyed by the
  * component name yields a {@link Field} over that member; `at(i)` is the positional accessor; and
  * `expr()` is the raw memref {@link Expr} (for returning the tuple or passing it as a call arg).
  * Typed via abitype over `C['components']`. Reference semantics: the handle is the pointer, so a
@@ -556,7 +556,7 @@ type PeelTupleArray<C extends TupleType> = C['type'] extends `${infer inner}[]`
 export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray<C>>;
 
 // `.at(i)` on a tuple-ARRAY Expr yields the element handle (the runtime `atOp` returns a Tuple
-// handle bound to the `index` out ValueId for a plain-tuple element, an Expr otherwise — §12.8).
+// handle bound to the `index` out ValueId for a plain-tuple element, an Expr otherwise).
 // The base `Expr.at` overload in `core/types.ts` only matches string-element arrays; this
 // augmentation adds the tuple-array case where `Tuple`/`Field`/`ComponentToType` are in scope.
 // Overload resolution picks the `this`-matching signature, so a `string[]`/`uint256[][]` Expr
@@ -610,7 +610,7 @@ export type PackedValue = Expr | AnyMutArray;
 
 /**
  * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),
- * a {@link Tuple} handle DIRECTLY (no `.expr()` needed — composite types §6/§8), or a
+ * a {@link Tuple} handle DIRECTLY (no `.expr()` needed), or a
  * {@link MutArray} handle DIRECTLY (no `.expr()` — issue #5 ask #5). `.expr()` stays valid on
  * both handles: it just yields the equivalent `Expr<C>`, which this union also covers.
  */
@@ -700,7 +700,7 @@ type ParamToTupleArrayType<p extends AbiParameter> = p extends {
   ? { readonly type: 'tuple[]'; readonly components: comps }
   : never;
 
-// the staged handle of one OUTPUT parameter (§12.8 return side): a `tuple` param → a `Tuple` handle
+// the staged handle of one OUTPUT parameter: a `tuple` param → a `Tuple` handle
 // (decoded into a flat block); a `tuple[]` param → an `Expr` of the `tuple[]` descriptor (so a
 // returned array is abitype-typed as `readonly Struct[]` and `.at(i)` is a typed Tuple element); a
 // nested word array (`uint256[][]`) / `string[]` → an `Expr` of its string type (abitype infers
@@ -714,7 +714,7 @@ type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
 // a struct, a positional array for an unnamed tuple, a `readonly Struct[]` for a `tuple[]`) OR an
 // `Expr`/handle of that type. For a `tuple` param: a `Tuple` handle / `s.tuple(...)` result. For a
-// `tuple[]` param (§12.8): an `Expr` of the `tuple[]` descriptor (a decoded/constructed array handle)
+// `tuple[]` param: an `Expr` of the `tuple[]` descriptor (a decoded/constructed array handle)
 // or the `readonly Struct[]` literal. `uint256[][]`/`string[]` are `EvsType` strings → `Expr<that>`.
 type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
@@ -915,10 +915,10 @@ export interface ScriptBuilder<
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
   let<t extends EvsType>(init: Expr<t>): Cell<t>;
-  // §12.8: `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a
+  // `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a
   // `tuple` (deferred shapes — `tuple[]` element, deeper nesting, `T[N]` — throw at record time).
   newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
-  // tuple/struct allocator (spec §5): `init` is a partial, name-keyed (struct) or positional
+  // tuple/struct allocator: `init` is a partial, name-keyed (struct) or positional
   // (t.tuple) record of members; omitted members default to zero. Returns a `Tuple` handle.
   tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>;

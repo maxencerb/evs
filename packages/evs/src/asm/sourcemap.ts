@@ -1,5 +1,5 @@
 /**
- * M4 `asm/sourcemap.ts` — PC→source map.
+ * `asm/sourcemap.ts` — PC→source map.
  *
  * `segments` are sorted by `pc` and non-overlapping; together they cover every emitted code
  * byte (assemble guarantees this). `sites` are merged in by compile.ts (the assembler emits

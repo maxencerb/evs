@@ -1,5 +1,5 @@
 /**
- * M8 unit tests — `codegen/program.ts` (`lowerProgram`) + disassembly goldens for the
+ * Unit tests — `codegen/program.ts` (`lowerProgram`) + disassembly goldens for the
  * worked examples.
  *
  * - dispatcher goldens (full annotated listing of a minimal script) + `EvsInvalidCalldata`
@@ -425,8 +425,8 @@ function st(body: StmtBody, site?: number): Stmt {
 // worked-example goldens
 // ---------------------------------------------------------------------------
 
-describe('worked-example goldens (architecture §15)', () => {
-  test('§15.1 checked ADD (uint256): a→0x80, b→0xA0, c→0xC0', () => {
+describe('worked-example goldens', () => {
+  test('checked ADD (uint256): a→0x80, b→0xA0, c→0xC0', () => {
     const listing = fragmentListing({
       values: ['uint256', 'uint256', 'uint256'],
       slots: new Map([
@@ -454,7 +454,7 @@ describe('worked-example goldens (architecture §15)', () => {
     `);
   });
 
-  test('§15.2 STATICCALL symbol() → dynamic string: token0→0x80, symbol0→0xA0, site 7', () => {
+  test('STATICCALL symbol() → dynamic string: token0→0x80, symbol0→0xA0, site 7', () => {
     const listing = fragmentListing({
       values: ['address', 'string'],
       slots: new Map([
@@ -576,7 +576,7 @@ describe('worked-example goldens (architecture §15)', () => {
     `);
   });
 
-  test('§15.3 while loop with cells: n→0x80, total→0xA0, i→0xC0, v1…v7→0xE0…0x1A0', () => {
+  test('while loop with cells: n→0x80, total→0xA0, i→0xC0, v1…v7→0xE0…0x1A0', () => {
     // value table: 0=n, 1..7=v1..v7, 8=const 0 (folded), 9=const 1 (folded)
     const slots = new Map<ValueId, number | null>([
       [0, 0x80],

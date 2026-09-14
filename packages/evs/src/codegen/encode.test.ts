@@ -6,7 +6,7 @@
 /**
  * Issue #17 differential suite — `s.encode` / `s.encodePacked` / `s.keccak256` vs the viem
  * oracle. viem's `encodeAbiParameters`, `encodePacked`, and `keccak256` are
- * assumed faithful to Solidity; for every case the compiled bytecode's returndata (M10 harness)
+ * assumed faithful to Solidity; for every case the compiled bytecode's returndata (EVM harness)
  * must match them byte-for-byte, and `interpret(script.ir, …)` must agree with the bytecode on
  * the full returndata. The corpus sweeps every word width, dynamic types (incl. empty and
  * non-32-aligned lengths), word arrays, structs (flat / nested / dynamic members), composite

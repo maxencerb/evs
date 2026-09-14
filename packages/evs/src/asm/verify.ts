@@ -1,5 +1,5 @@
 /**
- * M4 `asm/verify.ts` — the three always-on verification passes.
+ * `asm/verify.ts` — the three always-on verification passes.
  *
  * 1. `verifyJumpdests` — consensus-identical JUMPDEST scan (PUSH immediates are not jumpdests).
  * 2. `verifyStack` — stack-height simulation with `checked` and `'any'` label classes.

@@ -1,5 +1,5 @@
 /**
- * M8 `codegen/frame.ts` — static frame layout.
+ * `codegen/frame.ts` — static frame layout.
  *
  * Every arg, cell, value and fn param/result gets one 32-byte slot in the static frame
  * starting at `0x80`; statement templates load operands (`PUSH slot MLOAD` / `PUSH const`),

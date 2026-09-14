@@ -1,5 +1,5 @@
 /**
- * M1 `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
+ * `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
  */
 
 export interface SourceLoc {

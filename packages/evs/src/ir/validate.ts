@@ -1,5 +1,5 @@
 /**
- * M2 `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
+ * `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
  *
  * Re-checks everything the builder enforces so deserialized IR is as trustworthy as recorded
  * IR (`deserializeIr → validateIr` is the trust boundary): operand types per the op table,
@@ -840,7 +840,7 @@ class IrValidator {
   }
 
   /**
-   * Element type of an `arrnew` (§12.4). Admits one level of array nesting over a composite/dynamic
+   * Element type of an `arrnew`. Admits one level of array nesting over a composite/dynamic
    * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
    * or a plain `tuple`. STILL deferred (`UNSUPPORTED_V0`): `tuple[]` element (→ `tuple[][]`), a
    * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.

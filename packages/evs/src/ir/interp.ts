@@ -1,5 +1,5 @@
 /**
- * M6 `ir/interp.ts` — the reference interpreter over `ScriptIr` against a `MockChain`.
+ * `ir/interp.ts` — the reference interpreter over `ScriptIr` against a `MockChain`.
  *
  * It is the differential oracle for the compiler and implements the canonical word invariant,
  * the normative checked-arithmetic table, the call semantics (bubbling, staticMinSize guard,
@@ -200,7 +200,7 @@ function resolveEnv(env: InterpEnvOverrides | undefined): ResolvedEnv {
 
 /** `Panic(uint256)` selector bytes. */
 const PANIC_SELECTOR = Uint8Array.of(0x4e, 0x48, 0x7b, 0x71);
-/** `EvsDecodeError(uint256)` selector — single source of truth is M3's selectorOf. */
+/** `EvsDecodeError(uint256)` selector — single source of truth is abi/artifact.ts's selectorOf. */
 const DECODE_ERROR_SELECTOR = hexToBytes(selectorOf('EvsDecodeError', ['uint256']));
 
 // ---------------------------------------------------------------------------
@@ -214,7 +214,7 @@ interface BytesVal {
 }
 
 /**
- * memref payload of a `T[]` value — the `[len][p0]…[p_{len-1}]` block (§12.1). `items` is the
+ * memref payload of a `T[]` value — the `[len][p0]…[p_{len-1}]` block. `items` is the
  * element list, mutated in place by `arrset` (reference semantics, like {@link TupleVal}'s
  * `fields`). For a **word** element each item is a canonical `bigint`; for a **composite** element
  * (`tuple[]`, `T[][]`, `string[]`/`bytes[]`) each item is the element's own memref `Value`
@@ -470,7 +470,7 @@ class Interp {
         const len = this.word(s.length);
         if (len >= 1n << 32n) throw panicSignal(0x41);
         // zero-fill each slot with the typed zero (0n for a word element — preserves the
-        // pre-composite behavior; a typed memref zero for a composite/dynamic element, §12.5).
+        // pre-composite behavior; a typed memref zero for a composite/dynamic element).
         const elem = s.elem;
         const items = Array.from({ length: Number(len) }, () => zeroValue(elem));
         this.values.set(s.out, { kind: 'array', elem, items });
@@ -514,7 +514,7 @@ class Interp {
         const i = this.word(s.i);
         if (i >= BigInt(arr.items.length)) throw panicSignal(0x32);
         // word element → store the canonical word (preserves canonicalization); composite element
-        // → store the element's memref Value by reference (§12.5).
+        // → store the element's memref Value by reference.
         arr.items[Number(i)] = isWordType(arr.elem) ? this.word(s.value) : this.getValue(s.value);
         return;
       }
@@ -641,7 +641,7 @@ class Interp {
             `interpret: bitnot on non-word type '${stringifyType(ta)}'`,
           );
         }
-        // NOT then re-canonicalize (post-mask / re-sign-extend — §6 "Bitwise")
+        // NOT then re-canonicalize (post-mask / re-sign-extend)
         this.values.set(s.out, canonWord(ta, ~a & MASK256));
         return;
       }
@@ -685,13 +685,13 @@ class Interp {
     }
     const data = hexToBytesChecked(res.data, `MockChain returndata for ${s.fnAbi.name}()`, s.loc);
     if (!res.success) {
-      if (s.mode === 'strict') throw new RevertSignal(data); // bubble verbatim (§7.2 step 2)
+      if (s.mode === 'strict') throw new RevertSignal(data); // bubble verbatim
       this.zeroCallOuts(s);
       return;
     }
     const decoded = decodeOutputs(s.fnAbi.outputs, data);
     if (decoded === null) {
-      // structural decode failure (§7.2 steps 3/5)
+      // structural decode failure (staticMinSize guard / decode bounds)
       if (s.mode === 'strict') throw decodeErrorSignal(s.site);
       this.zeroCallOuts(s);
       return;
@@ -707,7 +707,7 @@ class Interp {
   }
 
   /**
-   * tryCall failure values (§7.2 step 6): `success = 0`, word outs = 0, memref outs point at
+   * tryCall failure values: `success = 0`, word outs = 0, memref outs point at
    * the zero slot ⇒ empty string / empty bytes / empty array. Taken on call failure AND on
    * malformed returndata.
    */
@@ -722,7 +722,7 @@ class Interp {
     if (s.successOut !== undefined) this.values.set(s.successOut, 0n);
   }
 
-  /** selector ++ standard ABI args block — byte-equal to viem `encodeFunctionData` (§7.1). */
+  /** selector ++ standard ABI args block — byte-equal to viem `encodeFunctionData`. */
   private encodeCalldata(fnAbi: PlainAbiFunction, argIds: readonly ValueId[]): Uint8Array {
     const items = argIds.map((id, i) => {
       const p = fnAbi.inputs[i];
@@ -739,7 +739,7 @@ class Interp {
     if (fn === undefined) {
       throw new EvsInternalError('INTERNAL', `interpret: unknown FnId ${s.fn}`);
     }
-    // §9 convention: caller stores args into the callee's param slots …
+    // fn-call convention: caller stores args into the callee's param slots …
     s.args.forEach((a, i) => {
       const p = fn.params[i];
       if (p === undefined) {
@@ -770,7 +770,7 @@ class Interp {
   private encodeReturn(): { data: Uint8Array; values: Record<string, unknown> } {
     const items = this.ir.returns.map((r) => ({ type: r.type, value: this.getValue(r.value) }));
     const block = encodeParamsBlock(items);
-    // dynamic tuple ⇒ top-level 0x20 offset; all-static ⇒ components inline (§8.2 step 1)
+    // dynamic tuple ⇒ top-level 0x20 offset; all-static ⇒ components inline
     const anyDynamic = this.ir.returns.some((r) => abiIsDynamic(r.type));
     const data = anyDynamic ? concatBytes([wordToBytes(32n), block]) : block;
     const values: Record<string, unknown> = {};
@@ -837,7 +837,7 @@ function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {
 
 /**
  * add/sub/mul/div/mod with solc ≥0.8 checked semantics. Exact bigint math + range check on
- * the true result — identical to the §6 EVM check sequences for canonical operands (incl.
+ * the true result — identical to the compiled EVM check sequences for canonical operands (incl.
  * uint192 mul wrap-past-2^256, int256 `−2^255 / −1`, intN `minN / −1`, `−1 × −2^255`).
  */
 function arith(
@@ -917,7 +917,7 @@ function canonWord(type: WordType, word: bigint): bigint {
 }
 
 /**
- * `convert` (§6): free widening / reinterpret where lossless; otherwise the logical value is
+ * `convert`: free widening / reinterpret where lossless; otherwise the logical value is
  * range-checked against the target (Panic 0x11) — covers checked narrowing, cross-signedness,
  * and `asAddress`'s high-96-bits-zero check uniformly.
  */
@@ -993,7 +993,7 @@ function zeroValue(type: EvsType): Value {
 }
 
 // ---------------------------------------------------------------------------
-// ABI encode (standard head/tail over raw bytes — §7.1 / §8.2 shapes, tuple-aware)
+// ABI encode (standard head/tail over raw bytes — calldata / return shapes, tuple-aware)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1140,7 +1140,7 @@ function encodeTail(type: EvsType, value: Value): Uint8Array {
 }
 
 /**
- * Encodes a `T[]` tail (§12.2): `[len]` then, for a **static** element, each element inlined
+ * Encodes a `T[]` tail: `[len]` then, for a **static** element, each element inlined
  * contiguously (`len · staticSize(E)` bytes, NO offset words); for a **dynamic** element, `len`
  * offset words each relative to the array DATA START `D` (the word after `len`), then the element
  * tails appended from `D + 32·len`. Word-array encode (every item a word, static element) reduces
@@ -1205,7 +1205,7 @@ function decodeBlock(
   base: number,
   end: number,
 ): readonly Value[] | null {
-  // staticMinSize guard BEFORE any head read (§7.2 step 3): the head must fit in [base, end)
+  // staticMinSize guard BEFORE any head read: the head must fit in [base, end)
   if (BigInt(end - base) < BigInt(abiHeadBytes(components))) return null;
   const decoded: Value[] = [];
   let headOff = 0; // cumulative head offset within this block
@@ -1263,7 +1263,7 @@ function decodeDynamic(type: EvsType, data: Uint8Array, ptr: number, end: number
     const start = ptr + 32;
     return { kind: 'bytes', bytes: data.slice(start, start + Number(len)) };
   }
-  // T[] (§12.2 decode): D = data start (word after len). A static element is inlined at
+  // T[] decode: D = data start (word after len). A static element is inlined at
   // D + i·staticSize; a dynamic element is reached via a per-element offset word at D + 32·i,
   // each offset relative to D. Each element is a fresh Value (no aliasing across elements).
   const elem = elemTypeOf(asArrayType(type));
@@ -1297,7 +1297,7 @@ function decodeDynamic(type: EvsType, data: Uint8Array, ptr: number, end: number
 }
 
 // ---------------------------------------------------------------------------
-// script-arg coercion (the JS mirror of the §8.1 calldata trust boundary)
+// script-arg coercion (the JS mirror of the calldata trust boundary)
 // ---------------------------------------------------------------------------
 
 function coerceArg(name: string, type: EvsType, value: unknown, loc: SourceLoc | null): Value {
@@ -1305,7 +1305,7 @@ function coerceArg(name: string, type: EvsType, value: unknown, loc: SourceLoc |
   return coerceValue(type, value, where, loc);
 }
 
-/** Coerces a host literal to a {@link Value} of `type` (the JS mirror of the §8.1 trust boundary,
+/** Coerces a host literal to a {@link Value} of `type` (the JS mirror of the trust boundary,
  *  recursing through tuple components — named object when all members named, positional otherwise). */
 function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLoc | null): Value {
   if (isPlainTuple(type)) return coerceTuple(type, value, where, loc); // a tuple[] falls through to the array arm
@@ -1325,7 +1325,7 @@ function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLo
   }
   const raw: readonly unknown[] = value;
   // recurse per element: a word element coerces to a canonical word, a composite/dynamic element
-  // (tuple/string/bytes/T[]) coerces to its own memref Value (§12.5).
+  // (tuple/string/bytes/T[]) coerces to its own memref Value.
   return {
     kind: 'array',
     elem,
@@ -1465,7 +1465,7 @@ function jsValueOf(type: EvsType, value: Value): unknown {
     return type === 'string' ? TEXT_DECODER.decode(value.bytes) : bytesToHex(value.bytes);
   }
   // an array projects to items.map(jsValueOf) — a flat number/bigint list for word elements, a
-  // nested array/object list for composite elements (matching abitype/viem decode shape, §12.5).
+  // nested array/object list for composite elements (matching abitype/viem decode shape).
   const elem = elemTypeOf(asArrayType(type));
   return value.items.map((item) => jsValueOf(elem, item));
 }
@@ -1538,7 +1538,7 @@ function concatBytes(chunks: readonly Uint8Array[]): Uint8Array {
 // ---------------------------------------------------------------------------
 
 /**
- * The array types this interp handles (§12): a string array `T[]` whose element is a word,
+ * The array types this interp handles: a string array `T[]` whose element is a word,
  * `string`/`bytes`, or a one-level word `T[]` (`uint256[]`, `string[]`, `uint256[][]`), OR a
  * `tuple[]`. Still rejected (still `UNSUPPORTED_V0` at validation): `tuple[][]` and string arrays
  * nested deeper than `[][]`. `T[N]` is not representable as a string array.

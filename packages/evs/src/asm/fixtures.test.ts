@@ -1,11 +1,10 @@
 /**
- * The research fixtures `RUNTIME_42` and `RUNTIME_WHOAMI`, hand-assembled with the M4
+ * The research fixtures `RUNTIME_42` and `RUNTIME_WHOAMI`, hand-assembled with the
  * writer/assembler and executed.
  *
- * NOTE: the original plan called for execution "on the M10 harness"
- * (`test/harness/evm.ts`); that module is not implemented yet, so these tests execute the
- * assembled runtime directly on `@ethereumjs/evm` (the same engine the harness is pinned to).
- * Once M10 lands, the integration-tier suites cover the harness path.
+ * These tests execute the assembled runtime directly on `@ethereumjs/evm` (the same engine the
+ * in-process harness `test/harness/evm.ts` is pinned to); the integration-tier suites cover the
+ * harness path.
  */
 
 import { createEVM } from '@ethereumjs/evm';
@@ -82,7 +81,7 @@ function assembleRuntimeWhoami(evmVersion: 'paris' | 'cancun'): Uint8Array {
   return assemble(w.nodes(), { evmVersion }).bytecode;
 }
 
-describe('RUNTIME_42 (viem-integration App. A)', () => {
+describe('RUNTIME_42', () => {
   test('hand-assembly on paris reproduces the research bytes exactly', () => {
     expect(hex(assembleRuntime42('paris'))).toBe('602a60005260206000f3');
   });
@@ -105,7 +104,7 @@ describe('RUNTIME_42 (viem-integration App. A)', () => {
   });
 });
 
-describe('RUNTIME_WHOAMI (viem-integration App. A)', () => {
+describe('RUNTIME_WHOAMI', () => {
   test('hand-assembly on paris reproduces the research bytes exactly', () => {
     expect(hex(assembleRuntimeWhoami('paris'))).toBe('306000523360205260406000f3');
   });

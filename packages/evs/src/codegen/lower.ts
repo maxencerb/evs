@@ -1,5 +1,5 @@
 /**
- * M8 `codegen/lower.ts` — the statement templates (the checked-op table, the canonical word
+ * `codegen/lower.ts` — the statement templates (the checked-op table, the canonical word
  * invariant, the control-flow shapes, the fncall convention).
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
@@ -18,7 +18,7 @@
  * (annotated at stack height 1 — the return address). The callee then immediately SPILLS the
  * return address into its dedicated frame slot (`frame.ts` `fnReturnAddressSlot`) so the body
  * runs at stack baseline 0, and reloads it for the return JUMP. Rationale (rather than keeping
- * the return address on the stack during the body): the M7 emitters (`emitStaticCall`,
+ * the return address on the stack during the body): the emitters (`emitStaticCall`,
  * `emitMemCopy`) pin checked labels at absolute height 0/1/4, so a baseline-1 body could not
  * contain calls; and nested fncalls would present two different absolute heights to a single
  * callee entry annotation, which the `asm/verify.ts` verifier cannot express. No recursion ⇒

@@ -247,7 +247,7 @@ describe('validateIr — accepts', () => {
     expect(() => validateIr(fixture)).not.toThrow();
   });
 
-  test('bitwise/shift ops accept intN and bytesN operands (architecture §6)', () => {
+  test('bitwise/shift ops accept intN and bytesN operands', () => {
     const fixture = ir({
       values: [
         vi('int128'),

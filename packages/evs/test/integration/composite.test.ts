@@ -495,7 +495,7 @@ describe('composite arrays (return path) against real solc getters', () => {
   });
 });
 
-// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc (M4) -------------------
+// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc ------------------------
 //
 // (1) CONSTRUCT a Position[] inside the evs script (s.newArray + s.tuple + arrset), pass it as a
 //     CALL ARG to sumLiquidity(Position[]) on the real deployment, and assert the returned sum
@@ -514,7 +514,7 @@ const PositionStruct = {
   ],
 } as const;
 
-describe('composite arrays CALL-ARG encode + construct against real solc (M4)', () => {
+describe('composite arrays CALL-ARG encode + construct against real solc', () => {
   test('construct a Position[] in the evs script and call sumLiquidity → sum matches solc', async () => {
     // three positions derived exactly like Composite.positionsBatch (i = 0,1,2): liquidity = i*1000+7.
     const POSITIONS = [0n, 1n, 2n].map((i) => derivePosition(i));

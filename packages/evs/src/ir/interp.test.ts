@@ -4,7 +4,7 @@
  * several revert-path tests assert exclusively through the expectPanic() helper, which wraps
  * the expect(...).toEqual(...) pair on the outcome. */
 /**
- * M6 unit tests — golden runs over hand-built IRs covering every stmt kind; revert paths
+ * Unit tests — golden runs over hand-built IRs covering every stmt kind; revert paths
  * (Panic codes per width class incl. `int256 −2^255 / −1` and the uint192 MUL wrap-back);
  * decode-fail site ids; tryCall zeroing; maxSteps guard; byte-exact ABI agreement with viem.
  */
@@ -177,7 +177,8 @@ function panicHex(code: number): Hex {
   return `0x${PANIC_SEL}${BigInt(code).toString(16).padStart(64, '0')}`;
 }
 
-const DECODE_SEL = '20cf27b7'; // selectorOf('EvsDecodeError', ['uint256']) — pinned in M3 tests
+// selectorOf('EvsDecodeError', ['uint256']) — pinned in abi/artifact.test.ts
+const DECODE_SEL = '20cf27b7';
 function decodeErrHex(site: number): Hex {
   return `0x${DECODE_SEL}${BigInt(site).toString(16).padStart(64, '0')}`;
 }
@@ -260,7 +261,7 @@ function runConvert(from: WordType, to: WordType, a: unknown): InterpResult {
 }
 
 // ---------------------------------------------------------------------------
-// const + return encoding (every const shape; §8.2 byte-exactness vs viem)
+// const + return encoding (every const shape; byte-exactness vs viem)
 // ---------------------------------------------------------------------------
 
 describe('const + return encoding', () => {
@@ -543,7 +544,7 @@ describe('script args', () => {
 });
 
 // ---------------------------------------------------------------------------
-// checked arithmetic — the §6 boundary matrix
+// checked arithmetic — the boundary matrix
 // ---------------------------------------------------------------------------
 
 const U256_MAX = 2n ** 256n - 1n;
@@ -1616,7 +1617,7 @@ describe('call — word output normalization (normalize-don’t-revert)', () => 
   });
 });
 
-describe('call — decode failure sites (§7.2 bounds)', () => {
+describe('call — decode failure sites', () => {
   function strictDynScript(outType: EvsType, site: number): ScriptIr {
     const abi = fnAbi('get', [], [{ name: '', type: outType }]);
     return ir({

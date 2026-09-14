@@ -66,7 +66,7 @@ const EXPECTED: readonly [Mnemonic, number, number, number, OpInfo['since']][] =
   ['INVALID', 0xfe, 0, 0, 'frontier'],
 ];
 
-describe('OPS table vs evm-target §2', () => {
+describe('OPS table vs the EVM opcode reference', () => {
   test.each(EXPECTED)('%s = code 0x%s', (mnemonic, code, pops, pushes, since) => {
     const info = OPS[mnemonic];
     expect(info.code).toBe(code);
