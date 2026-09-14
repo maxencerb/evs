@@ -27,12 +27,12 @@ jobs:
     outputs:
       mode: ${{ steps.select-mode.outputs.mode }}
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
       - id: select-mode
-        uses: changesets/action/select-mode@v2
+        uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
 
   version:
     name: Open / update "Version Packages" PR
@@ -43,11 +43,11 @@ jobs:
       contents: write # commit the version bump (pushed through the GitHub API)
       pull-requests: write # create / update the PR
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: changesets/action/version@v2
+      - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           # changeset version + `bun install --lockfile-only` so bun.lock's workspace
           # version stays in sync (a stale lock breaks `bun pm pack`, oven-sh/bun#20477)
@@ -64,12 +64,12 @@ jobs:
       contents: write # push the release tag + create the GitHub release
       id-token: write # npm trusted publishing (OIDC)
     steps:
-      - uses: actions/checkout@v7
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           submodules: recursive # contracts/lib/forge-std (release re-runs the full gate)
           persist-credentials: false
       - uses: ./.github/actions/setup
-      - uses: foundry-rs/foundry-toolchain@v1
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
           version: v1.8.1 # keep in sync with ci.yml
 
@@ -91,7 +91,7 @@ jobs:
       # scripts/publish.ts: `bun pm pack` (rewrites catalog:/workspace: specs) →
       # `npm publish <tgz> --provenance` (OIDC) → `changeset git-tag`. The action reads the
       # tag events (CHANGESETS_OUTPUT), pushes the tag and creates the GitHub release.
-      - uses: changesets/action/publish@v2
+      - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: vp run changeset:publish
           create-github-releases: true

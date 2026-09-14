@@ -41,6 +41,7 @@ export default defineConfig({
       '**/.wrangler/**',
       '**/.snippets/**',
       '.changeset/*.md',
+      'README.md', // root symlink → packages/evs/README.md (formatted through its real path)
     ],
   },
   lint: {

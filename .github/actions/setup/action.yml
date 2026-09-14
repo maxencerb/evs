@@ -9,8 +9,7 @@ runs:
   steps:
     # setup-vp replaces setup-bun + setup-node + actions/cache: vp provisions Node.js and the
     # package manager, and `cache: true` caches bun's install cache keyed on bun.lock.
-    # Exact version on purpose — the `v1` tag is frozen (setup-vp README).
-    - uses: voidzero-dev/setup-vp@v1.20.0
+    - uses: voidzero-dev/setup-vp@9fd26ff49f9b5e6276c2b493da4454ad4527f7f4 # v1.20.0
       with:
         node-version-file: .node-version
         cache: true
