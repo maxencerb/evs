@@ -636,9 +636,9 @@ export type TypeOfReturn<v> =
 export type TupleInit<C extends TupleType> = C['components'][number]['name'] extends ''
   ? PositionalInit<C['components']>
   : {
-      readonly [c in C['components'][number] as c['name'] extends ''
-        ? never
-        : c['name']]?: IntoMember<ComponentToType<c>>;
+      readonly [
+        c in C['components'][number] as c['name'] extends '' ? never : c['name']
+      ]?: IntoMember<ComponentToType<c>>;
     };
 
 /** The partial positional init record for a `t.tuple` (homomorphic over the components tuple, so

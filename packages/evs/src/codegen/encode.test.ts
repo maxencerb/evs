@@ -92,15 +92,13 @@ function wordCases(): EncodeCase[] {
 }
 
 const DYNAMIC_CASES: EncodeCase[] = [
-  ...[0, 1, 31, 32, 33, 64, 95].map(
-    (len): EncodeCase => ({
-      name: `bytes of length ${len}`,
-      types: ['bytes'],
-      params: [{ type: 'bytes' }],
-      packedTypes: ['bytes'],
-      values: [`0x${'5a'.repeat(len)}`],
-    }),
-  ),
+  ...[0, 1, 31, 32, 33, 64, 95].map((len): EncodeCase => ({
+    name: `bytes of length ${len}`,
+    types: ['bytes'],
+    params: [{ type: 'bytes' }],
+    packedTypes: ['bytes'],
+    values: [`0x${'5a'.repeat(len)}`],
+  })),
   {
     name: 'strings: empty / ascii / multibyte utf8',
     types: ['string', 'string', 'string'],
