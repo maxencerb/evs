@@ -223,12 +223,12 @@ evs optimizes for *auditable correctness* over gas:
   enormous (a sum loop costs roughly 1.4M gas for 10,000 iterations, far inside any node's cap).
 - **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
   100; evs does not dedupe repeated calls.
-- **Structs and tuples are supported** (including nested structs), and so are **arrays of
-  structs (`tuple[]`), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays
-  (`string[]`/`bytes[]`)** — across script args, returns, and call ABIs, byte-exact vs viem and
-  real solc. **Two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and
-  fixed-size arrays (`uint256[3]`)** are still rejected with a recording-time error
-  ([#4](https://github.com/maxencerb/evs/issues/4)).
+- **The whole ABI type vocabulary is supported**: structs and tuples (including nested
+  structs), arrays of structs (`tuple[]`, `tuple[][]`), arrays nested to any depth
+  (`uint256[][][]`, `string[][]`), and fixed-size arrays (`uint256[3]`, `Position[2]`, mixed
+  with dynamic suffixes) — across script args, returns, and call ABIs, byte-exact vs viem and
+  real solc ([#4](https://github.com/maxencerb/evs/issues/4)). Overloaded callee functions
+  resolve by arity and argument types the way viem does.
 - **Read-only by construction.** No state writes, no logs, no deployment — enforced by the
   shape lints above.
 

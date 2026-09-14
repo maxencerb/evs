@@ -12,7 +12,14 @@
 
 import { isHexString } from '../core/bytes.js';
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import { isEvsType, typeToAbiParam, type ArgType, type EvsType, type Hex } from '../core/types.js';
+import {
+  isEvsType,
+  isTupleTag,
+  typeToAbiParam,
+  type ArgType,
+  type EvsType,
+  type Hex,
+} from '../core/types.js';
 
 export type ValueId = number;
 export type CellId = number;
@@ -113,7 +120,11 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }
   | { k: 'len'; a: ValueId; out: ValueId }
-  | { k: 'arrnew'; elem: EvsType; length: ValueId; out: ValueId }
+  // `fixed` (OPTIONAL, additive since #4): present for a fixed-size array `elem[N]` — the out
+  // value's type is then `elem[N]` and `length` MUST be a word const equal to `N` (validateIr
+  // checks it), so the memory block's length word always equals `N`. Absent ⇒ a dynamic `elem[]`
+  // (pre-#4 IR deserializes unchanged).
+  | { k: 'arrnew'; elem: EvsType; length: ValueId; fixed?: number; out: ValueId }
   | { k: 'arrset'; arr: ValueId; i: ValueId; value: ValueId }
   // composite (tuple/struct) construction + member access. The out/tuple ValueId's
   // `values[id].type` carries the {@link TupleType} (with components); these nodes hold only the
@@ -329,7 +340,7 @@ function asEvsType(v: unknown, path: string): EvsType {
   }
   const o = asRecord(v, path);
   const type = asString(o['type'], `${path}.type`);
-  if (type === 'tuple' || type === 'tuple[]' || type === 'tuple[][]') {
+  if (isTupleTag(type)) {
     return {
       type,
       components: asArray(o['components'], `${path}.components`).map((c, i) =>
@@ -339,7 +350,7 @@ function asEvsType(v: unknown, path: string): EvsType {
   }
   return fail(
     `${path}.type`,
-    `expected a tuple tag ('tuple'|'tuple[]'|'tuple[][]'), got ${describe(type)}`,
+    `expected a tuple tag ('tuple' followed by \`[]\`/\`[N]\` suffixes), got ${describe(type)}`,
   );
 }
 
@@ -579,15 +590,29 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'len':
       return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
-    case 'arrnew':
+    case 'arrnew': {
+      // `fixed` is OPTIONAL: absent → a dynamic `elem[]` (pre-#4 IR); present → `elem[N]`, N ≥ 1.
+      const fixedRaw: unknown = o['fixed'];
+      let fixed: number | undefined;
+      if (fixedRaw !== undefined) {
+        fixed = asId(fixedRaw, `${path}.fixed`);
+        if (fixed === 0 || fixed > 0xffffffff) {
+          fail(
+            `${path}.fixed`,
+            `expected a fixed array length in [1, 2^32), got ${describe(fixed)}`,
+          );
+        }
+      }
       return {
         loc,
         site,
         k,
         elem: asEvsType(o['elem'], `${path}.elem`),
         length: asId(o['length'], `${path}.length`),
+        ...(fixed !== undefined ? { fixed } : {}),
         out: asId(o['out'], `${path}.out`),
       };
+    }
     case 'arrset':
       return {
         loc,

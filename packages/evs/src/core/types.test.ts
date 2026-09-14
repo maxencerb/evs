@@ -7,7 +7,10 @@ import { EvsStagingError, EvsTypeError } from './errors.js';
 import {
   bitsOf,
   elemTypeOf,
+  fixedLengthOf,
   installStagingTraps,
+  isTupleTag,
+  peelArraySuffix,
   isDynamicType,
   isEvsType,
   isEvsValueType,
@@ -56,8 +59,10 @@ const REJECTED = [
   'bytes33',
   'tuple',
   'tuple[]',
-  'uint256[2]',
-  'address[3]',
+  'uint256[0]',
+  'address[01]',
+  'uint256[x]',
+  'uint256[4294967296]',
   'function',
   'Uint256',
   ' uint256',
@@ -78,6 +83,34 @@ describe('isEvsType / isWordType (exhaustive table)', () => {
       expect(isEvsType(s)).toBe(false);
       expect(isWordType(s)).toBe(false);
     }
+  });
+
+  test('accepts fixed-size arrays and any nesting depth (issue #4)', () => {
+    for (const s of [
+      'uint256[2]',
+      'address[3]',
+      'string[2]',
+      'uint256[2][]',
+      'uint256[][2]',
+      'uint256[][][]',
+      'string[][]',
+      'bytes[][3][]',
+      'uint8[99][99][99][99]',
+    ]) {
+      expect(isEvsType(s)).toBe(true);
+      expect(isDynamicType(s as EvsType)).toBe(true);
+    }
+    expect(peelArraySuffix('uint256[2][]')).toEqual({ inner: 'uint256[2]', length: null });
+    expect(peelArraySuffix('uint256[][2]')).toEqual({ inner: 'uint256[]', length: 2 });
+    expect(peelArraySuffix('uint256')).toBeNull();
+    expect(peelArraySuffix('uint256[0]')).toBeNull();
+    expect(fixedLengthOf('uint256[2]')).toBe(2);
+    expect(fixedLengthOf('uint256[2][]')).toBeNull();
+    expect(fixedLengthOf(t.array(t.struct({ a: t.uint8 }), 4))).toBe(4);
+    expect(() => fixedLengthOf('uint256' as ArrayType)).toThrow(EvsTypeError);
+    expect(isTupleTag('tuple[2][]')).toBe(true);
+    expect(isTupleTag('tuple[0]')).toBe(false);
+    expect(isTupleTag('tuple(uint256)')).toBe(false);
   });
 });
 
@@ -122,10 +155,15 @@ describe('predicates', () => {
   });
 
   test('elemTypeOf round-trips every array type', () => {
-    for (const w of WORD_TYPES) expect(elemTypeOf(`${w}[]` as ArrayType)).toBe(w);
+    for (const w of WORD_TYPES) expect(elemTypeOf(`${w}[]`)).toBe(w);
     // nested string arrays peel one [] (now in the vocabulary)
     expect(elemTypeOf('string[]')).toBe('string');
     expect(elemTypeOf('uint256[][]')).toBe('uint256[]');
+    // fixed-size suffixes peel too, outermost first
+    expect(elemTypeOf('uint256[2]')).toBe('uint256');
+    expect(elemTypeOf('uint256[2][]')).toBe('uint256[2]');
+    expect(elemTypeOf('uint256[][2]')).toBe('uint256[]');
+    expect(elemTypeOf('uint256[][][]')).toBe('uint256[][]');
     // non-array strings (and the non-string `tuple[]` tag) have no string element type
     for (const s of ['string', 'uint256', 'tuple[]']) {
       expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsTypeError);
@@ -213,10 +251,11 @@ describe('namedArg()', () => {
     }
   });
 
-  test('rejects deferred fixed-size-array Solidity types with UNSUPPORTED_V0', () => {
-    // fixed-size arrays `T[N]` stay deferred (nested dynamic arrays + tuples are now in the
-    // string/tuple vocabulary, so they are no longer rejected by namedArg()).
-    for (const type of ['address[3]', 'uint256[2]', 'address[3][]']) {
+  test('accepts fixed-size arrays; a malformed suffix is TYPE_MISMATCH with the explanation', () => {
+    for (const type of ['address[3]', 'uint256[2]', 'address[3][]', 'string[][2]']) {
+      expect(namedArg('x', type as never).type).toBe(type);
+    }
+    for (const type of ['address[0]', 'uint256[01]', 'address[3][x]']) {
       let caught: unknown;
       try {
         namedArg('x', type as never);
@@ -225,10 +264,19 @@ describe('namedArg()', () => {
       }
       expect(caught).toBeInstanceOf(EvsTypeError);
       const err = caught as EvsTypeError;
-      expect(err.code).toBe('UNSUPPORTED_V0');
-      expect(err.message).toContain('not supported');
+      expect(err.code).toBe('TYPE_MISMATCH');
+      expect(err.message).toContain('malformed array suffix');
       expect(err.loc?.file).toMatch(/types\.test\.ts/);
     }
+    // a tuple written as a STRING is a misuse, explained as such
+    let caught: unknown;
+    try {
+      namedArg('x', 'tuple[]' as never);
+    } catch (e) {
+      caught = e;
+    }
+    expect((caught as EvsTypeError).code).toBe('TYPE_MISMATCH');
+    expect((caught as EvsTypeError).message).toContain('descriptor');
   });
 });
 
@@ -249,11 +297,29 @@ describe('t namespace', () => {
   test('t.array builds array types and validates eagerly', () => {
     expect(t.array(t.address)).toBe('address[]');
     expect(t.array('uint24')).toBe('uint24[]');
-    // dynamic/array element types are now in the vocabulary (the deferred follow-up)
+    // dynamic/array element types are in the vocabulary
     expect(t.array('string' as WordType)).toBe('string[]');
     expect(t.array('uint24[]' as WordType)).toBe('uint24[][]');
+    // any depth (issue #4)
+    expect(t.array(t.array(t.array(t.uint256)))).toBe('uint256[][][]');
     // genuinely-invalid element types still throw eagerly
     expect(() => t.array('uint7' as WordType)).toThrow(EvsTypeError);
+  });
+
+  test('t.array(elem, n) builds fixed-size array types (issue #4)', () => {
+    expect(t.array(t.uint256, 2)).toBe('uint256[2]');
+    expect(t.array(t.array(t.uint256, 2))).toBe('uint256[2][]');
+    expect(t.array(t.array(t.string), 3)).toBe('string[][3]');
+    expect(t.array(t.array(t.uint256, 2), 3)).toBe('uint256[2][3]');
+    const P = t.struct({ a: t.uint8 });
+    expect(t.array(P, 2)).toEqual({ type: 'tuple[2]', components: [{ name: 'a', type: 'uint8' }] });
+    expect(t.array(t.array(P), 2).type).toBe('tuple[][2]');
+    expect(t.array(t.array(P, 2)).type).toBe('tuple[2][]');
+    expect(elemTypeOf(t.array(P, 2))).toEqual(P);
+    // the length must be a positive integer below 2^32
+    for (const n of [0, -1, 1.5, 2 ** 32, 'x']) {
+      expect(() => t.array(t.uint256, n as never)).toThrow(EvsTypeError);
+    }
   });
 });
 

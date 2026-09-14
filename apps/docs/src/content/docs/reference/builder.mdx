@@ -88,22 +88,28 @@ pointer assignment — reference semantics, not a copy.
 
 ```ts nocheck
 newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+newArray<const e extends EvsType, const n extends number>(elem: e, length: n, opts: { fixed: true }): MutArray<e, n>;
 ```
 
-Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
-type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple`) — the
-resulting array is then a `tuple[]`; a `tuple[]` *element* is rejected (`UNSUPPORTED_V0`). This is
-the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
-(see [token balances](/examples/token-balances/)).
+Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be any value
+type — a word, `string`/`bytes`, an array (dynamic or fixed-size, any depth: `uint256[]` → a
+`uint256[][]`, `t.array(Position)` → a `tuple[][]`), or a struct/tuple (`tuple`) — the resulting
+array is `elem[]`. With `{ fixed: true }` and a *literal* length `n` it allocates a fixed-size
+`elem[n]` instead (the length is part of the type, so `expr()` is `Expr<'uint256[2]'>` and the
+array can be passed where a `T[N]` is expected). This is the building block for "loop over
+inputs, collect outputs" — the multicall replacement pattern (see
+[token balances](/examples/token-balances/)).
 
 - Runtime lengths of `2^32` or more revert with Panic `0x41` (allocation too large).
 - A *literal* length of `2^32` or more throws at recording time (`CERTAIN_PANIC`).
 - Allocating inside a loop allocates fresh memory every iteration — `compile` warns with
   `LOOP_ALLOCATION`.
-- A **composite element** (`tuple`, `string`/`bytes`, `T[]`) makes the array an array of
-  pointers; `get(i)` returns the element handle (a [`Tuple`](#tuple) for a tuple element), a
-  reference into slot `i`, and `set(i, v)` takes the element's `IntoMember` (a `Tuple`/literal for
-  a tuple element).
+- A **composite element** (`tuple`, `string`/`bytes`, `T[]`, `T[N]`) makes the array an array of
+  pointers; `get(i)` returns the element handle (a [`Tuple`](#tuple) for a tuple element, an
+  `Expr` of the row for an array element), a reference into slot `i`, and `set(i, v)` takes the
+  element's `IntoMember` (a `Tuple`/literal for a tuple element, an array handle/literal for an
+  array element). Every slot starts as the element's typed zero (an empty string/array, a zeroed
+  struct, a zeroed `T[N]`), so an element you never set still encodes.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

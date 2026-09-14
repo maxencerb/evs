@@ -3,7 +3,18 @@
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t } from './types.js';
-import type { ArgSpec, Expr, IntoExpr, LitOf, TupleType } from './types.js';
+import type {
+  ArgSpec,
+  ArrayElemOf,
+  ArrayType,
+  EvsType,
+  Expr,
+  FixedLengthOf,
+  IntoExpr,
+  LitOf,
+  PeelArraySuffix,
+  TupleType,
+} from './types.js';
 
 const takeU8 = (_x: IntoExpr<'uint8'>): void => undefined;
 const takeExprU8 = (_x: Expr<'uint8'>): void => undefined;
@@ -61,7 +72,55 @@ test('LitOf maps every kind to its host literal type', () => {
   expectTypeOf<LitOf<'bytes4'>>().toEqualTypeOf<`0x${string}`>();
   expectTypeOf<LitOf<'string'>>().toEqualTypeOf<string>();
   expectTypeOf<LitOf<'bytes'>>().toEqualTypeOf<`0x${string}`>();
-  expectTypeOf<LitOf<'uint24[]'>>().toEqualTypeOf<readonly (bigint | number)[]>();
+  // an array literal's elements may be host literals or staged Exprs of the element type (#4)
+  expectTypeOf<LitOf<'uint24[]'>>().toEqualTypeOf<readonly (bigint | number | Expr<'uint24'>)[]>();
+  expectTypeOf<LitOf<'uint24[2]'>>().toEqualTypeOf<readonly (bigint | number | Expr<'uint24'>)[]>();
+  expectTypeOf<LitOf<'string[][]'>>().toEqualTypeOf<
+    readonly (readonly (string | Expr<'string'>)[] | Expr<'string[]'>)[]
+  >();
+});
+
+test('#4 array vocabulary: exact literals + one catch-all; suffix parsing at any depth', () => {
+  // the dynamic forms are exact members; every other chain is admitted by the catch-all
+  expectTypeOf<'uint256[]'>().toMatchTypeOf<ArrayType>();
+  expectTypeOf<'uint256[2]'>().toMatchTypeOf<ArrayType>();
+  expectTypeOf<'bytes[][3][]'>().toMatchTypeOf<ArrayType>();
+  expectTypeOf<'uint256[][][][]'>().toMatchTypeOf<ArrayType>();
+  expectTypeOf<'uint256'>().not.toMatchTypeOf<ArrayType>();
+  expectTypeOf<'foo'>().not.toMatchTypeOf<EvsType>();
+  // documented widening: the catch-all does not check the LEAF of a fixed-size / deep string —
+  // `'foo[2]'` type-checks as an ArrayType (its element is `never`); recording rejects it
+  expectTypeOf<'foo[2]'>().toMatchTypeOf<ArrayType>();
+  expectTypeOf<ArrayElemOf<'foo[2]'>>().toEqualTypeOf<never>();
+
+  // ArrayElemOf: the OUTERMOST suffix peeled, fixed or dynamic, at any depth
+  expectTypeOf<ArrayElemOf<'uint256[]'>>().toEqualTypeOf<'uint256'>();
+  expectTypeOf<ArrayElemOf<'address[3]'>>().toEqualTypeOf<'address'>();
+  expectTypeOf<ArrayElemOf<'uint256[2][]'>>().toEqualTypeOf<'uint256[2]'>();
+  expectTypeOf<ArrayElemOf<'uint256[][2]'>>().toEqualTypeOf<'uint256[]'>();
+  expectTypeOf<ArrayElemOf<'bytes[][3][]'>>().toEqualTypeOf<'bytes[][3]'>();
+  expectTypeOf<ArrayElemOf<'uint256[][][][]'>>().toEqualTypeOf<'uint256[][][]'>();
+  expectTypeOf<ArrayElemOf<'uint256[]' | 'address[2]'>>().toEqualTypeOf<'uint256' | 'address'>();
+  expectTypeOf<ArrayElemOf<'uint256'>>().toEqualTypeOf<never>();
+  expectTypeOf<ArrayElemOf<EvsType>>().toEqualTypeOf<never>(); // wide receiver: no huge union
+
+  // FixedLengthOf: the outermost suffix's size, any positive literal (not capped at 99)
+  expectTypeOf<FixedLengthOf<'uint256[3]'>>().toEqualTypeOf<3>();
+  expectTypeOf<FixedLengthOf<'uint256[][2]'>>().toEqualTypeOf<2>();
+  expectTypeOf<FixedLengthOf<'uint256[300]'>>().toEqualTypeOf<300>();
+  expectTypeOf<FixedLengthOf<'uint256[2][]'>>().toEqualTypeOf<null>();
+  expectTypeOf<FixedLengthOf<'uint256'>>().toEqualTypeOf<null>();
+  // malformed sizes (what the runtime rejects) are `null`, not a widened `number`
+  expectTypeOf<FixedLengthOf<'uint256[01]'>>().toEqualTypeOf<null>();
+  expectTypeOf<FixedLengthOf<'uint256[0]'>>().toEqualTypeOf<null>();
+  expectTypeOf<FixedLengthOf<'uint256[1e3]'>>().toEqualTypeOf<null>();
+  expectTypeOf<FixedLengthOf<'uint256[-1]'>>().toEqualTypeOf<null>();
+
+  // PeelArraySuffix: the shared parser, tuple tags included
+  expectTypeOf<PeelArraySuffix<'tuple[]'>>().toEqualTypeOf<'tuple'>();
+  expectTypeOf<PeelArraySuffix<'tuple[2][]'>>().toEqualTypeOf<'tuple[2]'>();
+  expectTypeOf<PeelArraySuffix<'tuple'>>().toEqualTypeOf<never>();
+  expectTypeOf<PeelArraySuffix<'uint256[2'>>().toEqualTypeOf<never>(); // malformed chain
 });
 
 test('Expr brand is nominal: structurally-similar objects are not assignable', () => {

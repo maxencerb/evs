@@ -706,7 +706,7 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['values'][0]['type'] = 'uint7'), /values\[0\]\.type/);
     reject((r) => (r['values'][0]['type'] = 'tuple'), /values\[0\]\.type/); // bare 'tuple' string (needs the object form)
     reject((r) => (r['values'][0]['debugName'] = 4), /debugName/);
-    reject((r) => (r['cells'][0]['type'] = 'uint8[5]'), /cells\[0\]\.type/); // fixed-size array still invalid
+    reject((r) => (r['cells'][0]['type'] = 'uint8[0]'), /cells\[0\]\.type/); // malformed fixed-size suffix
   });
 
   test('rejects malformed args and returns', () => {

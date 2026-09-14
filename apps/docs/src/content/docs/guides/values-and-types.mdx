@@ -11,14 +11,16 @@ Every runtime value in a script has an evs type — a Solidity-style type string
 | -------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | Word types     | `uint8`…`uint256` and `int8`…`int256` (multiples of 8), `address`, `bool`, `bytes1`…`bytes32` | one canonical EVM word                            |
 | Dynamic types  | `string`, `bytes`                                                                       | memref — a pointer to `[length][payload]`         |
-| Array types    | `T[]` where `T` is a word type, a dynamic type, a one-level array (`T[][]`), or a struct/tuple (`tuple[]`) | memref — `[length]` then either one word per element (word element, inline) or one pointer per element (composite element) |
+| Array types    | `T[]` (dynamic) or `T[N]` (fixed-size, `N ≥ 1`) where `T` is any value type — a word, a dynamic type, a struct/tuple (`tuple[]`, `tuple[2]`), or itself an array, to any depth (`uint256[][]`, `tuple[][]`, `string[][]`, `uint256[2][]`, `uint256[][2]`, `bytes[][3][]`) | memref — `[length]` then either one word per element (word element, inline) or one pointer per element (composite element). A `T[N]` is laid out exactly like a `T[]` in memory (its length word is always `N`); only the ABI wire form differs |
 | Composite types | structs and tuples (`t.struct`/`t.tuple`)                                              | memref — a pointer to a packed block, one word per member |
 
 The exported type aliases mirror this taxonomy: `EvsType` is the whole set; `WordType`, `DynType`, `ArrayType`, and `TupleType` are the kinds; and two cross-cutting unions matter for operations — `NumericType` (`uintN` and `intN`) and `BitsType` (`uintN` and `bytesN`). The full alias table is in the [types reference](/reference/types/).
 
 A **composite-element array** — `tuple[]`, a string array (`string[]`/`bytes[]`), or a one-level nested array (`uint256[][]`) — is an **array of pointers**: the `[length]` prefix is followed by one pointer word per element, each pointing at that element's own block (a tuple block for `tuple[]`, an inner array for `T[][]`, a bytes block for `string[]`). This is exactly Solidity's `Struct[]`/`T[][]`/`string[]` memory layout. You read and build it through the same array handle as a word array (`.at(i)`, `.length()`, `s.newArray`), and it carries the same reference semantics — see [composite arrays](#composite-arrays-tuple-t-string) below.
 
-Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size arrays `T[N]` (not modeled).
+A **fixed-size array** `T[N]` (`uint256[2]`, `address[3]`, `Position[2]`, `string[2]`) is the same memref shape with a length word that is always `N` — every runtime op (`.length()`, `.at(i)`, `s.forEach`, `set`) works unchanged. On the ABI wire it has no length word: it is *static* when `T` is static (its `N` elements inline into the head like a static struct's members) and *dynamic* when `T` is dynamic. Its literal is a JS array of exactly `N` elements, enforced at recording (`TYPE_MISMATCH` otherwise; the static type is the plain `readonly` array — an N-tuple type made TypeScript's literal inference exponential). Arrays nest to any depth and mix freely (`uint256[2][]`, `tuple[][]`, `uint256[][][]`). A malformed suffix (`uint256[0]`, `uint256[01]`) is `TYPE_MISMATCH`.
+
+At the **type level**, `ArrayType` spells out the dynamic forms up to three levels deep as exact literals and admits every other chain — a fixed size anywhere, four or more levels — through a single catch-all pattern (*something followed by an array suffix*). That keeps type-checking fast (a union of leaf-exact patterns made `tsc` several times slower) and keeps every concrete type exact: `t.array(t.uint256, 2)` is `'uint256[2]'`, an `as const` ABI's `'int56[2]'` stays `'int56[2]'`, and `.at(i)` / `s.forEach` / `ArrayElemOf` peel the outermost suffix exactly at any depth (`'uint256[][2]'` → `'uint256[]'`). What is *not* checked statically is the leaf of such a string: `'foo[2]'` type-checks as an `ArrayType` (its element is `never`) and is rejected at recording with `TYPE_MISMATCH`. The one literal shape that widens is a dynamic-inside-fixed chain (`'uint256[][2]'`): its host literal is typed `readonly unknown[]` — the runtime validates it exactly.
 
 ## The `t` namespace
 
@@ -224,7 +226,7 @@ return types (`FromAbiOutputs`, `AbiParamToEvsType`) are in the
 
 ## Composite arrays: `tuple[]`, `T[][]`, `string[]`
 
-Arrays whose element is itself composite — `tuple[]` (arrays of structs), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays (`string[]`, `bytes[]`) — are first-class. They share the word-array handle surface (`.length()`, `.at(i)`, `s.newArray`); the only difference is in memory each slot holds a **pointer** to the element's own block instead of an inline value (an array-of-pointers, exactly Solidity `Struct[]`/`T[][]`/`string[]` memory). Reference semantics carry over: an array handle is a pointer, so the element handles you read from it alias the array's slots.
+Arrays whose element is itself composite — `tuple[]` (arrays of structs), nested arrays (`uint256[][]`, `uint256[][][]`, `tuple[][]`), and dynamic-leaf arrays (`string[]`, `bytes[]`, `string[][]`) — are first-class, to any depth. They share the word-array handle surface (`.length()`, `.at(i)`, `s.newArray`, `s.forEach`); the only difference is in memory each slot holds a **pointer** to the element's own block instead of an inline value (an array-of-pointers, exactly Solidity `Struct[]`/`T[][]`/`string[]` memory). Reference semantics carry over: an array handle is a pointer, so the element handles you read from it alias the array's slots. Each `.at(i)` peels one level: on a `tuple[][]` it yields the row (an `Expr<'tuple[]'>`), and `.at(j)` on the row yields the typed `Tuple` cell.
 
 **Read a `tuple[]` output.** A `'tuple[]'` output of `s.read` is an array handle; `.at(i)` returns the i-th element as a typed [`Tuple`](/reference/builder/#tuple) — read its fields by name:
 
@@ -263,7 +265,7 @@ const readPositions = evscript({ name: 'readPositions', args: [t.address] }, (s,
 
 A `tuple[]` output unwraps to `readonly Struct[]` at the viem call site; `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`.
 
-**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through:
+**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits any element type (a struct/tuple, an array — `t.array(Position)` for a `tuple[][]`, `t.array(t.uint256, 2)` for a `uint256[2][]` — or `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through. An element you never set reads as its typed zero (an empty array/string, a zeroed struct):
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -336,7 +338,34 @@ const sumLiquidity = evscript({ name: 'sumLiquidity', args: [t.address] }, (s, s
 });
 ```
 
-Not supported yet ([#4](https://github.com/maxencerb/evs/issues/4); `UNSUPPORTED_V0` at recording): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size `T[N]`.
+**Fixed-size arrays.** `t.array(elem, N)` (or the string `'uint256[2]'`) is a `T[N]`. It flows everywhere a `T[]` does — script args, call args and outputs, returns, members, `s.forEach` — and its literal must have exactly `N` elements (a recording-time `TYPE_MISMATCH` otherwise). `s.newArray(elem, N, { fixed: true })` allocates one with a *literal* length (the length is part of the type):
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const oracleAbi = [
+  {
+    type: 'function',
+    name: 'observe',
+    stateMutability: 'view',
+    inputs: [{ name: 'secondsAgos', type: 'uint32[2]' }],
+    outputs: [{ name: 'tickCumulatives', type: 'int56[2]' }],
+  },
+] as const;
+
+const twap = evscript({ name: 'twap', args: [t.address, t.array(t.uint32, 2)] }, (s, pool, window) => {
+  const ticks = s.read({ address: pool, abi: oracleAbi, functionName: 'observe', args: [window] });
+  //    ^? Expr<'int56[2]'> — `.at(i)` / `.length()` work exactly like on an int56[]
+  const delta = ticks.at(1n).sub(ticks.at(0n));
+  const pair = s.newArray(t.uint256, 2, { fixed: true }); // MutArray<'uint256', 2> → Expr<'uint256[2]'>
+  pair.set(0n, window.at(0n).toUint(t.uint256));
+  const literal = s.lit(t.array(t.uint256, 2), [1n, 2n]); // exactly two elements, checked at recording
+  return s.return({ delta, ticks, pair, literal });
+  // viem infers ticks as readonly [bigint, bigint], pair/literal as readonly [bigint, bigint]
+});
+```
+
+Every array shape in the vocabulary is supported since [#4](https://github.com/maxencerb/evs/issues/4) — there is no remaining `UNSUPPORTED_V0` array shape.
 
 ## Literal coercion: `IntoExpr`
 
@@ -351,9 +380,10 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `bytes`           | `0x` string                       | any even-length hex                                                    |
 | `string`          | `string`                          | UTF-8 encoded                                                          |
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
+| `T[N]`            | readonly array of exactly `N` `T` literals | element-wise rules of `T`; the length is enforced at recording |
 | `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to zero |
 
-Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
+Word literals canonicalize at recording. Dynamic literals and all-literal word-array literals (`T[]` or `T[N]`) become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) — or a word-array literal that mixes in an `Expr` element (`[x, 1n]`) — is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

@@ -41,6 +41,7 @@ const CONTRACTS = [
   'MockUniV3Pool',
   'MockVault',
   'Reverter',
+  'Shapes',
 ];
 
 const contractsDir = fileURLToPath(new URL('..', import.meta.url));

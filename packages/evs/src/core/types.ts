@@ -3,7 +3,7 @@
  * predicates/metadata (single source of truth for all modules).
  */
 
-import { EvsStagingError, EvsTypeError, type SourceLoc } from './errors.js';
+import { EvsInternalError, EvsStagingError, EvsTypeError, type SourceLoc } from './errors.js';
 import { captureLoc } from './loc.js';
 
 // `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
@@ -38,18 +38,43 @@ export type ScalarType = WordType | DynType;
 /** Every string-encoded type (a {@link ScalarType} or an {@link ArrayType}). */
 export type StringType = ScalarType | ArrayType;
 /**
- * Arrays of scalar leaves, string-encoded and nestable to a bounded depth (real ABIs rarely
- * exceed two): `uint256[]`, `address[][]`, `string[]`, …
+ * Arrays over a scalar leaf, string-encoded, nestable to ANY depth with a dynamic (`[]`) or
+ * fixed-size (`[N]`, N ≥ 1) suffix at every level: `uint256[]`, `address[3]`, `string[][]`,
+ * `uint256[2][]`, `bytes[][3][]`, …
+ *
+ * Shape — and why it is shaped this way (type-check PERFORMANCE, issue #4): the dynamic forms up
+ * to three levels deep are spelled out as a FINITE union of ~300 exact literals (autocomplete +
+ * O(log n) set membership), and everything else — any chain with a fixed size, deeper nesting —
+ * is admitted by ONE catch-all pattern (`` `${string}[${string}` ``: something followed by an
+ * array suffix). A single pattern is deliberate: TypeScript cannot reduce the intersection of
+ * two different template patterns, so a union of N leaf-exact patterns (`` `${ScalarType}[…` ``,
+ * N = 100) produced N² irreducible `` `uint8[…` & `uint16[…` `` junk members every time the
+ * vocabulary was intersected with a type parameter (`Expr.at`'s `this: Expr<t & ArrayType>`,
+ * `IntoMember`, …) and multiplied the full-package check time by ~6. With one pattern a literal
+ * either matches it (the intersection collapses to the literal) or does not (`never`).
+ *
+ * Consequence: a concrete array type is always an EXACT literal (`t.array(t.uint256, 2)` is
+ * `'uint256[2]'`; an `as const` ABI's `'int56[2]'` stays `'int56[2]'`), and {@link ArrayElemOf} /
+ * {@link FixedLengthOf} / `.at()` / `s.forEach` recover its element and length exactly at any
+ * depth. What the catch-all does NOT check at the type level is the LEAF of a fixed-size or
+ * deeper-than-three-level string (`'foo[2]'` is assignable to `ArrayType`; its element is
+ * `never`). The runtime (`isStringType`) is the exact authority — every entry point validates
+ * eagerly (`TYPE_MISMATCH`), so a malformed leaf or suffix never reaches the IR.
  */
-export type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+export type ArrayType =
+  | `${ScalarType}[]`
+  | `${ScalarType}[][]`
+  | `${ScalarType}[][][]`
+  | `${string}[${string}`;
 /**
  * A tuple / struct type — an abitype `AbiParameter`-shaped descriptor (recursive, JSON-safe).
- * `type` carries any array suffix (`'tuple'`, `'tuple[]'`, `'tuple[][]'`) and `components`
- * describe the (element) tuple's members. Built via {@link t.struct} / {@link t.tuple}; a raw
- * `readonly AbiParameter[]` is also accepted wherever a tuple type is expected.
+ * `type` carries any array suffix chain (`'tuple'`, `'tuple[]'`, `'tuple[2]'`, `'tuple[][]'`,
+ * `'tuple[3][]'`, …) and `components` describe the (element) tuple's members. Built via
+ * {@link t.struct} / {@link t.tuple} / {@link t.array}; a raw `readonly AbiParameter[]` is also
+ * accepted wherever a tuple type is expected.
  */
 export interface TupleType {
-  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly type: 'tuple' | `tuple[${string}`;
   readonly components: readonly NamedType[];
 }
 /**
@@ -65,19 +90,90 @@ export interface NamedType {
 }
 export type EvsType = WordType | DynType | ArrayType | TupleType;
 
+// -- suffix-chain parsing (type level) ----------------------------------------------------------
+// A string-array type is parsed FRONT TO BACK, one `[size]` group per step, with plain two-
+// placeholder template inference (`${infer a}[${infer b}` splits at the FIRST `[`, which is
+// exactly where the leaf ends; `[${infer size}]${infer rest}` splits at the first `]`, which is
+// exactly where one group ends). No size alphabet is involved: the earlier
+// `${infer e}[${'' | 1 | … | 99}]` end-anchored trick (abitype's) put a 100-member template
+// union into every `infer` and every conditional-vs-conditional comparison of `Expr.at`'s result.
+
+/** The sizes of a suffix chain, front to back: `'[2][][3]'` → `['2', '', '3']`; `''` → `[]`;
+ *  a malformed chain (`'[2'`) → `null` (a sentinel rather than `never`, which would match any
+ *  tuple pattern downstream). */
+type ArraySizes<s extends string, acc extends readonly string[] = []> = s extends ''
+  ? acc
+  : s extends `[${infer size}]${infer rest}`
+    ? ArraySizes<rest, [...acc, size]>
+    : null;
+
+/** The inverse of {@link ArraySizes}: `['2', '']` → `'[2][]'`. */
+type JoinSizes<sizes extends readonly string[]> = sizes extends readonly [
+  infer size extends string,
+  ...infer rest extends readonly string[],
+]
+  ? `[${size}]${JoinSizes<rest>}`
+  : '';
+
+/** `'uint256[2][]'` → `['uint256', ['2', '']]`; a suffix-less leaf → `[leaf, []]`; a malformed
+ *  chain → `[leaf, null]`. */
+type SplitArrayType<s extends string> = s extends `${infer leaf}[${infer tail}`
+  ? [leaf, ArraySizes<`[${tail}`>]
+  : [s, []];
+
 /**
- * One `[]` peeled off a string-array type via FORWARD inference: `uint256[][]` → `uint256[]`. The
- * check type is tuple-wrapped so it does NOT distribute — a concrete (or small-union) array type
- * infers its element, but a wide/non-array `t` (e.g. a loosely-typed `Expr<EvsType>`) collapses to
- * `never` instead of materializing the whole ~400-member union ("too complex to represent").
- *
- * Perf: {@link Expr.at} computes its element via this instead of reverse-
- * solving a generic `elem extends StringType` against `${elem}[]` — forward `infer` on the already-
- * concrete receiver type is ~free; reverse-matching a template against the union dominated check time.
+ * The OUTERMOST suffix (`[]` or `[N]`) peeled off a type string, at any depth: `'uint256[][]'` →
+ * `'uint256[]'`, `'address[3]'` → `'address'`, `'uint256[][2]'` → `'uint256[]'`, `'tuple[2][]'` →
+ * `'tuple[2]'`. A string with no suffix (or a malformed one) → `never`. Type-level mirror of the
+ * runtime `peelArraySuffix` — shared by {@link ArrayElemOf} (string arrays) and the tuple-array
+ * element dispatch in the builder.
  */
-export type ArrayElemOf<t extends EvsType> = [t] extends [`${infer e extends StringType}[]`]
-  ? e
+export type PeelArraySuffix<s extends string> =
+  SplitArrayType<s> extends [
+    infer leaf extends string,
+    [...infer init extends readonly string[], string],
+  ]
+    ? `${leaf}${JoinSizes<init>}`
+    : never;
+
+/**
+ * The element type of a string-array type — one suffix peeled (see {@link PeelArraySuffix}) and
+ * re-checked against the vocabulary (a peeled leaf that is not a {@link StringType}, e.g. the
+ * `'foo'` of `'foo[2]'`, is `never`). Computed by FORWARD parsing of the receiver's own concrete
+ * `t`. The outer check is tuple-wrapped so it does NOT distribute: a concrete array type (or a
+ * small union of them) yields its element(s), while a wide/non-array `t` (a loosely-typed
+ * `Expr<EvsType>`) collapses to `never` instead of materializing a huge union.
+ *
+ * Perf: {@link Expr.at} computes its element via this instead of reverse-solving a generic
+ * `elem extends StringType` against `${elem}[]` — forward parsing of the already-concrete
+ * receiver type is ~free; reverse-matching a template against the union dominated check time.
+ */
+export type ArrayElemOf<t extends EvsType> = [t] extends [ArrayType]
+  ? t extends string
+    ? PeelArraySuffix<t> extends infer e extends StringType
+      ? e
+      : never
+    : never
   : never;
+
+/** The fixed length of `t`'s OUTERMOST suffix (`'uint256[3]'` → `3`, `'uint256[][2]'` → `2`), or
+ *  `null` for a dynamic `[]` (or a non-array). Type-level mirror of the runtime `fixedLengthOf`:
+ *  the size must be a positive decimal integer with no sign / leading zero (`'01'`, `'0'`, `'1e3'`
+ *  → `null`, exactly the strings the runtime rejects as a malformed suffix). */
+export type FixedLengthOf<t extends EvsType> = [t] extends [ArrayType]
+  ? t extends string
+    ? SplitArrayType<t> extends [string, [...string[], infer last extends string]]
+      ? last extends `${infer n extends number}`
+        ? `${n}` extends last // canonical decimal only: `'01'` / `'1e3'` infer a plain `number`
+          ? last extends `${'-' | '0'}${string}` | `${string}.${string}`
+            ? null
+            : n
+          : null
+        : null
+      : null
+    : null
+  : null;
+
 export type ArgType = EvsType;
 export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
@@ -131,10 +227,10 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
-  // element via FORWARD inference on the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
+  // element via FORWARD parsing of the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
   // NOT a reverse-solved `elem extends StringType` against `${elem}[]` — same result type, but
-  // this cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
-  // `t & ArrayType` still pins the receiver to the depth-bounded array vocabulary.
+  // this cut `tsc` check time ~10× by not pattern-matching the ~300-member union.
+  // `t & ArrayType` still pins the receiver to the array vocabulary (dynamic `T[]` or fixed `T[N]`).
   at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
@@ -153,9 +249,29 @@ export type LitOf<t extends EvsType> = t extends NumericType
             ? `0x${string}`
             : t extends TupleType
               ? TupleLitOf<t>
-              : t extends `${infer e extends StringType}[]`
-                ? readonly LitOf<e>[]
-                : never;
+              : t extends `${infer e}[]`
+                ? e extends StringType
+                  ? readonly (LitOf<e> | Expr<e>)[] // `T[]` (any depth); elements may be staged
+                  : never
+                : t extends `${infer e}[${number}]`
+                  ? e extends StringType
+                    ? readonly (LitOf<e> | Expr<e>)[] // `T[N]` — N enforced at recording (below)
+                    : never
+                  : t extends `${string}[${string}]`
+                    ? readonly unknown[] // `T[][N]`-style suffix chains: widened (see the note below)
+                    : never;
+// Array literals — an element may be a host literal OR a staged `Expr` of the element type
+// (`[x, 1n]`): the recorder builds such a literal element-wise. The shape of this arm is
+// performance-critical. TypeScript infers a call's
+// `t` BACKWARDS through `LitOf<t>` for every literal operand (`s.let(t.uint256, 0n)`,
+// `s.add(x, 1n)`, …); an `infer e extends StringType` placeholder or a `[${'' | 1 | … | 99}]` size
+// alphabet here made that inference ~15× slower (minutes per file). So the placeholders are
+// unconstrained (`e extends StringType` is re-checked as a plain conditional), a fixed-size `T[N]`
+// literal is typed as `readonly LitOf<T>[]` (NOT an N-tuple — the exact length is enforced at
+// recording with `TYPE_MISMATCH`), and only a dynamic-inside-fixed chain (`uint256[][2]`) widens to
+// `readonly unknown[]` (`${infer e}` stops at the FIRST `[`, so the element cannot be recovered
+// in one match; {@link ArrayElemOf} is not used here on purpose — a conditional in an inference
+// target position defeats the backward inference). The runtime validates every shape exactly.
 
 /**
  * Host literal of a tuple: delegated to abitype, which applies the exact named-vs-positional
@@ -196,7 +312,8 @@ const IDENT_RE = /^[A-Za-z_]\w*$/;
  * arrays, and composite `t.struct`/`t.tuple` descriptors (a named struct arg arrives as a `Tuple`
  * handle, exactly like a bare one — in a script's `args` and in an `s.fn`'s params alike). Nested
  * composite fields are named via `t.struct` and keep their behaviour. A bare (unnamed) top-level
- * arg keeps the positional `arg{i}` fallback name.
+ * arg keeps the positional `arg{i}` fallback name. Every array shape is admitted — dynamic `T[]`,
+ * fixed-size `T[N]`, and any nesting of those (`tuple[][]`, `uint256[2][]`, `string[][]`, …).
  */
 export function namedArg<const name extends string, const type extends EvsType>(
   name: name,
@@ -342,17 +459,13 @@ export type TupleTypeOf<items extends readonly EvsType[]> = {
   readonly type: 'tuple';
   readonly components: { readonly [i in keyof items]: TypeToComponent<'', items[i]> };
 };
-/** `t.array(tupleType)` → an array-of-tuple type (one `[]` deeper). The `type` tag is computed
- *  by CONDITIONAL, not template, so a concrete element yields the literal (`'tuple'` →
- *  `'tuple[]'`) — the template-and-intersect form left the tag as the constraint-widened union
- *  `'tuple[]' | 'tuple[][]'`, which made `tuple[]` and `tuple[][]` values indistinguishable to
- *  the element-handle dispatch (issue #12 follow-up). A non-concrete `e` keeps the old union. */
-export type TupleArrayOf<e extends TupleType> = {
-  readonly type: e['type'] extends 'tuple'
-    ? 'tuple[]'
-    : e['type'] extends 'tuple[]'
-      ? 'tuple[][]'
-      : `${e['type']}[]` & TupleType['type'];
+/** `t.array(tupleType)` / `t.array(tupleType, n)` → an array-of-tuple type one suffix deeper:
+ *  `'tuple'` → `'tuple[]'` (or `'tuple[n]'` for a fixed length), `'tuple[]'` → `'tuple[][]'`, …
+ *  A concrete element tag yields the exact literal (the element-handle dispatch relies on
+ *  `tuple[]` vs `tuple[][]` staying distinguishable — issue #12 follow-up); a constraint-widened
+ *  `e['type']` keeps the honest pattern union. */
+export type TupleArrayOf<e extends TupleType, n extends number | null = null> = {
+  readonly type: `${e['type']}[${n extends number ? n : ''}]` & TupleType['type'];
   readonly components: e['components'];
 };
 
@@ -419,8 +532,12 @@ export type FromAbiOutputs<abi, name extends string> = [AbiFnNamed<abi, name>] e
     : EvsType;
 
 type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
+  // `t.array(elem)` → a dynamic `elem[]`; `t.array(elem, n)` → a fixed-size `elem[n]` (n ≥ 1,
+  // a literal number). Both nest to any depth (`t.array(t.array(t.uint256, 2))` → `uint256[2][]`).
   array<const e extends StringType>(elem: e): `${e}[]`;
+  array<const e extends StringType, const n extends number>(elem: e, length: n): `${e}[${n}]`;
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>;
+  array<const e extends TupleType, const n extends number>(elem: e, length: n): TupleArrayOf<e, n>;
   struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>;
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>;
   // declare a custom error (issue #15): params take the same shorthand as `evscript` args /
@@ -574,8 +691,8 @@ export const t: TypeNamespace = Object.freeze({
   bytes32: 'bytes32',
   string: 'string',
   bytes: 'bytes',
-  array(elem: unknown): unknown {
-    return arrayTypeRT(elem);
+  array(elem: unknown, length?: unknown): unknown {
+    return arrayTypeRT(elem, length);
   },
   struct(spec: unknown): unknown {
     return structTypeRT(spec);
@@ -598,20 +715,59 @@ export const t: TypeNamespace = Object.freeze({
 // runtime type predicates / metadata
 // ---------------------------------------------------------------------------
 
-/** Recognizes a string-encoded type (word, dynamic, or a nested array of such). */
+// The trailing array suffix of a type string: `[]` (dynamic) or `[N]` (fixed, N ≥ 1 with no
+// leading zero). Greedy `(.*)` anchors the match at the LAST suffix, so the inner type keeps its
+// own suffix chain (`uint256[2][]` → inner `uint256[2]`, size `[]`).
+const ARRAY_SUFFIX_RE = /^(.*)\[([1-9]\d*)?\]$/;
+/** A tuple tag: `tuple` followed by zero or more `[]`/`[N]` suffixes. */
+const TUPLE_TAG_RE = /^tuple(?:\[(?:[1-9]\d*)?\])*$/;
+/** Fixed-size arrays at or above this length cannot be allocated (`arrnew` Panics 0x41 there),
+ *  so the vocabulary rejects them outright rather than admitting an unconstructible type. */
+const MAX_FIXED_LENGTH = 0xffffffff;
+
+/**
+ * Splits one trailing array suffix off a type string: `'uint256[]'` → `{ inner: 'uint256',
+ * length: null }`, `'uint256[3][]'` → `{ inner: 'uint256[3]', length: null }`, `'address[2]'` →
+ * `{ inner: 'address', length: 2 }`. `null` when `s` has no well-formed trailing suffix (a bare
+ * type, or a malformed suffix such as `[0]`/`[01]`/`[x]`). Works on tuple tags too.
+ */
+export function peelArraySuffix(s: string): { inner: string; length: number | null } | null {
+  const m = ARRAY_SUFFIX_RE.exec(s);
+  if (m === null) return null;
+  const inner = m[1] ?? '';
+  const digits = m[2];
+  if (digits === undefined) return { inner, length: null };
+  const length = Number(digits);
+  if (!Number.isSafeInteger(length) || length > MAX_FIXED_LENGTH) return null;
+  return { inner, length };
+}
+
+/** Recognizes a string-encoded type (word, dynamic, or an array of such to any depth, with
+ *  dynamic or fixed-size suffixes). */
 export function isStringType(s: string): s is StringType {
   if (isWordType(s) || s === 'string' || s === 'bytes') return true;
-  return s.endsWith('[]') && isStringType(s.slice(0, -2));
+  const peeled = peelArraySuffix(s);
+  return peeled !== null && isStringType(peeled.inner);
+}
+
+/** A well-formed tuple tag (`'tuple'`, `'tuple[]'`, `'tuple[2]'`, `'tuple[][3]'`, …). */
+export function isTupleTag(s: string): s is TupleType['type'] {
+  if (!TUPLE_TAG_RE.test(s)) return false;
+  // re-walk the suffix chain through `peelArraySuffix` so oversized fixed lengths are rejected
+  let cur = s;
+  while (cur !== 'tuple') {
+    const peeled = peelArraySuffix(cur);
+    if (peeled === null) return false;
+    cur = peeled.inner;
+  }
+  return true;
 }
 
 /** A composite (tuple/struct) type descriptor — the only non-string {@link EvsType}. */
 export function isTupleType(v: unknown): v is TupleType {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const o = v as { type?: unknown; components?: unknown };
-  return (
-    (o.type === 'tuple' || o.type === 'tuple[]' || o.type === 'tuple[][]') &&
-    Array.isArray(o.components)
-  );
+  return typeof o.type === 'string' && isTupleTag(o.type) && Array.isArray(o.components);
 }
 
 /** Any valid {@link EvsType} value (string-encoded or a tuple descriptor). */
@@ -626,8 +782,9 @@ function componentsValid(components: readonly unknown[]): boolean {
     if (typeof c !== 'object' || c === null) return false;
     const o = c as { name?: unknown; type?: unknown; components?: unknown };
     if (typeof o.name !== 'string' || typeof o.type !== 'string') return false;
-    if (o.type.startsWith('tuple'))
-      return Array.isArray(o.components) && componentsValid(o.components);
+    if (o.type.startsWith('tuple')) {
+      return isTupleTag(o.type) && Array.isArray(o.components) && componentsValid(o.components);
+    }
     return isStringType(o.type) && o.components === undefined;
   });
 }
@@ -661,49 +818,64 @@ export function bitsOf(s: WordType): number {
   return bits;
 }
 
-/** Memref-valued (not a single stack word): string | bytes | T[] | tuple. */
+/** Memref-valued (not a single stack word): string | bytes | any array (`T[]`/`T[N]`) | tuple. */
 export function isDynamicType(s: EvsType): boolean {
   if (typeof s !== 'string') return true; // tuples are always memref pointers
-  return s === 'string' || s === 'bytes' || s.endsWith('[]');
+  return s === 'string' || s === 'bytes' || s.endsWith(']');
 }
 
 /**
  * True when `abi.encodePacked` accepts a value of this type (issue #17): a word, `string`/`bytes`,
- * or a word-element array (whose elements pack padded to 32 bytes, per the Solidity spec).
- * Everything Solidity rejects in packed mode — structs, nested arrays, arrays of dynamic
- * elements — is false here; `s.encode` (standard ABI) handles those.
+ * or a word-element array — dynamic `T[]` or fixed `T[N]` — whose elements pack padded to 32
+ * bytes, per the Solidity spec. Everything Solidity rejects in packed mode — structs, nested
+ * arrays, arrays of dynamic elements — is false here; `s.encode` (standard ABI) handles those.
  */
 export function isPackedEncodable(s: EvsType): boolean {
   if (typeof s !== 'string') return false; // tuple / tuple[] descriptors
   if (isWordType(s) || s === 'string' || s === 'bytes') return true;
-  return s.endsWith('[]') && isWordType(s.slice(0, -2));
+  const peeled = peelArraySuffix(s);
+  return peeled !== null && isWordType(peeled.inner);
 }
 
-/** A `T[]` array type (string array or tuple array). */
+/** An array type — dynamic `T[]` or fixed-size `T[N]`, string array or tuple array. */
 export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
-  return typeof s === 'string' ? s.endsWith('[]') : s.type !== 'tuple';
+  return typeof s === 'string' ? s.endsWith(']') : s.type !== 'tuple';
 }
 
-/** The element type of an array type: one `[]` peeled off (string arrays) or the element
- *  tuple (tuple arrays). */
+/** The fixed length `N` of an array type `T[N]`, or `null` for a dynamic `T[]`. Throws for a
+ *  non-array type. Only the OUTERMOST suffix is consulted (`uint256[2][]` → `null`). */
+export function fixedLengthOf(s: ArrayType | TupleType): number | null {
+  const peeled = peelArraySuffix(typeof s === 'string' ? s : s.type);
+  if (peeled === null) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `fixedLengthOf: ${typeof s === 'string' ? JSON.stringify(s) : 'a tuple'} is not an array type`,
+      { loc: captureLoc() },
+    );
+  }
+  return peeled.length;
+}
+
+/** The element type of an array type: the outermost suffix peeled off (string arrays), or the
+ *  element tuple / tuple-array descriptor with the same components (tuple arrays). */
 export function elemTypeOf(s: ArrayType | TupleType): EvsType {
   if (typeof s === 'string') {
-    const elem: string = s.endsWith('[]') ? s.slice(0, -2) : '';
-    if (isStringType(elem)) return elem;
+    const peeled = peelArraySuffix(s);
+    if (peeled !== null && isStringType(peeled.inner)) return peeled.inner;
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `elemTypeOf: ${JSON.stringify(s)} is not an array type`,
       { loc: captureLoc() },
     );
   }
-  if (s.type === 'tuple') {
+  const peeled = peelArraySuffix(s.type);
+  if (s.type === 'tuple' || peeled === null || !isTupleTag(peeled.inner)) {
     throw new EvsTypeError('TYPE_MISMATCH', `elemTypeOf: a tuple is not an array type`, {
       loc: captureLoc(),
     });
   }
-  const innerTag = s.type.slice(0, -2); // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]'
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- peeling one [] off a tuple-array tag yields a valid TupleType tag
-  return Object.freeze({ type: innerTag as TupleType['type'], components: s.components });
+  // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]', 'tuple[3][]' → 'tuple[3]'
+  return Object.freeze({ type: peeled.inner, components: s.components });
 }
 
 /** Structural equality of two value types — deep for tuples, `===` for string types. Tuple
@@ -865,31 +1037,35 @@ function tupleTypeRT(items: readonly unknown[]): TupleType {
   return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
 }
 
-function arrayTypeRT(elem: unknown): EvsType {
+/** The tuple-array tag one suffix deeper than `tag`: `('tuple', null)` → `'tuple[]'`,
+ *  `('tuple[]', 2)` → `'tuple[][2]'`. The one place the tag string is rebuilt (shared by the
+ *  builder and the validator so the IR/type tags never drift). */
+export function tupleArrayTag(tag: TupleType['type'], fixed: number | null): TupleType['type'] {
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- appending a well-formed `[]`/`[N]` suffix to a tuple tag yields a tuple tag
+  return `${tag}${fixed === null ? '[]' : `[${fixed}]`}` as TupleType['type'];
+}
+
+/** `t.array(elem)` → `elem[]`; `t.array(elem, n)` → `elem[n]`. The suffix string is validated
+ *  through the same parser every other entry point uses (`isStringType`/`isTupleTag`), so the
+ *  runtime and type-level vocabularies agree by construction. Nesting is unbounded. */
+function arrayTypeRT(elem: unknown, length: unknown): EvsType {
+  const suffix = arraySuffixRT(length, 't.array()');
   if (typeof elem === 'string') {
     assertEvsType(elem, 't.array() element');
-    arrayDepthGuard(`${elem}[]`);
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType, so `${elem}[]` is a valid ArrayType (depth-guarded)
-    return `${elem}[]` as ArrayType;
+    return `${elem}${suffix}`;
   }
+  const fixed = suffix === '[]' ? null : Number(suffix.slice(1, -1));
   if (isTupleType(elem)) {
-    const tag = `${elem.type}[]`;
-    if (tag !== 'tuple[]' && tag !== 'tuple[][]') {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `t.array(): tuple array nesting deeper than [][] is not supported`,
-        {
-          loc: captureLoc(),
-        },
-      );
-    }
     return Object.freeze({
-      type: tag,
+      type: tupleArrayTag(elem.type, fixed),
       components: normalizeComponents(elem.components, 't.array()'),
     });
   }
   if (Array.isArray(elem)) {
-    return Object.freeze({ type: 'tuple[]', components: componentsFromAbi(elem, 't.array()') });
+    return Object.freeze({
+      type: tupleArrayTag('tuple', fixed),
+      components: componentsFromAbi(elem, 't.array()'),
+    });
   }
   throw new EvsTypeError(
     'TYPE_MISMATCH',
@@ -898,18 +1074,19 @@ function arrayTypeRT(elem: unknown): EvsType {
   );
 }
 
-function arrayDepthGuard(s: string): void {
-  // depth-3 ceiling matches the ArrayType template type; deeper string arrays are rejected so
-  // the runtime and type-level vocabularies agree.
-  if (/\[\]\[\]\[\]\[\]/.test(s)) {
+/** The `[]` / `[n]` suffix for an optional fixed length: `undefined` → dynamic; otherwise a
+ *  positive safe integer below 2^32 (the allocation cap) → fixed. */
+function arraySuffixRT(length: unknown, ctx: string): '[]' | `[${number}]` {
+  if (length === undefined) return '[]';
+  const n = typeof length === 'bigint' ? Number(length) : length;
+  if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > MAX_FIXED_LENGTH) {
     throw new EvsTypeError(
-      'UNSUPPORTED_V0',
-      `t.array(): array nesting deeper than [][][] is not supported`,
-      {
-        loc: captureLoc(),
-      },
+      'TYPE_MISMATCH',
+      `${ctx}: a fixed array length must be a positive integer below 2^32, got ${describeTypeInput(length)}`,
+      { loc: captureLoc() },
     );
   }
+  return `[${n}]`;
 }
 
 /** A non-null, non-array object — narrows `unknown` to a property-indexable record. */
@@ -918,11 +1095,15 @@ function isRecordObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * `t.fromOutputs(abi, name)` runtime: locate the single function named `name` (overloads are not
- * supported yet — #4 — mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
- * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
- * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
- * does and round-trips with a `s.read({…, struct: true})` decode of the same function.
+ * `t.fromOutputs(abi, name)` runtime: locate the function named `name`, validate + canonicalize
+ * its outputs through {@link componentsFromAbi}, and return a SINGLE output's {@link EvsType}
+ * directly or wrap MANY outputs in a `tuple` {@link TupleType} (named, in ABI order). The result
+ * flows wherever a `t.struct`/`t.tuple` type does and round-trips with a
+ * `s.read({…, struct: true})` decode of the same function.
+ *
+ * Overloads: there are no call args here to pick an overload by (unlike `s.read`/`s.call`), so
+ * an overloaded name is accepted only when every overload declares the SAME outputs (the derived
+ * type is then unambiguous); otherwise `UNSUPPORTED_V0` tells the caller how to prune the ABI.
  */
 function fromOutputsRT(abi: unknown, name: unknown): EvsType {
   if (typeof name !== 'string') {
@@ -950,25 +1131,39 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
       { loc: captureLoc() },
     );
   }
-  if (fns.length > 1) {
+  const derived = fns.map((fn): EvsType => {
+    const outputs = fn.outputs;
+    if (!Array.isArray(outputs) || outputs.length === 0) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `t.fromOutputs("${name}"): function "${name}" has no outputs to derive a type from`,
+        { loc: captureLoc() },
+      );
+    }
+    const components = componentsFromAbi(outputs, `t.fromOutputs("${name}")`);
+    const single = components[0];
+    if (components.length === 1 && single !== undefined) return abiParamToType(single);
+    return Object.freeze({ type: 'tuple', components });
+  });
+  const first = derived[0];
+  if (first === undefined) throw new EvsInternalError('INTERNAL', 't.fromOutputs: no derivation');
+  if (!derived.every((d) => typesEqual(d, first))) {
+    const sigs = fns
+      .map((fn) => {
+        const inputs = Array.isArray(fn.inputs) ? (fn.inputs as readonly unknown[]) : [];
+        const types = inputs
+          .map((p) => (isRecordObject(p) && typeof p['type'] === 'string' ? p['type'] : '?'))
+          .join(',');
+        return `${name}(${types})`;
+      })
+      .join(', ');
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
-      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
+      `t.fromOutputs("${name}"): function "${name}" is overloaded with differing outputs (${sigs}) and there are no call args to pick an overload by — prune the ABI to the intended entry first, e.g. abi.filter((f) => f.type === 'function' && f.name === "${name}" && f.inputs.length === N)`,
       { loc: captureLoc() },
     );
   }
-  const outputs = fns[0]?.outputs;
-  if (!Array.isArray(outputs) || outputs.length === 0) {
-    throw new EvsTypeError(
-      'ABI_SHAPE',
-      `t.fromOutputs("${name}"): function "${name}" has no outputs to derive a type from`,
-      { loc: captureLoc() },
-    );
-  }
-  const components = componentsFromAbi(outputs, `t.fromOutputs("${name}")`);
-  const single = components[0];
-  if (components.length === 1 && single !== undefined) return abiParamToType(single);
-  return Object.freeze({ type: 'tuple', components });
+  return first;
 }
 
 // ---------------------------------------------------------------------------
@@ -1093,31 +1288,34 @@ function fromAbiParameterRT(param: unknown): EvsType {
 // internal helpers (module-private to evs; not part of the public surface)
 // ---------------------------------------------------------------------------
 
-/** Recognizably-Solidity types that are deliberately out of evs get the UNSUPPORTED_V0 code. */
-function looksDeferred(s: string): boolean {
-  if (/\[\d+\]$/.test(s)) return true; // fixed-size arrays T[N]
-  if (s.endsWith('[]') && /\[\d+\]/.test(s.slice(0, -2))) return true; // arrays containing a fixed array
-  return false;
+/**
+ * Why a type string is NOT a {@link StringType}, for the `TYPE_MISMATCH` message: a tuple written
+ * as a string (tuples are descriptor objects), a malformed fixed-size suffix (`[0]`, `[01]`,
+ * `[x]`, or ≥ 2^32), or an unknown leaf. Exported for the layout/builder mirrors so every entry
+ * point explains a rejection the same way.
+ */
+export function explainBadTypeString(s: string): string {
+  if (s === 'tuple' || s.startsWith('tuple')) {
+    return `a tuple type must be a \`t.struct\`/\`t.tuple\` descriptor (or a raw AbiParameter[]), not the string ${JSON.stringify(s)}`;
+  }
+  // walk the suffix chain inward: the first suffix that does not parse is the malformed one
+  let cur = s;
+  while (/\[[^\]]*\]$/.test(cur)) {
+    const peeled = peelArraySuffix(cur);
+    if (peeled === null) {
+      return `malformed array suffix in ${JSON.stringify(s)} — a fixed-size array length must be a positive integer below 2^32 with no leading zero (\`T[3]\`), or empty for a dynamic array (\`T[]\`)`;
+    }
+    cur = peeled.inner;
+  }
+  return `unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, an array \`T[]\`/\`T[N]\` of those, or a \`t.struct\`/\`t.tuple\`)`;
 }
 
-/**
- * Eager type-string validation: throws `EvsTypeError` with the caller's loc, using
- * `UNSUPPORTED_V0` for valid-Solidity-but-not-yet-supported shapes (#4) and `TYPE_MISMATCH` otherwise.
- */
+/** Eager type-string validation: throws `EvsTypeError(TYPE_MISMATCH)` with the caller's loc. */
 function assertEvsType(s: string, context: string): asserts s is StringType {
   if (isStringType(s)) return;
-  if (looksDeferred(s)) {
-    throw new EvsTypeError(
-      'UNSUPPORTED_V0',
-      `${context}: type ${JSON.stringify(s)} is not supported (fixed-size arrays \`T[N]\` are deferred — use a dynamic \`T[]\`)`,
-      { loc: captureLoc() },
-    );
-  }
-  throw new EvsTypeError(
-    'TYPE_MISMATCH',
-    `${context}: unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, a \`T[]\` array, or a \`t.struct\`/\`t.tuple\`)`,
-    { loc: captureLoc() },
-  );
+  throw new EvsTypeError('TYPE_MISMATCH', `${context}: ${explainBadTypeString(s)}`, {
+    loc: captureLoc(),
+  });
 }
 
 /**

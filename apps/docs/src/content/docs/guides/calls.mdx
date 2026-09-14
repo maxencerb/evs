@@ -178,13 +178,19 @@ hard type errors where viem is also permissive:
 
 - **Graceful widening** — an ABI without `as const` degrades to `functionName: string`,
   `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
-- **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
-  the overload you want.
-- **Restricted shapes** — two-level tuple arrays (`tuple[][]`), arrays nested deeper than
-  `[][]`, and fixed `T[N]` in an argument or output throw `EvsTypeError` at recording, naming the
-  parameter. Plain structs/tuples, arrays of structs (`tuple[]`), one-level nested arrays
-  (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
-  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs).
+- **Overloaded names** resolve the way viem's `readContract` does: by arity first, then by the
+  shape of each argument — a staged handle by its exact type, a host literal by its JS shape
+  (`bigint`/`number` → `uintN`/`intN`, `0x…` → `address`/`bytesN`/`bytes` by length, a string →
+  `string`, an array/object → the matching array/struct). The output handle types follow the
+  chosen overload (`FnForArgs`, the mirror of viem's `ExtractAbiFunctionForArgs`). A call no
+  overload accepts is `TYPE_MISMATCH` listing the candidates; a genuine tie — `f(uint8)` vs
+  `f(uint256)` with a bare `1n` — is `UNSUPPORTED_V0`, and the message says how to break it: type
+  the literal (`s.lit(t.uint8, 1)`) or prune the ABI to the intended entry.
+- **Every array shape is supported** in arguments and outputs — structs/tuples, arrays of
+  structs (`tuple[]`, `tuple[][]`), nested arrays to any depth (`uint256[][][]`), dynamic-leaf
+  arrays (`string[]`/`bytes[]`), and fixed-size arrays (`uint256[2]`, `Position[3]`) — see
+  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs). A malformed
+  type in the ABI throws `EvsTypeError` at recording, naming the parameter.
 
 ## Struct and array arguments and outputs
 

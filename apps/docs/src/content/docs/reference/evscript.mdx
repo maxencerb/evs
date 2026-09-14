@@ -66,10 +66,10 @@ Recording-time validation (each violation throws `EvsTypeError` with the call-si
   `readonly` list of them. A `namedArg` labels its input in the generated ABI; a bare arg is
   auto-named `arg{i}` (the names are positional labels; viem infers `args` positionally regardless).
   Duplicate arg names are rejected (`ABI_SHAPE`).
-- Every arg type must be a valid `EvsType` — a word/dynamic type, an array (a scalar array, a
-  one-level nested array `T[][]`, or a `tuple[]`), or a `TupleType` (struct/tuple). Shapes
-  outside the supported set — `tuple[][]`, deeper-than-`[][]` nesting, fixed `T[N]` — throw with
-  code `UNSUPPORTED_V0`.
+- Every arg type must be a valid `EvsType` — a word/dynamic type, an array of any element to any
+  depth, dynamic or fixed-size (`uint256[]`, `uint256[2]`, `tuple[][]`, `string[][2]`), or a
+  `TupleType` (struct/tuple). A malformed type (`uint256[0]`, a tuple written as a string) throws
+  with code `TYPE_MISMATCH`.
 - `body` must be a function.
 
 Everything the builder itself can throw during recording is catalogued in
@@ -159,8 +159,8 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
 - `type` is any `EvsType` — a word type, `string`, `bytes`, an array, or a composite
   `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
   one). Only top-level args are named as a whole; nested composite fields are named via
-  `t.struct`. Not-yet-supported Solidity shapes (fixed-size `T[N]` arrays, [#4](https://github.com/maxencerb/evs/issues/4)) throw `EvsTypeError` with
-  code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. Note `s.fn` params remain
+  `t.struct`. Every array shape is admitted (dynamic `T[]`, fixed-size `T[N]`, any nesting);
+  malformed inputs throw `TYPE_MISMATCH`. Note `s.fn` params remain
   word/string-typed — a composite param is rejected when the fn is defined (see
   [functions](/guides/functions/)).
 

@@ -2,9 +2,19 @@
  * `abi/layout.ts` — type layouts over evs ABI type strings / `PlainAbiParam` trees.
  *
  * Implements the memory model (canonical word invariant) and the ABI head/tail shapes for the
- * whole evs type vocabulary: words, `string`/`bytes`, one-level arrays over any of those or over a
- * tuple (`T[]`, `string[]`, `T[][]`, `tuple[]`), and (nested) tuples. Still rejected with
- * `UNSUPPORTED_V0` (#4): fixed-size `T[N]`, `tuple[][]`, and arrays nested deeper than `[][]`.
+ * whole evs type vocabulary: words, `string`/`bytes`, (nested) tuples, and arrays to ANY depth
+ * over any element — dynamic `T[]` and fixed-size `T[N]` alike (`uint256[2]`, `tuple[][]`,
+ * `string[][]`, `uint256[][][]`, `address[3][]`, …). A raw `'tuple…'` type STRING is rejected
+ * with `TYPE_MISMATCH` (tuples are descriptor objects, see {@link layoutOfType}).
+ *
+ * Fixed-size arrays: in MEMORY a `T[N]` is laid out exactly like a `T[]` — a length-prefixed
+ * `[N][slot0 … slot_{N-1}]` block (inline words for a word element, pointers otherwise) whose
+ * length word always equals `N` — so every runtime op (`.length`, `.at`, `forEach`, `arrset`,
+ * cells, fn params) reuses the dynamic-array machinery unchanged. Only the ABI codec differs:
+ * `T[N]` has NO length word on the wire, it is ABI-static when `T` is static (`N · staticSize(T)`
+ * bytes inlined into the head, like a static tuple) and ABI-dynamic when `T` is dynamic
+ * (offset-pointer head, tail = `N` offset words relative to the array block start + the element
+ * tails — `enc((T,…,T))` per the spec).
  */
 
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
@@ -12,9 +22,12 @@ import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   bitsOf,
+  explainBadTypeString,
   isSigned,
+  isTupleTag,
   isTupleType,
   isWordType,
+  peelArraySuffix,
   type EvsType,
   type TupleType,
   type WordType,
@@ -32,16 +45,17 @@ export type WordLayout = {
 export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
-  // a dynamic array `E[]`: `[len][p0]…[p_{len-1}]` where each slot is an inline word (word
-  // element) OR a memref pointer to the element's block (composite/dynamic element).
-  // `elem` is any {@link TypeLayout}: `layoutOf`/`layoutOfType` produce word-element arrays as well
-  // as one level of composite/dynamic-element arrays (`string[]`, `T[][]`, `tuple[]`); codegen
-  // dispatches on `elem.kind` before assuming a word element.
-  | { kind: 'array'; abi: string; elem: TypeLayout }
+  // an array `E[]` (`length: null`) or `E[N]` (`length: N`): in memory `[len][p0]…[p_{len-1}]`
+  // where each slot is an inline word (word element) OR a memref pointer to the element's block
+  // (composite/dynamic element); `len === N` always for a fixed-size array. `elem` is any
+  // {@link TypeLayout} — arrays nest to any depth. ABI-static iff fixed-size with a static
+  // element (see {@link isDynamic}); codegen dispatches on `elem.kind`/`length` before assuming
+  // the flat word-element `T[]` shape.
+  | { kind: 'array'; abi: string; elem: TypeLayout; length: number | null }
   // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is.
   // `components` are the member layouts in declaration order; `abi` carries the tuple tag
-  // (`'tuple'`; a `tuple[]` is an `array` layout whose `elem` is this). Built via `layoutOfType`, which is
-  // the only entry that handles the {@link TupleType} descriptor object.
+  // (`'tuple'`; a `tuple[]`/`tuple[N]` is an `array` layout whose `elem` is this). Built via
+  // `layoutOfType`, which is the only entry that handles the {@link TupleType} descriptor object.
   | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
 
 function wordLayoutOf(abi: WordType): WordLayout {
@@ -55,36 +69,16 @@ function wordLayoutOf(abi: WordType): WordLayout {
   };
 }
 
-/**
- * Valid-Solidity-but-not-yet-supported shapes (#4) get `UNSUPPORTED_V0`; anything else (not a type string
- * at all) gets `TYPE_MISMATCH`. Mirrors the classification in `core/types.ts`.
- */
-function isDeferredSolidity(s: string): boolean {
-  if (s === 'tuple' || s.startsWith('tuple')) return true; // tuples / tuple arrays
-  if (/\[\d+\]$/.test(s)) return true; // fixed-size arrays T[N]
-  if (s.endsWith('[]')) return true; // reached only with a non-word element: nested / dynamic
-  return false;
-}
-
+/** `TYPE_MISMATCH` for anything that is not a type string of the vocabulary — a tuple written as a
+ *  string, a malformed array suffix, or an unknown leaf (classification shared with `core/types`). */
 function badTypeError(abiType: string): EvsTypeError {
-  if (isDeferredSolidity(abiType)) {
-    return new EvsTypeError(
-      'UNSUPPORTED_V0',
-      `layoutOf: type ${JSON.stringify(abiType)} is not supported yet (fixed-size arrays \`T[N]\` and arrays nested deeper than \`[][]\` are not supported; tuples must be \`t.struct\`/\`t.tuple\` descriptors)`,
-      { loc: captureLoc() },
-    );
-  }
-  return new EvsTypeError(
-    'TYPE_MISMATCH',
-    `layoutOf: unknown ABI type ${JSON.stringify(abiType)} (expected uintN/intN/address/bool/bytesN, string, bytes, or T[] of a word type)`,
-    { loc: captureLoc() },
-  );
+  return new EvsTypeError('TYPE_MISMATCH', `layoutOf: ${explainBadTypeString(abiType)}`, {
+    loc: captureLoc(),
+  });
 }
 
-/** Throws `EvsTypeError` (`UNSUPPORTED_V0` on tuple/`T[N]`/deeper nesting, `TYPE_MISMATCH`
- *  otherwise). One level of array nesting over a composite/dynamic element is supported:
- *  `string[]`/`bytes[]` and one-level `T[][]` produce an array-of-composite layout; `T[N]` and
- *  string arrays nested deeper than `[][]` stay deferred. */
+/** Layout of a string-encoded type (word, `string`/`bytes`, or an array of those to any depth,
+ *  dynamic or fixed-size). Throws `EvsTypeError(TYPE_MISMATCH)` for a tuple STRING or junk. */
 export function layoutOf(abiType: string): TypeLayout {
   const hit = layoutByString.get(abiType);
   if (hit !== undefined) return hit;
@@ -102,37 +96,39 @@ const layoutByTuple = new WeakMap<TupleType, TypeLayout>();
 function computeLayoutOf(abiType: string): TypeLayout {
   if (isWordType(abiType)) return wordLayoutOf(abiType);
   if (abiType === 'bytes' || abiType === 'string') return { kind: 'bytes', abi: abiType };
-  if (abiType.endsWith('[]') && !/\[\d+\]$/.test(abiType)) {
-    const elem = abiType.slice(0, -2);
-    if (isWordType(elem)) return { kind: 'array', abi: abiType, elem: wordLayoutOf(elem) };
-    // one level over a composite/dynamic element: `string[]`/`bytes[]`, or one-level `T[][]`.
-    // `elem` must be a leaf-dynamic (`string`/`bytes`) or a single word-element array (`T[]`).
-    if (elem === 'bytes' || elem === 'string') {
-      return { kind: 'array', abi: abiType, elem: { kind: 'bytes', abi: elem } };
+  const peeled = peelArraySuffix(abiType);
+  if (peeled !== null && !peeled.inner.startsWith('tuple')) {
+    // recurse on the element — `layoutOf` (not `computeLayoutOf`) so inner types memoize too
+    let elem: TypeLayout;
+    try {
+      elem = layoutOf(peeled.inner);
+    } catch (e) {
+      // re-attribute the failure to the OUTER string the caller passed
+      if (e instanceof EvsTypeError) throw badTypeError(abiType);
+      throw e;
     }
-    if (elem.endsWith('[]') && !/\[\d+\]$/.test(elem)) {
-      const inner = elem.slice(0, -2);
-      if (isWordType(inner)) {
-        return {
-          kind: 'array',
-          abi: abiType,
-          elem: { kind: 'array', abi: elem, elem: wordLayoutOf(inner) },
-        };
-      }
-    }
+    return { kind: 'array', abi: abiType, elem, length: peeled.length };
   }
   throw badTypeError(abiType);
 }
 
 /**
  * Layout of any {@link EvsType}: a {@link TupleType} descriptor → a `tuple` layout (recursing
- * over its components via `abiParamToType`); a string type → the existing string-keyed `layoutOf`.
- * A tuple is `dynamic` iff any component layout is dynamic. One level of tuple array (`'tuple[]'`)
- * is an `array` layout over the tuple layout; `'tuple[][]'` is not supported yet (#4) and gets
- * `UNSUPPORTED_V0` here. Component arrays go through `layoutOf` and share its limits.
+ * over its components via `abiParamToType`), or — for an array tag (`'tuple[]'`, `'tuple[2]'`,
+ * `'tuple[][]'`, …) — an `array` layout over the one-suffix-peeled descriptor, to any depth; a
+ * string type → the string-keyed `layoutOf`. A tuple is `dynamic` iff any component layout is
+ * dynamic. Component arrays go through `layoutOf` and share its rules.
  */
 export function layoutOfType(t: EvsType): TypeLayout {
-  if (!isTupleType(t)) return layoutOf(t);
+  if (typeof t === 'string') return layoutOf(t);
+  if (!isTupleType(t)) {
+    // a descriptor object with a malformed tag (`tuple[0]`) or shape
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `layoutOfType: malformed tuple descriptor (type ${JSON.stringify((t as { type?: unknown }).type)})`,
+      { loc: captureLoc() },
+    );
+  }
   const hit = layoutByTuple.get(t);
   if (hit !== undefined) return hit;
   const layout = computeTupleLayout(t);
@@ -142,16 +138,16 @@ export function layoutOfType(t: EvsType): TypeLayout {
 
 function computeTupleLayout(t: TupleType): TypeLayout {
   if (t.type === 'tuple') return tupleLayoutOf(t);
-  // one level of tuple-array nesting: `tuple[]` → an array whose element is the tuple
-  // layout. `tuple[][]` (two levels) stays deferred.
-  if (t.type === 'tuple[]') {
-    return { kind: 'array', abi: 'tuple[]', elem: tupleLayoutOf({ ...t, type: 'tuple' }) };
+  const peeled = peelArraySuffix(t.type);
+  if (peeled === null || !isTupleTag(peeled.inner)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `layoutOfType: malformed tuple tag ${JSON.stringify(t.type)}`,
+      { loc: captureLoc() },
+    );
   }
-  throw new EvsTypeError(
-    'UNSUPPORTED_V0',
-    `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
-    { loc: captureLoc() },
-  );
+  const elem = layoutOfType({ type: peeled.inner, components: t.components });
+  return { kind: 'array', abi: t.type, elem, length: peeled.length };
 }
 
 function tupleLayoutOf(t: TupleType): Extract<TypeLayout, { kind: 'tuple' }> {
@@ -159,20 +155,37 @@ function tupleLayoutOf(t: TupleType): Extract<TypeLayout, { kind: 'tuple' }> {
   return { kind: 'tuple', abi: t.type, components, dynamic: components.some(isDynamic) };
 }
 
+/** ABI-dynamic (offset-pointer head + appended tail): `string`/`bytes`, any `T[]`, a `T[N]` whose
+ *  element is dynamic, and a tuple with a dynamic member. Static: words, `T[N]` over a static
+ *  element, and all-static tuples — those inline into the head. */
 export function isDynamic(l: TypeLayout): boolean {
-  if (l.kind === 'tuple') return l.dynamic;
-  return l.kind !== 'word';
+  switch (l.kind) {
+    case 'word':
+      return false;
+    case 'bytes':
+      return true;
+    case 'array':
+      return l.length === null || isDynamic(l.elem);
+    default:
+      return l.dynamic;
+  }
 }
 
 /**
- * Static (head-inlined) byte size of `l`: `32` for a word, `headBytes(components)` for a STATIC
- * tuple. Used by the array encode/decode element loops (a static element `E` inlines
- * `staticSize(E)` bytes per slot). A dynamic layout has no fixed head size — calling this on one
- * is an internal error (the caller must take the dynamic-element path instead).
+ * Static (head-inlined) byte size of `l`: `32` for a word, the components' sizes summed for a
+ * STATIC tuple, `N · staticSize(elem)` for a static fixed-size array. Used by the head walk and
+ * the array element loops (a static element `E` inlines `staticSize(E)` bytes per slot). A
+ * dynamic layout has no fixed head size — calling this on one is an internal error (the caller
+ * must take the dynamic path instead).
  */
 export function staticSize(l: TypeLayout): number {
   if (l.kind === 'word') return 32;
-  if (l.kind === 'tuple' && !l.dynamic) return headBytes(l.components.map(layoutToParam));
+  if (l.kind === 'tuple' && !l.dynamic) {
+    return l.components.reduce((n, c) => n + staticSize(c), 0);
+  }
+  if (l.kind === 'array' && l.length !== null && !isDynamic(l.elem)) {
+    return l.length * staticSize(l.elem);
+  }
   throw new EvsInternalError(
     'INTERNAL',
     `staticSize: ${JSON.stringify(l.abi)} is dynamic — no fixed head size`,
@@ -180,32 +193,17 @@ export function staticSize(l: TypeLayout): number {
   );
 }
 
-/** Reconstructs the `PlainAbiParam` for a tuple component layout, so `staticSize` can reuse
- *  {@link headBytes} (which walks `PlainAbiParam` trees). Name is irrelevant to head sizing. */
-function layoutToParam(l: TypeLayout): PlainAbiParam {
-  if (l.kind === 'tuple')
-    return { name: '', type: l.abi, components: l.components.map(layoutToParam) };
-  return { name: '', type: l.abi };
-}
-
 /**
- * Size in bytes of the ABI head for `params`. Each param occupies one 32-byte
- * head slot UNLESS it is a *static* tuple — an all-static inner tuple is inlined into the head as
- * its own components' head (no offset pointer), so it occupies `headBytes(components)` bytes. A
- * dynamic param (word-dynamic or a dynamic tuple) is a single offset-pointer slot. Each type is
- * validated through `layoutOfType` so unsupported shapes fail loudly here instead of producing a
- * silently-wrong head size.
+ * Size in bytes of the ABI head for `params`: each param occupies one 32-byte offset slot when
+ * dynamic, else its full static size inlined (a static tuple's members, a static fixed-size
+ * array's `N` elements — no offset pointer). Each type is validated through `layoutOfType` so
+ * unsupported shapes fail loudly here instead of producing a silently-wrong head size.
  */
 export function headBytes(params: readonly PlainAbiParam[]): number {
   let bytes = 0;
   for (const p of params) {
     const layout = layoutOfType(abiParamToType(p));
-    if (layout.kind === 'tuple' && !layout.dynamic) {
-      // static inner tuple — its members inline into the head (no offset word)
-      bytes += headBytes(p.components ?? []);
-    } else {
-      bytes += 32;
-    }
+    bytes += isDynamic(layout) ? 32 : staticSize(layout);
   }
   return bytes;
 }
