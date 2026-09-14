@@ -120,6 +120,9 @@ export type {
   WriteVerb, // issue #1: the s.simulate / s.trySimulate verb types (CALL); the base of CallVerb
 } from './builder/script.js';
 
+// codegen
+export { evsPeephole } from './codegen/peephole.js'; // issue #39: the built-in peephole pass behind compile({ optimize: true })
+
 // compile + viem
 export { compile } from './compile.js';
 export type { CompiledEvsScript, CompileOptions, RevertExplanation } from './compile.js';

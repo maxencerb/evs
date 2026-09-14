@@ -11,8 +11,10 @@ import { describe, expect, test } from 'vite-plus/test';
 import { execRuntime } from '../test/harness/evm.js';
 import { ATTACKER_RETURNERS } from '../test/harness/fixtures.js';
 import type { AsmNode } from './asm/assembler.js';
-import { siteById } from './asm/sourcemap.js';
+import { lookupPc, siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
+import { evsPeephole } from './codegen/peephole.js';
+import { lowerProgram } from './codegen/program.js';
 import { compile } from './compile.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
@@ -95,6 +97,7 @@ describe('artifact shape', () => {
   test('options resolve to Readonly<Required<CompileOptions>> defaults', () => {
     const compiled = compile(sumScript());
     expect(compiled.options.evmVersion).toBe('cancun');
+    expect(compiled.options.optimize).toBe(false);
     expect(compiled.options.locations).toBe(true);
     expect(typeof compiled.options.peephole).toBe('function');
     expect(typeof compiled.options.onDiagnostic).toBe('function');
@@ -104,13 +107,15 @@ describe('artifact shape', () => {
   test('user options are pinned on the artifact', () => {
     const compiled = compile(sumScript(), {
       evmVersion: 'paris',
+      optimize: true,
       peephole: identityPeephole,
       onDiagnostic: dropDiagnostic,
       locations: false,
     });
     expect(compiled.options).toEqual({
       evmVersion: 'paris',
-      peephole: identityPeephole,
+      optimize: true,
+      peephole: identityPeephole, // the user's own hook, never the built-in composition
       onDiagnostic: dropDiagnostic,
       locations: false,
     });
@@ -228,6 +233,94 @@ describe('pipeline hooks', () => {
     const blockDiags: EvsDiagnostic[] = [];
     compile(blocky, { onDiagnostic: (d) => blockDiags.push(d) });
     expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// optimize (issue #39)
+// ---------------------------------------------------------------------------
+
+/** The distinct source locations a source map carries (order-free). */
+function mappedLocs(
+  segments: readonly { loc: { file: string; line: number; column: number } | null }[],
+): string[] {
+  const keys = segments.map((s) =>
+    s.loc === null ? 'null' : `${s.loc.file}:${s.loc.line}:${s.loc.column}`,
+  );
+  return [...new Set(keys)].toSorted();
+}
+
+describe('optimize: the built-in peephole pass (issue #39)', () => {
+  test('optimize: true is exactly `peephole: evsPeephole`; the default is untouched', () => {
+    const plain = compile(sumScript());
+    const explicitOff = compile(sumScript(), { optimize: false });
+    const optimized = compile(sumScript(), { optimize: true });
+    const viaHook = compile(sumScript(), { peephole: evsPeephole });
+    expect(explicitOff.runtimeBytecode).toBe(plain.runtimeBytecode);
+    expect(optimized.runtimeBytecode).toBe(viaHook.runtimeBytecode);
+    expect(optimized.runtimeBytecode).not.toBe(plain.runtimeBytecode);
+    expect(optimized.runtimeBytecode.length).toBeLessThan(plain.runtimeBytecode.length);
+  });
+
+  test('the user peephole hook runs AFTER the built-in pass and sees its output', () => {
+    const lowered = lowerProgram(sumScript().ir, { evmVersion: 'cancun', locations: true }).nodes;
+    let seen: readonly AsmNode[] = [];
+    const compiled = compile(sumScript(), {
+      optimize: true,
+      peephole: (nodes) => {
+        seen = nodes;
+        return [...nodes];
+      },
+    });
+    expect(seen.length).toBe(evsPeephole(lowered).length);
+    expect(seen.length).toBeLessThan(lowered.length);
+    expect(compiled.runtimeBytecode).toBe(compile(sumScript(), { optimize: true }).runtimeBytecode);
+  });
+
+  test('the optimized artifact executes correctly and its source map still covers every byte', async () => {
+    const compiled = compile(sumScript(), { optimize: true });
+    const res = await execRuntime(compiled.runtimeBytecode, sumCalldata(2n, 3n));
+    expect(res.success).toBe(true);
+    expect(
+      decodeFunctionResult({ abi: compiled.abi, functionName: 'sum', data: res.data }),
+    ).toEqual({ total: 5n });
+    const codeLen = (compiled.runtimeBytecode.length - 2) / 2;
+    let lastEnd = 0;
+    for (const seg of compiled.sourceMap.segments) {
+      expect(seg.pc).toBe(lastEnd);
+      lastEnd = seg.pc + seg.len;
+    }
+    expect(lastEnd).toBe(codeLen);
+    for (let pc = 0; pc < codeLen; pc++) expect(lookupPc(compiled.sourceMap, pc)).toBeDefined();
+  });
+
+  test('a mapped diagnostic still resolves after optimization (locs survive the rewrite)', async () => {
+    const plain = compile(sumScript());
+    const optimized = compile(sumScript(), { optimize: true });
+    // no statement loses its mapping: the optimized map carries exactly the same locations
+    expect(mappedLocs(optimized.sourceMap.segments)).toEqual(mappedLocs(plain.sourceMap.segments));
+    // the `s.add` line is still reachable through the optimized segments
+    const addLoc = plain.sourceMap.sites.find((s) => s.kind === 'panic')?.loc;
+    expect(addLoc).toBeDefined();
+    expect(addLoc).not.toBeNull();
+    const hit = optimized.sourceMap.segments.some(
+      (seg) => seg.loc !== null && seg.loc.line === addLoc?.line && seg.loc.file === addLoc?.file,
+    );
+    expect(hit).toBe(true);
+    // end to end: overflow → Panic(0x11), explained back to a candidate site in this file
+    const res = await execRuntime(optimized.runtimeBytecode, sumCalldata(maxUint256, 1n));
+    expect(res.success).toBe(false);
+    const explained = optimized.explainRevert(res.data);
+    expect(explained.kind).toBe('panic');
+    expect(explained.candidateSites?.[0]?.loc?.file).toContain('compile.test.ts');
+  });
+
+  test('every fork: the optimized output passes the verifiers and is never larger', () => {
+    for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+      const plain = compile(symbolScript(), { evmVersion });
+      const optimized = compile(symbolScript(), { evmVersion, optimize: true });
+      expect(optimized.runtimeBytecode.length).toBeLessThanOrEqual(plain.runtimeBytecode.length);
+    }
   });
 });
 

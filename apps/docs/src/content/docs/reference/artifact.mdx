@@ -407,6 +407,6 @@ payloads are bit-for-bit what the compiled bytecode produces. `InterpEnvOverride
 ## `options`
 
 `compiled.options` is the frozen, fully resolved `Readonly<Required<CompileOptions>>` the
-artifact was built with — defaults applied: `evmVersion: 'cancun'`, `locations: true`, identity
-`peephole`, no-op `onDiagnostic`. See [evscript](/reference/evscript/) for the option-by-option
+artifact was built with — defaults applied: `evmVersion: 'cancun'`, `optimize: false`,
+`locations: true`, identity `peephole`, no-op `onDiagnostic`. See [evscript](/reference/evscript/) for the option-by-option
 reference and [EVM targets](/guides/evm-targets/) for choosing `evmVersion`.

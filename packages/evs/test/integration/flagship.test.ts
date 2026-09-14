@@ -5,6 +5,9 @@
  * execution paths with full type inference; E2 `balances` over 50 tokens (loop + dynamic
  * arg + MutArray); then the failure half: EOA pool → decode error naming the originating
  * s.call, Malformed token → EvsDecodeError(site).
+ *
+ * Every scenario runs twice: on the default output and on its `optimize: true` twin (the
+ * built-in peephole pass, issue #39) — the anvil gate for the optimizer.
  */
 
 import { encodeFunctionData, erc20Abi, parseEther } from 'viem';
@@ -35,7 +38,16 @@ const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s
   return s.return({ token0, token1, fee, symbol0, symbol1, tick: slot0[1], decimals0, bal0 });
 });
 
-const compiledPoolMeta = poolMeta.compile();
+/** `[mode label, optimize flag]` — every describe below loops over both. */
+const MODES = [
+  ['default', false],
+  ['optimize: true', true],
+] as const;
+
+const compiledPoolMetaBy = {
+  default: poolMeta.compile(),
+  'optimize: true': poolMeta.compile({ optimize: true }),
+};
 
 let token0: `0x${string}`;
 let token1: `0x${string}`;
@@ -64,7 +76,8 @@ beforeAll(async () => {
   });
 });
 
-describe('E1 poolMeta through all three paths', () => {
+describe.each(MODES)('E1 poolMeta through all three paths [%s]', (mode) => {
+  const compiledPoolMeta = compiledPoolMetaBy[mode];
   const expected = () => ({
     token0,
     token1,
@@ -141,93 +154,100 @@ const balances = evscript(
   },
 );
 
-describe('E2 balances over 50 tokens (multicall replacement)', () => {
-  test('matches direct readContract calls; non-tokens default to 0', async () => {
-    const tokens: `0x${string}`[] = [];
-    for (let i = 0; i < 48; i++) {
-      const addr = await deploy(MockERC20.abi, MockERC20.bytecode, [`Token ${i}`, `T${i}`, 18]);
-      tokens.push(addr);
-      if (i % 3 === 0) {
-        await write({
-          address: addr,
-          abi: MockERC20.abi,
-          functionName: 'mint',
-          args: [deployer.address, parseEther(String(i + 1))],
-        });
+describe.each(MODES)(
+  'E2 balances over 50 tokens (multicall replacement) [%s]',
+  (_mode, optimize) => {
+    test('matches direct readContract calls; non-tokens default to 0', async () => {
+      const tokens: `0x${string}`[] = [];
+      for (let i = 0; i < 48; i++) {
+        const addr = await deploy(MockERC20.abi, MockERC20.bytecode, [`Token ${i}`, `T${i}`, 18]);
+        tokens.push(addr);
+        if (i % 3 === 0) {
+          await write({
+            address: addr,
+            abi: MockERC20.abi,
+            functionName: 'mint',
+            args: [deployer.address, parseEther(String(i + 1))],
+          });
+        }
       }
-    }
-    // Two non-token addresses: an EOA and an address with no code at all → tryCall default 0n.
-    tokens.push(deployer.address, '0x00000000000000000000000000000000000fffff');
-    expect(tokens).toHaveLength(50);
+      // Two non-token addresses: an EOA and an address with no code at all → tryCall default 0n.
+      tokens.push(deployer.address, '0x00000000000000000000000000000000000fffff');
+      expect(tokens).toHaveLength(50);
 
-    const out = await publicClient.readContract({
-      ...balances.compile().toViem(),
-      functionName: 'balances',
-      args: [tokens, deployer.address],
+      const out = await publicClient.readContract({
+        ...balances.compile({ optimize }).toViem(),
+        functionName: 'balances',
+        args: [tokens, deployer.address],
+      });
+      expectTypeOf(out).toEqualTypeOf<{ balances: readonly bigint[] }>();
+
+      const direct = await Promise.all(
+        tokens.slice(0, 48).map((address) =>
+          publicClient.readContract({
+            address,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [deployer.address],
+          }),
+        ),
+      );
+      expect(out.balances).toStrictEqual([...direct, 0n, 0n]);
     });
-    expectTypeOf(out).toEqualTypeOf<{ balances: readonly bigint[] }>();
-
-    const direct = await Promise.all(
-      tokens.slice(0, 48).map((address) =>
-        publicClient.readContract({
-          address,
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: [deployer.address],
-        }),
-      ),
-    );
-    expect(out.balances).toStrictEqual([...direct, 0n, 0n]);
-  });
-});
+  },
+);
 
 // --- Failure half -------------------------------------------------------------------------
 
-describe('failure half: explainRevert names the originating call', () => {
-  test('EOA as pool → decode error at the token0 call site', async () => {
-    const overrideParams = compiledPoolMeta.toViem({ mode: 'stateOverride' });
-    const raw = await callExpectRevert({
-      to: overrideParams.address,
-      stateOverride: overrideParams.stateOverride,
-      data: encodeFunctionData({
-        abi: compiledPoolMeta.abi,
-        functionName: 'poolMeta',
-        args: [deployer.address, deployer.address], // an EOA, not a pool
-      }),
+describe.each(MODES)(
+  'failure half: explainRevert names the originating call [%s]',
+  (mode, optimize) => {
+    const compiledPoolMeta = compiledPoolMetaBy[mode];
+    test('EOA as pool → decode error at the token0 call site', async () => {
+      const overrideParams = compiledPoolMeta.toViem({ mode: 'stateOverride' });
+      const raw = await callExpectRevert({
+        to: overrideParams.address,
+        stateOverride: overrideParams.stateOverride,
+        data: encodeFunctionData({
+          abi: compiledPoolMeta.abi,
+          functionName: 'poolMeta',
+          args: [deployer.address, deployer.address], // an EOA, not a pool
+        }),
+      });
+      const explained = compiledPoolMeta.explainRevert(raw);
+      expect(explained.kind).toBe('evs-decode');
+      const site = explained.site;
+      expect(site).toBeDefined();
+      if (site !== undefined && site.loc !== null) {
+        expect(site.loc.file).toContain('flagship.test.ts');
+      }
     });
-    const explained = compiledPoolMeta.explainRevert(raw);
-    expect(explained.kind).toBe('evs-decode');
-    const site = explained.site;
-    expect(site).toBeDefined();
-    if (site !== undefined && site.loc !== null) {
-      expect(site.loc.file).toContain('flagship.test.ts');
-    }
-  });
 
-  test('Malformed callee → EvsDecodeError with the right site', async () => {
-    // Malformed.emptyReturn() is declared `returns (string)` but returns ZERO bytes —
-    // the strict call must revert EvsDecodeError(site), never decode garbage.
-    const script = evscript({ name: 'readMalformed', args: [t.address] }, (s, target) => {
-      const v = s.read({ address: target, abi: Malformed.abi, functionName: 'emptyReturn' });
-      return s.return({ v });
+    test('Malformed callee → EvsDecodeError with the right site', async () => {
+      // Malformed.emptyReturn() is declared `returns (string)` but returns ZERO bytes —
+      // the strict call must revert EvsDecodeError(site), never decode garbage.
+      const script = evscript({ name: 'readMalformed', args: [t.address] }, (s, target) => {
+        const v = s.read({ address: target, abi: Malformed.abi, functionName: 'emptyReturn' });
+        return s.return({ v });
+      });
+      const compiled = script.compile({ optimize });
+      const overrideParams = compiled.toViem({ mode: 'stateOverride' });
+      const raw = await callExpectRevert({
+        to: overrideParams.address,
+        stateOverride: overrideParams.stateOverride,
+        data: encodeFunctionData({
+          abi: compiled.abi,
+          functionName: 'readMalformed',
+          args: [malformed],
+        }),
+      });
+      const explained = compiled.explainRevert(raw);
+      expect(explained.kind).toBe('evs-decode');
+      const site = explained.site;
+      expect(site).toBeDefined();
+      if (site !== undefined && site.loc !== null) {
+        expect(site.loc.file).toContain('flagship.test.ts');
+      }
     });
-    const compiled = script.compile();
-    const overrideParams = compiled.toViem({ mode: 'stateOverride' });
-    const raw = await callExpectRevert({
-      to: overrideParams.address,
-      stateOverride: overrideParams.stateOverride,
-      data: encodeFunctionData({
-        abi: compiled.abi,
-        functionName: 'readMalformed',
-        args: [malformed],
-      }),
-    });
-    const explained = compiled.explainRevert(raw);
-    expect(explained.kind).toBe('evs-decode');
-    const site = explained.site;
-    expect(site).toBeDefined();
-    if (site !== undefined && site.loc !== null) {
-      expect(site.loc.file).toContain('flagship.test.ts');
-    }
-  });
-});
+  },
+);
