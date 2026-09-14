@@ -80,6 +80,7 @@ export type {
   ArgHandles,
   ArgInput, // issue #9: one top-level arg declarator (a bare type or a namedArg)
   ArgsInput,
+  CallVerb, // issue #35: the s.call verb type (WriteVerb + the `revertReturns` overload)
   Cell,
   ComponentToType,
   EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
@@ -96,6 +97,8 @@ export type {
   PackedValue, // issue #17: what s.encodePacked accepts per value
   ReturnValue,
   ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
+  RevertReturnHandles, // issue #35: the handles of a `revertReturns` list
+  RevertReturnsParams, // issue #35: the s.call / s.tryCall `revertReturns` parameter object
   ScriptBuilder,
   ScriptReturn,
   SubcallInputs, // issue #1: per-verb arg/output/struct helpers, generic over the mutability bucket
@@ -104,6 +107,7 @@ export type {
   SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
   SubcallVerb,
   ThrowArgs, // issue #15: the rest-args shape of s.throw (record / tuple / none)
+  TryCallVerb, // issue #35: the s.tryCall verb type (TryWriteVerb + the `revertReturns` overload)
   TryReadVerb,
   TrySubcallVerb,
   TryWriteVerb,
@@ -112,7 +116,7 @@ export type {
   TupleInit,
   ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
   WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket
-  WriteVerb, // issue #1: the s.call / s.tryCall / s.simulate / s.trySimulate verb types (CALL)
+  WriteVerb, // issue #1: the s.simulate / s.trySimulate verb types (CALL); the base of CallVerb
 } from './builder/script.js';
 
 // compile + viem

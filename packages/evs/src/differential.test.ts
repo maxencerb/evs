@@ -24,7 +24,7 @@ import {
 } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
-import { Reverter } from '../test/generated/index.js';
+import { MockQuoter, Reverter } from '../test/generated/index.js';
 import {
   CALLER_ADDRESS,
   DEPLOYLESS_WRAPPER_ADDRESS,
@@ -2977,4 +2977,221 @@ describe('custom errors (issue #15)', () => {
       expect(outcomes[1]?.kind).toBe('return');
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// revertReturns (issue #35) — s.call / s.tryCall decode the REVERT payload as the result
+// ---------------------------------------------------------------------------
+
+describe('revertReturns (issue #35)', () => {
+  const QUOTER = '0xf100000000000000000000000000000000000001';
+  const quoterV1Abi = [
+    {
+      type: 'function',
+      name: 'quoteExactInput',
+      stateMutability: 'nonpayable',
+      inputs: [{ name: 'amountIn', type: 'uint256' }],
+      outputs: [], // QuoterV1 declares none — the amount arrives in the revert data
+    },
+    {
+      type: 'function',
+      name: 'quoteMany',
+      stateMutability: 'nonpayable',
+      inputs: [],
+      outputs: [{ name: 'ignored', type: 'bool' }], // ignored under revertReturns
+    },
+  ] as const;
+
+  const strictScript = () =>
+    evscript({ name: 'rrStrict', args: [t.uint256] }, (s, amountIn) => {
+      const amountOut = s.call({
+        address: QUOTER,
+        abi: quoterV1Abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      return s.return({ amountOut });
+    });
+
+  const tryScript = () =>
+    evscript({ name: 'rrTry', args: [t.uint256] }, (s, amountIn) => {
+      const r = s.tryCall({
+        address: QUOTER,
+        abi: quoterV1Abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      return s.return({
+        ok: r.success,
+        amountOut: r.value,
+        picked: s.select(r.success, r.value, 1n),
+      });
+    });
+
+  test('strict: the revert payload IS the result', async () => {
+    const [o] = await expectAgreement(strictScript(), [[100n]], {
+      [QUOTER]: { kind: 'revert', data: word(150n) },
+    });
+    expect(o?.kind).toBe('return');
+    expect(o?.data).toBe(encodeAbiParameters([{ type: 'uint256' }], [150n]));
+  });
+
+  test('strict: a normal return is the failure → EvsDecodeError(site), never bubbled', async () => {
+    for (const data of ['0x', word(150n)] as const) {
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      const [o] = await expectAgreement(strictScript(), [[100n]], {
+        [QUOTER]: { kind: 'return', data },
+      });
+      expect(o?.kind).toBe('revert');
+      expect(o?.data.startsWith(sel('EvsDecodeError(uint256)'))).toBe(true);
+    }
+    // an unmocked (code-less) target: the CALL succeeds with empty returndata → the same failure
+    const [ghost] = await expectAgreement(strictScript(), [[100n]]);
+    expect(ghost?.kind).toBe('revert');
+    expect(ghost?.data.startsWith(sel('EvsDecodeError(uint256)'))).toBe(true);
+  });
+
+  test('strict: a short revert payload trips the staticMinSize guard (same as returndata)', async () => {
+    const [o] = await expectAgreement(strictScript(), [[100n]], {
+      [QUOTER]: { kind: 'revert', data: '0xdeadbeef' },
+    });
+    expect(o?.kind).toBe('revert');
+    expect(o?.data.startsWith(sel('EvsDecodeError(uint256)'))).toBe(true);
+  });
+
+  test('try: revert → success + value; return / malformed / unmocked → success=false, zero', async () => {
+    const decodeOut = (data: Hex | undefined) =>
+      decodeFunctionResult({ abi: tryScript().abi, functionName: 'rrTry', data: data ?? '0x' });
+    const [ok] = await expectAgreement(tryScript(), [[100n]], {
+      [QUOTER]: { kind: 'revert', data: word(150n) },
+    });
+    expect(decodeOut(ok?.data)).toEqual({ ok: true, amountOut: 150n, picked: 150n });
+
+    const [ret] = await expectAgreement(tryScript(), [[100n]], {
+      [QUOTER]: { kind: 'return', data: word(150n) },
+    });
+    expect(decodeOut(ret?.data)).toEqual({ ok: false, amountOut: 0n, picked: 1n });
+
+    const [bad] = await expectAgreement(tryScript(), [[100n]], {
+      [QUOTER]: { kind: 'revert', data: '0x08c379a0' },
+    });
+    expect(decodeOut(bad?.data)).toEqual({ ok: false, amountOut: 0n, picked: 1n });
+
+    const [ghost] = await expectAgreement(tryScript(), [[100n]]);
+    expect(decodeOut(ghost?.data)).toEqual({ ok: false, amountOut: 0n, picked: 1n });
+  });
+
+  test('dynamic + struct revert outputs decode with the full bounds sequence', async () => {
+    const Quote = t.struct({ amount: t.uint256, ok: t.bool });
+    const script = evscript({ name: 'rrMany', args: [] }, (s) => {
+      const [n, str, list, q] = s.call({
+        address: QUOTER,
+        abi: quoterV1Abi,
+        functionName: 'quoteMany',
+        revertReturns: [t.uint256, t.string, t.array(t.uint8), Quote],
+      });
+      return s.return({
+        n,
+        str,
+        list,
+        len: list.length(),
+        amount: q.amount.get(),
+        okq: q.ok.get(),
+      });
+    });
+    const payload = encodeAbiParameters(
+      [
+        { type: 'uint256' },
+        { type: 'string' },
+        { type: 'uint8[]' },
+        {
+          type: 'tuple',
+          components: [
+            { name: 'amount', type: 'uint256' },
+            { name: 'ok', type: 'bool' },
+          ],
+        },
+      ],
+      [7n, 'PEPE', [1, 2, 3], { amount: 99n, ok: true }],
+    );
+    const [o] = await expectAgreement(script, [[]], {
+      [QUOTER]: { kind: 'revert', data: payload },
+    });
+    expect(
+      decodeFunctionResult({ abi: script.abi, functionName: 'rrMany', data: o?.data ?? '0x' }),
+    ).toEqual({ n: 7n, str: 'PEPE', list: [1, 2, 3], len: 3n, amount: 99n, okq: true });
+
+    // attacker-shaped revert payload: a string offset past 2^64 → decode failure, not a halt
+    const evil = concatHex(word(7n), word(1n << 64n), word(0x80n), word(0xa0n));
+    const [e] = await expectAgreement(script, [[]], { [QUOTER]: { kind: 'revert', data: evil } });
+    expect(e?.kind).toBe('revert');
+    expect(e?.data.startsWith(sel('EvsDecodeError(uint256)'))).toBe(true);
+  });
+
+  test('the real MockQuoter artifact: quoteExactInputReverting (QuoterV1) vs quoteExactInput (V2)', async () => {
+    // Both legs see the SAME solc bytecode: the EVM leg runs it (a real CALL frame — the quoter
+    // writes storage before reverting), the interpreter leg gets the independently computed reply.
+    const table: CalleeTable = {
+      [QUOTER]: {
+        kind: 'bytecode',
+        runtime: MockQuoter.deployedBytecode,
+        respond: (calldata) => {
+          const amountIn = BigInt(`0x${calldata.slice(10, 74)}`);
+          const out = word((amountIn * 3n) / 2n);
+          const selector = calldata.slice(0, 10).toLowerCase();
+          if (selector === sel('quoteExactInputReverting(uint256)'))
+            return { success: false, data: out };
+          if (selector === sel('quoteExactInput(uint256)')) return { success: true, data: out };
+          return { success: false, data: '0x' };
+        },
+      },
+    };
+    const script = evscript({ name: 'quoter', args: [t.uint256] }, (s, amountIn) => {
+      // V1: the quote arrives via revert data
+      const v1 = s.call({
+        address: QUOTER,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInputReverting',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      // V1 through tryCall
+      const v1try = s.tryCall({
+        address: QUOTER,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInputReverting',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      // V2 (returns normally) under revertReturns: the normal return is the FAILURE
+      const v2asV1 = s.tryCall({
+        address: QUOTER,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      // V2 read the normal way, for reference
+      const v2 = s.call({
+        address: QUOTER,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+      });
+      return s.return({
+        v1,
+        ok1: v1try.success,
+        v1b: v1try.value,
+        okV2asV1: v2asV1.success,
+        v2asV1: v2asV1.value,
+        v2,
+      });
+    });
+    const [o] = await expectAgreement(script, [[100n]], table);
+    expect(
+      decodeFunctionResult({ abi: script.abi, functionName: 'quoter', data: o?.data ?? '0x' }),
+    ).toEqual({ v1: 150n, ok1: true, v1b: 150n, okV2asV1: false, v2asV1: 0n, v2: 150n });
+  });
 });

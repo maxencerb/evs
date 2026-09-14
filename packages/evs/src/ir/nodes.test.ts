@@ -294,6 +294,44 @@ describe('serializeIr / deserializeIr round trip', () => {
     expect(parsed).toBeTypeOf('object');
   });
 
+  test('a call with revertReturns (issue #35) round-trips; the field is absent when unset', () => {
+    const quoteAbi = {
+      name: 'quoteExactInput',
+      selector: '0x5c74b1eb',
+      inputs: [{ name: 'amountIn', type: 'uint256' }],
+      outputs: [],
+    } as const;
+    const struct: EvsType = { type: 'tuple', components: [{ name: 'a', type: 'uint256' }] };
+    const withRR = ir({
+      values: [vi('address'), vi('uint256'), vi('uint256'), vi('string'), vi(struct), vi('bool')],
+      body: [
+        mk({ k: 'env', op: 'caller', out: 0 }),
+        mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(100n) }, type: 'uint256' }),
+        mk({
+          k: 'call',
+          target: 0,
+          fnAbi: quoteAbi,
+          args: [1],
+          outs: [2, 3, 4],
+          mode: 'try',
+          kind: 'call',
+          successOut: 5,
+          revertReturns: ['uint256', 'string', struct],
+        }),
+      ],
+    });
+    const json = serializeIr(withRR);
+    expect(json).toContain('"revertReturns":["uint256","string",{"components":[');
+    const back = deserializeIr(json);
+    expect(back).toEqual(withRR);
+    expect(serializeIr(back)).toBe(json);
+    const call = back.body[2];
+    expect(call?.k === 'call' && Object.isFrozen(call.revertReturns)).toBe(true);
+    // KITCHEN_SINK predates the field: its calls serialize WITHOUT it (v1 IR round-trips unchanged)
+    expect(serializeIr(KITCHEN_SINK)).not.toContain('revertReturns');
+    expect(KITCHEN_SINK.body.filter((st) => st.k === 'call' && 'revertReturns' in st)).toEqual([]);
+  });
+
   test('deserializeIr deep-freezes the result', () => {
     const back = deserializeIr(serializeIr(KITCHEN_SINK));
     expect(Object.isFrozen(back)).toBe(true);
@@ -692,6 +730,20 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['body'][1]['op'] = 'pow'), /unknown bin op/);
     reject((r) => (r['body'][2]['op'] = 'neg'), /unknown un op/);
     reject((r) => (r['body'][3]['op'] = 'basefee'), /unknown env op/);
+  });
+
+  test('rejects malformed revertReturns entries (issue #35)', () => {
+    // body[13] is the strict balanceOf call of KITCHEN_SINK
+    reject((r) => (r['body'][13]['revertReturns'] = 'uint256'), /body\[13\]\.revertReturns/);
+    reject((r) => (r['body'][13]['revertReturns'] = ['uint257']), /body\[13\]\.revertReturns\[0\]/);
+    reject(
+      (r) => (r['body'][13]['revertReturns'] = ['uint256', { type: 'tuple' }]),
+      /body\[13\]\.revertReturns\[1\]\.components/,
+    );
+    reject(
+      (r) => (r['body'][13]['revertReturns'] = [{ type: 'uint256' }]),
+      /body\[13\]\.revertReturns\[0\]\.type/,
+    );
   });
 
   test('rejects malformed statement fields', () => {

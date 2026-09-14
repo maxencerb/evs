@@ -12,7 +12,7 @@
 
 import { isHexString } from '../core/bytes.js';
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import { isEvsType, type ArgType, type EvsType, type Hex } from '../core/types.js';
+import { isEvsType, typeToAbiParam, type ArgType, type EvsType, type Hex } from '../core/types.js';
 
 export type ValueId = number;
 export type CellId = number;
@@ -155,6 +155,14 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
       kind?: 'static' | 'call' | 'simulate';
       successOut?: ValueId;
       gas?: ValueId;
+      // revert-data-as-result (issue #35, `kind: 'call'` only): the output types carried by the
+      // target's REVERT payload (the QuoterV1 pattern). When present it REPLACES `fnAbi.outputs`
+      // as the decode schema — `outs` are typed by and decoded from the revert data via the
+      // same sequence (staticMinSize guard, 2^64 bounds) as normal outputs — and the
+      // success/failure branches swap: a REVERT is the value path, a normal RETURN is the
+      // failure (strict → `EvsDecodeError(site)`; try → success=0 + zeroed outs). OPTIONAL so
+      // v1 serialized IR without it round-trips unchanged (the `kind` precedent).
+      revertReturns?: readonly EvsType[];
     }
   | { k: 'fncall'; fn: FnId; args: readonly ValueId[]; outs: readonly ValueId[] }
   | { k: 'if'; cond: ValueId; then: readonly Stmt[]; else: readonly Stmt[] }
@@ -162,6 +170,21 @@ export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
   | { k: 'break' }
   | { k: 'continue' }
 );
+
+// ---------------------------------------------------------------------------
+// call helpers
+// ---------------------------------------------------------------------------
+
+/**
+ * The decode schema of a `call` statement's `outs`: its `revertReturns` (issue #35 — unnamed
+ * params built from the declared types, decoded from the REVERT payload) when present, else the
+ * ABI `outputs`. Every consumer of a call's outputs (validate, interp, codegen) reads the schema
+ * through this one helper so the two sources can never disagree.
+ */
+export function callOutputs(s: Extract<Stmt, { k: 'call' }>): readonly PlainAbiParam[] {
+  if (s.revertReturns === undefined) return s.fnAbi.outputs;
+  return s.revertReturns.map((ty) => typeToAbiParam('', ty));
+}
 
 // ---------------------------------------------------------------------------
 // serializeIr — stable JSON
@@ -666,6 +689,8 @@ function decodeStmt(v: unknown, path: string): Stmt {
       }
       const successOut: unknown = o['successOut'];
       const gas: unknown = o['gas'];
+      // `revertReturns` is OPTIONAL (issue #35): absent → the ABI outputs are the decode schema.
+      const revertReturns: unknown = o['revertReturns'];
       return {
         loc,
         site,
@@ -678,6 +703,13 @@ function decodeStmt(v: unknown, path: string): Stmt {
         ...(kind !== undefined && kind !== 'static' ? { kind } : {}),
         ...(successOut !== undefined ? { successOut: asId(successOut, `${path}.successOut`) } : {}),
         ...(gas !== undefined ? { gas: asId(gas, `${path}.gas`) } : {}),
+        ...(revertReturns !== undefined
+          ? {
+              revertReturns: asArray(revertReturns, `${path}.revertReturns`).map((ty, i) =>
+                asEvsType(ty, `${path}.revertReturns[${i}]`),
+              ),
+            }
+          : {}),
       };
     }
     case 'fncall':

@@ -1176,6 +1176,58 @@ describe('validateIr — call rules', () => {
     expectInvalid(callIr({ outs: [3] }, [vi('bool')]), /out 0.*produces 'uint256'/);
   });
 
+  // revert-data-as-result (issue #35): `revertReturns` replaces the ABI outputs as the schema.
+  test('revertReturns requires kind === "call"', () => {
+    expectInvalid(
+      callIr({ revertReturns: ['uint256'] }),
+      /revertReturns is only legal when kind === 'call'.*'static' \(absent\)/,
+    );
+    expectInvalid(
+      callIr({ kind: 'static', revertReturns: ['uint256'] }),
+      /revertReturns is only legal when kind === 'call'.*'static'/,
+    );
+    expectInvalid(
+      callIr({ kind: 'simulate', revertReturns: ['uint256'] }),
+      /revertReturns is only legal when kind === 'call'.*'simulate'/,
+    );
+  });
+
+  test('revertReturns types the outs and the ABI outputs are ignored', () => {
+    // the ABI declares NO outputs, yet the out is legal — typed by revertReturns
+    expect(() =>
+      validateIr(
+        callIr({ kind: 'call', fnAbi: { ...ABI, outputs: [] }, revertReturns: ['uint256'] }),
+      ),
+    ).not.toThrow();
+    // a declared ABI output is NOT a schema any more: arity follows revertReturns
+    expectInvalid(
+      callIr({ kind: 'call', revertReturns: ['uint256', 'bool'] }),
+      /arity mismatch — 1 outs for 2 revertReturns/,
+    );
+    expectInvalid(
+      callIr({ kind: 'call', revertReturns: [] }),
+      /arity mismatch — 1 outs for 0 revertReturns/,
+    );
+    // the out's declared type must match the revertReturns entry, not the ABI output
+    expectInvalid(callIr({ kind: 'call', revertReturns: ['bool'] }), /out 0.*produces 'bool'/);
+    // a tuple entry types a tuple out
+    const tupleType = { type: 'tuple', components: [{ name: 'x', type: 'uint256' }] } as const;
+    expect(() =>
+      validateIr(callIr({ kind: 'call', outs: [3], revertReturns: [tupleType] }, [vi(tupleType)])),
+    ).not.toThrow();
+  });
+
+  test('revertReturns entries must be supported types', () => {
+    expectInvalid(
+      callIr({ kind: 'call', revertReturns: ['uint256[2]' as never] }),
+      /revertReturns\[0\] is not a supported EvsType/,
+    );
+    expectInvalid(
+      callIr({ kind: 'call', revertReturns: [{ type: 'tuple', components: [] }] }),
+      /revertReturns\[0\].*tuple type carries no components/,
+    );
+  });
+
   test("successOut is present iff mode === 'try'", () => {
     expectInvalid(callIr({ successOut: 3 }, [vi('bool')]), /only legal when mode === 'try'/);
     expectInvalid(callIr({ mode: 'try' }), /must define successOut/);

@@ -1110,3 +1110,131 @@ test('the declared errors surface on the script value', () => {
   expectTypeOf(script.errors).toEqualTypeOf<readonly [typeof NoBalanceT]>();
   expectTypeOf(script.errors[0].name).toEqualTypeOf<'NoBalance'>();
 });
+
+// ---------------------------------------------------------------------------
+// revertReturns (issue #35) — s.call / s.tryCall decode the REVERT payload as the result
+// ---------------------------------------------------------------------------
+
+const quoterV1Fixture = [
+  {
+    type: 'function',
+    name: 'quoteExactInput',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amountIn', type: 'uint256' }],
+    outputs: [], // QuoterV1 declares none — the amount arrives in the revert data
+  },
+  {
+    type: 'function',
+    name: 'quoteWithOutputs',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: [{ name: 'ignored', type: 'bool' }], // ignored when revertReturns is set
+  },
+] as const satisfies Abi;
+
+test('revertReturns types the result from the declared list, not the ABI outputs', () => {
+  evscript({ name: 'rr', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
+    // [one] → the handle of that type (an ABI with NO outputs still yields a value)
+    const amountOut = s.call({
+      address: quoter,
+      abi: quoterV1Fixture,
+      functionName: 'quoteExactInput',
+      args: [amountIn],
+      revertReturns: [t.uint256],
+    });
+    expectTypeOf(amountOut).toEqualTypeOf<Expr<'uint256'>>();
+
+    // [many] → a readonly tuple of handles; a t.struct entry → a Tuple handle
+    const Quote = t.struct({ amount: t.uint256, ok: t.bool });
+    const many = s.call({
+      address: quoter,
+      abi: quoterV1Fixture,
+      functionName: 'quoteWithOutputs',
+      revertReturns: [t.uint256, t.string, Quote],
+    });
+    expectTypeOf(many).toEqualTypeOf<
+      readonly [Expr<'uint256'>, Expr<'string'>, Tuple<typeof Quote>]
+    >();
+    expectTypeOf(many[2].amount.get()).toEqualTypeOf<Expr<'uint256'>>();
+
+    // [] → void (the call must revert; nothing is decoded)
+    const none = s.call({
+      address: quoter,
+      abi: quoterV1Fixture,
+      functionName: 'quoteExactInput',
+      args: [amountIn],
+      revertReturns: [],
+    });
+    expectTypeOf(none).toBeVoid();
+
+    // without revertReturns the ABI outputs still drive the shape (the base overloads)
+    const plain = s.call({
+      address: quoter,
+      abi: quoterV1Fixture,
+      functionName: 'quoteWithOutputs',
+    });
+    expectTypeOf(plain).toEqualTypeOf<Expr<'bool'>>();
+
+    return s.return({ amountOut, first: many[0] });
+  });
+});
+
+test('tryCall + revertReturns: success Expr<bool> + the revertReturns-typed value', () => {
+  evscript({ name: 'rrTry', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
+    const r = s.tryCall({
+      address: quoter,
+      abi: quoterV1Fixture,
+      functionName: 'quoteExactInput',
+      args: [amountIn],
+      revertReturns: [t.uint256],
+    });
+    expectTypeOf(r.success).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(r.value).toEqualTypeOf<Expr<'uint256'>>();
+    const picked = s.select(r.success, r.value, 0n);
+    expectTypeOf(picked).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ ok: r.success, amountOut: picked });
+  });
+});
+
+test('revertReturns is rejected on s.read / s.tryRead / s.simulate / s.trySimulate and with struct: true', () => {
+  evscript({ name: 'rrNo', args: [t.address] }, (s, target) => {
+    expectTypeOf(target).toEqualTypeOf<Expr<'address'>>();
+    s.read({
+      address: target,
+      abi: erc20Fixture,
+      functionName: 'decimals',
+      // @ts-expect-error — revertReturns is an s.call / s.tryCall option only
+      revertReturns: [t.uint256],
+    });
+    s.tryRead({
+      address: target,
+      abi: erc20Fixture,
+      functionName: 'decimals',
+      // @ts-expect-error — revertReturns is an s.call / s.tryCall option only
+      revertReturns: [t.uint256],
+    });
+    s.simulate({
+      address: target,
+      abi: quoterV1Fixture,
+      functionName: 'quoteWithOutputs',
+      // @ts-expect-error — the simulate trampoline frames the target revert itself
+      revertReturns: [t.uint256],
+    });
+    s.trySimulate({
+      address: target,
+      abi: quoterV1Fixture,
+      functionName: 'quoteWithOutputs',
+      // @ts-expect-error — the simulate trampoline frames the target revert itself
+      revertReturns: [t.uint256],
+    });
+    s.call({
+      address: target,
+      abi: quoterV1Fixture,
+      functionName: 'quoteWithOutputs',
+      struct: true,
+      // @ts-expect-error — struct: true cannot be combined with revertReturns
+      revertReturns: [t.uint256],
+    });
+    return s.return({ x: s.lit(t.bool, true) });
+  });
+});

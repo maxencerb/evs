@@ -35,14 +35,15 @@ import {
   type TupleType,
   type WordType,
 } from '../core/types.js';
-import type {
-  CellId,
-  FnId,
-  PlainAbiFunction,
-  PlainAbiParam,
-  ScriptIr,
-  Stmt,
-  ValueId,
+import {
+  callOutputs,
+  type CellId,
+  type FnId,
+  type PlainAbiFunction,
+  type PlainAbiParam,
+  type ScriptIr,
+  type Stmt,
+  type ValueId,
 } from './nodes.js';
 
 export function validateIr(ir: ScriptIr): void {
@@ -782,14 +783,33 @@ class IrValidator {
       if (p === undefined) return; // unreachable: lengths checked above
       this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`, s.loc);
     });
-    if (s.outs.length !== s.fnAbi.outputs.length) {
+    // revert-data-as-result (issue #35): `revertReturns` replaces the ABI outputs as the decode
+    // schema. It is a `kind: 'call'` feature only (STATICCALL reads have no reverting-quoter use;
+    // the simulate trampoline carries its own revert framing).
+    if (s.revertReturns !== undefined) {
+      if (s.kind !== 'call') {
+        this.fail(
+          `${what}: revertReturns is only legal when kind === 'call' (s.call / s.tryCall), got kind ${s.kind === undefined ? "'static' (absent)" : `'${s.kind}'`}`,
+          s.loc,
+        );
+      }
+      s.revertReturns.forEach((ty, i) => {
+        if (!isEvsValueType(ty)) {
+          this.fail(`${what}: revertReturns[${i}] is not a supported EvsType`, s.loc);
+        }
+      });
+      this.checkAbiParams(callOutputs(s), `${what} revertReturns`, s.loc);
+    }
+    const outputs = callOutputs(s);
+    const schema = s.revertReturns === undefined ? 'ABI outputs' : 'revertReturns';
+    if (s.outs.length !== outputs.length) {
       this.fail(
-        `${what}: arity mismatch — ${s.outs.length} outs for ${s.fnAbi.outputs.length} ABI outputs`,
+        `${what}: arity mismatch — ${s.outs.length} outs for ${outputs.length} ${schema}`,
         s.loc,
       );
     }
     s.outs.forEach((out, i) => {
-      const p = s.fnAbi.outputs[i];
+      const p = outputs[i];
       if (p === undefined) return; // unreachable: lengths checked above
       this.define(out, abiParamToType(p), `${what} out ${i} ("${p.name}")`, s.loc);
     });

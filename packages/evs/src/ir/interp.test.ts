@@ -2123,3 +2123,160 @@ describe('regressions', () => {
     ).toThrowError(EvsTypeError);
   });
 });
+
+// ---------------------------------------------------------------------------
+// revertReturns (issue #35) — the REVERT payload is the result; a normal return is the failure
+// ---------------------------------------------------------------------------
+
+const encUS = (n: bigint, s: string): Hex =>
+  encodeAbiParameters([{ type: 'uint256' }, { type: 'string' }], [n, s]);
+
+describe('call — revertReturns (issue #35)', () => {
+  // QuoterV1 shape: the ABI declares NO outputs; the amount arrives in the revert data.
+  const quoteAbi = fnAbi('quoteExactInput', [{ name: 'amountIn', type: 'uint256' }], []);
+
+  /** strict `s.call` with revertReturns [uint256]; returns { n }. */
+  const strictRR = ir({
+    name: 'rrStrict',
+    args: [
+      { name: 'target', type: 'address' },
+      { name: 'amountIn', type: 'uint256' },
+    ],
+    values: [vi('address'), vi('uint256'), vi('uint256')],
+    body: [
+      mk(
+        {
+          k: 'call',
+          target: 0,
+          fnAbi: quoteAbi,
+          args: [1],
+          outs: [2],
+          mode: 'strict',
+          kind: 'call',
+          revertReturns: ['uint256'],
+        },
+        9,
+      ),
+    ],
+    returns: [{ name: 'n', type: 'uint256', value: 2 }],
+  });
+
+  /** try `s.tryCall` with revertReturns [uint256, string]; returns { ok, n, s }. */
+  const tryRR = ir({
+    name: 'rrTry',
+    args: [{ name: 'target', type: 'address' }],
+    values: [vi('address'), vi('uint256'), vi('string'), vi('bool')],
+    body: [
+      mk(
+        {
+          k: 'call',
+          target: 0,
+          fnAbi: fnAbi('quote', [], [{ name: 'ignored', type: 'bool' }]),
+          args: [],
+          outs: [1, 2],
+          mode: 'try',
+          kind: 'call',
+          successOut: 3,
+          revertReturns: ['uint256', 'string'],
+        },
+        9,
+      ),
+    ],
+    returns: [
+      { name: 'ok', type: 'bool', value: 3 },
+      { name: 'n', type: 'uint256', value: 1 },
+      { name: 's', type: 'string', value: 2 },
+    ],
+  });
+
+  test('strict: the REVERT payload decodes as the result (through the mutable oracle)', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: encU(150n) }),
+    });
+    expect(retOf(interpret(strictRR, [TOKEN, 100n], chain))).toEqual({ n: 150n });
+    expect(chain.callReqs).toHaveLength(1);
+    expect(chain.callReqs[0]?.kind).toBe('call');
+    expect(chain.staticReqs).toHaveLength(0);
+  });
+
+  test('strict: a normal RETURN is the failure → EvsDecodeError(site), nothing bubbled', () => {
+    for (const data of ['0x', encU(150n)] as const) {
+      const chain = chainSplit({
+        staticResult: () => ({ success: true, data: '0x' }),
+        callResult: () => ({ success: true, data }),
+      });
+      expect(revertData(interpret(strictRR, [TOKEN, 100n], chain))).toBe(decodeErrHex(9));
+    }
+  });
+
+  test('strict: a malformed revert payload is a decode failure (staticMinSize guard)', () => {
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: '0xdeadbeef' }), // 4 bytes < 32
+    });
+    expect(revertData(interpret(strictRR, [TOKEN, 100n], chain))).toBe(decodeErrHex(9));
+  });
+
+  test("strict: word outputs from the revert payload normalize-don't-revert", () => {
+    const uint8Script = ir({
+      ...strictRR,
+      values: [vi('address'), vi('uint256'), vi('uint8')],
+      body: [
+        mk(
+          {
+            k: 'call',
+            target: 0,
+            fnAbi: quoteAbi,
+            args: [1],
+            outs: [2],
+            mode: 'strict',
+            kind: 'call',
+            revertReturns: ['uint8'],
+          },
+          9,
+        ),
+      ],
+      returns: [{ name: 'n', type: 'uint8', value: 2 }],
+    });
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: wordHex((1n << 200n) | 0x1ffn) }),
+    });
+    expect(retOf(interpret(uint8Script, [TOKEN, 1n], chain))).toEqual({ n: 0xff }); // uint8 → number
+  });
+
+  test('try: revert → success=true with the decoded values; normal return → success=false, zeroed', () => {
+    const reverting = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: encUS(7n, 'quote') }),
+    });
+    expect(retOf(interpret(tryRR, [TOKEN], reverting))).toEqual({ ok: true, n: 7n, s: 'quote' });
+
+    // a normal return — even one that would decode under the schema — is the failure
+    const returning = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: true, data: encUS(7n, 'quote') }),
+    });
+    expect(retOf(interpret(tryRR, [TOKEN], returning))).toEqual({ ok: false, n: 0n, s: '' });
+  });
+
+  test('try: a malformed revert payload zeroes (same decode bounds as returndata)', () => {
+    const truncated: Hex = `0x${wordHex(7n).slice(2)}${wordHex(2n ** 65n).slice(2)}`; // off > 2^64
+    const chain = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: truncated }),
+    });
+    expect(retOf(interpret(tryRR, [TOKEN], chain))).toEqual({ ok: false, n: 0n, s: '' });
+    const short = chainSplit({
+      staticResult: () => ({ success: true, data: '0x' }),
+      callResult: () => ({ success: false, data: '0x' }),
+    });
+    expect(retOf(interpret(tryRR, [TOKEN], short))).toEqual({ ok: false, n: 0n, s: '' });
+  });
+
+  test('falls back to staticcall when the mutable oracle is absent (revert reply still decodes)', () => {
+    const chain = chainOf(() => ({ success: false, data: encU(150n) }));
+    expect(retOf(interpret(strictRR, [TOKEN, 100n], chain))).toEqual({ n: 150n });
+  });
+});
