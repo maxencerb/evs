@@ -1,0 +1,5 @@
+---
+"@maxencerb/evs": minor
+---
+
+Dead-code elimination (#40). `compile()` now runs an IR-level pass between `validateIr` and lowering that drops statements whose results nothing observable reads — arithmetic, conversions, literals, element/length/member reads, allocations, `s.encode`/`s.keccak256`, `.get()` on a cell, `.set()` on a cell never read, and calls to pure `s.fn`s. Returned values, `s.throw` arguments, every sub-call, loops, read cells and impure `s.fn` calls stay. A revert that only guarded an unused value (checked arithmetic, bounds checks, narrowing conversions) is dead work too and is removed, as in the Solidity optimizer. The value table, site ids and source locations are untouched, so source maps and `explainRevert` keep resolving; `compiled.ir` remains the recorded IR. The pass is exported as `eliminateDeadCode` (alias `dce`) and is gated by the differential suite (`interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`). `s.forEach` now records the element load unconditionally — a body that ignores `elem` leaves it to the pass instead of a builder special case. Emitted bytecode changes wherever a script computed a value it never used.

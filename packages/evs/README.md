@@ -345,11 +345,16 @@ the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts mak
 ## Design notes (the parts worth knowing)
 
 - **Pipeline.** The builder callback runs once and records a value-semantics IR (a flat value
-  table, one site id per statement). `validateIr` checks it, codegen lowers each statement
-  through fixed memory-slot templates to an assembly stream, the assembler resolves jumps
-  (`PUSH2` fixups), and mandatory verifiers run on the output before it is handed to you:
-  a `JUMPDEST` scan, a stack-height simulation (the operand stack must be empty at every
-  statement boundary), opcode/fork lints, and the EIP-170 size check.
+  table, one site id per statement). `validateIr` checks it, `eliminateDeadCode` (the one
+  IR-level pass, always on and also exported as `dce`) drops statements whose results nothing
+  observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
+  calls are the roots; a revert that only guarded an unused value is dead work too, like in
+  the Solidity optimizer — then codegen lowers each surviving statement through fixed
+  memory-slot templates to an assembly stream, the assembler resolves jumps (`PUSH2` fixups),
+  and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST` scan, a
+  stack-height simulation (the operand stack must be empty at every statement boundary),
+  opcode/fork lints, and the EIP-170 size check. The artifact's `ir` stays the recorded IR;
+  the differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures point at), a **static frame from `0x80`**
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata

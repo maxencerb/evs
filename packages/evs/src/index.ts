@@ -58,6 +58,7 @@ export { deserializeIr, serializeIr } from './ir/nodes.js';
 export type { ScriptIr } from './ir/nodes.js';
 export { interpret } from './ir/interp.js';
 export type { InterpEnvOverrides, InterpResult, MockChain } from './ir/interp.js';
+export { dce, eliminateDeadCode } from './ir/dce.js'; // issue #40: the pass compile() runs, for tools
 
 // abi
 export { EVS_ERROR_ABI } from './abi/artifact.js';
