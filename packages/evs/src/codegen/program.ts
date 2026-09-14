@@ -254,8 +254,11 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
       // CALL kinds prefix their verb so a simulate/call site is distinguishable in the message.
       const isStatic = s.kind === undefined || s.kind === 'static';
       const prefix = isStatic ? '' : `${s.kind} `;
+      // revertReturns (issue #35): the strict site decodes the REVERT payload, and a normal return
+      // lands on the same decode-fail stub — name the source so explainRevert reads right.
+      const source = s.revertReturns === undefined ? 'returndata' : 'revert data';
       return s.mode === 'strict'
-        ? ['decode', `decoding ${prefix}${s.fnAbi.name}() returndata`]
+        ? ['decode', `decoding ${prefix}${s.fnAbi.name}() ${source}`]
         : ['call', `try ${prefix}${s.fnAbi.name}()`];
     }
     case 'bin':

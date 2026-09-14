@@ -829,10 +829,60 @@ export interface TrySubcallVerb<mut extends AbiStateMutability> {
 export type ReadVerb = SubcallVerb<ViewMutability>;
 /** `s.tryRead` — STATICCALL, never reverts the script (`{ success, value }`). */
 export type TryReadVerb = TrySubcallVerb<ViewMutability>;
-/** `s.call` / `s.simulate` — a `CALL` frame for a `nonpayable`/`payable` function. */
+/** `s.simulate` (and the base of `s.call`) — a `CALL` frame for a `nonpayable`/`payable` function. */
 export type WriteVerb = SubcallVerb<WriteMutability>;
-/** `s.tryCall` / `s.trySimulate` — a `CALL` frame, never reverts the script. */
+/** `s.trySimulate` (and the base of `s.tryCall`) — a `CALL` frame, never reverts the script. */
 export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
+
+// ---------------------------------------------------------------------------
+// revert-data-as-result (issue #35): `s.call` / `s.tryCall` `revertReturns` opt-in
+// ---------------------------------------------------------------------------
+
+/**
+ * `s.call({ …, revertReturns: [t.uint256] })` (issue #35) — the QuoterV1 pattern: the target
+ * REVERTS with its ABI-encoded result. `revertReturns` declares the output types carried by the
+ * revert payload and REPLACES the ABI outputs as the decode schema (the ABI's own `outputs`, if
+ * any, are ignored). The branches swap: a revert is the value path; a normal return is the
+ * failure (`s.call` reverts `EvsDecodeError(site)`, `s.tryCall` reports `success = false` with
+ * zeroed values). Not combinable with `struct: true` — declare one `t.struct` type instead.
+ */
+export interface RevertReturnsParams<
+  abi extends Abi | readonly unknown[],
+  name extends ContractFunctionName<abi, WriteMutability>,
+  rr extends readonly EvsType[],
+> extends SubcallParams<abi, name, WriteMutability> {
+  readonly revertReturns: rr;
+  readonly struct?: false;
+}
+
+/** The handles of a `revertReturns` list, positionally: each declared type → its
+ *  {@link ArgHandle} (a `t.struct` → a `Tuple`; anything else → an `Expr`). */
+export type RevertReturnHandles<rr extends readonly EvsType[]> = {
+  readonly [i in keyof rr]: rr[i] extends EvsType ? ArgHandle<rr[i]> : never;
+};
+
+/** `s.call` — {@link WriteVerb} plus the `revertReturns` overload (issue #35), whose result is
+ *  typed from the declared list (`[] → void`, `[one] → handle`, `[many] → readonly tuple`). */
+export interface CallVerb extends WriteVerb {
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, WriteMutability>,
+    const rr extends readonly EvsType[],
+  >(
+    p: RevertReturnsParams<abi, name, rr>,
+  ): UnwrapSingle<RevertReturnHandles<rr>>;
+}
+
+/** `s.tryCall` — {@link TryWriteVerb} plus the `revertReturns` overload (issue #35). */
+export interface TryCallVerb extends TryWriteVerb {
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, WriteMutability>,
+    const rr extends readonly EvsType[],
+  >(
+    p: RevertReturnsParams<abi, name, rr>,
+  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<RevertReturnHandles<rr>> };
+}
 
 // ---------------------------------------------------------------------------
 // user functions
@@ -995,11 +1045,12 @@ export interface ScriptBuilder<
   // mutability bucket its `functionName`/arg/output handles are filtered by:
   //   read     / tryRead     → STATICCALL of view/pure          (the renamed frozen read surface)
   //   call     / tryCall     → CALL of nonpayable/payable        (non-static frame, NO rollback)
+  //                            + the `revertReturns` opt-in (issue #35: decode the REVERT payload)
   //   simulate / trySimulate → CALL of nonpayable/payable        (write dry-run, state rolled back)
   read: ReadVerb;
   tryRead: TryReadVerb;
-  call: WriteVerb;
-  tryCall: TryWriteVerb;
+  call: CallVerb;
+  tryCall: TryCallVerb;
   simulate: WriteVerb;
   trySimulate: TryWriteVerb;
 

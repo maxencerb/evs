@@ -67,7 +67,8 @@ freely in one call. See [values and types](/guides/values-and-types/) for the co
 
 ### Parameters
 
-These keys are the **same for all six verbs**; only the `functionName` mutability filter changes.
+These keys are the **same for all six verbs** (only the `functionName` mutability filter changes),
+except `revertReturns`, which only `s.call` / `s.tryCall` accept.
 
 | Key            | Type                                  | Notes                                                              |
 | -------------- | ------------------------------------- | ------------------------------------------------------------------ |
@@ -77,6 +78,7 @@ These keys are the **same for all six verbs**; only the `functionName` mutabilit
 | `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
 | `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the sub-call; by default all available gas is forwarded |
 | `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named — see [below](#decoding-multiple-outputs-into-a-struct) |
+| `revertReturns` | `readonly EvsType[]` (optional, **`s.call` / `s.tryCall` only**) | The output types carried by the target's **revert data** (the QuoterV1 pattern); replaces the ABI outputs as the decode schema — see [decoding revert data](#decoding-revert-data-as-the-result-revertreturns) |
 
 Every `s.read` sub-call executes as a `STATICCALL`, so the callee runs in a read-only frame: even a
 function mislabeled as `view` in its ABI cannot mutate state — an attempted write makes that
@@ -437,8 +439,13 @@ const quoteV2 = evscript(
 );
 ```
 
-A **QuoterV1**-style function instead *reverts* with the ABI-encoded result — so call it with
-`s.tryCall`, which reports `success = false` on that revert instead of bubbling it:
+### Decoding revert data as the result (`revertReturns`)
+
+A **QuoterV1**-style function instead *reverts* with the ABI-encoded result — its ABI declares no
+outputs at all. Pass `revertReturns`, the list of output types carried by the revert payload, and
+the call decodes **that payload** as its result. The list replaces the ABI outputs as the decode
+schema (any outputs the ABI does declare are ignored), and the two branches swap: the **revert is
+the value path**, and a normal return is the failure.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -455,29 +462,74 @@ const quoterV1Abi = [
       { name: 'amountIn', type: 'uint256' },
       { name: 'sqrtPriceLimitX96', type: 'uint160' },
     ],
-    outputs: [{ name: 'amountOut', type: 'uint256' }],
+    outputs: [], // QuoterV1 reverts with the quote — nothing is returned normally
   },
 ] as const;
 
 const quoteV1 = evscript(
   { name: 'quoteV1', args: [t.address, t.address, t.address, t.uint24, t.uint256] },
   (s, quoter, tokenIn, tokenOut, fee, amountIn) => {
-    const r = s.tryCall({
+    const amountOut = s.call({
       address: quoter,
       abi: quoterV1Abi,
       functionName: 'quoteExactInputSingle',
       args: [tokenIn, tokenOut, fee, amountIn, 0n],
+      revertReturns: [t.uint256], // the quote arrives in the revert data
     });
-    // QuoterV1 reverts with the encoded quote, so r.success is false on the revert path.
-    return s.return({ ok: r.success, amountOut: r.value });
+    //    ^? Expr<'uint256'> — typed from `revertReturns`, not from the ABI outputs
+    return s.return({ amountOut });
   },
 );
 ```
 
+The result is shaped like any other call result, but from the `revertReturns` list: `[]` →
+`void`, `[t.uint256]` → `Expr<'uint256'>`, `[t.uint256, t.string]` → a positional tuple of
+handles, and a `t.struct(...)` entry → a [`Tuple` handle](/reference/builder/#tuple). The revert
+payload goes through exactly the same decode sequence as returndata — the `rds ≥ 32·n` head guard
+and the `2^64` bounds on dynamic outputs — so a malformed payload is a decode failure, never a
+misread.
+
+`s.tryCall` takes the same option. `success` is `true` when the target **reverted** with a payload
+that decodes under `revertReturns`, and `false` — with `value` zeroed as usual — when it returned
+normally or the revert payload is structurally malformed:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const quoterV1Abi = [
+  {
+    type: 'function',
+    name: 'quoteExactInput',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amountIn', type: 'uint256' }],
+    outputs: [],
+  },
+] as const;
+
+const tryQuoteV1 = evscript({ name: 'tryQuoteV1', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
+  const r = s.tryCall({
+    address: quoter,
+    abi: quoterV1Abi,
+    functionName: 'quoteExactInput',
+    args: [amountIn],
+    revertReturns: [t.uint256],
+  });
+  // r.success: the target reverted with a decodable quote; r.value: Expr<'uint256'>
+  return s.return({ ok: r.success, amountOut: r.value });
+});
+```
+
 :::note
-Decoding QuoterV1's *revert data* as the quote result is not supported yet
-([#35](https://github.com/maxencerb/evs/issues/35)) — `s.tryCall` reports `success = false` and
-zeroes `value` on that revert. Use a QuoterV2-style contract with `s.call` to read the quote directly.
+- `revertReturns` is an `s.call` / `s.tryCall` option only. `s.read` never carries its result in
+  revert data, and `s.simulate` frames the target's revert itself — both reject it at recording.
+  It cannot be combined with `struct: true`; declare a single `t.struct(...)` type instead.
+- A strict `s.call` whose target returns *normally* reverts `EvsDecodeError(site)` — there is no
+  revert payload to bubble — and `explainRevert` reports it as `decoding call … revert data failed`
+  at the recording line.
+- A *genuine* error revert whose payload is at least as long as the declared head (an
+  `Error(string)` is ≥ 100 bytes) decodes as data rather than failing, exactly as QuoterV1's own
+  Solidity callers would misread it. If the target can revert for other reasons, keep the schema
+  minimal and sanity-check the value (or its `length()`) in the script.
 :::
 
 ## Simulating writes (s.simulate / s.trySimulate)
@@ -568,6 +620,7 @@ Pick the verb by the callee's mutability first, then by what you need from the r
 - **`s.call` / `s.tryCall`** — a `nonpayable`/`payable` function you need a real frame for but whose
   state effect you don't care to discard (a Uniswap quoter, a function that touches transient state
   a later `s.read` should see). The write persists within the `eth_call`; nothing reaches the chain.
+  Add `revertReturns` when the target reports its result by **reverting** (QuoterV1).
 - **`s.simulate` / `s.trySimulate`** — a `nonpayable`/`payable` write whose **return value** you want
   but whose **state change** must not leak into later reads in the same script (an ERC-4626
   `deposit`/`mint` preview, any `previewX` that doesn't exist as a `view`).

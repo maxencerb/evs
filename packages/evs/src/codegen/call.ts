@@ -25,6 +25,11 @@
  *   (it rejoins the program): every failure path cleans its stack to height 0 and jumps to
  *   it; it zeroes `successOut`/word outs and points memref outs at the `0x60` zero slot, then
  *   falls through to the join.
+ * - `revertReturns` (issue #35, `kind: 'call'` only): the CALL success flag is inverted — a
+ *   REVERT is the value path and the SAME decode sequence (guard, snapshot, normalize/validate)
+ *   runs over the revert payload with `callOutputs(stmt)` as the schema; a normal RETURN is the
+ *   failure and jumps to `plan.dfailLabel` (strict: the `EvsDecodeError(site)` stub — nothing is
+ *   bubbled; try: the zero block).
  */
 
 import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
@@ -41,7 +46,7 @@ import {
   type Hex,
   type NamedType,
 } from '../core/types.js';
-import type { ConstData, SiteId, Stmt } from '../ir/nodes.js';
+import { callOutputs, type ConstData, type SiteId, type Stmt } from '../ir/nodes.js';
 import {
   emitDecodeArrayToMem,
   emitDecodeTupleToMem,
@@ -800,12 +805,19 @@ export function emitStaticCall(
 ): void {
   const { stmt, siteId } = plan;
   const { fnAbi } = stmt;
-  const outputs = fnAbi.outputs;
+  // the decode schema: `revertReturns` (decoded from the REVERT payload) or the ABI outputs
+  const outputs = callOutputs(stmt);
   const tryMode = stmt.mode === 'try';
+  const revertMode = stmt.revertReturns !== undefined;
 
+  if (revertMode && stmt.kind !== 'call') {
+    throw internal(
+      `call to ${fnAbi.name} (site ${siteId}): revertReturns on kind '${stmt.kind ?? 'static'}' survived validateIr`,
+    );
+  }
   if (outputs.length !== plan.outRefs.length) {
     throw internal(
-      `call to ${fnAbi.name} (site ${siteId}): ${outputs.length} ABI output(s) but ${plan.outRefs.length} out ref(s)`,
+      `call to ${fnAbi.name} (site ${siteId}): ${outputs.length} output(s) in the decode schema but ${plan.outRefs.length} out ref(s)`,
     );
   }
   outputs.forEach((out, j) => {
@@ -855,13 +867,23 @@ export function emitStaticCall(
   pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
   w.op(useCall ? 'CALL' : 'STATICCALL', {
     loc: stmt.loc,
-    note: `${stmt.mode} ${useCall ? 'call' : 'read'} ${fnAbi.name} (site ${siteId})`,
+    note: `${stmt.mode} ${useCall ? 'call' : 'read'} ${fnAbi.name}${revertMode ? ' [revertReturns]' : ''} (site ${siteId})`,
   }); // [success, buf]
 
   const ok = w.newLabel(`call_ok_${siteId}`);
+  // revertReturns (issue #35): the branch is INVERTED — a REVERT is the value path (its payload is
+  // decoded below exactly like returndata), a normal RETURN is the failure.
+  if (revertMode) w.op('ISZERO', { note: 'revertReturns: a revert is the value path' });
   w.pushLabel(ok);
   w.op('JUMPI'); // [buf]
-  if (tryMode) {
+  if (revertMode) {
+    // a normal return under revertReturns: nothing to bubble (no revert payload) — strict lands on
+    // the site's `EvsDecodeError(site)` stub (an 'any'-height label), try on the zero block
+    // (height 0); POP first so both entries are clean.
+    w.op('POP');
+    w.pushLabel(plan.dfailLabel);
+    w.op('JUMP', { note: 'revertReturns: normal return is the failure' });
+  } else if (tryMode) {
     w.op('POP');
     w.pushLabel(plan.dfailLabel);
     w.op('JUMP'); // → zero block
@@ -874,7 +896,8 @@ export function emitStaticCall(
   }
   w.label(ok, 1); // [buf]
 
-  // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate) ---------------
+  // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate). Under revertReturns
+  //       the returndata IS the revert payload — the sequence is byte-identical. ----------------
   if (outputs.length > 0) {
     const headOffsets = headOffsetsOf(outputs); // cumulative (static tuple outputs inline)
     const minSize = headBytes(outputs);
@@ -1133,6 +1156,10 @@ export function emitSimulateCall(
   const outputs = fnAbi.outputs;
   const tryMode = stmt.mode === 'try';
 
+  if (stmt.revertReturns !== undefined) {
+    // validateIr restricts revertReturns to kind 'call' (the trampoline has its own revert framing)
+    throw internal(`simulate ${fnAbi.name} (site ${siteId}): revertReturns survived validateIr`);
+  }
   if (outputs.length !== plan.outRefs.length) {
     throw internal(
       `simulate ${fnAbi.name} (site ${siteId}): ${outputs.length} ABI output(s) but ${plan.outRefs.length} out ref(s)`,

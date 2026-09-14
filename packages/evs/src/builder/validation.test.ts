@@ -1484,3 +1484,147 @@ describe('custom errors (issue #15)', () => {
     expect(() => recErr((s, a) => s.return({ x: a.x }))).not.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// revertReturns (issue #35) — recording-time checks
+// ---------------------------------------------------------------------------
+
+describe('checklist: revertReturns (issue #35)', () => {
+  const quoterAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'nonpayable',
+      inputs: [],
+      outputs: [{ name: 'amountOut', type: 'uint256' }],
+    },
+  ] as const satisfies Abi;
+
+  test('accepted on s.call / s.tryCall with word, dynamic and struct types', () => {
+    expect(() =>
+      rec((s, a) => {
+        s.call({
+          address: a.who,
+          abi: quoterAbi,
+          functionName: 'quote',
+          revertReturns: [t.uint256, t.string, t.array(t.uint8), t.struct({ x: t.uint256 })],
+        });
+        s.tryCall({ address: a.who, abi: quoterAbi, functionName: 'quote', revertReturns: [] });
+        return s.return({ x: a.x });
+      }),
+    ).not.toThrow();
+  });
+
+  test('rejected on s.read / s.tryRead (steers: a read never carries its result in revert data)', () => {
+    const p = { abi: erc20Abi, functionName: 'decimals', revertReturns: [t.uint8] } as const;
+    const cases = [
+      ['read', (s: AnyBuilder, a: Args) => s.read({ address: a.who, ...p } as never)],
+      ['tryRead', (s: AnyBuilder, a: Args) => s.tryRead({ address: a.who, ...p } as never)],
+    ] as const;
+    for (const [verb, body] of cases) {
+      const e = expectEvs(
+        () => rec(body),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /`revertReturns` is only supported on s\.call \/ s\.tryCall/,
+      );
+      expect(e.message).toMatch(new RegExp(`^s\\.${verb}\\(\\)`));
+      expect(e.message).toMatch(/view\/pure read/);
+    }
+  });
+
+  test('rejected on s.simulate / s.trySimulate (the trampoline frames the revert itself)', () => {
+    const p = { abi: quoterAbi, functionName: 'quote', revertReturns: [t.uint256] } as const;
+    const cases = [
+      ['simulate', (s: AnyBuilder, a: Args) => s.simulate({ address: a.who, ...p } as never)],
+      ['trySimulate', (s: AnyBuilder, a: Args) => s.trySimulate({ address: a.who, ...p } as never)],
+    ] as const;
+    for (const [verb, body] of cases) {
+      const e = expectEvs(
+        () => rec(body),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /`revertReturns` is only supported on s\.call \/ s\.tryCall/,
+      );
+      expect(e.message).toMatch(new RegExp(`^s\\.${verb}\\(\\)`));
+      expect(e.message).toMatch(/trampoline/);
+    }
+  });
+
+  test('rejected together with struct: true', () => {
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: [t.uint256],
+            struct: true,
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /`struct: true` cannot be combined with `revertReturns`.*t\.struct/,
+    );
+  });
+
+  test('must be an array of types; a bad entry is named by index', () => {
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: t.uint256,
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /`revertReturns` must be an array of types.*got "uint256"/,
+    );
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: [t.uint256, 'uint257'],
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /revertReturns\[1\]: expected a type.*got "uint257"/,
+    );
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: [42n],
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /revertReturns\[0\]: expected a type.*got 42n/,
+    );
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: [{ type: 'tuple', components: [] }],
+          } as never),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /revertReturns\[0\]: tuple type carries no components/,
+    );
+  });
+});

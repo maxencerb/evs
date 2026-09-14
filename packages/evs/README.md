@@ -246,7 +246,9 @@ subcalls in the same script but the `eth_call` itself never commits. `s.simulate
 **write** in a self-call sub-frame that reverts, so you read back what it _would_ return while its
 state changes are discarded and isolated from later reads. Mutability is filtered per verb — a
 `nonpayable` function under `s.read`, or a `view` function under `s.call`, is a compile error that
-steers you to the right verb.
+steers you to the right verb. `s.call` / `s.tryCall` also take `revertReturns: [t.uint256]` to
+decode a QuoterV1-style target's **revert data** as the result (the list replaces the ABI outputs as
+the decode schema; a normal return is then the failure).
 
 A callee revert **bubbles verbatim** (`Error(string)`, `Panic`, custom errors alike) under the
 strict verbs, so viem decodes the original error through your script; malformed returndata reverts

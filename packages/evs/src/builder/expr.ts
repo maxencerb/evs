@@ -2421,7 +2421,7 @@ export class Recorder {
     if (typeof p !== 'object' || p === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${label}: expected { address, abi, functionName, args?, gas? }`,
+        `${label}: expected { address, abi, functionName, args?, gas?, struct?${kind === 'call' ? ', revertReturns?' : ''} }`,
         { loc },
       );
     }
@@ -2432,6 +2432,7 @@ export class Recorder {
       args?: unknown;
       gas?: unknown;
       struct?: unknown;
+      revertReturns?: unknown;
     }>(p);
     if (params.struct !== undefined && typeof params.struct !== 'boolean') {
       throw new EvsTypeError(
@@ -2441,6 +2442,13 @@ export class Recorder {
       );
     }
     const wantStruct = params.struct === true;
+    // revert-data-as-result (issue #35): an s.call / s.tryCall opt-in declaring the output types
+    // carried by the target's REVERT payload (the QuoterV1 pattern). Validated before the ABI so a
+    // misplaced option steers immediately.
+    const revertReturns =
+      params.revertReturns === undefined
+        ? undefined
+        : this.revertReturnTypes(params.revertReturns, kind, wantStruct, label, loc);
     const abi = params.abi;
     if (!Array.isArray(abi)) {
       throw new EvsTypeError('ABI_SHAPE', `${label}: \`abi\` must be an ABI array`, { loc });
@@ -2534,14 +2542,20 @@ export class Recorder {
         : this.coerceToId(params.gas, 'uint256', `${label} gas`, loc);
     // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
     // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
-    // Tuple handle on unwrap; scalars/arrays yield an Expr.
-    const outTypes = plain.outputs.map((o): EvsType => {
-      const oty = abiParamToType(o);
-      if (!isEvsValueType(oty)) {
-        throw new EvsInternalError('INTERNAL', `${label}: unsupported output survived validation`);
-      }
-      return oty;
-    });
+    // Tuple handle on unwrap; scalars/arrays yield an Expr. Under `revertReturns` the declared
+    // types ARE the outputs (the ABI outputs are ignored — the payload comes from the revert).
+    const outTypes: readonly EvsType[] =
+      revertReturns ??
+      plain.outputs.map((o): EvsType => {
+        const oty = abiParamToType(o);
+        if (!isEvsValueType(oty)) {
+          throw new EvsInternalError(
+            'INTERNAL',
+            `${label}: unsupported output survived validation`,
+          );
+        }
+        return oty;
+      });
     const outIds = outTypes.map((oty, i) => {
       const tag =
         outTypes.length === 1 ? `${callerName}(${fname})` : `${callerName}(${fname})[${i}]`;
@@ -2561,6 +2575,7 @@ export class Recorder {
         ...(kind !== 'static' ? { kind } : {}),
         ...(successId !== undefined ? { successOut: successId } : {}),
         ...(gasId !== undefined ? { gas: gasId } : {}),
+        ...(revertReturns !== undefined ? { revertReturns } : {}),
       },
       loc,
     );
@@ -2586,6 +2601,75 @@ export class Recorder {
               Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
     }
     return { success: successId !== undefined ? makeExpr(this, successId) : null, value };
+  }
+
+  /**
+   * Validates the `revertReturns` option (issue #35): `s.call` / `s.tryCall` only, never combined
+   * with `struct: true` (revert-decoded outputs carry no names — declare one `t.struct` type
+   * instead), and every entry a supported value type (the same vocabulary as ABI outputs, so an
+   * unsupported shape gets the same `UNSUPPORTED_V0` classification `layoutOfType` gives it).
+   */
+  private revertReturnTypes(
+    raw: unknown,
+    kind: 'static' | 'call' | 'simulate',
+    wantStruct: boolean,
+    label: string,
+    loc: SourceLoc | null,
+  ): readonly EvsType[] {
+    if (kind !== 'call') {
+      const steer =
+        kind === 'static'
+          ? 'a view/pure read never carries its result in revert data'
+          : 'the simulate trampoline frames the target revert itself (bubbled / success=false)';
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`revertReturns\` is only supported on s.call / s.tryCall (decode a QuoterV1-style target's REVERT payload as the result) — ${steer}`,
+        { loc },
+      );
+    }
+    if (wantStruct) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`struct: true\` cannot be combined with \`revertReturns\` (revert-decoded outputs are unnamed) — declare a single \`t.struct(...)\` type in \`revertReturns\` instead`,
+        { loc },
+      );
+    }
+    if (!Array.isArray(raw)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`revertReturns\` must be an array of types (e.g. \`[t.uint256]\`), got ${describeHost(raw)}`,
+        { loc },
+      );
+    }
+    const types = raw.map((ty, i): EvsType => {
+      const what = `${label} revertReturns[${i}]`;
+      if (!isEvsValueType(ty)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: expected a type (use the \`t\` namespace — t.uint256, t.string, t.struct(...)), got ${describeHost(ty)}`,
+          { loc },
+        );
+      }
+      if (isTupleType(ty) && ty.components.length === 0) {
+        throw new EvsTypeError('ABI_SHAPE', `${what}: tuple type carries no components`, { loc });
+      }
+      try {
+        layoutOfType(ty);
+      } catch (e) {
+        if (e instanceof EvsTypeError) {
+          throw new EvsTypeError(
+            e.code,
+            `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`,
+            {
+              loc,
+            },
+          );
+        }
+        throw e;
+      }
+      return ty;
+    });
+    return Object.freeze(types);
   }
 
   /** `s.read({ …, struct: true })` (issue #5 ask #2): compose ONE Tuple from a call's outputs by

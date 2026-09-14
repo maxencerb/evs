@@ -1891,3 +1891,129 @@ describe('calling-verb facade shape', () => {
     }
   });
 });
+
+// ---------------------------------------------------------------------------
+// revertReturns (issue #35) — s.call / s.tryCall decode the REVERT payload as the result
+// ---------------------------------------------------------------------------
+
+describe('s.call / s.tryCall revertReturns (issue #35)', () => {
+  const quoterV1Abi = [
+    {
+      type: 'function',
+      name: 'quoteExactInput',
+      stateMutability: 'nonpayable',
+      inputs: [{ name: 'amountIn', type: 'uint256' }],
+      outputs: [], // QuoterV1 declares none — the amount arrives in the revert data
+    },
+    {
+      type: 'function',
+      name: 'quoteWithOutputs',
+      stateMutability: 'nonpayable',
+      inputs: [],
+      outputs: [{ name: 'ignored', type: 'bool' }],
+    },
+  ] as const satisfies Abi;
+
+  const script = evscript(
+    { name: 'rr', args: [t.address, t.uint256] },
+    (s, quoter, amountIn) => {
+      const amountOut = s.call({
+        address: quoter,
+        abi: quoterV1Abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      const r = s.tryCall({
+        address: quoter,
+        abi: quoterV1Abi,
+        functionName: 'quoteWithOutputs',
+        revertReturns: [t.uint256, t.string, t.struct({ a: t.uint256, b: t.bool })],
+      });
+      return s.return({ amountOut, ok: r.success, first: r.value[0], s: r.value[1] });
+    },
+    NO_LOC,
+  );
+
+  test('records `revertReturns` on the call stmt and types the outs from it, ignoring the ABI outputs', () => {
+    const calls = allStmts(script.ir).filter((s) => s.k === 'call');
+    expect(calls).toHaveLength(2);
+    const strict = calls[0];
+    const tried = calls[1];
+    if (strict?.k !== 'call' || tried?.k !== 'call') throw new Error('unreachable');
+    expect(strict.kind).toBe('call');
+    expect(strict.mode).toBe('strict');
+    expect(strict.revertReturns).toEqual(['uint256']);
+    expect(strict.fnAbi.outputs).toEqual([]); // the ABI is untouched — no outputs declared
+    expect(strict.outs).toHaveLength(1);
+    expect(script.ir.values[strict.outs[0] ?? -1]?.type).toBe('uint256');
+
+    expect(tried.mode).toBe('try');
+    expect(tried.fnAbi.outputs).toHaveLength(1); // the ABI output is IGNORED as a schema…
+    expect(tried.revertReturns).toEqual([
+      'uint256',
+      'string',
+      {
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint256' },
+          { name: 'b', type: 'bool' },
+        ],
+      },
+    ]);
+    expect(tried.outs).toHaveLength(3); // …the three declared revert types are the outs
+    expect(script.ir.values[tried.outs[1] ?? -1]?.type).toBe('string');
+    expect(Object.isFrozen(tried.revertReturns)).toBe(true);
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('IR with revertReturns serializes and round-trips; IR without it carries no field', () => {
+    const json = serializeIr(script.ir);
+    expect(json).toContain('"revertReturns"');
+    const plain = evscript(
+      { name: 'plain', args: [t.address] },
+      (s, q) =>
+        s.return({
+          ok: s.tryCall({ address: q, abi: quoterV1Abi, functionName: 'quoteWithOutputs' }).success,
+        }),
+      NO_LOC,
+    );
+    expect(serializeIr(plain.ir)).not.toContain('revertReturns');
+  });
+
+  test('the strict handle is unwrapped from the list; a struct entry yields a Tuple handle', () => {
+    evscript(
+      { name: 'handles', args: [t.address] },
+      (s, q) => {
+        const one = s.call({
+          address: q,
+          abi: quoterV1Abi,
+          functionName: 'quoteWithOutputs',
+          revertReturns: [t.uint256],
+        });
+        expect(typeof one.type).toBe('string'); // an Expr handle
+        const none = s.call({
+          address: q,
+          abi: quoterV1Abi,
+          functionName: 'quoteWithOutputs',
+          revertReturns: [],
+        });
+        expect(none).toBeUndefined();
+        const [n, st] = s.call({
+          address: q,
+          abi: quoterV1Abi,
+          functionName: 'quoteWithOutputs',
+          revertReturns: [t.uint256, t.struct({ a: t.uint256 })],
+        });
+        expect(n.type).toBe('uint256');
+        const tup: Tuple<{
+          readonly type: 'tuple';
+          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+        }> = st;
+        expect(tup.a.get().type).toBe('uint256');
+        return s.return({ one, n, a: tup.a.get() });
+      },
+      NO_LOC,
+    );
+  });
+});

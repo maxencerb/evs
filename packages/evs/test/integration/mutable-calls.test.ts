@@ -158,10 +158,9 @@ describe('s.call for a non-view quoter (the canonical CALL use case)', () => {
     expect(out).toStrictEqual({ amountOut: 150n }); // 100 * 3 / 2
   });
 
-  test('s.tryCall on a reverting (QuoterV1-style) quoter → success=false', async () => {
-    // quoteExactInputReverting declares no outputs (it reverts with raw bytes); decoding
-    // revert-data-as-result is not supported yet (#35), so a strict s.call would bubble and
-    // s.tryCall simply reports success=false.
+  test('s.tryCall on a reverting (QuoterV1-style) quoter WITHOUT revertReturns → success=false', async () => {
+    // quoteExactInputReverting declares no outputs (it reverts with raw bytes): without the
+    // revertReturns opt-in a revert is still a failure — s.tryCall reports success=false.
     const quote = evscript({ name: 'tryQuote', args: [t.address, t.uint256] }, (s, q, amountIn) => {
       const r = s.tryCall({
         address: q,
@@ -177,6 +176,80 @@ describe('s.call for a non-view quoter (the canonical CALL use case)', () => {
       args: [quoter, 100n],
     });
     expect(out).toStrictEqual({ ok: false });
+  });
+});
+
+describe('revertReturns (issue #35) — the QuoterV1 pattern against real anvil state', () => {
+  test('s.call decodes the revert payload of quoteExactInputReverting as the quote', async () => {
+    const quote = evscript({ name: 'quoteV1', args: [t.address, t.uint256] }, (s, q, amountIn) => {
+      const amountOut = s.call({
+        address: q,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInputReverting',
+        args: [amountIn],
+        revertReturns: [t.uint256], // the ABI declares no outputs; the amount is in the revert data
+      });
+      return s.return({ amountOut });
+    });
+    const out = await publicClient.readContract({
+      ...quote.compile().toViem({ mode: 'stateOverride' }),
+      functionName: 'quoteV1',
+      args: [quoter, 100n],
+    });
+    expect(out).toStrictEqual({ amountOut: 150n }); // 100 * 3 / 2, read back from the revert
+  });
+
+  test('s.tryCall + revertReturns: revert → success=true + value; normal return → success=false', async () => {
+    const quote = evscript(
+      { name: 'tryQuoteV1', args: [t.address, t.uint256] },
+      (s, q, amountIn) => {
+        const v1 = s.tryCall({
+          address: q,
+          abi: MockQuoter.abi,
+          functionName: 'quoteExactInputReverting',
+          args: [amountIn],
+          revertReturns: [t.uint256],
+        });
+        // a QuoterV2-style function RETURNS normally: under revertReturns that is the failure
+        const v2 = s.tryCall({
+          address: q,
+          abi: MockQuoter.abi,
+          functionName: 'quoteExactInput',
+          args: [amountIn],
+          revertReturns: [t.uint256],
+        });
+        return s.return({ ok1: v1.success, out1: v1.value, ok2: v2.success, out2: v2.value });
+      },
+    );
+    const out = await publicClient.readContract({
+      ...quote.compile().toViem({ mode: 'stateOverride' }),
+      functionName: 'tryQuoteV1',
+      args: [quoter, 100n],
+    });
+    expect(out).toStrictEqual({ ok1: true, out1: 150n, ok2: false, out2: 0n });
+  });
+
+  test('strict s.call + revertReturns on a normally-returning target → EvsDecodeError(site), not a bubble', async () => {
+    const quote = evscript({ name: 'v2asV1', args: [t.address, t.uint256] }, (s, q, amountIn) => {
+      const amountOut = s.call({
+        address: q,
+        abi: MockQuoter.abi,
+        functionName: 'quoteExactInput',
+        args: [amountIn],
+        revertReturns: [t.uint256],
+      });
+      return s.return({ amountOut });
+    });
+    const compiled = quote.compile();
+    const override = compiled.toViem({ mode: 'stateOverride' });
+    const raw = await callExpectRevert({
+      to: override.address,
+      stateOverride: override.stateOverride,
+      data: encodeFunctionData({ abi: compiled.abi, functionName: 'v2asV1', args: [quoter, 100n] }),
+    });
+    const explained = compiled.explainRevert(raw);
+    expect(explained.kind).toBe('evs-decode');
+    expect(explained.message).toContain('decoding call quoteExactInput() revert data failed');
   });
 });
 

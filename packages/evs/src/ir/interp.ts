@@ -68,7 +68,14 @@ import {
   type TupleType,
   type WordType,
 } from '../core/types.js';
-import type { CellId, PlainAbiFunction, ScriptIr, Stmt, ValueId } from './nodes.js';
+import {
+  callOutputs,
+  type CellId,
+  type PlainAbiFunction,
+  type ScriptIr,
+  type Stmt,
+  type ValueId,
+} from './nodes.js';
 import { validateIr } from './validate.js';
 
 // ---------------------------------------------------------------------------
@@ -684,12 +691,23 @@ class Interp {
       );
     }
     const data = hexToBytesChecked(res.data, `MockChain returndata for ${s.fnAbi.name}()`, s.loc);
-    if (!res.success) {
-      if (s.mode === 'strict') throw new RevertSignal(data); // bubble verbatim
+    if (s.revertReturns === undefined) {
+      if (!res.success) {
+        if (s.mode === 'strict') throw new RevertSignal(data); // bubble verbatim
+        this.zeroCallOuts(s);
+        return;
+      }
+    } else if (res.success) {
+      // revert-data-as-result (issue #35): a normal RETURN is the failure — nothing is bubbled
+      // (there is no revert payload to bubble); strict lands on the site's decode-fail
+      // (`EvsDecodeError(site)`), try zeroes. Only a REVERT payload is ever decoded (below).
+      if (s.mode === 'strict') throw decodeErrorSignal(s.site);
       this.zeroCallOuts(s);
       return;
     }
-    const decoded = decodeOutputs(s.fnAbi.outputs, data);
+    // the decode schema: `revertReturns` over the revert payload, else the ABI outputs over the
+    // returndata — the same guard/bounds sequence either way.
+    const decoded = decodeOutputs(callOutputs(s), data);
     if (decoded === null) {
       // structural decode failure (staticMinSize guard / decode bounds)
       if (s.mode === 'strict') throw decodeErrorSignal(s.site);
@@ -712,10 +730,11 @@ class Interp {
    * malformed returndata.
    */
   private zeroCallOuts(s: Extract<Stmt, { k: 'call' }>): void {
+    const outputs = callOutputs(s);
     s.outs.forEach((out, i) => {
-      const p = s.fnAbi.outputs[i];
+      const p = outputs[i];
       if (p === undefined) {
-        throw new EvsInternalError('INTERNAL', `interpret: call out ${i} has no ABI output`);
+        throw new EvsInternalError('INTERNAL', `interpret: call out ${i} has no output schema`);
       }
       this.values.set(out, zeroValue(abiParamToType(p)));
     });

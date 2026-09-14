@@ -395,7 +395,8 @@ conditional execution). Branch types must match exactly, and at least one branch
 Sub-calls split by **mutability + call frame** (issue #1). All six verbs share the *same*
 parameter object and the *same* struct-aware overloads (default positional / `struct: true` /
 non-literal `boolean`, plus a `try*` variant returning `{ success, value }`); they differ only in
-the opcode they emit and the `functionName` mutability bucket they accept:
+the opcode they emit and the `functionName` mutability bucket they accept — plus the
+[`revertReturns`](#scall) opt-in that only `call` / `tryCall` take:
 
 | Verb | Opcode | Mutability bucket | State |
 | --- | --- | --- | --- |
@@ -498,6 +499,9 @@ const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s,
 call<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'nonpayable' | 'payable'>>(
   p: SubcallParams, // identical to s.read, but functionName is filtered to nonpayable/payable
 ): CallOutputs;
+call<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'nonpayable' | 'payable'>, const rr extends readonly EvsType[]>(
+  p: SubcallParams & { readonly revertReturns: rr; readonly struct?: false },
+): CallOutputs; // typed from `rr`, NOT the ABI outputs: [] → void; [one] → Expr|Tuple; [many] → readonly tuple
 ```
 
 Identical encode/decode/verbatim-bubble path to [`s.read`](#sread), but emits a **`CALL` (value 0)**
@@ -508,6 +512,40 @@ same script (the same `eth_call` frame), though the `eth_call` result is still n
 on-chain. The target sees `msg.sender` = the **script's** address (frame-dependent — see
 [calls](/guides/calls/#mutable-calls-scall--strycall)). `s.tryCall` is the `{ success, value }`
 variant.
+
+**`revertReturns`** (the QuoterV1 pattern) — the output types carried by the target's **revert
+data**. When set it replaces the ABI outputs as the decode schema (the ABI's own outputs, if any,
+are ignored) and the branches swap: a revert is the value path, decoded with the same head guard and
+dynamic-output bounds as returndata; a normal return is the failure (`s.call` reverts
+`EvsDecodeError(site)` — nothing is bubbled; `s.tryCall` reports `success = false` with zeroed
+values). `s.call` / `s.tryCall` only — `s.read*` and `s.simulate*` reject it at recording, as does
+combining it with `struct: true` (declare one `t.struct(...)` type instead). See
+[calls — decoding revert data](/guides/calls/#decoding-revert-data-as-the-result-revertreturns).
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const quoterV1Abi = [
+  {
+    type: 'function',
+    name: 'quoteExactInput',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amountIn', type: 'uint256' }],
+    outputs: [], // QuoterV1 reverts with the encoded quote
+  },
+] as const;
+
+const quoteV1 = evscript({ name: 'quoteV1', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
+  const amountOut = s.call({
+    address: quoter,
+    abi: quoterV1Abi,
+    functionName: 'quoteExactInput',
+    args: [amountIn],
+    revertReturns: [t.uint256], // amountOut: Expr<'uint256'>, decoded from the revert payload
+  });
+  return s.return({ amountOut });
+});
+```
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
