@@ -231,7 +231,7 @@ describe('named args (namedArg)', () => {
         if (e instanceof EvsError) ({ code, message } = e);
       }
       expect(code).toBe('UNSUPPORTED_V0');
-      expect(message).toContain('composite (t.struct/t.tuple) params are not supported in v0');
+      expect(message).toContain('composite (t.struct/t.tuple) params are not supported yet');
     }
   });
 
@@ -1048,7 +1048,7 @@ describe('s.forEach', () => {
     expect(stripDebugNames(script.ir)).toEqual(stripDebugNames(manual.ir));
   });
 
-  test('the element load is skipped when the body omits `elem` (v0 has no DCE — post-review)', () => {
+  test('the element load is skipped when the body omits `elem` (no DCE pass yet — post-review)', () => {
     const counted = evscript(
       { name: 'counted', args: [t.array(t.uint256)] },
       (s, xs) => {
@@ -1134,7 +1134,7 @@ describe('s.forEach', () => {
   });
 
   test('a tuple[][] arg stays UNSUPPORTED_V0 — the Expr<tuple[]> row typing is forward-looking', () => {
-    // A tuple[][] Expr is unconstructible in v0 (args, newArray, and call outputs all reject
+    // A tuple[][] Expr is unconstructible today (args, newArray, and call outputs all reject
     // the shape), so `TupleArrayElemHandle`'s Expr<tuple[]> row arm cannot be exercised at
     // runtime today — this pins the rejection the type-level dispatch is anticipating.
     expect(() =>
@@ -1143,7 +1143,7 @@ describe('s.forEach', () => {
         (s) => s.return({ z: s.lit(t.uint256, 0n) }),
         NO_LOC,
       ),
-    ).toThrowError(/tuple\[\]\[\]" is not supported in evs v0/);
+    ).toThrowError(/tuple\[\]\[\]" is not supported yet/);
   });
 });
 

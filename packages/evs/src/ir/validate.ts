@@ -6,7 +6,7 @@
  * def-before-use under the scope rule (a `while` header dominates its body; `if`/`else`
  * branches are isolated; `fn` bodies see params only), unknown ids, single static assignment
  * of every ValueId, cell creation/typing/scoping, `break`/`continue` only inside a loop body,
- * call-graph acyclicity, return-name validity, fnAbi v0-ness, and `successOut` ⇔ try mode.
+ * call-graph acyclicity, return-name validity, fnAbi type validity, and `successOut` ⇔ try mode.
  *
  * Script args bind positionally to the first `args.length` entries of the value table
  * (ValueIds `0 … args.length-1`) — the only binding the frozen `ScriptIr` shape admits, since
@@ -116,12 +116,12 @@ class IrValidator {
     const { ir } = this;
     ir.values.forEach((info, i) => {
       if (!isEvsValueType(info.type)) {
-        this.fail(`values[${i}] has a non-v0 type ${JSON.stringify(info.type)}`, info.loc);
+        this.fail(`values[${i}] has an unsupported type ${JSON.stringify(info.type)}`, info.loc);
       }
     });
     ir.cells.forEach((info, i) => {
       if (!isEvsValueType(info.type)) {
-        this.fail(`cells[${i}] has a non-v0 type ${JSON.stringify(info.type)}`, info.loc);
+        this.fail(`cells[${i}] has an unsupported type ${JSON.stringify(info.type)}`, info.loc);
       }
     });
     const argNames = new Set<string>();
@@ -132,7 +132,10 @@ class IrValidator {
       if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`, ir.loc);
       argNames.add(a.name);
       if (!isEvsValueType(a.type)) {
-        this.fail(`args[${i}] ("${a.name}") has a non-v0 type ${JSON.stringify(a.type)}`, ir.loc);
+        this.fail(
+          `args[${i}] ("${a.name}") has an unsupported type ${JSON.stringify(a.type)}`,
+          ir.loc,
+        );
       }
       const backing = ir.values[i];
       if (backing === undefined) {
@@ -152,19 +155,22 @@ class IrValidator {
       fn.params.forEach((p, i) => {
         if (!isEvsValueType(p.type)) {
           this.fail(
-            `fns[${f}].params[${i}] ("${p.name}") has a non-v0 type ${JSON.stringify(p.type)}`,
+            `fns[${f}].params[${i}] ("${p.name}") has an unsupported type ${JSON.stringify(p.type)}`,
             fn.loc,
           );
         }
       });
       fn.results.forEach((r, i) => {
         if (!isEvsValueType(r.type)) {
-          this.fail(`fns[${f}].results[${i}] has a non-v0 type ${JSON.stringify(r.type)}`, fn.loc);
+          this.fail(
+            `fns[${f}].results[${i}] has an unsupported type ${JSON.stringify(r.type)}`,
+            fn.loc,
+          );
         }
       });
     });
     // declared custom errors (issue #15): unique identifier names, 4-byte selectors, and
-    // resolved (non-empty, per-error-unique) input names over v0 types.
+    // resolved (non-empty, per-error-unique) input names over evs types.
     const errorNames = new Set<string>();
     (ir.errors ?? []).forEach((e, i) => {
       if (!IDENT_RE.test(e.name)) {
@@ -221,7 +227,7 @@ class IrValidator {
       names.add(r.name);
       if (!isEvsValueType(r.type)) {
         this.fail(
-          `returns[${i}] ("${r.name}") has a non-v0 type ${JSON.stringify(r.type)}`,
+          `returns[${i}] ("${r.name}") has an unsupported type ${JSON.stringify(r.type)}`,
           ir.loc,
         );
       }
@@ -377,7 +383,7 @@ class IrValidator {
       case 'const': {
         const what = `${path} (const)`;
         if (!isEvsValueType(s.type) || isTupleType(s.type)) {
-          this.fail(`${what}: non-v0 / non-const type ${JSON.stringify(s.type)}`, s.loc);
+          this.fail(`${what}: unsupported / non-const type ${JSON.stringify(s.type)}`, s.loc);
         }
         this.checkConstData(s.type, s.data, what, s.loc);
         this.define(s.out, s.type, what, s.loc);
@@ -425,7 +431,7 @@ class IrValidator {
         if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
         if (!convertOk(from, outInfo.type)) {
           this.fail(
-            `${what}: no v0 conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
+            `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
             s.loc,
           );
         }
@@ -842,7 +848,7 @@ class IrValidator {
   /**
    * Element type of an `arrnew`. Admits one level of array nesting over a composite/dynamic
    * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
-   * or a plain `tuple`. STILL deferred (`UNSUPPORTED_V0`): `tuple[]` element (→ `tuple[][]`), a
+   * or a plain `tuple`. Not supported yet (`UNSUPPORTED_V0`, #4): `tuple[]` element (→ `tuple[][]`), a
    * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
    */
   private checkElemType(elem: EvsType, what: string, loc: SourceLoc | null): EvsType {

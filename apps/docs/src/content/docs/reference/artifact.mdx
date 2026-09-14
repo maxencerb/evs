@@ -366,8 +366,8 @@ compile(script).ir === script.ir; // true — the artifact carries the same IR o
 
 Stability notes:
 
-- The format is versioned: `irVersion: 1`. `deserializeIr` rejects any other version, and v0
-  emits only version 1.
+- The format is versioned: `irVersion: 1`. `deserializeIr` rejects any other version, and the
+  compiler emits only version 1.
 - `serializeIr` emits object keys sorted and omits `undefined`-valued optional properties, so
   two structurally equal IRs serialize to the same string.
 - `deserializeIr` performs the structural check only and throws `EvsTypeError` naming the

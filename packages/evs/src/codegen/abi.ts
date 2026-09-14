@@ -129,14 +129,13 @@ function wordLayoutOf(type: WordType): Extract<TypeLayout, { kind: 'word' }> {
 
 /**
  * The element word abi of a word-element array layout. Composite-element arrays (`tuple[]`,
- * `T[][]`, `string[]` — `elem.kind !== 'word'`) are not yet emitted here;
- * this throws an internal error for them. UNREACHABLE today: `layoutOfType` never produces a
- * composite-element array (it throws UNSUPPORTED_V0 first), so this is a behavior-preserving
- * plumbing guard the array-element codegen milestone replaces with real handling.
+ * `T[][]`, `string[]` — `elem.kind !== 'word'`) are handled by the recursive array paths
+ * (`emitDecodeArrayToMem` / `emitEncodeArrayTail` and the `elem.kind !== 'word'` dispatches in
+ * the callers), so reaching this with a composite element is an internal invariant violation.
  */
 function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): WordType {
   if (layout.elem.kind !== 'word') {
-    throw internal('composite-element array codegen pending');
+    throw internal('wordElemAbi: composite-element array reached the word-element path');
   }
   return layout.elem.abi;
 }
@@ -1748,8 +1747,8 @@ function emitDynCalldataArg(
     w.op('ADD'); // [pad, 0, ptr, len, src]
     w.op('MSTORE'); // [ptr, len, src]
   } else {
-    // array: `wordElemAbi` guards composite-element arrays (codegen pending) —
-    // UNREACHABLE today (layoutOfType never yields one), so this is behavior-preserving.
+    // array: word elements only — the caller dispatches composite-element arrays
+    // (`elem.kind !== 'word'`) to the recursive path before reaching here.
     const elemAbi = wordElemAbi(layout);
     if (wordNeedsNormalize(elemAbi)) {
       // eager element normalization (skipped for full-word element types)

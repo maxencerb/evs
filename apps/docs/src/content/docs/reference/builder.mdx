@@ -232,7 +232,7 @@ eq<t extends WordType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewis
 Comparison mirrors. Ordering comparisons are numeric-only; signed vs unsigned EVM opcodes
 (`LT`/`GT` vs `SLT`/`SGT`) are chosen from the static type. `eq`/`neq` accept any **word** type
 (`address`, `bool`, `bytesN` included) but not `string`/`bytes`/arrays — there is no deep
-equality in v0. Operand types must match exactly; the error message suggests `toUint`/`toInt`
+equality ([#38](https://github.com/maxencerb/evs/issues/38)); compare hashes via `s.keccak256`. Operand types must match exactly; the error message suggests `toUint`/`toInt`
 when they do not.
 
 ## s.and / s.or / s.not

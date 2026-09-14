@@ -182,7 +182,7 @@ class IrB {
   }): { outs: readonly ValueId[]; success: ValueId | null; site: number } {
     const mode = o.mode ?? 'strict';
     const outs = o.abi.outputs.map((p) => {
-      if (!isEvsType(p.type)) throw new Error(`IrB: non-v0 output type '${p.type}'`);
+      if (!isEvsType(p.type)) throw new Error(`IrB: unsupported output type '${p.type}'`);
       return this.val(p.type);
     });
     const success = mode === 'try' ? this.val('bool') : null;

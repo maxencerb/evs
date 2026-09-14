@@ -25,7 +25,7 @@ import {
 } from './types.js';
 
 // ---------------------------------------------------------------------------
-// the full v0 vocabulary, built independently of the implementation
+// the full evs type vocabulary, built independently of the implementation
 // ---------------------------------------------------------------------------
 
 const UINT_BITS = Array.from({ length: 32 }, (_, i) => 8 * (i + 1)); // 8..256
@@ -39,10 +39,9 @@ const DYN_TYPES = ['string', 'bytes'];
 const ARRAY_TYPES = WORD_TYPES.map((w) => `${w}[]`);
 const ALL_EVS_TYPES = [...WORD_TYPES, ...DYN_TYPES, ...ARRAY_TYPES];
 
-// Nested arrays (`uint256[][]`, `string[]`, …) are now in the string-encoded vocabulary
-// (`isEvsType` accepts them — represented for the deferred composite-array follow-up; the
-// builder/codegen still restrict them). `tuple`/`tuple[]` are NOT string-encoded (they are
-// TupleType objects), so `isEvsType` rejects those strings.
+// Nested arrays (`uint256[][]`, `string[]`, …) are in the string-encoded vocabulary and
+// `isEvsType` accepts them. `tuple`/`tuple[]` are NOT string-encoded (they are TupleType
+// objects), so `isEvsType` rejects those strings.
 const REJECTED = [
   '',
   'uint',
@@ -65,8 +64,8 @@ const REJECTED = [
   'uint256 ',
 ];
 
-describe('isEvsType / isWordType (exhaustive v0 table)', () => {
-  test(`accepts every v0 type string (${ALL_EVS_TYPES.length} total)`, () => {
+describe('isEvsType / isWordType (exhaustive table)', () => {
+  test(`accepts every evs type string (${ALL_EVS_TYPES.length} total)`, () => {
     expect(WORD_TYPES).toHaveLength(98);
     expect(ALL_EVS_TYPES).toHaveLength(198);
     for (const s of ALL_EVS_TYPES) expect(isEvsType(s)).toBe(true);
@@ -74,7 +73,7 @@ describe('isEvsType / isWordType (exhaustive v0 table)', () => {
     for (const s of [...DYN_TYPES, ...ARRAY_TYPES]) expect(isWordType(s)).toBe(false);
   });
 
-  test('rejects non-v0 type strings', () => {
+  test('rejects unsupported type strings', () => {
     for (const s of REJECTED) {
       expect(isEvsType(s)).toBe(false);
       expect(isWordType(s)).toBe(false);
@@ -400,7 +399,7 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
     expect(() => t.fromOutputs({} as never, 'slot0')).toThrow(/ABI array/);
   });
 
-  test('overloaded function name is a v0 deferral', () => {
+  test('overloaded function name is not supported yet', () => {
     const overloaded = [
       {
         type: 'function',

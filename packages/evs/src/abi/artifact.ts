@@ -260,7 +260,7 @@ export function buildScriptAbi(
   });
   // declared custom errors (issue #15): appended AFTER the built-ins (stable prefix). Every
   // input type is re-validated through the tuple-aware layout — a hand-built (deserialized)
-  // error cannot smuggle a non-v0 or degenerate-struct shape into the ABI.
+  // error cannot smuggle a unsupported or degenerate-struct shape into the ABI.
   const seenErrors = new Set<string>();
   const errorEntries = errors.map((e) => {
     if (!IDENT_RE.test(e.name)) {
@@ -390,17 +390,17 @@ export const PANIC_MEANINGS: Readonly<Record<string, string>> = Object.freeze({
 
 /**
  * One `AbiParameter` → `PlainAbiParam`, recursing through tuple components so `s.call` accepts
- * struct/tuple inputs and outputs. Each (leaf or component) type is validated against the v0 set;
+ * struct/tuple inputs and outputs. Each (leaf or component) type is validated against the evs type vocabulary;
  * a tuple param carries its frozen, recursively-converted `components`.
  */
 function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
   if (p.type.startsWith('tuple')) {
     // one level of tuple-array nesting (`tuple[]`) is supported; `tuple[][]` (and deeper)
-    // stays a v0 follow-up — reject with UNSUPPORTED_V0.
+    // is not supported yet (#4) — reject with UNSUPPORTED_V0.
     if (p.type !== 'tuple' && p.type !== 'tuple[]') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
-        `${where}: type ${JSON.stringify(p.type)} is not supported in evs v0 (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is deferred)`,
+        `${where}: type ${JSON.stringify(p.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
         { loc: captureLoc() },
       );
     }
@@ -430,7 +430,7 @@ function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
 
 /**
  * `AbiFunction` → `PlainAbiFunction` (+ selector). Validates every input/output type against the
- * v0 set (recursing into tuple components), naming the offending parameter. The selector is
+ * evs type vocabulary (recursing into tuple components), naming the offending parameter. The selector is
  * computed by viem from the whole `item` so tuple inputs expand to their canonical
  * `(t1,t2,…)` signature.
  */
@@ -571,7 +571,7 @@ export function encodeLiteralWord(type: WordType, value: unknown): Hex {
  * leading 32-byte head offset.
  */
 export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex {
-  const layout = layoutOf(type); // throws on non-v0 shapes
+  const layout = layoutOf(type); // throws on unsupported shapes
   let coerced: unknown;
   if (layout.kind === 'word') {
     throw new EvsTypeError(

@@ -21,7 +21,7 @@ Every method (except the conversions) also exists as a free function on the buil
 
 Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and-types/): `x.add(1n)`, `tick.lt(0n)`, `flag.and(true)`.
 
-`eq`/`neq` are restricted to word types — memref (`string`/`bytes`/`T[]`) equality is not defined in v0. Boolean `and`/`or` are **eager**, not short-circuiting: both sides are already-computed values by the time you combine them. For conditional execution, use `s.if` ([control flow](/guides/control-flow/)).
+`eq`/`neq` are restricted to word types — memref (`string`/`bytes`/`T[]`) equality is not supported ([#38](https://github.com/maxencerb/evs/issues/38)); compare hashes via `s.keccak256` instead. Boolean `and`/`or` are **eager**, not short-circuiting: both sides are already-computed values by the time you combine them. For conditional execution, use `s.if` ([control flow](/guides/control-flow/)).
 
 ## Checked semantics
 
@@ -36,7 +36,7 @@ Checks run at the operand type's width, not at 256 bits: a `uint64` addition ove
 
 Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate source lines for that panic. See [errors and debugging](/guides/errors-and-debugging/).
 
-Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` (the typed surface admits only these; an arithmetic `SAR` lowering exists at the IR level for signed operands but is not exposed on the builder in v0). Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
+Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` (the typed surface admits only these; an arithmetic `SAR` lowering exists at the IR level for signed operands but is not exposed on the builder yet — see [#10](https://github.com/maxencerb/evs/issues/10)). Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
 
 ## Signedness selects the comparison
 

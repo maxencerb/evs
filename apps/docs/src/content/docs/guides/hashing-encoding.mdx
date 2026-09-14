@@ -63,7 +63,7 @@ This works because `s.encodePacked(...)` produces a `bytes` value and a single `
 
 ## `s.encode` — standard ABI encoding
 
-`s.encode` produces the head/tail `abi.encode` bytes of its values and accepts the whole v0 type vocabulary: words, `string`/`bytes`, arrays (including `string[]`, `uint256[][]`, and arrays of structs), and `t.struct`/`t.tuple` values — bare `Tuple` and `MutArray` handles are fine, just like in `s.return`:
+`s.encode` produces the head/tail `abi.encode` bytes of its values and accepts the whole evs type vocabulary: words, `string`/`bytes`, arrays (including `string[]`, `uint256[][]`, and arrays of structs), and `t.struct`/`t.tuple` values — bare `Tuple` and `MutArray` handles are fine, just like in `s.return`:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

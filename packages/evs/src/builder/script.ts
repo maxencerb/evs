@@ -199,7 +199,7 @@ const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
 ]);
 
 /** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry
- *  must be a `t.error` value with v0 param types; names and selectors must be unique (and
+ *  must be a `t.error` value with evs param types; names and selectors must be unique (and
  *  selector-disjoint from the built-ins). */
 function normalizeErrorDecls(
   scriptName: string,
@@ -594,7 +594,7 @@ export type AnyMutArray = { readonly [mutArrayBrand]: EvsType };
 
 /**
  * What `s.encode(...)` / `s.keccak256(...)` accept per value (issue #17; keccak widened by #24):
- * any staged handle — an {@link Expr} of any v0 type, a {@link Tuple}, or a {@link MutArray} (bare
+ * any staged handle — an {@link Expr} of any evs type, a {@link Tuple}, or a {@link MutArray} (bare
  * handles contribute their memref, like `s.return`). Literals must be lifted with
  * `s.lit(type, value)` (an untyped literal is ambiguous).
  */
@@ -842,7 +842,7 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  * What an `s.fn` body may return (widened by issue #5 ask #1): a single {@link Expr}, a single
  * {@link Tuple}/{@link MutArray} handle (a composite/array result — byte-identical IR to `.expr()`),
  * a readonly list of those (the `[many]` shape), or void. `s.fn` PARAMS stay word/string-typed —
- * composite params are a separate v0 deferral, rejected at record time with `UNSUPPORTED_V0`
+ * composite params are not supported yet (#37), rejected at record time with `UNSUPPORTED_V0`
  * whether declared bare or via `namedArg` (whose bound admits every `EvsType` since #25).
  */
 export type FnReturn = Expr | AnyTuple | AnyMutArray | readonly FnResult[] | void;
@@ -978,7 +978,7 @@ export interface ScriptBuilder<
   // string-element array an `Expr` of the element (the same {@link TupleArrayElemHandle}
   // dispatch as the `.at` augmentation; a plain `tuple` is a compile error, mirrored at record
   // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
-  // load is recorded only when the body declares `elem` (v0 has no DCE — an unconditional load
+  // load is recorded only when the body declares `elem` (there is no DCE pass yet, #40 — an unconditional load
   // would execute its bounds check + reads every iteration for nothing).
   forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
     array: Expr<C>,
@@ -1005,7 +1005,7 @@ export interface ScriptBuilder<
 
   // functions — `params` accepts the same shorthand as `evscript` args (issue #9): a
   // bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing named/bare. Body params
-  // are labeled by name; composite params stay a v0 deferral (rejected at record time).
+  // are labeled by name; composite params are not supported yet (#37, rejected at record time).
   fn<const params extends ArgsInput, const r extends FnReturn>(
     name: string,
     params: params,

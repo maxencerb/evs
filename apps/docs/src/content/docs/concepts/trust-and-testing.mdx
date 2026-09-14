@@ -32,7 +32,7 @@ actually CREATEd and called from a wrapper address, and `interpret()` with match
 environment overrides must agree byte-exactly — so the frame-dependence of
 `s.env('caller')`/`s.env('address')` (see [Executing scripts](/guides/execution/)) is inside
 the oracle's coverage, not a blind spot. Any divergence on any axis is a release blocker; the
-design document's normative tables adjudicate which side is wrong.
+reference pages' normative tables adjudicate which side is wrong.
 
 ## Axis 2: ABI encoding and decoding vs viem
 
@@ -88,7 +88,7 @@ custom errors, and empty reverts must all surface through the script unchanged.
 
 ## The honesty rule
 
-Every bytecode listing in the design documentation is generated compiler output. A doc-sync
+Every bytecode listing in this documentation is generated compiler output. A doc-sync
 test recompiles the documented example scripts through the public API and fails CI if any
 listing drifts from what the compiler actually emits today. No documented example shows an
 optimization the compiler does not perform.
@@ -108,7 +108,7 @@ move in patches):
 | `typecheck` — `bun run --filter '@maxencerb/evs' typecheck` | strict typecheck of the library                                     |
 | `docs-typecheck` — `bun run --filter '@maxencerb/evs-docs' typecheck` | the docs site type-checks (`astro check`)                  |
 | `test` — `bun run test`                         | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
-| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.7.1 for determinism)                       |
+| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.8.1 for determinism)                       |
 | `package-health` — `publint` + `@arethetypeswrong/cli --pack` | the published package shape resolves correctly (ESM-only profile)  |
 
 The integration tier executes compiled scripts through every supported path on a real node:

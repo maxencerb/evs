@@ -112,7 +112,7 @@ describe('toPlainAbiFunction', () => {
     expect(Object.isFrozen(plain.outputs)).toBe(true);
   });
 
-  test('rejects non-v0 input types, naming function and parameter', () => {
+  test('rejects unsupported input types, naming function and parameter', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'observe',
@@ -412,7 +412,7 @@ describe('buildScriptAbi', () => {
     expect(Object.isFrozen(fn.outputs[0])).toBe(true);
   });
 
-  test('validation: names and v0 types', () => {
+  test('validation: names and evs types', () => {
     expect(catchEvs(() => buildScriptAbi('not a name', args, returns)).code).toBe('ABI_SHAPE');
     // empty return keys would break viem's object inference — hard error
     expect(catchEvs(() => buildScriptAbi('s', args, [{ name: '', type: 'address' }])).code).toBe(
