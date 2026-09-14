@@ -86,6 +86,15 @@ function constHexOf(ir: ScriptIr, id: number): string | undefined {
 /** Ordinary JS helper composing builder ops — exercised by the value-semantics suite. */
 const twice = (s: ScriptBuilder, e: Expr<'uint256'>): Expr<'uint256'> => s.add(e, e);
 
+/** Records a throwaway `(string, uint256[], uint256)` script whose body is a seeded compare
+ *  violation — exercised by the memref-equality suite (issue #38). */
+const recMemrefCompare = (
+  body: (s: ScriptBuilder, str: Expr<'string'>, arr: Expr<'uint256[]'>, x: Expr<'uint256'>) => Expr,
+) =>
+  evscript({ name: 'bad', args: [t.string, t.array(t.uint256), t.uint256] }, (s, str, arr, x) =>
+    s.return({ r: body(s, str, arr, x) }),
+  );
+
 // ---------------------------------------------------------------------------
 // args + return + artifact shape
 // ---------------------------------------------------------------------------
@@ -927,6 +936,155 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
 // ---------------------------------------------------------------------------
 // control flow
 // ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// eq / neq on memref types — hash equality (issue #38)
+// ---------------------------------------------------------------------------
+
+describe('eq/neq on memref types (hash equality — #38)', () => {
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+  /** The `bin` stmt plus the `keccak256` stmts feeding it. */
+  function eqShape(ir: ScriptIr) {
+    const stmts = allStmts(ir);
+    const bins = stmts.filter((x) => x.k === 'bin');
+    const hashes = stmts.filter((x) => x.k === 'keccak256');
+    const encodes = stmts.filter((x) => x.k === 'encode');
+    return { bins, hashes, encodes };
+  }
+
+  test('string/bytes: both operands hashed directly, then one word eq/neq — no encode stmt', () => {
+    const script = evscript(
+      { name: 'streq', args: [t.string, t.string, t.bytes, t.bytes] },
+      (s, a, b, c, d) => s.return({ eq: a.eq(b), neq: c.neq(d) }),
+      NO_LOC,
+    );
+    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const { bins, hashes, encodes } = eqShape(script.ir);
+    expect(encodes).toHaveLength(0);
+    expect(hashes.map((h) => h.k === 'keccak256' && h.a)).toEqual([0, 1, 2, 3]);
+    expect(bins.map((x) => x.k === 'bin' && x.op)).toEqual(['eq', 'neq']);
+    // each compare consumes the two bytes32 hashes of its own operands
+    const hashOut = hashes.map((h) => h.k === 'keccak256' && h.out);
+    expect(bins.map((x) => x.k === 'bin' && [x.a, x.b])).toEqual([
+      [hashOut[0], hashOut[1]],
+      [hashOut[2], hashOut[3]],
+    ]);
+    expect(script.ir.returns.map((r) => r.type)).toEqual(['bool', 'bool']);
+  });
+
+  test('arrays: element-wise via ONE standard encode per side (never packed), then hashed', () => {
+    const script = evscript(
+      { name: 'arreq', args: [t.array(t.uint256), t.array(t.uint256), 'string[]', 'string[]'] },
+      (s, a, b, c, d) => s.return({ eq: s.eq(a, b), neq: s.neq(c, d) }),
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const { bins, hashes, encodes } = eqShape(script.ir);
+    expect(encodes).toHaveLength(4);
+    expect(encodes.every((e) => e.k === 'encode' && e.mode === 'abi' && e.args.length === 1)).toBe(
+      true,
+    );
+    expect(encodes.map((e) => e.k === 'encode' && e.args[0])).toEqual([0, 1, 2, 3]);
+    // hash(encode(x)) per operand, then the word compare
+    expect(hashes.map((h) => h.k === 'keccak256' && h.a)).toEqual(
+      encodes.map((e) => e.k === 'encode' && e.out),
+    );
+    expect(bins.map((x) => x.k === 'bin' && x.op)).toEqual(['eq', 'neq']);
+  });
+
+  test('is exactly the stmts of the explicit s.keccak256(a).eq(s.keccak256(b)) spelling', () => {
+    const sugar = evscript(
+      { name: 'cmp', args: [t.string, t.array(t.uint256)] },
+      (s, str, arr) => s.return({ a: str.eq('hello'), b: arr.neq([1n, 2n]) }),
+      NO_LOC,
+    );
+    const explicit = evscript(
+      { name: 'cmp', args: [t.string, t.array(t.uint256)] },
+      (s, str, arr) =>
+        s.return({
+          a: s.keccak256(str).eq(s.keccak256(s.lit(t.string, 'hello'))),
+          b: s.keccak256(arr).neq(s.keccak256(s.lit(t.array(t.uint256), [1n, 2n]))),
+        }),
+      NO_LOC,
+    );
+    expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
+  });
+
+  test('literal rhs is coerced like any IntoExpr (string / array / struct literals)', () => {
+    const script = evscript(
+      { name: 'lits', args: [t.string, 'string[]'] },
+      (s, str, strs) => {
+        const pair = s.tuple(Pair, {
+          token: '0x00000000000000000000000000000000deadbeef',
+          fee: 500n,
+        });
+        return s.return({
+          a: str.eq('hello'),
+          b: strs.eq(['x', 'y']),
+          c: pair.expr().eq({ token: '0x00000000000000000000000000000000deadbeef', fee: 500 }),
+          d: s.neq('', str), // literal-left free form
+        });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const stmts = allStmts(script.ir);
+    // 'hello', '' and the two elements of the string[] literal
+    expect(stmts.filter((x) => x.k === 'const' && x.type === 'string')).toHaveLength(4);
+    expect(stmts.filter((x) => x.k === 'arrnew')).toHaveLength(1); // the string[] literal
+    expect(stmts.filter((x) => x.k === 'tuplenew')).toHaveLength(2); // s.tuple + the struct literal
+    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(8);
+    expect(stmts.filter((x) => x.k === 'bin').map((x) => x.k === 'bin' && x.op)).toEqual([
+      'eq',
+      'eq',
+      'eq',
+      'neq',
+    ]);
+  });
+
+  test('bare MutArray / Tuple handles are accepted as their memref (like s.encode)', () => {
+    const script = evscript(
+      { name: 'bare', args: [t.array(t.uint256)] },
+      (s, arr) => {
+        const mut = s.newArray(t.uint256, 2n);
+        const pair = s.tuple(Pair, { fee: 500n });
+        return s.return({
+          // @ts-expect-error — a bare MutArray is not an IntoExpr (runtime acceptance pinned)
+          a: s.eq(arr, mut),
+          // @ts-expect-error — a bare Tuple is not an IntoExpr (runtime acceptance pinned)
+          b: s.eq(pair, pair.expr()),
+        });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(allStmts(script.ir).filter((x) => x.k === 'bin')).toHaveLength(2);
+  });
+
+  test('operand types must match structurally: memref vs word, and two memref types', () => {
+    expect(() =>
+      // @ts-expect-error — string vs uint256 (runtime rejection pinned)
+      recMemrefCompare((_s, str, _arr, x) => str.eq(x)),
+    ).toThrow(/operand types differ \(Expr<'string'> vs Expr<'uint256'>\)/);
+    expect(() =>
+      // @ts-expect-error — string vs uint256[] (runtime rejection pinned)
+      recMemrefCompare((_s, str, arr) => str.eq(arr)),
+    ).toThrow(/operand types differ \(Expr<'string'> vs Expr<'uint256\[\]'>\)/);
+    expect(() =>
+      // @ts-expect-error — uint256 vs uint256[] (runtime rejection pinned)
+      recMemrefCompare((_s, _str, arr, x) => x.eq(arr)),
+    ).toThrow(/operand types differ \(Expr<'uint256'> vs Expr<'uint256\[\]'>\)/);
+    expect(() =>
+      // @ts-expect-error — an array literal is not a string literal (runtime rejection pinned)
+      recMemrefCompare((_s, str) => str.eq(['a'])),
+    ).toThrow(/string literal must be a JS string, got an array/);
+    expect(() => recMemrefCompare((s) => s.eq('a', 'b'))).toThrow(
+      /at least one operand must be an Expr/,
+    );
+  });
+});
 
 describe('s.if', () => {
   const script = evscript(

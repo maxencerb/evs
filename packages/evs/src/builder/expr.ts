@@ -1592,8 +1592,14 @@ export class Recorder {
     const loc = captureLoc();
     this.assertOpen(what, loc);
     const isShift = op === 'shl' || op === 'shr';
-    const ca = this.classify(a, `${what} left operand`, loc);
-    const cb = this.classify(b, `${what} ${isShift ? 'shift amount' : 'right operand'}`, loc);
+    const isEquality = op === 'eq' || op === 'neq';
+    const ca = this.classifyOperand(a, `${what} left operand`, isEquality, loc);
+    const cb = this.classifyOperand(
+      b,
+      `${what} ${isShift ? 'shift amount' : 'right operand'}`,
+      isEquality,
+      loc,
+    );
 
     // infer the operation type from the Expr operand(s)
     let ty: EvsType;
@@ -1631,6 +1637,10 @@ export class Recorder {
       );
     }
 
+    // memref equality (issue #38): `a.eq(b)` on string/bytes/T[]/tuple values is HASH equality —
+    // rewritten at record time to `keccak256(a) == keccak256(b)` with s.keccak256's lowering.
+    if (isEquality && !isWordType(ty)) return this.memrefEquality(op, a, b, ty, what, loc);
+
     this.checkBinDomain(op, ty, what, loc);
     const bTy: EvsType = isShift ? 'uint256' : ty;
     const resultTy: EvsType = CMP_OPS.has(op) || op === 'and' || op === 'or' ? 'bool' : ty;
@@ -1650,6 +1660,55 @@ export class Recorder {
     const ib = rb.id ?? this.materializeWord(bTy, rb, loc);
     const out = this.newValue(resultTy, loc);
     this.appendStmt({ k: 'bin', op, a: ia, b: ib, out }, loc);
+    return makeExpr(this, out);
+  }
+
+  /** `bin` operand classification. Equality additionally accepts a bare Tuple/MutArray handle as
+   *  its memref (like `s.encode` / `s.return`); every other op keeps classify()'s "use .expr()"
+   *  steer for those handles. */
+  private classifyOperand(
+    v: unknown,
+    what: string,
+    acceptBareHandles: boolean,
+    loc: SourceLoc | null,
+  ): Operand {
+    if (acceptBareHandles) {
+      const bare = this.bareHandleId(v, what, loc);
+      if (bare !== null) return { kind: 'expr', id: bare, type: this.typeOfValue(bare) };
+    }
+    return this.classify(v, what, loc);
+  }
+
+  /**
+   * `eq`/`neq` on memref operands (issue #38): hash equality. Both sides are coerced to exactly
+   * `ty` (an Expr, a bare handle, or a host literal — `IntoExpr` rules), each is hashed the way
+   * `s.keccak256(v)` hashes a single value (`string`/`bytes` directly → byte equality; arrays and
+   * tuples through their standard ABI encoding → element-wise equality, never the ambiguous packed
+   * form), and the two `bytes32` words are compared. No new IR node: the recorded stmts are exactly
+   * `s.keccak256(a).eq(s.keccak256(b))`.
+   */
+  private memrefEquality(
+    op: 'eq' | 'neq',
+    a: unknown,
+    b: unknown,
+    ty: EvsType,
+    what: string,
+    loc: SourceLoc | null,
+  ): Expr {
+    // left-to-right, hash-as-you-go: the stmt order is exactly what the explicit spelling records
+    // (a literal operand's const lands between the two hashes, as `s.lit` in the rhs would).
+    const ha = this.hashIds(
+      [this.coerceToId(a, ty, `${what} left operand`, loc)],
+      loc,
+      `${what} left operand hash`,
+    );
+    const hb = this.hashIds(
+      [this.coerceToId(b, ty, `${what} right operand`, loc)],
+      loc,
+      `${what} right operand hash`,
+    );
+    const out = this.newValue('bool', loc);
+    this.appendStmt({ k: 'bin', op, a: ha, b: hb, out }, loc);
     return makeExpr(this, out);
   }
 
@@ -1701,11 +1760,11 @@ export class Recorder {
       return;
     }
     if (op === 'eq' || op === 'neq') {
+      // memref operands never reach here — `bin` rewrites them to hash equality (issue #38)
       if (!isWordType(ty)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${what}: eq/neq compare word types only — memref ('${stringifyEvsType(ty)}') equality is not supported`,
-          { loc },
+        throw new EvsInternalError(
+          'INTERNAL',
+          `${what}: memref ('${stringifyEvsType(ty)}') equality must be lowered to hash equality`,
         );
       }
       return;
@@ -1942,18 +2001,24 @@ export class Recorder {
     const loc = captureLoc();
     this.assertOpen(what, loc);
     const ids = this.encodeArgIds('abi', values, what, loc);
+    return makeExpr(this, this.hashIds(ids, loc, 's.keccak256(…)'));
+  }
+
+  /** The `s.keccak256` lowering over resolved ValueIds: a single `bytes`/`string` value is hashed
+   *  directly, anything else through one standard `encode` stmt. Shared with memref equality. */
+  private hashIds(ids: readonly ValueId[], loc: SourceLoc | null, debugName: string): ValueId {
     let a: ValueId;
     const single = ids.length === 1 ? ids[0] : undefined;
     const singleType = single === undefined ? null : this.typeOfValue(single);
     if (single !== undefined && (singleType === 'bytes' || singleType === 'string')) {
       a = single;
     } else {
-      a = this.newValue('bytes', loc, 's.keccak256(…) encoded bytes');
+      a = this.newValue('bytes', loc, `${debugName} encoded bytes`);
       this.appendStmt({ k: 'encode', mode: 'abi', args: ids, out: a }, loc);
     }
-    const out = this.newValue('bytes32', loc, 's.keccak256(…)');
+    const out = this.newValue('bytes32', loc, debugName);
     this.appendStmt({ k: 'keccak256', a, out }, loc);
-    return makeExpr(this, out);
+    return out;
   }
 
   /** Resolves the variadic encode/hash values to ValueIds: an Expr, a bare Tuple/MutArray
