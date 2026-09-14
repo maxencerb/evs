@@ -34,8 +34,9 @@ agree byte for byte, the pass output must re-validate, and applying the pass twi
 no-op.
 
 Every script goes through the EVM side twice: the default output and its `optimize: true` twin,
-so the opt-in [peephole pass](/concepts/how-it-works/) is held to the same oracle — and must
-additionally never be larger, never cost more gas, and keep every mapped source location.
+so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator and the
+peephole pass) is held to the same oracle — and must additionally never be larger, never use a
+larger frame, never cost more gas, and keep every mapped source location.
 
 A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
 actually CREATEd and called from a wrapper address, and `interpret()` with matching

@@ -10,8 +10,9 @@
  * this tier pins byte-for-byte stability.
  *
  * Every case is snapshotted twice: the default output (the `optimize: false` bytes MUST stay
- * identical whatever the optimizer does) and its `optimize: true` twin (issue #39), which is
- * additionally asserted to never be larger.
+ * identical whatever the optimizer does) and its `optimize: true` twin (the peephole pass,
+ * issue #39, over the liveness-packed frame, issue #41), which is additionally asserted to
+ * never be larger.
  */
 import type { Abi } from 'abitype';
 import { describe, expect, test } from 'vite-plus/test';

@@ -1,6 +1,6 @@
 /**
  * `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
- * (the optimizer seam).
+ * (the optimizer seam; `opts.optimize` picks the liveness-based frame allocator, #41).
  *
  * Program layout:
  *
@@ -60,10 +60,12 @@ function internal(message: string): EvsInternalError {
 
 export function lowerProgram(
   ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; locations: boolean },
+  opts: { evmVersion: EvmVersion; locations: boolean; optimize?: boolean },
 ): LowerResult {
   validateIr(ir);
-  const frame = layoutFrames(ir);
+  // `optimize` (compile's single optimizer switch) selects the liveness-based frame allocator
+  // (issue #41); the default keeps one slot per value so the default bytes never move.
+  const frame = layoutFrames(ir, { optimize: opts.optimize ?? false });
   const w = new AsmWriter();
   const evm = { evmVersion: opts.evmVersion };
   const tails = createSharedTails(w, evm);

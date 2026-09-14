@@ -1,17 +1,18 @@
 /**
  * `compile.ts` — pipeline orchestration:
  *
- *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates) →
- *   [optimize: built-in evsPeephole] → peephole (user hook) → assemble(verify: jumpdests,
- *   stack, shapes) → EIP-170 check (per-region breakdown via labelNames) → merge sites into
- *   the sourceMap → build the artifact.
+ *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates)
+ *   [optimize: liveness frame allocator] → [optimize: built-in evsPeephole] → peephole (user
+ *   hook) → assemble(verify: jumpdests, stack, shapes) → EIP-170 check (per-region breakdown
+ *   via labelNames) → merge sites into the sourceMap → build the artifact.
  *
- * `optimize` (default false) is the single switch for the built-in optimizer passes; today that
- * is the asm-level peephole pass (`codegen/peephole.ts`) — dead-code elimination is not an
- * optimizer pass and always runs. The peephole pass runs at the same hook position as the user
- * `peephole` hook and BEFORE it, so a user hook always sees the optimized stream, and the
- * verifiers always see the final one. With `optimize: false` the pipeline is byte-identical to
- * the unoptimized lowering.
+ * `optimize` (default false) is the single switch for the built-in optimizer passes: the
+ * liveness-based frame allocator behind `codegen/frame.ts` (slot reuse across dead values,
+ * issue #41) and the asm-level peephole pass (`codegen/peephole.ts`, issue #39) — dead-code
+ * elimination is not an optimizer pass and always runs. The peephole pass runs at the same hook
+ * position as the user `peephole` hook and BEFORE it, so a user hook always sees the optimized
+ * stream, and the verifiers always see the final one. With `optimize: false` the pipeline is
+ * byte-identical to the unoptimized lowering.
  *
  * Diagnostics from lowering are forwarded to `options.onDiagnostic`; nothing is ever logged.
  * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
@@ -59,7 +60,7 @@ import {
 
 export interface CompileOptions {
   evmVersion?: EvmVersion; // default 'cancun'
-  optimize?: boolean; // default false — enables the built-in optimizer passes (currently the asm peephole pass, `evsPeephole`); output is still fully verified
+  optimize?: boolean; // default false — enables the built-in optimizer passes (the liveness-based frame allocator + the asm peephole pass `evsPeephole`); output is still fully verified
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity — a user hook over the node stream; with `optimize` it runs AFTER the built-in passes
   onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION); never logged
   locations?: boolean; // default true
@@ -195,6 +196,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   const lowered = lowerProgram(eliminateDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     locations: resolved.locations,
+    optimize: resolved.optimize,
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
 

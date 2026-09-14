@@ -38,6 +38,7 @@ import { concatHex, returner, reverter, RUNTIME_ECHO, word } from '../test/harne
 import { assemble, AsmWriter, type LabelId } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
+import { lowerProgram } from './codegen/program.js';
 import { compile, type CompiledEvsScript } from './compile.js';
 import { namedArg, t, type Expr, type Hex, type NumericType } from './core/types.js';
 import { eliminateDeadCode } from './ir/dce.js';
@@ -175,11 +176,13 @@ function mappedLocs(map: CompiledEvsScript['sourceMap']): string[] {
 }
 
 /**
- * Compiles twice — the default output AND its `optimize: true` twin (the built-in peephole
- * pass, issue #39) — checks the always-on DCE pass (issue #40: `interpret(ir) ==
- * interpret(dce(ir))`, output validity, idempotence), then for every arg set asserts byte-exact agreement between the reference
+ * Compiles twice — the default output AND its `optimize: true` twin (the built-in passes: the
+ * liveness-based frame allocator, issue #41, and the peephole pass, issue #39) — checks the
+ * always-on DCE pass (issue #40: `interpret(ir) == interpret(dce(ir))`, output validity,
+ * idempotence), then for every arg set asserts byte-exact agreement between the reference
  * interpreter and BOTH compiled runtimes on the harness EVM. The optimized twin must also
- * never be larger, never cost more gas, and carry exactly the same mapped source locations.
+ * never be larger, never use a larger frame, never cost more gas, and carry exactly the same
+ * mapped source locations.
  * Returns the (agreed) outcomes so callers can pin expectations for specific cases.
  */
 async function expectAgreement(
@@ -204,6 +207,9 @@ async function expectAgreement(
   expect(mappedLocs(optimized.sourceMap), `${twinLabel}: mapped locations`).toEqual(
     mappedLocs(compiled.sourceMap),
   );
+  const frameEndOf = (optimize: boolean): number =>
+    lowerProgram(script.ir, { evmVersion, locations: true, optimize }).frameEnd;
+  expect(frameEndOf(true), `${twinLabel}: frame`).toBeLessThanOrEqual(frameEndOf(false));
   const fixture = fixtureOf(table);
   const chain = chainOf(table);
   const outcomes: Outcome[] = [];
@@ -3352,4 +3358,185 @@ describe('simulate follow-ups (issue #36)', () => {
       expect(r).toEqual({ kind: 'revert', data: panicData(0x11n) });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// frame allocator stress (issue #41) — shapes where the optimized twin reuses slots: straight
+// chains, values crossing loop back-edges, nested loops, exclusive if-branches, fn calls with
+// live caller temporaries, encode/keccak memref temporaries. Any wrong reuse shows up here as
+// a payload mismatch against the interpreter.
+// ---------------------------------------------------------------------------
+
+describe('frame allocator stress (issue #41)', () => {
+  test('long straight-line chain of temporaries; one early temporary kept live to the end', async () => {
+    const script = evscript({ name: 'chain', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const first = s.add(a, b); // live across the whole chain
+      let x = first;
+      for (let i = 0; i < 40; i++) {
+        x = s.add(s.mul(x, 3n), s.lit(t.uint256, BigInt(i)));
+      }
+      const y = s.select(x.gt(first), x, first);
+      return s.return({ x, y, first, sum: s.add(y, first) });
+    });
+    await expectAgreement(script, [
+      [0n, 0n],
+      [1n, 2n],
+      [1n << 100n, 5n],
+      [1n << 200n, 1n], // ×3 forty times overflows → Panic 0x11 mid-chain
+    ]);
+  });
+
+  test('values defined before a loop and read inside stay live across every iteration', async () => {
+    const script = evscript({ name: 'carried', args: [t.uint256, t.uint256] }, (s, n, a) => {
+      const base = s.mul(a, 2n); // read in the body every iteration
+      const step = s.add(a, 1n); // read late in the body, after the body's own temporaries
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        const t1 = s.mul(i, 3n);
+        const t2 = s.add(t1, base);
+        acc.set(acc.get().add(t2));
+        const t3 = s.add(acc.get(), step);
+        acc.set(t3);
+        const t4 = s.mul(t3, 1n);
+        acc.set(t4);
+      });
+      return s.return({ acc: acc.get(), base, step });
+    });
+    await expectAgreement(script, [
+      [0n, 5n],
+      [3n, 7n],
+      [10n, 1n],
+      [4n, 1n << 254n], // acc overflows on the second iteration → Panic 0x11
+    ]);
+  });
+
+  test('while: value from before the loop read after a continue; temporaries around break', async () => {
+    const script = evscript({ name: 'loopreuse', args: [t.uint256, t.uint256] }, (s, n, k) => {
+      const bound = s.mul(k, 2n); // read only after the `continue` check
+      const i = s.let(t.uint256, 0n);
+      const acc = s.let(t.uint256, 0n);
+      s.while(
+        () => i.get().lt(n),
+        (loop) => {
+          const cur = i.get();
+          i.set(cur.add(1n));
+          const t1 = s.mul(cur, 7n);
+          s.if(t1.eq(14n), () => loop.continue());
+          const t2 = s.add(t1, bound);
+          s.if(t2.gt(100n), () => loop.break());
+          acc.set(acc.get().add(t2));
+          const last = s.add(cur, bound);
+          acc.set(acc.get().add(last));
+        },
+      );
+      return s.return({ acc: acc.get(), i: i.get(), bound });
+    });
+    await expectAgreement(script, [
+      [0n, 1n],
+      [3n, 1n],
+      [10n, 3n],
+      [40n, 0n],
+    ]);
+  });
+
+  test('nested loops: temporaries crossing both back-edges', async () => {
+    const script = evscript({ name: 'nested', args: [t.uint256, t.uint256] }, (s, n, m) => {
+      const outerK = s.add(n, m); // defined before both loops, read in the inner body
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        const oi = s.mul(i, 10n); // read in the inner loop and after it
+        s.for({ from: 0n, until: m }, (j) => {
+          const t1 = s.add(oi, j);
+          const t2 = s.add(t1, outerK);
+          acc.set(acc.get().add(t2));
+        });
+        acc.set(acc.get().add(oi));
+        const after = s.mul(oi, 2n);
+        acc.set(acc.get().add(after));
+      });
+      return s.return({ acc: acc.get(), outerK });
+    });
+    await expectAgreement(script, [
+      [0n, 0n],
+      [1n, 1n],
+      [3n, 4n],
+      [5n, 0n],
+    ]);
+  });
+
+  test('if branches: exclusive-branch temporaries; values live through and past the if', async () => {
+    const script = evscript({ name: 'branchy', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const p = s.add(a, 1n);
+      const q = s.mul(b, 2n);
+      const r = s.let(t.uint256, 0n);
+      s.if(
+        a.gt(b),
+        () => {
+          const t1 = s.add(p, q);
+          const t2 = s.mul(t1, 2n);
+          const t3 = s.sub(t2, p);
+          r.set(t3);
+        },
+        () => {
+          const u1 = s.mul(q, 3n);
+          const u2 = s.add(u1, q);
+          r.set(u2);
+        },
+      );
+      const afterP = s.add(p, r.get()); // p still live after the if
+      s.if(afterP.gt(10n), () => {
+        r.set(s.add(r.get(), q)); // q read only inside this then-branch
+      });
+      const tail = s.add(r.get(), afterP);
+      return s.return({ r: r.get(), tail });
+    });
+    await expectAgreement(script, [
+      [0n, 0n],
+      [5n, 2n],
+      [2n, 5n],
+      [1n << 255n, 1n], // then-branch: t2 = 2·t1 overflows → Panic 0x11
+    ]);
+  });
+
+  test('fn calls interleaved with live caller temporaries; fn bodies with their own chains', async () => {
+    const script = evscript({ name: 'fnmix', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const chain3 = s.fn('chain3', [namedArg('x', t.uint256)] as const, (x) => {
+        const c1 = x.add(x);
+        const c2 = c1.mul(3n);
+        const c3 = c2.sub(x);
+        return c3;
+      });
+      const t1 = s.mul(a, 3n); // live across both calls
+      const d1 = chain3(a);
+      const t2 = s.add(t1, d1); // live across the second call
+      const d2 = chain3(b);
+      const t3 = s.add(t2, d2);
+      const d3 = chain3(t3);
+      return s.return({ t1, t2, t3, d1, d2, d3 });
+    });
+    await expectAgreement(script, [
+      [0n, 0n],
+      [1n, 2n],
+      [7n, 11n],
+      [1n << 250n, 1n], // c2 = 3·(2x) overflows → Panic 0x11 inside the fn
+    ]);
+  });
+
+  test('encode / keccak256 temporaries (memref pointers in reused slots)', async () => {
+    const script = evscript({ name: 'hashes', args: [t.uint256, t.address] }, (s, a, who) => {
+      const e1 = s.encode(a, who);
+      const h1 = s.keccak256(e1);
+      const e2 = s.encodePacked(h1, a);
+      const h2 = s.keccak256(e2);
+      const e3 = s.encode(h1, h2, a);
+      const h3 = s.keccak256(e3);
+      const n1 = e1.length(); // e1 read again after later temporaries
+      const n2 = s.add(n1, e2.length());
+      return s.return({ h1, h2, h3, n2, e3 });
+    });
+    await expectAgreement(script, [
+      [0n, TOKA],
+      [123_456_789n, USER],
+    ]);
+  });
 });
