@@ -5,8 +5,8 @@
  * the documented dynamic-corpus pattern (mirrors checked-math.test.ts / differential.test.ts). */
 /**
  * Issue #17 differential suite — `s.encode` / `s.encodePacked` / `s.keccak256` vs the viem
- * oracle (testing.md §4.4). viem's `encodeAbiParameters`, `encodePacked`, and `keccak256` are
- * assumed faithful to Solidity; for every case the compiled bytecode's returndata (M10 harness)
+ * oracle. viem's `encodeAbiParameters`, `encodePacked`, and `keccak256` are
+ * assumed faithful to Solidity; for every case the compiled bytecode's returndata (EVM harness)
  * must match them byte-for-byte, and `interpret(script.ir, …)` must agree with the bytecode on
  * the full returndata. The corpus sweeps every word width, dynamic types (incl. empty and
  * non-32-aligned lengths), word arrays, structs (flat / nested / dynamic members), composite
@@ -27,7 +27,7 @@ import {
   keccak256,
   stringToHex,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
 import { evscript } from '../builder/script.js';
@@ -43,7 +43,7 @@ const deadChain: MockChain = {
 
 interface EncodeCase {
   name: string;
-  /** script arg types (the values arrive via calldata, exercising the full §8.1 path too). */
+  /** script arg types (the values arrive via calldata, exercising the calldata-decode path too). */
   types: readonly EvsType[];
   /** the same types as viem ABI params (for the encodeAbiParameters oracle). */
   params: readonly AbiParameter[];
@@ -92,15 +92,13 @@ function wordCases(): EncodeCase[] {
 }
 
 const DYNAMIC_CASES: EncodeCase[] = [
-  ...[0, 1, 31, 32, 33, 64, 95].map(
-    (len): EncodeCase => ({
-      name: `bytes of length ${len}`,
-      types: ['bytes'],
-      params: [{ type: 'bytes' }],
-      packedTypes: ['bytes'],
-      values: [`0x${'5a'.repeat(len)}`],
-    }),
-  ),
+  ...[0, 1, 31, 32, 33, 64, 95].map((len): EncodeCase => ({
+    name: `bytes of length ${len}`,
+    types: ['bytes'],
+    params: [{ type: 'bytes' }],
+    packedTypes: ['bytes'],
+    values: [`0x${'5a'.repeat(len)}`],
+  })),
   {
     name: 'strings: empty / ascii / multibyte utf8',
     types: ['string', 'string', 'string'],
@@ -279,7 +277,7 @@ async function expectCase(c: EncodeCase, evmVersion?: 'paris' | 'shanghai' | 'ca
   const calldata = encodeFunctionData({
     abi: compiled.abi,
     functionName: 'encCase',
-    args: c.values as never,
+    args: c.values,
   });
   const res = await execRuntime(compiled.runtimeBytecode, calldata);
   expect(res.success, `${c.name}: script reverted with ${res.data}`).toBe(true);
@@ -318,7 +316,7 @@ async function expectCase(c: EncodeCase, evmVersion?: 'paris' | 'shanghai' | 'ca
     expectedP === undefined ? undefined : keccak256(expectedP),
   );
 
-  // interpreter ↔ bytecode agreement on the full returndata (testing.md §4.1 invariant)
+  // interpreter ↔ bytecode agreement on the full returndata
   const interp = interpret(script.ir, c.values, deadChain);
   const interpData = interp.outcome.kind === 'return' ? interp.outcome.data : interp.outcome;
   expect(interpData, `${c.name}: interp/bytecode divergence`).toBe(res.data);
@@ -360,7 +358,7 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
       abi: compiled.abi,
       functionName: 'emptyHash',
       data: res.data,
-    }) as { h: Hex };
+    });
     expect(out.h).toBe('0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
   });
 
@@ -391,7 +389,7 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
       abi: compiled.abi,
       functionName: 'wordHash',
       data: res.data,
-    }) as { ha: Hex; hb: Hex; hc: Hex; hap: Hex };
+    });
     expect(out.ha).toBe(keccak256(encodeAbiParameters([{ type: 'uint8' }], [7])));
     expect(out.hb).toBe(keccak256(encodeAbiParameters([{ type: 'uint256' }], [123n])));
     expect(out.hc).toBe(keccak256(word)); // bytes32: abi.encode(x) IS the word

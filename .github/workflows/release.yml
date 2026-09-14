@@ -1,131 +1,99 @@
+# Changesets-driven release. Every push to main either
+#   (a) opens/updates the "Version Packages" PR (changesets found), or
+#   (b) publishes @maxencerb/evs (no changesets, package.json version not on npm yet)
+#       via npm OIDC trusted publishing, then tags + creates the GitHub release.
+#
+# The filename MUST stay `release.yml`: it is the workflow the npm trusted publisher is
+# configured against (npmjs.com → @maxencerb/evs → Trusted publishing).
 name: Release
 
 on:
-  release:
-    types: [published]
+  push:
+    branches: [main]
 
-permissions:
-  contents: read
-  id-token: write # npm trusted publishing (OIDC)
+# reset, then grant per job — id-token: write only where npm publish runs
+permissions: {}
 
 concurrency:
-  group: release-${{ github.event.release.tag_name }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
-  publish:
-    name: Publish @maxencerb/evs to npm
+  select-mode:
+    name: Select changesets mode
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    outputs:
+      mode: ${{ steps.select-mode.outputs.mode }}
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          submodules: recursive
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - id: select-mode
+        uses: changesets/action/select-mode@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
 
-      - uses: oven-sh/setup-bun@v2
+  version:
+    name: Open / update "Version Packages" PR
+    if: needs.select-mode.outputs.mode == 'version'
+    needs: select-mode
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # commit the version bump (pushed through the GitHub API)
+      pull-requests: write # create / update the PR
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
-          bun-version: latest
-
-      # Node 24 bundles npm >= 11.13 (OIDC floor is 11.5.1); registry-url writes .npmrc whose
-      # NODE_AUTH_TOKEN placeholder is defused at the publish step so OIDC wins.
-      - uses: actions/setup-node@v6
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          node-version: 24
-          registry-url: 'https://registry.npmjs.org'
-          package-manager-cache: false
+          # changeset version + `bun install --lockfile-only` so bun.lock's workspace
+          # version stays in sync (a stale lock breaks `bun pm pack`, oven-sh/bun#20477)
+          script: vp run changeset:version
+          commit-message: 'chore(release): version packages'
+          pr-title: 'chore(release): version packages'
 
+  publish:
+    name: Publish @maxencerb/evs to npm (OIDC)
+    if: needs.select-mode.outputs.mode == 'publish'
+    needs: select-mode
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # push the release tag + create the GitHub release
+      id-token: write # npm trusted publishing (OIDC)
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          submodules: recursive # contracts/lib/forge-std (release re-runs the full gate)
+          persist-credentials: false
+      - uses: ./.github/actions/setup
+      - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
+        with:
+          version: v1.8.1 # keep in sync with ci.yml
+
+      # npm >= 11.5.1 is required for OIDC; Node 24 (from .node-version) bundles >= 11.13.
+      # Node's own npm is used on purpose — `bun publish` has no OIDC support (oven-sh/bun#22423).
       - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
         run: |
           npm install -g npm@latest
           npm --version
 
-      - name: Derive version from release tag
-        id: version
-        env:
-          TAG: ${{ github.event.release.tag_name }} # env indirection: no script injection
-          RELEASE_PRERELEASE: ${{ github.event.release.prerelease }}
+      - name: Full gate (contracts, build, check, tests)
         run: |
-          SEMVER_RE='^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)(-((0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*)(\.(0|[1-9][0-9]*|[0-9]*[a-zA-Z-][0-9a-zA-Z-]*))*))?(\+([0-9a-zA-Z-]+(\.[0-9a-zA-Z-]+)*))?$'
-          if [[ ! "$TAG" =~ $SEMVER_RE ]]; then
-            echo "::error::Release tag '$TAG' must look like v1.2.3 or v1.2.3-beta.1"
-            exit 1
-          fi
-          # the dist-tag follows the tag's semver prerelease component (BASH_REMATCH[4]),
-          # not the GitHub release checkbox — hard-fail when the two disagree
-          PRERELEASE=false
-          if [[ -n "${BASH_REMATCH[4]}" ]]; then PRERELEASE=true; fi
-          if [[ "$PRERELEASE" != "$RELEASE_PRERELEASE" ]]; then
-            echo "::error::Tag '$TAG' (prerelease=$PRERELEASE per semver) disagrees with the GitHub release prerelease checkbox ($RELEASE_PRERELEASE) — fix the release and retry"
-            exit 1
-          fi
-          echo "version=${TAG#v}" >> "$GITHUB_OUTPUT"
-          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          (cd packages/contracts && forge build && forge test && vp run codegen)
+          vp run build
+          vp run check
+          vp run test
+          vp run test:integration
 
-      # Warm the bun install cache (keyed on the lockfile) — the later re-sync install
-      # after the version bump reuses it too.
-      - uses: actions/cache@v4
+      # scripts/publish.ts: `bun pm pack` (rewrites catalog:/workspace: specs) →
+      # `npm publish <tgz> --provenance` (OIDC) → `changeset git-tag`. The action reads the
+      # tag events (CHANGESETS_OUTPUT), pushes the tag and creates the GitHub release.
+      - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          path: ~/.bun/install/cache
-          key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-          restore-keys: |
-            bun-${{ runner.os }}-
-
-      # Install BEFORE the version bump (bun's frozen-lockfile hashes workspace manifests),
-      # and bun pm pack requires a completed install.
-      - name: Install dependencies
-        run: bun install --frozen-lockfile
-
-      - uses: foundry-rs/foundry-toolchain@v1
-        with:
-          version: v1.7.1
-
-      - name: Full test gate
-        run: |
-          (cd packages/contracts && forge build && forge test && bun run codegen)
-          bun run build
-          bun run check
-          bun run test
-          bun run test:integration
-
-      - name: Inject version
-        working-directory: packages/evs
-        # bun pm version, NOT npm version: npm cannot parse the workspace's catalog:
-        # protocol deps and fails with EUNSUPPORTEDPROTOCOL (verified 2026-06-12).
-        run: bun pm version "${{ steps.version.outputs.version }}" --no-git-tag-version
-
-      - name: Re-sync lockfile after version bump
-        # NOT frozen: the bump changed the workspace version, and packing against a stale
-        # bun.lock makes `bun pm pack --quiet` chatty (extra "Saved lockfile" line broke the
-        # GITHUB_OUTPUT capture in run 27402030447) and risks oven-sh/bun#20477 stale
-        # version substitution. Dependencies are unchanged; only the lock's workspace
-        # version is updated.
-        run: bun install
-
-      - name: Rebuild with release version
-        working-directory: packages/evs
-        run: bun run build
-
-      - name: 'Pack (bun rewrites workspace:/catalog: protocols)'
-        id: pack
-        working-directory: packages/evs
-        # tail -n1: pack's stdout must be exactly the filename for GITHUB_OUTPUT
-        run: echo "tarball=$(bun pm pack --quiet | tail -n1)" >> "$GITHUB_OUTPUT"
-
-      # validate the EXACT tarball being published (testing.md §8) — publint accepts a
-      # tarball path and checks the rewritten manifest, not the workspace source
-      - name: Package health on the packed tarball (publint)
-        working-directory: packages/evs
-        run: bunx publint "${{ steps.pack.outputs.tarball }}"
-
-      - name: Publish to npm via OIDC
-        working-directory: packages/evs
+          script: vp run changeset:publish
+          create-github-releases: true
         env:
-          NODE_AUTH_TOKEN: '' # defuse setup-node's placeholder so OIDC wins
-          # Provenance is ON (repo is public since 2026-06-12; publishConfig.provenance=true).
-          # It would fail on a private repo — if the repo ever goes private again, flip both back.
-        run: |
-          TAG_FLAG=latest
-          if [ "${{ steps.version.outputs.prerelease }}" = "true" ]; then TAG_FLAG=next; fi
-          npm publish "${{ steps.pack.outputs.tarball }}" \
-            --access public \
-            --provenance \
-            --tag "$TAG_FLAG"
+          NODE_AUTH_TOKEN: '' # nothing must shadow OIDC (npm-oidc-release.md §2)

@@ -1,12 +1,12 @@
 /**
- * M10 self-tests (module-interfaces §M10): RUNTIME_42 fixture, mock STATICCALL target,
+ * Harness self-tests: RUNTIME_42 fixture, mock STATICCALL target,
  * gas limit respected — plus byte-exact checks for the three handwritten snippets
  * (PUSH/ADD/RETURN, STATICCALL to a mock, REVERT with payload) and the attacker-shaped
  * returner builders.
  */
 
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { CALLER_ADDRESS, DEFAULT_GAS_LIMIT, execRuntime, SCRIPT_ADDRESS } from './evm.js';
 import {

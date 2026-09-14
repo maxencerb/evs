@@ -1,13 +1,13 @@
 /**
- * M8 `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
- * (the optimizer seam — architecture §1/§11).
+ * `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
+ * (the optimizer seam).
  *
- * Program layout (architecture §11):
+ * Program layout:
  *
  *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE
  *   dispatch    cds < 4 → @badcd; selector mismatch → @badcd; else → @main
- *   @main       arg decode (§8.1) · body statement templates · return encode (§8.2) RETURN
- *   @fn_*       subroutines (§9) — uncalled fns dropped
+ *   @main       arg decode · body statement templates · return encode RETURN
+ *   @fn_*       subroutines — uncalled fns dropped
  *   @dfail_*    per-strict-site decode-fail stubs → @decode_revert
  *   tails       @panic_* / @panic / @decode_revert / @badcd (+ @memcpy pre-cancun)
  *   INVALID     data segments (dataLabel-addressed blobs, content-deduplicated) — LAST
@@ -36,7 +36,7 @@ import {
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
 // ---------------------------------------------------------------------------
-// frozen contract (module-interfaces §M8)
+// contract
 // ---------------------------------------------------------------------------
 
 export interface LowerResult {
@@ -48,9 +48,9 @@ export interface LowerResult {
 }
 
 /**
- * Frames larger than this trip the `LARGE_FRAME` warning (no pinned threshold exists in the
- * design docs; 32 KiB ≈ 1,020 slots is far beyond any reasonable read script and the point
- * where quadratic memory-expansion gas starts to register).
+ * Frames larger than this trip the `LARGE_FRAME` warning (the threshold is a judgment call:
+ * 32 KiB ≈ 1,020 slots is far beyond any reasonable read script and the point where
+ * quadratic memory-expansion gas starts to register).
  */
 const LARGE_FRAME_BYTES = 0x8000;
 
@@ -95,7 +95,7 @@ export function lowerProgram(
   const state = lowerInternals(ctx);
   state.locations = opts.locations;
 
-  // -- prologue: free-pointer init (architecture §5/§11) --------------------------------
+  // -- prologue: free-pointer init --------------------------------
   w.push(frame.frameEnd, { note: 'frameEnd' });
   w.push(0x40);
   w.op('MSTORE', { note: 'free-ptr init' });
@@ -112,7 +112,7 @@ export function lowerProgram(
   for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
   const trampoline = hasSimulate ? w.newLabel('simulate_trampoline') : null;
 
-  // -- dispatcher (§11): size floor, selector match, fallback EvsInvalidCalldata --------
+  // -- dispatcher: size floor, selector match, fallback EvsInvalidCalldata --------
   // tuple args expand to their canonical `(t1,t2,…)` signature so the dispatcher selector is
   // byte-identical to viem's over the tuple-expanded ScriptAbi inputs.
   const argTypes = ir.args.map((a) => canonicalTypeSignature(a.type));
@@ -156,7 +156,7 @@ export function lowerProgram(
   w.op('JUMP'); // fallback — named EvsInvalidCalldata()
   w.label(main, 0);
 
-  // -- arg decode (§8.1) ------------------------------------------------------------------
+  // -- arg decode ------------------------------------------------------------------
   const argRefs: SlotRef[] = ir.args.map((a, i) => {
     const slot = frame.slotOfValue(i);
     if (slot === null) throw internal(`arg #${i} ("${a.name}") has no frame slot`);
@@ -167,7 +167,7 @@ export function lowerProgram(
   // -- body --------------------------------------------------------------------------------
   lowerStmts(w, ir.body, ctx);
 
-  // -- return encode (§8.2) — ends with RETURN ---------------------------------------------
+  // -- return encode — ends with RETURN ---------------------------------------------
   const components = ir.returns.map((r) => {
     const slot = frame.slotOfValue(r.value);
     if (slot === null) {
@@ -177,13 +177,13 @@ export function lowerProgram(
   });
   emitReturnEncode(w, components, tails, evm);
 
-  // -- fn subroutines (only fns reached through fncall — uncalled fns dropped, §9) ---------
+  // -- fn subroutines (only fns reached through fncall — uncalled fns dropped) ---------
   emitFnSubroutines(w, ctx);
 
   // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
   if (trampoline !== null) emitSimulateTrampoline(w, trampoline, evm);
 
-  // -- per-site decode-fail stubs (strict calls) + shared tails (§11/§15.0) ----------------
+  // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
   emitSharedTails(w, tails, evm);
 
@@ -218,7 +218,7 @@ function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, stri
 }
 
 // ---------------------------------------------------------------------------
-// sites — the SiteId table behind explainRevert / EvsDecodeError (architecture §14)
+// sites — the SiteId table behind explainRevert / EvsDecodeError
 // ---------------------------------------------------------------------------
 
 function collectSites(
@@ -283,7 +283,7 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
 }
 
 // ---------------------------------------------------------------------------
-// diagnostics — LOOP_ALLOCATION (§5) + LARGE_FRAME + ENV_FRAME_DEPENDENT
+// diagnostics — LOOP_ALLOCATION + LARGE_FRAME + ENV_FRAME_DEPENDENT
 // ---------------------------------------------------------------------------
 
 /** Statements that allocate memory at runtime (call-with-outputs snapshots returndata; a
@@ -327,7 +327,7 @@ function collectDiagnostics(
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
 
-  // fn bodies allocating transitively (the call graph is acyclic per §9; the seen-set keeps
+  // fn bodies allocating transitively (the call graph is acyclic; the seen-set keeps
   // the walk finite even on malformed input).
   const fnAllocMemo = new Map<FnId, boolean>();
   const fnAllocates = (f: FnId, seen: ReadonlySet<FnId>): boolean => {

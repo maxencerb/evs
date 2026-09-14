@@ -15,7 +15,7 @@
  */
 
 import { encodeFunctionData } from 'viem';
-import { beforeEach, describe, expect, test } from 'vitest';
+import { beforeEach, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockQuoter, MockVault } from '../generated/index.js';

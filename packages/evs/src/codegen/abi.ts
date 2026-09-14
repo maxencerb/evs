@@ -1,14 +1,12 @@
 /**
- * M7 `codegen/abi.ts` — the ABI emitters: dispatch-time calldata decode (architecture §8.1),
- * return-tuple encode (§8.2), and the fork-portable memory-copy primitive (§10 lowering table).
+ * `codegen/abi.ts` — the ABI emitters: dispatch-time calldata decode, return-tuple encode,
+ * and the fork-portable memory-copy primitive.
  *
- * Contract: docs/design/module-interfaces.md §M7 (frozen signatures) + architecture.md §5
- * (memory model, canonical word invariant), §8 (encode/decode shapes), §10 (evmVersion
- * lowering). Every emitted sequence is net-zero on the operand stack (the statement-boundary
- * invariant) and stays within the 16-item template budget — `asm/verify.ts` machine-checks
- * both on every `assemble`.
+ * Every emitted sequence is net-zero on the operand stack (the statement-boundary invariant)
+ * and stays within the 16-item template budget — `asm/verify.ts` machine-checks both on every
+ * `assemble`.
  *
- * Conventions used throughout (architecture §5):
+ * Memory-model conventions used throughout:
  * - scratch `0x00` holds the running tail cursor of the return encoder / calldata templates
  *   (intra-template temporary only — dead once the template ends);
  * - `0x40` is the free-memory pointer; `0x60` is the never-written zero slot;
@@ -42,7 +40,7 @@ import {
 } from '../core/types.js';
 
 // ---------------------------------------------------------------------------
-// frozen contract types (module-interfaces §M7)
+// contract types
 // ---------------------------------------------------------------------------
 
 export interface SharedTails {
@@ -65,16 +63,16 @@ export interface SlotRef {
 // shared constants / helpers
 // ---------------------------------------------------------------------------
 
-/** 2^64 − 1 — the overflow-free bound for every decoded offset/length (architecture §7/§8). */
+/** 2^64 − 1 — the overflow-free bound for every decoded offset/length. */
 const MAX_U64 = 0xffffffffffffffffn;
 
-/** Free-memory-pointer slot (architecture §5). */
+/** Free-memory-pointer slot. */
 const FREE_PTR = 0x40;
 
-/** Scratch slot for running tail cursors (intra-template temporary, architecture §5). */
+/** Scratch slot for running tail cursors (intra-template temporary). */
 const TAIL_CURSOR = 0x00;
 
-/** Words per reserved encode loop frame: `{arrPtr, D, len, i}` (§12.7). */
+/** Words per reserved encode loop frame: `{arrPtr, D, len, i}`. */
 const FRAME_SLOTS = 4;
 const FRAME_ARRPTR = 0;
 const FRAME_D = 1;
@@ -94,7 +92,7 @@ export interface EncodeOpts {
 
 /**
  * Scratch slot holding the current composite-array element's SOURCE base during
- * {@link emitDecodeArrayToMem} (architecture §5). The recursive element decoders re-derive their
+ * {@link emitDecodeArrayToMem}. The recursive element decoders re-derive their
  * base from `MLOAD(ELEM_BASE)` so the base is stack-depth-independent across their internal churn.
  * Each `emitDecodeArrayToMem` brackets this slot with save/restore, so nested array decodes never
  * clobber a parent's base. It is `0x20` — free during *decode* (the snapshot/calldata base lives in
@@ -131,14 +129,14 @@ function wordLayoutOf(type: WordType): Extract<TypeLayout, { kind: 'word' }> {
 
 /**
  * The element word abi of a word-element array layout. Composite-element arrays (`tuple[]`,
- * `T[][]`, `string[]` — `elem.kind !== 'word'`) are §12.6/§12.7 codegen and not yet emitted;
+ * `T[][]`, `string[]` — `elem.kind !== 'word'`) are not yet emitted here;
  * this throws an internal error for them. UNREACHABLE today: `layoutOfType` never produces a
  * composite-element array (it throws UNSUPPORTED_V0 first), so this is a behavior-preserving
  * plumbing guard the array-element codegen milestone replaces with real handling.
  */
 function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): WordType {
   if (layout.elem.kind !== 'word') {
-    throw internal('composite-element array codegen pending (§12.6/§12.7)');
+    throw internal('composite-element array codegen pending');
   }
   return layout.elem.abi;
 }
@@ -153,7 +151,7 @@ export function wordNeedsNormalize(type: WordType): boolean {
 
 /**
  * @internal Shared by `codegen/call.ts`. Normalizes the word on top of the stack to the
- * canonical form of `type` (architecture §5): `uintN`/`address` masked, `intN` sign-extended,
+ * canonical form of `type`: `uintN`/`address` masked, `intN` sign-extended,
  * `bool` collapsed to 0/1 (`ISZERO ISZERO`), `bytesN` masked left-aligned. Net stack 0.
  */
 export function emitNormalizeWord(w: AsmWriter, type: WordType): void {
@@ -178,7 +176,7 @@ export function emitNormalizeWord(w: AsmWriter, type: WordType): void {
 
 /**
  * @internal Shared by `codegen/call.ts`. Eager element-normalization loop over an array
- * memref payload (architecture §7.2 step 5 / §8.1).
+ * memref payload.
  *
  * Stack contract: entry `[cur, end, …depthBelow items]` → exit `[cur, end, …]` with
  * `cur == end`; the loop labels are checked at absolute height `depthBelow + 2`, so the
@@ -208,7 +206,7 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
 }
 
 // ---------------------------------------------------------------------------
-// recursive ABI encoder (head/tail over a flat-pointer SRC tree) — architecture §8.2/§3
+// recursive ABI encoder (head/tail over a flat-pointer SRC tree)
 // ---------------------------------------------------------------------------
 
 /**
@@ -328,7 +326,7 @@ export function emitEncodeBlock(
       return;
     }
 
-    // composite-element array member (`tuple[]`/`T[][]`/`string[]`): the §12.7 scratch-frame
+    // composite-element array member (`tuple[]`/`T[][]`/`string[]`): the scratch-frame
     // element loop. The member head already stored its offset (cursor − base) above; the array's
     // own `[len][…]` block is appended at the cursor by `emitEncodeArrayTail`, which keeps all of
     // its loop state in a reserved memory frame so the stack stays at the template baseline (no
@@ -447,12 +445,12 @@ function emitLeafDynTail(
 }
 
 // ---------------------------------------------------------------------------
-// composite-element array encode (the scratch-frame element loop) — architecture §12.7
+// composite-element array encode (the scratch-frame element loop)
 // ---------------------------------------------------------------------------
 
 /**
  * @internal The number of composite-array loop frames concurrently live while ENCODING a value of
- * `l` (§12.7). A leaf (`word`/`bytes`/`string`/a word-element array — all emitted via the inline
+ * `l`. A leaf (`word`/`bytes`/`string`/a word-element array — all emitted via the inline
  * head write or {@link emitLeafDynTail}) needs none; a tuple needs the max its members need; a
  * composite-element array ({@link emitEncodeArrayTail}) needs one frame for its own loop plus
  * whatever encoding ONE element concurrently needs. The return encoder reserves `max` over the
@@ -474,7 +472,7 @@ export function encodeFramesOf(l: TypeLayout): number {
 
 /**
  * Reserves `frames` composite-array encode loop frames immediately BELOW the upcoming output/calldata
- * buffer by bumping the free pointer by `32·FRAME_SLOTS·frames` (§12.7). The CALLER must read the
+ * buffer by bumping the free pointer by `32·FRAME_SLOTS·frames`. The CALLER must read the
  * buffer base as `MLOAD(0x40)` AFTER this so the buffer sits just above frame 0 and {@link pushFrameSlot}
  * (which addresses each frame relative to `MLOAD(0x40)`) resolves correctly. The free pointer must not
  * be bumped again between this reservation and the encode (tails are written at the cursor, never via
@@ -496,7 +494,7 @@ export function reserveEncodeFrames(w: AsmWriter, frames: number, note?: string)
  * bumped by `32·FRAME_SLOTS·FRAMES` before `out = MLOAD(0x40)` is read, so `out` — which never
  * moves during the in-place encode — sits just above frame 0). Frame `f` occupies
  * `[out − 32·FRAME_SLOTS·(f+1), out − 32·FRAME_SLOTS·f)`; word `k` is `frameBase + 32·k`. Reading
- * the address off `MLOAD(0x40)` makes every frame access stack-depth-independent (the §12.7 / decode
+ * the address off `MLOAD(0x40)` makes every frame access stack-depth-independent (the decode
  * `ELEM_BASE` lesson), so loop state never has to ride the stack across an `emitMemCopy`.
  */
 function pushFrameSlot(w: AsmWriter, frameDepth: number, k: number): void {
@@ -523,8 +521,8 @@ function emitFrameStore(w: AsmWriter, frameDepth: number, k: number): void {
 /**
  * Encodes a composite-element array `E[]` (`tuple[]` / `T[][]` / `string[]`/`bytes[]`) as an ABI
  * `T[]` tail written at the shared tail cursor (`TAIL_CURSOR`), exactly mirroring the interpreter's
- * `encodeArrayTail` (§12.2/§12.7). `pushArrPtr` pushes the source array memref pointer
- * (`[len:32][p0:32]…[p_{len-1}:32]`, §12.1). On entry the cursor already points at this array's
+ * `encodeArrayTail`. `pushArrPtr` pushes the source array memref pointer
+ * (`[len:32][p0:32]…[p_{len-1}:32]`). On entry the cursor already points at this array's
  * `len` word; on exit the cursor has advanced past the whole tail. Net stack 0.
  *
  *  1. `MSTORE(cursor, len)` (`len = MLOAD(arrPtr)`); `D = cursor + 32`.
@@ -801,7 +799,7 @@ function emitEncodeArrayElementTail(
 }
 
 // ---------------------------------------------------------------------------
-// encode-to-bytes emitters — `s.encode` / `s.encodePacked` (issue #17, architecture §8.4)
+// encode-to-bytes emitters — `s.encode` / `s.encodePacked` (issue #17)
 // ---------------------------------------------------------------------------
 
 /** One `encode`/`encodePacked` operand: its ABI param (name irrelevant) and a thunk pushing its
@@ -862,9 +860,9 @@ function emitBytesFinalize(w: AsmWriter, note: string): void {
  * Materializes the STANDARD ABI encoding (`abi.encode`) of `items` into a fresh `bytes` memref
  * and leaves its pointer on the stack (net stack +1). The items encode as a top-level tuple —
  * heads at the payload start, dynamic offsets relative to it, tails appended at the shared
- * scratch cursor — via {@link emitEncodeBlock}, i.e. exactly the §8.2 return shape minus the
+ * scratch cursor — via {@link emitEncodeBlock}, i.e. exactly the return-encode shape minus the
  * outer RETURN and the single-output wrapper. Composite-array loop frames are reserved BELOW
- * the memref (§12.7), so the free pointer must not move between entry and the final bump here.
+ * the memref, so the free pointer must not move between entry and the final bump here.
  */
 export function emitAbiEncodeToBytes(
   w: AsmWriter,
@@ -979,7 +977,7 @@ export function emitPackedEncodeToBytes(
   }
 
   // explicit zero-pad of the trailing partial word: memory above the free pointer is not
-  // guaranteed zero (§5) and the memref invariant promises zero-padded payloads; this also
+  // guaranteed zero and the memref invariant promises zero-padded payloads; this also
   // covers any pre-cancun @memcpy whole-word over-copy left by the LAST segment.
   w.push(0);
   w.push(TAIL_CURSOR);
@@ -990,7 +988,7 @@ export function emitPackedEncodeToBytes(
 }
 
 // ---------------------------------------------------------------------------
-// recursive ABI decoder (memory head/tail → flat-pointer block) — architecture §3/§7.2/§8.1
+// recursive ABI decoder (memory head/tail → flat-pointer block)
 // ---------------------------------------------------------------------------
 
 /**
@@ -1195,7 +1193,7 @@ export function emitDecodeTupleToMem(
  * Decodes a composite-element array `E[]` located in memory at `pushBase()` (the `[len:32][…]`
  * block start) into a freshly-allocated pointer block `[len:32][p0:32]…[p_{len-1}:32]`, and leaves
  * that block pointer on the stack (net stack +1). Mirrors the interpreter's `decodeDynamic` `T[]`
- * arm byte-for-byte (§12.6):
+ * arm byte-for-byte:
  *
  * - read `len` at `base`, bound `len ≤ 2^64−1`; bump-alloc `32 + 32·len`; `D = base + 32`.
  * - static element `E` (a STATIC tuple, or a word — `string[]`/`bytes[]` are dynamic): the body is
@@ -1442,11 +1440,11 @@ function layoutToNamed(l: TypeLayout, i: number): NamedType {
 }
 
 // ---------------------------------------------------------------------------
-// emitCalldataDecode — architecture §8.1
+// emitCalldataDecode
 // ---------------------------------------------------------------------------
 
 /**
- * Decodes the script arguments from calldata into their frame slots (architecture §8.1).
+ * Decodes the script arguments from calldata into their frame slots.
  *
  * - One up-front size guard: `CALLDATASIZE < 4 + headBytes(args)` → `tails.invalidCalldata`
  *   (a static tuple arg inlines its whole head, so the head walk is cumulative, not `32·i`).
@@ -1643,7 +1641,7 @@ export function emitCalldataDecode(
   });
 }
 
-/** One dynamic (`string`/`bytes`/`T[]`) script argument — architecture §8.1, net stack 0. */
+/** One dynamic (`string`/`bytes`/`T[]`) script argument — net stack 0. */
 function emitDynCalldataArg(
   w: AsmWriter,
   ref: SlotRef,
@@ -1740,7 +1738,7 @@ function emitDynCalldataArg(
 
   if (!isArray) {
     // explicit zero-pad of the trailing partial word: MSTORE(ptr + 32 + len, 0) — memory
-    // above the free pointer is NOT guaranteed zero (architecture §5), and the memref
+    // above the free pointer is NOT guaranteed zero, and the memref
     // invariant promises zero-padded payloads.
     w.push(0); // [0, ptr, len, src]
     w.op('DUP2');
@@ -1750,7 +1748,7 @@ function emitDynCalldataArg(
     w.op('ADD'); // [pad, 0, ptr, len, src]
     w.op('MSTORE'); // [ptr, len, src]
   } else {
-    // array: `wordElemAbi` guards composite-element arrays (§12.6/§12.7 codegen pending) —
+    // array: `wordElemAbi` guards composite-element arrays (codegen pending) —
     // UNREACHABLE today (layoutOfType never yields one), so this is behavior-preserving.
     const elemAbi = wordElemAbi(layout);
     if (wordNeedsNormalize(elemAbi)) {
@@ -1779,12 +1777,12 @@ function emitDynCalldataArg(
 }
 
 // ---------------------------------------------------------------------------
-// emitReturnEncode — architecture §8.2
+// emitReturnEncode
 // ---------------------------------------------------------------------------
 
 /**
- * Encodes the return record as the single named tuple output and RETURNs it
- * (architecture §8.2). The record is treated as a synthetic top-level tuple: a static word
+ * Encodes the return record as the single named tuple output and RETURNs it.
+ * The record is treated as a synthetic top-level tuple: a static word
  * component reads its canonical frame slot; a dynamic component (string/bytes/T[]) or a tuple
  * component reads its memref pointer (a flat-pointer block) and recurses through
  * {@link emitEncodeBlock}.
@@ -1811,7 +1809,7 @@ export function emitReturnEncode(
   const dynOff = anyDyn ? 32 : 0;
   const headSize = headBytes(named);
 
-  // Reserve the composite-array encode loop frames BELOW the output buffer (§12.7): bump the free
+  // Reserve the composite-array encode loop frames BELOW the output buffer: bump the free
   // pointer by 32·FRAME_SLOTS·FRAMES BEFORE reading `out`, so `out = MLOAD(0x40)` sits above frame 0
   // and `RETURN(out, cursor − out)` never returns scratch. FRAMES = the max concurrent array-nesting
   // depth of the return type (0 for a record with no composite-element array — no bump at all).
@@ -1863,7 +1861,7 @@ export function emitReturnEncode(
 }
 
 // ---------------------------------------------------------------------------
-// emitMemCopy — §10 lowering (MCOPY on cancun, @memcpy subroutine before)
+// emitMemCopy — evmVersion lowering (MCOPY on cancun, @memcpy subroutine before)
 // ---------------------------------------------------------------------------
 
 /**

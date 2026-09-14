@@ -1,6 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * exhaustive-table tests cast generated type strings on purpose. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
 import type { TupleType, WordType } from '../core/types.js';
@@ -106,7 +106,7 @@ describe('layoutOf rejections', () => {
     'address[3]',
     'uint256[][][]', // string arrays nested deeper than [][] stay deferred
   ];
-  // §12.3 un-gate: one level of array nesting over a composite/dynamic element now PRODUCES a layout.
+  // un-gated: one level of array nesting over a composite/dynamic element now PRODUCES a layout.
   const NOW_SUPPORTED = ['uint256[][]', 'address[][]', 'string[]', 'bytes[]'];
   const UNKNOWN = [
     '',
@@ -133,7 +133,7 @@ describe('layoutOf rejections', () => {
     expect((caught as EvsTypeError).message).toContain(JSON.stringify(s));
   });
 
-  test.each(NOW_SUPPORTED)('%j → array-of-composite layout (§12.3 un-gate)', (s) => {
+  test.each(NOW_SUPPORTED)('%j → array-of-composite layout (un-gated)', (s) => {
     const l = layoutOf(s);
     expect(l.kind).toBe('array');
     const elemKind = l.kind === 'array' ? l.elem.kind : 'word';

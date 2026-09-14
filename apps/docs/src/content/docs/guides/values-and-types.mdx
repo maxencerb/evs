@@ -167,7 +167,7 @@ the same for a single ABI parameter:
 - **`t.fromAbiParameter(param)`** — one ABI parameter → its evs type (a `tuple…` param becomes a
   `TupleType`, anything else its type string).
 
-```ts twoslash
+```ts
 import { evscript, t } from '@maxencerb/evs';
 
 const poolAbi = [
@@ -193,7 +193,7 @@ const poolAbi = [
 
 // Several named outputs → a named struct type, in ABI declaration order.
 const Slot0 = t.fromOutputs(poolAbi, 'slot0');
-//    ^?
+//    ^? { type: 'tuple'; components: readonly [{ name: 'sqrtPriceX96'; type: 'uint160' }, { name: 'tick'; type: 'int24' }, { name: 'unlocked'; type: 'bool' }] }
 // A single output → that output's type directly.
 const Fee = t.fromOutputs(poolAbi, 'fee'); // 'uint24'
 // One ABI parameter → its evs type.

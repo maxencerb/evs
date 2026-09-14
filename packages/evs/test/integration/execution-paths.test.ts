@@ -1,5 +1,5 @@
 /**
- * testing.md §3 "Execution paths covered, every release":
+ * Execution paths covered, every release:
  *   1. anvil_setCode + plain readContract
  *   2. stateOverride mode
  *   3. deployless `code` path (initBytecode) — incl. the raw-runtime silent-failure canary
@@ -9,7 +9,7 @@
  */
 
 import { encodeFunctionData, erc20Abi, getAddress, parseEther } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockERC20 } from '../generated/index.js';
@@ -104,7 +104,7 @@ describe('three execution paths', () => {
     // run as initcode hits the dispatcher with EMPTY calldata and reverts, so create2
     // yields the zero address and the wrapper reverts with NO data — the caller gets a
     // generic "execution reverted" with zero diagnostic content. (The historical viem
-    // behavior was silent empty data — docs/research/viem-integration.md; either way the
+    // behavior was silent empty data; either way the
     // misuse is undebuggable, which is why toViem() always hands out initBytecode.)
     // This canary keeps the guard rails honest: if the failure mode ever changes again,
     // revisit the docs and toViem() defaults.

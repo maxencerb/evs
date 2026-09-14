@@ -1,10 +1,10 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { FORBIDDEN, OPS, type Mnemonic, type OpInfo } from './ops.js';
 
 /**
- * Spot-check table copied independently from docs/research/evm-target.md §2 (hex, stack
- * in/out, fork gating). Top-of-stack-first operand counts.
+ * Spot-check table copied independently from the EVM opcode reference (hex, stack in/out,
+ * fork gating). Top-of-stack-first operand counts.
  */
 const EXPECTED: readonly [Mnemonic, number, number, number, OpInfo['since']][] = [
   // [mnemonic, code, pops, pushes, since]
@@ -66,7 +66,7 @@ const EXPECTED: readonly [Mnemonic, number, number, number, OpInfo['since']][] =
   ['INVALID', 0xfe, 0, 0, 'frontier'],
 ];
 
-describe('OPS table vs evm-target §2', () => {
+describe('OPS table vs the EVM opcode reference', () => {
   test.each(EXPECTED)('%s = code 0x%s', (mnemonic, code, pops, pushes, since) => {
     const info = OPS[mnemonic];
     expect(info.code).toBe(code);

@@ -1,5 +1,5 @@
 /**
- * Custom errors end-to-end on anvil (issue #15; testing.md §3):
+ * Custom errors end-to-end on anvil (issue #15):
  *
  * - a thrown declared error's raw revert data over a REAL eth_call is byte-exact
  *   `selector ‖ abi.encode(args)` (pinned against viem's own `encodeErrorResult`);
@@ -15,7 +15,7 @@ import {
   encodeErrorResult,
   encodeFunctionData,
 } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import {
   compile,

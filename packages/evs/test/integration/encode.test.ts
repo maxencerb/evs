@@ -1,5 +1,5 @@
 /**
- * testing.md §4.4: `s.encode` / `s.encodePacked` / `s.keccak256` vs solc — the on-chain
+ * `s.encode` / `s.encodePacked` / `s.keccak256` vs solc — the on-chain
  * differential (issue #17).
  *
  * For every EvsReference encode/hash function, the deployed solc 0.8.30 contract and the
@@ -13,7 +13,7 @@
  */
 
 import type { Abi } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { compile, evscript, t, type EvsType, type Expr } from '../../src/index.js';
 import { EvsReference } from '../generated/index.js';

@@ -164,11 +164,11 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
   word/string-typed — a composite param is rejected when the fn is defined (see
   [functions](/guides/functions/)).
 
-```ts twoslash
+```ts
 import { evscript, namedArg, t } from '@maxencerb/evs';
 
 const token = namedArg('token', t.address);
-//    ^?
+//    ^? ArgSpec<'token', 'address'>
 const fees = namedArg('fees', t.array(t.uint24)); // ArgSpec<'fees', 'uint24[]'>
 const amount = namedArg('amount', 'uint128'); // raw type strings work everywhere t.* does
 
@@ -182,9 +182,9 @@ void [token, fees, amount, position];
 ```
 
 Used in a script's `args`, the name flows into the ABI input and surfaces as the viem `args` label —
-hover the inferred `Args` type below (a bare arg would read `arg0`/`arg1` instead):
+see the inferred `Args` type below (a bare arg would read `arg0`/`arg1` instead):
 
-```ts twoslash
+```ts
 import { evscript, namedArg, t } from '@maxencerb/evs';
 import type { ReadContractParameters } from 'viem';
 
@@ -195,7 +195,7 @@ const balance = evscript(
 
 // viem labels the call args with your names — `token`/`holder`, not `arg0`/`arg1`:
 type Args = ReadContractParameters<typeof balance.abi, 'balance'>['args'];
-//   ^?
+//   ^? readonly [token: `0x${string}`, holder: `0x${string}`]
 void balance;
 ```
 

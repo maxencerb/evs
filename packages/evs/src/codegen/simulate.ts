@@ -1,6 +1,5 @@
 /**
- * `codegen/simulate.ts` — the `s.simulate` / `s.trySimulate` self-call trampoline (issue #1,
- * architecture §7.3).
+ * `codegen/simulate.ts` — the `s.simulate` / `s.trySimulate` self-call trampoline (issue #1).
  *
  * `s.simulate` dry-runs a true WRITE and reads back its return value, with the write's state
  * **rolled back** and isolated from later reads in the same script. The only EVM primitive that

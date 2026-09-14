@@ -10,7 +10,7 @@
  * this tier pins byte-for-byte stability.
  */
 import type { Abi } from 'abitype';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { evscript } from './builder/script.js';
 import { compile } from './compile.js';

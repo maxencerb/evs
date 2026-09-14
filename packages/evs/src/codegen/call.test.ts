@@ -2,8 +2,8 @@
  * these helpers narrow word-typed args (`a.type as WordType`) after an `isDyn` guard; the
  * EvsType union now includes TupleType, but these fixtures are word/dyn/array only. */
 /**
- * M7 unit tests — `codegen/call.ts` (`emitStaticCall`, architecture §7/§15.2) against mock
- * callee bytecode on the M10 harness:
+ * Unit tests — `codegen/call.ts` (`emitStaticCall`) against mock
+ * callee bytecode on the in-process EVM harness:
  *
  * - calldata template differential vs viem `encodeFunctionData` (literal / runtime / mixed
  *   args; const folding incl. the >96-byte → data-segment + CODECOPY path), observed through
@@ -18,7 +18,7 @@
 
 import type { Abi, AbiFunction, Address } from 'abitype';
 import { encodeAbiParameters, encodeErrorResult, encodeFunctionData } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   bytesToHex,
@@ -267,7 +267,7 @@ function outComps(
 }
 
 // ---------------------------------------------------------------------------
-// calldata template differential vs viem encodeFunctionData (§7.1)
+// calldata template differential vs viem encodeFunctionData
 // ---------------------------------------------------------------------------
 
 describe('calldata template vs viem encodeFunctionData (bubbled through a calldata-reverter)', () => {
@@ -578,7 +578,7 @@ describe('strict STATICCALL failure bubbles the callee revert verbatim', () => {
 });
 
 // ---------------------------------------------------------------------------
-// attacker payload fixtures → EvsDecodeError(site), never garbage (testing.md §2)
+// attacker payload fixtures → EvsDecodeError(site), never garbage
 // ---------------------------------------------------------------------------
 
 describe('malformed returndata → EvsDecodeError(site) — strict mode', () => {
@@ -634,7 +634,7 @@ describe('malformed returndata → EvsDecodeError(site) — strict mode', () => 
       const fixture = m.callee === '0x' ? undefined : fixtureWith(m.callee);
       const res = await execRuntime(built.runtime, '0x', fixture);
       expect(res.success).toBe(false);
-      expect(res.data).toBe(DECODE_ERROR); // EvsDecodeError(site) — the law-specified shape
+      expect(res.data).toBe(DECODE_ERROR); // EvsDecodeError(site) — the specified shape
       expect(res.gasUsed).toBeLessThan(DEFAULT_GAS_LIMIT / 100n); // never an all-gas OOB halt
     });
   }
@@ -644,7 +644,7 @@ describe('malformed returndata → EvsDecodeError(site) — strict mode', () => 
 // tryCall — success flag, zeroing block, rejoining
 // ---------------------------------------------------------------------------
 
-describe('tryCall (architecture §7.2 step 6)', () => {
+describe('tryCall', () => {
   const OUTS: readonly EvsType[] = ['uint256', 'string'];
   const COMPS = outComps(OUTS, true);
   const ZEROED = tuple(COMPS, { ok: false, o0: 0n, o1: '' });

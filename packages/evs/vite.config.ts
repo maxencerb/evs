@@ -1,14 +1,12 @@
-import { defineConfig } from 'vitest/config';
+import { defineConfig } from 'vite-plus';
 
 export default defineConfig({
   test: {
     projects: [
       {
-        // Deviation from testing.md §1 (include was `src/**/*.test.ts` only), recorded in
-        // docs/design/amendments.md: the M10 harness self-tests (test/harness/*.test.ts,
-        // in-process @ethereumjs/evm — no anvil needed) run in the `unit` project so the
-        // regular `bun run test` flow exercises them. The `integration` project
-        // (test/integration/**) is unaffected.
+        // The M10 harness self-tests (test/harness/*.test.ts, in-process @ethereumjs/evm —
+        // no anvil needed) run in the `unit` project so the regular `bun run test` flow
+        // exercises them. The `integration` project (test/integration/**) is unaffected.
         test: {
           name: 'unit',
           include: ['src/**/*.test.ts', 'test/harness/**/*.test.ts'],

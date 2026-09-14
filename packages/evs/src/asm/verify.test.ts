@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import { AsmWriter, type AsmNode } from './assembler.js';
@@ -200,7 +200,7 @@ describe('verifyStack — checked labels', () => {
   });
 });
 
-/** The §15.0 shared panic tail: relative counter, goes negative, terminates in REVERT. */
+/** The shared panic tail: relative counter, goes negative, terminates in REVERT. */
 const panicTailCorpus = (): readonly AsmNode[] => [
   // main: checked region with a conditional edge into the tail
   { k: 'push', value: 1n },

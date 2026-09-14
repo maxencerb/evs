@@ -1,7 +1,7 @@
 /* oxlint-disable vitest/expect-expect --
  * every test asserts through the shared `expectAgreement` runner. */
 /**
- * M9 differential suite — the anti-miscompilation core (testing.md §4.1).
+ * Differential suite — the anti-miscompilation core.
  *
  * For a corpus of builder scripts covering every op family, control flow, calls with mocks,
  * tryCall, and dynamic returns, `interpret(script.ir, args, mockChain)` must agree
@@ -22,7 +22,7 @@ import {
   getAddress,
   toFunctionSelector,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { Reverter } from '../test/generated/index.js';
 import {
@@ -44,7 +44,7 @@ import { interpret, type MockChain } from './ir/interp.js';
 import type { ScriptIr } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
-// shared callee table → (MockChain, EvmFixture) — testing.md §4.1's "same table"
+// shared callee table → (MockChain, EvmFixture) — the same table feeds both legs
 // ---------------------------------------------------------------------------
 
 type CalleeCase = { selector: Hex; kind: 'return' | 'revert'; data: Hex };
@@ -1267,7 +1267,7 @@ describe('composite types', () => {
 // encoding (encodeAbiParameters([{type:'tuple',components}],[obj])). `expectAgreement` already
 // asserts interp == in-process EVM runtime BYTE-FOR-BYTE; we then decode the agreed returndata
 // with viem to close the third leg (interp == EVM == viem). Every shape runs across
-// paris/shanghai/cancun. (testing.md §4.2 differential bar; impl-plan §6.)
+// paris/shanghai/cancun.
 // ---------------------------------------------------------------------------
 
 const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
@@ -1606,13 +1606,13 @@ describe('composite regression', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12c. composite arrays — READ PATH (decode) byte-exactness (§12 milestone 2).
+// 12c. composite arrays — READ PATH (decode) byte-exactness.
 //
 // Each shape: s.call a composite-element array, read len + an element field (index/.at + .field),
 // and return a DERIVED WORD (no composite-array encode — that is the next milestone). The mock
 // callee returndata is viem's canonical encoding; `expectAgreement` asserts interp == in-process
 // EVM runtime byte-for-byte, closing interp == EVM; the interp itself is proven == viem. Every
-// shape runs across paris/shanghai/cancun. (impl-plan §12.6/§12.10.)
+// shape runs across paris/shanghai/cancun.
 // ---------------------------------------------------------------------------
 
 describe('composite arrays (read path)', () => {
@@ -1870,13 +1870,13 @@ describe('composite arrays (read path)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12d. composite arrays — RETURN PATH (encode) byte-exactness (§12 milestone 3).
+// 12d. composite arrays — RETURN PATH (encode) byte-exactness.
 //
 // Each shape: s.call a composite-element array and s.return THE WHOLE ARRAY. `expectAgreement`
 // asserts interp == compiled EVM byte-for-byte (the interp's `encodeArrayTail` is proven == viem),
 // and each case additionally decodes the returned bytes through viem `decodeAbiParameters` and
 // asserts a round-trip to the original value. Every shape runs across paris/shanghai/cancun (the
-// pre-cancun `@memcpy` height contract is the load-bearing risk). (impl-plan §12.2/§12.7/§12.10.)
+// pre-cancun `@memcpy` height contract is the load-bearing risk).
 // ---------------------------------------------------------------------------
 
 /** Loose returnable handle: a composite-array call output is an `Expr` at runtime (precise
@@ -2062,7 +2062,7 @@ describe('composite arrays (return path)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// 12e. composite arrays — CALL-ARG encode + CONSTRUCT + LITERAL (§12 milestone 4).
+// 12e. composite arrays — CALL-ARG encode + CONSTRUCT + LITERAL.
 //
 // (a) CALL-ARG: forward a decoded/constructed composite array as a sub-call ARG; assert the recorded
 //     calldata is byte-identical to viem `encodeFunctionData` (interp == compiled EVM is the
@@ -2071,7 +2071,7 @@ describe('composite arrays (return path)', () => {
 //     literals), RETURN the whole array; assert byte-exact vs viem `encodeAbiParameters`.
 // (c) LITERAL: a composite-array literal passed as an arg / returned.
 // Every shape runs across paris/shanghai/cancun (the scratch-frame `@memcpy` height contract is the
-// load-bearing risk for the dynamic-element encode loop). (impl-plan §12.2/§12.7/§12.8/§12.10.)
+// load-bearing risk for the dynamic-element encode loop).
 // ---------------------------------------------------------------------------
 
 describe('composite arrays (call-arg encode + construct + literal)', () => {
@@ -2135,7 +2135,7 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
   ] as const satisfies Abi;
 
   // a `sink(tuple[] ps) returns (bytes)` echo: lets the script return the recorded sub-call calldata
-  // (bytes), so interp's `respond` and the EVM `runtime` produce identical results (the §12.7
+  // (bytes), so interp's `respond` and the EVM `runtime` produce identical results (the
   // call-arg encode is what we assert byte-exact vs viem). Numeric `sumLiquidity` semantics are
   // covered by the real-solc integration test.
   const sinkPositionsAbi = [
@@ -2324,7 +2324,7 @@ describe('composite arrays (call-arg encode + construct + literal)', () => {
       });
       expect(decoded).toEqual({ ps: POSITIONS });
       // and the returned bytes are byte-identical to viem's encoding of the script-return tuple (the
-      // return record is encoded as a single top-level tuple `(tuple[] ps)` — §8.2 — so the wire form
+      // return record is encoded as a single top-level tuple `(tuple[] ps)`, so the wire form
       // is `[tuple offset 0x20][ps offset 0x20][tuple[] payload]`).
       expect(o?.data).toEqual(
         encodeAbiParameters(

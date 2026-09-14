@@ -1,7 +1,5 @@
 /**
- * M1 `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
- *
- * Contract: docs/design/module-interfaces.md §M1 (frozen) + architecture.md §13.
+ * `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
  */
 
 export interface SourceLoc {
@@ -20,7 +18,7 @@ export type EvsErrorCode =
   | 'RECORDING_CLOSED'
   | 'UNSUPPORTED_V0'
   | 'ABI_SHAPE'
-  // custom errors (issue #15; docs/design/proposals/custom-errors.md):
+  // custom errors (issue #15):
   | 'ERROR_DECL' // invalid `errors: [...]` declaration (duplicate/reserved name, selector clash)
   | 'ERROR_UNDECLARED' // s.throw of an error missing from the script's declared set
   | 'COMPILE_LIMIT'
@@ -53,7 +51,7 @@ export class EvsTypeError extends EvsError {}
 export class EvsScopeError extends EvsError {}
 export class EvsCompileError extends EvsError {}
 
-/** The exact phrase every `EvsInternalError` message must contain (module-interfaces §M1). */
+/** The exact phrase every `EvsInternalError` message must contain. */
 const INTERNAL_MARKER = 'bug in evs, please report';
 
 export class EvsInternalError extends EvsError {
@@ -75,9 +73,9 @@ export class EvsInternalError extends EvsError {
 
 export interface EvsDiagnostic {
   severity: 'warning';
-  // 'ENV_FRAME_DEPENDENT' extends the frozen §M1 union (recorded in
-  // docs/design/amendments.md): s.env('caller')/s.env('address') read the execution frame,
-  // whose shape differs between toViem() deployless (default) and stateOverride modes.
+  // 'ENV_FRAME_DEPENDENT' extends the frozen union: s.env('caller')/s.env('address') read
+  // the execution frame, whose shape differs between toViem() deployless (default) and
+  // stateOverride modes.
   code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT';
   message: string;
   loc: SourceLoc | null;

@@ -1,10 +1,10 @@
 /**
- * M3 `abi/layout.ts` — type layouts over v0 ABI type strings / `PlainAbiParam` trees.
+ * `abi/layout.ts` — type layouts over v0 ABI type strings / `PlainAbiParam` trees.
  *
- * Contract: docs/design/module-interfaces.md §M3 (frozen) + architecture.md §5 (memory model,
- * canonical word invariant) and §8 (head/tail shapes). v0-limited (no tuples, no `T[N]`, no
- * nested arrays) but recursion-ready: `headBytes` walks `PlainAbiParam` trees and the layout
- * union has room for a future `tuple` member without reshaping the existing ones.
+ * Implements the memory model (canonical word invariant) and the ABI head/tail shapes.
+ * v0-limited (no tuples, no `T[N]`, no nested arrays) but recursion-ready: `headBytes` walks
+ * `PlainAbiParam` trees and the layout union has room for a future `tuple` member without
+ * reshaping the existing ones.
  */
 
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
@@ -33,16 +33,16 @@ export type TypeLayout =
   | WordLayout
   | { kind: 'bytes'; abi: 'bytes' | 'string' }
   // a dynamic array `E[]`: `[len][p0]…[p_{len-1}]` where each slot is an inline word (word
-  // element) OR a memref pointer to the element's block (composite/dynamic element, §12.1).
+  // element) OR a memref pointer to the element's block (composite/dynamic element).
   // `elem` is widened to {@link TypeLayout} so the type ADMITS composite-element arrays for the
-  // §12.6/§12.7 codegen milestone; today `layoutOf`/`layoutOfType` still only ever PRODUCE a
+  // composite-array codegen milestone; today `layoutOf`/`layoutOfType` still only ever PRODUCE a
   // word-element array (composite elements throw `UNSUPPORTED_V0`), so every codegen consumer that
   // assumes `elem.kind === 'word'` is still correct at runtime.
   | { kind: 'array'; abi: string; elem: TypeLayout }
-  // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is
-  // (architecture.md §5). `components` are the member layouts in declaration order; `abi` carries
-  // the tuple tag (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`,
-  // which is the only entry that handles the {@link TupleType} descriptor object.
+  // a tuple/struct: a flat block of `components.length` words, dynamic iff any component is.
+  // `components` are the member layouts in declaration order; `abi` carries the tuple tag
+  // (`'tuple'` only in v0 — tuple arrays are a follow-up). Built via `layoutOfType`, which is
+  // the only entry that handles the {@link TupleType} descriptor object.
   | { kind: 'tuple'; abi: string; components: TypeLayout[]; dynamic: boolean };
 
 function wordLayoutOf(abi: WordType): WordLayout {
@@ -83,7 +83,7 @@ function badTypeError(abiType: string): EvsTypeError {
 }
 
 /** Throws `EvsTypeError` (`UNSUPPORTED_V0` on tuple/`T[N]`/deeper nesting, `TYPE_MISMATCH`
- *  otherwise). One level of array nesting over a composite/dynamic element is supported (§12.3):
+ *  otherwise). One level of array nesting over a composite/dynamic element is supported:
  *  `string[]`/`bytes[]` and one-level `T[][]` produce an array-of-composite layout; `T[N]` and
  *  string arrays nested deeper than `[][]` stay deferred. */
 export function layoutOf(abiType: string): TypeLayout {
@@ -144,7 +144,7 @@ export function layoutOfType(t: EvsType): TypeLayout {
 
 function computeTupleLayout(t: TupleType): TypeLayout {
   if (t.type === 'tuple') return tupleLayoutOf(t);
-  // one level of tuple-array nesting (§12.3): `tuple[]` → an array whose element is the tuple
+  // one level of tuple-array nesting: `tuple[]` → an array whose element is the tuple
   // layout. `tuple[][]` (two levels) stays deferred.
   if (t.type === 'tuple[]') {
     return { kind: 'array', abi: 'tuple[]', elem: tupleLayoutOf({ ...t, type: 'tuple' }) };
@@ -168,7 +168,7 @@ export function isDynamic(l: TypeLayout): boolean {
 
 /**
  * Static (head-inlined) byte size of `l`: `32` for a word, `headBytes(components)` for a STATIC
- * tuple. Used by the array encode/decode element loops (§12.2: a static element `E` inlines
+ * tuple. Used by the array encode/decode element loops (a static element `E` inlines
  * `staticSize(E)` bytes per slot). A dynamic layout has no fixed head size — calling this on one
  * is an internal error (the caller must take the dynamic-element path instead).
  */
@@ -191,7 +191,7 @@ function layoutToParam(l: TypeLayout): PlainAbiParam {
 }
 
 /**
- * Size in bytes of the ABI head for `params` (architecture §8). Each param occupies one 32-byte
+ * Size in bytes of the ABI head for `params`. Each param occupies one 32-byte
  * head slot UNLESS it is a *static* tuple — an all-static inner tuple is inlined into the head as
  * its own components' head (no offset pointer), so it occupies `headBytes(components)` bytes. A
  * dynamic param (word-dynamic or a dynamic tuple) is a single offset-pointer slot. Each type is

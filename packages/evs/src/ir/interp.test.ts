@@ -1,10 +1,10 @@
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 /* oxlint-disable vitest/expect-expect --
  * several revert-path tests assert exclusively through the expectPanic() helper, which wraps
  * the expect(...).toEqual(...) pair on the outcome. */
 /**
- * M6 unit tests — golden runs over hand-built IRs covering every stmt kind; revert paths
+ * Unit tests — golden runs over hand-built IRs covering every stmt kind; revert paths
  * (Panic codes per width class incl. `int256 −2^255 / −1` and the uint192 MUL wrap-back);
  * decode-fail site ids; tryCall zeroing; maxSteps guard; byte-exact ABI agreement with viem.
  */
@@ -15,7 +15,7 @@ import {
   keccak256,
   toFunctionSelector,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { canonicalTypeSignature } from '../abi/artifact.js';
 import { EvsCompileError, EvsTypeError, type SourceLoc } from '../core/errors.js';
@@ -38,7 +38,7 @@ type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0): Stmt {
-  return { loc: LOC, site, ...body } as Stmt;
+  return { loc: LOC, site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
@@ -177,7 +177,8 @@ function panicHex(code: number): Hex {
   return `0x${PANIC_SEL}${BigInt(code).toString(16).padStart(64, '0')}`;
 }
 
-const DECODE_SEL = '20cf27b7'; // selectorOf('EvsDecodeError', ['uint256']) — pinned in M3 tests
+// selectorOf('EvsDecodeError', ['uint256']) — pinned in abi/artifact.test.ts
+const DECODE_SEL = '20cf27b7';
 function decodeErrHex(site: number): Hex {
   return `0x${DECODE_SEL}${BigInt(site).toString(16).padStart(64, '0')}`;
 }
@@ -260,7 +261,7 @@ function runConvert(from: WordType, to: WordType, a: unknown): InterpResult {
 }
 
 // ---------------------------------------------------------------------------
-// const + return encoding (every const shape; §8.2 byte-exactness vs viem)
+// const + return encoding (every const shape; byte-exactness vs viem)
 // ---------------------------------------------------------------------------
 
 describe('const + return encoding', () => {
@@ -543,7 +544,7 @@ describe('script args', () => {
 });
 
 // ---------------------------------------------------------------------------
-// checked arithmetic — the §6 boundary matrix
+// checked arithmetic — the boundary matrix
 // ---------------------------------------------------------------------------
 
 const U256_MAX = 2n ** 256n - 1n;
@@ -1156,7 +1157,7 @@ describe('control flow', () => {
     expect(retOf(interpret(script, [false], deadChain))).toEqual({ r: 2n });
   });
 
-  /** architecture §15.3 — sum 0..n−1 with cells; header re-executed per iteration. */
+  /** sum 0..n−1 with cells; header re-executed per iteration. */
   const sumScript = ir({
     name: 'sum',
     args: [{ name: 'n', type: 'uint256' }],
@@ -1616,7 +1617,7 @@ describe('call — word output normalization (normalize-don’t-revert)', () => 
   });
 });
 
-describe('call — decode failure sites (§7.2 bounds)', () => {
+describe('call — decode failure sites', () => {
   function strictDynScript(outType: EvsType, site: number): ScriptIr {
     const abi = fnAbi('get', [], [{ name: '', type: outType }]);
     return ir({
@@ -1765,7 +1766,7 @@ describe('tryCall — zeroing', () => {
 // ---------------------------------------------------------------------------
 // call kind routing — STATICCALL vs the mutable `call` oracle (issue #1)
 //
-// The reference interpreter is STATELESS (architecture §4): a CALL and a STATICCALL observe the
+// The reference interpreter is STATELESS: a CALL and a STATICCALL observe the
 // same returndata and a simulate's rollback is invisible. So the ONLY interpreter-observable
 // difference between the three kinds is *which MockChain oracle answers the subcall*. These tests
 // pin that routing (the persistence/rollback semantics themselves live in the anvil tier).
@@ -2023,7 +2024,7 @@ describe('maxSteps + trace', () => {
 describe('host misuse', () => {
   test('malformed MockChain replies → EvsTypeError', () => {
     const bad: MockChain = {
-      staticcall: () => ({ success: true, data: '0xzz' as Hex }),
+      staticcall: () => ({ success: true, data: '0xzz' }),
     };
     expect(() => interpret(callScript, [TOKEN, OWNER], bad)).toThrowError(EvsTypeError);
   });

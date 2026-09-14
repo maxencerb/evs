@@ -1,13 +1,13 @@
 /**
- * M8 unit tests — `codegen/frame.ts` (static frame layout, architecture §5).
+ * Unit tests — `codegen/frame.ts` (static frame layout).
  *
- * Slot-order expectations mirror the worked example in architecture §15.3: args first
+ * Slot-order expectations mirror the while-loop worked example: args first
  * (0x80…), then cells, then non-folded values in id order, then per-reachable-fn result
  * regions + return-address spill slots. Folded word consts → `slotOfValue === null`;
  * returned word consts keep a slot; uncalled fns get no region and no value slots.
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import type { ScriptIr, Stmt } from '../ir/nodes.js';
@@ -29,7 +29,7 @@ function st(body: StmtBody): Stmt {
   return { loc: null, site: nextSite++, ...body };
 }
 
-/** §15.3-shaped IR: arg n; cells total, i; folded consts 0/1; loop values v1…v7; final get. */
+/** Loop-example IR: arg n; cells total, i; folded consts 0/1; loop values v1…v7; final get. */
 function loopIr(): ScriptIr {
   return {
     irVersion: 1,
@@ -125,7 +125,7 @@ function fnIr(): ScriptIr {
 // tests
 // ---------------------------------------------------------------------------
 
-describe('layoutFrames — slot ordering (architecture §15.3)', () => {
+describe('layoutFrames — slot ordering', () => {
   const ir = loopIr();
   const frame = layoutFrames(ir);
 
@@ -175,7 +175,7 @@ describe('layoutFrames — slot ordering (architecture §15.3)', () => {
   });
 });
 
-describe('layoutFrames — fn regions (architecture §9)', () => {
+describe('layoutFrames — fn regions', () => {
   const ir = fnIr();
   const frame = layoutFrames(ir);
 
@@ -197,7 +197,7 @@ describe('layoutFrames — fn regions (architecture §9)', () => {
     expect(frame.frameEnd).toBe(0x140);
   });
 
-  test('uncalled fn: no region, no value slots (dropped per §9)', () => {
+  test('uncalled fn: no region, no value slots (dropped)', () => {
     expect(() => frame.fnRegion(1)).toThrow(EvsInternalError);
     expect(() => fnReturnAddressSlot(frame, 1)).toThrow(EvsInternalError);
     expect(() => frame.slotOfValue(3)).toThrow(EvsInternalError);

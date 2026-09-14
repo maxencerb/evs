@@ -1,6 +1,6 @@
 /**
  * E1 — Flagship: Uniswap-V3-style pool metadata in ONE eth_call round trip
- * (docs/design/api.md §11). Data flows BETWEEN calls on-chain (pool → token0 → symbol),
+ * Data flows BETWEEN calls on-chain (pool → token0 → symbol),
  * which a multicall cannot do; the result comes back as one fully-typed object.
  *
  * Also showcases a STRUCT-returning getter: `Composite.slot0Struct()` decodes into a

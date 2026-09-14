@@ -1,5 +1,5 @@
 /**
- * Shared helpers for the anvil integration tier (testing.md §3).
+ * Shared helpers for the anvil integration tier.
  *
  * One anvil per vitest worker via the prool proxy (`harness/anvil.ts`). Files in a worker
  * run serially, so per-file deployments never race nonces.
@@ -43,7 +43,7 @@ export async function deploy(
     bytecode,
     // viem types constructor args from the abi generic; the generated artifacts are
     // passed through `Abi` here on purpose (one helper for every fixture contract).
-    args: args as never,
+    args: args,
     account: deployer,
     chain: foundry,
   });
@@ -66,7 +66,7 @@ export async function write(params: {
     address: params.address,
     abi: params.abi,
     functionName: params.functionName,
-    args: params.args as never,
+    args: params.args,
     account: deployer,
     chain: foundry,
   });
@@ -85,13 +85,10 @@ export function extractRevertData(err: unknown): Hex {
   // RpcRequestError.data for plain `call()` (anvil returns JSON-RPC error code 3).
   const carrier = err.walk((e) => {
     if (typeof e !== 'object' || e === null || !('data' in e)) return false;
-    const data = (e as { data: unknown }).data;
+    const data = e.data;
     if (typeof data === 'string') return data.startsWith('0x');
     return (
-      typeof data === 'object' &&
-      data !== null &&
-      'data' in data &&
-      typeof (data as { data: unknown }).data === 'string'
+      typeof data === 'object' && data !== null && 'data' in data && typeof data.data === 'string'
     );
   });
   if (carrier === null) return '0x'; // empty revert: no data anywhere in the chain
@@ -122,7 +119,7 @@ export async function callExpectRevert(params: {
   throw new Error('callExpectRevert: call unexpectedly succeeded');
 }
 
-/** Deterministic LCG so corpora are stable across runs (testing.md: seeded corpora only). */
+/** Deterministic LCG so corpora are stable across runs (seeded corpora only). */
 export function lcg(seed: bigint): () => bigint {
   let state = seed & ((1n << 64n) - 1n);
   return () => {

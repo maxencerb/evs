@@ -1,13 +1,12 @@
 /**
- * M7 `codegen/call.ts` — the STATICCALL site emitter (architecture §7, exactly).
+ * `codegen/call.ts` — the STATICCALL site emitter.
  *
- * Contract: docs/design/module-interfaces.md §M7 (frozen) with one recorded deviation: the
- * law's `CallSitePlan` carries no location for the call *target* (and optional gas cap) even
- * though `emitStaticCall` cannot emit `STATICCALL` without them — `targetRef` (required) and
- * `gasRef` (optional) are added here, mirroring `argRefs`' `SlotRef | { literal: ConstData }`
- * shape.
+ * `CallSitePlan` carries the call *target* location (and optional gas cap) alongside the args
+ * — `targetRef` (required) and `gasRef` (optional) mirror `argRefs`'
+ * `SlotRef | { literal: ConstData }` shape — since `emitStaticCall` cannot emit `STATICCALL`
+ * without them.
  *
- * Shapes (architecture §7 / §15.2):
+ * Shapes:
  * - CalldataTemplate: compile-time const segments (selector + every literal arg, merged),
  *   `word` segments (runtime word slots MSTOREd at their head offsets), `dyn` segments
  *   (runtime memrefs: head offset word + tail copied via `emitMemCopy` with explicit
@@ -64,7 +63,7 @@ import {
 import { SIMULATE_MAGIC, SIMULATE_TRAMPOLINE_SELECTOR_NUM } from './simulate.js';
 
 // ---------------------------------------------------------------------------
-// frozen contract types (module-interfaces §M7 + recorded targetRef/gasRef deviation)
+// contract types
 // ---------------------------------------------------------------------------
 
 export interface CallSitePlan {
@@ -147,7 +146,7 @@ function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string): void
 }
 
 // ---------------------------------------------------------------------------
-// CalldataTemplate — compile-time const folding (architecture §7.1)
+// CalldataTemplate — compile-time const folding
 // ---------------------------------------------------------------------------
 
 interface ConstRun {
@@ -500,7 +499,7 @@ function emitZeroValue(w: AsmWriter, type: EvsType): void {
 }
 
 // ---------------------------------------------------------------------------
-// tuple-bearing calldata build — the recursive encoder (architecture §3/§7.1/§8)
+// tuple-bearing calldata build — the recursive encoder
 // ---------------------------------------------------------------------------
 
 /** Scratch slot holding the data-literal staging base for the duration of a tuple-bearing build. */
@@ -533,7 +532,7 @@ function emitCalldataBuildTuples(
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
 
   // Composite-element array CALL ARGS (`tuple[]` directly, or a tuple arg whose member is a
-  // `tuple[]`/`T[][]`/`string[]`) encode through the §12.7 scratch-frame loop, which keeps its loop
+  // `tuple[]`/`T[][]`/`string[]`) encode through the scratch-frame loop, which keeps its loop
   // state in a reserved in-memory frame region rather than on the stack. The return encoder reserves
   // those frames below its output buffer; here the call-arg buffer is transient (the free pointer is
   // NOT bumped for it), so we reserve the frames just below the buffer base by bumping the free
@@ -591,7 +590,7 @@ function emitCalldataBuildTuples(
   }
 
   // -- reserve the composite-array encode loop frames just below the (transient) buffer base ----
-  // (§12.7). After this bump, `MLOAD(0x40)` is the buffer base and frame f sits at
+  // After this bump, `MLOAD(0x40)` is the buffer base and frame f sits at
   // `[base − 32·FRAME_SLOTS·(f+1), base − 32·FRAME_SLOTS·f)`; the encode below never bumps the free
   // pointer again (tails are written at TAIL_CURSOR), so the buffer base stays fixed throughout.
   reserveEncodeFrames(w, frames, `reserve ${frames} call-arg array-encode frame(s)`);
@@ -647,7 +646,7 @@ function emitCalldataBuildTuples(
 }
 
 // ---------------------------------------------------------------------------
-// machinery shared by emitStaticCall and emitSimulateCall (§7.2/§7.3). The two emitters
+// machinery shared by emitStaticCall and emitSimulateCall. The two emitters
 // legitimately diverge only in the middle — per-output in-place decode vs whole-tuple
 // decode-then-scatter — everything else routes through these helpers.
 // ---------------------------------------------------------------------------
@@ -789,7 +788,7 @@ function emitTryEpilogue(w: AsmWriter, plan: CallSitePlan, labelPrefix: string):
 }
 
 // ---------------------------------------------------------------------------
-// emitStaticCall — architecture §7 / §15.2
+// emitStaticCall
 // ---------------------------------------------------------------------------
 
 export function emitStaticCall(
@@ -1103,8 +1102,8 @@ export function emitStaticCall(
 }
 
 // ---------------------------------------------------------------------------
-// emitSimulateCall — the s.simulate / s.trySimulate self-call trampoline (issue #1,
-// architecture §7.3; trampoline body in codegen/simulate.ts)
+// emitSimulateCall — the s.simulate / s.trySimulate self-call trampoline (issue #1;
+// trampoline body in codegen/simulate.ts)
 // ---------------------------------------------------------------------------
 
 /** Reserved 4-byte trampoline selector as a left-shifted 32-byte word (`sel << 224`). */
@@ -1114,7 +1113,7 @@ const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
 const SIM_ARGSIZE_SLOT = 0x20;
 
 /**
- * Emits an `s.simulate` / `s.trySimulate` site (architecture §7.3). Builds the target's calldata
+ * Emits an `s.simulate` / `s.trySimulate` site. Builds the target's calldata
  * exactly like a normal call, wraps it as `[trampSel(4)][target(32)][payload…]` in transient
  * scratch above the buffer, self-`CALL`s `ADDRESS()` so the trampoline (codegen/simulate.ts)
  * performs the real write-`CALL` and `REVERT`s with `[MAGIC][innerSuccess][returndata]`, then

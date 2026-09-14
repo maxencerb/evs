@@ -1,15 +1,14 @@
 /**
- * M7 `codegen/tails.ts` — shared tail emission: the panic tails (architecture §15.0), the
- * `EvsInvalidCalldata()` / `EvsDecodeError(site)` revert tails (§11), the per-site decode-fail
- * stubs, and the pre-cancun `@memcpy` word-loop subroutine (§10).
+ * `codegen/tails.ts` — shared tail emission: the panic tails, the `EvsInvalidCalldata()` /
+ * `EvsDecodeError(site)` revert tails, the per-site decode-fail stubs, and the pre-cancun
+ * `@memcpy` word-loop subroutine.
  *
- * NOTE: module-interfaces.md §M7 lists only `codegen/abi.ts` + `codegen/call.ts`, but the
- * `SharedTails` labels those emitters jump to must be *defined* somewhere; this module is the
- * single place that emits the tail bodies (used directly by the M7 unit tests, and available
- * to M8's `lowerProgram`, which the law tasks with placing panic tails / dfail stubs /
+ * NOTE: the `SharedTails` labels `codegen/abi.ts` + `codegen/call.ts` jump to must be *defined*
+ * somewhere; this module is the single place that emits the tail bodies (used directly by the
+ * unit tests, and by `lowerProgram`, which places panic tails / dfail stubs /
  * `@decode_revert` / `@memcpy` after the program body).
  *
- * Tail shapes (architecture §15.0, byte-for-byte intent):
+ * Tail shapes (byte-for-byte intent):
  *
  *   @panic_<kind>:   JUMPDEST PUSH1 <code> PUSH2 @panic JUMP                ('any')
  *   @panic:          JUMPDEST PUSH4 0x4e487b71 PUSH1 0xE0 SHL PUSH0 MSTORE  ('any')
@@ -30,10 +29,10 @@ import type { SiteId } from '../ir/nodes.js';
 import type { SharedTails } from './abi.js';
 
 // ---------------------------------------------------------------------------
-// selectors (computed once — architecture §11)
+// selectors (computed once)
 // ---------------------------------------------------------------------------
 
-/** `bytes4(keccak256("Panic(uint256)"))` — solc's panic selector (evm-target §5). */
+/** `bytes4(keccak256("Panic(uint256)"))` — solc's panic selector. */
 const PANIC_SELECTOR: Hex = '0x4e487b71';
 const DECODE_ERROR_SELECTOR: Hex = selectorOf('EvsDecodeError', ['uint256']);
 const INVALID_CALLDATA_SELECTOR: Hex = selectorOf('EvsInvalidCalldata', []);
@@ -69,12 +68,12 @@ export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }
 }
 
 /**
- * Per-site decode-fail stub (strict-mode `s.call` sites — architecture §7.2 step 6):
+ * Per-site decode-fail stub (strict-mode `s.call` sites):
  *
  *   @dfail_<site>: JUMPDEST PUSH<k> <site> PUSH2 @decode_revert JUMP   ('any')
  *
  * `emitStaticCall` only *references* `plan.dfailLabel` in strict mode; the program assembler
- * (M8 `lowerProgram`, or a test harness) must place one stub per strict call site.
+ * (`lowerProgram`, or a test harness) must place one stub per strict call site.
  */
 export function emitDecodeFailStub(
   w: AsmWriter,
@@ -102,7 +101,7 @@ export function emitSharedTails(
   tails: SharedTails,
   _opts: { evmVersion: EvmVersion },
 ): void {
-  // -- panic stubs + core (§15.0) ------------------------------------------------------
+  // -- panic stubs + core ------------------------------------------------------
   const panic = w.newLabel('panic');
   const stubs: readonly [LabelId, number][] = [
     [tails.panicOverflow, 0x11],
@@ -124,7 +123,7 @@ export function emitSharedTails(
   w.push(0);
   w.op('REVERT', { note: 'Panic(code)' }); // revert(0, 36)
 
-  // -- @decode_revert: EvsDecodeError(uint256 site) (§11) -------------------------------
+  // -- @decode_revert: EvsDecodeError(uint256 site) -------------------------------
   w.label(tails.decodeRevert, 'any'); // [site, …dead]
   emitSelectorStore(w, DECODE_ERROR_SELECTOR);
   w.push(4);
@@ -133,14 +132,14 @@ export function emitSharedTails(
   w.push(0);
   w.op('REVERT', { note: 'EvsDecodeError(site)' }); // revert(0, 36)
 
-  // -- @badcd: EvsInvalidCalldata() (§11) ------------------------------------------------
+  // -- @badcd: EvsInvalidCalldata() ------------------------------------------------
   w.label(tails.invalidCalldata, 'any');
   emitSelectorStore(w, INVALID_CALLDATA_SELECTOR);
   w.push(4);
   w.push(0);
   w.op('REVERT', { note: 'EvsInvalidCalldata()' }); // revert(0, 4)
 
-  // -- @memcpy word-loop subroutine (pre-cancun only — §10) ------------------------------
+  // -- @memcpy word-loop subroutine (pre-cancun only) ------------------------------
   if (tails.memcpy !== null) emitMemcpySubroutine(w, tails.memcpy);
 }
 

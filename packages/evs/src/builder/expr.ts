@@ -1,9 +1,8 @@
 /**
- * M5 `builder/expr.ts` — the module-private recording engine.
+ * `builder/expr.ts` — the module-private recording engine.
  *
- * Contract: docs/design/module-interfaces.md §M5 (implementation invariants 1–7, binding) +
- * architecture.md §3 (value semantics, scope rule, staging traps, constant folding) +
- * api.md §3–§9. This file has no frozen exports of its own — the public surface lives in
+ * Implements the builder's recording invariants (value semantics, scope rule, staging traps,
+ * constant folding). This file has no frozen exports of its own — the public surface lives in
  * `builder/script.ts`; everything here is internal to the builder module.
  *
  * Key mechanisms:
@@ -20,7 +19,7 @@
  *   documented escape hatch (route one operand through a cell).
  */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the frozen IR schema names the if-statement branch field `then`. */
 
 import type { AbiFunction } from 'abitype';
 
@@ -80,7 +79,7 @@ export interface RecErrorDecl {
 }
 
 // ---------------------------------------------------------------------------
-// module-private handle internals (M5 invariant 1)
+// module-private handle internals (unforgeable handles)
 // ---------------------------------------------------------------------------
 
 interface ExprInternals {
@@ -94,7 +93,7 @@ interface CellInternals {
 interface ArrInternals {
   readonly owner: Recorder;
   readonly id: ValueId;
-  readonly elem: EvsType; // word | string | bytes | one-level T[] | tuple (composite element, §12.8)
+  readonly elem: EvsType; // word | string | bytes | one-level T[] | tuple (composite element)
 }
 interface TupleInternals {
   readonly owner: Recorder;
@@ -126,7 +125,7 @@ type ScopeKind = 'main' | 'if-then' | 'if-else' | 'while-header' | 'while-body' 
 interface Scope {
   readonly kind: ScopeKind;
   readonly stmts: Stmt[];
-  /** per-scope `(kind:type:hex) → ValueId` const-dedup cache (architecture §4) */
+  /** per-scope `(kind:type:hex) → ValueId` const-dedup cache */
   readonly consts: Map<string, ValueId>;
 }
 
@@ -201,7 +200,7 @@ function rangeOf(type: WordType): readonly [bigint, bigint] {
   return [0n, (1n << bits) - 1n];
 }
 
-/** canonical 32-byte slot image of a logical value (architecture §5). */
+/** canonical 32-byte slot image of a logical value. */
 function canonicalHex(type: WordType, logical: bigint): Hex {
   const MASK_256 = (1n << 256n) - 1n;
   let x: bigint;
@@ -277,7 +276,7 @@ function memberName(comp: NamedType, index: number): string {
 }
 
 /** True for an array type whose ELEMENT is composite/dynamic (a tuple, an inner array, or
- *  string/bytes) — i.e. an `array of pointers` (§12.1): `tuple[]`, `uint256[][]`, `string[]`,
+ *  string/bytes) — i.e. an `array of pointers` : `tuple[]`, `uint256[][]`, `string[]`,
  *  `bytes[]`. A word-element array (`uint256[]`, `address[]`) is NOT composite. */
 function isCompositeElemArray(type: ArrayType | TupleType): boolean {
   return isDynamicType(elemTypeOf(type));
@@ -423,7 +422,7 @@ function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
 }
 
 // ---------------------------------------------------------------------------
-// the Expr handle (staging traps installed per instance — M5 invariant 2)
+// the Expr handle (staging traps installed per instance)
 // ---------------------------------------------------------------------------
 
 class ExprHandle {
@@ -605,7 +604,7 @@ function arrInternalsOf(h: object): ArrInternals {
 }
 
 // ---------------------------------------------------------------------------
-// Tuple / Field handles (composite memrefs — architecture §5; api.md §5)
+// Tuple / Field handles (composite memrefs)
 // ---------------------------------------------------------------------------
 
 /**
@@ -948,7 +947,7 @@ export class Recorder {
     return { kind: 'raw', value: v };
   }
 
-  /** Scope rule (M5 invariant 3): a value is usable iff its defining scope is on the stack. */
+  /** Scope rule: a value is usable iff its defining scope is on the stack. */
   private checkVisible(id: ValueId, what: string, loc: SourceLoc | null): void {
     const scope = this.valueScopes[id];
     if (scope === undefined) {
@@ -1064,7 +1063,7 @@ export class Recorder {
     return id;
   }
 
-  /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal rules of api.md §3). */
+  /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal coercion rules). */
   private coerceToId(v: unknown, type: EvsType, what: string, loc: SourceLoc | null): ValueId {
     // a tuple (NOT tuple-array) target: a Tuple handle (reuse its ValueId — reference) or a literal
     // struct object (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field
@@ -1095,7 +1094,7 @@ export class Recorder {
       return this.wordConst(type, logical, loc, hex);
     }
     // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`) is built at
-    // record time as `arrnew` + per-element construction (§12.8) — reusing the same lowerings as a
+    // record time as `arrnew` + per-element construction — reusing the same lowerings as a
     // constructed array — rather than a flat data-segment const (word-element arrays still use the
     // const path via `dataConst`). A `tuple[]` literal also lands here (`tuple` returned above).
     if (isArrayValueType(type) && isCompositeElemArray(type)) {
@@ -1155,7 +1154,7 @@ export class Recorder {
     return arrId;
   }
 
-  /** Tuple branch of {@link coerceToId} (spec §5): reuse a Tuple handle's ValueId, or build a
+  /** Tuple branch of {@link coerceToId}: reuse a Tuple handle's ValueId, or build a
    *  `tuplenew` from a literal struct/positional object. */
   private coerceTupleToId(
     v: unknown,
@@ -1234,7 +1233,7 @@ export class Recorder {
   }
 
   /** The ValueId behind a bare {@link Tuple} handle, after owner + visibility checks. Reused by the
-   *  direct-return paths (`s.return`, `s.fn` result — composite types §6/§8, issue #5 ask #1). */
+   *  direct-return paths (`s.return`, `s.fn` result — issue #5 ask #1). */
   private tupleHandleId(ti: TupleInternals, what: string, loc: SourceLoc | null): ValueId {
     this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what, loc);
     this.checkVisible(ti.id, what, loc);
@@ -1412,7 +1411,7 @@ export class Recorder {
       const { hex, logical } = this.wordLiteral(type, value);
       return makeExpr(this, this.wordConst(type, logical, loc, hex));
     }
-    // a composite-element array literal (`string[]`/`uint256[][]`) is built at record time (§12.8),
+    // a composite-element array literal (`string[]`/`uint256[][]`) is built at record time,
     // exactly like a coerced array literal; word-element arrays / string / bytes use the const path.
     if (type.endsWith('[]') && isArrayValueType(type) && isCompositeElemArray(type)) {
       return makeExpr(this, this.buildArrayLiteral(type, value, 's.lit()', loc));
@@ -1497,7 +1496,7 @@ export class Recorder {
     return new MutArrayImpl(this, arrId, elemType, makeExpr(this, lenOut));
   }
 
-  /** Validate an `s.newArray` element type (§12.8): word | string | bytes | one-level T[] | tuple.
+  /** Validate an `s.newArray` element type: word | string | bytes | one-level T[] | tuple.
    *  Deferred shapes (`tuple[]` element, deeper string arrays, `T[N]`) raise UNSUPPORTED_V0; the
    *  resulting array type is validated through `layoutOfType` so the classification mirrors layout. */
   private newArrayElemType(elem: unknown, loc: SourceLoc | null): EvsType {
@@ -1640,7 +1639,7 @@ export class Recorder {
     const ra = this.resolveOperand(ca, ty, `${what} left operand`, loc);
     const rb = this.resolveOperand(cb, bTy, `${what} right operand`, loc);
 
-    // all-literal fold (M5 invariant 6) — domain checks established ty/resultTy are word types
+    // all-literal fold — domain checks established ty/resultTy are word types
     if (ra.logical !== null && rb.logical !== null && isWordType(ty) && isWordType(resultTy)) {
       const f = foldBin(op, ty, ra.logical, rb.logical);
       if (!f.ok) this.certainPanic(what, f.reason, f.panic, loc);
@@ -2238,7 +2237,7 @@ export class Recorder {
         loc,
       });
     }
-    // the loop cell + the ONE-TIME snapshots of `until` and `step` (api.md §7)
+    // the loop cell + the ONE-TIME snapshots of `until` and `step`
     const cellId = this.makeCell(ty, r.from, loc);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until', loc);
     const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step', loc);
@@ -2288,7 +2287,7 @@ export class Recorder {
   /**
    * The shared counter-loop core of `s.for` / `s.forEach`: an internal cell, `i < until` in
    * the loop header, and the step recorded before every `continue` and once at the natural end
-   * of the body — continue() must execute the step first (api.md §5: "for-loops: to the step").
+   * of the body — continue() must execute the step first (for-loops continue to the step).
    */
   private counterLoop(
     ty: StringType,
@@ -2362,7 +2361,7 @@ export class Recorder {
         { loc },
       );
     }
-    // literal condition folds (M5 invariant 6): both branches are already-computed values,
+    // literal condition folds: both branches are already-computed values,
     // so picking one is exact — the chosen operand is aliased (or interned, for a literal).
     const cc = this.classify(cond, 's.select() condition', loc);
     let condLit: bigint | null = null;
@@ -2696,7 +2695,7 @@ export class Recorder {
       return { name: pName, type: pType };
     });
 
-    // reserve the FnId, push the isolated stack (M5 invariant 3) and record the body once
+    // reserve the FnId, push the isolated stack (scope rule) and record the body once
     const fnId = this.fnIrs.length;
     this.fnIrs.push(null);
     this.openFns.add(fnId);
@@ -2751,9 +2750,9 @@ export class Recorder {
       index === null ? `s.fn("${fnName}") result` : `s.fn("${fnName}") result [${index}]`;
     // a Tuple / MutArray handle is returnable from a fn body DIRECTLY (composite/array result —
     // issue #5 ask #1): return its ValueId verbatim (byte-identical to `.expr()`) after owner +
-    // visibility checks. The fncall result is a single pointer word (architecture §5/§9), so the
-    // IR/codegen/validate layers carry it unchanged. classify() (below) still rejects these handles
-    // on the arithmetic paths with the "use .expr()" message.
+    // visibility checks. The fncall result is a single pointer word, so the IR/codegen/validate
+    // layers carry it unchanged. classify() (below) still rejects these handles on the arithmetic
+    // paths with the "use .expr()" message.
     const bare = this.bareHandleId(v, what, loc);
     if (bare !== null) return bare;
     const c = this.classify(v, what, loc);
@@ -2875,7 +2874,7 @@ export class Recorder {
       returns.push({ name: key, type: c.type, value: c.id });
     }
     this.returnsList = returns;
-    this.sealed = true; // M5 invariant 7: the recorder seals on s.return
+    this.sealed = true; // the recorder seals on s.return
     const token = Object.freeze({ [RETURN_BRAND]: values });
     this.returnToken = token;
     return token;

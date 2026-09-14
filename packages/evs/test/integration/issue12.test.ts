@@ -6,7 +6,7 @@
  */
 
 import { getAddress } from 'viem';
-import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockERC20 } from '../generated/index.js';

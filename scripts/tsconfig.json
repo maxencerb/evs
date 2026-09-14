@@ -1,0 +1,7 @@
+{
+  // Release helpers run on bun (`bun scripts/<name>.ts`); this config only exists so
+  // type-aware lint / `vp check` type-check them with bun's globals.
+  "extends": "../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["bun"] },
+  "include": ["."]
+}

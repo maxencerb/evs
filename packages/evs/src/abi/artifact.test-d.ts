@@ -1,8 +1,8 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * type-level tests conjure phantom values via assertions; nothing here runs. */
 /**
- * M3 type tests — `ScriptAbi` literal shape, viem `readContract` inference over it, and the
- * abitype §4.2 interning regression (docs/research/abitype-typing.md).
+ * ABI type tests — `ScriptAbi` literal shape, viem `readContract` inference over it, and the
+ * abitype interning regression.
  *
  * ORDER OF DECLARATIONS IN THIS FILE IS LOAD-BEARING: `realisticPoolAbi` below deliberately
  * interns the string literal types `'tick'`, `'fee'`, and `'owner'` BEFORE any `ScriptAbi`
@@ -13,7 +13,7 @@
  */
 import type { Abi } from 'abitype';
 import type { ReadContractParameters, ReadContractReturnType } from 'viem';
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import type { ArgSpec, Expr } from '../core/types.js';
 import {
@@ -24,7 +24,7 @@ import {
 } from './artifact.js';
 
 // ---------------------------------------------------------------------------
-// §4.2 trap setup — intern 'tick' / 'fee' / 'owner' early (as output/input names of an
+// interning trap setup — intern 'tick' / 'fee' / 'owner' early (as output/input names of an
 // unrelated ABI, exactly the research repro) before the script types reference them.
 // ---------------------------------------------------------------------------
 
@@ -109,7 +109,7 @@ test('outputs: single named tuple; components carry every (name, type) pair — 
   type Output = PoolMetaAbi[0]['outputs'][0];
   expectTypeOf<Output['name']>().toEqualTypeOf<'result'>();
   expectTypeOf<Output['type']>().toEqualTypeOf<'tuple'>();
-  // assert the component SET (union) — never the tuple order, which §4.2 makes unstable
+  // assert the component SET (union) — never the tuple order, which interning makes unstable
   expectTypeOf<Output['components'][number]>().toEqualTypeOf<
     | { readonly name: 'token0'; readonly type: 'address' }
     | { readonly name: 'symbol0'; readonly type: 'string' }
@@ -118,7 +118,7 @@ test('outputs: single named tuple; components carry every (name, type) pair — 
   expectTypeOf<ReturnSpecToComponents<PoolMetaRet>['length']>().toEqualTypeOf<3>();
 });
 
-test('§4.2 interning regression: viem still infers the correct OBJECT (incl. int24 → number)', () => {
+test('interning regression: viem still infers the correct OBJECT (incl. int24 → number)', () => {
   // 'tick' was interned by realisticPoolAbi long before PoolMetaRet declared it last —
   // whatever order UnionToTuple produces, the single named-tuple output yields an object.
   expectTypeOf<ReadContractReturnType<PoolMetaAbi, 'poolMeta'>>().toEqualTypeOf<{

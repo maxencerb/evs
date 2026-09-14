@@ -1,5 +1,5 @@
 /**
- * M5 type tests — positional arg handles spread into the body callback after `s`, `IntoExpr`
+ * Builder type tests — positional arg handles spread into the body callback after `s`, `IntoExpr`
  * coercions at the builder surface, `s.call`/`s.tryCall` output inference (0/1/n unwrap,
  * mutability filtering, graceful widening) against viem-shaped const ABI fixtures, and
  * `ScriptReturn` inference through `evscript`. Runs under the vitest `types` project (typecheck
@@ -7,7 +7,7 @@
  */
 import type { Abi, AbiParametersToPrimitiveTypes } from 'abitype';
 import type { ReadContractReturnType } from 'viem';
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
 import {
@@ -81,7 +81,7 @@ const poolFixture = [
   },
 ] as const satisfies Abi;
 
-// composite-array OUTPUT fixtures (§12 read path)
+// composite-array OUTPUT fixtures (read path)
 const arraysFixture = [
   {
     type: 'function',
@@ -309,7 +309,7 @@ test('s.call unwraps outputs: [] → void, [one] → Expr, [many] → labeled tu
   });
 });
 
-test('composite-array outputs: nested word arrays and string arrays index to typed Exprs (§12)', () => {
+test('composite-array outputs: nested word arrays and string arrays index to typed Exprs', () => {
   evscript({ name: 'rdArrays', args: [t.address] }, (s, target) => {
     // uint256[][] → an array Expr; .at(i) peels one [] (Expr<'uint256[]'>), .at(i).at(j) → word.
     const m = s.read({ address: target, abi: arraysFixture, functionName: 'matrix' });
@@ -636,7 +636,7 @@ test('ScriptReturn flows through evscript into EvsScript / ScriptAbi / viem retu
 });
 
 test('abitype infers composite-array outputs: tuple[] → readonly Struct[], uint256[][], string[]', () => {
-  // The callee ABI's composite-array outputs infer the shapes evs decodes into (§12.8): a
+  // The callee ABI's composite-array outputs infer the shapes evs decodes into: a
   // `tuple[]` → `readonly Struct[]`, `uint256[][]` → `readonly (readonly bigint[])[]`,
   // `string[]` → `readonly string[]`. (The runtime decode is proven byte-exact in the differential
   // + integration tiers; this pins the type-level shape evs targets.)
@@ -651,7 +651,7 @@ test('abitype infers composite-array outputs: tuple[] → readonly Struct[], uin
   >();
 });
 
-test('returning a whole composite array infers an abitype-typed script output (§12.8 return side)', () => {
+test('returning a whole composite array infers an abitype-typed script output', () => {
   // s.return of a decoded composite array widens the script's own ScriptAbi output so a viem read
   // of the compiled script infers the precise shape: `tuple[]` → `readonly Struct[]`, `uint256[][]`
   // → `readonly (readonly bigint[])[]`, `string[]` → `readonly string[]`.
@@ -823,7 +823,7 @@ test('#2 s.read({ struct: true }) returns ONE named Tuple over the outputs (opt-
     // a NON-LITERAL boolean `struct` is the UNION of both shapes — the runtime decides on the value
     // (`wantStruct = struct === true`), so the caller must NARROW. This is the soundness fix for the
     // literal-vs-boolean gap: neither a positional index nor a struct field works un-narrowed.
-    const flag = (1 as number) > 0; // a non-literal boolean
+    const flag = Math.random() > 0.5; // a non-literal boolean (not a constant expression)
     const maybe = s.read({ address: pool, abi: poolFixture, functionName: 'slot0', struct: flag });
     // @ts-expect-error — `maybe` may be a Tuple, so a positional index is not available un-narrowed.
     expectTypeOf(maybe[0]);

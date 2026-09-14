@@ -1,13 +1,13 @@
 /**
- * M7 unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per
- * evm-target §5, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts (architecture
- * §11/§15.0), and the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`.
+ * Unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per solc's
+ * `Panic(uint256)` encoding, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts, and
+ * the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`.
  *
  * Everything assembles with full verification (jumpdests, stack heights, shapes) and runs on
- * the M10 in-process EVM harness.
+ * the in-process EVM harness (test/harness/evm.ts).
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime } from '../../test/harness/evm.js';
 import { selectorOf } from '../abi/artifact.js';
@@ -32,7 +32,7 @@ function tailRuntime(pick: Exclude<keyof SharedTails, 'memcpy'>, evmVersion: Evm
   return bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 }
 
-describe('panic tails (architecture §15.0)', () => {
+describe('panic tails', () => {
   const PANIC_SELECTOR: Hex = '0x4e487b71';
   const CASES = [
     ['panicOverflow', 0x11n],
@@ -53,7 +53,7 @@ describe('panic tails (architecture §15.0)', () => {
   }
 });
 
-describe('EvsInvalidCalldata tail (architecture §11)', () => {
+describe('EvsInvalidCalldata tail', () => {
   for (const evmVersion of FORKS) {
     test(`reverts with the bare 4-byte selector on ${evmVersion}`, async () => {
       const res = await execRuntime(tailRuntime('invalidCalldata', evmVersion), '0x');
@@ -129,7 +129,7 @@ function copyRuntime(len: number, evmVersion: EvmVersion): Hex {
   return bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 }
 
-describe('memcpy lowering (architecture §10)', () => {
+describe('memcpy lowering', () => {
   test('createSharedTails allocates @memcpy only before cancun', () => {
     const w = new AsmWriter();
     expect(createSharedTails(w, { evmVersion: 'cancun' }).memcpy).toBeNull();

@@ -1,11 +1,11 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * fixture builders cast hand-assembled (and deliberately malformed) structures on purpose. */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 /* oxlint-disable vitest/expect-expect --
  * several rejection tests assert exclusively through the reject() helper, which wraps the
  * expect(...).toThrowError(...) pair. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
 import { typeToAbiParam, type EvsType, type Hex, type WordType } from '../core/types.js';
@@ -27,7 +27,7 @@ type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0, loc: SourceLoc | null = null): Stmt {
-  return { loc, site, ...body } as Stmt;
+  return { loc, site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
@@ -317,7 +317,7 @@ describe('serializeIr / deserializeIr round trip', () => {
           out: 0,
           data: { kind: 'word', hex: wordHex(1n) },
           type: 'uint256',
-        } as Stmt,
+        },
       ],
     });
     const reordered = {
@@ -331,7 +331,7 @@ describe('serializeIr / deserializeIr round trip', () => {
           k: 'const',
           site: 3,
           loc: null,
-        } as Stmt,
+        },
       ],
       fns: [],
       cells: [],

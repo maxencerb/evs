@@ -1,9 +1,8 @@
 /**
- * M9 `viem.ts` — the init-code wrapper and the two `toViem()` shapes
- * (architecture §12, docs/research/viem-integration.md §1/§2/§5).
+ * `viem.ts` — the init-code wrapper and the two `toViem()` shapes.
  *
  * - viem's deployless `code` parameter expects CREATION bytecode — passing runtime bytecode
- *   fails SILENTLY (viem-integration §1.3, empirically verified). The artifact therefore only
+ *   fails SILENTLY (empirically verified). The artifact therefore only
  *   ever exposes creation bytecode under a key named `code`; the raw fields are named
  *   `runtimeBytecode` / `initBytecode` deliberately.
  * - The locked 10-byte wrapper is `61 RRRR 80 600A 5F 39 5F F3` (RRRR = runtime length,
@@ -20,7 +19,7 @@
  *
  * - State-override mode takes runtime bytecode directly at a deterministic address;
  *   `DEFAULT_SCRIPT_ADDRESS` is the last 20 bytes of keccak256("evs.script") — no
- *   code/storage/balance on any major chain (viem-integration §5.1).
+ *   code/storage/balance on any major chain.
  */
 
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'abitype';
@@ -39,7 +38,7 @@ import { abiParamToType, type Hex } from './core/types.js';
 import type { PlainAbiParam } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
-// init wrapper (architecture §10/§12 — the locked 10-byte builder)
+// init wrapper (the locked 10-byte builder)
 // ---------------------------------------------------------------------------
 
 /** EIP-170 keeps runtimes ≤ 24,576, far below the PUSH2 immediate ceiling. */
@@ -81,7 +80,7 @@ function initWrapper(runtimeLength: number, evmVersion: EvmVersion): Hex {
 export const INIT_CODE_PREFIX_SHANGHAI: Hex = initWrapper(0, 'shanghai');
 
 /**
- * `initBytecode = wrapper(len) ++ runtime` (architecture §12). The wrapper CODECOPYs
+ * `initBytecode = wrapper(len) ++ runtime`. The wrapper CODECOPYs
  * everything after itself and RETURNs it as the deployed code, so a creation-frame `eth_call`
  * (viem deployless `code` mode) executes the runtime unchanged.
  */
@@ -100,7 +99,7 @@ export function toCreationBytecode(runtime: Hex, evmVersion: EvmVersion): Hex {
 }
 
 // ---------------------------------------------------------------------------
-// toViem shapes (viem-integration §5)
+// toViem shapes
 // ---------------------------------------------------------------------------
 
 /**
@@ -220,14 +219,14 @@ function revertDataOf(input: unknown): Hex | undefined {
       return false; // keep scanning — an outer wrapper may hide a richer carrier deeper
     }
     if (typeof e === 'object' && e !== null && 'data' in e) {
-      const d: unknown = (e as { data: unknown }).data;
+      const d: unknown = e.data;
       if (typeof d === 'string') {
         if (isHexString(d)) {
           sawRevert = true;
           data ??= d;
         }
       } else if (typeof d === 'object' && d !== null && 'data' in d) {
-        const dd: unknown = (d as { data: unknown }).data;
+        const dd: unknown = d.data;
         if (typeof dd === 'string' && isHexString(dd)) {
           sawRevert = true;
           data ??= dd;

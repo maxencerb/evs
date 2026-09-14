@@ -1,6 +1,6 @@
 /**
  * E2 — Batch reads over a runtime `address[]` arg: the multicall replacement
- * (docs/design/api.md §11). A loop + tryCall over N tokens compiles to one script;
+ * A loop + tryCall over N tokens compiles to one script;
  * non-token addresses yield 0 instead of reverting the whole batch.
  *
  * Run: bun examples/token-balances/index.ts

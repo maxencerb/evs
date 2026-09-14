@@ -1,16 +1,16 @@
 /**
- * testing.md §3 item 5: fork-mode suite, env-gated on ANVIL_FORK_URL (RPC_URL also accepted).
+ * Fork-mode suite, env-gated on ANVIL_FORK_URL (RPC_URL also accepted).
  * Spawns a dedicated forked anvil (separate from the per-worker proxy instance) and reads
  * mainnet WETH metadata through a compiled script in both execution modes.
  *
  * Locally: ANVIL_FORK_URL=https://… bun run test:integration
- * CI runs this on a scheduled job, never per-PR (testing.md §3).
+ * CI runs this on a scheduled job, never per-PR.
  */
 
 import { Instance } from 'prool';
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { mainnet } from 'viem/chains';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { poolId } from '../harness/anvil.js';

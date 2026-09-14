@@ -1,12 +1,12 @@
 /**
- * M9 `compile.ts` — pipeline orchestration (architecture §1/§12):
+ * `compile.ts` — pipeline orchestration:
  *
  *   validateIr → lowerProgram → peephole (user hook) → assemble(verify: jumpdests, stack,
  *   shapes) → EIP-170 check (per-region breakdown via labelNames) → merge sites into the
  *   sourceMap → build the artifact.
  *
  * Diagnostics from lowering are forwarded to `options.onDiagnostic`; nothing is ever logged.
- * `explainRevert` decodes the on-chain error set (architecture §11/§13): `Panic(uint256)`
+ * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
  * (with candidate sites from `sourceMap.sites`), `EvsDecodeError(uint256 site)` (exact site),
  * `EvsInvalidCalldata()`, `Error(string)`, custom selectors, and the empty revert.
  */
@@ -38,7 +38,7 @@ import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, toViemDeployless } from './viem.js';
 
 // ---------------------------------------------------------------------------
-// frozen contract (module-interfaces §M9 + api.md §10)
+// public contract
 // ---------------------------------------------------------------------------
 
 export interface CompileOptions {
@@ -102,12 +102,12 @@ export type CompiledOf<s> =
     ? CompiledEvsScript<n, a, r, e>
     : never;
 
-// DEVIATION (recorded): the law writes `compile<s extends EvsScript>`, but a concrete
+// DEVIATION (recorded): the frozen signature is `compile<s extends EvsScript>`, but a concrete
 // multi-return script is NOT assignable to the default-instantiated `EvsScript` — the
 // `ScriptAbi` default collapses `Record<string, Expr>` components to a 1-tuple via
 // UnionToTuple, so `EvsScript<'x', […], { a; b }>` fails the constraint and every real
 // script would be rejected. The constraint below is the minimal structural relaxation;
-// `CompiledOf<s>` (and therefore the result type) is exactly the law's.
+// `CompiledOf<s>` (and therefore the result type) is exactly the frozen signature's.
 export function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
 >(script: s, options?: CompileOptions): CompiledOf<s> {
@@ -230,10 +230,10 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
 }
 
 // ---------------------------------------------------------------------------
-// EIP-170 per-region breakdown (architecture §10 — "C's actionable variant")
+// EIP-170 per-region breakdown
 // ---------------------------------------------------------------------------
 
-/** Shared-tail label names emitted by codegen/tails.ts (architecture §11/§15.0). */
+/** Shared-tail label names emitted by codegen/tails.ts. */
 const TAIL_LABEL_NAMES: ReadonlySet<string> = new Set([
   'panic_overflow',
   'panic_divzero',
@@ -288,10 +288,10 @@ function eip170Message(
 }
 
 // ---------------------------------------------------------------------------
-// explainRevert (architecture §11/§13; api.md §11 E7)
+// explainRevert
 // ---------------------------------------------------------------------------
 
-// selectors computed once via the sanctioned helper (M3 invariant)
+// selectors computed once via `abi/artifact.ts`'s `selectorOf` (the single selector helper)
 const PANIC_SELECTOR = selectorOf('Panic', ['uint256']); // 0x4e487b71
 const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']); // 0x08c379a0
 const DECODE_ERROR_SELECTOR = selectorOf('EvsDecodeError', ['uint256']);

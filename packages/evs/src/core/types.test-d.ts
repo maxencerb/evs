@@ -1,6 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * type-level tests conjure phantom Expr handles via assertions; nothing here runs. */
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t } from './types.js';
 import type { ArgSpec, Expr, IntoExpr, LitOf, TupleType } from './types.js';
@@ -95,7 +95,7 @@ test('t.struct infers a named-component TupleType; t.tuple a positional one', ()
   expectTypeOf(pos).toMatchTypeOf<TupleType>();
   expectTypeOf(pos.type).toEqualTypeOf<'tuple'>();
   // A `t.struct`'s component ORDER is `UnionToTuple`'s TS-internal-id order — explicitly UNSTABLE
-  // (core/types.ts §4.2; it can flip when unrelated types are added). Assert the component SET (the
+  // (it can flip when unrelated types are added). Assert the component SET (the
   // `[number]` element union, order-insensitive), which is the property the design actually
   // guarantees — viem infers an order-insensitive object from the named tuple either way.
   expectTypeOf<(typeof pos.components)[number]>().toEqualTypeOf<

@@ -11,7 +11,7 @@
  */
 
 import { getAddress } from 'viem';
-import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, evscript, t } from '../../src/index.js';
 import { MockERC20, MockUniV3Pool } from '../generated/index.js';

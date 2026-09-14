@@ -10,7 +10,7 @@
 
 import type { Abi } from 'abitype';
 import { encodeAbiParameters, encodeFunctionData } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
 import { returner, reverter, word } from '../../test/harness/fixtures.js';

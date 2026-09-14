@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import type { SourceLoc } from '../core/errors.js';
 import { lookupPc, siteById, type SourceMap } from './sourcemap.js';

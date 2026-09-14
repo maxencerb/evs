@@ -1,11 +1,11 @@
 /**
- * M8 unit tests — `codegen/program.ts` (`lowerProgram`) + disassembly goldens for the
- * architecture §15 worked examples.
+ * Unit tests — `codegen/program.ts` (`lowerProgram`) + disassembly goldens for the
+ * worked examples.
  *
  * - dispatcher goldens (full annotated listing of a minimal script) + `EvsInvalidCalldata`
  *   behavior (short calldata, wrong selector, truncated args, malformed dynamic args);
- * - worked-example goldens: §15.1 checked ADD, §15.2 `symbol()` decode, §15.3 while loop —
- *   lowered as verified fragments over the doc's exact frame slots;
+ * - worked-example goldens: checked ADD, `symbol()` decode, while loop — lowered as verified
+ *   fragments over hand-pinned frame slots;
  * - call statements end-to-end: strict success / byte-exact revert bubbling /
  *   `EvsDecodeError(site)` on attacker returndata (gas sanity — no all-gas halt) / tryCall
  *   zeroing / gas cap;
@@ -17,7 +17,7 @@
 
 import type { AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, type EvmFixture } from '../../test/harness/evm.js';
 import {
@@ -343,7 +343,7 @@ interface FragmentSpec {
 }
 
 /** Lowers `body` over a hand-pinned frame, terminates with STOP, assembles (verified), and
- * returns the annotated listing up to the STOP — the §15 worked-example shape. */
+ * returns the annotated listing up to the STOP — the worked-example shape. */
 function fragmentListing(spec: FragmentSpec): string {
   const evmVersion = spec.evmVersion ?? 'cancun';
   const w = new AsmWriter();
@@ -422,11 +422,11 @@ function st(body: StmtBody, site?: number): Stmt {
 }
 
 // ---------------------------------------------------------------------------
-// worked-example goldens (architecture §15)
+// worked-example goldens
 // ---------------------------------------------------------------------------
 
-describe('worked-example goldens (architecture §15)', () => {
-  test('§15.1 checked ADD (uint256): a→0x80, b→0xA0, c→0xC0', () => {
+describe('worked-example goldens', () => {
+  test('checked ADD (uint256): a→0x80, b→0xA0, c→0xC0', () => {
     const listing = fragmentListing({
       values: ['uint256', 'uint256', 'uint256'],
       slots: new Map([
@@ -454,7 +454,7 @@ describe('worked-example goldens (architecture §15)', () => {
     `);
   });
 
-  test('§15.2 STATICCALL symbol() → dynamic string: token0→0x80, symbol0→0xA0, site 7', () => {
+  test('STATICCALL symbol() → dynamic string: token0→0x80, symbol0→0xA0, site 7', () => {
     const listing = fragmentListing({
       values: ['address', 'string'],
       slots: new Map([
@@ -475,7 +475,7 @@ describe('worked-example goldens (architecture §15)', () => {
         ),
       ],
       pre: (w) => {
-        // prologue + token0 preload (the §15.2 listing assumes both)
+        // prologue + token0 preload (the listing assumes both)
         w.push(0xc0, { note: 'frameEnd' });
         w.push(0x40);
         w.op('MSTORE');
@@ -576,7 +576,7 @@ describe('worked-example goldens (architecture §15)', () => {
     `);
   });
 
-  test('§15.3 while loop with cells: n→0x80, total→0xA0, i→0xC0, v1…v7→0xE0…0x1A0', () => {
+  test('while loop with cells: n→0x80, total→0xA0, i→0xC0, v1…v7→0xE0…0x1A0', () => {
     // value table: 0=n, 1..7=v1..v7, 8=const 0 (folded), 9=const 1 (folded)
     const slots = new Map<ValueId, number | null>([
       [0, 0x80],
@@ -716,7 +716,7 @@ describe('worked-example goldens (architecture §15)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// dispatcher (architecture §11)
+// dispatcher
 // ---------------------------------------------------------------------------
 
 function echoIr(): ScriptIr {
@@ -866,7 +866,7 @@ describe('dispatcher', () => {
 });
 
 // ---------------------------------------------------------------------------
-// dynamic script args (architecture §8.1)
+// dynamic script args
 // ---------------------------------------------------------------------------
 
 describe('dynamic script args', () => {

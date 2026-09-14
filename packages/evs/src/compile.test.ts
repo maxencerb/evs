@@ -1,12 +1,12 @@
 /**
- * M9 unit tests — `compile.ts`: artifact shape, pipeline wiring (options, diagnostics,
+ * Unit tests — `compile.ts`: artifact shape, pipeline wiring (options, diagnostics,
  * peephole), EIP-170 rejection with per-region breakdown, sites merge + sourceMap coverage,
  * `toViem()` both modes, `disassemble()` round-trip, `explainRevert` over every revert kind,
  * and the end-to-end `evscript → compile → harness` smoke.
  */
 
 import { decodeFunctionResult, encodeErrorResult, encodeFunctionData, maxUint256 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { ATTACKER_RETURNERS } from '../test/harness/fixtures.js';
@@ -329,7 +329,7 @@ describe('toViem()', () => {
 });
 
 // ---------------------------------------------------------------------------
-// explainRevert — every kind (architecture §11/§13)
+// explainRevert — every kind
 // ---------------------------------------------------------------------------
 
 describe('explainRevert', () => {
@@ -472,7 +472,7 @@ describe('explainRevert', () => {
     expect(compiled.explainRevert('0x4e487b7100').kind).toBe('custom');
     // Error(string) selector with garbage body degrades to custom
     expect(compiled.explainRevert('0x08c379a0ffff').kind).toBe('custom');
-    expect(() => compiled.explainRevert('0x123' as Hex)).toThrowError(EvsTypeError);
+    expect(() => compiled.explainRevert('0x123')).toThrowError(EvsTypeError);
   });
 });
 
@@ -506,11 +506,11 @@ describe('end-to-end smoke', () => {
 });
 
 // ---------------------------------------------------------------------------
-// composite-array call args — M4 un-gated these (forwarding a decoded tuple[] as an arg compiles);
+// composite-array call args are supported (forwarding a decoded tuple[] as an arg compiles);
 // the still-deferred shapes (`tuple[][]`) STILL throw UNSUPPORTED_V0.
 // ---------------------------------------------------------------------------
 
-describe('composite-array CALL ARG encode (M4)', () => {
+describe('composite-array CALL ARG encode', () => {
   const posComponents = [
     { name: 'nonce', type: 'uint96' },
     { name: 'liquidity', type: 'uint128' },
@@ -533,7 +533,7 @@ describe('composite-array CALL ARG encode (M4)', () => {
   ] as const;
   const POOL = '0xc000000000000000000000000000000000000003' as const;
 
-  test('forwarding a decoded tuple[] as a call arg now COMPILES (§12.7 M4)', () => {
+  test('forwarding a decoded tuple[] as a call arg compiles', () => {
     const script = evscript({ name: 'sumPositions' }, (s) => {
       const ps = s.read({ address: POOL, abi, functionName: 'positionsBatch', args: [2n] });
       const sum = s.read({

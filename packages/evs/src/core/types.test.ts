@@ -1,7 +1,7 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-base-to-string, typescript/no-unnecessary-template-expression --
  * exhaustive-table tests cast generated type strings on purpose, and the staging-trap suite
  * deliberately performs the host coercions the traps exist to intercept. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsStagingError, EvsTypeError } from './errors.js';
 import {
@@ -125,8 +125,8 @@ describe('predicates', () => {
   test('elemTypeOf round-trips every array type', () => {
     for (const w of WORD_TYPES) expect(elemTypeOf(`${w}[]` as ArrayType)).toBe(w);
     // nested string arrays peel one [] (now in the vocabulary)
-    expect(elemTypeOf('string[]' as ArrayType)).toBe('string');
-    expect(elemTypeOf('uint256[][]' as ArrayType)).toBe('uint256[]');
+    expect(elemTypeOf('string[]')).toBe('string');
+    expect(elemTypeOf('uint256[][]')).toBe('uint256[]');
     // non-array strings (and the non-string `tuple[]` tag) have no string element type
     for (const s of ['string', 'uint256', 'tuple[]']) {
       expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsTypeError);

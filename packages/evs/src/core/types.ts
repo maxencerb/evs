@@ -1,15 +1,12 @@
 /**
- * M1 `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
+ * `core/types.ts` — the type vocabulary, `Expr` brand, `namedArg()`/`t`, and runtime type
  * predicates/metadata (single source of truth for all modules).
- *
- * Contract: docs/design/module-interfaces.md §M1 (frozen) + api.md §2/§3.
  */
 
 import { EvsStagingError, EvsTypeError, type SourceLoc } from './errors.js';
 import { captureLoc } from './loc.js';
 
-// re-exported per the module-interfaces conventions block ("`Address` is re-exported from
-// `abitype`"); type-only — abitype is the only import core may take.
+// `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
 
@@ -74,7 +71,7 @@ export type EvsType = WordType | DynType | ArrayType | TupleType;
  * infers its element, but a wide/non-array `t` (e.g. a loosely-typed `Expr<EvsType>`) collapses to
  * `never` instead of materializing the whole ~400-member union ("too complex to represent").
  *
- * Perf (amendments.md §18.1): {@link Expr.at} computes its element via this instead of reverse-
+ * Perf: {@link Expr.at} computes its element via this instead of reverse-
  * solving a generic `elem extends StringType` against `${elem}[]` — forward `infer` on the already-
  * concrete receiver type is ~free; reverse-matching a template against the union dominated check time.
  */
@@ -86,7 +83,7 @@ export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
 
 // ---------------------------------------------------------------------------
-// Expr — the branded staged-value handle (api.md §3, verbatim)
+// Expr — the branded staged-value handle
 // ---------------------------------------------------------------------------
 
 export declare const exprBrand: unique symbol;
@@ -134,7 +131,7 @@ export interface Expr<t extends EvsType = EvsType> {
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
   // element via FORWARD inference on the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
   // NOT a reverse-solved `elem extends StringType` against `${elem}[]` — same result type, but
-  // amendments.md §18.1 cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
+  // this cut `tsc` check time ~10× by not pattern-matching the ~400-member union.
   // `t & ArrayType` still pins the receiver to the depth-bounded array vocabulary.
   at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
@@ -179,7 +176,7 @@ export type TupleAsParam<t extends TupleType> = {
 export type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 
 // ---------------------------------------------------------------------------
-// namedArg() declarator + the `t` type namespace (api.md §2)
+// namedArg() declarator + the `t` type namespace
 // ---------------------------------------------------------------------------
 
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
@@ -225,12 +222,12 @@ export function namedArg<const name extends string, const type extends EvsType>(
 // ---------------------------------------------------------------------------
 // args-input normalization (shared by `evscript` args, `s.fn` params, `t.error` params)
 // ---------------------------------------------------------------------------
-// These lived in builder/script.ts (M5) until issue #15; they are pure M1 material (EvsType +
+// These lived in builder/script.ts until issue #15; they are pure core/ material (EvsType +
 // ArgSpec only) and `t.error` needs them, so they moved here. script.ts re-exports them
-// verbatim — the frozen M5 surface is unchanged.
+// verbatim — the builder's public surface is unchanged.
 
 /**
- * One top-level arg/param declarator (api.md §2; issue #9): a bare `t.*` type, or a
+ * One top-level arg/param declarator (issue #9): a bare `t.*` type, or a
  * {@link namedArg}-produced {@link ArgSpec} that labels the arg.
  */
 export type ArgInput = EvsType | ArgSpec;
@@ -292,9 +289,9 @@ export interface EvsErrorAbiEntry<
 /**
  * A declared custom error (issue #15): a module-level value created by {@link t.error},
  * declared on a script def (`errors: [...]`) and thrown with `s.throw`. Carries the normalized
- * param specs and the literal ABI entry; the 4-byte selector is derived downstream (M3
- * `selectorOf` — core stays viem-free), byte-identical to Solidity's over the canonical
- * signature.
+ * param specs and the literal ABI entry; the 4-byte selector is derived downstream
+ * (`selectorOf` in abi/artifact.ts — core stays viem-free), byte-identical to Solidity's over
+ * the canonical signature.
  */
 export interface EvsErrorType<
   name extends string = string,
@@ -306,7 +303,7 @@ export interface EvsErrorType<
   readonly abi: EvsErrorAbiEntry<name, params>;
 }
 
-// -- type-level record→ordered-components machinery (abitype §4.2) -----------------------------
+// -- type-level record→ordered-components machinery (UnionToTuple) -----------------------------
 // A struct record is unordered at the type level; recovering an order needs `UnionToTuple`,
 // whose order is TS-internal-id order, NOT declaration order. That is SAFE here because a struct
 // compiles to a single NAMED ABI `tuple` which abitype infers as an ORDER-INSENSITIVE object;
@@ -1091,7 +1088,7 @@ function fromAbiParameterRT(param: unknown): EvsType {
 }
 
 // ---------------------------------------------------------------------------
-// internal helpers (module-private to evs; not part of the frozen M1 surface)
+// internal helpers (module-private to evs; not part of the public surface)
 // ---------------------------------------------------------------------------
 
 /** Recognizably-Solidity types that are deliberately out of evs get the UNSUPPORTED_V0 code. */
@@ -1122,12 +1119,12 @@ function assertEvsType(s: string, context: string): asserts s is StringType {
 }
 
 /**
- * @internal Staging-misuse traps shared by every handle implementation (architecture.md §3).
+ * @internal Staging-misuse traps shared by every handle implementation.
  *
  * Installs throwing `valueOf` / `toString` / `toJSON` / `Symbol.toPrimitive` on `target`
  * (each throws `EvsStagingError` citing both the misuse site and where the handle was
  * recorded), plus a NON-throwing `nodejs.util.inspect.custom` returning `describe()` —
- * printing is debugging, not misuse. The builder (M5) layers `Expr` methods on top.
+ * printing is debugging, not misuse. The builder layers `Expr` methods on top.
  */
 export function installStagingTraps(
   target: object,

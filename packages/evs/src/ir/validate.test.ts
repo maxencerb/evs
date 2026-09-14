@@ -4,8 +4,8 @@
  * most rejection tests assert exclusively through the expectInvalid() helper, which wraps the
  * expect(...).toThrowError(...) pair. */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
-import { describe, expect, test } from 'vitest';
+ * the IR schema names the if-statement branch field `then`. */
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import type { EvsType, Hex, WordType } from '../core/types.js';
@@ -21,7 +21,7 @@ type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0): Stmt {
-  return { loc: LOC, site, ...body } as Stmt;
+  return { loc: LOC, site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
@@ -247,7 +247,7 @@ describe('validateIr — accepts', () => {
     expect(() => validateIr(fixture)).not.toThrow();
   });
 
-  test('bitwise/shift ops accept intN and bytesN operands (architecture §6)', () => {
+  test('bitwise/shift ops accept intN and bytesN operands', () => {
     const fixture = ir({
       values: [
         vi('int128'),

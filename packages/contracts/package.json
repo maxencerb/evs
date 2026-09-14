@@ -1,6 +1,7 @@
 {
   "name": "@maxencerb/evs-contracts",
   "private": true,
+  "type": "module",
   "scripts": {
     "build": "forge build",
     "test": "forge test",

@@ -1,11 +1,11 @@
 /**
- * M9 unit tests — `viem.ts`: init wrapper bytes goldens (cancun/shanghai/paris), wrapper
+ * Unit tests — `viem.ts`: init wrapper bytes goldens (cancun/shanghai/paris), wrapper
  * EXECUTION semantics on the harness (the wrapper RETURNs the runtime byte-exactly), the
  * silent-failure fence (field naming), and both toViem helper shapes.
  */
 
 import { BaseError, ContractFunctionRevertedError, encodeErrorResult } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { RUNTIME_42, RUNTIME_WHOAMI } from '../test/harness/fixtures.js';
@@ -32,7 +32,7 @@ const ERC20ISH_ABI = [
   },
 ] as const;
 
-describe('init wrapper bytes (golden — architecture §12)', () => {
+describe('init wrapper bytes (golden)', () => {
   test('INIT_CODE_PREFIX_SHANGHAI is the 10-byte template with RRRR zeroed', () => {
     expect(INIT_CODE_PREFIX_SHANGHAI).toBe('0x61000080600a5f395ff3');
   });
@@ -78,7 +78,7 @@ describe('init wrapper bytes (golden — architecture §12)', () => {
   });
 
   test('rejects malformed hex and PUSH2-range overflow', () => {
-    expect(() => toCreationBytecode('0x123' as Hex, 'cancun')).toThrowError(EvsTypeError);
+    expect(() => toCreationBytecode('0x123', 'cancun')).toThrowError(EvsTypeError);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
     expect(() => toCreationBytecode('nope' as Hex, 'cancun')).toThrowError(EvsTypeError);
     expect(() => toCreationBytecode(`0x${'00'.repeat(0x10000)}`, 'cancun')).toThrowError(
@@ -93,7 +93,7 @@ describe('init wrapper bytes (golden — architecture §12)', () => {
   });
 });
 
-describe('toViem shapes (viem-integration §5)', () => {
+describe('toViem shapes', () => {
   test('DEFAULT_SCRIPT_ADDRESS is the pinned vanity constant', () => {
     expect(DEFAULT_SCRIPT_ADDRESS).toBe('0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530');
   });

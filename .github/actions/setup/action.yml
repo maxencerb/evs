@@ -1,27 +1,17 @@
-name: Setup bun + node
-description: Install bun & node, restore the bun install cache, then `bun install --frozen-lockfile`.
+name: Setup Vite+ (node + bun) and install
+description: >
+  Install the Vite+ CLI (version resolved from the root package.json catalog), the Node.js
+  from .node-version and the bun pinned in `packageManager`, restore the bun install cache,
+  then `vp install --frozen-lockfile`.
 
 runs:
   using: composite
   steps:
-    - uses: oven-sh/setup-bun@v2
+    # setup-vp replaces setup-bun + setup-node + actions/cache: vp provisions Node.js and the
+    # package manager, and `cache: true` caches bun's install cache keyed on bun.lock.
+    - uses: voidzero-dev/setup-vp@9fd26ff49f9b5e6276c2b493da4454ad4527f7f4 # v1.20.0
       with:
-        bun-version: latest
-
-    # vitest executes on Node (bun is the package manager / script runner)
-    - uses: actions/setup-node@v6
-      with:
-        node-version: 24
-
-    # Cache bun's global install cache keyed on the lockfile — the single biggest
-    # repeated cost across the fan-out jobs. restore-keys lets a changed lock still
-    # warm-start from the previous run's cache.
-    - uses: actions/cache@v4
-      with:
-        path: ~/.bun/install/cache
-        key: bun-${{ runner.os }}-${{ hashFiles('bun.lock') }}
-        restore-keys: |
-          bun-${{ runner.os }}-
-
-    - shell: bash
-      run: bun install --frozen-lockfile
+        node-version-file: .node-version
+        cache: true
+        run-install: |
+          args: ['--frozen-lockfile']

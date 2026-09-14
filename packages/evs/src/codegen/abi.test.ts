@@ -1,8 +1,8 @@
 /**
- * M7 unit tests — `codegen/abi.ts`: calldata decode + return encode, differential against
- * viem `encodeAbiParameters` / `decodeFunctionResult` (testing.md §4.2), the malformed /
+ * Unit tests — `codegen/abi.ts`: calldata decode + return encode, differential against
+ * viem `encodeAbiParameters` / `decodeFunctionResult`, the malformed /
  * attacker-shaped calldata matrix (→ `EvsInvalidCalldata()`, never an exceptional halt), the
- * dirty-word normalization rules (architecture §8.1), and the pre-cancun memcpy path.
+ * dirty-word normalization rules, and the pre-cancun memcpy path.
  *
  * Test scripts are "echo" programs: prologue → `emitCalldataDecode` into frame slots →
  * `emitReturnEncode` of the same slots → shared tails. Both ABI directions are exercised in
@@ -10,7 +10,7 @@
  */
 
 import { decodeFunctionResult, encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, DEFAULT_GAS_LIMIT } from '../../test/harness/evm.js';
 import { buildScriptAbi, canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
@@ -24,7 +24,7 @@ import { createSharedTails, emitSharedTails } from './tails.js';
 // helpers
 // ---------------------------------------------------------------------------
 
-/** Arbitrary selector — the decoder never inspects it (the dispatcher does, M8). */
+/** Arbitrary selector — the decoder never inspects it (the dispatcher in `program.ts` does). */
 const SELECTOR: Hex = '0x01020304';
 const FRAME_BASE = 0x80;
 const INVALID_CALLDATA: Hex = selectorOf('EvsInvalidCalldata', []);
@@ -76,7 +76,7 @@ function expectedReturn(types: readonly EvsType[], values: readonly unknown[]): 
 }
 
 // ---------------------------------------------------------------------------
-// the echo case matrix (testing.md §4.2 — byte equality against viem)
+// the echo case matrix (byte equality against viem)
 // ---------------------------------------------------------------------------
 
 interface EchoCase {
@@ -256,7 +256,7 @@ describe('fuzzed echo matrix (seeded, differential vs viem)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// dirty-word normalization (normalize-don't-revert — architecture §8.1)
+// dirty-word normalization (normalize-don't-revert)
 // ---------------------------------------------------------------------------
 
 describe('dirty calldata words normalize instead of reverting', () => {
@@ -313,7 +313,7 @@ describe('dirty calldata words normalize instead of reverting', () => {
 // malformed / attacker-shaped calldata → EvsInvalidCalldata (never a halt)
 // ---------------------------------------------------------------------------
 
-describe('malformed calldata reverts EvsInvalidCalldata() — architecture §8.1', () => {
+describe('malformed calldata reverts EvsInvalidCalldata()', () => {
   interface BadCase {
     name: string;
     types: readonly EvsType[];

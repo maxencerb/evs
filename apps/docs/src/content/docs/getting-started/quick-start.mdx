@@ -12,13 +12,12 @@ returns one fully-typed array. You need
 
 ## The script
 
-The pool ABI is elided below for readability (hover any identifier to see its inferred type —
-this page uses [Twoslash](https://twoslash.netlify.app/)). Everything else is the whole script:
+The pool ABI is collapsed below for readability (expand it to see the full `as const`
+fragment); inferred types are written out as `^?` comments. Everything else is the whole script:
 
-```ts twoslash
+```ts collapse={3-22}
 import { namedArg, evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
-// ---cut-start---
 const uniswapV3PoolAbi = [
   { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
   { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
@@ -39,10 +38,9 @@ const uniswapV3PoolAbi = [
     ],
   },
 ] as const;
-// ---cut-end---
 // Derive the slot0 struct type straight from the ABI — no re-typing its 7 fields.
 const Slot0 = t.fromOutputs(uniswapV3PoolAbi, 'slot0');
-//    ^?
+//    ^? { type: 'tuple'; components: readonly [{ name: 'sqrtPriceX96'; type: 'uint160' }, { name: 'tick'; type: 'int24' }, … 7 named components, in ABI order] }
 
 // Compose the output shape from structs; a struct member can itself be a struct.
 const TokenMetadata = t.struct({
@@ -125,10 +123,9 @@ it cannot express this in one round trip; evs records the chain and runs it on-c
 `compile()` validates the recorded script and returns a frozen artifact; spread `toViem()` into
 a plain viem `readContract` and add the `functionName` and typed `args`:
 
-```ts twoslash
+```ts collapse={3-62}
 import { namedArg, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
-// ---cut-start---
 const uniswapV3PoolAbi = [
   { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
   { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ name: '', type: 'address' }] },
@@ -189,7 +186,6 @@ const poolsData = evscript(
     return s.return({ metadata });
   },
 );
-// ---cut-end---
 const code = poolsData.compile();
 // code.runtimeBytecode — the script body (EIP-170: at most 24,576 bytes, enforced)
 // code.abi            — literal-typed ABI: the 'poolsData' view function plus the two evs error entries

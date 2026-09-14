@@ -2,7 +2,7 @@
  * rejection matrices deliberately feed wrongly-typed values through the public signatures. */
 import type { AbiFunction, AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
 import { t } from '../core/types.js';
@@ -38,7 +38,7 @@ function catchEvs(fn: () => unknown): EvsTypeError {
 // ---------------------------------------------------------------------------
 
 describe('EVS_ERROR_ABI', () => {
-  test('exact shape (architecture §11)', () => {
+  test('exact shape', () => {
     expect(EVS_ERROR_ABI).toEqual([
       { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
       { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
@@ -155,7 +155,7 @@ describe('toPlainAbiFunction', () => {
     });
   });
 
-  test('accepts a one-level tuple ARRAY output (§12 un-gate)', () => {
+  test('accepts a one-level tuple ARRAY output', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'positions',
@@ -193,7 +193,7 @@ describe('toPlainAbiFunction', () => {
 // ---------------------------------------------------------------------------
 
 describe('encodeLiteralWord', () => {
-  test('goldens (canonical 32-byte words, architecture §5)', () => {
+  test('goldens (canonical 32-byte words)', () => {
     expect(encodeLiteralWord('uint8', 5)).toBe(`0x${'0'.repeat(62)}05`);
     expect(encodeLiteralWord('uint256', 2n ** 256n - 1n)).toBe(`0x${'f'.repeat(64)}`);
     expect(encodeLiteralWord('int8', -1n)).toBe(`0x${'f'.repeat(64)}`); // sign-extended
@@ -207,7 +207,7 @@ describe('encodeLiteralWord', () => {
     expect(encodeLiteralWord('bytes4', '0xdeadbeef')).toBe(`0xdeadbeef${'0'.repeat(56)}`); // LEFT-aligned
   });
 
-  test('address checksum NOT enforced (api.md §3): mixed-case is lowercased, not rejected', () => {
+  test('address checksum NOT enforced: mixed-case is lowercased, not rejected', () => {
     // deliberately NOT a valid EIP-55 checksum casing
     const mixed = '0xAaAaAAaaAaaaAaAaAaaAAAaaAAAAaAaAAaaaAaAa';
     expect(encodeLiteralWord('address', mixed)).toBe(`0x${'0'.repeat(24)}${'aa'.repeat(20)}`);
@@ -271,7 +271,7 @@ describe('encodeLiteralWord', () => {
 const LEN = (n: number): string => n.toString(16).padStart(64, '0');
 
 describe('encodeLiteralData', () => {
-  test('goldens ([len:32][payload…] memref bytes, architecture §5)', () => {
+  test('goldens ([len:32][payload…] memref bytes)', () => {
     expect(encodeLiteralData('string', 'hello')).toBe(`0x${LEN(5)}68656c6c6f${'0'.repeat(54)}`);
     expect(encodeLiteralData('string', '')).toBe(`0x${LEN(0)}`);
     expect(encodeLiteralData('bytes', '0xdeadbeef')).toBe(`0x${LEN(4)}deadbeef${'0'.repeat(56)}`);
@@ -326,15 +326,11 @@ describe('encodeLiteralData', () => {
     expect(catchEvs(() => encodeLiteralData('uint8[]', '0x01')).code).toBe('TYPE_MISMATCH');
     // word types must go through encodeLiteralWord
     expect(catchEvs(() => encodeLiteralData('uint256' as DynType, 1n)).code).toBe('TYPE_MISMATCH');
-    // a composite-element array has no flat data-segment literal — the recorder builds it (§12.8),
+    // a composite-element array has no flat data-segment literal — the recorder builds it,
     // so this direct call rejects with TYPE_MISMATCH (it is not the construction route).
-    expect(catchEvs(() => encodeLiteralData('string[]' as ArrayType, ['a'])).code).toBe(
-      'TYPE_MISMATCH',
-    );
+    expect(catchEvs(() => encodeLiteralData('string[]', ['a'])).code).toBe('TYPE_MISMATCH');
     // a still-deferred array shape (nested deeper than [][]) is classified UNSUPPORTED_V0 by layout.
-    expect(catchEvs(() => encodeLiteralData('uint256[][][]' as ArrayType, [])).code).toBe(
-      'UNSUPPORTED_V0',
-    );
+    expect(catchEvs(() => encodeLiteralData('uint256[][][]', [])).code).toBe('UNSUPPORTED_V0');
   });
 
   test('element errors name the index', () => {
@@ -418,7 +414,7 @@ describe('buildScriptAbi', () => {
 
   test('validation: names and v0 types', () => {
     expect(catchEvs(() => buildScriptAbi('not a name', args, returns)).code).toBe('ABI_SHAPE');
-    // empty return keys would break viem's object inference (abitype §4.3) — hard error
+    // empty return keys would break viem's object inference — hard error
     expect(catchEvs(() => buildScriptAbi('s', args, [{ name: '', type: 'address' }])).code).toBe(
       'ABI_SHAPE',
     );

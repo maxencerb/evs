@@ -1,9 +1,8 @@
 /**
- * M10 `test/harness/anvil.ts` — prool anvil client helpers (integration tier).
+ * prool anvil client helpers (integration tier).
  *
- * Contract: docs/design/module-interfaces.md §M10 + testing.md §3 (viem's production
- * pattern): one anvil instance per vitest worker, routed through the prool proxy server
- * started by `test/global-setup.ts` (`http://127.0.0.1:8545/<poolId>`).
+ * Viem's production pattern: one anvil instance per vitest worker, routed through the prool
+ * proxy server started by `test/global-setup.ts` (`http://127.0.0.1:8545/<poolId>`).
  */
 
 import {

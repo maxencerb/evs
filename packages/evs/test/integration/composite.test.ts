@@ -1,5 +1,5 @@
 /**
- * Composite-types end-to-end integration (spec §9, testing.md §3/§7).
+ * Composite-types end-to-end integration.
  *
  * Runs builder-compiled read scripts against a REAL solc-0.8.30 `Composite` deployment on
  * anvil — the byte-exact differential oracle already proves codec parity, this tier proves
@@ -14,7 +14,7 @@
  */
 
 import { encodeAbiParameters, encodeFunctionData, encodePacked, getAddress, keccak256 } from 'viem';
-import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { Composite } from '../generated/index.js';
@@ -377,7 +377,7 @@ describe('composite arrays (read path) against real solc getters', () => {
 // --- composite arrays RETURN PATH: real-solc getters → return the WHOLE array -------------
 //
 // Each compiled evs script eth_calls a composite-array getter on the REAL deployment and returns
-// the WHOLE decoded array (§12.7 encode). The solc-derived ground truth is the SAME getter read
+// the WHOLE decoded array (array encode). The solc-derived ground truth is the SAME getter read
 // directly through viem; the evs-script result must deep-equal it across all three toViem paths.
 
 /** Loose returnable handle: a composite-array call output is an Expr at runtime (precise inference
@@ -495,7 +495,7 @@ describe('composite arrays (return path) against real solc getters', () => {
   });
 });
 
-// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc (§12.7/§12.8 M4) -------
+// --- composite arrays CALL-ARG encode + CONSTRUCT against real solc ------------------------
 //
 // (1) CONSTRUCT a Position[] inside the evs script (s.newArray + s.tuple + arrset), pass it as a
 //     CALL ARG to sumLiquidity(Position[]) on the real deployment, and assert the returned sum
@@ -514,7 +514,7 @@ const PositionStruct = {
   ],
 } as const;
 
-describe('composite arrays CALL-ARG encode + construct against real solc (M4)', () => {
+describe('composite arrays CALL-ARG encode + construct against real solc', () => {
   test('construct a Position[] in the evs script and call sumLiquidity → sum matches solc', async () => {
     // three positions derived exactly like Composite.positionsBatch (i = 0,1,2): liquidity = i*1000+7.
     const POSITIONS = [0n, 1n, 2n].map((i) => derivePosition(i));

@@ -5,7 +5,7 @@
  * every test asserts through the expectEvs()/catchEvs() helpers (class + code + message + loc);
  * the rule only recognizes direct expect* calls. */
 /**
- * M5 unit tests — the recording-time validation checklist (module-interfaces §M5 invariant 5):
+ * Builder unit tests — the recording-time validation checklist:
  * every item asserts the error class, the error code, a message substring, AND the loc
  * (pointing into this file). Plus staging traps, foreign/cross-scope handles, and LoopCtl
  * scoping.
@@ -13,7 +13,7 @@
 import { inspect } from 'node:util';
 
 import type { Abi } from 'abitype';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   EvsError,
@@ -79,7 +79,7 @@ const tupleAbi = [
     inputs: [],
     outputs: [
       {
-        // `tuple[][]` (two levels) is STILL deferred — `tuple[]` is now supported (§12 un-gate).
+        // `tuple[][]` (two levels) is STILL deferred — `tuple[]` is now supported.
         name: 'data',
         type: 'tuple[][]',
         components: [{ name: 'a', type: 'uint256' }],
@@ -156,21 +156,22 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
     );
   });
 
-  test('one-level nested-array arg type is now accepted (§12 un-gate), read via .length()', () => {
+  test('one-level nested-array arg type is now accepted, read via .length()', () => {
     // `uint256[][]` arg decodes (read path). Return a derived WORD (composite-array encode is the
     // next milestone), so recording + the script build succeed.
-    const script = evscript({ name: 'd', args: ['uint256[][]' as never] }, ((
-      s: AnyBuilder,
-      x: { length(): unknown },
-    ) => s.return({ rows: x.length() } as never)) as never);
+    const script = evscript(
+      { name: 'd', args: ['uint256[][]' as never] },
+      (s: AnyBuilder, x: { length(): unknown }) => s.return({ rows: x.length() } as never),
+    );
     expect(script).toBeDefined();
   });
 
   test('STILL deferred: an array nested deeper than [][] → UNSUPPORTED_V0', () => {
     expectEvs(
       () =>
-        evscript({ name: 'd', args: ['uint256[][][]' as never] }, ((s: AnyBuilder, x: unknown) =>
-          s.return({ x } as never)) as never),
+        evscript({ name: 'd', args: ['uint256[][][]' as never] }, (s: AnyBuilder, x: unknown) =>
+          s.return({ x } as never),
+        ),
       EvsTypeError,
       'UNSUPPORTED_V0',
       /not supported in evs v0/,
@@ -262,7 +263,7 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
     );
   });
 
-  test('a composite-array literal in s.lit now BUILDS at record time (§12.8)', () => {
+  test('a composite-array literal in s.lit now BUILDS at record time', () => {
     // `uint256[][]` is a valid composite-element array; s.lit builds it via arrnew + per-element
     // construction (no flat data segment) and returns a usable Expr.
     expect(() =>
@@ -404,7 +405,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
   });
 
   test('newArray now admits a composite element (string), but NOT a fixed-size element (T[N])', () => {
-    // string is a valid composite element (§12.8) — s.newArray('string', n) builds a string[] now.
+    // string is a valid composite element — s.newArray('string', n) builds a string[] now.
     expect(() =>
       evscript({ name: 'mkStrings' }, (s) => {
         const xs = s.newArray('string' as never, 2n);
@@ -1182,7 +1183,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
 });
 
 // ---------------------------------------------------------------------------
-// staging traps (M5 invariant 2)
+// staging traps
 // ---------------------------------------------------------------------------
 
 /* oxlint-disable typescript/restrict-template-expressions, typescript/no-base-to-string --
@@ -1348,8 +1349,9 @@ describe('custom errors (issue #15)', () => {
   test('def errors: a non-t.error value is ERROR_DECL', () => {
     expectEvs(
       () =>
-        evscript({ name: 'bad', errors: [{ nope: true }] as never }, ((s: AnyBuilder) =>
-          s.return({ ok: s.lit(t.bool, true) })) as never),
+        evscript({ name: 'bad', errors: [{ nope: true }] as never }, (s: AnyBuilder) =>
+          s.return({ ok: s.lit(t.bool, true) }),
+        ),
       EvsTypeError,
       'ERROR_DECL',
       /expected an error declared with t\.error/,
@@ -1360,8 +1362,9 @@ describe('custom errors (issue #15)', () => {
     const dup = t.error('NoBalance', [namedArg('balance', t.uint256)]);
     expectEvs(
       () =>
-        evscript({ name: 'bad', errors: [NoBalance, dup] as never }, ((s: AnyBuilder) =>
-          s.return({ ok: s.lit(t.bool, true) })) as never),
+        evscript({ name: 'bad', errors: [NoBalance, dup] as never }, (s: AnyBuilder) =>
+          s.return({ ok: s.lit(t.bool, true) }),
+        ),
       EvsTypeError,
       'ERROR_DECL',
       /duplicate error name "NoBalance"/,

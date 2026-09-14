@@ -1,7 +1,5 @@
 /**
- * M2 `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
- *
- * Contract: docs/design/module-interfaces.md §M2 (frozen) + architecture.md §3/§4/§6.
+ * `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
  *
  * Re-checks everything the builder enforces so deserialized IR is as trustworthy as recorded
  * IR (`deserializeIr → validateIr` is the trust boundary): operand types per the op table,
@@ -761,7 +759,7 @@ class IrValidator {
     const what = `${path} (call${s.mode === 'try' ? ' try' : ''} "${s.fnAbi.name}")`;
     if (s.kind !== undefined && s.kind !== 'static' && s.kind !== 'call' && s.kind !== 'simulate') {
       this.fail(
-        `${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind as unknown)}`,
+        `${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind)}`,
         s.loc,
       );
     }
@@ -842,7 +840,7 @@ class IrValidator {
   }
 
   /**
-   * Element type of an `arrnew` (§12.4). Admits one level of array nesting over a composite/dynamic
+   * Element type of an `arrnew`. Admits one level of array nesting over a composite/dynamic
    * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
    * or a plain `tuple`. STILL deferred (`UNSUPPORTED_V0`): `tuple[]` element (→ `tuple[][]`), a
    * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
@@ -877,7 +875,7 @@ class IrValidator {
   }
 
   // -------------------------------------------------------------------------
-  // const payload checks (canonical word invariant — architecture §5)
+  // const payload checks (canonical word invariant)
   // -------------------------------------------------------------------------
 
   private checkConstData(
@@ -975,12 +973,12 @@ function stringifyType(t: EvsType): string {
   return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
-/** bitwise/shift operand domain per architecture §6: uintN, intN, bytesN. */
+/** bitwise/shift operand domain: uintN, intN, bytesN. */
 function isBitsOperand(s: EvsType): boolean {
   return isWordType(s) && s !== 'address' && s !== 'bool';
 }
 
-/** legal `convert` pairs per architecture §6. */
+/** legal `convert` pairs. */
 function convertOk(from: EvsType, to: EvsType): boolean {
   if (isNumeric(from) && isNumeric(to)) return true; // free widening / checked narrowing
   if ((from === 'uint256' || from === 'bytes32') && to === 'address') return true; // asAddress
@@ -989,7 +987,7 @@ function convertOk(from: EvsType, to: EvsType): boolean {
   return false;
 }
 
-/** canonical word invariant per architecture §5. */
+/** canonical word invariant. */
 function isCanonicalWord(type: WordType, x: bigint): boolean {
   if (type === 'bool') return x === 0n || x === 1n;
   if (type === 'address') return x < 1n << 160n;
