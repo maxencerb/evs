@@ -4,7 +4,6 @@
  * run results — including the bytecode seam between editor and output.
  */
 
-import * as monaco from 'monaco-editor';
 import editorWorker from 'monaco-editor/editor/editor.worker.js?worker';
 // Side effect: registers the TypeScript language service (the main entry only
 // registers syntax highlighting); also the only home of its API in monaco 0.56.
@@ -18,6 +17,7 @@ import tsWorker from 'monaco-editor/language/typescript/ts.worker.js?worker';
 
 import payload from '../generated/playground-dts.json';
 import { examples } from './examples.ts';
+import * as monaco from './monaco.ts';
 import { runScript, type RunOutcome } from './run.ts';
 
 import './playground.css';
