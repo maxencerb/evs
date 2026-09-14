@@ -166,10 +166,21 @@ interface AnyScript {
 
 type Outcome = { kind: 'return' | 'revert'; data: Hex };
 
+/** The distinct source locations a source map carries (order-free). */
+function mappedLocs(map: CompiledEvsScript['sourceMap']): string[] {
+  const keys = map.segments.map((seg) =>
+    seg.loc === null ? 'null' : `${seg.loc.file}:${seg.loc.line}:${seg.loc.column}`,
+  );
+  return [...new Set(keys)].toSorted();
+}
+
 /**
- * Compiles once, then for every arg set asserts byte-exact agreement between the reference
- * interpreter and the compiled runtime on the harness EVM. Returns the (agreed) outcomes so
- * callers can pin expectations for specific cases.
+ * Compiles twice — the default output AND its `optimize: true` twin (the built-in peephole
+ * pass, issue #39) — checks the always-on DCE pass (issue #40: `interpret(ir) ==
+ * interpret(dce(ir))`, output validity, idempotence), then for every arg set asserts byte-exact agreement between the reference
+ * interpreter and BOTH compiled runtimes on the harness EVM. The optimized twin must also
+ * never be larger, never cost more gas, and carry exactly the same mapped source locations.
+ * Returns the (agreed) outcomes so callers can pin expectations for specific cases.
  */
 async function expectAgreement(
   script: AnyScript,
@@ -180,10 +191,18 @@ async function expectAgreement(
   // compile() lowers dce(ir) (issue #40): the corpus therefore also gates the DCE pass —
   // interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir)) — plus idempotence and validity.
   const compiled: CompiledEvsScript = compile(script, { evmVersion });
-  const optimized = eliminateDeadCode(script.ir);
-  expect(() => validateIr(optimized), `${script.name}: dce output validates`).not.toThrow();
-  expect(serializeIr(eliminateDeadCode(optimized)), `${script.name}: dce idempotence`).toBe(
-    serializeIr(optimized),
+  const dced = eliminateDeadCode(script.ir);
+  expect(() => validateIr(dced), `${script.name}: dce output validates`).not.toThrow();
+  expect(serializeIr(eliminateDeadCode(dced)), `${script.name}: dce idempotence`).toBe(
+    serializeIr(dced),
+  );
+  const optimized: CompiledEvsScript = compile(script, { evmVersion, optimize: true });
+  const twinLabel = `${script.name} [${evmVersion}] optimized twin`;
+  expect(optimized.runtimeBytecode.length, `${twinLabel}: size`).toBeLessThanOrEqual(
+    compiled.runtimeBytecode.length,
+  );
+  expect(mappedLocs(optimized.sourceMap), `${twinLabel}: mapped locations`).toEqual(
+    mappedLocs(compiled.sourceMap),
   );
   const fixture = fixtureOf(table);
   const chain = chainOf(table);
@@ -192,7 +211,7 @@ async function expectAgreement(
     const label = `${script.name}(${args.map(String).join(', ')}) [${evmVersion}]`;
     const calldata = encodeFunctionData({ abi: compiled.abi, functionName: script.name, args });
     const fromInterp = interpret(script.ir, args, chain).outcome;
-    const fromDce = interpret(optimized, args, chain).outcome;
+    const fromDce = interpret(dced, args, chain).outcome;
     expect(fromDce.kind, `${label}: dce interp outcome`).toBe(fromInterp.kind);
     expect(fromDce.data, `${label}: dce interp payload`).toBe(fromInterp.data);
     // oxlint-disable-next-line no-await-in-loop -- sequential by design: deterministic per-case labels
@@ -203,6 +222,14 @@ async function expectAgreement(
     expect(fromEvm.data, `${label}: payload`).toBe(fromInterp.data);
     // decode/panic reverts must never be exceptional halts (no all-gas consumption)
     expect(fromEvm.gasUsed, `${label}: gas sanity`).toBeLessThan(25_000_000n);
+    // the optimized twin: same outcome, same payload, never more gas
+    // oxlint-disable-next-line no-await-in-loop -- see above
+    const fromOptimized = await execRuntime(optimized.runtimeBytecode, calldata, fixture);
+    expect(fromOptimized.success, `${label} (optimized): outcome`).toBe(
+      fromInterp.kind === 'return',
+    );
+    expect(fromOptimized.data, `${label} (optimized): payload`).toBe(fromInterp.data);
+    expect(fromOptimized.gasUsed, `${label} (optimized): gas`).toBeLessThanOrEqual(fromEvm.gasUsed);
     outcomes.push({ kind: fromInterp.kind, data: fromInterp.data });
   }
   return outcomes;

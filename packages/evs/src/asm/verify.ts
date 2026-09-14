@@ -64,8 +64,9 @@ export function verifyJumpdests(
 // pass 2 — stack-height simulation
 // ---------------------------------------------------------------------------
 
-/** Max simulated depth inside a statement template (DUP/SWAP reach). */
-const MAX_TEMPLATE_DEPTH = 16;
+/** Max simulated depth inside a statement template (DUP/SWAP reach). Exported for the
+ *  built-in peephole pass, which must respect the same budget when it deepens a window. */
+export const MAX_TEMPLATE_DEPTH = 16;
 
 function isZeroPush(node: AsmNode): boolean {
   return (node.k === 'push' && node.value === 0n) || (node.k === 'op' && node.op === 'PUSH0');

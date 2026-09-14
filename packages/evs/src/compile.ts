@@ -2,9 +2,16 @@
  * `compile.ts` — pipeline orchestration:
  *
  *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates) →
- *   peephole (user hook) → assemble(verify: jumpdests, stack, shapes) → EIP-170 check
- *   (per-region breakdown via labelNames) → merge sites into the sourceMap → build the
- *   artifact.
+ *   [optimize: built-in evsPeephole] → peephole (user hook) → assemble(verify: jumpdests,
+ *   stack, shapes) → EIP-170 check (per-region breakdown via labelNames) → merge sites into
+ *   the sourceMap → build the artifact.
+ *
+ * `optimize` (default false) is the single switch for the built-in optimizer passes; today that
+ * is the asm-level peephole pass (`codegen/peephole.ts`) — dead-code elimination is not an
+ * optimizer pass and always runs. The peephole pass runs at the same hook position as the user
+ * `peephole` hook and BEFORE it, so a user hook always sees the optimized stream, and the
+ * verifiers always see the final one. With `optimize: false` the pipeline is byte-identical to
+ * the unoptimized lowering.
  *
  * Diagnostics from lowering are forwarded to `options.onDiagnostic`; nothing is ever logged.
  * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
@@ -26,6 +33,7 @@ import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
+import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
 import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import {
@@ -51,7 +59,8 @@ import {
 
 export interface CompileOptions {
   evmVersion?: EvmVersion; // default 'cancun'
-  peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity (no optimizer ships yet, #39)
+  optimize?: boolean; // default false — enables the built-in optimizer passes (currently the asm peephole pass, `evsPeephole`); output is still fully verified
+  peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity — a user hook over the node stream; with `optimize` it runs AFTER the built-in passes
   onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION); never logged
   locations?: boolean; // default true
 }
@@ -158,6 +167,7 @@ function resolveOptions(options: CompileOptions | undefined): Readonly<Required<
   }
   return Object.freeze({
     evmVersion,
+    optimize: options?.optimize ?? false,
     peephole: options?.peephole ?? identityPeephole,
     onDiagnostic: options?.onDiagnostic ?? ignoreDiagnostic,
     locations: options?.locations ?? true,
@@ -188,9 +198,14 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
 
+  // built-in passes first (opt-in), then the user hook; `options.peephole` stays the user's own
+  const userPeephole = resolved.peephole;
+  const peephole = resolved.optimize
+    ? (nodes: readonly AsmNode[]): AsmNode[] => userPeephole(evsPeephole(nodes))
+    : userPeephole;
   const assembled = assemble(lowered.nodes, {
     evmVersion: resolved.evmVersion,
-    peephole: resolved.peephole,
+    peephole,
     verify: true,
   });
 

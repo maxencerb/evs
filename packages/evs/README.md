@@ -355,6 +355,10 @@ the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts mak
   stack-height simulation (the operand stack must be empty at every statement boundary),
   opcode/fork lints, and the EIP-170 size check. The artifact's `ir` stays the recorded IR;
   the differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`.
+  An opt-in peephole optimizer (`compile(script, { optimize: true })`, exported as `evsPeephole`)
+  sits between codegen and assembly: it folds store-then-reload slot pairs, constants and stack
+  identities, never crosses a `JUMPDEST`, keeps every source location, and its output goes
+  through the same verifiers. It is off by default so the default bytes stay the plain lowering.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures point at), a **static frame from `0x80`**
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata
@@ -377,7 +381,8 @@ Three tiers, all run by CI (`ci.yml`):
 
 - **unit** (`src/**/*.test.ts`) — in-process EVM harness (`@ethereumjs/evm`), including the
   anti-miscompilation core: the IR **interpreter vs the compiled bytecode** must agree
-  byte-for-byte on returndata and revert payloads for every fixture; ABI codecs vs viem's
+  byte-for-byte on returndata and revert payloads for every fixture — for the default output
+  and its `optimize: true` twin alike; ABI codecs vs viem's
   `encodeAbiParameters` / `encodeFunctionData`; checked arithmetic vs the solc reference
   contract (`packages/contracts`, forge tests + codegen'd artifacts).
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
