@@ -75,6 +75,12 @@ jobs:
         with:
           name: generated
           path: packages/evs/test/generated
+      - name: DEBUG fmt diff (temporary)
+        run: |
+          vp toolchain
+          vp fmt
+          git --no-pager diff
+          git checkout -- .
       - run: vp run fmt:check
       # type-aware lint + tsgolint type-check; resolves workspace imports through the built .d.ts
       # and the codegen artifacts
