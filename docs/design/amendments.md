@@ -1740,6 +1740,65 @@ this change; decisions locked in the issue-#15 discussion). Summary of the law a
   differential corpus case (break/continue/Panic 0x11 agreement across interp + compiled
   bytecode), and the anvil integration tier (`test/integration/issue12.test.ts`).
 
+## 26. Toolchain: Vite+ (`vp`) + changesets-driven releases (2026-09-14)
+
+Supersedes repo-layout.md §6–§10 where they disagree. Motivation: one toolchain (format,
+lint, type-aware checks, tests, task runner) behind a single CLI, and a versioning flow that
+records intent (changesets) instead of deriving the version from a hand-made GitHub release.
+
+### 26.1 Vite+ replaces the standalone oxlint / oxfmt / vitest binaries
+
+- `vite-plus` (pinned exact, `catalog:testing`) is the only tooling dev dependency; it ships
+  vitest 4.1.x, oxlint, oxfmt, oxlint-tsgolint (TypeScript 7 semantics) and tsdown. Root
+  `overrides` alias `vite` → `@voidzero-dev/vite-plus-core@<same version>` and pin `vitest`
+  to the bundled version so the workspace shares one Vite / Vitest instance (Astro's own
+  `vite ^8` dependency resolves to the same core).
+- Root `vite.config.ts` holds `fmt` (§7 verbatim), `lint` (§6 verbatim, plus
+  `options.typeCheck: true` and the `vite-plus/prefer-vite-plus-imports` rule) and `test`
+  (§8's re-rooted projects). `packages/evs/vite.config.ts` (renamed from `vitest.config.ts`)
+  stays the single source of truth for the unit / types / integration projects (testing.md §1).
+- Test files import from `vite-plus/test` instead of `vitest` (thin re-export; `declare
+module 'vitest'` augmentations would still target `vitest`).
+- `tsconfig.base.json` sets `types: ["node"]` explicitly: tsgolint does not auto-include
+  `@types/*` the way tsc does. Bun-run scripts (`packages/contracts/scripts`, `scripts/`) get
+  their own `tsconfig.json` with `types: ["bun"]` so `vp check` type-checks them with bun's
+  globals; those packages are `"type": "module"` (NodeNext otherwise treats them as CJS).
+- The library build stays `tsc -p tsconfig.build.json` (§3/§5 unchanged): exact `.d.ts` +
+  declaration maps, and the docs site's Cloudflare build command must not depend on `vp`.
+  `vp pack` (tsdown) is a possible follow-up, not a decision.
+- Scripts: `vp check` is the local static gate (fmt + lint + tsgolint type-check);
+  `bun run check` / `vp run check` adds the per-workspace `tsc --noEmit` / `astro check`.
+  `bun run <script>` keeps working — bun remains the package manager (`packageManager`
+  pin; `vp install` delegates to it).
+- CI (`ci.yml`): `voidzero-dev/setup-vp@<exact>` replaces setup-bun + setup-node +
+  actions/cache (it provisions Node from `.node-version`, bun from `packageManager`, caches
+  bun's install cache and runs `vp install --frozen-lockfile`). Job graph unchanged; the
+  lint job now also needs `test/generated` (type-check covers the test tree).
+
+### 26.2 Releases: changesets → "Version Packages" PR → npm OIDC publish
+
+- `.changeset/config.json`: `@changesets/changelog-github`, `access: public`,
+  `privatePackages: { version: false, tag: false }` (only `@maxencerb/evs` is versioned),
+  `format: false` (the repo formatter runs separately).
+- The committed `packages/evs/package.json` version is the **last released version**
+  (was `0.0.0` + tag-derived). `changeset version` bumps it; `changeset:version` also runs
+  `bun install --lockfile-only` so `bun.lock` records the new workspace version.
+- `release.yml` (name unchanged — the npm trusted publisher is bound to it) runs on every
+  push to `main`: `changesets/action/select-mode` → either `changesets/action/version`
+  (opens / updates the release PR) or `changesets/action/publish` with a **custom script**
+  (`scripts/publish.ts`). The custom script is required because
+  - `bun publish` still has no npm OIDC support (oven-sh/bun#22423, open; the OIDC PR
+    #29374 was closed unmerged), so the upload must be `npm publish`;
+  - `npm publish <dir>` / `changeset publish` would ship `catalog:` / `workspace:` specs
+    verbatim; `bun pm pack` rewrites them.
+    Hence `bun pm pack` → `bunx publint <tgz>` → `npm publish <tgz> --provenance --access
+public --tag latest|next` → `changeset git-tag` (writes the tag events to
+    `CHANGESETS_OUTPUT`, which the action uses to push the tag and create the GitHub release).
+    `id-token: write` is granted to the publish job only.
+- Retired: `bun pm version`, the tag-regex / prerelease-checkbox check, `release:` trigger.
+  Prerelease dist-tags now follow the semver prerelease component of the changeset-bumped
+  version (`changeset pre enter <tag>` flow).
+
 ## Spot-check summary (integration agent)
 
 | Claim                                                               | Where verified                                                                                                      | Result           |

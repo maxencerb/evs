@@ -1,5 +1,11 @@
 # evs — Repository Layout & Release Engineering (binding)
 
+> **Amended 2026-09-14 (amendments.md §26):** the toolchain moved to **Vite+** (`vp`) and
+> releases to **changesets**. Where this document and §26 disagree, §26 wins:
+> `.oxlintrc.json` / `.oxfmtrc.json` / root `vitest.config.ts` (§6–§8) are replaced by the
+> root `vite.config.ts`; `ci.yml` / `release.yml` (§9–§10) by the changesets-driven
+> workflows; the committed library version is the last released one, not `0.0.0`.
+
 Status: FINAL. Sources: stack-testing.md, npm-oidc-release.md, oxc-tooling.md.
 
 ## 1. Monorepo tree
@@ -9,9 +15,8 @@ evs/
   package.json                  # private root: workspaces + catalogs + tool scripts
   bun.lock
   tsconfig.base.json            # shared strict compiler options
-  vitest.config.ts              # projects: ['packages/*/vitest.config.ts']; coverage (root-only)
-  .oxlintrc.json
-  .oxfmtrc.json
+  vite.config.ts                # Vite+ root config: fmt + lint + test projects (§26 amendment)
+  .changeset/                   # changesets config + pending changesets (§26 amendment)
   .gitignore                    # dist/, coverage/, contracts/out|cache, *.tgz
   .github/workflows/ci.yml
   .github/workflows/release.yml # filename must match the npm trusted-publisher config exactly
@@ -23,7 +28,7 @@ evs/
       package.json
       tsconfig.json             # typecheck (noEmit), includes src + test
       tsconfig.build.json       # emit: dist/ js + d.ts + maps, src only
-      vitest.config.ts          # unit / types / integration projects (testing.md §1)
+      vite.config.ts            # unit / types / integration projects (testing.md §1)
       src/                      # module layout per module-interfaces.md
         core/  ir/  abi/  builder/  asm/  codegen/
         compile.ts  viem.ts  index.ts

@@ -13,7 +13,7 @@
  */
 import type { Abi } from 'abitype';
 import type { ReadContractParameters, ReadContractReturnType } from 'viem';
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import type { ArgSpec, Expr } from '../core/types.js';
 import {

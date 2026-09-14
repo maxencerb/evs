@@ -8,7 +8,7 @@
  */
 
 import { encodeFunctionData, erc20Abi, parseEther } from 'viem';
-import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { Malformed, MockERC20, MockUniV3Pool } from '../generated/index.js';

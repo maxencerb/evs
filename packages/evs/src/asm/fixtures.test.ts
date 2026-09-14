@@ -9,7 +9,7 @@
  */
 
 import { createEVM } from '@ethereumjs/evm';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { AsmWriter, assemble } from './assembler.js';
 import { disassemble } from './disasm.js';

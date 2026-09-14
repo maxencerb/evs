@@ -22,7 +22,7 @@ import {
   getAddress,
   toFunctionSelector,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { Reverter } from '../test/generated/index.js';
 import {

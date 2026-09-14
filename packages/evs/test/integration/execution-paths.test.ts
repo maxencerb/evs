@@ -9,7 +9,7 @@
  */
 
 import { encodeFunctionData, erc20Abi, getAddress, parseEther } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockERC20 } from '../generated/index.js';

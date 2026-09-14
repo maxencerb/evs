@@ -303,20 +303,26 @@ bun examples/token-balances/index.ts   # loop + tryCall over address[] — the m
 
 ## Development
 
-Bun workspaces monorepo; Bun is the package manager / script runner, tests execute on
-[vitest](https://vitest.dev) (recorded decision — per-worker anvil via prool and typecheck
-tests need it; **never run `bun test` here**).
+Bun workspaces monorepo driven by [Vite+](https://viteplus.dev) (`vp`): one toolchain for
+formatting (oxfmt), linting + type-aware checks (oxlint / tsgolint), tests (vitest 4) and the
+task runner. Bun stays the package manager (pinned via `packageManager`); `vp install`
+delegates to it. Tests execute on vitest (recorded decision — per-worker anvil via prool and
+typecheck tests need it; **never run `bun test` here**).
 
 ```sh
-bun install               # workspaces + pinned catalogs
-bun run build             # build @maxencerb/evs (tsc → dist/)
-bun run test              # unit + type tests (vitest)
-bun run test:integration  # anvil integration tests (requires foundry)
-bun run check             # fmt:check + lint:ci + typecheck
-bun run fmt               # oxfmt (writes)
+curl -fsSL https://vite.plus | bash   # once: the global `vp` CLI
+vp install                # workspaces + pinned catalogs (= bun install)
+vp run build              # build @maxencerb/evs (tsc → dist/)
+vp run test               # unit + type tests (vitest via vp test)
+vp run test:integration   # anvil integration tests (requires foundry)
+vp check                  # format + lint + type-check (tsgolint) in one pass
+vp run check              # vp check + tsc/astro typecheck across workspaces (= CI)
+vp fmt                    # oxfmt (writes)
+vp run changeset          # add a changeset when a change should ship in the next release
 ```
 
-Contracts: `cd packages/contracts && forge build / forge test / bun run codegen`.
+Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
+Releases: [`RELEASING.md`](RELEASING.md) (changesets → "Version Packages" PR → npm OIDC publish).
 
 ## License
 

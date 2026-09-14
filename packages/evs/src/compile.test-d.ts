@@ -12,7 +12,7 @@ import type {
   ReadContractReturnType,
   StateOverride,
 } from 'viem';
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';

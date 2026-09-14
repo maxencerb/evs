@@ -24,7 +24,8 @@
   "devDependencies": {
     "@astrojs/check": "catalog:docs",
     "@maxencerb/evs": "workspace:*",
-    "@types/bun": "^1.3.14",
+    "@types/bun": "^1.4.2",
+    "satteri": "catalog:docs",
     "typescript": "catalog:",
     "viem": "catalog:",
     "wrangler": "catalog:docs"

@@ -1,6 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * exhaustive-table tests cast generated type strings on purpose. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
 import type { TupleType, WordType } from '../core/types.js';

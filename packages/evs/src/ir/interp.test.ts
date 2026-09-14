@@ -15,7 +15,7 @@ import {
   keccak256,
   toFunctionSelector,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { canonicalTypeSignature } from '../abi/artifact.js';
 import { EvsCompileError, EvsTypeError, type SourceLoc } from '../core/errors.js';

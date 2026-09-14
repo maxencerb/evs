@@ -7,7 +7,7 @@
  */
 import type { Abi, AbiParametersToPrimitiveTypes } from 'abitype';
 import type { ReadContractReturnType } from 'viem';
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
 import {

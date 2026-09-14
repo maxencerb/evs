@@ -6,7 +6,7 @@
  */
 
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { CALLER_ADDRESS, DEFAULT_GAS_LIMIT, execRuntime, SCRIPT_ADDRESS } from './evm.js';
 import {

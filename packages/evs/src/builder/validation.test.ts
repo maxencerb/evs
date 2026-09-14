@@ -13,7 +13,7 @@
 import { inspect } from 'node:util';
 
 import type { Abi } from 'abitype';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   EvsError,

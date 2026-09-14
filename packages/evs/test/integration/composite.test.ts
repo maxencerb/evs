@@ -14,7 +14,7 @@
  */
 
 import { encodeAbiParameters, encodeFunctionData, encodePacked, getAddress, keccak256 } from 'viem';
-import { beforeAll, describe, expect, expectTypeOf, test } from 'vitest';
+import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { Composite } from '../generated/index.js';

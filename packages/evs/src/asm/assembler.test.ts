@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import { AsmWriter, assemble, type AsmNode } from './assembler.js';

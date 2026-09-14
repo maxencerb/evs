@@ -15,7 +15,7 @@ import {
   encodeErrorResult,
   encodeFunctionData,
 } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import {
   compile,

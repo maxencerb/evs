@@ -7,7 +7,7 @@
  * returned word consts keep a slot; uncalled fns get no region and no value slots.
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import type { ScriptIr, Stmt } from '../ir/nodes.js';

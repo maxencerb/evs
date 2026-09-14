@@ -6,7 +6,7 @@
  */
 
 import { decodeFunctionResult, encodeErrorResult, encodeFunctionData, maxUint256 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { ATTACKER_RETURNERS } from '../test/harness/fixtures.js';

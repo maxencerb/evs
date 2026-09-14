@@ -5,7 +5,7 @@
  * expect(...).toThrowError(...) pair. */
 /* oxlint-disable unicorn/no-thenable --
  * the frozen IR schema (module-interfaces.md §M2) names the if-statement branch field `then`. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import type { EvsType, Hex, WordType } from '../core/types.js';

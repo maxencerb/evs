@@ -1,6 +1,6 @@
 {
   "name": "@maxencerb/evs",
-  "version": "0.0.0",
+  "version": "0.0.11",
   "description": "Typed EVM read scripts in plain TypeScript: a callback builder compiled to runtime bytecode, executed via eth_call (deployless or state-override) with full viem inference",
   "license": "MIT",
   "repository": {
@@ -35,8 +35,8 @@
   "scripts": {
     "build": "rm -rf dist && tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit",
-    "test": "vitest run --project unit --project types",
-    "test:integration": "vitest run --project integration",
+    "test": "vp test run --project unit --project types",
+    "test:integration": "vp test run --project integration",
     "prepublishOnly": "bun run build"
   },
   "dependencies": {
@@ -47,7 +47,7 @@
     "prool": "catalog:testing",
     "typescript": "catalog:",
     "viem": "catalog:",
-    "vitest": "catalog:testing"
+    "vite-plus": "catalog:testing"
   },
   "peerDependencies": {
     "typescript": ">=5.5",

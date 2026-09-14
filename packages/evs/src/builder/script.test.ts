@@ -7,7 +7,7 @@ import type { Abi } from 'abitype';
  * deterministic (no absolute paths / line numbers); loc-sensitive assertions live in
  * `validation.test.ts`.
  */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';

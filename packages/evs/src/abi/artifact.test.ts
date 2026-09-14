@@ -2,7 +2,7 @@
  * rejection matrices deliberately feed wrongly-typed values through the public signatures. */
 import type { AbiFunction, AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
 import { t } from '../core/types.js';

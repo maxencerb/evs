@@ -5,7 +5,7 @@
  */
 
 import { BaseError, ContractFunctionRevertedError, encodeErrorResult } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { RUNTIME_42, RUNTIME_WHOAMI } from '../test/harness/fixtures.js';

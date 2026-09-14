@@ -1,0 +1,7 @@
+{
+  // scripts/codegen.ts runs on bun (`bun run codegen`); this config only exists so type-aware
+  // lint / `vp check` type-check it with bun's globals instead of a bare default project.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["bun"] },
+  "include": ["scripts"]
+}

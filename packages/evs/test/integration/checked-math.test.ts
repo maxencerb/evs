@@ -7,7 +7,7 @@
  */
 
 import { decodeFunctionResult, encodeFunctionData, type Abi, type Hex } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, type EvsType } from '../../src/index.js';
 import { EvsReference } from '../generated/index.js';

@@ -27,7 +27,7 @@ import {
   keccak256,
   stringToHex,
 } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
 import { evscript } from '../builder/script.js';

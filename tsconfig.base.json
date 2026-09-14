@@ -10,7 +10,9 @@
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    // explicit: tsgolint (vp check typeCheck) does not auto-include @types/* like tsc does
+    "types": ["node"]
     // NO baseUrl — required by oxlint-tsgolint (TS7 semantics, oxc-tooling §5)
   }
 }

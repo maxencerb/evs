@@ -7,7 +7,7 @@
  * the M10 in-process EVM harness.
  */
 
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime } from '../../test/harness/evm.js';
 import { selectorOf } from '../abi/artifact.js';

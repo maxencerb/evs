@@ -1,6 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * type-level tests conjure phantom Expr handles via assertions; nothing here runs. */
-import { expectTypeOf, test } from 'vitest';
+import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t } from './types.js';
 import type { ArgSpec, Expr, IntoExpr, LitOf, TupleType } from './types.js';

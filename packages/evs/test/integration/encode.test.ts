@@ -13,7 +13,7 @@
  */
 
 import type { Abi } from 'viem';
-import { beforeAll, describe, expect, test } from 'vitest';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { compile, evscript, t, type EvsType, type Expr } from '../../src/index.js';
 import { EvsReference } from '../generated/index.js';

@@ -18,7 +18,7 @@
 
 import type { Abi, AbiFunction, Address } from 'abitype';
 import { encodeAbiParameters, encodeErrorResult, encodeFunctionData } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   bytesToHex,

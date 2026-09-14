@@ -1,4 +1,4 @@
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { FORBIDDEN, OPS, type Mnemonic, type OpInfo } from './ops.js';
 

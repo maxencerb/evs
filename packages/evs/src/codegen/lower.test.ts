@@ -15,7 +15,7 @@
 
 import type { AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   CALLER_ADDRESS,

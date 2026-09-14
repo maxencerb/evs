@@ -1,7 +1,7 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-base-to-string, typescript/no-unnecessary-template-expression --
  * exhaustive-table tests cast generated type strings on purpose, and the staging-trap suite
  * deliberately performs the host coercions the traps exist to intercept. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsStagingError, EvsTypeError } from './errors.js';
 import {

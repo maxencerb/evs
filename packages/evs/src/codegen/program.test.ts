@@ -17,7 +17,7 @@
 
 import type { AbiParameter } from 'abitype';
 import { encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, type EvmFixture } from '../../test/harness/evm.js';
 import {

@@ -5,7 +5,7 @@
 /* oxlint-disable vitest/expect-expect --
  * several rejection tests assert exclusively through the reject() helper, which wraps the
  * expect(...).toThrowError(...) pair. */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
 import { typeToAbiParam, type EvsType, type Hex, type WordType } from '../core/types.js';

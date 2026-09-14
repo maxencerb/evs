@@ -4,7 +4,7 @@
  * pin the exact semantics every former call site relied on: past-the-end reads as zero,
  * two's-complement wrapping, and strict shape validation where advertised.
  */
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import {
   bytesToBigInt,

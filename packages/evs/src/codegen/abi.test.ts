@@ -10,7 +10,7 @@
  */
 
 import { decodeFunctionResult, encodeAbiParameters } from 'viem';
-import { describe, expect, test } from 'vitest';
+import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, DEFAULT_GAS_LIMIT } from '../../test/harness/evm.js';
 import { buildScriptAbi, canonicalTypeSignature, selectorOf } from '../abi/artifact.js';

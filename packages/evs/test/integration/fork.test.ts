@@ -10,7 +10,7 @@
 import { Instance } from 'prool';
 import { createPublicClient, erc20Abi, http } from 'viem';
 import { mainnet } from 'viem/chains';
-import { afterAll, beforeAll, describe, expect, test } from 'vitest';
+import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { poolId } from '../harness/anvil.js';
