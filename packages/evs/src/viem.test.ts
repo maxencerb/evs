@@ -78,7 +78,7 @@ describe('init wrapper bytes (golden — architecture §12)', () => {
   });
 
   test('rejects malformed hex and PUSH2-range overflow', () => {
-    expect(() => toCreationBytecode('0x123' as Hex, 'cancun')).toThrowError(EvsTypeError);
+    expect(() => toCreationBytecode('0x123', 'cancun')).toThrowError(EvsTypeError);
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
     expect(() => toCreationBytecode('nope' as Hex, 'cancun')).toThrowError(EvsTypeError);
     expect(() => toCreationBytecode(`0x${'00'.repeat(0x10000)}`, 'cancun')).toThrowError(

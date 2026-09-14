@@ -823,7 +823,7 @@ test('#2 s.read({ struct: true }) returns ONE named Tuple over the outputs (opt-
     // a NON-LITERAL boolean `struct` is the UNION of both shapes — the runtime decides on the value
     // (`wantStruct = struct === true`), so the caller must NARROW. This is the soundness fix for the
     // literal-vs-boolean gap: neither a positional index nor a struct field works un-narrowed.
-    const flag = (1 as number) > 0; // a non-literal boolean
+    const flag = Math.random() > 0.5; // a non-literal boolean (not a constant expression)
     const maybe = s.read({ address: pool, abi: poolFixture, functionName: 'slot0', struct: flag });
     // @ts-expect-error — `maybe` may be a Tuple, so a positional index is not available un-narrowed.
     expectTypeOf(maybe[0]);

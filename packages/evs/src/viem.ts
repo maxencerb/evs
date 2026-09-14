@@ -220,14 +220,14 @@ function revertDataOf(input: unknown): Hex | undefined {
       return false; // keep scanning — an outer wrapper may hide a richer carrier deeper
     }
     if (typeof e === 'object' && e !== null && 'data' in e) {
-      const d: unknown = (e as { data: unknown }).data;
+      const d: unknown = e.data;
       if (typeof d === 'string') {
         if (isHexString(d)) {
           sawRevert = true;
           data ??= d;
         }
       } else if (typeof d === 'object' && d !== null && 'data' in d) {
-        const dd: unknown = (d as { data: unknown }).data;
+        const dd: unknown = d.data;
         if (typeof dd === 'string' && isHexString(dd)) {
           sawRevert = true;
           data ??= dd;

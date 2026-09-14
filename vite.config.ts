@@ -94,6 +94,9 @@ export default defineConfig({
           'vitest/no-conditional-expect': 'off',
           'no-await-in-loop': 'off',
           'typescript/no-unsafe-type-assertion': 'off',
+          // `abi: X as Abi` / `args: v as never` widenings are load-bearing there: they stop
+          // viem's generic inference from going "excessively deep" on the fixture ABIs.
+          'typescript/no-unnecessary-type-assertion': 'off',
         },
       },
     ],

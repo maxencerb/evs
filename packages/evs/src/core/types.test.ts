@@ -125,8 +125,8 @@ describe('predicates', () => {
   test('elemTypeOf round-trips every array type', () => {
     for (const w of WORD_TYPES) expect(elemTypeOf(`${w}[]` as ArrayType)).toBe(w);
     // nested string arrays peel one [] (now in the vocabulary)
-    expect(elemTypeOf('string[]' as ArrayType)).toBe('string');
-    expect(elemTypeOf('uint256[][]' as ArrayType)).toBe('uint256[]');
+    expect(elemTypeOf('string[]')).toBe('string');
+    expect(elemTypeOf('uint256[][]')).toBe('uint256[]');
     // non-array strings (and the non-string `tuple[]` tag) have no string element type
     for (const s of ['string', 'uint256', 'tuple[]']) {
       expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsTypeError);

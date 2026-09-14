@@ -38,7 +38,7 @@ type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0): Stmt {
-  return { loc: LOC, site, ...body } as Stmt;
+  return { loc: LOC, site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
@@ -2023,7 +2023,7 @@ describe('maxSteps + trace', () => {
 describe('host misuse', () => {
   test('malformed MockChain replies → EvsTypeError', () => {
     const bad: MockChain = {
-      staticcall: () => ({ success: true, data: '0xzz' as Hex }),
+      staticcall: () => ({ success: true, data: '0xzz' }),
     };
     expect(() => interpret(callScript, [TOKEN, OWNER], bad)).toThrowError(EvsTypeError);
   });

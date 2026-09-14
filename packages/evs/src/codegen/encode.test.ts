@@ -277,7 +277,7 @@ async function expectCase(c: EncodeCase, evmVersion?: 'paris' | 'shanghai' | 'ca
   const calldata = encodeFunctionData({
     abi: compiled.abi,
     functionName: 'encCase',
-    args: c.values as never,
+    args: c.values,
   });
   const res = await execRuntime(compiled.runtimeBytecode, calldata);
   expect(res.success, `${c.name}: script reverted with ${res.data}`).toBe(true);
@@ -358,7 +358,7 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
       abi: compiled.abi,
       functionName: 'emptyHash',
       data: res.data,
-    }) as { h: Hex };
+    });
     expect(out.h).toBe('0xc5d2460186f7233c927e7db2dcc703c0e500b653ca82273b7bfad8045d85a470');
   });
 
@@ -389,7 +389,7 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
       abi: compiled.abi,
       functionName: 'wordHash',
       data: res.data,
-    }) as { ha: Hex; hb: Hex; hc: Hex; hap: Hex };
+    });
     expect(out.ha).toBe(keccak256(encodeAbiParameters([{ type: 'uint8' }], [7])));
     expect(out.hb).toBe(keccak256(encodeAbiParameters([{ type: 'uint256' }], [123n])));
     expect(out.hc).toBe(keccak256(word)); // bytes32: abi.encode(x) IS the word

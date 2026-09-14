@@ -472,7 +472,7 @@ describe('explainRevert', () => {
     expect(compiled.explainRevert('0x4e487b7100').kind).toBe('custom');
     // Error(string) selector with garbage body degrades to custom
     expect(compiled.explainRevert('0x08c379a0ffff').kind).toBe('custom');
-    expect(() => compiled.explainRevert('0x123' as Hex)).toThrowError(EvsTypeError);
+    expect(() => compiled.explainRevert('0x123')).toThrowError(EvsTypeError);
   });
 });
 

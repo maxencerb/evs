@@ -27,7 +27,7 @@ type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never
 const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0, loc: SourceLoc | null = null): Stmt {
-  return { loc, site, ...body } as Stmt;
+  return { loc, site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
@@ -317,7 +317,7 @@ describe('serializeIr / deserializeIr round trip', () => {
           out: 0,
           data: { kind: 'word', hex: wordHex(1n) },
           type: 'uint256',
-        } as Stmt,
+        },
       ],
     });
     const reordered = {
@@ -331,7 +331,7 @@ describe('serializeIr / deserializeIr round trip', () => {
           k: 'const',
           site: 3,
           loc: null,
-        } as Stmt,
+        },
       ],
       fns: [],
       cells: [],
