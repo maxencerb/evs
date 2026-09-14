@@ -136,6 +136,14 @@ await client.readContract({
   account: caller, // msg.sender as seen by the script — controllable in this mode
   blockNumber: 22_000_000n, // historical reads work in both modes — it is just eth_call
 });
+
+// 2b. Sender mode: the script is installed AT `sender` (+ `account: sender`), so every sub-call
+//     target — including a simulated write — sees msg.sender = sender.
+await client.readContract({
+  ...compiled.toViem({ mode: 'stateOverride', sender: caller }),
+  functionName: 'poolMeta',
+  args,
+});
 ```
 
 Prefer `stateOverride` when you want a stable, human-meaningful `address(this)` (default
@@ -253,8 +261,10 @@ the decode schema; a normal return is then the failure).
 A callee revert **bubbles verbatim** (`Error(string)`, `Panic`, custom errors alike) under the
 strict verbs, so viem decodes the original error through your script; malformed returndata reverts
 a named `EvsDecodeError(site)`. ⚠ `s.call`/`s.simulate` make a real call where the target sees
-`msg.sender` as your script's address — use `toViem({ mode: 'stateOverride' })` + `account` for
-`msg.sender`-sensitive targets.
+`msg.sender` as your script's address — use `toViem({ mode: 'stateOverride', sender })` (the
+script runs _at_ `sender`) for `msg.sender`-sensitive targets. Every verb takes an optional `gas`
+cap (for `s.simulate` it bounds the inner target call), and simulate sites nest freely — inside
+`s.fn` bodies, one dry-run feeding the next.
 
 ### Checked arithmetic
 

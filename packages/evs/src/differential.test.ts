@@ -3195,3 +3195,122 @@ describe('revertReturns (issue #35)', () => {
     ).toEqual({ v1: 150n, ok1: true, v1b: 150n, okV2asV1: false, v2asV1: 0n, v2: 150n });
   });
 });
+
+// ---------------------------------------------------------------------------
+// simulate follow-ups (issue #36): simulate inside s.fn bodies, chained simulates, gas caps —
+// interpreter and trampoline bytecode must agree byte-for-byte on both forks (the wrapper
+// payload memcpy takes the MCOPY path on cancun and the `@memcpy` loop on paris).
+// ---------------------------------------------------------------------------
+
+describe('simulate follow-ups (issue #36)', () => {
+  const vaultAbi = [
+    {
+      type: 'function',
+      name: 'deposit',
+      stateMutability: 'nonpayable',
+      inputs: [{ name: 'amount', type: 'uint256' }],
+      outputs: [{ name: 'shares', type: 'uint256' }],
+    },
+    {
+      type: 'function',
+      name: 'label',
+      stateMutability: 'nonpayable',
+      inputs: [{ name: 'note', type: 'string' }],
+      outputs: [
+        { name: 'shares', type: 'uint256' },
+        { name: 'echo', type: 'string' },
+      ],
+    },
+  ] as const satisfies Abi;
+
+  for (const evmVersion of ['cancun', 'paris'] as const) {
+    test(`simulate inside an s.fn (called twice) + a simulate fed by a simulate [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'nestedSim', args: [t.uint256] }, (s, amount) => {
+        const preview = s.fn('preview', [t.uint256], (a) =>
+          s.simulate({ address: TOKA, abi: vaultAbi, functionName: 'deposit', args: [a] }),
+        );
+        const first = preview(amount);
+        const second = preview(first);
+        const [shares, echo] = s.simulate({
+          address: TOKB,
+          abi: vaultAbi,
+          functionName: 'label',
+          args: [s.lit(t.string, 'dry-run')],
+        });
+        const third = s.simulate({
+          address: TOKA,
+          abi: vaultAbi,
+          functionName: 'deposit',
+          args: [s.add(s.add(first, second), shares)],
+        });
+        return s.return({ first, second, third, echo });
+      });
+      const table: CalleeTable = {
+        [TOKA]: { kind: 'return', data: word(200n) },
+        [TOKB]: {
+          kind: 'return',
+          data: encodeAbiParameters([{ type: 'uint256' }, { type: 'string' }], [5n, 'dry-run']),
+        },
+      };
+      const [o] = await expectAgreement(script, [[100n]], table, evmVersion);
+      expect(
+        decodeFunctionResult({ abi: script.abi, functionName: 'nestedSim', data: o?.data ?? '0x' }),
+      ).toEqual({ first: 200n, second: 200n, third: 200n, echo: 'dry-run' });
+    });
+
+    test(`trySimulate with a gas cap: revert → false, success → value; strict bubbles [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'cappedSim', args: [t.uint256], errors: [] }, (s, cap) => {
+        const bad = s.trySimulate({
+          address: REVERTER,
+          abi: vaultAbi,
+          functionName: 'deposit',
+          args: [1n],
+          gas: cap,
+        });
+        const good = s.trySimulate({
+          address: TOKA,
+          abi: vaultAbi,
+          functionName: 'deposit',
+          args: [2n],
+          gas: 150_000n,
+        });
+        const strict = s.simulate({
+          address: TOKA,
+          abi: vaultAbi,
+          functionName: 'deposit',
+          args: [good.value],
+          gas: cap,
+        });
+        return s.return({
+          badOk: bad.success,
+          bad: bad.value,
+          goodOk: good.success,
+          good: good.value,
+          strict,
+        });
+      });
+      const table: CalleeTable = {
+        [REVERTER]: { kind: 'revert', data: panicData(0x11n) },
+        [TOKA]: { kind: 'return', data: word(9n) },
+      };
+      const [o] = await expectAgreement(script, [[100_000n]], table, evmVersion);
+      expect(
+        decodeFunctionResult({ abi: script.abi, functionName: 'cappedSim', data: o?.data ?? '0x' }),
+      ).toEqual({ badOk: false, bad: 0n, goodOk: true, good: 9n, strict: 9n });
+
+      // strict + reverting target: the simulated write's revert bubbles verbatim through the hop
+      const bubbling = evscript({ name: 'bubbleSim', args: [] }, (s) => {
+        const shares = s.simulate({
+          address: REVERTER,
+          abi: vaultAbi,
+          functionName: 'deposit',
+          args: [1n],
+          gas: 100_000n,
+        });
+        return s.return({ shares });
+      });
+      const [r] = await expectAgreement(bubbling, [[]], table, evmVersion);
+      expect(r).toEqual({ kind: 'revert', data: panicData(0x11n) });
+    });
+  }
+});

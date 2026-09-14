@@ -378,19 +378,75 @@ export function matchScriptError<
   return result as HandlerResult<handlers>;
 }
 
+/** The state-override execution shape: `{ abi, address, stateOverride }`. */
+export interface ViemStateOverrideShape<abi extends Abi> {
+  abi: abi;
+  address: Address;
+  stateOverride: StateOverride;
+}
+
+/** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
+export interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
+  account: Address;
+}
+
 /**
  * State-override mode — deterministic `address(this)`, controllable `msg.sender` (via the
  * `account` call parameter). Spread the result into `readContract`; requires a provider
  * supporting the third `eth_call` parameter.
+ *
+ * `sender` (issue #36) — run the script AS `sender`: the runtime is installed at the sender's
+ * own address and the eth_call's `account` is set to it, so every sub-call target (`s.read`,
+ * `s.call`, `s.simulate` and their `try*` variants) sees `msg.sender = sender` — the script
+ * self-calls through that address — and `s.env('caller')`/`s.env('address')` both read `sender`.
+ * This is the only way to give a simulated write a chosen `msg.sender` (permit-style checks,
+ * `onlyOwner` views, ERC-4626 `maxWithdraw(owner)` patterns): there is no in-frame EVM primitive
+ * for it. Caveats: the override REPLACES the code at `sender` for the duration of the call (a
+ * contract sender — a Safe, say — cannot answer callbacks), while its balance, nonce and storage
+ * stay in place. `sender` and `address` are the same knob; passing both with different values
+ * throws.
  */
 export function toViemStateOverride<const abi extends Abi>(
   s: { abi: abi; runtimeBytecode: Hex },
-  opts?: { address?: Address },
-): { abi: abi; address: Address; stateOverride: StateOverride } {
+  opts: { address?: Address; sender: Address },
+): ViemSenderShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address; sender?: undefined },
+): ViemStateOverrideShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address; sender?: Address | undefined },
+): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
+  const sender = opts?.sender;
+  if (sender !== undefined) {
+    if (!isAddressLike(sender)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `toViem: \`sender\` must be a 20-byte 0x address, got ${JSON.stringify(sender)}`,
+      );
+    }
+    if (opts?.address !== undefined && opts.address.toLowerCase() !== sender.toLowerCase()) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `toViem: \`sender\` (${sender}) and \`address\` (${opts.address}) disagree — sender mode installs the script AT the sender address; pass one or the other`,
+      );
+    }
+    return {
+      abi: s.abi,
+      address: sender,
+      stateOverride: [{ address: sender, code: s.runtimeBytecode }],
+      account: sender,
+    };
+  }
   const address = opts?.address ?? DEFAULT_SCRIPT_ADDRESS;
   return {
     abi: s.abi,
     address,
     stateOverride: [{ address, code: s.runtimeBytecode }],
   };
+}
+
+function isAddressLike(value: unknown): value is Address {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }

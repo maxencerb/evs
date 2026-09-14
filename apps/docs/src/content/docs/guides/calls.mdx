@@ -76,7 +76,7 @@ except `revertReturns`, which only `s.call` / `s.tryCall` accept.
 | `abi`          | `Abi`                                 | Inline or `as const`, exactly as with viem                         |
 | `functionName` | name union                            | Restricted per verb — `pure`/`view` for `s.read`, `nonpayable`/`payable` for `s.call`/`s.simulate` |
 | `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
-| `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the sub-call; by default all available gas is forwarded |
+| `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the target call — see [capping a target's gas](#capping-a-targets-gas); by default all available gas is forwarded |
 | `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named — see [below](#decoding-multiple-outputs-into-a-struct) |
 | `revertReturns` | `readonly EvsType[]` (optional, **`s.call` / `s.tryCall` only**) | The output types carried by the target's **revert data** (the QuoterV1 pattern); replaces the ABI outputs as the decode schema — see [decoding revert data](#decoding-revert-data-as-the-result-revertreturns) |
 
@@ -586,22 +586,152 @@ target's revert verbatim; `try`: `success = false`, zeroed value), and decodes t
 returndata through the same in-memory tuple decoder every other verb uses.
 
 `s.trySimulate` is the `{ success, value }` companion — use it when the simulated write might revert
-and you want a flag instead of bubbling.
+and you want a flag instead of bubbling. The trampoline self-call to `ADDRESS()` works in both
+execution modes.
 
-:::note
-Nested `s.simulate`, an explicit gas cap on the inner `CALL`, and controlling `msg.sender` on the
-self-call hop are not supported yet ([#36](https://github.com/maxencerb/evs/issues/36)). The
-trampoline self-call to `ADDRESS()` works in both execution modes.
-:::
+### Nesting and composition
+
+The trampoline is an ordinary dispatcher entrypoint that runs in its own call frame, so simulate
+sites compose without restriction: put one inside an [`s.fn`](/guides/functions/) body (called as
+often as you like, from the script or from another `s.fn`), feed the result of one dry-run into the
+next, or interleave them with `s.call` and `s.read`. Every hop rolls back independently — a dry-run
+of a dry-run's result still leaves the target's state untouched.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'deposit',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'assets', type: 'uint256' }],
+    outputs: [{ name: 'shares', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'totalShares',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+const previewTwice = evscript(
+  { name: 'previewTwice', args: [t.address, t.uint256] },
+  (s, vault, assets) => {
+    // a dry-run inside a reusable fn (fn bodies take what they need as params)
+    const preview = s.fn('preview', [t.address, t.uint256], (v, a) =>
+      s.simulate({ address: v, abi: vaultAbi, functionName: 'deposit', args: [a] }),
+    );
+    const first = preview(vault, assets);
+    const second = preview(vault, first); // the first dry-run's result feeds the second
+    // both writes were rolled back: totalShares is what it was before the script ran
+    const total = s.read({ address: vault, abi: vaultAbi, functionName: 'totalShares' });
+    return s.return({ first, second, total });
+  },
+);
+```
+
+### Capping a target's gas
+
+Every verb accepts an optional `gas` (a literal or an `Expr<'uint256'>`) that caps what the target
+may spend; without it the sub-call forwards all available gas. Under `s.simulate` / `s.trySimulate`
+the cap bounds the **inner** target call: the self-call hop itself always forwards all gas, so the
+trampoline can always report the outcome — a target that exhausts its cap surfaces as a failed
+dry-run (empty revert under `s.simulate`, `success = false` under `s.trySimulate`), never as a lost
+result. This is how you contain a misbehaving target without failing the whole `eth_call`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'deposit',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'assets', type: 'uint256' }],
+    outputs: [{ name: 'shares', type: 'uint256' }],
+  },
+] as const;
+
+const boundedPreview = evscript(
+  { name: 'boundedPreview', args: [t.address, t.uint256] },
+  (s, vault, assets) => {
+    const r = s.trySimulate({
+      address: vault,
+      abi: vaultAbi,
+      functionName: 'deposit',
+      args: [assets],
+      gas: 300_000n, // the dry-run may burn at most this much; the script goes on either way
+    });
+    return s.return({ ok: r.success, shares: r.value });
+  },
+);
+```
+
+Two EVM rules shape what `gas` means:
+
+- **The 63/64 rule (EIP-150).** A `CALL` can hand its callee at most 63/64 of the caller's
+  remaining gas, whatever the cap says — so `gas` is an upper bound, never a guarantee. Size the
+  `eth_call`'s own gas (the node's cap, typically 30–50M) with your caps in mind.
+- **Out-of-gas is an empty revert.** A target that exhausts its cap fails with no revert data.
+  `s.read`/`s.call`/`s.simulate` bubble that empty revert; the `try*` variants report
+  `success = false` with a zeroed `value`.
+
+### Choosing `msg.sender`: sender mode
+
+There is no EVM primitive to change `msg.sender` inside a frame: whatever verb you use, the target
+sees the address the script runs at. To give `msg.sender`-sensitive targets (permit-style checks,
+`onlyOwner` views, ERC-4626 `maxWithdraw(owner)` patterns, `balanceOf(msg.sender)` inside a
+write) a chosen sender, run the script **at** that address with
+[`toViem({ mode: 'stateOverride', sender })`](/guides/execution/#sender-mode): the runtime is
+installed at `sender` through `stateOverride` and the script self-calls through it, so every
+sub-call — including the simulated write — sees `msg.sender = sender`, and `s.env('caller')` /
+`s.env('address')` read `sender` too.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'withdraw',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'assets', type: 'uint256' }],
+    outputs: [{ name: 'shares', type: 'uint256' }],
+  },
+] as const;
+
+const previewWithdraw = evscript(
+  { name: 'previewWithdraw', args: [t.address, t.uint256] },
+  (s, vault, assets) => {
+    // withdraw() burns msg.sender's shares — it needs the OWNER as msg.sender to succeed
+    const shares = s.simulate({ address: vault, abi: vaultAbi, functionName: 'withdraw', args: [assets] });
+    return s.return({ shares });
+  },
+);
+
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+const owner = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
+
+const result = await client.readContract({
+  ...previewWithdraw.compile().toViem({ mode: 'stateOverride', sender: owner }),
+  functionName: 'previewWithdraw',
+  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // sDAI
+});
+// result: { shares: bigint } — withdraw() ran with msg.sender = owner, then rolled back
+```
 
 :::caution[Frame dependence: `msg.sender` is the script]
 `s.call` and `s.simulate` make a real call in which the **target sees `msg.sender` = the script's
 address** — a per-script counterfactual `CREATE2` address in the default deployless `toViem()` mode,
-or the override address in `stateOverride` mode. For `msg.sender`-sensitive writes (anything gated on
-the caller's identity or balances), run the script with `toViem({ mode: 'stateOverride' })` and the
-`account` call parameter so the script lives at a controllable address. This mirrors the
-[`s.env('caller')`](/reference/builder/#senv) frame-dependence warning; the `s.simulate` self-call to
-`ADDRESS()` itself works in both modes. See [execution modes](/guides/execution/).
+the override address (`DEFAULT_SCRIPT_ADDRESS` by default) in `stateOverride` mode, or the chosen
+`sender` in [sender mode](/guides/execution/#sender-mode). The `account` call parameter alone only
+changes the script's *own* caller (`s.env('caller')`), never what the targets see. This mirrors the
+[`s.env('caller')`](/reference/builder/#senv) frame-dependence warning. See
+[execution modes](/guides/execution/).
 :::
 
 ## When to use which

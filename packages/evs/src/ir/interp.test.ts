@@ -120,8 +120,8 @@ function chainOf(handler: (to: Hex, data: Hex) => { success: boolean; data: Hex 
 }
 
 interface SplitChain extends MockChain {
-  readonly staticReqs: { to: Hex; data: Hex }[];
-  readonly callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate' }[];
+  readonly staticReqs: { to: Hex; data: Hex; gas?: bigint }[];
+  readonly callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint }[];
 }
 
 /**
@@ -133,8 +133,8 @@ function chainSplit(opts: {
   staticResult: () => { success: boolean; data: Hex };
   callResult?: () => { success: boolean; data: Hex };
 }): SplitChain {
-  const staticReqs: { to: Hex; data: Hex }[] = [];
-  const callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate' }[] = [];
+  const staticReqs: { to: Hex; data: Hex; gas?: bigint }[] = [];
+  const callReqs: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint }[] = [];
   const chain: SplitChain = {
     staticReqs,
     callReqs,
@@ -1859,6 +1859,63 @@ describe('call — kind routing (mutable `call` oracle)', () => {
       expect(retOf(interpret(strictKindScript(kind), [TOKEN], chain))).toEqual({ n: 7n });
       expect(chain.staticReqs).toHaveLength(1);
     }
+  });
+
+  test('the `gas` cap is handed to the oracle (both verbs); absent when the site has none', () => {
+    // issue #36: the interpreter has no gas model, but a mock may want to emulate an OOG target —
+    // so the evaluated cap rides along on the request, for `call` (simulate/call) and `staticcall`.
+    const gasScript = (kind: 'static' | 'call' | 'simulate'): ScriptIr =>
+      ir({
+        name: 'gasKinded',
+        args: [
+          { name: 'target', type: 'address' },
+          { name: 'cap', type: 'uint256' },
+        ],
+        values: [vi('address'), vi('uint256'), vi('uint256')],
+        body: [
+          mk(
+            {
+              k: 'call',
+              target: 0,
+              fnAbi: getAbi,
+              args: [],
+              outs: [2],
+              mode: 'strict',
+              kind,
+              gas: 1,
+            },
+            5,
+          ),
+        ],
+        returns: [{ name: 'n', type: 'uint256', value: 2 }],
+      });
+    for (const kind of ['call', 'simulate'] as const) {
+      const chain = chainSplit({
+        staticResult: () => ({ success: true, data: encU(1n) }),
+        callResult: () => ({ success: true, data: encU(2n) }),
+      });
+      expect(retOf(interpret(gasScript(kind), [TOKEN, 100_000n], chain))).toEqual({ n: 2n });
+      expect(chain.callReqs[0]?.gas).toBe(100_000n);
+    }
+    const staticChain = chainSplit({ staticResult: () => ({ success: true, data: encU(1n) }) });
+    interpret(gasScript('static'), [TOKEN, 21_000n], staticChain);
+    expect(staticChain.staticReqs[0]?.gas).toBe(21_000n);
+    // no cap on the site → no `gas` key at all (not `undefined`) on the request
+    const uncapped = chainSplit({
+      staticResult: () => ({ success: true, data: encU(1n) }),
+      callResult: () => ({ success: true, data: encU(2n) }),
+    });
+    interpret(strictKindScript('simulate'), [TOKEN], uncapped);
+    expect(uncapped.callReqs[0]).not.toHaveProperty('gas');
+    // the mock MAY use the cap to emulate an out-of-gas target: a failed simulate bubbles empty
+    const oog = chainSplit({
+      staticResult: () => ({ success: true, data: encU(1n) }),
+      callResult: () => ({ success: false, data: '0x' }),
+    });
+    expect(interpret(gasScript('simulate'), [TOKEN, 5_000n], oog).outcome).toEqual({
+      kind: 'revert',
+      data: '0x',
+    });
   });
 
   test('mutable-kind calldata to the call oracle is byte-equal to viem (shared encode path)', () => {
