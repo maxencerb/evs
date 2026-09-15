@@ -32,17 +32,15 @@
  *   bubbled; try: the zero block).
  */
 
-import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
+import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { bytesToBigInt, HEX_BYTES_RE, hexToBytes, u256ToBytes } from '../core/bytes.js';
 import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
-  isDynamicType,
   isTupleType,
   typesEqual,
-  type EvsType,
   type Hex,
   type NamedType,
 } from '../core/types.js';
@@ -55,8 +53,10 @@ import {
   emitMemCopy,
   emitNormalizeElemsLoop,
   emitNormalizeWord,
+  emitZeroValue,
   encodeFramesOf,
   headOffsetsOf,
+  isRecursiveArray,
   reserveEncodeFrames,
   needsMemorySnapshot,
   wordNeedsNormalize,
@@ -97,7 +97,7 @@ const FREE_PTR = 0x40;
 const TAIL_CURSOR = 0x00; // scratch — calldata-template tail cursor (transient)
 const SNAP_SLOT = 0x00; // scratch — returndata snapshot base during tuple-output decode (transient,
 //                         dead once the calldata cursor's job is done — the call already happened)
-const ZERO_SLOT = 0x60;
+// (`ZERO_SLOT` / `emitZeroValue` live in codegen/abi.ts — shared with the `arrnew` lowering.)
 
 /** Const segments at or under this size are PUSH-chunked; larger ones go to a data segment. */
 const CONST_SEGMENT_INLINE_MAX = 96;
@@ -238,13 +238,13 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       }
       return;
     }
-    // dynamic arg. A composite-element array call arg (`tuple[]`/`T[][]`/`string[]`) is routed to the
-    // recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s `needsRecursiveEncode`
-    // dispatch and never reaches the template path — this backstop catches a routing regression that
-    // would otherwise silently mis-encode a composite array as a word-array memref tail.
-    if (l.kind === 'array' && l.elem.kind !== 'word') {
+    // dynamic arg. A recursive-codec array call arg (`tuple[]`/`T[][]`/`string[]`, any `T[N]`) is
+    // routed to the recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s
+    // `needsRecursiveEncode` dispatch and never reaches the template path — this backstop catches a
+    // routing regression that would otherwise silently mis-encode it as a word-array memref tail.
+    if (isRecursiveArray(l)) {
       throw internal(
-        `${what}: composite-element array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
+        `${what}: recursive-codec array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
       );
     }
     if (isLiteralRef(ref)) {
@@ -467,44 +467,6 @@ function emitCalldataBuild(
     w.push(TAIL_CURSOR);
     w.op('MSTORE'); // []
   }
-}
-
-/**
- * Pushes a zero value of `type` onto the stack (net +1): `0` for a word, the `0x60` zero slot for
- * a string/bytes/T[] (an empty memref), or a freshly-allocated zero-filled flat block for a tuple
- * (its dynamic members point at `0x60`, nested tuples recurse). Matches the interpreter's
- * `zeroValue`. Used by the try-mode zero block.
- */
-function emitZeroValue(w: AsmWriter, type: EvsType): void {
-  if (!isTupleType(type)) {
-    w.push(isDynamicType(type) ? ZERO_SLOT : 0);
-    return;
-  }
-  const n = type.components.length;
-  // allocate 32·n, zero-fill via CALLDATACOPY past the calldata end (memory above freePtr is dirty)
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [flat]
-  w.op('DUP1');
-  w.push(32 * n);
-  w.op('ADD'); // [flat+32n, flat]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [flat]   freePtr bumped
-  w.push(32 * n);
-  w.op('CALLDATASIZE');
-  w.op('DUP3'); // [flat, cds, 32n, flat]
-  w.op('CALLDATACOPY', { note: 'zero-fill tuple' }); // [flat]
-  // set non-word members: dynamic → 0x60; nested tuple → its own zero block
-  type.components.forEach((c, j) => {
-    const ct = abiParamToType(c);
-    if (!isDynamicType(ct)) return; // word member stays 0 (zero-filled)
-    emitZeroValue(w, ct); // [member, flat]
-    w.op('DUP2'); // [flat, member, flat]
-    if (j !== 0) {
-      w.push(32 * j);
-      w.op('ADD');
-    }
-    w.op('MSTORE'); // [flat]
-  });
 }
 
 // ---------------------------------------------------------------------------
@@ -1001,12 +963,13 @@ export function emitStaticCall(
         return;
       }
 
-      if (layout.kind === 'array' && layout.elem.kind !== 'word') {
-        // composite-element array output (`tuple[]`/`T[][]`/`string[]`): decode from the snapshot
-        // into a fresh `[len][p0…]` pointer block (its elements alias/recurse). base/end come from
-        // SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would drift),
-        // exactly like the tuple-output path above. The head word at buf+headOffset is an offset
-        // relative to buf; bounds it, then base = buf+off.
+      if (layout.kind === 'array' && isRecursiveArray(layout)) {
+        // recursive-codec array output (`tuple[]`/`T[][]`/`string[]`, any `T[N]`): decode from the
+        // snapshot into a fresh `[len][p0…]` pointer block (its elements alias/recurse). base/end
+        // come from SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would
+        // drift), exactly like the tuple-output path above. A STATIC fixed-size array inlines at
+        // buf+headOffset; otherwise the head word there is an offset relative to buf — bound it,
+        // then base = buf+off.
         const pushSnap = (): void => {
           w.push(SNAP_SLOT);
           w.op('MLOAD'); // [buf]
@@ -1016,35 +979,46 @@ export function emitStaticCall(
           w.op('RETURNDATASIZE');
           w.op('ADD'); // [buf + rds]
         };
-        // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
-        pushSnap();
-        if (headOffset !== 0) {
-          w.push(headOffset);
-          w.op('ADD');
-        }
-        w.op('MLOAD'); // [off, buf]
-        w.op('DUP1');
-        w.push(MAX_U64);
-        w.op('LT'); // [off > max, off, buf]
-        emitDecodeFail(2); // [off, buf]
-        w.op('DUP1');
-        w.push(32);
-        w.op('ADD'); // [off+32, off, buf]
-        w.op('RETURNDATASIZE');
-        w.op('LT'); // [rds < off+32, off, buf]
-        emitDecodeFail(2); // [off, buf]
-        w.op('POP'); // [buf]   (base re-derived inside the thunk)
-        const pushArrBase: PushBase = () => {
-          pushSnap(); // [buf]
-          w.op('DUP1');
+        let pushArrBase: PushBase;
+        if (isDynamic(layout)) {
+          // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
+          pushSnap();
           if (headOffset !== 0) {
             w.push(headOffset);
             w.op('ADD');
           }
           w.op('MLOAD'); // [off, buf]
-          w.op('ADD'); // [base]
-        };
-        emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
+          w.op('DUP1');
+          w.push(MAX_U64);
+          w.op('LT'); // [off > max, off, buf]
+          emitDecodeFail(2); // [off, buf]
+          w.op('DUP1');
+          w.push(32);
+          w.op('ADD'); // [off+32, off, buf]
+          w.op('RETURNDATASIZE');
+          w.op('LT'); // [rds < off+32, off, buf]
+          emitDecodeFail(2); // [off, buf]
+          w.op('POP'); // [buf]   (base re-derived inside the thunk)
+          pushArrBase = () => {
+            pushSnap(); // [buf]
+            w.op('DUP1');
+            if (headOffset !== 0) {
+              w.push(headOffset);
+              w.op('ADD');
+            }
+            w.op('MLOAD'); // [off, buf]
+            w.op('ADD'); // [base]
+          };
+        } else {
+          pushArrBase = () => {
+            pushSnap(); // [buf]
+            if (headOffset !== 0) {
+              w.push(headOffset);
+              w.op('ADD');
+            } // [base = buf+headOffset]
+          };
+        }
+        emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
         return;
@@ -1093,10 +1067,10 @@ export function emitStaticCall(
       emitDecodeFail(2); // [ptr, buf]
 
       if (layout.kind === 'array') {
-        // word-element array (composite-element arrays were handled above): eager element
+        // dynamic word-element array (every other array was handled above): eager element
         // normalization over the aliased snapshot region.
-        if (layout.elem.kind !== 'word') {
-          throw internal('composite-element array reached the word-array decode path');
+        if (layout.elem.kind !== 'word' || isRecursiveArray(layout)) {
+          throw internal('recursive-codec array reached the word-array decode path');
         }
         const elemAbi = layout.elem.abi;
         if (wordNeedsNormalize(elemAbi)) {

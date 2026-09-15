@@ -333,7 +333,7 @@ describe('validateIr — table rules', () => {
     expectInvalid(
       ir({
         values: [vi('uint256')],
-        fns: [{ ...fn, params: [{ name: 'x', type: 'uint256[2]' as EvsType, value: 0 }] }],
+        fns: [{ ...fn, params: [{ name: 'x', type: 'uint256[0]', value: 0 }] }],
       }),
       /fns\[0\]\.params\[0\].*unsupported/,
     );
@@ -782,8 +782,21 @@ describe('validateIr — select/index/len/array rules', () => {
     );
   });
 
-  test('arrnew: element admits word|string|bytes|one-level T[]|tuple, length uint256, out the matching array type', () => {
-    // a fixed-size element (`uint256[2]`) is still rejected (deferred shape) by checkElemType.
+  test('arrnew: element admits any value type, length uint256, out the matching array type', () => {
+    // a fixed-size element (`uint256[2]`) → `uint256[2][]`; a deeper element → `uint256[][][]`
+    // (issue #4). The out type must match exactly.
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('uint256'), vi('uint256[2][]'), vi('uint256[][][]')],
+          body: [
+            u256Const(0, 1n),
+            mk({ k: 'arrnew', elem: 'uint256[2]' as WordType, length: 0, out: 1 }),
+            mk({ k: 'arrnew', elem: 'uint256[][]' as WordType, length: 0, out: 2 }),
+          ],
+        }),
+      ),
+    ).not.toThrow();
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('uint256[]')],
@@ -792,18 +805,18 @@ describe('validateIr — select/index/len/array rules', () => {
           mk({ k: 'arrnew', elem: 'uint256[2]' as WordType, length: 0, out: 1 }),
         ],
       }),
-      /not supported/,
+      /produces 'uint256\[2\]\[\]'/,
     );
-    // a string array nested deeper than one level (`uint256[][]` element → `uint256[][][]`) rejected.
+    // a malformed element type is rejected
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('uint256[]')],
         body: [
           u256Const(0, 1n),
-          mk({ k: 'arrnew', elem: 'uint256[][]' as WordType, length: 0, out: 1 }),
+          mk({ k: 'arrnew', elem: 'uint256[0]' as WordType, length: 0, out: 1 }),
         ],
       }),
-      /nests deeper than one level/,
+      /not a valid EvsType/,
     );
     expectInvalid(
       ir({
@@ -1115,10 +1128,19 @@ describe('validateIr — call rules', () => {
   });
 
   test('rejects fnAbi params outside the supported type set', () => {
-    // a fixed-size array is outside the supported EvsType set
+    // a malformed fixed-size suffix is outside the EvsType set (a well-formed `uint256[2]` is in)
     expectInvalid(
-      callIr({ fnAbi: { ...ABI, outputs: [{ name: '', type: 'uint256[2]' }] } }),
+      callIr({ fnAbi: { ...ABI, outputs: [{ name: '', type: 'uint256[0]' }] } }),
       /type outside the supported set/,
+    );
+    expectInvalid(
+      callIr({
+        fnAbi: {
+          ...ABI,
+          outputs: [{ name: '', type: 'tuple[0]', components: [{ name: 'a', type: 'uint8' }] }],
+        },
+      }),
+      /malformed tuple tag/,
     );
   });
 
@@ -1219,7 +1241,7 @@ describe('validateIr — call rules', () => {
 
   test('revertReturns entries must be supported types', () => {
     expectInvalid(
-      callIr({ kind: 'call', revertReturns: ['uint256[2]' as never] }),
+      callIr({ kind: 'call', revertReturns: ['uint256[0]'] }),
       /revertReturns\[0\] is not a supported EvsType/,
     );
     expectInvalid(

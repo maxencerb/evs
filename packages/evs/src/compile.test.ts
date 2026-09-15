@@ -649,8 +649,8 @@ describe('end-to-end smoke', () => {
 });
 
 // ---------------------------------------------------------------------------
-// composite-array call args are supported (forwarding a decoded tuple[] as an arg compiles);
-// the still-deferred shapes (`tuple[][]`) STILL throw UNSUPPORTED_V0.
+// composite-array call args are supported (forwarding a decoded tuple[] as an arg compiles),
+// including two-level tuple arrays (`tuple[][]`) since issue #4.
 // ---------------------------------------------------------------------------
 
 describe('composite-array CALL ARG encode', () => {
@@ -692,7 +692,7 @@ describe('composite-array CALL ARG encode', () => {
     expect(compiled.runtimeBytecode).toMatch(/^0x[0-9a-f]+$/);
   });
 
-  test('STILL deferred: a `tuple[][]` call arg → UNSUPPORTED_V0', () => {
+  test('a `tuple[][]` call arg (literal) compiles on every fork (issue #4)', () => {
     const abi2 = [
       {
         type: 'function',
@@ -702,22 +702,18 @@ describe('composite-array CALL ARG encode', () => {
         outputs: [{ name: '', type: 'uint256' }],
       },
     ] as const;
-    // the `tuple[][]` input is rejected at s.call ABI-parse time (before compile) — either way, the
-    // deferred shape STILL throws UNSUPPORTED_V0.
-    const err = captureError(() => {
-      const script = evscript({ name: 'badTwoLevel' }, (s) => {
-        const out = s.read({
-          address: POOL,
-          abi: abi2,
-          functionName: 'twoLevels',
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deferred shape, force the gate
-          args: [[] as never] as never,
-        });
-        return s.return({ out });
+    const script = evscript({ name: 'twoLevel' }, (s) => {
+      const out = s.read({
+        address: POOL,
+        abi: abi2,
+        functionName: 'twoLevels',
+        args: [[[{ nonce: 1n, liquidity: 2n }], []]],
       });
-      compile(script, { evmVersion: 'cancun' });
-    }, EvsTypeError);
-    expect(err.code).toBe('UNSUPPORTED_V0');
+      return s.return({ out });
+    });
+    for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
+      expect(compile(script, { evmVersion }).runtimeBytecode).toMatch(/^0x[0-9a-f]+$/);
+    }
   });
 });
 

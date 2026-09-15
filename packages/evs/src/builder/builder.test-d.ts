@@ -1238,3 +1238,159 @@ test('revertReturns is rejected on s.read / s.tryRead / s.simulate / s.trySimula
     return s.return({ x: s.lit(t.bool, true) });
   });
 });
+
+// ---------------------------------------------------------------------------
+// issue #4: fixed-size arrays, tuple[][], deeper nesting, overload resolution
+// ---------------------------------------------------------------------------
+
+test('#4 t.array(elem, N) builds fixed-size types; ArrayElemOf/LitOf peel and pin the length', () => {
+  const P = t.struct({ a: t.uint256, b: t.address });
+  expectTypeOf(t.array(t.uint256, 2)).toEqualTypeOf<'uint256[2]'>();
+  expectTypeOf(t.array(t.array(t.uint256, 2))).toEqualTypeOf<'uint256[2][]'>();
+  expectTypeOf(t.array(t.array(t.string), 3)).toEqualTypeOf<'string[][3]'>();
+  expectTypeOf(t.array(t.array(t.array(t.uint256)))).toEqualTypeOf<'uint256[][][]'>();
+  expectTypeOf(t.array(P, 2).type).toEqualTypeOf<'tuple[2]'>();
+  expectTypeOf(t.array(t.array(P)).type).toEqualTypeOf<'tuple[][]'>();
+  expectTypeOf(t.array(t.array(P, 2)).type).toEqualTypeOf<'tuple[2][]'>();
+
+  evscript(
+    {
+      name: 'fixed',
+      args: [t.array(t.uint256, 2), 'string[][]', t.array(P, 2), t.array(t.array(P))],
+    },
+    (s, pair, grid, ps2, tuples) => {
+      // `.at(i)` peels one suffix, fixed or dynamic; `.length()` is available on every array
+      expectTypeOf(pair).toEqualTypeOf<Expr<'uint256[2]'>>();
+      expectTypeOf(pair.at(0n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(pair.length()).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(grid.at(0n)).toEqualTypeOf<Expr<'string[]'>>();
+      expectTypeOf(grid.at(0n).at(0n)).toEqualTypeOf<Expr<'string'>>();
+      // a tuple[2] element is a named-field Tuple; a tuple[][] row is an Expr<tuple[]> whose cell is a Tuple
+      expectTypeOf(ps2.at(1n).b.get()).toEqualTypeOf<Expr<'address'>>();
+      expectTypeOf(tuples.at(0n)).not.toHaveProperty('a');
+      expectTypeOf(tuples.at(0n).at(0n).a.get()).toEqualTypeOf<Expr<'uint256'>>();
+      s.forEach(tuples, (row) => {
+        s.forEach(row, (cell, i) => {
+          expectTypeOf(cell.a.get()).toEqualTypeOf<Expr<'uint256'>>();
+          expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+        });
+      });
+      // a fixed-size literal is typed as a readonly array of the element literal (the exact
+      // length is enforced at recording, not statically — see the LitOf note in core/types.ts)
+      const lit = s.lit(t.array(t.uint256, 2), [1n, 2n]);
+      expectTypeOf(lit).toEqualTypeOf<Expr<'uint256[2]'>>();
+      // s.newArray({ fixed: true }) types the array by its literal length
+      const built = s.newArray(t.uint256, 2, { fixed: true });
+      expectTypeOf(built).toEqualTypeOf<MutArray<'uint256', 2>>();
+      expectTypeOf(built.expr()).toEqualTypeOf<Expr<'uint256[2]'>>();
+      const rows = s.newArray(t.array(P), 3n); // tuple[][]
+      expectTypeOf(rows.expr().type.type).toEqualTypeOf<'tuple[][]'>();
+      expectTypeOf(rows.get(0n)).toEqualTypeOf<
+        Expr<{ readonly type: 'tuple[]'; readonly components: (typeof P)['components'] }>
+      >();
+      const pairs = s.newArray(t.array(t.uint256, 2), 2n); // uint256[2][]
+      expectTypeOf(pairs.expr()).toEqualTypeOf<Expr<'uint256[2][]'>>();
+      pairs.set(0n, [pair.at(0n), 7n]);
+      return s.return({ pair, lit, built, grid, ps2, tuples });
+    },
+  );
+});
+
+test('#4 fixed-size and deep-array outputs/args flow through viem inference', () => {
+  const abi = [
+    {
+      type: 'function',
+      name: 'observe',
+      stateMutability: 'view',
+      inputs: [{ name: 'secondsAgos', type: 'uint32[2]' }],
+      outputs: [{ name: 'ticks', type: 'int56[2]' }],
+    },
+    {
+      type: 'function',
+      name: 'grid',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: '', type: 'tuple[][]', components: [{ name: 'x', type: 'uint8' }] },
+        { name: '', type: 'uint256[][][]' },
+      ],
+    },
+  ] as const satisfies Abi;
+  const script = evscript({ name: 'fixedOut', args: [t.address] }, (s, pool) => {
+    const ticks = s.read({ address: pool, abi, functionName: 'observe', args: [[1, 2]] });
+    expectTypeOf(ticks).toEqualTypeOf<Expr<'int56[2]'>>();
+    const [g, cube] = s.read({ address: pool, abi, functionName: 'grid' });
+    expectTypeOf(g.at(0n).at(0n).x.get()).toEqualTypeOf<Expr<'uint8'>>();
+    expectTypeOf(cube.at(0n).at(0n).at(0n)).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ ticks, g, cube });
+  });
+  type Out = ReadContractReturnType<typeof script.abi, 'fixedOut'>;
+  expectTypeOf<Out['ticks']>().toEqualTypeOf<readonly [bigint, bigint]>();
+  expectTypeOf<Out['g']>().toEqualTypeOf<readonly (readonly { x: number }[])[]>();
+  expectTypeOf<Out['cube']>().toEqualTypeOf<readonly (readonly (readonly bigint[])[])[]>();
+});
+
+test('#4 overloads resolve by args at the type level (FnForArgs mirrors viem)', () => {
+  const abi = [
+    {
+      type: 'function',
+      name: 'pick',
+      stateMutability: 'view',
+      inputs: [{ name: 'x', type: 'uint256' }],
+      outputs: [{ name: '', type: 'uint256' }],
+    },
+    {
+      type: 'function',
+      name: 'pick',
+      stateMutability: 'view',
+      inputs: [
+        { name: 'x', type: 'uint256' },
+        { name: 'y', type: 'uint256' },
+      ],
+      outputs: [{ name: '', type: 'uint256' }],
+    },
+    {
+      type: 'function',
+      name: 'pick',
+      stateMutability: 'view',
+      inputs: [{ name: 's', type: 'string' }],
+      outputs: [{ name: '', type: 'string' }],
+    },
+    {
+      type: 'function',
+      name: 'zero',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'bool' }],
+    },
+    {
+      type: 'function',
+      name: 'zero',
+      stateMutability: 'view',
+      inputs: [{ name: 'k', type: 'bytes32' }],
+      outputs: [{ name: '', type: 'address' }],
+    },
+  ] as const satisfies Abi;
+  evscript({ name: 'ov', args: [t.address, t.uint256] }, (s, who, x) => {
+    // arity + a typed handle
+    expectTypeOf(s.read({ address: who, abi, functionName: 'pick', args: [x] })).toEqualTypeOf<
+      Expr<'uint256'>
+    >();
+    expectTypeOf(s.read({ address: who, abi, functionName: 'pick', args: [x, 2n] })).toEqualTypeOf<
+      Expr<'uint256'>
+    >();
+    // a string literal selects pick(string)
+    expectTypeOf(s.read({ address: who, abi, functionName: 'pick', args: ['hi'] })).toEqualTypeOf<
+      Expr<'string'>
+    >();
+    // omitted args select the zero-input overload; one arg the other
+    expectTypeOf(s.read({ address: who, abi, functionName: 'zero' })).toEqualTypeOf<Expr<'bool'>>();
+    expectTypeOf(
+      s.read({ address: who, abi, functionName: 'zero', args: [`0x${'0'.repeat(64)}`] }),
+    ).toEqualTypeOf<Expr<'address'>>();
+    // the try variant follows the same pick
+    const tried = s.tryRead({ address: who, abi, functionName: 'pick', args: ['hi'] });
+    expectTypeOf(tried.value).toEqualTypeOf<Expr<'string'>>();
+    return s.return({ x });
+  });
+});

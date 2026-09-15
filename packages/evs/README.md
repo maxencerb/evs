@@ -278,9 +278,13 @@ replacement pattern ([`examples/token-balances`](https://github.com/maxencerb/ev
 
 The calling surface is split into three verbs by mutability and call frame. All three share the
 same `{ address, abi, functionName, args }` shape (typed like viem's `readContract`: per-arg
-literal-or-`Expr` unions, outputs unwrapped one→`Expr`/many→tuple) and a `try*` variant returning
-`{ success: Expr<'bool'>, value }` (`success` false on failure **or** malformed returndata,
-`value` then zeros/empty — pair with `s.select` for defaults).
+literal-or-`Expr` unions, outputs unwrapped one→`Expr`/many→tuple, overloads resolved by arity
+and argument shape) and a `try*` variant returning `{ success: Expr<'bool'>, value }` (`success`
+false on failure **or** malformed returndata, `value` then zeros/empty — pair with `s.select` for
+defaults). The whole ABI type vocabulary flows through args, outputs and returns: words,
+`string`/`bytes`, structs/tuples (`t.struct`/`t.tuple`), and arrays of any element to any depth,
+dynamic (`T[]`) or fixed-size (`T[N]`, `t.array(elem, N)`) — `tuple[]`, `tuple[][]`,
+`uint256[][][]`, `string[][]`, `uint256[2][]`, … — byte-exact vs viem and real solc.
 
 | Verb                           | Opcode                                | Functions                | State                                                           |
 | ------------------------------ | ------------------------------------- | ------------------------ | --------------------------------------------------------------- |

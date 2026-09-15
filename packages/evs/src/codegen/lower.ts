@@ -32,6 +32,7 @@ import { HEX_BYTES_RE, hexToBytes, padWordAligned, selectorBytes } from '../core
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import {
   bitsOf,
+  isDynamicType,
   isSigned,
   isTupleType,
   isWordType,
@@ -52,6 +53,7 @@ import {
   emitAbiEncodeToBytes,
   emitNormalizeWord,
   emitPackedEncodeToBytes,
+  emitZeroValue,
   fmtType,
   wordNeedsNormalize,
   type SharedTails,
@@ -872,6 +874,39 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('DUP2'); // [n, ptr, n]
   w.op('DUP2'); // [ptr, n, ptr, n]
   w.op('MSTORE'); // [ptr, n]
+  if (isDynamicType(s.elem)) {
+    // composite/dynamic element (`string`, `bytes`, `T[]`, `tuple`, `T[N]`): every slot is a
+    // POINTER, and a zero pointer is not a valid element (`MLOAD(0)` is scratch). Fill each slot
+    // with the element's typed zero value — the `0x60` zero slot for an empty `string`/`bytes`/
+    // `T[]`, a fresh zero block for a tuple / fixed-size array — matching the interpreter's
+    // `zeroValue`-filled `arrnew`, so an unset element reads/encodes as its zero on both sides.
+    const base = ctx.fnBaseline;
+    const head = w.newLabel(`arrnew_fill_${s.site}`);
+    const done = w.newLabel(`arrnew_fill_${s.site}_done`);
+    w.push(0); // [i, ptr, n]
+    w.label(head, base + 3);
+    w.op('DUP3'); // [n, i, ptr, n]
+    w.op('DUP2'); // [i, n, i, ptr, n]
+    w.op('LT'); // [i < n, i, ptr, n]
+    w.op('ISZERO');
+    w.pushLabel(done);
+    w.op('JUMPI'); // [i, ptr, n]
+    emitZeroValue(w, s.elem); // [zero, i, ptr, n]
+    w.op('DUP2');
+    w.push(5);
+    w.op('SHL'); // [32·i, zero, i, ptr, n]
+    w.op('DUP4');
+    w.op('ADD');
+    w.push(32);
+    w.op('ADD'); // [slot, zero, i, ptr, n]
+    w.op('MSTORE'); // [i, ptr, n]
+    w.push(1);
+    w.op('ADD'); // [i+1, ptr, n]
+    w.pushLabel(head);
+    w.op('JUMP');
+    w.label(done, base + 3); // [i, ptr, n]
+    w.op('POP'); // [ptr, n]
+  }
   storeOut(w, ctx, s.out); // [n]
   w.op('POP'); // []
 }

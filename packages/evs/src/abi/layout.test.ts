@@ -3,8 +3,15 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
-import type { TupleType, WordType } from '../core/types.js';
-import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from './layout.js';
+import { t, type TupleType, type WordType } from '../core/types.js';
+import {
+  headBytes,
+  isDynamic,
+  layoutOf,
+  layoutOfType,
+  staticSize,
+  type TypeLayout,
+} from './layout.js';
 
 // ---------------------------------------------------------------------------
 // the full evs type vocabulary, built independently of the implementation
@@ -88,6 +95,7 @@ describe('layoutOf golden table', () => {
         kind: 'array',
         abi: `${w}[]`,
         elem: layoutOf(w),
+        length: null,
       });
     }
   });
@@ -98,16 +106,32 @@ describe('layoutOf golden table', () => {
 // ---------------------------------------------------------------------------
 
 describe('layoutOf rejections', () => {
-  const DEFERRED = [
-    'tuple',
-    'tuple[]', // tuple-array STRING form (the object form goes through layoutOfType)
-    'tuple(uint256,address)',
+  // tuples are descriptor OBJECTS (`layoutOfType`); a tuple type STRING is a misuse, and a
+  // malformed array suffix is not a type. Both are TYPE_MISMATCH (nothing is "not supported yet"
+  // in the array vocabulary since issue #4).
+  const TUPLE_STRINGS = ['tuple', 'tuple[]', 'tuple(uint256,address)'];
+  const BAD_SUFFIX = [
+    'uint256[0]',
+    'uint256[01]',
+    'address[x]',
+    'uint256[]]',
+    'uint256[4294967296]',
+  ];
+  // every array shape produces a layout: composite elements, any depth, fixed sizes.
+  const SUPPORTED = [
+    'uint256[][]',
+    'address[][]',
+    'string[]',
+    'bytes[]',
+    'uint256[][][]',
+    'string[][]',
     'uint256[2]',
     'address[3]',
-    'uint256[][][]', // string arrays nested deeper than [][] stay deferred
+    'string[2]',
+    'uint256[2][]',
+    'uint256[][2]',
+    'bytes[3][2][]',
   ];
-  // un-gated: one level of array nesting over a composite/dynamic element now PRODUCES a layout.
-  const NOW_SUPPORTED = ['uint256[][]', 'address[][]', 'string[]', 'bytes[]'];
   const UNKNOWN = [
     '',
     'uint',
@@ -121,7 +145,7 @@ describe('layoutOf rejections', () => {
     '(uint256)',
   ];
 
-  test.each(DEFERRED)('%j → EvsTypeError(UNSUPPORTED_V0)', (s) => {
+  test.each(TUPLE_STRINGS)('%j → EvsTypeError(TYPE_MISMATCH): tuples are descriptors', (s) => {
     let caught: unknown;
     try {
       layoutOf(s);
@@ -129,15 +153,49 @@ describe('layoutOf rejections', () => {
       caught = e;
     }
     expect(caught).toBeInstanceOf(EvsTypeError);
-    expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
+    expect((caught as EvsTypeError).code).toBe('TYPE_MISMATCH');
+    expect((caught as EvsTypeError).message).toContain(JSON.stringify(s));
+    expect((caught as EvsTypeError).message).toContain('descriptor');
+  });
+
+  test.each(BAD_SUFFIX)('%j → EvsTypeError(TYPE_MISMATCH): malformed suffix', (s) => {
+    let caught: unknown;
+    try {
+      layoutOf(s);
+    } catch (e) {
+      caught = e;
+    }
+    expect(caught).toBeInstanceOf(EvsTypeError);
+    expect((caught as EvsTypeError).code).toBe('TYPE_MISMATCH');
     expect((caught as EvsTypeError).message).toContain(JSON.stringify(s));
   });
 
-  test.each(NOW_SUPPORTED)('%j → array-of-composite layout (un-gated)', (s) => {
+  test.each(SUPPORTED)('%j → array layout', (s) => {
     const l = layoutOf(s);
     expect(l.kind).toBe('array');
-    const elemKind = l.kind === 'array' ? l.elem.kind : 'word';
-    expect(elemKind).not.toBe('word');
+    expect(l.abi).toBe(s);
+  });
+
+  test('fixed-size layouts carry their length; dynamic ones null', () => {
+    expect(layoutOf('uint256[2]')).toEqual({
+      kind: 'array',
+      abi: 'uint256[2]',
+      elem: layoutOf('uint256'),
+      length: 2,
+    });
+    expect(layoutOf('uint256[2][]')).toMatchObject({ length: null, elem: { length: 2 } });
+    expect(layoutOf('uint256[][2]')).toMatchObject({ length: 2, elem: { length: null } });
+    expect(layoutOfType(t.array(t.struct({ a: t.uint8 }), 3))).toMatchObject({
+      kind: 'array',
+      abi: 'tuple[3]',
+      length: 3,
+      elem: { kind: 'tuple', dynamic: false },
+    });
+    expect(layoutOfType(t.array(t.array(t.struct({ a: t.uint8 }))))).toMatchObject({
+      abi: 'tuple[][]',
+      length: null,
+      elem: { kind: 'array', abi: 'tuple[]', elem: { kind: 'tuple' } },
+    });
   });
 
   test.each(UNKNOWN)('%j → EvsTypeError(TYPE_MISMATCH)', (s) => {
@@ -168,6 +226,28 @@ describe('isDynamic', () => {
     expect(isDynamic(layoutOf('bytes'))).toBe(true);
     expect(isDynamic(layoutOf('uint256[]'))).toBe(true);
     expect(isDynamic(layoutOf('bytes32[]'))).toBe(true);
+  });
+
+  test('fixed-size arrays are static iff their element is (ABI spec); staticSize inlines N·elem', () => {
+    expect(isDynamic(layoutOf('uint256[2]'))).toBe(false);
+    expect(staticSize(layoutOf('uint256[2]'))).toBe(64);
+    expect(isDynamic(layoutOf('uint256[2][3]'))).toBe(false);
+    expect(staticSize(layoutOf('uint256[2][3]'))).toBe(192);
+    expect(isDynamic(layoutOf('string[2]'))).toBe(true);
+    expect(isDynamic(layoutOf('uint256[][2]'))).toBe(true);
+    expect(isDynamic(layoutOf('uint256[2][]'))).toBe(true);
+    const staticTuple2 = layoutOfType(t.array(t.struct({ a: t.uint8, b: t.address }), 2));
+    expect(isDynamic(staticTuple2)).toBe(false);
+    expect(staticSize(staticTuple2)).toBe(128);
+    expect(isDynamic(layoutOfType(t.array(t.struct({ a: t.string }), 2)))).toBe(true);
+    // a static fixed array inlines into the head like a static tuple
+    expect(
+      headBytes([
+        { name: '', type: 'uint256[2]' },
+        { name: '', type: 'string[2]' },
+      ]),
+    ).toBe(96);
+    expect(() => staticSize(layoutOf('string[2]'))).toThrow(/dynamic/);
   });
 
   test('hand-built layouts (independent of layoutOf)', () => {
@@ -215,8 +295,9 @@ describe('headBytes', () => {
     expect(
       headBytes([{ name: 'b', type: 'tuple', components: [{ name: 'x', type: 'string' }] }]),
     ).toBe(32);
-    // genuinely-unsupported shapes still throw
-    expect(() => headBytes([{ name: 'a', type: 'uint256[2]' }])).toThrowError(EvsTypeError);
+    // a STATIC fixed-size array inlines its N elements (issue #4); a malformed type throws
+    expect(() => headBytes([{ name: 'a', type: 'uint256[0]' }])).toThrowError(EvsTypeError);
+    expect(headBytes([{ name: 'a', type: 'uint256[2]' }])).toBe(64);
   });
 });
 
@@ -251,11 +332,17 @@ describe('layout memoization', () => {
     });
   });
 
-  test('unsupported types still throw (failures are not cached as layouts)', () => {
+  test('malformed types still throw (failures are not cached as layouts)', () => {
+    const bad: TupleType = {
+      type: 'tuple[0]',
+      components: [{ name: 'x', type: 'uint256' }],
+    };
+    expect(() => layoutOfType(bad)).toThrowError(EvsTypeError);
+    expect(() => layoutOfType(bad)).toThrowError(EvsTypeError); // idempotent across calls
+    expect(() => layoutOf('uint256[0]')).toThrowError(EvsTypeError);
+    expect(() => layoutOf('uint256[0]')).toThrowError(EvsTypeError);
+    // a `tuple[][]` descriptor is a layout now (issue #4), cached per descriptor
     const arr2: TupleType = { type: 'tuple[][]', components: [{ name: 'x', type: 'uint256' }] };
-    expect(() => layoutOfType(arr2)).toThrowError(EvsTypeError);
-    expect(() => layoutOfType(arr2)).toThrowError(EvsTypeError); // idempotent across calls
-    expect(() => layoutOf('uint256[2]')).toThrowError(EvsTypeError);
-    expect(() => layoutOf('uint256[2]')).toThrowError(EvsTypeError);
+    expect(layoutOfType(arr2)).toBe(layoutOfType(arr2));
   });
 });

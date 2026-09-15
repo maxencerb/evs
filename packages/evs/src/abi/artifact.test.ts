@@ -112,19 +112,32 @@ describe('toPlainAbiFunction', () => {
     expect(Object.isFrozen(plain.outputs)).toBe(true);
   });
 
-  test('rejects unsupported input types, naming function and parameter', () => {
+  test('rejects malformed input types, naming function and parameter', () => {
+    const fn: AbiFunction = {
+      type: 'function',
+      name: 'observe',
+      stateMutability: 'view',
+      inputs: [{ name: 'secondsAgos', type: 'uint32[0]' }],
+      outputs: [],
+    };
+    const err = catchEvs(() => toPlainAbiFunction(fn));
+    expect(err.code).toBe('TYPE_MISMATCH');
+    expect(err.message).toContain('observe');
+    expect(err.message).toContain('secondsAgos');
+    expect(err.message).toContain('input');
+  });
+
+  test('accepts fixed-size array inputs (`uint32[3]`) — issue #4', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'observe',
       stateMutability: 'view',
       inputs: [{ name: 'secondsAgos', type: 'uint32[3]' }],
-      outputs: [],
+      outputs: [{ name: '', type: 'int56[3][]' }],
     };
-    const err = catchEvs(() => toPlainAbiFunction(fn));
-    expect(err.code).toBe('UNSUPPORTED_V0');
-    expect(err.message).toContain('observe');
-    expect(err.message).toContain('secondsAgos');
-    expect(err.message).toContain('input');
+    const plain = toPlainAbiFunction(fn);
+    expect(plain.inputs[0]?.type).toBe('uint32[3]');
+    expect(plain.outputs[0]?.type).toBe('int56[3][]');
   });
 
   test('accepts a tuple output, recursing into its components', () => {
@@ -170,18 +183,32 @@ describe('toPlainAbiFunction', () => {
     expect(plain.outputs[0]?.components?.[0]?.type).toBe('uint128');
   });
 
-  test('STILL rejects a two-level tuple ARRAY output (`tuple[][]` deferred)', () => {
+  test('accepts a two-level tuple ARRAY output (`tuple[][]`) and a fixed `tuple[2]` — issue #4', () => {
+    const fn: AbiFunction = {
+      type: 'function',
+      name: 'matrixOfStructs',
+      stateMutability: 'view',
+      inputs: [{ name: 'p', type: 'tuple[2]', components: [{ name: 'a', type: 'uint8' }] }],
+      outputs: [
+        { name: '', type: 'tuple[][]', components: [{ name: 'liquidity', type: 'uint128' }] },
+      ],
+    };
+    const plain = toPlainAbiFunction(fn);
+    expect(plain.inputs[0]?.type).toBe('tuple[2]');
+    expect(plain.outputs[0]?.type).toBe('tuple[][]');
+    expect(plain.outputs[0]?.components?.[0]?.type).toBe('uint128');
+  });
+
+  test('rejects a malformed tuple tag (`tuple[0]`) with ABI_SHAPE, naming the parameter', () => {
     const fn: AbiFunction = {
       type: 'function',
       name: 'matrixOfStructs',
       stateMutability: 'view',
       inputs: [],
-      outputs: [
-        { name: '', type: 'tuple[][]', components: [{ name: 'liquidity', type: 'uint128' }] },
-      ],
+      outputs: [{ name: '', type: 'tuple[0]', components: [{ name: 'a', type: 'uint128' }] }],
     };
     const err = catchEvs(() => toPlainAbiFunction(fn));
-    expect(err.code).toBe('UNSUPPORTED_V0');
+    expect(err.code).toBe('ABI_SHAPE');
     expect(err.message).toContain('matrixOfStructs');
     expect(err.message).toContain('#0');
     expect(err.message).toContain('output');
@@ -329,8 +356,20 @@ describe('encodeLiteralData', () => {
     // a composite-element array has no flat data-segment literal — the recorder builds it,
     // so this direct call rejects with TYPE_MISMATCH (it is not the construction route).
     expect(catchEvs(() => encodeLiteralData('string[]', ['a'])).code).toBe('TYPE_MISMATCH');
-    // a still-deferred array shape (nested deeper than [][]) is classified UNSUPPORTED_V0 by layout.
-    expect(catchEvs(() => encodeLiteralData('uint256[][][]', [])).code).toBe('UNSUPPORTED_V0');
+    // a deeper composite-element array is a composite array too (no flat literal)
+    expect(catchEvs(() => encodeLiteralData('uint256[][][]', [])).code).toBe('TYPE_MISMATCH');
+    // a fixed-size word array literal must carry exactly N elements
+    expect(catchEvs(() => encodeLiteralData('uint8[2]', [1n])).code).toBe('TYPE_MISMATCH');
+    expect(catchEvs(() => encodeLiteralData('uint8[2]', [1n, 2n, 3n])).code).toBe('TYPE_MISMATCH');
+  });
+
+  test('a fixed-size word array literal encodes as the length-prefixed memref image', () => {
+    // same image as the dynamic twin `uint8[]`: [len=2][1][2] (the memory model is length-prefixed
+    // for `T[N]` too; only the wire form drops the length word).
+    expect(encodeLiteralData('uint8[2]', [1n, 2n])).toBe(encodeLiteralData('uint8[]', [1n, 2n]));
+    expect(encodeLiteralData('uint8[2]', [1n, 2n])).toBe(
+      `0x${'2'.padStart(64, '0')}${'1'.padStart(64, '0')}${'2'.padStart(64, '0')}`,
+    );
   });
 
   test('element errors name the index', () => {
@@ -428,10 +467,15 @@ describe('buildScriptAbi', () => {
     ).toBe('ABI_SHAPE');
     // an invalid arg TYPE is reported against its name
     const badType = catchEvs(() =>
-      buildScriptAbi('s', [{ name: 'arg0', type: 'uint256[2]' as 'uint256' }], returns),
+      buildScriptAbi('s', [{ name: 'arg0', type: 'uint256[0]' }], returns),
     );
-    expect(badType.code).toBe('UNSUPPORTED_V0');
+    expect(badType.code).toBe('TYPE_MISMATCH');
     expect(badType.message).toContain('"arg0"');
+    // a fixed-size array arg is a valid input (issue #4)
+    const fixed = buildScriptAbi('s', [{ name: 'arg0', type: 'uint256[2]' }], returns);
+    expect((fixed[0] as { inputs: readonly { type: string }[] }).inputs[0]?.type).toBe(
+      'uint256[2]',
+    );
   });
 
   test('arg names: user names (namedArg) surface as input labels; duplicates rejected (issue #9)', () => {

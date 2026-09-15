@@ -336,7 +336,7 @@ describe('named args (namedArg)', () => {
         s.fn(
           'f',
           // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately smuggles a malformed descriptor past the type bound
-          { type: 'tuple', components: [{ name: 'x', type: 'uint256[2]' }] } as never,
+          { type: 'tuple', components: [{ name: 'x', type: 'uint256[0]' }] } as never,
           () => undefined,
         );
         return s.return({ x: s.lit(t.uint256, 1n) });
@@ -1398,17 +1398,23 @@ describe('s.forEach', () => {
     expect(allStmts(script3.ir).filter((s) => s.k === 'index')).toHaveLength(1);
   });
 
-  test('a tuple[][] arg stays UNSUPPORTED_V0 — the Expr<tuple[]> row typing is forward-looking', () => {
-    // A tuple[][] Expr is unconstructible today (args, newArray, and call outputs all reject
-    // the shape), so `TupleArrayElemHandle`'s Expr<tuple[]> row arm cannot be exercised at
-    // runtime today — this pins the rejection the type-level dispatch is anticipating.
-    expect(() =>
-      evscript(
-        { name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] },
-        (s) => s.return({ z: s.lit(t.uint256, 0n) }),
-        NO_LOC,
-      ),
-    ).toThrowError(/tuple\[\]\[\]" is not supported yet/);
+  test('a tuple[][] arg is an Expr whose rows are Expr<tuple[]> and whose cells are Tuples (#4)', () => {
+    // `TupleArrayElemHandle`'s Expr<tuple[]> row arm, exercised at runtime: `.at(i)` on the
+    // tuple[][] Expr yields the row Expr (no named fields), `.at(j)` on the row yields the Tuple.
+    const nested = evscript(
+      { name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] },
+      (s, grid) => {
+        const row = grid.at(0n);
+        expect(row).not.toHaveProperty('x');
+        const cell = row.at(1n);
+        return s.return({ x: cell.x.get(), rows: grid.length(), cols: row.length() });
+      },
+      NO_LOC,
+    );
+    expect(() => validateIr(nested.ir)).not.toThrow();
+    expect(allStmts(nested.ir).filter((s) => s.k === 'index')).toHaveLength(2);
+    expect(allStmts(nested.ir).filter((s) => s.k === 'field')).toHaveLength(1);
+    expect(nested.ir.returns[0]?.type).toBe('uint256');
   });
 });
 

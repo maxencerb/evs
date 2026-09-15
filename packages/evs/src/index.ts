@@ -22,7 +22,7 @@ export type {
   Address,
   ArgSpec,
   ArgType,
-  ArrayElemOf, // the element type of `Expr.at` (one `[]` peeled)
+  ArrayElemOf, // the element type of `Expr.at` (one `[]`/`[N]` suffix peeled)
   ArrayType,
   BitsType,
   BytesNType,
@@ -32,6 +32,7 @@ export type {
   EvsErrorType, // issue #15: a t.error-declared custom error
   EvsType,
   Expr,
+  FixedLengthOf, // issue #4: the outermost fixed length of an array type (`null` for `[]`)
   FromAbiOutputs, // issue #5: the return type of `t.fromOutputs(abi, name)`
   Hex,
   IntoExpr,
@@ -39,6 +40,7 @@ export type {
   LitOf,
   NamedType,
   NumericType,
+  PeelArraySuffix, // issue #4: one `[]`/`[N]` suffix peeled off a type string, at any depth
   ScalarType,
   StringType,
   StructTypeOf,

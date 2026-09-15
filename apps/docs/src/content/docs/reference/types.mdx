@@ -13,8 +13,8 @@ narrative version (and the staging-misuse failure modes), see
 import type { EvsType, StringType, TupleType } from '@maxencerb/evs';
 import type { Abi, AbiParameter } from 'viem';
 
-declare const t: { readonly [k in Exclude<StringType, `${string}[]`>]: k } & {
-  array(elem: StringType | TupleType): StringType | TupleType;
+declare const t: { readonly [k in Exclude<StringType, `${string}[${string}`>]: k } & {
+  array(elem: StringType | TupleType, length?: number): StringType | TupleType;
   struct(spec: Record<string, EvsType>): TupleType;
   tuple(...items: readonly EvsType[]): TupleType;
   fromOutputs(abi: Abi, name: string): EvsType; // derive a type from a function's outputs
@@ -36,10 +36,11 @@ autocomplete sugar — plus three functions that build composite types. Raw type
 | `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
 | `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
 | `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
-| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]`), or a `tuple[]` of a tuple element |
+| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of any element (`uint256[]`, `string[]`, `uint256[][]`, `uint256[][][]`), or a `tuple[]`/`tuple[][]` of a tuple / tuple-array element |
+| `t.array(elem, N)`               | `` `${elem}[${N}]` `` / `TupleType` | function: a fixed-size array of `N ≥ 1` elements (`uint256[2]`, `address[3]`, `tuple[2]`); nests freely with dynamic suffixes (`uint256[2][]`, `string[][2]`) |
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
-| `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); overloaded/unknown name throws (a non-`const` ABI degrades to `EvsType`) |
+| `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); an unknown name throws, an overloaded name is accepted only when every overload declares the same outputs (a non-`const` ABI degrades to `EvsType`) |
 | `t.fromAbiParameter(param)`      | `EvsType`                      | function: derive a type from one ABI parameter (`AbiParamToEvsType`) — a `tuple…` param → a `TupleType`, else the type string |
 
 `t.array` validates its element at the call site. `t.struct`/`t.tuple` build a
@@ -50,10 +51,13 @@ viem infers directly.
 import { t } from '@maxencerb/evs';
 
 const fees = t.array(t.uint24); // 'uint24[]'
+const pair = t.array(t.uint256, 2); // 'uint256[2]' — fixed-size
+const grid = t.array(t.array(t.uint256)); // 'uint256[][]' — any depth
 const Position = t.struct({ liquidity: t.uint128, owner: t.address }); // named struct → object
 const Pair = t.tuple(t.address, t.uint256); // positional tuple → [address, bigint]
+const positions = t.array(t.array(Position)); // { type: 'tuple[][]', components }
 const amount = 'uint128'; // raw strings work identically
-void [fees, Position, Pair, amount];
+void [fees, pair, grid, Position, Pair, positions, amount];
 ```
 
 ## Type aliases
@@ -75,7 +79,11 @@ type BytesNType = `bytes${BytesSize}`;
 type WordType = UintType | IntType | 'address' | 'bool' | BytesNType;
 type DynType = 'string' | 'bytes';
 type ScalarType = WordType | DynType;
-type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+type ArrayType = // exact literals for the dynamic forms + ONE catch-all for every other chain
+  | `${ScalarType}[]`
+  | `${ScalarType}[][]`
+  | `${ScalarType}[][][]`
+  | `${string}[${string}`; // `T[N]`, `T[N][]`, `T[][N]`, 4+ levels, … — the runtime is exact
 type StringType = ScalarType | ArrayType; // every string-encoded type
 interface NamedType {
   readonly name: string; // '' for a positional tuple member
@@ -83,7 +91,7 @@ interface NamedType {
   readonly components?: readonly NamedType[]; // present iff type starts with 'tuple'
 }
 interface TupleType {
-  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly type: 'tuple' | `tuple[${string}`; // 'tuple', 'tuple[]', 'tuple[2]', 'tuple[][]', …
   readonly components: readonly NamedType[];
 }
 type EvsType = WordType | DynType | ArrayType | TupleType;
@@ -104,7 +112,10 @@ type BitsType = UintType | BytesNType;
 | `WordType`    | Every type that fits one EVM word: unsigned and signed integers, `address`, `bool`, `bytesN`.|
 | `DynType`     | The dynamic byte-string types: `string` and `bytes`.                                         |
 | `ScalarType`  | `WordType` or `DynType` — every non-array, non-tuple type.                                   |
-| `ArrayType`   | String-encoded arrays of a scalar element, up to three `[]` deep — `uint256[]`, `address[][]`. |
+| `ArrayType`   | String-encoded arrays over a scalar leaf, to any depth, with a dynamic `[]` or fixed `[N]` suffix at every level — `uint256[]`, `address[3]`, `string[][]`, `uint256[2][]`. The dynamic forms up to three levels deep are exact literals (autocomplete); every other chain (a fixed size anywhere, four or more levels) is admitted by a single catch-all pattern — *something followed by an array suffix* — whose leaf is only checked at runtime (`'foo[2]'` type-checks as an `ArrayType`; its element is `never`; recording rejects it with `TYPE_MISMATCH`). A concrete type is always the exact literal (`t.array(t.uint256, 2)` is `'uint256[2]'`). |
+| `ArrayElemOf<t>` | The element type of an array type (the outermost suffix peeled, at any depth): `'uint256[][]'` → `'uint256[]'`, `'address[3]'` → `'address'`, `'uint256[][2]'` → `'uint256[]'`; a non-array or an unknown leaf → `never`. |
+| `FixedLengthOf<t>` | The outermost fixed length of `t` (`'uint256[3]'` → `3`, `'uint256[][2]'` → `2`), or `null` for a dynamic `[]` (or a non-array). |
+| `PeelArraySuffix<s>` | The outermost `[]`/`[N]` suffix peeled off any type *string*, tuple tags included (`'tuple[2][]'` → `'tuple[2]'`); no suffix → `never`. The parser behind `ArrayElemOf` and the tuple-array element dispatch. |
 | `StringType`  | Every string-encoded type: a scalar or a string array.                                       |
 | `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
 | `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
@@ -150,16 +161,17 @@ does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#st
 `s.read` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
 `s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
 
-`t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`). A
-composite-element array — `tuple[]`, a one-level nested array (`uint256[][]`), or a dynamic-leaf
+`t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`);
+`t.array(Position, 2)` to a fixed-size `tuple[2]`; `t.array(t.array(Position))` to a `tuple[][]`. A
+composite-element array — `tuple[]`, a nested array (`uint256[][]`, `tuple[][]`), or a dynamic-leaf
 array (`string[]`/`bytes[]`) — is an **array of pointers** in memory: the `[length]` prefix is
 followed by one pointer word per element, each pointing at the element's own block (a tuple
 block, an inner array, or a bytes block). It shares the word-array handle surface — `.length()`,
 `.at(i)`, `s.newArray` — and the same reference semantics; an `s.read` `tuple[]` output is an
 array handle whose `.at(i)` yields a typed [`Tuple`](/reference/builder/#tuple) element. The
 build/read/pass examples live in [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string).
-Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays
-nested deeper than `[][]`, and fixed-size `T[N]`.
+Arrays nest to any depth, and every level may be fixed-size (`T[N]`, laid out in memory exactly like
+a `T[]` with the length word pinned to `N`; static on the wire when `T` is static).
 
 Several type-level helpers are exported for advanced inference: `StructTypeOf`, `TupleTypeOf`,
 `TupleArrayOf`, `TypeToComponent`, `TupleLitOf`, and `TupleAsParam`. You rarely name them — they
@@ -175,7 +187,8 @@ narrative and a runnable example. Their return types are exported:
 
 - **`FromAbiOutputs<abi, name>`** — the type of `t.fromOutputs(abi, name)`: a single output's type,
   or a `TupleType` struct over several outputs (named, in ABI declaration order). An unknown name
-  or a non-`const` ABI widens to `EvsType`; an overloaded name throws at recording.
+  or a non-`const` ABI widens to `EvsType`; an overloaded name throws at recording unless every
+  overload declares the same outputs.
 - **`AbiParamToEvsType<p>`** — the type of `t.fromAbiParameter(p)`: a `TupleType` for a `tuple…`
   parameter, else the scalar/array type string.
 
@@ -201,9 +214,13 @@ type LitOf<t extends EvsType> = t extends NumericType
             ? `0x${string}`
             : t extends TupleType
               ? TupleLitOf<t> // delegated to abitype: object (all-named) or array (positional)
-              : t extends `${infer e extends StringType}[]`
-                ? readonly LitOf<e>[]
-                : never;
+              : t extends `${infer e}[]` | `${infer e}[${number}]`
+                ? e extends StringType
+                  ? readonly (LitOf<e> | Expr<e>)[] // `T[]` / `T[N]` (N enforced at recording); elements may be staged
+                  : never
+                : t extends `${string}[${string}]`
+                  ? readonly unknown[] // a dynamic-inside-fixed chain (`uint256[][2]`): widened
+                  : never;
 
 type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
@@ -221,6 +238,7 @@ violation):
 | `0x` string for `bytes`          | any even-length hex                                               |
 | `string` for `string`            | UTF-8 encoded                                                     |
 | JS array for `T[]`               | element-wise rules of `T`                                         |
+| JS array of exactly N for `T[N]` | element-wise rules of `T`; the length is enforced at recording (`TYPE_MISMATCH` otherwise) |
 
 Word literals canonicalize at recording; dynamic literals and literal arrays become bytecode
 data segments. All-literal pure operations fold at recording, and a fold that would certainly
@@ -324,8 +342,8 @@ const casts = evscript({ name: 'casts', args: [t.bytes32] }, (s, raw) => {
 
 | Method   | Signature                                    | Available on                  | Semantics                                                       |
 | -------- | -------------------------------------------- | ----------------------------- | ---------------------------------------------------------------- |
-| `length` | `length(): Expr<'uint256'>`                  | `string`, `bytes`, any `T[]`  | byte length for `string`/`bytes`; element count for arrays      |
-| `at`     | `at(i: IntoExpr<'uint256'>): Expr<elem>`     | any `T[]`                     | bounds-checked — Panic `0x32` on an out-of-range index          |
+| `length` | `length(): Expr<'uint256'>`                  | `string`, `bytes`, any `T[]`/`T[N]` | byte length for `string`/`bytes`; element count for arrays (`N` for a fixed-size array) |
+| `at`     | `at(i: IntoExpr<'uint256'>): Expr<elem>`     | any `T[]`/`T[N]`              | bounds-checked — Panic `0x32` on an out-of-range index; one suffix peeled per call (`uint256[][]` → `uint256[]` → `uint256`; a `tuple[]` element is a `Tuple`) |
 
 ### Putting it together
 

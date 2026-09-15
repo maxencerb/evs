@@ -41,11 +41,12 @@ import type {
   NamedType,
   NormalizeArgs,
   NumericType,
+  PeelArraySuffix,
   StringType,
   TupleType,
 } from '../core/types.js';
 import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
-import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
+import { assertTypeString, Recorder, type RecErrorDecl } from './expr.js';
 
 // ---------------------------------------------------------------------------
 // entry point
@@ -331,12 +332,12 @@ export function evscript<
     if (isArgSpecValue(d)) {
       const ty: unknown = d.type;
       if (!isEvsValueType(ty)) {
-        assertV0Type(ty, `evscript "${def.name}" arg "${d.name}"`, entryLoc);
+        assertTypeString(ty, `evscript "${def.name}" arg "${d.name}"`, entryLoc);
       }
       return { name: d.name, type: ty };
     }
     if (!isEvsValueType(d)) {
-      assertV0Type(d, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
+      assertTypeString(d, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
     }
     return { name: `arg${i}`, type: d };
   });
@@ -412,37 +413,43 @@ export interface Cell<t extends EvsType> {
   set(value: IntoExpr<t>): void;
 }
 
-/** The `T[]` value type of a `MutArray<e>` element `e`: a string element → `${e}[]` (pinned to the
- *  depth-bounded {@link EvsType} array vocabulary); a `tuple` element → a `tuple[]` {@link TupleType}
- *  with the SAME components (a `MutArray` element is always a plain `tuple`, so the array tag
- *  is exactly `'tuple[]'`). One-level-deeper only — deeper string arrays are rejected at record time. */
-export type MutArrayValueOf<e extends EvsType> = e extends TupleType
-  ? { readonly type: 'tuple[]'; readonly components: e['components'] }
+/** The array value type of a `MutArray<e, n>`: a string element → `${e}[]` (or `${e}[n]` for a
+ *  fixed-size array); a tuple descriptor element (plain `tuple` or a tuple array) → the tuple-array
+ *  {@link TupleType} with the SAME components and the suffix appended to its tag. Any element type
+ *  nests (`MutArray<'uint256[]'>` → `uint256[][]`, `MutArray<tuple[]>` → `tuple[][]`). */
+export type MutArrayValueOf<e extends EvsType, n extends number | null = null> = e extends TupleType
+  ? {
+      readonly type: `${e['type']}[${n extends number ? n : ''}]` & TupleType['type'];
+      readonly components: e['components'];
+    }
   : e extends StringType
-    ? Extract<`${e}[]`, EvsType>
+    ? `${e}[${n extends number ? n : ''}]` extends infer a extends EvsType
+      ? a // deferred `infer` — instantiated per concrete `e`, never solved against the wide union
+      : never
     : never;
 
-/** The element handle of a `MutArray<e>`: a `tuple` element → a {@link Tuple} handle; otherwise an
- *  {@link Expr} of the element type. */
-export type MutArrayElem<e extends EvsType> = e extends TupleType
-  ? Tuple<e>
-  : Expr<Extract<e, EvsType>>;
+/** The element handle of a `MutArray<e>`: a plain `tuple` element → a {@link Tuple} handle; a
+ *  tuple-array / scalar / string-array element → an {@link Expr} (the {@link ArgHandle} dispatch,
+ *  matching the runtime `valueHandle`). */
+export type MutArrayElem<e extends EvsType> = ArgHandle<e>;
 
 /**
- * A mutable array (`s.newArray`) over element type `e`.
- * `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a `tuple`. `set`
- * accepts the element's `IntoMember` (a `Tuple` handle / literal for a tuple element, an `IntoExpr`
- * otherwise); `get` yields the element handle; `expr()` is the raw memref of the SAME buffer.
+ * A mutable array (`s.newArray`) over element type `e` — a dynamic `e[]` (`n = null`) or, with
+ * `{ fixed: true }`, a fixed-size `e[n]`. `e` is any value type: a word, `string`/`bytes`, an array
+ * (dynamic or fixed, any depth), or a struct/tuple. `set` accepts the element's `IntoMember` (a
+ * `Tuple` handle / literal for a tuple element, an array handle / literal for an array element, an
+ * `IntoExpr` otherwise); `get` yields the element handle; `expr()` is the raw memref of the SAME
+ * buffer.
  */
-export interface MutArray<e extends EvsType> {
+export interface MutArray<e extends EvsType, n extends number | null = null> {
   readonly elemType: e;
   readonly length: Expr<'uint256'>;
   set(i: IntoExpr<'uint256'>, v: IntoMember<e>): void; // bounds-checked → Panic 0x32
   get(i: IntoExpr<'uint256'>): MutArrayElem<e>; // bounds-checked → Panic 0x32
-  expr(): Expr<MutArrayValueOf<e>>; // memref handle to the SAME buffer (reference semantics)
+  expr(): Expr<MutArrayValueOf<e, n>>; // memref handle to the SAME buffer (reference semantics)
   // phantom brand (issue #5 ask #5): lets `s.return({ arr })` / an array slot accept the bare
   // handle (no `.expr()`). Type-only — the runtime `MutArrayImpl` carries no such property.
-  readonly [mutArrayBrand]: MutArrayValueOf<e>;
+  readonly [mutArrayBrand]: MutArrayValueOf<e, n>;
 }
 
 export interface LoopCtl {
@@ -537,11 +544,17 @@ export type TupleArrayElem<C extends TupleType> = {
   readonly components: C['components'];
 };
 
-/** One `[]` peeled off a tuple-ARRAY descriptor: `tuple[]` → its plain `tuple` element
- *  (= {@link TupleArrayElem}), `tuple[][]` → its `tuple[]` row; a non-array `tuple` → `never`. */
-type PeelTupleArray<C extends TupleType> = C['type'] extends `${infer inner}[]`
-  ? { readonly type: inner & TupleType['type']; readonly components: C['components'] }
-  : never;
+/** One suffix (`[]`/`[N]`) peeled off a tuple-ARRAY descriptor: `tuple[]` → its plain `tuple`
+ *  element (= {@link TupleArrayElem}), `tuple[][]` → its `tuple[]` row, `tuple[2][]` → `tuple[2]`;
+ *  a non-array `tuple` → `never`. The tag is parsed front to back by core's
+ *  {@link PeelArraySuffix} (the same parser `ArrayElemOf` uses for string arrays). */
+type PeelTupleArray<C extends TupleType> =
+  PeelArraySuffix<C['type']> extends infer inner extends TupleType['type']
+    ? { readonly type: inner; readonly components: C['components'] }
+    : never;
+
+/** A tuple-ARRAY descriptor tag: any `tuple` tag with at least one `[]`/`[N]` suffix. */
+type TupleArrayTag = `tuple[${string}`;
 
 /**
  * The element handle `.at(i)` / `s.forEach` yield for a tuple-array {@link Expr} (issue #12
@@ -567,11 +580,11 @@ export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray
 // which a `tuple[]` Expr is not; the runtime `lenOp` accepts every dynamic memref).
 declare module '../core/types.js' {
   interface Expr<t extends EvsType = EvsType> {
-    at<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
+    at<C extends TupleType & { readonly type: TupleArrayTag }>(
       this: Expr<C>,
       i: IntoExpr<'uint256'>,
     ): TupleArrayElemHandle<C>;
-    length(this: Expr<TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>): Expr<'uint256'>;
+    length(this: Expr<TupleType & { readonly type: TupleArrayTag }>): Expr<'uint256'>;
   }
 }
 
@@ -690,60 +703,104 @@ type ParamToTupleType<p extends AbiParameter> = p extends {
   ? { readonly type: 'tuple'; readonly components: comps }
   : never;
 
-/** An abitype `AbiParameter` for a `'tuple[]'` member → the matching `tuple[]` {@link TupleType}
- *  descriptor (an array value type whose `.type` is `'tuple[]'`). */
+/** An abitype `AbiParameter` for a tuple-ARRAY member (`'tuple[]'`, `'tuple[2]'`, `'tuple[][]'`,
+ *  …) → the matching tuple-array {@link TupleType} descriptor (an array value type whose `.type`
+ *  is the param's tag). */
 type ParamToTupleArrayType<p extends AbiParameter> = p extends {
-  readonly type: 'tuple[]';
+  readonly type: infer tag extends TupleArrayTag;
   readonly components: infer comps extends readonly NamedType[];
 }
-  ? { readonly type: 'tuple[]'; readonly components: comps }
+  ? { readonly type: tag; readonly components: comps }
   : never;
 
 // the staged handle of one OUTPUT parameter: a `tuple` param → a `Tuple` handle
-// (decoded into a flat block); a `tuple[]` param → an `Expr` of the `tuple[]` descriptor (so a
-// returned array is abitype-typed as `readonly Struct[]` and `.at(i)` is a typed Tuple element); a
-// nested word array (`uint256[][]`) / `string[]` → an `Expr` of its string type (abitype infers
-// `readonly (readonly bigint[])[]` / `readonly string[]`); every other scalar/array → an `Expr`.
+// (decoded into a flat block); a tuple-array param (`tuple[]`, `tuple[2]`, `tuple[][]`, …) → an
+// `Expr` of the tuple-array descriptor (so a returned array is abitype-typed as `readonly Struct[]`
+// and `.at(i)` is a typed Tuple element / row); a nested word array (`uint256[][]`) / `string[]`
+// / fixed `uint256[2]` → an `Expr` of its string type (abitype infers `readonly (readonly
+// bigint[])[]` / `readonly string[]` / `readonly [bigint, bigint]`); every other scalar → an `Expr`.
 type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
   ? Tuple<ParamToTupleType<p>>
-  : p['type'] extends 'tuple[]'
+  : p['type'] extends TupleArrayTag
     ? Expr<ParamToTupleArrayType<p>>
     : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
 
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
 // a struct, a positional array for an unnamed tuple, a `readonly Struct[]` for a `tuple[]`) OR an
 // `Expr`/handle of that type. For a `tuple` param: a `Tuple` handle / `s.tuple(...)` result. For a
-// `tuple[]` param: an `Expr` of the `tuple[]` descriptor (a decoded/constructed array handle)
-// or the `readonly Struct[]` literal. `uint256[][]`/`string[]` are `EvsType` strings → `Expr<that>`.
+// tuple-array param: an `Expr` of the tuple-array descriptor (a decoded/constructed array handle)
+// or the `readonly Struct[]` literal. `uint256[][]`/`string[]`/`uint256[2]` are `EvsType` strings →
+// `Expr<that>` (or the literal; a fixed-size literal is a tuple of exactly N).
 type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
       | AbiParameterToPrimitiveType<p, 'inputs'>
       | Tuple<ParamToTupleType<p>>
       | AnyTuple // issue #5 ask #3: a cross-order call-decoded Tuple is accepted (runtime-checked)
       | Expr<ParamToTupleType<p>>
-  : p['type'] extends 'tuple[]'
+  : p['type'] extends TupleArrayTag
     ? AbiParameterToPrimitiveType<p, 'inputs'> | Expr<ParamToTupleArrayType<p>> | AnyMutArray // issue #5 ask #5: a bare MutArray<tuple> is accepted (runtime-checked)
-    :
-        | AbiParameterToPrimitiveType<p, 'inputs'>
-        | Expr<p['type'] extends EvsType ? p['type'] : never>;
+    : p['type'] extends `${string}[${string}`
+      ?
+          | AbiParameterToPrimitiveType<p, 'inputs'>
+          | LitOf<Extract<p['type'], EvsType>> // an array literal whose elements may be staged Exprs
+          | Expr<p['type'] extends EvsType ? p['type'] : never>
+          | AnyMutArray // a bare MutArray of the array type is accepted (runtime-checked)
+      :
+          | AbiParameterToPrimitiveType<p, 'inputs'>
+          | Expr<p['type'] extends EvsType ? p['type'] : never>;
 
+/** The `args` tuple one ABI function accepts (each input's {@link InputValue}). */
+type InputsOf<fn> = fn extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
+  ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
+  : readonly unknown[];
+
+type IsUnion<t, u = t> = t extends unknown ? ([u] extends [t] ? false : true) : never;
+
+/** viem's `CheckArgs`: an omitted/empty `args` matches the zero-input overload; otherwise the
+ *  provided args tuple must be assignable to the overload's inputs tuple. */
+type CheckArgs<fn, args> =
+  (readonly [] extends args ? readonly [] : args) extends InputsOf<fn> ? fn : never;
+
+/**
+ * Overload resolution at the type level (issue #4) — the mirror of viem's
+ * `ExtractAbiFunctionForArgs`: the ABI function named `name` in the `mut` bucket; when several
+ * overloads share the name, the one(s) whose inputs accept the provided `args` (arity first, then
+ * per-input assignability — the same order the recorder resolves at record time). A single
+ * (non-overloaded) function is picked regardless of `args`.
+ */
+export type FnForArgs<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability,
+  args,
+> =
+  FnOf<abi, name, mut> extends infer fn
+    ? IsUnion<fn> extends true
+      ? fn extends unknown
+        ? CheckArgs<fn, args>
+        : never
+      : fn
+    : never;
+
+/** The `args` accepted by the function(s) named `name`: a union over every overload's inputs
+ *  tuple (so an arg literal is contextually typed by all candidates), `readonly unknown[]` for a
+ *  non-`const` ABI / unknown name. */
 export type SubcallInputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
-  ? readonly unknown[]
-  : FnOf<abi, name, mut> extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
-    ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
-    : readonly unknown[];
+> = [FnOf<abi, name, mut>] extends [never] ? readonly unknown[] : InputsOf<FnOf<abi, name, mut>>;
 
 export type SubcallOutputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
+  args = SubcallInputs<abi, name, mut>,
+> = [FnForArgs<abi, name, mut, args>] extends [never]
   ? readonly (Expr | Tuple<TupleType>)[]
-  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  : FnForArgs<abi, name, mut, args> extends {
+        readonly outputs: infer outs extends readonly AbiParameter[];
+      }
     ? { readonly [i in keyof outs]: OutputHandle<outs[i]> }
     : readonly (Expr | Tuple<TupleType>)[];
 
@@ -765,9 +822,12 @@ export type SubcallStruct<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
+  args = SubcallInputs<abi, name, mut>,
+> = [FnForArgs<abi, name, mut, args>] extends [never]
   ? Tuple<TupleType>
-  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  : FnForArgs<abi, name, mut, args> extends {
+        readonly outputs: infer outs extends readonly AbiParameter[];
+      }
     ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>
     : Tuple<TupleType>;
 
@@ -775,11 +835,14 @@ export interface SubcallParams<
   abi extends Abi | readonly unknown[],
   name extends ContractFunctionName<abi, mut>,
   mut extends AbiStateMutability = ViewMutability,
+  // the provided `args` (inferred `const` at the call site): with overloads, the output handle
+  // types follow the overload these args select (`FnForArgs`), exactly like viem's `readContract`.
+  args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
 > {
   readonly address: IntoExpr<'address'>;
   readonly abi: abi;
   readonly functionName: name | ContractFunctionName<abi, mut>; // autocomplete union
-  readonly args?: SubcallInputs<abi, name, mut>;
+  readonly args?: args;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
   // the default positional `[many]` array. See {@link SubcallStruct}.
@@ -792,35 +855,62 @@ export interface SubcallParams<
 // (STATICCALL); `call`/`tryCall`/`simulate`/`trySimulate` filter to WriteMutability (CALL).
 // ---------------------------------------------------------------------------
 
-/** The strict result shape, parameterized over the mutability bucket. */
+/** The strict result shape, parameterized over the mutability bucket. `args` is inferred `const`
+ *  from `p.args` so overloads resolve by the provided argument shapes (issue #4). */
 export interface SubcallVerb<mut extends AbiStateMutability> {
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct: true },
-  ): SubcallStruct<abi, name, mut>;
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
-  ): UnwrapSingle<SubcallOutputs<abi, name, mut>>;
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut>,
-  ): SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args> & { readonly struct: true },
+  ): SubcallStruct<abi, name, mut, args>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args> & { readonly struct?: false },
+  ): UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args>,
+  ): SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
 }
 
 /** The try result shape (`{ success, value }`), parameterized over the mutability bucket. */
 export interface TrySubcallVerb<mut extends AbiStateMutability> {
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct: true },
-  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut> };
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args> & { readonly struct: true },
+  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut, args> };
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args> & { readonly struct?: false },
   ): {
     readonly success: Expr<'bool'>;
-    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
   };
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut>,
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends ContractFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: SubcallParams<abi, name, mut, args>,
   ): {
     readonly success: Expr<'bool'>;
-    readonly value: SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+    readonly value:
+      | SubcallStruct<abi, name, mut, args>
+      | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
   };
 }
 
@@ -971,9 +1061,15 @@ export interface ScriptBuilder<
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
   let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
   let<t extends EvsType>(init: Expr<t>): Cell<t>;
-  // `e` is a word type, `string`/`bytes`, a one-level string array (`uint256[]`), or a
-  // `tuple` (deferred shapes — `tuple[]` element, deeper nesting, `T[N]` — throw at record time).
+  // `e` is any value type: a word, `string`/`bytes`, an array (dynamic or fixed-size, any
+  // depth), or a `tuple`/tuple-array descriptor. `{ fixed: true }` with a LITERAL length `n`
+  // allocates a fixed-size `e[n]` (its length is part of the type — `expr()` is `Expr<e[n]>`).
   newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+  newArray<const e extends EvsType, const n extends number>(
+    elem: e,
+    length: n,
+    opts: { readonly fixed: true },
+  ): MutArray<e, n>;
   // tuple/struct allocator: `init` is a partial, name-keyed (struct) or positional
   // (t.tuple) record of members; omitted members default to zero. Returns a `Tuple` handle.
   tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
@@ -1036,7 +1132,7 @@ export interface ScriptBuilder<
   // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
   // load is always recorded; a body that never reads `elem` leaves it dead and the compile-time
   // DCE pass (ir/dce.ts) drops it, bounds check included.
-  forEach<C extends TupleType & { readonly type: 'tuple[]' | 'tuple[][]' }>(
+  forEach<C extends TupleType & { readonly type: TupleArrayTag }>(
     array: Expr<C>,
     body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
@@ -1099,7 +1195,7 @@ function makeBuilder(r: Recorder): ScriptBuilder {
   const builder = {
     lit: (type: unknown, value: unknown) => r.lit(type, value),
     let: (a: unknown, b?: unknown) => r.letCell(a, b),
-    newArray: (elem: unknown, length: unknown) => r.newArray(elem, length),
+    newArray: (elem: unknown, length: unknown, opts?: unknown) => r.newArray(elem, length, opts),
     tuple: (type: unknown, init?: unknown) => r.tuple(type, init),
     env: (kind: unknown) => r.env(kind),
 
