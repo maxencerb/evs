@@ -5,13 +5,49 @@
 // paths work in both colour schemes: light strokes on a near-black ground in dark mode,
 // dark strokes on a near-white ground in light mode. Registered via `components.Hero` in
 // `astro.config.mjs`; every other page keeps Starlight's built-in hero.
+//
+// Extras over the stock hero, all landing-page specific: a facts strip, actions split into a
+// primary row and a minimal row, an install line with a package-manager switcher and a copy
+// button, and a "copy prompt" button that hands an AI coding agent the gist of the library plus
+// the /llms.txt endpoints.
 import { LinkButton } from '@astrojs/starlight/components';
 
 const { data } = Astro.locals.starlightRoute.entry;
 const { title = data.title, tagline, actions = [] } = data.hero || {};
+const primaryActions = actions.filter((a) => a.variant !== 'minimal');
+const minimalActions = actions.filter((a) => a.variant === 'minimal');
 
 // Same value as Starlight's `PAGE_TITLE_ID` (`_top`): the skip-link / ToC target.
 const PAGE_TITLE_ID = '_top';
+
+const facts = [
+  { term: 'One eth_call', detail: 'Dependent reads run inside a single RPC round trip.' },
+  { term: 'Typed through viem', detail: 'The script is its own ABI; readContract infers args and result.' },
+  { term: 'Nothing to deploy', detail: 'Deployless by default, state override when msg.sender matters.' },
+  { term: 'solc 0.8 semantics', detail: 'Checked arithmetic, verbatim revert bubbling, panic codes.' },
+];
+
+const managers = [
+  { id: 'bun', label: 'bun', command: 'bun add @maxencerb/evs viem' },
+  { id: 'npm', label: 'npm', command: 'npm install @maxencerb/evs viem' },
+  { id: 'pnpm', label: 'pnpm', command: 'pnpm add @maxencerb/evs viem' },
+  { id: 'yarn', label: 'yarn', command: 'yarn add @maxencerb/evs viem' },
+  { id: 'deno', label: 'deno', command: 'deno add npm:@maxencerb/evs npm:viem' },
+];
+
+const site = Astro.site?.href.replace(/\/$/, '') ?? 'https://evs.maxencerb.com';
+const agentPrompt = `I want to use @maxencerb/evs ("evs") in this project.
+
+evs is a TypeScript library for typed, read-only EVM scripts. You write a callback against a small builder API (s.read / s.call / s.simulate for calls, s.if / s.for / s.select for runtime control flow, checked arithmetic), it compiles to EVM runtime bytecode, and viem executes it as one deployless eth_call. Reads whose target depends on an earlier read (pool.token0() then token0.symbol()) batch into a single round trip, which a multicall cannot do, and the script's literal ABI gives readContract full argument and result inference.
+
+Install: ${managers[0]?.command} (peer viem >= 2.14.1, ESM only, TypeScript >= 5.5 in strict mode).
+
+Read the documentation before writing code:
+- Index: ${site}/llms.txt
+- Full text: ${site}/llms-full.txt
+
+Rules that matter: the builder callback runs once at build time and records statements, so native JS if/for only unroll host values and never branch on chain data; use the s.* combinators for runtime values. Execute with client.readContract({ ...compiled.toViem(), functionName, args }); pass toViem({ mode: 'stateOverride' }) plus an account when the script reads msg.sender.
+`;
 ---
 
 <section class="hero">
@@ -121,10 +157,11 @@ const PAGE_TITLE_ID = '_top';
       <h1 id={PAGE_TITLE_ID} data-page-title set:html={title} />
       {tagline && <div class="tagline" set:html={tagline} />}
     </div>
+
     {
-      actions.length > 0 && (
+      primaryActions.length > 0 && (
         <div class="sl-flex actions">
-          {actions.map(
+          {primaryActions.map(
             ({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
               <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
                 {text}
@@ -135,9 +172,141 @@ const PAGE_TITLE_ID = '_top';
         </div>
       )
     }
-    <code class="install" translate="no">bun add @maxencerb/evs viem</code>
+    {
+      minimalActions.length > 0 && (
+        <div class="sl-flex actions actions-minimal">
+          {minimalActions.map(
+            ({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+              <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+                {text}
+                {icon?.html && <Fragment set:html={icon.html} />}
+              </LinkButton>
+            ),
+          )}
+        </div>
+      )
+    }
+
+    <div class="install" data-install>
+      <div class="pm-tabs" role="tablist" aria-label="Package manager">
+        {
+          managers.map((pm, i) => (
+            <button
+              type="button"
+              role="tab"
+              class="pm-tab"
+              data-pm={pm.id}
+              data-command={pm.command}
+              aria-selected={i === 0 ? 'true' : 'false'}
+              tabindex={i === 0 ? 0 : -1}
+            >
+              {pm.label}
+            </button>
+          ))
+        }
+      </div>
+      <div class="install-line">
+        <code class="install-cmd" data-install-cmd translate="no">{managers[0]?.command}</code>
+        <button type="button" class="copy-btn" data-copy-install aria-label="Copy install command">
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+    </div>
+
+    <button type="button" class="prompt-btn" data-copy-prompt data-prompt={agentPrompt}>
+      <span class="copy-label">Copy a prompt for your AI agent</span>
+    </button>
   </div>
+
+  <dl class="facts">
+    {
+      facts.map((f) => (
+        <div class="fact">
+          <dt>{f.term}</dt>
+          <dd>{f.detail}</dd>
+        </div>
+      ))
+    }
+  </dl>
 </section>
+
+<script>
+  const STORAGE_KEY = 'evs-pm';
+
+  function flash(button: HTMLElement, text: string) {
+    const label = button.querySelector<HTMLElement>('.copy-label');
+    if (!label) return;
+    const original = label.textContent;
+    label.textContent = text;
+    button.setAttribute('data-copied', '');
+    window.setTimeout(() => {
+      label.textContent = original;
+      button.removeAttribute('data-copied');
+    }, 1600);
+  }
+
+  async function copy(text: string, button: HTMLElement) {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(button, 'Copied');
+    } catch {
+      flash(button, 'Press ⌘C');
+    }
+  }
+
+  for (const root of document.querySelectorAll<HTMLElement>('[data-install]')) {
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>('.pm-tab')];
+    const cmd = root.querySelector<HTMLElement>('[data-install-cmd]');
+    const copyBtn = root.querySelector<HTMLButtonElement>('[data-copy-install]');
+    if (!cmd || !copyBtn) continue;
+
+    const select = (tab: HTMLButtonElement, persist: boolean) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+      }
+      cmd.textContent = tab.dataset.command ?? '';
+      if (persist) {
+        try {
+          localStorage.setItem(STORAGE_KEY, tab.dataset.pm ?? '');
+        } catch {
+          /* private mode etc. */
+        }
+      }
+    };
+
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    const initial = tabs.find((t) => t.dataset.pm === stored);
+    if (initial) select(initial, false);
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => select(tab, true));
+      tab.addEventListener('keydown', (e) => {
+        const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (dir === 0) return;
+        e.preventDefault();
+        const next = tabs[(tabs.indexOf(tab) + dir + tabs.length) % tabs.length];
+        if (next) {
+          select(next, true);
+          next.focus();
+        }
+      });
+    }
+
+    copyBtn.addEventListener('click', () => void copy(cmd.textContent ?? '', copyBtn));
+    cmd.addEventListener('click', () => void copy(cmd.textContent ?? '', copyBtn));
+  }
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-copy-prompt]')) {
+    btn.addEventListener('click', () => void copy(btn.dataset.prompt ?? '', btn));
+  }
+</script>
 
 <style>
   @layer starlight.core {
@@ -147,15 +316,20 @@ const PAGE_TITLE_ID = '_top';
       --hero-ground-top: #141414;
       --hero-ink: oklch(92% 0.006 var(--sl-hue-base));
       --hero-ink-soft: oklch(78% 0.012 var(--sl-hue-base));
+      --hero-ink-mute: oklch(62% 0.01 var(--sl-hue-base));
       --hero-border: oklch(100% 0 0 / 0.1);
+      --hero-chip: oklch(100% 0 0 / 0.06);
+      --hero-chip-on: oklch(100% 0 0 / 0.14);
 
       position: relative;
       isolation: isolate;
       overflow: hidden;
       display: grid;
       align-items: center;
+      gap: clamp(2rem, 6vmin, 3.5rem);
       margin-block: 0.5rem 1rem;
-      padding: clamp(2.5rem, calc(1rem + 9vmin), 6.5rem) clamp(1.25rem, 4vw, 3.5rem);
+      padding: clamp(2.5rem, calc(1rem + 8vmin), 6rem) clamp(1.25rem, 4vw, 3.5rem)
+        clamp(1.5rem, 3vmin, 2.5rem);
       border: 1px solid var(--hero-border);
       border-radius: 1.25rem;
       background: linear-gradient(180deg, var(--hero-ground-top), var(--hero-ground));
@@ -167,7 +341,10 @@ const PAGE_TITLE_ID = '_top';
       --hero-ground-top: oklch(100% 0 0);
       --hero-ink: oklch(24% 0.012 var(--sl-hue-base));
       --hero-ink-soft: oklch(40% 0.014 var(--sl-hue-base));
+      --hero-ink-mute: oklch(52% 0.012 var(--sl-hue-base));
       --hero-border: var(--sl-color-gray-5);
+      --hero-chip: oklch(0% 0 0 / 0.05);
+      --hero-chip-on: oklch(0% 0 0 / 0.11);
     }
 
     .waves {
@@ -255,7 +432,7 @@ const PAGE_TITLE_ID = '_top';
     .stack {
       flex-direction: column;
       align-items: center;
-      gap: clamp(1.5rem, calc(1.5rem + 1vw), 2rem);
+      gap: 1.25rem;
       text-align: center;
     }
 
@@ -263,10 +440,11 @@ const PAGE_TITLE_ID = '_top';
       flex-direction: column;
       gap: 1rem;
       align-items: center;
+      margin-bottom: 0.5rem;
     }
 
     .copy > * {
-      max-width: 52ch;
+      max-width: 54ch;
     }
 
     h1 {
@@ -288,24 +466,165 @@ const PAGE_TITLE_ID = '_top';
     }
 
     .actions {
-      gap: 1rem 2rem;
+      gap: 1rem 1.5rem;
       flex-wrap: wrap;
       justify-content: center;
     }
 
-    .install {
-      font-size: var(--sl-text-sm);
-      padding: 0.45rem 0.9rem;
-      border: 1px solid var(--hero-border);
-      border-radius: 999px;
-      background: color-mix(in oklch, var(--hero-ground) 70%, transparent);
-      color: var(--hero-ink-soft);
-      user-select: all;
+    .actions-minimal {
+      gap: 0.5rem 1.75rem;
+      margin-top: -0.5rem;
     }
 
-    .install::before {
+    /* Install line: package-manager tabs above a monospace command + copy button. */
+    .install {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      max-width: 100%;
+    }
+
+    .pm-tabs {
+      display: flex;
+      gap: 0.125rem;
+      padding: 0.125rem;
+      border-radius: 999px;
+      background: var(--hero-chip);
+    }
+
+    .pm-tab {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--hero-ink-mute);
+      font: inherit;
+      font-size: var(--sl-text-xs);
+      font-weight: 500;
+      padding: 0.2rem 0.65rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition:
+        background-color 120ms ease,
+        color 120ms ease;
+    }
+
+    .pm-tab:hover {
+      color: var(--hero-ink);
+    }
+
+    .pm-tab[aria-selected='true'] {
+      background: var(--hero-chip-on);
+      color: var(--hero-ink);
+    }
+
+    .install-line {
+      display: flex;
+      align-items: stretch;
+      max-width: 100%;
+      border: 1px solid var(--hero-border);
+      border-radius: 0.625rem;
+      background: color-mix(in oklch, var(--hero-ground) 72%, transparent);
+      overflow: hidden;
+    }
+
+    .install-cmd {
+      display: inline-flex;
+      align-items: center;
+      padding: 0.55rem 0.9rem;
+      font-size: var(--sl-text-sm);
+      color: var(--hero-ink);
+      background: transparent;
+      white-space: nowrap;
+      overflow-x: auto;
+      user-select: all;
+      cursor: text;
+    }
+
+    .install-cmd::before {
       content: '$ ';
-      opacity: 0.55;
+      color: var(--hero-ink-mute);
+      user-select: none;
+    }
+
+    .copy-btn,
+    .prompt-btn {
+      appearance: none;
+      font: inherit;
+      cursor: pointer;
+      color: var(--hero-ink-soft);
+      transition:
+        background-color 120ms ease,
+        color 120ms ease;
+    }
+
+    .copy-btn {
+      border: 0;
+      border-left: 1px solid var(--hero-border);
+      background: var(--hero-chip);
+      padding: 0 0.85rem;
+      font-size: var(--sl-text-xs);
+      font-weight: 500;
+      min-width: 4.5rem;
+    }
+
+    .copy-btn:hover,
+    .prompt-btn:hover {
+      background: var(--hero-chip-on);
+      color: var(--hero-ink);
+    }
+
+    .copy-btn[data-copied],
+    .prompt-btn[data-copied] {
+      color: var(--sl-color-accent-high);
+    }
+
+    .prompt-btn {
+      border: 1px dashed var(--hero-border);
+      border-radius: 999px;
+      background: transparent;
+      padding: 0.35rem 0.9rem;
+      font-size: var(--sl-text-xs);
+    }
+
+    .prompt-btn::before {
+      content: '✦ ';
+      color: var(--hero-ink-mute);
+    }
+
+    /* Facts strip: four short claims, no cards. */
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem 1.5rem;
+      margin: 0;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--hero-border);
+      text-align: start;
+    }
+
+    @media (min-width: 50rem) {
+      .facts {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+
+    .fact {
+      min-width: 0;
+    }
+
+    .facts dt {
+      font-size: var(--sl-text-sm);
+      font-weight: 600;
+      color: var(--hero-ink);
+    }
+
+    .facts dd {
+      margin: 0.2rem 0 0;
+      font-size: var(--sl-text-xs);
+      line-height: 1.5;
+      color: var(--hero-ink-mute);
     }
   }
 </style>

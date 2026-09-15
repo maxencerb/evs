@@ -1,15 +1,15 @@
 ---
 title: evs
-description: Typed EVM read scripts in plain TypeScript — batch dozens of on-chain reads into a single eth_call, with full viem inference and no deployed contracts.
+description: Typed EVM read scripts in plain TypeScript. Batch dozens of dependent on-chain reads into a single eth_call, with full viem inference and no deployed contracts.
 template: splash
 hero:
   title: Ethereum Virtual Script
-  tagline: <strong>evs</strong> turns a plain TypeScript callback into EVM bytecode and runs it as one <code>eth_call</code> — dozens of dependent on-chain reads in a single round trip, nothing to deploy, and the result typed end to end through viem.
+  tagline: Write read-only EVM scripts in TypeScript. <strong>evs</strong> compiles them to bytecode and runs them as one <code>eth_call</code>, so reads that depend on earlier reads cost a single round trip. Nothing to deploy, and viem types the result.
   actions:
     - text: Quick start
       link: /getting-started/quick-start/
       icon: right-arrow
-    - text: Try it in the playground
+    - text: Open the playground
       link: /playground/
       icon: rocket
       variant: secondary
@@ -22,50 +22,94 @@ hero:
       variant: minimal
 ---
 
-import { Card, CardGrid } from '@astrojs/starlight/components';
+import { Steps } from '@astrojs/starlight/components';
 
-```ts collapse={3-11}
-import { evscript, t, compile } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-const poolAbi = [
-  {
-    type: 'function',
-    name: 'token0',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'address' }],
-  },
-] as const;
-// Two DEPENDENT reads, one eth_call: the second call's target IS the first
-// call's result — a chain multicall can't batch (it needs every address up front).
-const poolToken0 = evscript({ name: 'poolToken0', args: [t.address] }, (s, pool) => {
-  const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
-  //    ^? Expr<'address'> — a runtime value, and the next call's target
-  const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-  return s.return({ token0, symbol });
-});
+## From ABI to typed result in three steps
 
-const script = compile(poolToken0);
-// → runtime bytecode + a literal-typed ABI viem infers your args & result from
-```
+The example reads a Uniswap V3 pool's two tokens and each token's symbol: four reads, two of
+which target addresses that only exist once the first two have returned. One `eth_call` runs all
+of them.
 
-<CardGrid stagger>
-  <Card title="One round trip" icon="rocket">
-    Sequential, dependent reads — pool → tokens → metadata — collapse into a single
-    `eth_call`. No multicall contracts, no waterfall of requests.
-  </Card>
-  <Card title="Typed end to end" icon="approve-check">
-    Calls are typed like viem's `readContract`. The compiled artifact carries an `as const`
-    ABI, so `readContract` infers your script's argument and return types exactly.
-  </Card>
-  <Card title="Nothing to deploy" icon="setting">
-    Scripts execute deploylessly via the `eth_call` `code` parameter or a state override.
-    The chain never sees a deployment; any standard RPC node works.
-  </Card>
-  <Card title="Solidity-grade semantics" icon="seti:ethereum">
-    Checked arithmetic with solc 0.8 panic codes, verbatim revert bubbling, three calling verbs
-    (`s.read` view reads, `s.call` for `CALL`-frame functions like a Uniswap quoter, `s.simulate`
-    to dry-run a write), and a differential test suite that pins the bytecode against a reference
-    interpreter, viem's codecs, and real solc output.
-  </Card>
-</CardGrid>
+<Steps>
+
+1. **Describe the contracts.** Plain `as const` ABI fragments, the same shape viem uses. viem
+   already ships `erc20Abi`, so only the pool needs writing down.
+
+   ```ts title="abis.ts"
+   export const poolAbi = [
+     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+   ] as const;
+   ```
+
+2. **Write the script.** The callback runs once, at build time, and records what the bytecode
+   will do. Every value it touches is an `Expr`, a typed placeholder for something that only
+   exists inside the `eth_call`. Passing one call's result as the next call's address is the
+   part a multicall cannot express.
+
+   ```ts title="script.ts" collapse={3-7}
+   import { evscript, t } from '@maxencerb/evs';
+   import { erc20Abi } from 'viem';
+   // abis.ts (step 1)
+   const poolAbi = [
+     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+   ] as const;
+
+   export const poolTokens = evscript({ name: 'poolTokens', args: [t.address] }, (s, pool) => {
+     const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+     //    ^? Expr<'address'>
+     const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
+     // The target of these two calls is the result of the previous two.
+     const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+     const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+     return s.return({ token0, token1, symbol0, symbol1 });
+   });
+   ```
+
+3. **Compile it and run it with viem.** `compile` produces verified runtime bytecode plus a
+   literal-typed ABI. `toViem()` hands both to `readContract` as a deployless `eth_call`, and
+   the argument list and the result object are inferred from the script.
+
+   ```ts title="main.ts" collapse={4-19}
+   import { compile } from '@maxencerb/evs';
+   import { createPublicClient, http } from 'viem';
+   import { mainnet } from 'viem/chains';
+   // script.ts (step 2)
+   import { evscript, t } from '@maxencerb/evs';
+   import { erc20Abi } from 'viem';
+   const poolAbi = [
+     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
+   ] as const;
+   const poolTokens = evscript({ name: 'poolTokens', args: [t.address] }, (s, pool) => {
+     const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+     const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
+     const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+     const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+     return s.return({ token0, token1, symbol0, symbol1 });
+   });
+
+   const compiled = compile(poolTokens);
+
+   const client = createPublicClient({ chain: mainnet, transport: http() });
+   const out = await client.readContract({
+     ...compiled.toViem(), // { abi, code }: a plain deployless eth_call
+     functionName: 'poolTokens',
+     args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // typed readonly [pool: `0x${string}`]
+   });
+   // out: { token0: `0x${string}`; token1: `0x${string}`; symbol0: string; symbol1: string }
+   ```
+
+</Steps>
+
+## Where next
+
+- [Why evs?](/getting-started/why-evs/) compares this with multicall and hand-written helper
+  contracts, and says when not to use it.
+- [Writing scripts](/guides/writing-scripts/) covers values, control flow, loops over runtime
+  arrays and the three calling verbs.
+- [Executing scripts](/guides/execution/) explains the deployless and state-override modes and
+  which providers support each.
+- [How it works](/concepts/how-it-works/) walks through the pipeline from recorded IR to verified
+  bytecode.

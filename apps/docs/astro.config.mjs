@@ -13,7 +13,7 @@ export default defineConfig({
     starlight({
       title: 'evs',
       description:
-        'Typed EVM read scripts in plain TypeScript — batch dozens of on-chain reads into a single eth_call, with full viem inference and no deployed contracts.',
+        'Typed EVM read scripts in plain TypeScript. Batch dozens of dependent on-chain reads into a single eth_call, with full viem inference and no deployed contracts.',
       favicon: '/favicon.svg',
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/maxencerb/evs' },
