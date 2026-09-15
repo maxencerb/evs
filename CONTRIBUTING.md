@@ -100,7 +100,8 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets); 
 
 1. A PR that changes the library in a user-visible way adds a changeset (`vp run changeset`).
 2. On merge to `main`, `release.yml` opens / refreshes the **"chore(release): version packages"**
-   PR: bumps `packages/evs/package.json`, writes the changelog, re-syncs `bun.lock`.
+   PR: bumps `packages/evs/package.json`, writes the changelog (`CHANGELOG.md` is excluded from
+   the formatter, since changesets writes it in its own style), re-syncs `bun.lock`.
 3. Merging that PR publishes: full gate → `scripts/publish.ts` = `bun pm pack` → `publint` →
    `npm publish <tarball> --provenance` → `changeset git-tag`; the action pushes the tag and
    creates the GitHub release. The committed version is always the last released one.
