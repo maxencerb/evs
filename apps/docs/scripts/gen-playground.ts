@@ -54,25 +54,37 @@ export const http = ((url?: string, config?: Parameters<typeof _http>[1]) =>
 `,
 );
 
-const build = await Bun.build({
-  entrypoints: [evsEntry, viemEntry],
-  outdir: outPublic,
-  target: 'browser',
-  format: 'esm',
-  minify: true,
-  naming: '[name].[ext]',
+// Two builds, not one: viem.js bundles viem, while evs.js keeps `viem` EXTERNAL and imports
+// the sibling viem.js instead. Bundling viem into both used to give the page two copies of
+// viem's error classes, and the library's revert decoding (`decodeScriptError` /
+// `matchScriptError`) failed to recognise errors thrown by the user's copy — the custom-errors
+// example surfaced as a bare "reverted" instead of the decoded InsufficientBalance. One copy
+// also halves the bytes shipped.
+const common = { outdir: outPublic, target: 'browser', format: 'esm', minify: true } as const;
+const viemBuild = await Bun.build({ ...common, entrypoints: [viemEntry], naming: 'viem.[ext]' });
+const evsBuild = await Bun.build({
+  ...common,
+  entrypoints: [evsEntry],
+  naming: 'evs.[ext]',
+  external: ['viem'],
 });
-if (!build.success) {
-  for (const log of build.logs) console.error(log);
-  throw new Error('playground runtime bundle failed');
-}
-const bundleNames: Record<string, string> = { 'evs-entry': 'evs.js', 'viem-entry': 'viem.js' };
-for (const artifact of build.outputs) {
-  const base = artifact.path.split('/').pop()?.replace(/\.js$/, '') ?? '';
-  const wanted = bundleNames[base];
-  if (wanted) {
-    await writeFile(join(outPublic, wanted), await readFile(artifact.path));
+for (const build of [viemBuild, evsBuild]) {
+  if (!build.success) {
+    for (const log of build.logs) console.error(log);
+    throw new Error('playground runtime bundle failed');
   }
+}
+{
+  // Bun leaves the external specifier verbatim; point it at the sibling bundle. Relative
+  // resolution works for both consumers: the browser imports evs.js from
+  // `${origin}/playground/`, the headless gate from its filesystem path.
+  const evsOut = join(outPublic, 'evs.js');
+  const source = await readFile(evsOut, 'utf8');
+  const rewritten = source.replace(/from\s*(["'])viem\1/g, 'from"./viem.js"');
+  if (/(["'])viem\1/.test(rewritten)) {
+    throw new Error('evs.js still references the bare `viem` specifier after rewriting');
+  }
+  await writeFile(evsOut, rewritten);
 }
 
 // ---------------------------------------------------------------------------

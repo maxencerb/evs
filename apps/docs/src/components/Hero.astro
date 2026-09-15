@@ -1,0 +1,663 @@
+---
+// Landing-page hero: Starlight's default `Hero` (title / tagline / actions from the page
+// frontmatter) laid over the same animated dune ridges as the repository banner
+// (`.github/assets/evs-banner.svg`). The ridges are drawn with `currentColor` so the same
+// paths work in both colour schemes: light strokes on a near-black ground in dark mode,
+// dark strokes on a near-white ground in light mode. Registered via `components.Hero` in
+// `astro.config.mjs`; every other page keeps Starlight's built-in hero.
+//
+// Extras over the stock hero, all landing-page specific: a facts strip, actions split into a
+// primary row and a minimal row, an install line with a package-manager switcher and a copy
+// button, and a "copy prompt" button that hands an AI coding agent the gist of the library plus
+// the /llms.txt endpoints.
+import { LinkButton } from '@astrojs/starlight/components';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+const primaryActions = actions.filter((a) => a.variant !== 'minimal');
+const minimalActions = actions.filter((a) => a.variant === 'minimal');
+
+// Same value as Starlight's `PAGE_TITLE_ID` (`_top`): the skip-link / ToC target.
+const PAGE_TITLE_ID = '_top';
+
+const facts = [
+  { term: 'One eth_call', detail: 'Dependent reads run inside a single RPC round trip.' },
+  { term: 'Typed through viem', detail: 'The script is its own ABI; readContract infers args and result.' },
+  { term: 'Nothing to deploy', detail: 'Deployless by default, state override when msg.sender matters.' },
+  { term: 'solc 0.8 semantics', detail: 'Checked arithmetic, verbatim revert bubbling, panic codes.' },
+];
+
+const managers = [
+  { id: 'bun', label: 'bun', command: 'bun add @maxencerb/evs viem' },
+  { id: 'npm', label: 'npm', command: 'npm install @maxencerb/evs viem' },
+  { id: 'pnpm', label: 'pnpm', command: 'pnpm add @maxencerb/evs viem' },
+  { id: 'yarn', label: 'yarn', command: 'yarn add @maxencerb/evs viem' },
+  { id: 'deno', label: 'deno', command: 'deno add npm:@maxencerb/evs npm:viem' },
+];
+
+const site = Astro.site?.href.replace(/\/$/, '') ?? 'https://evs.maxencerb.com';
+const agentPrompt = `I want to use @maxencerb/evs ("evs") in this project.
+
+evs is a TypeScript library for typed, read-only EVM scripts. You write a callback against a small builder API (s.read / s.call / s.simulate for calls, s.if / s.for / s.select for runtime control flow, checked arithmetic), it compiles to EVM runtime bytecode, and viem executes it as one deployless eth_call. Reads whose target depends on an earlier read (pool.token0() then token0.symbol()) batch into a single round trip, which a multicall cannot do, and the script's literal ABI gives readContract full argument and result inference.
+
+Install: ${managers[0]?.command} (peer viem >= 2.14.1, ESM only, TypeScript >= 5.5 in strict mode).
+
+Read the documentation before writing code:
+- Index: ${site}/llms.txt
+- Full text: ${site}/llms-full.txt
+
+Rules that matter: the builder callback runs once at build time and records statements, so native JS if/for only unroll host values and never branch on chain data; use the s.* combinators for runtime values. Execute with client.readContract({ ...compiled.toViem(), functionName, args }); pass toViem({ mode: 'stateOverride' }) plus an account when the script reads msg.sender.
+`;
+---
+
+<section class="hero">
+  <svg
+    class="waves"
+    viewBox="0 0 2176 714"
+    preserveAspectRatio="xMidYMid slice"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <defs>
+      <linearGradient id="hero-ridge" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0.55" />
+        <stop offset="0.08" stop-color="currentColor" stop-opacity="0.22" />
+        <stop offset="0.4" stop-color="currentColor" stop-opacity="0.06" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-ridge-soft" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0.26" />
+        <stop offset="0.2" stop-color="currentColor" stop-opacity="0.08" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-shadow" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="var(--hero-ground)" stop-opacity="0.85" />
+        <stop offset="1" stop-color="var(--hero-ground)" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-sheen" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0" />
+        <stop offset="0.5" stop-color="currentColor" stop-opacity="0.06" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <filter id="hero-glow" x="-10%" y="-10%" width="120%" height="120%">
+        <feGaussianBlur stdDeviation="2.5" />
+      </filter>
+      <filter id="hero-soft" x="-10%" y="-10%" width="120%" height="120%">
+        <feGaussianBlur stdDeviation="10" />
+      </filter>
+    </defs>
+
+    <!-- upper dune -->
+    <g class="w2">
+      <path
+        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250 L 2400 -200 L -200 -200 Z"
+        fill="url(#hero-ridge-soft)"></path>
+      <path
+        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.22"
+        stroke-width="2"
+        filter="url(#hero-glow)"></path>
+    </g>
+
+    <!-- main lower ridge -->
+    <g class="w1">
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720 L 2400 900 L -200 900 Z"
+        fill="url(#hero-ridge)"></path>
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.55"
+        stroke-width="2.5"
+        filter="url(#hero-glow)"></path>
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.9"
+        stroke-width="1"></path>
+      <path
+        d="M-200 370 C 150 270, 350 290, 520 430 C 650 540, 780 630, 1000 640 C 1250 650, 1450 590, 1650 570 C 1850 550, 2050 630, 2400 750 L 2400 900 L -200 900 Z"
+        fill="url(#hero-shadow)"
+        filter="url(#hero-soft)"></path>
+    </g>
+
+    <!-- right rising ridge -->
+    <g class="w3">
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220 L 2400 900 L 1100 900 Z"
+        fill="url(#hero-ridge-soft)"></path>
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.4"
+        stroke-width="2"
+        filter="url(#hero-glow)"></path>
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.7"
+        stroke-width="0.8"></path>
+    </g>
+
+    <!-- travelling sheen -->
+    <g class="sheen">
+      <rect x="788" y="-100" width="600" height="914" fill="url(#hero-sheen)" transform="skewX(-25)"
+      ></rect>
+    </g>
+  </svg>
+
+  <div class="sl-flex stack">
+    <div class="sl-flex copy">
+      <h1 id={PAGE_TITLE_ID} data-page-title set:html={title} />
+      {tagline && <div class="tagline" set:html={tagline} />}
+    </div>
+
+    {
+      primaryActions.length > 0 && (
+        <div class="sl-flex actions">
+          {primaryActions.map(
+            ({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+              <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+                {text}
+                {icon?.html && <Fragment set:html={icon.html} />}
+              </LinkButton>
+            ),
+          )}
+        </div>
+      )
+    }
+    {
+      minimalActions.length > 0 && (
+        <div class="sl-flex actions actions-minimal">
+          {minimalActions.map(
+            ({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+              <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+                {text}
+                {icon?.html && <Fragment set:html={icon.html} />}
+              </LinkButton>
+            ),
+          )}
+        </div>
+      )
+    }
+
+    <div class="install" data-install>
+      <div class="pm-tabs" role="tablist" aria-label="Package manager">
+        {
+          managers.map((pm, i) => (
+            <button
+              type="button"
+              role="tab"
+              class="pm-tab"
+              data-pm={pm.id}
+              data-command={pm.command}
+              aria-selected={i === 0 ? 'true' : 'false'}
+              tabindex={i === 0 ? 0 : -1}
+            >
+              {pm.label}
+            </button>
+          ))
+        }
+      </div>
+      <div class="install-line">
+        <code class="install-cmd" data-install-cmd translate="no">{managers[0]?.command}</code>
+        <button type="button" class="copy-btn" data-copy-install aria-label="Copy install command">
+          <span class="copy-label">Copy</span>
+        </button>
+      </div>
+    </div>
+
+    <button type="button" class="prompt-btn" data-copy-prompt data-prompt={agentPrompt}>
+      <span class="copy-label">Copy a prompt for your AI agent</span>
+    </button>
+  </div>
+
+  <dl class="facts">
+    {
+      facts.map((f) => (
+        <div class="fact">
+          <dt>{f.term}</dt>
+          <dd>{f.detail}</dd>
+        </div>
+      ))
+    }
+  </dl>
+</section>
+
+<script>
+  const STORAGE_KEY = 'evs-pm';
+
+  function flash(button: HTMLElement, text: string) {
+    const label = button.querySelector<HTMLElement>('.copy-label');
+    if (!label) return;
+    const original = label.textContent;
+    label.textContent = text;
+    button.setAttribute('data-copied', '');
+    window.setTimeout(() => {
+      label.textContent = original;
+      button.removeAttribute('data-copied');
+    }, 1600);
+  }
+
+  async function copy(text: string, button: HTMLElement) {
+    try {
+      await navigator.clipboard.writeText(text);
+      flash(button, 'Copied');
+    } catch {
+      flash(button, 'Press ⌘C');
+    }
+  }
+
+  for (const root of document.querySelectorAll<HTMLElement>('[data-install]')) {
+    const tabs = [...root.querySelectorAll<HTMLButtonElement>('.pm-tab')];
+    const cmd = root.querySelector<HTMLElement>('[data-install-cmd]');
+    const copyBtn = root.querySelector<HTMLButtonElement>('[data-copy-install]');
+    if (!cmd || !copyBtn) continue;
+
+    const select = (tab: HTMLButtonElement, persist: boolean) => {
+      for (const t of tabs) {
+        const on = t === tab;
+        t.setAttribute('aria-selected', on ? 'true' : 'false');
+        t.tabIndex = on ? 0 : -1;
+      }
+      cmd.textContent = tab.dataset.command ?? '';
+      if (persist) {
+        try {
+          localStorage.setItem(STORAGE_KEY, tab.dataset.pm ?? '');
+        } catch {
+          /* private mode etc. */
+        }
+      }
+    };
+
+    let stored: string | null = null;
+    try {
+      stored = localStorage.getItem(STORAGE_KEY);
+    } catch {
+      /* ignore */
+    }
+    const initial = tabs.find((t) => t.dataset.pm === stored);
+    if (initial) select(initial, false);
+
+    for (const tab of tabs) {
+      tab.addEventListener('click', () => select(tab, true));
+      tab.addEventListener('keydown', (e) => {
+        const dir = e.key === 'ArrowRight' ? 1 : e.key === 'ArrowLeft' ? -1 : 0;
+        if (dir === 0) return;
+        e.preventDefault();
+        const next = tabs[(tabs.indexOf(tab) + dir + tabs.length) % tabs.length];
+        if (next) {
+          select(next, true);
+          next.focus();
+        }
+      });
+    }
+
+    copyBtn.addEventListener('click', () => void copy(cmd.textContent ?? '', copyBtn));
+    cmd.addEventListener('click', () => void copy(cmd.textContent ?? '', copyBtn));
+  }
+
+  for (const btn of document.querySelectorAll<HTMLButtonElement>('[data-copy-prompt]')) {
+    btn.addEventListener('click', () => void copy(btn.dataset.prompt ?? '', btn));
+  }
+</script>
+
+<style>
+  @layer starlight.core {
+    .hero {
+      /* Dark mode: the banner's own ground. Light mode: the site's paper tones. */
+      --hero-ground: #040404;
+      --hero-ground-top: #141414;
+      --hero-ink: oklch(92% 0.006 var(--sl-hue-base));
+      --hero-ink-soft: oklch(78% 0.012 var(--sl-hue-base));
+      --hero-ink-mute: oklch(62% 0.01 var(--sl-hue-base));
+      --hero-border: oklch(100% 0 0 / 0.1);
+      --hero-chip: oklch(100% 0 0 / 0.06);
+      --hero-chip-on: oklch(100% 0 0 / 0.14);
+
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      display: grid;
+      align-items: center;
+      gap: clamp(2rem, 6vmin, 3.5rem);
+      margin-block: 0.5rem 1rem;
+      padding: clamp(2.5rem, calc(1rem + 8vmin), 6rem) clamp(1.25rem, 4vw, 3.5rem)
+        clamp(1.5rem, 3vmin, 2.5rem);
+      border: 1px solid var(--hero-border);
+      border-radius: 1.25rem;
+      background: linear-gradient(180deg, var(--hero-ground-top), var(--hero-ground));
+      color: var(--hero-ink);
+    }
+
+    :global([data-theme='light']) .hero {
+      --hero-ground: oklch(97% 0.003 var(--sl-hue-base));
+      --hero-ground-top: oklch(100% 0 0);
+      --hero-ink: oklch(24% 0.012 var(--sl-hue-base));
+      --hero-ink-soft: oklch(40% 0.014 var(--sl-hue-base));
+      --hero-ink-mute: oklch(52% 0.012 var(--sl-hue-base));
+      --hero-border: var(--sl-color-gray-5);
+      --hero-chip: oklch(0% 0 0 / 0.05);
+      --hero-chip-on: oklch(0% 0 0 / 0.11);
+    }
+
+    .waves {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      width: 100%;
+      height: 100%;
+      color: var(--hero-ink);
+      pointer-events: none;
+    }
+
+    .waves .w1 {
+      animation: hero-drift1 14s ease-in-out infinite;
+    }
+    .waves .w2 {
+      animation: hero-drift2 18s ease-in-out infinite;
+    }
+    .waves .w3 {
+      animation: hero-drift3 16s ease-in-out infinite;
+    }
+    .waves .sheen {
+      animation: hero-sheen 12s linear infinite;
+    }
+    .stack {
+      animation: hero-fade-in 1.2s ease-out both;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .waves .w1,
+      .waves .w2,
+      .waves .w3,
+      .waves .sheen,
+      .stack {
+        animation: none;
+      }
+    }
+
+    @keyframes hero-drift1 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(-40px, 14px);
+      }
+    }
+    @keyframes hero-drift2 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(36px, -12px);
+      }
+    }
+    @keyframes hero-drift3 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(-28px, -18px);
+      }
+    }
+    @keyframes hero-sheen {
+      from {
+        transform: translateX(-1400px);
+      }
+      to {
+        transform: translateX(1400px);
+      }
+    }
+    @keyframes hero-fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .stack {
+      flex-direction: column;
+      align-items: center;
+      gap: 1.25rem;
+      text-align: center;
+    }
+
+    .copy {
+      flex-direction: column;
+      gap: 1rem;
+      align-items: center;
+      margin-bottom: 0.5rem;
+    }
+
+    .copy > * {
+      max-width: 54ch;
+    }
+
+    h1 {
+      font-size: clamp(var(--sl-text-3xl), calc(0.25rem + 5vw), var(--sl-text-6xl));
+      line-height: var(--sl-line-height-headings);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--hero-ink);
+    }
+
+    .tagline {
+      font-size: clamp(var(--sl-text-base), calc(0.0625rem + 2vw), var(--sl-text-xl));
+      color: var(--hero-ink-soft);
+    }
+
+    .tagline :global(strong) {
+      color: var(--hero-ink);
+      font-weight: 600;
+    }
+
+    .actions {
+      gap: 1rem 1.5rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .actions-minimal {
+      gap: 0.5rem 1.75rem;
+      margin-top: -0.5rem;
+    }
+
+    /* Install line: package-manager tabs above a monospace command + copy button. */
+    .install {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 0.5rem;
+      margin-top: 0.75rem;
+      /* The definite width lives here: as a centred flex item the wrapper would otherwise
+         shrink to its content, and the line's percentage width would follow the command. */
+      width: min(100%, 26rem);
+    }
+
+    .pm-tabs {
+      display: flex;
+      gap: 0.125rem;
+      padding: 0.125rem;
+      border-radius: 999px;
+      background: var(--hero-chip);
+    }
+
+    .pm-tab {
+      appearance: none;
+      border: 0;
+      background: transparent;
+      color: var(--hero-ink-mute);
+      font: inherit;
+      font-size: var(--sl-text-xs);
+      font-weight: 500;
+      padding: 0.2rem 0.65rem;
+      border-radius: 999px;
+      cursor: pointer;
+      transition:
+        background-color 120ms ease,
+        color 120ms ease;
+    }
+
+    .pm-tab:hover {
+      color: var(--hero-ink);
+    }
+
+    .pm-tab[aria-selected='true'] {
+      background: var(--hero-chip-on);
+      color: var(--hero-ink);
+    }
+
+    /* Fixed width whatever the command length: the command scrolls sideways beneath the copy
+       button, and an opaque gradient fades it out before it reaches the button. */
+    .install-line {
+      --install-bg: color-mix(in oklch, var(--hero-ground) 90%, var(--hero-ink));
+      --copy-width: 4.5rem;
+      --fade-width: 2.5rem;
+      position: relative;
+      display: flex;
+      align-items: stretch;
+      width: 100%;
+      border: 1px solid var(--hero-border);
+      border-radius: 0.625rem;
+      background: var(--install-bg);
+      overflow: hidden;
+    }
+
+    .install-cmd {
+      display: block;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0.55rem calc(var(--copy-width) + var(--fade-width)) 0.55rem 0.9rem;
+      font-size: var(--sl-text-sm);
+      line-height: 1.5;
+      color: var(--hero-ink);
+      background: transparent;
+      white-space: nowrap;
+      text-align: start; /* the hero centres text; a short command must hug the left edge */
+      overflow-x: auto;
+      scrollbar-width: none;
+      user-select: all;
+      cursor: text;
+    }
+
+    .install-cmd::-webkit-scrollbar {
+      display: none;
+    }
+
+    .install-cmd::before {
+      content: '$ ';
+      color: var(--hero-ink-mute);
+      user-select: none;
+    }
+
+    .copy-btn,
+    .prompt-btn {
+      appearance: none;
+      font: inherit;
+      cursor: pointer;
+      color: var(--hero-ink-soft);
+      transition:
+        background-color 120ms ease,
+        color 120ms ease;
+    }
+
+    .copy-btn {
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 0;
+      width: var(--copy-width);
+      border: 0;
+      border-inline-start: 1px solid var(--hero-border);
+      background: color-mix(in oklch, var(--install-bg) 94%, var(--hero-ink));
+      padding: 0;
+      font-size: var(--sl-text-xs);
+      font-weight: 500;
+    }
+
+    .copy-btn::before {
+      content: '';
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 100%;
+      width: var(--fade-width);
+      background: linear-gradient(to right, transparent, var(--install-bg));
+      pointer-events: none;
+    }
+
+    .copy-btn:hover {
+      background: color-mix(in oklch, var(--install-bg) 86%, var(--hero-ink));
+      color: var(--hero-ink);
+    }
+
+    .prompt-btn:hover {
+      background: var(--hero-chip-on);
+      color: var(--hero-ink);
+    }
+
+    .copy-btn[data-copied],
+    .prompt-btn[data-copied] {
+      color: var(--sl-color-accent-high);
+    }
+
+    .prompt-btn {
+      border: 1px dashed var(--hero-border);
+      border-radius: 999px;
+      background: transparent;
+      padding: 0.35rem 0.9rem;
+      font-size: var(--sl-text-xs);
+    }
+
+    .prompt-btn::before {
+      content: '✦ ';
+      color: var(--hero-ink-mute);
+    }
+
+    /* Facts strip: four short claims, no cards. */
+    .facts {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 1rem 1.5rem;
+      margin: 0;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--hero-border);
+      text-align: start;
+    }
+
+    @media (min-width: 50rem) {
+      .facts {
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+      }
+    }
+
+    .fact {
+      min-width: 0;
+    }
+
+    .facts dt {
+      font-size: var(--sl-text-sm);
+      font-weight: 600;
+      color: var(--hero-ink);
+    }
+
+    .facts dd {
+      margin: 0.2rem 0 0;
+      font-size: var(--sl-text-xs);
+      line-height: 1.5;
+      color: var(--hero-ink-mute);
+    }
+  }
+</style>

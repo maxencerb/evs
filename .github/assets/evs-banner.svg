@@ -1,0 +1,98 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2176 714" width="2176" height="714" role="img" aria-label="Ethereum Virtual Script (evs)">
+  <defs>
+    <style>
+      @keyframes drift1 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-40px,14px); } }
+      @keyframes drift2 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(36px,-12px); } }
+      @keyframes drift3 { 0%,100% { transform: translate(0,0); } 50% { transform: translate(-28px,-18px); } }
+      @keyframes sheen  { 0% { transform: translateX(-1400px); } 100% { transform: translateX(1400px); } }
+      @keyframes fadeIn { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: translateY(0); } }
+      .w1 { animation: drift1 14s ease-in-out infinite; }
+      .w2 { animation: drift2 18s ease-in-out infinite; }
+      .w3 { animation: drift3 16s ease-in-out infinite; }
+      .sheen { animation: sheen 12s linear infinite; }
+      .title { animation: fadeIn 1.4s ease-out both; }
+    </style>
+
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#111111"/>
+      <stop offset="1" stop-color="#040404"/>
+    </linearGradient>
+    <linearGradient id="ridge" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.6"/>
+      <stop offset="0.08" stop-color="#8f8f8f" stop-opacity="0.4"/>
+      <stop offset="0.4" stop-color="#262626" stop-opacity="0.7"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="ridgeSoft" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0.28"/>
+      <stop offset="0.2" stop-color="#343434" stop-opacity="0.5"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="shadowBand" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#000000" stop-opacity="0.85"/>
+      <stop offset="1" stop-color="#000000" stop-opacity="0"/>
+    </linearGradient>
+    <linearGradient id="sheenGrad" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#ffffff" stop-opacity="0"/>
+      <stop offset="0.5" stop-color="#ffffff" stop-opacity="0.07"/>
+      <stop offset="1" stop-color="#ffffff" stop-opacity="0"/>
+    </linearGradient>
+
+    <filter id="glow" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="2.5"/>
+    </filter>
+    <filter id="soft" x="-10%" y="-10%" width="120%" height="120%">
+      <feGaussianBlur stdDeviation="10"/>
+    </filter>
+    <clipPath id="frame"><rect width="2176" height="714"/></clipPath>
+  </defs>
+
+  <rect width="2176" height="714" fill="url(#bg)"/>
+
+  <g clip-path="url(#frame)">
+    <!-- upper dune -->
+    <g class="w2">
+      <path d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250 L 2400 -200 L -200 -200 Z"
+            fill="url(#ridgeSoft)"/>
+      <path d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250"
+            fill="none" stroke="#ffffff" stroke-opacity="0.22" stroke-width="2" filter="url(#glow)"/>
+    </g>
+
+    <!-- main lower ridge -->
+    <g class="w1">
+      <path d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720 L 2400 900 L -200 900 Z"
+            fill="url(#ridge)"/>
+      <path d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+            fill="none" stroke="#ffffff" stroke-opacity="0.55" stroke-width="2.5" filter="url(#glow)"/>
+      <path d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+            fill="none" stroke="#ffffff" stroke-opacity="0.9" stroke-width="1"/>
+      <path d="M-200 370 C 150 270, 350 290, 520 430 C 650 540, 780 630, 1000 640 C 1250 650, 1450 590, 1650 570 C 1850 550, 2050 630, 2400 750 L 2400 900 L -200 900 Z"
+            fill="url(#shadowBand)" filter="url(#soft)"/>
+    </g>
+
+    <!-- right rising ridge -->
+    <g class="w3">
+      <path d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220 L 2400 900 L 1100 900 Z"
+            fill="url(#ridgeSoft)"/>
+      <path d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+            fill="none" stroke="#ffffff" stroke-opacity="0.4" stroke-width="2" filter="url(#glow)"/>
+      <path d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+            fill="none" stroke="#ffffff" stroke-opacity="0.7" stroke-width="0.8"/>
+    </g>
+
+    <!-- travelling sheen -->
+    <g class="sheen">
+      <rect x="788" y="-100" width="600" height="914" fill="url(#sheenGrad)" transform="skewX(-25)"/>
+    </g>
+
+    <!-- vignette -->
+    <rect width="2176" height="714" fill="url(#shadowBand)" opacity="0.45" transform="rotate(180 1088 357)"/>
+  </g>
+
+  <text class="title" x="1088" y="382" text-anchor="middle"
+        font-family="Inter, 'Segoe UI', Helvetica, Arial, sans-serif"
+        font-size="86" letter-spacing="-1.5">
+    <tspan fill="#f4f4f4" font-weight="700">Ethereum Virtual Script</tspan>
+    <tspan fill="#c4c4c4" font-weight="400" dx="18">(evs)</tspan>
+  </text>
+</svg>
