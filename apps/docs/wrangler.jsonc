@@ -10,6 +10,12 @@
     "directory": "./dist",
     "not_found_handling": "404-page",
   },
+  // Production serves only the custom domain (no workers.dev route). Preview URLs
+  // (`<version>-evs.<subdomain>.workers.dev`, what `wrangler versions upload` prints for
+  // non-production branches) must be opted in explicitly: with `preview_urls` absent, wrangler
+  // follows the workers.dev route and every production deploy turned previews back OFF.
+  "workers_dev": false,
+  "preview_urls": true,
   "routes": [
     {
       "pattern": "evs.maxencerb.com",

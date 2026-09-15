@@ -6,13 +6,19 @@ viem inference.
 
 ## Documentation
 
-- `packages/evs/README.md` (the root `README.md` is a symlink to it) is the single project
-  document: user-facing intro + quickstart, provider support, design notes, testing tiers,
-  release flow, docs-site deploy settings. Keep it accurate when you change any of those.
-- `apps/docs/src/content/docs/**` — the user documentation site (evs.maxencerb.com).
+- `packages/evs/README.md` (the root `README.md` is a symlink to it) is the package's
+  **presentation page** — what npm and GitHub show: banner, intro, install, quickstart, the two
+  execution modes, key concepts, runnable examples. Keep it user-facing; maintainer material
+  does not go there.
+- `CONTRIBUTING.md` (repo root, not published to npm) is the **maintainer document**: repository
+  map, toolchain, test tiers, design notes, release flow, docs-site deploy settings. Keep it
+  accurate when you change any of those.
+- `apps/docs/src/content/docs/**` — the user documentation site (evs.maxencerb.com). The
+  provider support matrix lives in `guides/execution.mdx`.
 - The former `docs/design/**` / `docs/research/**` design and research documents were
-  **retired on 2026-09-14** (essentials folded into the README, citations swept from code
-  comments). Do not add references to them; the code and the README are the truth.
+  **retired on 2026-09-14** (essentials folded into what is now CONTRIBUTING.md, citations swept
+  from code comments). Do not add references to them; the code and CONTRIBUTING.md are the
+  truth.
 
 ## Toolchain: Vite+ (`vp`) on top of Bun
 
@@ -49,8 +55,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `lib/forge-std` (never an npm dependency).
 - `examples/` — runnable example scripts (private workspaces).
 - `apps/docs` — Astro Starlight docs site → `evs.maxencerb.com`. Built/deployed by
-  **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in the README's
-  "Docs site" section; its build command uses plain `bun run …` and must not depend on `vp`).
+  **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in
+  CONTRIBUTING.md's "Docs site" section; its build command uses plain `bun run …` and must not
+  depend on `vp`).
   Every ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:
   `bun run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
   opts out. Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).

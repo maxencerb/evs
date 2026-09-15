@@ -55,13 +55,15 @@ export async function deploy(
   return getAddress(address); // anvil receipts are lowercase; readContract returns checksummed
 }
 
-/** Sends a state-changing call from the deployer and waits for it to mine. */
-export async function write(params: {
+export interface WriteParams {
   address: Address;
   abi: Abi;
   functionName: string;
   args: readonly unknown[];
-}): Promise<void> {
+}
+
+/** Sends a state-changing call from the deployer and waits for it to mine. */
+export async function write(params: WriteParams): Promise<void> {
   const hash = await walletClient.writeContract({
     address: params.address,
     abi: params.abi,
@@ -71,6 +73,69 @@ export async function write(params: {
     chain: foundry,
   });
   await publicClient.waitForTransactionReceipt({ hash });
+}
+
+/**
+ * Bulk variant of `deploy` for large fixture corpora: every transaction is sent at once
+ * with an explicit nonce and gas limit (so viem skips the per-tx nonce fetch and gas
+ * estimate), then all receipts are awaited together. anvil automines in nonce order, so N
+ * deployments cost one round trip of sends plus one of receipts instead of 2N sequential
+ * ones — on a loaded CI runner the sequential form ran into the test timeout.
+ */
+export async function deployMany(
+  specs: readonly { abi: Abi; bytecode: Hex; args?: readonly unknown[] }[],
+  gas = 3_000_000n,
+): Promise<Address[]> {
+  const nonce = await publicClient.getTransactionCount({
+    address: deployer.address,
+    blockTag: 'pending',
+  });
+  const hashes = await Promise.all(
+    specs.map((spec, i) =>
+      walletClient.deployContract({
+        abi: spec.abi,
+        bytecode: spec.bytecode,
+        args: spec.args ?? [],
+        account: deployer,
+        chain: foundry,
+        nonce: nonce + i,
+        gas,
+      }),
+    ),
+  );
+  const receipts = await Promise.all(
+    hashes.map((hash) => publicClient.waitForTransactionReceipt({ hash })),
+  );
+  return receipts.map((receipt, i) => {
+    const address = receipt.contractAddress;
+    if (address === null || address === undefined) {
+      throw new Error(`deployMany: no contractAddress in receipt for ${hashes[i]}`);
+    }
+    return getAddress(address);
+  });
+}
+
+/** Bulk variant of `write`: same explicit-nonce fan-out as {@link deployMany}. */
+export async function writeMany(calls: readonly WriteParams[], gas = 500_000n): Promise<void> {
+  const nonce = await publicClient.getTransactionCount({
+    address: deployer.address,
+    blockTag: 'pending',
+  });
+  const hashes = await Promise.all(
+    calls.map((call, i) =>
+      walletClient.writeContract({
+        address: call.address,
+        abi: call.abi,
+        functionName: call.functionName,
+        args: call.args,
+        account: deployer,
+        chain: foundry,
+        nonce: nonce + i,
+        gas,
+      }),
+    ),
+  );
+  await Promise.all(hashes.map((hash) => publicClient.waitForTransactionReceipt({ hash })));
 }
 
 /**

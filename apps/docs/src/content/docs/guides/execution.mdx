@@ -178,6 +178,17 @@ instead and revert.
 | Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
 | Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls |
 
+### Provider support
+
+| Provider / node       | deployless (`to: null`) | `stateOverride` (3rd `eth_call` param)                    |
+| --------------------- | ----------------------- | --------------------------------------------------------- |
+| geth, reth, anvil     | yes                     | yes (documented; anvil verified in the integration suite) |
+| QuickNode, publicnode | yes                     | yes (documented / empirically verified)                   |
+| Alchemy, Infura       | yes                     | **not documented** for `eth_call` — probe before relying  |
+
+Deployless works everywhere `eth_call` works, which is why it is the default. Both modes share
+the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts making many calls.
+
 ## Block pinning
 
 Both modes are ordinary `eth_call`s, so viem's block selectors pass straight through: give
