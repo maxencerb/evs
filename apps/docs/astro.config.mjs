@@ -20,6 +20,9 @@ export default defineConfig({
         { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/@maxencerb/evs' },
       ],
       editLink: { baseUrl: 'https://github.com/maxencerb/evs/edit/main/apps/docs/' },
+      // Landing-page hero with the animated banner ridges (src/components/Hero.astro); only
+      // `index.mdx` uses `template: splash` + `hero`, so no other page is affected.
+      components: { Hero: './src/components/Hero.astro' },
       // `collapse={a-b}` fence meta folds boilerplate (long ABIs) behind a "N collapsed lines"
       // toggle; the snippet gate (scripts/check-snippets.ts) still typechecks the whole fence.
       // (Twoslash type-on-hover was dropped on 2026-09-14: ~30s of the Cloudflare build for six

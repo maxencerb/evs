@@ -1,0 +1,311 @@
+---
+// Landing-page hero: Starlight's default `Hero` (title / tagline / actions from the page
+// frontmatter) laid over the same animated dune ridges as the repository banner
+// (`.github/assets/evs-banner.svg`). The ridges are drawn with `currentColor` so the same
+// paths work in both colour schemes: light strokes on a near-black ground in dark mode,
+// dark strokes on a near-white ground in light mode. Registered via `components.Hero` in
+// `astro.config.mjs`; every other page keeps Starlight's built-in hero.
+import { LinkButton } from '@astrojs/starlight/components';
+
+const { data } = Astro.locals.starlightRoute.entry;
+const { title = data.title, tagline, actions = [] } = data.hero || {};
+
+// Same value as Starlight's `PAGE_TITLE_ID` (`_top`): the skip-link / ToC target.
+const PAGE_TITLE_ID = '_top';
+---
+
+<section class="hero">
+  <svg
+    class="waves"
+    viewBox="0 0 2176 714"
+    preserveAspectRatio="xMidYMid slice"
+    aria-hidden="true"
+    focusable="false"
+  >
+    <defs>
+      <linearGradient id="hero-ridge" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0.55" />
+        <stop offset="0.08" stop-color="currentColor" stop-opacity="0.22" />
+        <stop offset="0.4" stop-color="currentColor" stop-opacity="0.06" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-ridge-soft" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0.26" />
+        <stop offset="0.2" stop-color="currentColor" stop-opacity="0.08" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-shadow" x1="0" y1="0" x2="0" y2="1">
+        <stop offset="0" stop-color="var(--hero-ground)" stop-opacity="0.85" />
+        <stop offset="1" stop-color="var(--hero-ground)" stop-opacity="0" />
+      </linearGradient>
+      <linearGradient id="hero-sheen" x1="0" y1="0" x2="1" y2="0">
+        <stop offset="0" stop-color="currentColor" stop-opacity="0" />
+        <stop offset="0.5" stop-color="currentColor" stop-opacity="0.06" />
+        <stop offset="1" stop-color="currentColor" stop-opacity="0" />
+      </linearGradient>
+      <filter id="hero-glow" x="-10%" y="-10%" width="120%" height="120%">
+        <feGaussianBlur stdDeviation="2.5" />
+      </filter>
+      <filter id="hero-soft" x="-10%" y="-10%" width="120%" height="120%">
+        <feGaussianBlur stdDeviation="10" />
+      </filter>
+    </defs>
+
+    <!-- upper dune -->
+    <g class="w2">
+      <path
+        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250 L 2400 -200 L -200 -200 Z"
+        fill="url(#hero-ridge-soft)"></path>
+      <path
+        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.22"
+        stroke-width="2"
+        filter="url(#hero-glow)"></path>
+    </g>
+
+    <!-- main lower ridge -->
+    <g class="w1">
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720 L 2400 900 L -200 900 Z"
+        fill="url(#hero-ridge)"></path>
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.55"
+        stroke-width="2.5"
+        filter="url(#hero-glow)"></path>
+      <path
+        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.9"
+        stroke-width="1"></path>
+      <path
+        d="M-200 370 C 150 270, 350 290, 520 430 C 650 540, 780 630, 1000 640 C 1250 650, 1450 590, 1650 570 C 1850 550, 2050 630, 2400 750 L 2400 900 L -200 900 Z"
+        fill="url(#hero-shadow)"
+        filter="url(#hero-soft)"></path>
+    </g>
+
+    <!-- right rising ridge -->
+    <g class="w3">
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220 L 2400 900 L 1100 900 Z"
+        fill="url(#hero-ridge-soft)"></path>
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.4"
+        stroke-width="2"
+        filter="url(#hero-glow)"></path>
+      <path
+        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
+        fill="none"
+        stroke="currentColor"
+        stroke-opacity="0.7"
+        stroke-width="0.8"></path>
+    </g>
+
+    <!-- travelling sheen -->
+    <g class="sheen">
+      <rect x="788" y="-100" width="600" height="914" fill="url(#hero-sheen)" transform="skewX(-25)"
+      ></rect>
+    </g>
+  </svg>
+
+  <div class="sl-flex stack">
+    <div class="sl-flex copy">
+      <h1 id={PAGE_TITLE_ID} data-page-title set:html={title} />
+      {tagline && <div class="tagline" set:html={tagline} />}
+    </div>
+    {
+      actions.length > 0 && (
+        <div class="sl-flex actions">
+          {actions.map(
+            ({ attrs: { class: className, ...attrs } = {}, icon, link: href, text, variant }) => (
+              <LinkButton {href} {variant} icon={icon?.name} class:list={[className]} {...attrs}>
+                {text}
+                {icon?.html && <Fragment set:html={icon.html} />}
+              </LinkButton>
+            ),
+          )}
+        </div>
+      )
+    }
+    <code class="install" translate="no">bun add @maxencerb/evs viem</code>
+  </div>
+</section>
+
+<style>
+  @layer starlight.core {
+    .hero {
+      /* Dark mode: the banner's own ground. Light mode: the site's paper tones. */
+      --hero-ground: #040404;
+      --hero-ground-top: #141414;
+      --hero-ink: oklch(92% 0.006 var(--sl-hue-base));
+      --hero-ink-soft: oklch(78% 0.012 var(--sl-hue-base));
+      --hero-border: oklch(100% 0 0 / 0.1);
+
+      position: relative;
+      isolation: isolate;
+      overflow: hidden;
+      display: grid;
+      align-items: center;
+      margin-block: 0.5rem 1rem;
+      padding: clamp(2.5rem, calc(1rem + 9vmin), 6.5rem) clamp(1.25rem, 4vw, 3.5rem);
+      border: 1px solid var(--hero-border);
+      border-radius: 1.25rem;
+      background: linear-gradient(180deg, var(--hero-ground-top), var(--hero-ground));
+      color: var(--hero-ink);
+    }
+
+    :global([data-theme='light']) .hero {
+      --hero-ground: oklch(97% 0.003 var(--sl-hue-base));
+      --hero-ground-top: oklch(100% 0 0);
+      --hero-ink: oklch(24% 0.012 var(--sl-hue-base));
+      --hero-ink-soft: oklch(40% 0.014 var(--sl-hue-base));
+      --hero-border: var(--sl-color-gray-5);
+    }
+
+    .waves {
+      position: absolute;
+      inset: 0;
+      z-index: -1;
+      width: 100%;
+      height: 100%;
+      color: var(--hero-ink);
+      pointer-events: none;
+    }
+
+    .waves .w1 {
+      animation: hero-drift1 14s ease-in-out infinite;
+    }
+    .waves .w2 {
+      animation: hero-drift2 18s ease-in-out infinite;
+    }
+    .waves .w3 {
+      animation: hero-drift3 16s ease-in-out infinite;
+    }
+    .waves .sheen {
+      animation: hero-sheen 12s linear infinite;
+    }
+    .stack {
+      animation: hero-fade-in 1.2s ease-out both;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .waves .w1,
+      .waves .w2,
+      .waves .w3,
+      .waves .sheen,
+      .stack {
+        animation: none;
+      }
+    }
+
+    @keyframes hero-drift1 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(-40px, 14px);
+      }
+    }
+    @keyframes hero-drift2 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(36px, -12px);
+      }
+    }
+    @keyframes hero-drift3 {
+      0%,
+      100% {
+        transform: translate(0, 0);
+      }
+      50% {
+        transform: translate(-28px, -18px);
+      }
+    }
+    @keyframes hero-sheen {
+      from {
+        transform: translateX(-1400px);
+      }
+      to {
+        transform: translateX(1400px);
+      }
+    }
+    @keyframes hero-fade-in {
+      from {
+        opacity: 0;
+        transform: translateY(12px);
+      }
+      to {
+        opacity: 1;
+        transform: translateY(0);
+      }
+    }
+
+    .stack {
+      flex-direction: column;
+      align-items: center;
+      gap: clamp(1.5rem, calc(1.5rem + 1vw), 2rem);
+      text-align: center;
+    }
+
+    .copy {
+      flex-direction: column;
+      gap: 1rem;
+      align-items: center;
+    }
+
+    .copy > * {
+      max-width: 52ch;
+    }
+
+    h1 {
+      font-size: clamp(var(--sl-text-3xl), calc(0.25rem + 5vw), var(--sl-text-6xl));
+      line-height: var(--sl-line-height-headings);
+      font-weight: 700;
+      letter-spacing: -0.02em;
+      color: var(--hero-ink);
+    }
+
+    .tagline {
+      font-size: clamp(var(--sl-text-base), calc(0.0625rem + 2vw), var(--sl-text-xl));
+      color: var(--hero-ink-soft);
+    }
+
+    .tagline :global(strong) {
+      color: var(--hero-ink);
+      font-weight: 600;
+    }
+
+    .actions {
+      gap: 1rem 2rem;
+      flex-wrap: wrap;
+      justify-content: center;
+    }
+
+    .install {
+      font-size: var(--sl-text-sm);
+      padding: 0.45rem 0.9rem;
+      border: 1px solid var(--hero-border);
+      border-radius: 999px;
+      background: color-mix(in oklch, var(--hero-ground) 70%, transparent);
+      color: var(--hero-ink-soft);
+      user-select: all;
+    }
+
+    .install::before {
+      content: '$ ';
+      opacity: 0.55;
+    }
+  }
+</style>

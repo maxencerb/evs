@@ -1,3 +1,28 @@
+<p align="center">
+  <a href="https://evs.maxencerb.com">
+    <img src="https://raw.githubusercontent.com/maxencerb/evs/main/.github/assets/evs-banner.svg" alt="Ethereum Virtual Script (evs)" width="100%">
+  </a>
+</p>
+
+<p align="center">
+  <a href="https://www.npmjs.com/package/@maxencerb/evs"><img alt="npm version" src="https://img.shields.io/npm/v/@maxencerb/evs?labelColor=111111&color=3d3d3d"></a>
+  <a href="https://github.com/maxencerb/evs/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/maxencerb/evs/ci.yml?branch=main&label=ci&labelColor=111111"></a>
+  <a href="https://github.com/maxencerb/evs/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/@maxencerb/evs?labelColor=111111&color=3d3d3d"></a>
+  <a href="https://www.npmjs.com/package/viem"><img alt="viem peer dependency" src="https://img.shields.io/badge/viem-%E2%89%A5%202.14-3d3d3d?labelColor=111111"></a>
+</p>
+
+<p align="center">
+  <a href="https://evs.maxencerb.com"><b>Documentation</b></a>
+  ·
+  <a href="https://evs.maxencerb.com/getting-started/quick-start/">Quick start</a>
+  ·
+  <a href="https://evs.maxencerb.com/playground/">Playground</a>
+  ·
+  <a href="https://github.com/maxencerb/evs/tree/main/examples">Examples</a>
+  ·
+  <a href="https://github.com/maxencerb/evs/blob/main/packages/evs/CHANGELOG.md">Changelog</a>
+</p>
+
 # @maxencerb/evs
 
 **Typed EVM read scripts in plain TypeScript.** You write a callback against a small builder
@@ -16,7 +41,23 @@ literal ABI.
 TS callback ──record──▶ IR ──compile──▶ runtime bytecode ──eth_call──▶ typed object
 ```
 
-**Documentation: <https://evs.maxencerb.com>** · source: <https://github.com/maxencerb/evs>
+## Highlights
+
+- **One round trip.** Dependent reads — pool → tokens → metadata — collapse into a single
+  `eth_call`. No multicall contract, no waterfall of requests, no client-side glue.
+- **Typed end to end.** Calls are typed like viem's `readContract`; the script _is_ its own
+  literal ABI, so viem infers your arguments and the exact shape of the result.
+- **Nothing to deploy.** Runs deploylessly through the `eth_call` `code` parameter, or through
+  a state override — any standard RPC node, any block, including historical ones.
+- **Three calling verbs.** `s.read` for views, `s.call` for `CALL`-frame functions such as a
+  Uniswap quoter, `s.simulate` to dry-run a write and read back its return value.
+- **Solidity-grade semantics.** Checked arithmetic with solc 0.8 panic codes, verbatim revert
+  bubbling, loops over runtime arrays, per-call error recovery with `try*` variants.
+- **Verified bytecode.** Every compile passes a `JUMPDEST` scan, a stack-height simulation and
+  fork lints; the test suite pins the bytecode against a reference interpreter, viem's codecs
+  and real solc output.
+- **Debuggable.** `disassemble()` annotates each opcode with your source line, and
+  `explainRevert()` maps a revert payload back to the builder call that produced it.
 
 ## Install
 

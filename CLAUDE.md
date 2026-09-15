@@ -55,6 +55,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `bun run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
   opts out. Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).
 - `scripts/` — release helpers run on bun (`scripts/publish.ts`).
+- `.github/assets/` — repository artwork (`evs-banner.svg`, the animated README banner; the
+  docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).
 - Dependency versions are pinned via **catalogs** in the root `package.json`. `viem` and
   `vite-plus` are exact-pinned (type tests depend on viem patch behavior; `vite-plus` must
   match the `vite` alias override and the `vitest` override pin) — bump deliberately, then
