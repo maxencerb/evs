@@ -213,7 +213,9 @@ try {
 Adding an error to the script without updating the switch is a **type error** — the handler
 record is exhaustive over the declared set. If the caught value carries no revert data at all
 (a network error, a timeout), `matchScriptError` **rethrows it** instead of routing it to `_`
-— transport failures never masquerade as script errors.
+— transport failures never masquerade as script errors. The error tree is inspected by shape,
+not by class, so a revert thrown by a different copy of viem than the one evs resolved (a
+second bundle, a pnpm-duplicated version) still decodes.
 
 Under the sugar sits `decodeScriptError(script, errorOrHex)`, which returns a
 `name`-discriminated union you can `switch` on directly — one arm per ABI error entry
