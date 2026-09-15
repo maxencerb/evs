@@ -7,7 +7,9 @@
  * s.call, Malformed token → EvsDecodeError(site).
  *
  * Every scenario runs twice: on the default output and on its `optimize: true` twin (the
- * built-in peephole pass, issue #39) — the anvil gate for the optimizer.
+ * built-in peephole pass, issue #39) — the anvil gate for the optimizer. Fixtures (the pool,
+ * the 50-token corpus) are deployed ONCE per file in `beforeAll`, with the corpus fanned out
+ * through `deployMany` / `writeMany`; the two modes only read.
  */
 
 import { encodeFunctionData, erc20Abi, parseEther } from 'viem';
@@ -16,7 +18,7 @@ import { beforeAll, describe, expect, expectTypeOf, test } from 'vite-plus/test'
 import { evscript, t } from '../../src/index.js';
 import { Malformed, MockERC20, MockUniV3Pool } from '../generated/index.js';
 import { publicClient, testClient } from '../harness/anvil.js';
-import { callExpectRevert, deploy, deployer, write } from './helpers.js';
+import { callExpectRevert, deploy, deployer, deployMany, write, writeMany } from './helpers.js';
 
 // --- E1: flagship pool metadata script ---------------------------------------------------
 
@@ -53,9 +55,12 @@ let token0: `0x${string}`;
 let token1: `0x${string}`;
 let pool: `0x${string}`;
 let malformed: `0x${string}`;
+/** E2 corpus: 48 MockERC20s (every third one funded) + an EOA + an empty address. */
+let corpus: `0x${string}`[];
 
 const TICK = -887_220;
 const USER_BALANCE = parseEther('42');
+const CORPUS_TOKENS = 48;
 
 beforeAll(async () => {
   token0 = await deploy(MockERC20.abi, MockERC20.bytecode, ['USD Coin', 'USDC', 6]);
@@ -74,6 +79,30 @@ beforeAll(async () => {
     functionName: 'mint',
     args: [deployer.address, USER_BALANCE],
   });
+
+  const tokens = await deployMany(
+    Array.from({ length: CORPUS_TOKENS }, (_, i) => ({
+      abi: MockERC20.abi,
+      bytecode: MockERC20.bytecode,
+      args: [`Token ${i}`, `T${i}`, 18],
+    })),
+  );
+  await writeMany(
+    tokens.flatMap((address, i) =>
+      i % 3 === 0
+        ? [
+            {
+              address,
+              abi: MockERC20.abi,
+              functionName: 'mint',
+              args: [deployer.address, parseEther(String(i + 1))],
+            },
+          ]
+        : [],
+    ),
+  );
+  // Two non-token addresses: an EOA and an address with no code at all → tryCall default 0n.
+  corpus = [...tokens, deployer.address, '0x00000000000000000000000000000000000fffff'];
 });
 
 describe.each(MODES)('E1 poolMeta through all three paths [%s]', (mode) => {
@@ -158,21 +187,7 @@ describe.each(MODES)(
   'E2 balances over 50 tokens (multicall replacement) [%s]',
   (_mode, optimize) => {
     test('matches direct readContract calls; non-tokens default to 0', async () => {
-      const tokens: `0x${string}`[] = [];
-      for (let i = 0; i < 48; i++) {
-        const addr = await deploy(MockERC20.abi, MockERC20.bytecode, [`Token ${i}`, `T${i}`, 18]);
-        tokens.push(addr);
-        if (i % 3 === 0) {
-          await write({
-            address: addr,
-            abi: MockERC20.abi,
-            functionName: 'mint',
-            args: [deployer.address, parseEther(String(i + 1))],
-          });
-        }
-      }
-      // Two non-token addresses: an EOA and an address with no code at all → tryCall default 0n.
-      tokens.push(deployer.address, '0x00000000000000000000000000000000000fffff');
+      const tokens = corpus;
       expect(tokens).toHaveLength(50);
 
       const out = await publicClient.readContract({
@@ -183,7 +198,7 @@ describe.each(MODES)(
       expectTypeOf(out).toEqualTypeOf<{ balances: readonly bigint[] }>();
 
       const direct = await Promise.all(
-        tokens.slice(0, 48).map((address) =>
+        tokens.slice(0, CORPUS_TOKENS).map((address) =>
           publicClient.readContract({
             address,
             abi: erc20Abi,
