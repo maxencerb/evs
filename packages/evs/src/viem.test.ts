@@ -261,6 +261,43 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
     expect(decodeScriptError(script, wrapped)?.name).toBe('NoBalance');
   });
 
+  test('an error tree from ANOTHER copy of viem (no shared class identity) decodes', () => {
+    // Shapes only, no viem classes: what a second viem bundle / a pnpm-duplicated version
+    // throws. The decoder must not depend on `instanceof` against evs's own viem.
+    const foreignReverted = Object.assign(new Error('reverted'), {
+      name: 'ContractFunctionRevertedError',
+      raw: NO_BALANCE_DATA,
+      data: { errorName: 'NoBalance', args: [5n] },
+    });
+    const foreignExecution = new Error('call reverted', { cause: foreignReverted });
+    expect(decodeScriptError(script, foreignExecution)).toEqual({
+      name: 'NoBalance',
+      args: { balance: 5n },
+      raw: NO_BALANCE_DATA,
+    });
+
+    // The RPC-level shape (`call()` / a node's error object): hex `data` on the inner error.
+    const foreignRpc = Object.assign(new Error('RPC Request failed.'), {
+      name: 'RpcRequestError',
+      code: 3,
+      data: NOT_OWNER_DATA,
+    });
+    const wrapped = new Error('execution reverted', { cause: foreignRpc });
+    expect(decodeScriptError(script, wrapped)?.name).toBe('NotOwner');
+    expect(
+      matchScriptError(script, wrapped, {
+        NoBalance: () => 'x',
+        NotOwner: () => 'not owner',
+        _: () => 'z',
+      }),
+    ).toBe('not owner');
+
+    // A cyclic cause chain terminates.
+    const cyclic = new Error('a') as Error & { cause?: unknown };
+    cyclic.cause = cyclic;
+    expect(decodeScriptError(script, cyclic)).toBeUndefined();
+  });
+
   test('a non-revert error (transport failure) yields undefined', () => {
     expect(decodeScriptError(script, new BaseError('timeout'))).toBeUndefined();
     expect(decodeScriptError(script, new Error('boom'))).toBeUndefined();

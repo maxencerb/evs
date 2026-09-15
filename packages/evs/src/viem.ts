@@ -23,7 +23,7 @@
  */
 
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'abitype';
-import { BaseError, ContractFunctionRevertedError, type StateOverride } from 'viem';
+import type { StateOverride } from 'viem';
 
 import {
   canonicalTypeSignature,
@@ -200,25 +200,34 @@ function plainInputsOf(entry: { inputs?: unknown }): readonly PlainAbiParam[] {
 
 /**
  * Pulls the raw revert payload out of `input`: a `0x…` string is taken verbatim (raw revert
- * bytes); a viem error tree is walked for the revert carrier (`ContractFunctionRevertedError`
- * for contract actions, a hex `data` — possibly nested `{ data }` — for plain `call()` /
- * RPC-level errors). Returns `undefined` when no revert data exists — a transport failure or
- * non-viem throw is NOT a script error.
+ * bytes); an error tree is walked down its `cause` chain for the revert carrier
+ * (`ContractFunctionRevertedError` for contract actions, a hex `data` — possibly nested
+ * `{ data }` — for plain `call()` / RPC-level errors). Returns `undefined` when no revert data
+ * exists — a transport failure or non-viem throw is NOT a script error.
+ *
+ * Deliberately duck-typed, never `instanceof`: the error may come from ANOTHER copy of viem
+ * than the one evs was bundled or resolved with (two bundles on a page, a pnpm-duplicated
+ * version, a monorepo with two lockfile entries). Class identity would then fail and a real
+ * revert would be rethrown as "not a script error"; the shape of the carrier is stable across
+ * copies and versions.
  */
 function revertDataOf(input: unknown): Hex | undefined {
   if (typeof input === 'string') {
     return isHexString(input) ? input : undefined;
   }
-  if (!(input instanceof BaseError)) return undefined;
+  if (typeof input !== 'object' || input === null) return undefined;
   let sawRevert = false;
   let data: Hex | undefined;
-  input.walk((e) => {
-    if (e instanceof ContractFunctionRevertedError) {
+  const seen = new Set<object>();
+  let current: unknown = input;
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const e = current as { name?: unknown; raw?: unknown; data?: unknown; cause?: unknown };
+    if (e.name === 'ContractFunctionRevertedError') {
       sawRevert = true;
-      data ??= e.raw;
-      return false; // keep scanning — an outer wrapper may hide a richer carrier deeper
-    }
-    if (typeof e === 'object' && e !== null && 'data' in e) {
+      if (typeof e.raw === 'string' && isHexString(e.raw)) data ??= e.raw;
+      // keep scanning — an outer wrapper may hide a richer carrier deeper
+    } else if ('data' in e) {
       const d: unknown = e.data;
       if (typeof d === 'string') {
         if (isHexString(d)) {
@@ -233,8 +242,8 @@ function revertDataOf(input: unknown): Hex | undefined {
         }
       }
     }
-    return false;
-  });
+    current = e.cause;
+  }
   if (!sawRevert) return undefined;
   return data ?? '0x'; // a revert carrier with no payload = the empty revert
 }
@@ -242,8 +251,8 @@ function revertDataOf(input: unknown): Hex | undefined {
 /**
  * Decodes a caught error (or raw revert bytes) against a script's ABI into a typed,
  * `name`-discriminated value (issue #15). Accepts the UNTOUCHED value from `catch` — the viem
- * error tree of `readContract`/`call` — or a `0x…` payload (e.g. `error.raw`,
- * `extractRevertData` output, stored bytes).
+ * error tree of `readContract`/`call`, from any copy or version of viem — or a `0x…` payload
+ * (e.g. `error.raw`, `extractRevertData` output, stored bytes).
  *
  * Returns `undefined` when `input` carries NO revert data (network error, timeout, non-viem
  * throw): absence of revert data means "not a script error" — rethrow it, don't switch on it.
