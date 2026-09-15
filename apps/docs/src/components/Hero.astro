@@ -483,7 +483,9 @@ Rules that matter: the builder callback runs once at build time and records stat
       align-items: center;
       gap: 0.5rem;
       margin-top: 0.75rem;
-      max-width: 100%;
+      /* The definite width lives here: as a centred flex item the wrapper would otherwise
+         shrink to its content, and the line's percentage width would follow the command. */
+      width: min(100%, 26rem);
     }
 
     .pm-tabs {
@@ -528,7 +530,7 @@ Rules that matter: the builder callback runs once at build time and records stat
       position: relative;
       display: flex;
       align-items: stretch;
-      width: min(100%, 26rem);
+      width: 100%;
       border: 1px solid var(--hero-border);
       border-radius: 0.625rem;
       background: var(--install-bg);
