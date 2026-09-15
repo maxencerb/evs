@@ -1,6 +1,6 @@
 {
   "name": "@maxencerb/evs",
-  "version": "0.0.12",
+  "version": "0.1.0",
   "description": "Typed EVM read scripts in plain TypeScript: a callback builder compiled to runtime bytecode, executed via eth_call (deployless or state-override) with full viem inference",
   "license": "MIT",
   "repository": {
