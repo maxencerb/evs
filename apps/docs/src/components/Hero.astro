@@ -519,27 +519,40 @@ Rules that matter: the builder callback runs once at build time and records stat
       color: var(--hero-ink);
     }
 
+    /* Fixed width whatever the command length: the command scrolls sideways beneath the copy
+       button, and an opaque gradient fades it out before it reaches the button. */
     .install-line {
+      --install-bg: color-mix(in oklch, var(--hero-ground) 90%, var(--hero-ink));
+      --copy-width: 4.5rem;
+      --fade-width: 2.5rem;
+      position: relative;
       display: flex;
       align-items: stretch;
-      max-width: 100%;
+      width: min(100%, 26rem);
       border: 1px solid var(--hero-border);
       border-radius: 0.625rem;
-      background: color-mix(in oklch, var(--hero-ground) 72%, transparent);
+      background: var(--install-bg);
       overflow: hidden;
     }
 
     .install-cmd {
-      display: inline-flex;
-      align-items: center;
-      padding: 0.55rem 0.9rem;
+      display: block;
+      flex: 1 1 auto;
+      min-width: 0;
+      padding: 0.55rem calc(var(--copy-width) + var(--fade-width)) 0.55rem 0.9rem;
       font-size: var(--sl-text-sm);
+      line-height: 1.5;
       color: var(--hero-ink);
       background: transparent;
       white-space: nowrap;
       overflow-x: auto;
+      scrollbar-width: none;
       user-select: all;
       cursor: text;
+    }
+
+    .install-cmd::-webkit-scrollbar {
+      display: none;
     }
 
     .install-cmd::before {
@@ -560,16 +573,33 @@ Rules that matter: the builder callback runs once at build time and records stat
     }
 
     .copy-btn {
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 0;
+      width: var(--copy-width);
       border: 0;
-      border-left: 1px solid var(--hero-border);
-      background: var(--hero-chip);
-      padding: 0 0.85rem;
+      border-inline-start: 1px solid var(--hero-border);
+      background: color-mix(in oklch, var(--install-bg) 94%, var(--hero-ink));
+      padding: 0;
       font-size: var(--sl-text-xs);
       font-weight: 500;
-      min-width: 4.5rem;
     }
 
-    .copy-btn:hover,
+    .copy-btn::before {
+      content: '';
+      position: absolute;
+      inset-block: 0;
+      inset-inline-end: 100%;
+      width: var(--fade-width);
+      background: linear-gradient(to right, transparent, var(--install-bg));
+      pointer-events: none;
+    }
+
+    .copy-btn:hover {
+      background: color-mix(in oklch, var(--install-bg) 86%, var(--hero-ink));
+      color: var(--hero-ink);
+    }
+
     .prompt-btn:hover {
       background: var(--hero-chip-on);
       color: var(--hero-ink);
