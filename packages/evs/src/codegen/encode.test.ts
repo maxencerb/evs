@@ -2,7 +2,7 @@
  * every matrix test asserts through the shared `expectCase` runner. */
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * the matrix drives evscript/viem with runtime-built type lists, not literals — the casts are
- * the documented dynamic-corpus pattern (mirrors checked-math.test.ts / differential.test.ts). */
+ * the documented dynamic-corpus pattern (mirrors checked-math.test.ts / differential/*.test.ts). */
 /**
  * Issue #17 differential suite — `s.encode` / `s.encodePacked` / `s.keccak256` vs the viem
  * oracle. viem's `encodeAbiParameters`, `encodePacked`, and `keccak256` are

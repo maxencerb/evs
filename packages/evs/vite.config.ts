@@ -11,6 +11,11 @@ export default defineConfig({
           name: 'unit',
           include: ['src/**/*.test.ts', 'test/harness/**/*.test.ts'],
           environment: 'node',
+          // Threads without per-file isolation: the unit files hold no mutable module state, and
+          // re-importing the compiler + viem per file was the dominant fixed cost once the
+          // differential corpus was split into slices (src/differential/*.test.ts).
+          pool: 'threads',
+          isolate: false,
         },
       },
       {

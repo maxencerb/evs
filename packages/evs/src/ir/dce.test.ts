@@ -4,7 +4,7 @@
  * `ir/dce.ts` unit tests — hand-built IR per statement kind, the liveness seeds (returns,
  * throw, call, live cells, impure fns), aliasing through composite values, idempotence, the
  * documented revert-guard decision, and source-map resolution after the pass. The whole
- * builder corpus is gated separately by `differential.test.ts`
+ * builder corpus is gated separately by `differential/*.test.ts`
  * (`interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`).
  */
 import { describe, expect, test } from 'vite-plus/test';
