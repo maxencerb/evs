@@ -41,6 +41,9 @@ export default defineConfig({
       '**/.wrangler/**',
       '**/.snippets/**',
       '.changeset/*.md',
+      // Written by changesets on the "Version Packages" PR in its own markdown style
+      // (`format: false` in .changeset/config.json); checking it made that PR's CI fail.
+      '**/CHANGELOG.md',
       'README.md', // root symlink → packages/evs/README.md (formatted through its real path)
     ],
   },
