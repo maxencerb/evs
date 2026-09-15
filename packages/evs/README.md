@@ -466,7 +466,10 @@ Workers Builds** (not GitHub Actions): root directory `/`, build command
 `bun install --frozen-lockfile && bun run build && cd apps/docs && bun run check:snippets && bun run build`,
 deploy command `npx wrangler deploy -c apps/docs/wrangler.jsonc` (non-production branches:
 `npx wrangler versions upload …` for a preview URL), watch paths `apps/docs/**`,
-`packages/evs/src/**`, `bun.lock`. `wrangler` is a **root** devDependency on purpose: the deploy
+`packages/evs/src/**`, `bun.lock`. `wrangler.jsonc` sets `workers_dev: false` (the custom domain
+is the only production route) and `preview_urls: true` explicitly: wrangler syncs both flags on
+every deploy, and with `preview_urls` absent it follows the workers.dev flag, so each merge to
+`main` used to switch branch preview URLs back off. `wrangler` is a **root** devDependency on purpose: the deploy
 command runs `npx wrangler` from the repo root, and bun's isolated `node_modules` only exposes a
 workspace's own binaries there. Every ` ```ts ` fence under `apps/docs/src/content/docs/`
 must typecheck standalone against the built package (`bun run check:snippets`); ` ```ts nocheck `
