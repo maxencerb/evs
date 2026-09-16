@@ -1,5 +1,13 @@
 # @maxencerb/evs
 
+## 0.1.1
+
+### Patch Changes
+
+- [#59](https://github.com/maxencerb/evs/pull/59) [`adc1285`](https://github.com/maxencerb/evs/commit/adc12859ec78197735fdc66bee6a251331a7c099) Thanks [@maxencerb](https://github.com/maxencerb)! - Fix a module-evaluation crash on runtimes without `import.meta.url` (bundled Cloudflare Workers / workerd, some bundler outputs).
+  
+  `core/loc.ts` derived its own-frame skip list from `import.meta.url` at import time. Where that value is `undefined`, merely importing `@maxencerb/evs` threw `TypeError: Cannot read properties of undefined (reading 'startsWith')` — uncatchable by the caller, and invisible in dev servers and vitest, which both provide a real `import.meta.url`. The skip list is now resolved lazily on the first frame filter and tolerates a missing self URL: locations degrade (they may point at library internals, or resolve to `<unknown>`) instead of the package failing to load.
+
 ## 0.1.0
 
 ### Minor Changes
