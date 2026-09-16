@@ -6,6 +6,11 @@
  * filename is inside @maxencerb/evs (dist or src, or an installed copy under node_modules) are
  * skipped so the reported location is the *user's* call site. Test/spec files are exempt from
  * the skip (they are consumers of the library even when they live inside `src/`).
+ *
+ * Nothing here runs at module evaluation. The skip list needs this module's own path, and on a
+ * runtime that has no `import.meta.url` (bundled workerd, some bundler outputs) there is none —
+ * resolving it lazily keeps merely importing the package safe there, and the missing value
+ * degrades to "no frames to skip" instead of throwing.
  */
 
 import type { SourceLoc } from './errors.js';
@@ -125,15 +130,32 @@ function dirnameOf(p: string): string {
   return i <= 0 ? '/' : p.slice(0, i);
 }
 
-/** `<pkg>/src/` and `<pkg>/dist/` derived from this very module's location. */
-function ownSkipPrefixes(): readonly string[] {
-  const selfFile = stripFileUrl(import.meta.url); // …/<pkg>/(src|dist)/core/loc.(ts|js)
+/**
+ * `<pkg>/src/` and `<pkg>/dist/` derived from this very module's location.
+ *
+ * @internal Exported for tests. `selfUrl` is `import.meta.url`, which some runtimes do not
+ * provide: a bundled Cloudflare Worker (workerd) leaves it `undefined`, and so do a few bundler
+ * outputs. With no self location there is nothing to skip, so every frame stays a user frame —
+ * locations degrade rather than throw.
+ */
+export function skipPrefixesFor(selfUrl: unknown): readonly string[] {
+  if (typeof selfUrl !== 'string') return [];
+  const selfFile = stripFileUrl(selfUrl); // …/<pkg>/(src|dist)/core/loc.(ts|js)
   const moduleRoot = dirnameOf(dirnameOf(selfFile)); // …/<pkg>/(src|dist)
   const packageRoot = dirnameOf(moduleRoot); // …/<pkg>
   return [`${packageRoot}/src/`, `${packageRoot}/dist/`];
 }
 
-const SKIP_PREFIXES = ownSkipPrefixes();
+/**
+ * Resolved on first frame filter, never at import time: a program that never reads a location
+ * (a Worker that only executes scripts) must not pay for — or trip over — this at module
+ * evaluation, where nothing downstream could catch a throw.
+ */
+let skipPrefixes: readonly string[] | undefined;
+function ownSkipPrefixes(): readonly string[] {
+  skipPrefixes ??= skipPrefixesFor(import.meta.url);
+  return skipPrefixes;
+}
 
 const TEST_FILE_RE = /\.(?:test(?:-d)?|spec)\.[a-z]+/;
 
@@ -148,7 +170,7 @@ function isUserFrame(file: string): boolean {
   // in-repo frames under <pkg>/src or <pkg>/dist are library internals — except test files,
   // which are consumers of the library even though they live next to the sources
   if (TEST_FILE_RE.test(file)) return true;
-  for (const prefix of SKIP_PREFIXES) {
+  for (const prefix of ownSkipPrefixes()) {
     if (file.startsWith(prefix)) return false;
   }
   return true;

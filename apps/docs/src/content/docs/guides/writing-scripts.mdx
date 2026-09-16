@@ -145,6 +145,16 @@ const lean = evscript(
 
 `compile()` has its own `locations` option with the same default; see [errors and debugging](/guides/errors-and-debugging/) for the full diagnostics story.
 
+:::note[Runtimes without `import.meta.url`]
+Locations come from JS stack traces, and evs recognises its *own* frames by this module's URL so
+the reported site is your call, not library internals. A few runtimes provide no
+`import.meta.url` — a bundled Cloudflare Worker (workerd) is the common one, and some bundler
+outputs too. There, evs cannot recognise its own frames: captured locations still work but may
+point at library internals or resolve to `<unknown>`. Nothing throws, and everything else — the
+compiler, the bytecode, execution — is unaffected. Pass `{ locations: false }` on such a runtime
+to skip the capture entirely.
+:::
+
 ## Next
 
 - [Values and types](/guides/values-and-types/) — what an `Expr` is and which literals coerce.
