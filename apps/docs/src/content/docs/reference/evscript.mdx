@@ -95,6 +95,10 @@ const fast = evscript(
 
 `compile` has its own independent `locations` option (below) for the emitted source map.
 
+On a runtime with no `import.meta.url` (bundled workerd, some bundler outputs) evs cannot
+identify its own stack frames, so captured locations may point at library internals or resolve
+to `<unknown>` — see [writing scripts](/guides/writing-scripts/#source-locations-the-locations-option).
+
 ## EvsScript
 
 The value returned by `evscript`. It is frozen; `ir` is deep-frozen.

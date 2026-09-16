@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test, vi } from 'vite-plus/test';
 
-import { captureLoc, setLocCapture } from './loc.js';
+import { captureLoc, setLocCapture, skipPrefixesFor } from './loc.js';
 
 afterEach(() => {
   setLocCapture(true);
@@ -151,6 +151,23 @@ describe('bun/JSC-format stacks', () => {
     expect(loc?.file).toBe('/home/dev/app/pools.ts');
     expect(loc?.line).toBe(9);
     expect(loc?.column).toBe(18);
+  });
+});
+
+describe('own skip prefixes', () => {
+  test("derives <pkg>/src/ and <pkg>/dist/ from this module's URL", () => {
+    expect(skipPrefixesFor('file:///repo/packages/evs/dist/core/loc.js')).toEqual([
+      '/repo/packages/evs/src/',
+      '/repo/packages/evs/dist/',
+    ]);
+  });
+
+  test('degrades to no prefixes when the runtime has no import.meta.url (bundled workerd)', () => {
+    // workerd leaves `import.meta.url` undefined; this must not throw — importing the package
+    // would die at module evaluation, where no caller could catch it.
+    expect(skipPrefixesFor(undefined)).toEqual([]);
+    expect(skipPrefixesFor(null)).toEqual([]);
+    expect(skipPrefixesFor(42)).toEqual([]);
   });
 });
 
