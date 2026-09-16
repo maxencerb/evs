@@ -10,6 +10,22 @@
 // primary row and a minimal row, an install line with a package-manager switcher and a copy
 // button, and a "copy prompt" button that hands an AI coding agent the gist of the library plus
 // the /llms.txt endpoints.
+//
+// The ridges carry no SVG filter, deliberately, and this is the one place that matters: the
+// banner is an `<img>`, which WebKit rasterises as its own image document into a single
+// composited layer, so its `feGaussianBlur` costs nothing per frame. Inline in this page the
+// ridges are ordinary SVG sub-elements, which WebKit does not composite — the `transform` on
+// each animated `<g>` re-maps its filtered children every frame and the blur is re-run on the
+// CPU, over path extents (x -200..2400, y -200..900) that made it millions of pixels per frame.
+// Safari crawled; Chromium and Firefox layerise the group and never noticed.
+//
+// Two filter-free equivalents replace it:
+//   - each crest glow is a stack of concentric strokes over one `<use>`d path. The ring radii sit
+//     at equal steps of the blurred profile's own alpha, with two fainter rings out in the tail,
+//     so the composite traces the Gaussian to within ~0.013 alpha with no step above ~6/255 and
+//     an outermost edge at ~1.6/255. A plain two-stroke approximation banded visibly.
+//   - the `hero-shadow` band's soft top edge is baked into its gradient stops, which sample the
+//     error function the stdDeviation="10" blur produced across the path's bounding box.
 import { LinkButton } from '@astrojs/starlight/components';
 
 const { data } = Astro.locals.starlightRoute.entry;
@@ -71,7 +87,15 @@ Rules that matter: the builder callback runs once at build time and records stat
         <stop offset="1" stop-color="currentColor" stop-opacity="0" />
       </linearGradient>
       <linearGradient id="hero-shadow" x1="0" y1="0" x2="0" y2="1">
-        <stop offset="0" stop-color="var(--hero-ground)" stop-opacity="0.85" />
+        <stop offset="0.0" stop-color="var(--hero-ground)" stop-opacity="0.019" />
+        <stop offset="0.0085" stop-color="var(--hero-ground)" stop-opacity="0.057" />
+        <stop offset="0.0169" stop-color="var(--hero-ground)" stop-opacity="0.135" />
+        <stop offset="0.0254" stop-color="var(--hero-ground)" stop-opacity="0.262" />
+        <stop offset="0.0339" stop-color="var(--hero-ground)" stop-opacity="0.425" />
+        <stop offset="0.0424" stop-color="var(--hero-ground)" stop-opacity="0.588" />
+        <stop offset="0.0508" stop-color="var(--hero-ground)" stop-opacity="0.715" />
+        <stop offset="0.0593" stop-color="var(--hero-ground)" stop-opacity="0.793" />
+        <stop offset="0.0678" stop-color="var(--hero-ground)" stop-opacity="0.831" />
         <stop offset="1" stop-color="var(--hero-ground)" stop-opacity="0" />
       </linearGradient>
       <linearGradient id="hero-sheen" x1="0" y1="0" x2="1" y2="0">
@@ -79,70 +103,68 @@ Rules that matter: the builder callback runs once at build time and records stat
         <stop offset="0.5" stop-color="currentColor" stop-opacity="0.06" />
         <stop offset="1" stop-color="currentColor" stop-opacity="0" />
       </linearGradient>
-      <filter id="hero-glow" x="-10%" y="-10%" width="120%" height="120%">
-        <feGaussianBlur stdDeviation="2.5" />
-      </filter>
-      <filter id="hero-soft" x="-10%" y="-10%" width="120%" height="120%">
-        <feGaussianBlur stdDeviation="10" />
-      </filter>
+
+      <!-- Crest lines, stroked repeatedly below to build each glow. -->
+      <path id="hero-crest-upper" d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250" fill="none" stroke="currentColor"></path>
+      <path id="hero-crest-main" d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720" fill="none" stroke="currentColor"></path>
+      <path id="hero-crest-right" d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220" fill="none" stroke="currentColor"></path>
     </defs>
 
     <!-- upper dune -->
     <g class="w2">
-      <path
-        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250 L 2400 -200 L -200 -200 Z"
-        fill="url(#hero-ridge-soft)"></path>
-      <path
-        d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250"
-        fill="none"
-        stroke="currentColor"
-        stroke-opacity="0.22"
-        stroke-width="2"
-        filter="url(#hero-glow)"></path>
+      <path d="M-200 40 C 300 -40, 700 120, 1050 160 C 1300 190, 1500 300, 1750 340 C 1950 370, 2100 330, 2400 250 L 2400 -200 L -200 -200 Z" fill="url(#hero-ridge-soft)"></path>
+      <use href="#hero-crest-upper" stroke-width="14.28" stroke-opacity="0.002"></use>
+      <use href="#hero-crest-upper" stroke-width="12.94" stroke-opacity="0.002"></use>
+      <use href="#hero-crest-upper" stroke-width="11.44" stroke-opacity="0.0041"></use>
+      <use href="#hero-crest-upper" stroke-width="9.72" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="8.55" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="7.61" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="6.79" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="6.05" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="5.33" stroke-opacity="0.0059"></use>
+      <use href="#hero-crest-upper" stroke-width="4.62" stroke-opacity="0.006"></use>
+      <use href="#hero-crest-upper" stroke-width="3.9" stroke-opacity="0.006"></use>
+      <use href="#hero-crest-upper" stroke-width="3.1" stroke-opacity="0.0061"></use>
+      <use href="#hero-crest-upper" stroke-width="2.14" stroke-opacity="0.0073"></use>
     </g>
 
     <!-- main lower ridge -->
     <g class="w1">
-      <path
-        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720 L 2400 900 L -200 900 Z"
-        fill="url(#hero-ridge)"></path>
-      <path
-        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
-        fill="none"
-        stroke="currentColor"
-        stroke-opacity="0.55"
-        stroke-width="2.5"
-        filter="url(#hero-glow)"></path>
-      <path
-        d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720"
-        fill="none"
-        stroke="currentColor"
-        stroke-opacity="0.9"
-        stroke-width="1"></path>
-      <path
-        d="M-200 370 C 150 270, 350 290, 520 430 C 650 540, 780 630, 1000 640 C 1250 650, 1450 590, 1650 570 C 1850 550, 2050 630, 2400 750 L 2400 900 L -200 900 Z"
-        fill="url(#hero-shadow)"
-        filter="url(#hero-soft)"></path>
+      <path d="M-200 340 C 150 240, 350 260, 520 400 C 650 510, 780 600, 1000 610 C 1250 620, 1450 560, 1650 540 C 1850 520, 2050 600, 2400 720 L 2400 900 L -200 900 Z" fill="url(#hero-ridge)"></path>
+      <use href="#hero-crest-main" stroke-width="14.47" stroke-opacity="0.0063"></use>
+      <use href="#hero-crest-main" stroke-width="13.12" stroke-opacity="0.0063"></use>
+      <use href="#hero-crest-main" stroke-width="11.6" stroke-opacity="0.0128"></use>
+      <use href="#hero-crest-main" stroke-width="9.86" stroke-opacity="0.0186"></use>
+      <use href="#hero-crest-main" stroke-width="8.67" stroke-opacity="0.0186"></use>
+      <use href="#hero-crest-main" stroke-width="7.72" stroke-opacity="0.0188"></use>
+      <use href="#hero-crest-main" stroke-width="6.9" stroke-opacity="0.0192"></use>
+      <use href="#hero-crest-main" stroke-width="6.14" stroke-opacity="0.0195"></use>
+      <use href="#hero-crest-main" stroke-width="5.41" stroke-opacity="0.0199"></use>
+      <use href="#hero-crest-main" stroke-width="4.69" stroke-opacity="0.0203"></use>
+      <use href="#hero-crest-main" stroke-width="3.95" stroke-opacity="0.0208"></use>
+      <use href="#hero-crest-main" stroke-width="3.15" stroke-opacity="0.0215"></use>
+      <use href="#hero-crest-main" stroke-width="2.18" stroke-opacity="0.026"></use>
+      <use href="#hero-crest-main" stroke-width="1" stroke-opacity="0.9"></use>
+      <path d="M-200 370 C 150 270, 350 290, 520 430 C 650 540, 780 630, 1000 640 C 1250 650, 1450 590, 1650 570 C 1850 550, 2050 630, 2400 750 L 2400 900 L -200 900 Z" fill="url(#hero-shadow)"></path>
     </g>
 
     <!-- right rising ridge -->
     <g class="w3">
-      <path
-        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220 L 2400 900 L 1100 900 Z"
-        fill="url(#hero-ridge-soft)"></path>
-      <path
-        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
-        fill="none"
-        stroke="currentColor"
-        stroke-opacity="0.4"
-        stroke-width="2"
-        filter="url(#hero-glow)"></path>
-      <path
-        d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220"
-        fill="none"
-        stroke="currentColor"
-        stroke-opacity="0.7"
-        stroke-width="0.8"></path>
+      <path d="M1100 760 C 1400 690, 1700 560, 1900 460 C 2050 380, 2150 300, 2400 220 L 2400 900 L 1100 900 Z" fill="url(#hero-ridge-soft)"></path>
+      <use href="#hero-crest-right" stroke-width="14.28" stroke-opacity="0.0037"></use>
+      <use href="#hero-crest-right" stroke-width="12.94" stroke-opacity="0.0037"></use>
+      <use href="#hero-crest-right" stroke-width="11.44" stroke-opacity="0.0075"></use>
+      <use href="#hero-crest-right" stroke-width="9.72" stroke-opacity="0.0108"></use>
+      <use href="#hero-crest-right" stroke-width="8.55" stroke-opacity="0.0108"></use>
+      <use href="#hero-crest-right" stroke-width="7.61" stroke-opacity="0.0108"></use>
+      <use href="#hero-crest-right" stroke-width="6.79" stroke-opacity="0.0109"></use>
+      <use href="#hero-crest-right" stroke-width="6.05" stroke-opacity="0.011"></use>
+      <use href="#hero-crest-right" stroke-width="5.33" stroke-opacity="0.0112"></use>
+      <use href="#hero-crest-right" stroke-width="4.62" stroke-opacity="0.0113"></use>
+      <use href="#hero-crest-right" stroke-width="3.9" stroke-opacity="0.0115"></use>
+      <use href="#hero-crest-right" stroke-width="3.1" stroke-opacity="0.0117"></use>
+      <use href="#hero-crest-right" stroke-width="2.14" stroke-opacity="0.014"></use>
+      <use href="#hero-crest-right" stroke-width="0.8" stroke-opacity="0.7"></use>
     </g>
 
     <!-- travelling sheen -->
@@ -350,11 +372,23 @@ Rules that matter: the builder callback runs once at build time and records stat
     .waves {
       position: absolute;
       inset: 0;
-      z-index: -1;
+      /* Not a negative z-index: under `isolation: isolate` that puts the animated ridges in the
+         same paint pass as the text above them, so every drift frame repaints the whole hero.
+         The content is lifted instead (`.stack` / `.facts` below). */
+      z-index: 0;
       width: 100%;
       height: 100%;
       color: var(--hero-ink);
       pointer-events: none;
+    }
+
+    /* `will-change` asks for a compositing layer per ridge, so the drift is a transform of a
+       cached raster rather than a re-paint. The ridges carry no filter for the same reason. */
+    .waves .w1,
+    .waves .w2,
+    .waves .w3,
+    .waves .sheen {
+      will-change: transform;
     }
 
     .waves .w1 {
@@ -380,6 +414,7 @@ Rules that matter: the builder callback runs once at build time and records stat
       .waves .sheen,
       .stack {
         animation: none;
+        will-change: auto;
       }
     }
 
@@ -427,6 +462,12 @@ Rules that matter: the builder callback runs once at build time and records stat
         opacity: 1;
         transform: translateY(0);
       }
+    }
+
+    .stack,
+    .facts {
+      position: relative;
+      z-index: 1;
     }
 
     .stack {
