@@ -394,7 +394,7 @@ const nested = evscript(
 
 ## Literal coercion: `IntoExpr`
 
-Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plain JS literal of the matching shape (`LitOf<t>`). Literals are validated **at recording time**, with the call site's location attached to any `EvsTypeError`:
+Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plain JS literal of the matching shape (`LitOf<t>`). Literals are validated **at recording time**: a bad one throws `EvsTypeError` from inside your callback, so the ordinary JS stack trace points at the call site:
 
 | evs type          | Accepted JS literal               | Validation rule                                                        |
 | ----------------- | --------------------------------- | ---------------------------------------------------------------------- |
@@ -431,7 +431,7 @@ Out-of-range literals are recording-time errors, not runtime reverts: `s.lit(t.u
 
 ## Staging misuse: treating a handle like a value
 
-Because handles are plain objects at run time of *your* program, JS will happily let you pass them places they make no sense. evs traps the common cases: every handle installs throwing `valueOf`, `toString`, `toJSON`, and `Symbol.toPrimitive`, so arithmetic, template strings, loose equality, and `JSON.stringify` all throw `EvsStagingError` at the offending line — citing both the misuse site and where the handle was recorded.
+Because handles are plain objects at run time of *your* program, JS will happily let you pass them places they make no sense. evs traps the common cases: every handle installs throwing `valueOf`, `toString`, `toJSON`, and `Symbol.toPrimitive`, so arithmetic, template strings, loose equality, and `JSON.stringify` all throw `EvsStagingError` at the offending line. The message names the misused handle — its type, id and the op that produced it, e.g. `Expr<uint256> #1 ← s.read(totalSupply)` — and the ordinary JS stack trace points at the misuse site; evs records no source location of its own for where the handle was created.
 
 The following does not compile (and the parts TS cannot reject throw at recording time):
 

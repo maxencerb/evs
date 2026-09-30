@@ -271,8 +271,13 @@ function lowerPowConstExp(
   storeOut(w, ctx, s.out);
 }
 
-/** ⌊n^(1/k)⌋ for n ≥ 0, k ≥ 1 (binary search; n < 2^256). */
+/**
+ * ⌊n^(1/k)⌋ for n ≥ 0, k ≥ 1 (binary search; n < 2^256). For k ≥ 256 the root is 0 or 1
+ * (2^k > n), answered directly: probing `2n ** k` would build a k-bit host bigint, which V8
+ * refuses past ~2^30 bits (a folded exponent may be any word up to 2^256 − 1).
+ */
 function integerRoot(n: bigint, k: bigint): bigint {
+  if (k >= 256n) return n >= 1n ? 1n : 0n;
   let lo = 0n;
   let hi = 1n << (256n / k + 1n);
   while (lo < hi) {

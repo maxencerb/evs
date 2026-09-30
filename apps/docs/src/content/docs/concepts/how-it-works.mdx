@@ -113,7 +113,8 @@ function parameter/result — see the memory model below), then emits, as one no
   `try*` forms), the **ABI encoders** (`s.encode`, `s.encodePacked`) and the return-tuple
   encoder;
 - the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
-  `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback;
+  `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback — each emitted
+  only when some code jumps to it;
 - **data segments** for large constants, referenced only by `CODECOPY`.
 
 Compile-time diagnostics (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`) are emitted
