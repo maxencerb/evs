@@ -65,7 +65,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 - `apps/docs` — Astro Starlight docs site → `evs.maxencerb.com`. Built/deployed by
   **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in
   CONTRIBUTING.md's "Docs site" section; its build command uses plain `bun run …` and must not
-  depend on `vp`).
+  depend on `vp`). Deploys stay on wrangler (`apps/docs/wrangler.jsonc`), not the `cf` CLI
+  beta: `cf build`/`cf deploy` cannot ship a static Astro build without the Cloudflare adapter
+  (details in CONTRIBUTING.md) — do not run `cf migrate` on it.
   Every ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:
   `bun run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
   opts out. Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).

@@ -138,3 +138,14 @@ command runs `npx wrangler` from the repo root, and bun's isolated `node_modules
 workspace's own binaries there. Every ` ```ts ` fence under `apps/docs/src/content/docs/`
 must typecheck standalone against the built package (`bun run check:snippets`); ` ```ts nocheck `
 opts out. `astro build` also validates every internal link.
+
+Deployment deliberately stays on **wrangler**, not Cloudflare's `cf` CLI (evaluated with
+`cf@1.0.0-beta.6` on 2026-09-30; wrangler stays supported for 18 months after the `cf` beta
+ends). `cf migrate` maps every `wrangler.jsonc` setting faithfully (name, compatibility date,
+`workersDev: false`, `previewUrls: true`, `notFoundHandling: "404-page"`, the custom domain), but
+its output still bundles through wrangler (a `wrangler.config.ts` importing
+`wrangler/experimental-config`, so wrangler stays installed), and `cf build` / `cf deploy` run a
+bare `astro build` (skipping `gen:playground`) and then require Build Output under
+`.cloudflare/output/v0/`, which a static Astro build only emits with the `@astrojs/cloudflare`
+adapter. Revisit once `cf` can deploy a prebuilt static-assets directory without an adapter;
+until then keep `wrangler.jsonc` and the dashboard commands above unchanged.
