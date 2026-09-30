@@ -76,10 +76,10 @@ Recording-time validation (each violation throws `EvsTypeError` with the call-si
   `readonly` list of them. A `namedArg` labels its input in the generated ABI; a bare arg is
   auto-named `arg{i}` (the names are positional labels; viem infers `args` positionally regardless).
   Duplicate arg names are rejected (`ABI_SHAPE`).
-- Every arg type must be a valid `EvsType` — a word/dynamic type, an array (a scalar array, a
-  one-level nested array `T[][]` of a word element, or a `tuple[]`), or a `TupleType`
-  (struct/tuple). Shapes outside the supported set — `string[][]`/`bytes[][]`, `tuple[][]`,
-  deeper-than-`[][]` nesting, fixed `T[N]` — throw with code `UNSUPPORTED_V0`.
+- Every arg type must be a valid `EvsType` — a word/dynamic type, a `TupleType`
+  (struct/tuple), or an array of any of those, dynamic or fixed-size (`T[]`, `T[N]`, `tuple[]`,
+  `tuple[][]`, `uint256[][][]`, `string[2]`, …). An array nested more than four levels deep
+  throws with code `UNSUPPORTED_V0`; a malformed type (`uint256[0]`) with `TYPE_MISMATCH`.
 - `def.errors`, when present, must be a `t.error` value or a list of them, with no duplicate
   name or selector clash (`ERROR_DECL`).
 - `body` must be a function.
@@ -161,7 +161,7 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
 - `type` is any `EvsType` — a word type, `string`, `bytes`, an array, or a composite
   `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
   one). Only top-level args are named as a whole; nested composite fields are named via
-  `t.struct`. Not-yet-supported Solidity shapes (fixed-size `T[N]` arrays, [#4](https://github.com/maxencerb/evs/issues/4)) throw `EvsTypeError` with
+  `t.struct`. Arrays nested more than four levels deep ([#4](https://github.com/maxencerb/evs/issues/4)) throw `EvsTypeError` with
   code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. `s.fn` params take any evs
   type too, struct/tuple included (see [functions](/guides/functions/#struct-params)).
 

@@ -235,13 +235,15 @@ evs optimizes for *auditable correctness* over gas:
   iteration — far inside any node's cap).
 - **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
   100; evs does not dedupe repeated calls.
-- **Structs and tuples are supported** (including nested structs), and so are **arrays of
-  structs (`tuple[]`), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays
-  (`string[]`/`bytes[]`)** — across script args, returns, and call ABIs, byte-exact vs viem and
-  real solc. A nested array needs a word element (`uint256[][]`, `address[][]`). **Nested
-  dynamic-leaf arrays (`string[][]`/`bytes[][]`), two-level tuple arrays (`tuple[][]`), arrays
-  nested deeper than `[][]`, and fixed-size arrays (`uint256[3]`)** are not supported yet and
-  are rejected with a recording-time error ([#4](https://github.com/maxencerb/evs/issues/4)).
+- **The ABI type vocabulary is supported**: structs and tuples (including nested structs),
+  arrays of structs (`tuple[]`, `tuple[][]`), nested arrays (`uint256[][][]`, `string[][]`,
+  `bytes[][]`), and fixed-size arrays (`uint256[3]`, `Position[2]`, mixed with dynamic
+  suffixes), up to four array levels — across script args, returns, and call ABIs, byte-exact
+  vs viem and real solc. Deeper arrays are rejected with a recording-time error
+  ([#4](https://github.com/maxencerb/evs/issues/4)). The decoder keeps a fast stack-based loop
+  for the one- and two-level shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`) and switches to
+  heap-allocated loop frames for the deeper ones, so the common shapes pay no gas for the
+  others ([#52](https://github.com/maxencerb/evs/issues/52)).
 - **Read-only by construction.** The script's own code never writes storage, emits logs or
   deploys contracts (enforced by the shape lints above), and the effects of `s.call`/`s.simulate`
   `CALL` frames are never committed, because the whole execution is an `eth_call`.

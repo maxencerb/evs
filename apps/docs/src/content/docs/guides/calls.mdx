@@ -180,12 +180,13 @@ hard type errors where viem is also permissive:
   `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
 - **Overloaded names** resolve by the `args` — see
   [overloaded functions](#overloaded-functions) below.
-- **Restricted shapes** — nested dynamic-leaf arrays (`string[][]`/`bytes[][]`, not supported
-  yet — [#4](https://github.com/maxencerb/evs/issues/4)), two-level tuple arrays (`tuple[][]`), arrays nested deeper than
-  `[][]`, and fixed `T[N]` in an argument or output throw `EvsTypeError` at recording, naming the
-  parameter. Plain structs/tuples, arrays of structs (`tuple[]`), one-level nested arrays
-  of a word element (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
-  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs).
+- **Every array shape up to four levels deep** is supported in arguments and outputs —
+  structs/tuples, arrays of structs (`tuple[]`, `tuple[][]`), nested arrays (`uint256[][][]`),
+  dynamic-leaf arrays (`string[]`, `bytes[][]`), and fixed-size arrays (`uint256[2]`,
+  `Position[3]`, `string[2]`) — see
+  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs). A deeper
+  array (`uint256[][][][][]`) throws `EvsTypeError` (`UNSUPPORTED_V0`) at recording and a
+  malformed type (`uint256[0]`, `tuple[0]`) `TYPE_MISMATCH`/`ABI_SHAPE`, naming the parameter.
 
 ## Overloaded functions
 

@@ -115,9 +115,26 @@ Releases: see [Releasing](#releasing) below.
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata
   snapshots, dynamic values, mutable arrays, the return tuple). Every word in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);
-  dynamic values and tuples are pointers. No slot reuse or fusion by default, on purpose — the
+  dynamic values and tuples are pointers. Every array — `T[]` and fixed-size `T[N]` alike — is a
+  length-prefixed block (`[len][slot…]`, `len === N` for a `T[N]`) of inline words or element
+  pointers, so one set of array ops serves both; only the ABI codec knows a `T[N]` has no length
+  word on the wire. No slot reuse or fusion by default, on purpose — the
   disassembly stays legible and the stack invariant machine-checkable; `optimize: true` packs
   dead values' slots without changing the templates.
+- **Array codec** (`codegen/abi.ts`). The encoder keeps its loop state in frames reserved below
+  the output buffer, so nesting never touches the operand stack. The decoder has two lowerings,
+  chosen per array level at codegen time: the **stack fast path** for the one- and two-level
+  shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`/`bytes[]`) keeps five loop words per level on the
+  stack, and the **heap-frame path** for everything else (any `T[N]`, `uint256[][][]`,
+  `string[][]`, `tuple[][]`, …) keeps them in a heap frame chained through scratch `0x20` (one
+  stack word per level). The fast path is emitted speculatively (`AsmWriter.checkpoint` /
+  `rollback`) and replaced by the heap path when it would overflow the 16-item template budget
+  at that depth (a fast-path shape deep inside tuples or heap levels). Both paths save and
+  restore `0x20`, so they nest in either order. The heap path is ~15–19% more gas on the
+  two-level shapes (#52), which is why the fast path stays: a shape that decoded before #4 must
+  keep its bytes (the `#52 corpus` entries of `compile.bytecode.test.ts`). Arrays nest at most
+  `MAX_ARRAY_DEPTH` (4) levels; deeper types are `UNSUPPORTED_V0` in `t.array`, type-string
+  validation, `abi/layout`, `abi/artifact` and `ir/validate`.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
   narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
   differentially against solc-compiled reference contracts. `pow` has three templates, all

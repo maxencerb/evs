@@ -38,7 +38,7 @@ custom error, and two derive a type from an ABI. Raw type strings (and raw
 | `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
 | `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
 | `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
-| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]` — a nested array needs a word element; `string[][]`/`bytes[][]` can be built but are rejected at recording with `UNSUPPORTED_V0`), or a `tuple[]` of a tuple element |
+| `t.array(elem, n?)`              | `` `${elem}[]` `` / `` `${elem}[n]` `` / `TupleType` | function: a dynamic array (`t.array(t.uint256)` → `'uint256[]'`) or, with a literal `n ≥ 1`, a fixed-size array (`t.array(t.uint256, 2)` → `'uint256[2]'`) of any element — a scalar, an array (`'uint256[][]'`, `'string[][]'`, `'uint256[2][]'`), or a tuple (`tuple[]`, `tuple[2]`, `tuple[][]`). Nesting deeper than four levels throws `UNSUPPORTED_V0`; an invalid `n` throws `TYPE_MISMATCH` |
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
 | `t.error(name, params?)`         | `EvsErrorType`                 | function: declare a custom error for a script's `errors: [...]` and `s.throw`; `params` takes the same shorthand as script args (bare types, `namedArg`, or a mixed list). Invalid, reserved (`Error`, `Panic`, `EvsDecodeError`, `EvsInvalidCalldata`, `empty`, `unknown`, `_`) or duplicate names throw `ERROR_DECL`. See [custom errors](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow) |
@@ -78,7 +78,11 @@ type BytesNType = `bytes${BytesSize}`;
 type WordType = UintType | IntType | 'address' | 'bool' | BytesNType;
 type DynType = 'string' | 'bytes';
 type ScalarType = WordType | DynType;
-type ArrayType = `${ScalarType}[]` | `${ScalarType}[][]` | `${ScalarType}[][][]`;
+type ArrayType =
+  | `${ScalarType}[]`
+  | `${ScalarType}[][]`
+  | `${ScalarType}[][][]`
+  | `${string}[${string}`; // catch-all: fixed sizes (`uint256[2]`) and four levels
 type StringType = ScalarType | ArrayType; // every string-encoded type
 interface NamedType {
   readonly name: string; // '' for a positional tuple member
@@ -86,7 +90,7 @@ interface NamedType {
   readonly components?: readonly NamedType[]; // present iff type starts with 'tuple'
 }
 interface TupleType {
-  readonly type: 'tuple' | 'tuple[]' | 'tuple[][]';
+  readonly type: 'tuple' | `tuple[${string}`; // 'tuple', 'tuple[]', 'tuple[2]', 'tuple[][]', …
   readonly components: readonly NamedType[];
 }
 type EvsType = WordType | DynType | ArrayType | TupleType;
@@ -107,7 +111,7 @@ type BitsType = UintType | BytesNType;
 | `WordType`    | Every type that fits one EVM word: unsigned and signed integers, `address`, `bool`, `bytesN`.|
 | `DynType`     | The dynamic byte-string types: `string` and `bytes`.                                         |
 | `ScalarType`  | `WordType` or `DynType` — every non-array, non-tuple type.                                   |
-| `ArrayType`   | String-encoded arrays of a scalar element, up to three `[]` deep — `uint256[]`, `address[][]`. The alias admits `[][][]` and `string[][]` for typing, but recording rejects anything past `[][]` and a nested array of `string`/`bytes` (see [Composite types](#composite-types-tupletype)). |
+| `ArrayType`   | String-encoded arrays of a scalar element, dynamic or fixed-size — `uint256[]`, `address[3]`, `string[][]`, `uint256[2][]`. The dynamic forms up to three levels are exact literals; every other chain (a fixed size, four levels) is admitted by one catch-all pattern, so the leaf of such a string is checked at recording rather than statically. Recording rejects more than four levels (`UNSUPPORTED_V0`). |
 | `StringType`  | Every string-encoded type: a scalar or a string array.                                       |
 | `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
 | `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
@@ -155,19 +159,23 @@ does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#st
 `s.read` argument or output, and as an `s.return` value. The handle surface — `Tuple`, `Field`,
 `s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
 
-`t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`). A
-composite-element array — `tuple[]`, a one-level nested array of a word element (`uint256[][]`), or a dynamic-leaf
-array (`string[]`/`bytes[]`) — is an **array of pointers** in memory: the `[length]` prefix is
+`t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`);
+`t.array(Position, 2)` to a `tuple[2]` and `t.array(t.array(Position))` to a `tuple[][]`. A
+composite-element array — `tuple[]`, a nested array (`uint256[][]`, `tuple[][]`,
+`string[][]`), or a dynamic-leaf array (`string[]`/`bytes[]`) — is an **array of pointers** in
+memory: the `[length]` prefix is
 followed by one pointer word per element, each pointing at the element's own block (a tuple
 block, an inner array, or a bytes block). It shares the word-array handle surface — `.length()`,
 `.at(i)`, `s.newArray` — and the same reference semantics; an `s.read` `tuple[]` output is an
 array handle whose `.at(i)` yields a typed [`Tuple`](/reference/builder/#tuple) element. The
 build/read/pass examples live in [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string).
-A nested array needs a word element (`uint256[][]`, `address[][]`). Still rejected at recording
-(`UNSUPPORTED_V0`): nested dynamic-leaf arrays (`string[][]`/`bytes[][]` — not supported yet,
-tracked in [#4](https://github.com/maxencerb/evs/issues/4); the error message currently
-describes them as "nested deeper than `[][]`"), two-level tuple arrays (`tuple[][]`), arrays
-nested deeper than `[][]`, and fixed-size `T[N]`.
+A fixed-size array `T[N]` has the same memory layout as a `T[]` (its length word is always
+`N`); only its ABI encoding differs (no length word, inlined into the head when `T` is static).
+`ArrayElemOf<t>` peels the outermost suffix (`'uint256[][2]'` → `'uint256[]'`),
+`FixedLengthOf<t>` reads its fixed length (`'uint256[3]'` → `3`, `null` for `[]`), and
+`PeelArraySuffix<s>` is the shared parser (it works on tuple tags too). Arrays nest at most four
+levels; a deeper type is rejected at recording with `UNSUPPORTED_V0`
+([#4](https://github.com/maxencerb/evs/issues/4)).
 
 Several type-level helpers are exported for advanced inference: `StructTypeOf`, `TupleTypeOf`,
 `TupleArrayOf`, `TypeToComponent`, `TupleLitOf`, and `TupleAsParam`. You rarely name them — they
@@ -210,9 +218,17 @@ type LitOf<t extends EvsType> = t extends NumericType
             ? `0x${string}`
             : t extends TupleType
               ? TupleLitOf<t> // delegated to abitype: object (all-named) or array (positional)
-              : t extends `${infer e extends StringType}[]`
-                ? readonly LitOf<e>[]
-                : never;
+              : t extends `${infer e}[]`
+                ? e extends StringType
+                  ? readonly (LitOf<e> | Expr<e>)[] // `T[]`; elements may be staged
+                  : never
+                : t extends `${infer e}[${number}]`
+                  ? e extends StringType
+                    ? readonly (LitOf<e> | Expr<e>)[] // `T[N]` — N enforced at recording
+                    : never
+                  : t extends `${string}[${string}]`
+                    ? readonly unknown[] // `T[][N]`-style chains: widened, validated at recording
+                    : never;
 
 type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
 ```
@@ -229,7 +245,8 @@ violation):
 | `0x` string for `bytesN`         | exactly N bytes                                                   |
 | `0x` string for `bytes`          | any even-length hex                                               |
 | `string` for `string`            | UTF-8 encoded                                                     |
-| JS array for `T[]`               | element-wise rules of `T`                                         |
+| JS array for `T[]`               | element-wise rules of `T`; an element may also be an `Expr` of `T` |
+| JS array for `T[N]`              | exactly `N` elements (`TYPE_MISMATCH` otherwise), element-wise    |
 
 Word literals canonicalize at recording; dynamic literals and literal arrays become bytecode
 data segments. All-literal pure operations fold at recording, and a fold that would certainly

@@ -195,6 +195,103 @@ const BYTE_STABLE: readonly Case[] = [
   },
 ];
 
+const Position = t.struct({ nonce: t.uint96, operator: t.address, liquidity: t.uint128 });
+
+const gridAbi = [
+  {
+    type: 'function',
+    name: 'grid',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple[][]',
+        components: [
+          { name: 'id', type: 'uint256' },
+          { name: 'data', type: 'bytes' },
+        ],
+      },
+    ],
+  },
+] as const satisfies Abi;
+
+// Array decode paths (#4, #52). The first two cases are the #52 regression corpus: one- and
+// two-level composite arrays decode on the STACK fast path, and their bytes must stay exactly
+// what they were before the heap-frame decoder existed. The rest pin the new shapes, which take
+// the heap-frame path (fixed-size `T[N]`, `tuple[][]`, `uint256[][][]`) and the typed zeros of
+// fixed-size arrays.
+const ARRAY_DECODE: readonly Case[] = [
+  {
+    name: '#52 corpus: uint256[][] + string[] args, nested forEach, returned back (stack fast path)',
+    script: () =>
+      evscript(
+        { name: 'nested', args: [t.array(t.array(t.uint256)), t.array(t.string)] },
+        (s, grid, names) => {
+          const total = s.let(t.uint256, 0n);
+          s.forEach(grid, (row) => {
+            s.forEach(row, (x) => {
+              total.set(total.get().add(x));
+            });
+          });
+          const lens = s.let(t.uint256, 0n);
+          s.forEach(names, (n) => {
+            lens.set(lens.get().add(n.length()));
+          });
+          return s.return({ grid, names, total: total.get(), lens: lens.get() });
+        },
+      ),
+  },
+  {
+    name: '#52 corpus: tuple[] arg iterated + s.newArray(struct) returned (stack fast path)',
+    script: () =>
+      evscript({ name: 'structs', args: [t.array(Position)] }, (s, ps) => {
+        const out = s.newArray(Position, ps.length());
+        s.forEach(ps, (p, i) => {
+          const q = out.get(i);
+          q.nonce.set(p.nonce.get());
+          q.operator.set(p.operator.get());
+          q.liquidity.set(p.liquidity.get().add(1n));
+        });
+        return s.return({ out });
+      }),
+  },
+  {
+    name: '#4 heap-frame decode: uint256[2] + string[2] + uint256[][][] args returned',
+    script: () =>
+      evscript(
+        { name: 'fixedDeep', args: ['uint256[2]', 'string[2]', 'uint256[][][]'] },
+        (s, pair, names, cube) =>
+          s.return({ sum: pair.at(0n).add(pair.at(1n)), names, cube, slabs: cube.length() }),
+      ),
+  },
+  {
+    name: '#4 heap-frame decode: tuple[][] call output (strict + try) iterated',
+    script: () =>
+      evscript({ name: 'grids', args: [t.address] }, (s, pool) => {
+        const grid = s.read({ address: pool, abi: gridAbi, functionName: 'grid' });
+        const tried = s.tryRead({ address: pool, abi: gridAbi, functionName: 'grid' });
+        const ids = s.let(t.uint256, 0n);
+        s.forEach(grid, (row) => {
+          s.forEach(row, (cell) => {
+            ids.set(ids.get().add(cell.id.get()));
+          });
+        });
+        return s.return({ ids: ids.get(), ok: tried.success, rows: tried.value.length() });
+      }),
+  },
+  {
+    name: '#4 fixed-size construction: typed zeros of string[2] / uint256[2][] / tuple[2]',
+    script: () =>
+      evscript({ name: 'zeros', args: [t.uint256] }, (s, x) => {
+        const names = s.newArray(t.string, 2, { fixed: true });
+        const pairs = s.newArray(t.array(t.uint256, 2), x);
+        const ps = s.newArray(t.array(Position, 2), 1n);
+        return s.return({ names, pairs, ps });
+      }),
+  },
+];
+
 const CUSTOM_ERRORS: readonly Case[] = [
   {
     name: 'throw: named args, zero-arg, and a string param (dynamic encode)',
@@ -247,8 +344,17 @@ describe('custom errors are byte-stable (issue #15)', () => {
   }
 });
 
+describe('array decode paths are byte-stable (issues #4, #52)', () => {
+  for (const c of ARRAY_DECODE) {
+    // oxlint-disable-next-line vitest/valid-title -- parametrized over the case table; titles are the snapshot keys
+    test(c.name, () => {
+      expect(bytesOf(c, false)).toMatchSnapshot();
+    });
+  }
+});
+
 describe('optimized twin (optimize: true) is byte-stable (issue #39)', () => {
-  for (const c of [...BYTE_STABLE, ...CUSTOM_ERRORS]) {
+  for (const c of [...BYTE_STABLE, ...CUSTOM_ERRORS, ...ARRAY_DECODE]) {
     // oxlint-disable-next-line vitest/valid-title -- parametrized over the case table; titles are the snapshot keys
     test(c.name, () => {
       const plain = bytesOf(c, false);
