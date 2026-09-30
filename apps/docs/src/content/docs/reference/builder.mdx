@@ -104,6 +104,10 @@ the building block for "loop over inputs, collect outputs" — the multicall rep
   pointers; `get(i)` returns the element handle (a [`Tuple`](#tuple) for a tuple element), a
   reference into slot `i`, and `set(i, v)` takes the element's `IntoMember` (a `Tuple`/literal for
   a tuple element).
+- Every element starts at its **zero value**: `0` for a word, an empty string/bytes/array for a
+  `string`/`bytes`/`T[]` element, and a zeroed struct for a tuple element (its own dynamic members
+  empty, nested structs zeroed). Each tuple element is a **distinct** block, so writing a field
+  through `get(i)` never shows up in another element.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -125,7 +129,7 @@ import { evscript, t } from '@maxencerb/evs';
 const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 
 const positions = evscript({ name: 'positions', args: [t.address, t.uint256] }, (s, owner, n) => {
-  const out = s.newArray(Position, n); // zero-filled tuple[n] (array of pointers)
+  const out = s.newArray(Position, n); // tuple[n]: each slot a distinct zeroed struct
   s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
     const el = out.get(i); // Tuple handle into slot i
     el.liquidity.set(i.toUint(t.uint128));
@@ -144,7 +148,7 @@ tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
 Allocates a tuple/struct in memory and returns a [`Tuple`](#tuple) handle. `type` is a
 [`TupleType`](/reference/types/#composite-types-tupletype) — a `t.struct`/`t.tuple` (or a raw
 `readonly AbiParameter[]`). `init` is a **partial**, name-keyed (struct) or positional
-(`t.tuple`) record of members; every member is optional, defaults to zero, and accepts a
+(`t.tuple`) record of members; every member is optional, defaults to its zero value, and accepts a
 literal, an `Expr`, or a nested `Tuple`. Use the returned handle's [`Field.set`](#field) to fill
 or overwrite members later.
 
@@ -160,7 +164,9 @@ const mkPos = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
 });
 ```
 
-The allocation is zero-filled, so omitted members start at zero with no extra write. A tuple
+Omitted members start at their zero value: `0` for a word member (the allocation is zero-filled,
+so this costs no extra write), an empty string/bytes/array for a `string`/`bytes`/`T[]` member,
+and a fresh zeroed struct for a nested tuple member. A tuple
 handle is a pointer with **reference semantics**: copying it (or passing it to a call) shares the
 same block, so a later `.set()` is visible through every alias. See
 [composite types in values & types](/guides/values-and-types/#composite-types-structs-and-tuples).

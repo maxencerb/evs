@@ -1164,7 +1164,8 @@ export class Recorder {
 
   /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),
    *  returning the new tuple ValueId. Members are name-keyed (struct) or positional (t.tuple);
-   *  an omitted or literal-zero member is left to the zero-fill (no MSTORE). */
+   *  an omitted or literal-zero WORD member is left to the zero-fill (no MSTORE); an omitted
+   *  memref member gets its typed zero from codegen (`lowerTupleNew`). */
   private buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
     const isPositional = type.components.every((c) => c.name === '');
     let lookup: (comp: NamedType, index: number) => unknown;
@@ -1192,7 +1193,9 @@ export class Recorder {
     const inits: { index: number; value: ValueId }[] = [];
     type.components.forEach((comp, index) => {
       const memberVal = lookup(comp, index);
-      if (memberVal === undefined) return; // omitted → left zeroed by the block's zero-fill
+      // omitted → its typed zero: a word member is covered by the block's zero-fill; a memref
+      // member (string/bytes/T[] → empty, nested tuple → a fresh zeroed block) is set by codegen.
+      if (memberVal === undefined) return;
       const memberType = abiParamToType(comp);
       const valId = this.coerceToId(
         memberVal,
@@ -1200,7 +1203,7 @@ export class Recorder {
         `${what} member "${memberName(comp, index)}"`,
       );
       // a literal-zero word member is already covered by the zero-fill — skip its MSTORE.
-      if (this.litValues.get(valId) === 0n) return;
+      if (!isDynamicType(memberType) && this.litValues.get(valId) === 0n) return;
       inits.push({ index, value: valId });
     });
 

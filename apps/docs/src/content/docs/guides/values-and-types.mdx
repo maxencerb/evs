@@ -263,7 +263,7 @@ const readPositions = evscript({ name: 'readPositions', args: [t.address] }, (s,
 
 A `tuple[]` output unwraps to `readonly Struct[]` at the viem call site; `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`.
 
-**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]` of a word element such as `uint256[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through:
+**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]` of a word element such as `uint256[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through. Unset elements hold their zero value: an empty string/bytes/array, or a zeroed struct — a distinct one per slot, so elements never alias each other:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -271,7 +271,7 @@ import { evscript, t } from '@maxencerb/evs';
 const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 
 const buildPositions = evscript({ name: 'buildPositions', args: [t.address, t.uint256] }, (s, owner, n) => {
-  const arr = s.newArray(Position, n); // zero-filled tuple[n] — an array of fresh element blocks
+  const arr = s.newArray(Position, n); // tuple[n] — each slot a distinct zeroed element block
   s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
     const el = arr.get(i); // Tuple handle into slot i
     el.liquidity.set(i.toUint(t.uint128));
@@ -351,7 +351,7 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `bytes`           | `0x` string                       | any even-length hex                                                    |
 | `string`          | `string`                          | UTF-8 encoded                                                          |
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
-| `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to zero |
+| `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to their zero value (`0`, empty string/bytes/array, zeroed nested struct) |
 
 Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
 
