@@ -15,7 +15,10 @@ import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 import { evscript, t } from '../../src/index.js';
 import { getFreePort } from '../harness/anvil.js';
 
-const forkUrl = process.env.ANVIL_FORK_URL ?? process.env.RPC_URL;
+// an empty value counts as unset: CI expands a missing secret to '' (the fork-tests job fails
+// up front on that, see ci.yml), and `ANVIL_FORK_URL=` in a shell must skip, not start anvil
+// with an empty --fork-url
+const forkUrl = process.env.ANVIL_FORK_URL || process.env.RPC_URL || undefined;
 
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
 
@@ -31,8 +34,9 @@ describe.runIf(forkUrl !== undefined)('fork mode: real mainnet WETH', () => {
   let client: PublicClient;
 
   beforeAll(async () => {
+    if (forkUrl === undefined) throw new Error('unreachable: the suite is gated on forkUrl');
     const port = await getFreePort();
-    anvil = Instance.anvil({ forkUrl: forkUrl ?? '', port, chainId: 1 });
+    anvil = Instance.anvil({ forkUrl, port, chainId: 1 });
     client = createPublicClient({ chain: mainnet, transport: http(`http://127.0.0.1:${port}`) });
     await anvil.start();
   }, 60_000);
@@ -63,7 +67,9 @@ describe.runIf(forkUrl !== undefined)('fork mode: real mainnet WETH', () => {
 });
 
 // Always-present so the file is never empty; skips itself dynamically without the env var.
+// When set, the value must be a usable RPC URL — a clear failure here beats an anvil CLI error.
 test('fork mode is env-gated (set ANVIL_FORK_URL to run it)', (ctx) => {
-  if (forkUrl === undefined) ctx.skip();
-  expect(forkUrl).toBeDefined();
+  if (forkUrl === undefined) return ctx.skip();
+  expect(URL.canParse(forkUrl), 'ANVIL_FORK_URL / RPC_URL is not a URL').toBe(true);
+  expect(new URL(forkUrl).protocol).toMatch(/^(https?|wss?):$/);
 });

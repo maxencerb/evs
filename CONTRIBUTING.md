@@ -204,7 +204,8 @@ Three tiers, all run by CI (`ci.yml`):
   arithmetic vs the solc 0.8.30 `EvsReference` contract and `pow` / `addmod` / `mulmod` /
   signed shifts vs `EvsMathReference` (both codegen'd from `packages/contracts`, whose own
   forge tests run in CI's contracts step); an env-gated
-  mainnet-fork suite (`ANVIL_FORK_URL`) covers the flagship scenario.
+  mainnet-fork suite (`ANVIL_FORK_URL`, an empty value counts as unset and skips it) covers
+  the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need
 vitest); test files import from `vite-plus/test`.
