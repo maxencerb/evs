@@ -3,15 +3,19 @@ import { defineConfig } from 'vite-plus';
 export default defineConfig({
   // Library build (`vp pack`, tsdown): one ESM module per source file under dist/ (unbundled, so
   // the published layout mirrors src/ and `sideEffects: false` tree-shaking stays per module),
-  // `.js` + `.d.ts` names (`exports` / `main` / `types` point at them), and source maps for both
-  // the JS and the declarations — `files` ships src/ so they resolve to real sources.
+  // `.js` + `.d.ts` names (`exports` / `main` / `types` point at them), and JS source maps that
+  // embed the TypeScript sources (`sourcesContent`) so stack traces and debuggers map to the
+  // original code without src/ in the tarball (`files` does not ship it). No declaration maps:
+  // go-to-definition lands on the `.d.ts`, which keeps the JSDoc.
   pack: {
     entry: ['src/index.ts'],
     format: 'esm',
     unbundle: true,
     fixedExtension: false,
     sourcemap: true,
-    dts: { sourcemap: true },
+    // rolldown's default, pinned: the published maps are self-contained.
+    outputOptions: { sourcemapExcludeSources: false },
+    dts: { sourcemap: false },
   },
   test: {
     projects: [
