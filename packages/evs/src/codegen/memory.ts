@@ -118,32 +118,29 @@ function emitZeroFixedArray(w: AsmWriter, type: ArrayType | TupleType, height: n
   w.op('DUP2');
   w.op('MSTORE'); // [arr]   length word = N
   if (!isDynamicType(elem)) return; // word slots: the zero-fill already is their zero value
-  // memref slots: p walks [arr+32, arr+32+32N), storing a fresh typed zero into each
+  // memref slots: p walks the slots DOWN from arr+32N to arr+32, storing a fresh typed zero into
+  // each — two live words per level ([p, arr]; the bound is arr itself), so deeply nested
+  // fixed-size zeros stay inside the stack window
   w.op('DUP1');
-  w.push(32);
-  w.op('ADD'); // [p, arr]
-  w.op('DUP2');
-  w.push(bytes);
-  w.op('ADD'); // [end, p, arr]
-  w.op('SWAP1'); // [p, end, arr]
+  w.push(32 * n);
+  w.op('ADD'); // [p = arr+32N, arr]
   const head = w.newLabel('zero_fixed');
   const done = w.newLabel('zero_fixed_done');
-  w.label(head, height + 3); // [p, end, arr]
-  w.op('DUP2'); // [end, p, end, arr]
-  w.op('DUP2'); // [p, end, p, end, arr]
-  w.op('LT'); // [p < end, p, end, arr]
-  w.op('ISZERO');
+  w.label(head, height + 2); // [p, arr]
+  w.op('DUP2'); // [arr, p, arr]
+  w.op('DUP2'); // [p, arr, p, arr]
+  w.op('EQ'); // [p == arr, p, arr]
   w.pushLabel(done);
-  w.op('JUMPI'); // [p, end, arr]
-  emitZeroValue(w, elem, height + 3); // [zero, p, end, arr]
-  w.op('DUP2'); // [p, zero, p, end, arr]
-  w.op('MSTORE', { note: 'zero element' }); // [p, end, arr]
+  w.op('JUMPI'); // [p, arr]
+  emitZeroValue(w, elem, height + 2); // [zero, p, arr]
+  w.op('DUP2'); // [p, zero, p, arr]
+  w.op('MSTORE', { note: 'zero element' }); // [p, arr]
   w.push(32);
-  w.op('ADD'); // [p+32, end, arr]
+  w.op('SWAP1');
+  w.op('SUB'); // [p−32, arr]
   w.pushLabel(head);
   w.op('JUMP');
-  w.label(done, height + 3); // [p, end, arr]
-  w.op('POP');
+  w.label(done, height + 2); // [p, arr]
   w.op('POP'); // [arr]
 }
 

@@ -412,13 +412,16 @@ Two failure modes are distinguished:
 
 - **The callee reverted** — its revert data bubbles verbatim out of the script.
 - **The call succeeded but the returndata does not decode** against the ABI (too short,
-  out-of-bounds offsets, a non-contract address returning nothing) — the script reverts with
+  out-of-bounds offsets, a length word the returndata cannot back, a nested struct whose head is
+  cut short, a non-contract address returning nothing) — the script reverts with
   the `EvsDecodeError(site)` custom error. This error is part of the script's own ABI, so viem
   names it, and `explainRevert` maps the site id back to the offending
   call. See [errors and debugging](/guides/errors-and-debugging/).
 
 Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-lenient): a
-`uint8` output with garbage in its upper bytes comes back masked to its declared width.
+`uint8` output with garbage in its upper bytes comes back masked to its declared width. Every
+output is decoded from the original returndata, so even non-canonical data whose offsets make
+two outputs share bytes decodes each of them exactly as if it were alone.
 
 ## s.tryRead
 

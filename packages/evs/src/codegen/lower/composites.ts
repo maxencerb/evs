@@ -7,9 +7,20 @@
 import { layoutOfType } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import { selectorBytes } from '../../core/bytes.js';
-import { isDynamicType, type TupleType, isTupleType, typeToAbiParam } from '../../core/types.js';
+import {
+  isDynamicType,
+  type TupleType,
+  isTupleType,
+  typeToAbiParam,
+  stringifyType,
+} from '../../core/types.js';
 import type { Stmt, ValueId } from '../../ir/nodes.js';
-import { fmtType, emitAbiEncodeToBytes, emitPackedEncodeToBytes } from '../abi.js';
+import {
+  fmtType,
+  emitAbiEncodeToBytes,
+  emitPackedEncodeToBytes,
+  emitWithinStackBudget,
+} from '../abi.js';
 import { FREE_PTR, emitZeroValue, emitZeroMemrefMembers } from '../memory.js';
 import {
   type LowerCtx,
@@ -123,7 +134,12 @@ export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx
   w.op('ISZERO');
   w.pushLabel(done);
   w.op('JUMPI'); // [p, end, ptr]
-  emitZeroValue(w, s.elem, STMT_BASELINE + 3); // [zero, p, end, ptr]
+  emitWithinStackBudget(
+    w,
+    STMT_BASELINE + 3,
+    () => `s.newArray() element type ${stringifyType(s.elem)}`,
+    () => emitZeroValue(w, s.elem, STMT_BASELINE + 3),
+  ); // [zero, p, end, ptr]
   w.op('DUP2'); // [p, zero, p, end, ptr]
   w.op('MSTORE', { note: 'zero element' }); // [p, end, ptr]
   w.push(32);
@@ -196,11 +212,17 @@ export function lowerTupleNew(
   w.op('DUP3'); // [ptr, cds, size, ptr]
   w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
   // omitted memref members → their typed zero (provided members are stored just below)
-  emitZeroMemrefMembers(
+  emitWithinStackBudget(
     w,
-    ty.components,
     STMT_BASELINE + 1,
-    new Set(s.inits.map((init) => init.index)),
+    () => `s.tuple() of ${stringifyType(ty)}`,
+    () =>
+      emitZeroMemrefMembers(
+        w,
+        ty.components,
+        STMT_BASELINE + 1,
+        new Set(s.inits.map((init) => init.index)),
+      ),
   ); // [ptr]
   // MSTORE each provided member at ptr + 32·index
   for (const init of s.inits) {

@@ -7,9 +7,9 @@
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
 import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
-import type { Hex } from '../../core/types.js';
+import { stringifyType, type Hex } from '../../core/types.js';
 import type { Stmt, ConstData, SiteId } from '../../ir/nodes.js';
-import { type SlotRef, emitCeil32 } from '../abi.js';
+import { type SlotRef, emitCeil32, emitWithinStackBudget } from '../abi.js';
 import { SCRATCH_0, FREE_PTR, emitZeroValue } from '../memory.js';
 
 // ---------------------------------------------------------------------------
@@ -101,7 +101,8 @@ export function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string
 /**
  * try-mode failure router. Stack on entry: `[bad, …live]`; on exit (continue path):
  * `[…live]`. Strict mode jumps straight to the `'any'` dfail stub; try mode inverts the
- * branch, cleans the stack to height 0, and jumps to the (checked, height-0) zero block.
+ * branch, cleans the stack to height 0, and jumps to `tryTarget` — the (checked, height-0) zero
+ * block by default, or its free-pointer-restoring entry (see {@link emitTryEpilogue}).
  * `labelPrefix` keeps the emitters' historical label names (`call_*` / `sim_*`).
  */
 export function makeDecodeFail(
@@ -109,6 +110,7 @@ export function makeDecodeFail(
   plan: CallSitePlan,
   tryMode: boolean,
   labelPrefix: string,
+  tryTarget: LabelId = plan.dfailLabel,
 ): (liveDepth: number) => void {
   return (liveDepth: number): void => {
     if (!tryMode) {
@@ -121,7 +123,7 @@ export function makeDecodeFail(
     w.pushLabel(cont);
     w.op('JUMPI'); // […live]
     for (let k = 0; k < liveDepth; k++) w.op('POP');
-    w.pushLabel(plan.dfailLabel);
+    w.pushLabel(tryTarget);
     w.op('JUMP');
     w.label(cont, liveDepth);
   };
@@ -203,8 +205,20 @@ export function pushSnapOffsetBase(w: AsmWriter, headOffset: number): void {
  * (checked, height-0) zero block — success := 0 and a zero value per output (word outs = 0,
  * string/bytes/array outs = 0x60, tuple outs = a fresh zero-filled flat block) — which falls
  * through to the join. `labelPrefix` keeps the emitters' historical label names.
+ *
+ * `restoreLabel` (sites whose outputs decode through the recursive memory decoders) opens an
+ * entry just above the zero block that first rolls the free pointer back to the returndata
+ * snapshot base in scratch `SNAP_SLOT`: a decode that fails part-way leaves its partial
+ * allocations (pointer blocks, flat blocks, heap frames) and the snapshot behind, and nothing
+ * references them once the zero block overwrites every output. Only failures AFTER the snapshot
+ * may route there (before it, `SNAP_SLOT` holds a stale scratch value).
  */
-export function emitTryEpilogue(w: AsmWriter, plan: CallSitePlan, labelPrefix: string): void {
+export function emitTryEpilogue(
+  w: AsmWriter,
+  plan: CallSitePlan,
+  labelPrefix: string,
+  restoreLabel: LabelId | null = null,
+): void {
   const { siteId } = plan;
   if (plan.successRef !== null) {
     w.push(1);
@@ -215,16 +229,27 @@ export function emitTryEpilogue(w: AsmWriter, plan: CallSitePlan, labelPrefix: s
   w.pushLabel(join);
   w.op('JUMP');
 
+  if (restoreLabel !== null) {
+    w.label(restoreLabel, 0, `restore_${siteId}`);
+    pushSnap(w);
+    w.push(FREE_PTR);
+    w.op('MSTORE', { note: `free ptr := snapshot base (site ${siteId})` }); // falls into the zero block
+  }
   w.label(plan.dfailLabel, 0, `zero_${siteId}`);
   if (plan.successRef !== null) {
     w.push(0);
     w.push(plan.successRef.slot);
     w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
   }
-  for (const ref of plan.outRefs) {
-    emitZeroValue(w, ref.type, 0); // [zero, …]   (the zero block is checked at height 0)
+  plan.outRefs.forEach((ref, j) => {
+    emitWithinStackBudget(
+      w,
+      0,
+      () => `the try zero value of output #${j} (${stringifyType(ref.type)}) at site ${siteId}`,
+      () => emitZeroValue(w, ref.type, 0), // [zero]   (the zero block is checked at height 0)
+    );
     w.push(ref.slot);
     w.op('MSTORE');
-  }
+  });
   w.label(join, 0); // fallthrough from the zero block rejoins here
 }

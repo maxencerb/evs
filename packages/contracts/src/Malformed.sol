@@ -103,6 +103,18 @@ contract Malformed {
         }
     }
 
+    // ------------------------------------------------ caller-crafted returndata
+    /// @dev Returns `data` VERBATIM as the returndata (no ABI wrapping). Scripts declare this
+    ///      function with whatever output shape a case needs — the selector only depends on the
+    ///      name and the `bytes` input — and pass the crafted payload: huge in-range length
+    ///      words, nested tuples with short heads, overlapping (aliased) tails.
+    function echoRaw(bytes calldata data) external pure returns (bytes memory) {
+        assembly {
+            calldatacopy(0, data.offset, data.length)
+            return(0, data.length)
+        }
+    }
+
     // ------------------------------------------------ non-canonical word values
     /// @dev Declared `bool` but the word is 2 — evs must normalize (ISZERO ISZERO) to true.
     function dirtyBool() external pure returns (bool) {

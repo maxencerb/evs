@@ -7,7 +7,7 @@
 import { layoutOfType, headBytes, isDynamic, type TypeLayout } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { typeToAbiParam, isTupleType, abiParamToType } from '../../core/types.js';
+import { typeToAbiParam, isTupleType, abiParamToType, stringifyType } from '../../core/types.js';
 import { FREE_PTR, MAX_U64 } from '../memory.js';
 import { type DecodeFail, emitDecodeTupleToMem, emitDecodeArrayToMem } from './decode.js';
 import {
@@ -30,6 +30,7 @@ import {
   wordElemAbi,
   wordNeedsNormalize,
   emitNormalizeElemsLoop,
+  emitWithinStackBudget,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -159,7 +160,9 @@ export function emitCalldataDecode(
               w.op('ADD');
             } // [base = snap+4+within]
           };
-      // for a DYNAMIC tuple, first bounds-check its offset word (off ≤ 2^64−1, region+off+? ≤ end)
+      if (!isTupleType(ref.type)) throw internal(`arg #${i} layout is tuple but type is not`);
+      // for a DYNAMIC tuple, first bounds-check its offset word (off ≤ 2^64−1) and its whole head
+      // (region+off+headBytes ≤ end — the tuple decoder reads every head word unchecked)
       if (layout.dynamic) {
         pushArgsBase();
         const within = headOff - 4;
@@ -174,14 +177,19 @@ export function emitCalldataDecode(
         failCalldata(1); // [off]
         pushArgsBase();
         w.op('ADD'); // [base]
-        w.push(32);
-        w.op('ADD'); // [base+32]
+        w.push(headBytes(ref.type.components));
+        w.op('ADD'); // [base+head]
         pushEnd();
-        w.op('LT'); // [end < base+32]
+        w.op('LT'); // [end < base+head]
         failCalldata(0); // []
       }
-      if (!isTupleType(ref.type)) throw internal(`arg #${i} layout is tuple but type is not`);
-      emitDecodeTupleToMem(w, ref.type.components, pushTupleBase, pushEnd, failCalldata, 0); // [flat]
+      const components = ref.type.components;
+      emitWithinStackBudget(
+        w,
+        0,
+        () => `script argument #${i} (${stringifyType(ref.type)})`,
+        () => emitDecodeTupleToMem(w, components, pushTupleBase, pushEnd, failCalldata, 0),
+      ); // [flat]
       w.push(ref.slot);
       w.op('MSTORE'); // []
       return;
@@ -232,7 +240,12 @@ export function emitCalldataDecode(
           } // [base = snap+4+within]
         };
       }
-      emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0); // [arr]
+      emitWithinStackBudget(
+        w,
+        0,
+        () => `script argument #${i} (${stringifyType(ref.type)})`,
+        () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0),
+      ); // [arr]
       w.push(ref.slot);
       w.op('MSTORE'); // []
       return;

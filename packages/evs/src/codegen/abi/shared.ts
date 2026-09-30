@@ -8,9 +8,10 @@
 import { type TypeLayout, layoutOf } from '../../abi/layout.js';
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { EvsInternalError } from '../../core/errors.js';
+import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
+import { EvsCompileError, EvsInternalError } from '../../core/errors.js';
 import type { EvsType, WordType, NamedType } from '../../core/types.js';
-import { SCRATCH_0, SCRATCH_1 } from '../memory.js';
+import { FREE_PTR, SCRATCH_0, SCRATCH_1 } from '../memory.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -75,17 +76,45 @@ export interface EncodeOpts {
  */
 export const ELEM_BASE = SCRATCH_1;
 export const DECODE_FRAME = SCRATCH_1;
-/** Words per heap array-decode frame: `{elemBase, i, D, arr, len, parent}`. */
-export const DFRAME_SLOTS = 6;
+/** Words per heap array-decode frame: `{elemBase, i, D, len, parent}` (the destination pointer
+ *  block itself rides on the operand stack — the one live word per heap level). */
+export const DFRAME_SLOTS = 5;
 export const DFRAME_ELEM_BASE = 0;
 export const DFRAME_I = 1;
 export const DFRAME_D = 2;
-export const DFRAME_ARR = 3;
-export const DFRAME_LEN = 4;
-export const DFRAME_PARENT = 5;
+export const DFRAME_LEN = 3;
+export const DFRAME_PARENT = 4;
 
 export function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. Runs a template fragment emitter (`emit`, entered at
+ * absolute operand-stack height `entryHeight`) and checks what it produced against the 16-item
+ * template budget. Used around the decoders and the try-mode zero values, whose stack use grows
+ * with the nesting of the type: the array decoder already falls back from its stack fast path to
+ * the heap-frame path wherever the fast path would not fit, but tuple levels and heap array
+ * levels (one live word each) still add up, so a type that nests structs and arrays deeply
+ * enough cannot be handled within the EVM's reachable stack window at all. That is a limit of
+ * the shape, not a bug, so it surfaces as a coded `UNSUPPORTED_V0` compile error instead of the
+ * asm verifier's INTERNAL one.
+ */
+export function emitWithinStackBudget(
+  w: AsmWriter,
+  entryHeight: number,
+  what: () => string,
+  emit: () => void,
+): void {
+  const cp = w.checkpoint();
+  emit();
+  const peak = w.peakHeightSince(cp, entryHeight);
+  if (peak > MAX_TEMPLATE_DEPTH) {
+    throw new EvsCompileError(
+      'UNSUPPORTED_V0',
+      `${what()} nests structs and arrays too deeply: handling it needs ${peak} operand-stack slots, over the EVM's ${MAX_TEMPLATE_DEPTH}-slot reach — flatten the type (fewer nested struct / array levels)`,
+    );
+  }
 }
 
 /** Human-readable rendering of a value type for error messages / debug notes (tuples → their
@@ -212,6 +241,66 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
   w.pushLabel(head);
   w.op('JUMP');
   w.label(done, height);
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. Copies a (bounds-checked) word-array memref `[len][e…]`
+ * into a freshly-allocated block, normalizing every element on the way: `[src, …] → [dst, …]`.
+ *
+ * The decoders alias `string`/`bytes`/`T[]` members straight into the source snapshot, so a
+ * narrow-element array must never be normalized IN PLACE: non-canonical data may point two
+ * decoded values at the same bytes (overlapping offsets), and masking one would change the
+ * other. Copying keeps the snapshot pristine, so every decoded value reads the original bytes —
+ * exactly the interpreter's fresh-copy decode. Full-word element types need no normalization and
+ * keep aliasing.
+ *
+ * One fused loop (no `emitMemCopy`, so it is fork-independent and works at any stack depth):
+ * `k` walks the byte offset `32·len … 32` down to 0 and copies `norm(src[k])` to `dst[k]`. Loop
+ * labels are checked at absolute height `depthBelow + 3` (`[k, dst, src]` above `depthBelow`).
+ */
+export function emitCopyNormalizeWordArray(w: AsmWriter, elem: WordType, depthBelow: number): void {
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [dst, src, …]
+  w.op('DUP2');
+  w.op('MLOAD'); // [len, dst, src, …]
+  w.op('DUP1');
+  w.op('DUP3');
+  w.op('MSTORE'); // [len, dst, src, …]   dst[0] := len
+  w.push(5);
+  w.op('SHL'); // [k = 32·len, dst, src, …]
+  w.op('DUP1');
+  w.op('DUP3');
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [dst+32+32·len, k, dst, src, …]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [k, dst, src, …]   freePtr bumped
+  const height = depthBelow + 3;
+  const head = w.newLabel(`elemcopy_${elem}`);
+  const done = w.newLabel(`elemcopy_${elem}_done`);
+  w.label(head, height);
+  w.op('DUP1');
+  w.op('ISZERO');
+  w.pushLabel(done);
+  w.op('JUMPI'); // [k, dst, src, …]
+  w.op('DUP3');
+  w.op('DUP2');
+  w.op('ADD');
+  w.op('MLOAD'); // [src[k], k, dst, src, …]
+  emitNormalizeWord(w, elem); // [word, k, dst, src, …]
+  w.op('DUP3');
+  w.op('DUP3');
+  w.op('ADD'); // [dst+k, word, k, dst, src, …]
+  w.op('MSTORE'); // [k, dst, src, …]
+  w.push(32);
+  w.op('SWAP1');
+  w.op('SUB'); // [k−32, dst, src, …]
+  w.pushLabel(head);
+  w.op('JUMP');
+  w.label(done, height); // [0, dst, src, …]
+  w.op('POP');
+  w.op('SWAP1');
+  w.op('POP'); // [dst, …]
 }
 
 /** A tuple layout's components as `NamedType[]` (reconstructed for the recursive decoders). */

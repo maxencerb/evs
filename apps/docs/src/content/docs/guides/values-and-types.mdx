@@ -22,6 +22,8 @@ A **fixed-size array** `T[N]` (`uint256[2]`, `address[3]`, `Position[2]`, `strin
 
 Arrays nest at most **four levels** (`uint256[][][][]`, `tuple[2][][][]`); a deeper type is rejected at recording with `UNSUPPORTED_V0` ([#4](https://github.com/maxencerb/evs/issues/4)).
 
+Structs and arrays together can nest only as deep as the EVM's 16-slot stack window lets the decoder reach: about a dozen levels of nested structs, or four to five levels of structs inside arrays of structs. A script argument, call output or zero value of a deeper type makes `compile()` throw `EvsCompileError` with code `UNSUPPORTED_V0`, naming the offending argument or output; flatten the type to fix it.
+
 At the **type level**, `ArrayType` spells out the dynamic forms up to three levels deep as exact literals and admits every other chain (a fixed size anywhere, four levels) through a single catch-all pattern (*something followed by an array suffix*). That keeps type-checking fast and every concrete type exact: `t.array(t.uint256, 2)` is `'uint256[2]'`, an `as const` ABI's `'int56[2]'` stays `'int56[2]'`, and `.at(i)` / `s.forEach` / `ArrayElemOf` peel the outermost suffix exactly (`'uint256[][2]'` → `'uint256[]'`). What is *not* checked statically is the leaf of such a string: `'foo[2]'` type-checks as an `ArrayType` (its element is `never`) and is rejected at recording with `TYPE_MISMATCH`. The one literal shape that widens is a dynamic-inside-fixed chain (`'uint256[][2]'`): its host literal is typed `readonly unknown[]`, and the runtime validates it exactly.
 
 ## The `t` namespace

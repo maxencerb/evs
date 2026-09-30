@@ -161,7 +161,21 @@ Releases: see [Releasing](#releasing) below.
   at that depth (a fast-path shape deep inside tuples or heap levels). Both paths save and
   restore `0x20`, so they nest in either order. The heap path is ~15–19% more gas on the
   two-level shapes (#52), which is why the fast path stays: a shape that decoded before #4 must
-  keep its bytes (the `#52 corpus` entries of `compile.bytecode.test.ts`). Arrays nest at most
+  keep its size and gas (the `#52 corpus` entries of `compile.bytecode.test.ts`). Both paths
+  bound the array body against the source end (`D + 32·len`, or `D + len·staticSize`) BEFORE
+  they allocate anything, so an unbacked length word (anything up to the `2^64−1` guard) fails
+  cleanly instead of bumping the free pointer or writing a heap frame at `32·len`; the heap frame
+  sits at the free pointer, below its pointer block, and is written addressed off the
+  not-yet-bumped free pointer to keep the prologue's stack peak low. A dynamic tuple's WHOLE head
+  (`headBytes`) must fit before it is read, at every level, matching `ir/interp/decode.ts`.
+  Dynamic members alias the source snapshot, except narrow word arrays (`uint8[]`, …), which are
+  normalized into a fresh copy — normalizing in place would rewrite bytes another decoded value
+  may alias. Each tuple level and each heap array level keeps one live stack word, so a deep
+  enough struct/array chain cannot fit the 16-item window at all: `emitWithinStackBudget`
+  (`codegen/abi/shared.ts`) turns that into a coded `UNSUPPORTED_V0` compile error at every
+  decode / zero-value entry instead of the asm verifier's INTERNAL one. A try verb whose outputs
+  decode through these decoders rolls the free pointer back to the returndata snapshot on a
+  decode failure before its zero block (`emitTryEpilogue`). Arrays nest at most
   `MAX_ARRAY_DEPTH` (4) levels; deeper types are `UNSUPPORTED_V0` in `t.array`, type-string
   validation, `abi/layout`, `abi/artifact` and `ir/validate`.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked

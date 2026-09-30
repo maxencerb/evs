@@ -35,6 +35,8 @@ export {
   wordNeedsNormalize,
   emitNormalizeWord,
   emitNormalizeElemsLoop,
+  emitCopyNormalizeWordArray,
+  emitWithinStackBudget,
   emitCeil32,
   emitMemCopy,
 } from './abi/shared.js';
