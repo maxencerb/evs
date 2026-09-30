@@ -170,6 +170,44 @@ describe('pow: folded exponent (root bound + EXP)', () => {
       await Promise.all(exps.map((e) => expectAgreement(constExp(type, e), bases)));
     });
   }
+
+  // A folded exponent may be any word. Past 256 only |a| ≤ 1 stays in range, and the base bound
+  // must be computed without materializing a power on the host (V8 caps bigints near 2^30 bits).
+  const HUGE_EXPS = [257n, 1n << 29n, 1n << 30n, 1n << 32n, 1n << 128n, MAX256];
+  const word = (v: bigint): string =>
+    `0x${BigInt.asUintN(256, v).toString(16).padStart(64, '0')}`;
+  for (const type of WIDTHS) {
+    test(`width ${type}: huge exponents (257 … 2^256 − 1)`, async () => {
+      const bases = baseCorpus(type);
+      const outcomes = await Promise.all(
+        HUGE_EXPS.map((e) => expectAgreement(constExp(type, e), bases.map((a) => [a]))),
+      );
+      // solc semantics, independently of the interpreter: 0 → 0, 1 → 1, −1 → ±1, else Panic
+      HUGE_EXPS.forEach((e, i) => {
+        bases.forEach((a, j) => {
+          const got = outcomes[i]?.[j];
+          const label = `${type}: ${a} ** ${e}`;
+          if (a === 0n || a === 1n || a === -1n) {
+            const r = a === -1n && e % 2n === 0n ? 1n : a;
+            expect(got, label).toEqual({ kind: 'return', data: word(r) });
+          } else {
+            expect(got, label).toEqual({ kind: 'revert', data: panicData(0x11n) });
+          }
+        });
+      });
+    });
+  }
+
+  test('a huge exponent typed narrower than uint256 (s.lit uint64 2^30 / 2^63)', async () => {
+    for (const e of [1n << 30n, 1n << 63n]) {
+      const script = evscript({ name: 'pow_lit', args: [t.int256] }, (s, a) =>
+        s.return({ r: s.pow(a, s.lit(t.uint64, e)) }),
+      );
+      // oxlint-disable-next-line no-await-in-loop -- two cases, deterministic order
+      const outcomes = await expectAgreement(script, [[0n], [1n], [-1n], [2n], [-2n]]);
+      expect(outcomes.map((o) => o.kind)).toEqual(['return', 'return', 'return', 'revert', 'revert']);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

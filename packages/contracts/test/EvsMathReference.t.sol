@@ -47,6 +47,18 @@ contract EvsMathReferenceTest is Test {
         ref.powBase2(256);
     }
 
+    function testPowHugeExponent() public view {
+        assertEq(ref.powExpHugeU256(0), 0);
+        assertEq(ref.powExpHugeU256(1), 1);
+        assertEq(ref.powExpMaxI64(-1), -1);
+        assertEq(ref.powExpHugeEvenI8(-1), 1);
+    }
+
+    function testPowHugeExponentOverflow() public {
+        vm.expectRevert(stdError.arithmeticError);
+        ref.powExpMaxI64(-2);
+    }
+
     function testModArithHappyPaths() public view {
         uint256 max = type(uint256).max;
         assertEq(ref.addmodU256(max, max, 10), 0); // (2^257 - 2) % 10 == 0

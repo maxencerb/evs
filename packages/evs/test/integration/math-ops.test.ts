@@ -135,6 +135,10 @@ const PAIRS: Pair[] = [
       ['powExp2I8', 'int8', 2n],
       ['powExp3I256', 'int256', 3n],
       ['powExp3U64', 'uint64', 3n],
+      // huge folded exponents: the base bound is |a| ≤ 1 (never a host-side power)
+      ['powExpHugeU256', 'uint256', 1n << 128n],
+      ['powExpMaxI64', 'int64', MAX256],
+      ['powExpHugeEvenI8', 'int8', 1n << 32n],
     ] as const
   ).map(([fn, ty, e]): Pair => ({
     fn,

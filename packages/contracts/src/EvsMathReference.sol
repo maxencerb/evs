@@ -10,7 +10,7 @@ pragma solidity 0.8.30;
 ///         `pow{U|I}{bits}` take a runtime base and a runtime exponent of the same width (a
 ///         narrower exponent than the base draws solc warning 3149, and the 256-bit variants
 ///         cover exponents past 255); `powBase*` have a literal base (solc's literal-base
-///         template), `powExp*` a literal exponent; then the `addmod` / `mulmod` builtins and
+///         template), `powExp*` a literal exponent (up to 2 ** 256 - 1); then the `addmod` / `mulmod` builtins and
 ///         the signed shifts.
 contract EvsMathReference {
     // ---------------------------------------------------------------- runtime base ** exponent
@@ -81,6 +81,19 @@ contract EvsMathReference {
 
     function powExp3U64(uint64 a) external pure returns (uint64) {
         return a ** 3;
+    }
+
+    // huge literal exponents: only |a| <= 1 stays in range
+    function powExpHugeU256(uint256 a) external pure returns (uint256) {
+        return a ** (2 ** 128);
+    }
+
+    function powExpMaxI64(int64 a) external pure returns (int64) {
+        return a ** (2 ** 256 - 1);
+    }
+
+    function powExpHugeEvenI8(int8 a) external pure returns (int8) {
+        return a ** (2 ** 32);
     }
 
     // ---------------------------------------------------------------- addmod / mulmod

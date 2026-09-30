@@ -193,6 +193,13 @@ const BYTE_STABLE: readonly Case[] = [
         return s.return({ p, mm });
       }),
   },
+  {
+    name: 'checked pow with huge folded exponents (2^128 unsigned, 2^256 − 1 signed): |a| ≤ 1 bound',
+    script: () =>
+      evscript({ name: 'powhuge', args: [t.uint256, t.int64] }, (s, u, i) =>
+        s.return({ u: u.pow(1n << 128n), i: i.pow((1n << 256n) - 1n) }),
+      ),
+  },
 ];
 
 const Position = t.struct({ nonce: t.uint96, operator: t.address, liquidity: t.uint128 });
