@@ -34,7 +34,7 @@
  *   bubbled; try: the zero block).
  */
 
-import { headBytes, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
+import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { bytesToBigInt, HEX_BYTES_RE, hexToBytes, u256ToBytes } from '../core/bytes.js';
@@ -59,6 +59,7 @@ import {
   emitNormalizeWord,
   encodeFramesOf,
   headOffsets,
+  isRecursiveArray,
   reserveEncodeFrames,
   needsMemorySnapshot,
   wordNeedsNormalize,
@@ -238,13 +239,13 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       }
       return;
     }
-    // dynamic arg. A composite-element array call arg (`tuple[]`/`T[][]`/`string[]`) is routed to the
-    // recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s `needsRecursiveEncode`
-    // dispatch and never reaches the template path — this backstop catches a routing regression that
-    // would otherwise silently mis-encode a composite array as a word-array memref tail.
-    if (l.kind === 'array' && l.elem.kind !== 'word') {
+    // dynamic arg. A recursive-codec array call arg (`tuple[]`/`T[][]`/`string[]`, any `T[N]`) is
+    // routed to the recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s
+    // `needsRecursiveEncode` dispatch and never reaches the template path — this backstop catches a
+    // routing regression that would otherwise silently mis-encode it as a word-array memref tail.
+    if (isRecursiveArray(l)) {
       throw internal(
-        `${what}: composite-element array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
+        `${what}: recursive-codec array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
       );
     }
     if (isLiteralRef(ref)) {
@@ -724,7 +725,7 @@ function emitTryEpilogue(w: AsmWriter, plan: CallSitePlan, labelPrefix: string):
     w.op('MSTORE', { note: `success = 0 (site ${siteId})` });
   }
   for (const ref of plan.outRefs) {
-    emitZeroValue(w, ref.type); // [zero, …]
+    emitZeroValue(w, ref.type, 0); // [zero, …]   (the zero block is checked at height 0)
     w.push(ref.slot);
     w.op('MSTORE');
   }
@@ -917,32 +918,44 @@ export function emitStaticCall(
         return;
       }
 
-      if (layout.kind === 'array' && layout.elem.kind !== 'word') {
-        // composite-element array output (`tuple[]`/`T[][]`/`string[]`): decode from the snapshot
-        // into a fresh `[len][p0…]` pointer block (its elements alias/recurse). base/end come from
-        // SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would drift),
-        // exactly like the tuple-output path above. The head word at buf+headOffset is an offset
-        // relative to buf; bounds it, then base = buf+off.
-        // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
-        pushSnap(w);
-        if (headOffset !== 0) {
-          w.push(headOffset);
-          w.op('ADD');
+      if (layout.kind === 'array' && isRecursiveArray(layout)) {
+        // recursive-codec array output (`tuple[]`/`T[][]`/`string[]`, any `T[N]`): decode from the
+        // snapshot into a fresh `[len][p0…]` pointer block (its elements alias/recurse). base/end
+        // come from SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would
+        // drift), exactly like the tuple-output path above. A STATIC fixed-size array inlines at
+        // buf+headOffset; otherwise the head word there is an offset relative to buf — bound it,
+        // then base = buf+off.
+        let pushArrBase: PushBase;
+        if (isDynamic(layout)) {
+          // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
+          pushSnap(w);
+          if (headOffset !== 0) {
+            w.push(headOffset);
+            w.op('ADD');
+          }
+          w.op('MLOAD'); // [off, buf]
+          w.op('DUP1');
+          w.push(MAX_U64);
+          w.op('LT'); // [off > max, off, buf]
+          emitDecodeFail(2); // [off, buf]
+          w.op('DUP1');
+          w.push(32);
+          w.op('ADD'); // [off+32, off, buf]
+          w.op('RETURNDATASIZE');
+          w.op('LT'); // [rds < off+32, off, buf]
+          emitDecodeFail(2); // [off, buf]
+          w.op('POP'); // [buf]   (base re-derived inside the thunk)
+          pushArrBase = () => pushSnapOffsetBase(w, headOffset);
+        } else {
+          pushArrBase = () => {
+            pushSnap(w);
+            if (headOffset !== 0) {
+              w.push(headOffset);
+              w.op('ADD');
+            } // [base = buf+headOffset]
+          };
         }
-        w.op('MLOAD'); // [off, buf]
-        w.op('DUP1');
-        w.push(MAX_U64);
-        w.op('LT'); // [off > max, off, buf]
-        emitDecodeFail(2); // [off, buf]
-        w.op('DUP1');
-        w.push(32);
-        w.op('ADD'); // [off+32, off, buf]
-        w.op('RETURNDATASIZE');
-        w.op('LT'); // [rds < off+32, off, buf]
-        emitDecodeFail(2); // [off, buf]
-        w.op('POP'); // [buf]   (base re-derived inside the thunk)
-        const pushArrBase: PushBase = () => pushSnapOffsetBase(w, headOffset);
-        emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
+        emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
         return;
@@ -991,10 +1004,10 @@ export function emitStaticCall(
       emitDecodeFail(2); // [ptr, buf]
 
       if (layout.kind === 'array') {
-        // word-element array (composite-element arrays were handled above): eager element
+        // dynamic word-element array (every other array was handled above): eager element
         // normalization over the aliased snapshot region.
-        if (layout.elem.kind !== 'word') {
-          throw internal('composite-element array reached the word-array decode path');
+        if (layout.elem.kind !== 'word' || isRecursiveArray(layout)) {
+          throw internal('recursive-codec array reached the word-array decode path');
         }
         const elemAbi = layout.elem.abi;
         if (wordNeedsNormalize(elemAbi)) {

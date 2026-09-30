@@ -19,9 +19,11 @@ import type { ReturnValue, TypeOfReturn } from '../builder/script.js';
 import { EvsTypeError } from '../core/errors.js';
 import {
   abiParamToType,
+  assertArrayDepth,
   bitsOf,
   IDENT_RE,
   isSigned,
+  isTupleTag,
   isWordType,
   typeToAbiParam,
   type ArgSpec,
@@ -133,7 +135,7 @@ export type ScriptAbi<
  *  {@link TupleType} descriptor validates through its component layouts (`layoutOfType`); a raw
  *  type string (which may be an arbitrary, possibly-invalid ABI string from an `AbiParameter`)
  *  stays on the existing string `layoutOf` path. */
-function validateV0Type(type: TupleType | string, where: string): void {
+function validateAbiType(type: TupleType | string, where: string): void {
   try {
     if (typeof type === 'string') layoutOf(type);
     else layoutOfType(type);
@@ -219,7 +221,7 @@ export function buildScriptAbi(
       );
     }
     seenArgs.add(a.name);
-    validateV0Type(a.type, `argument #${i} ("${a.name}")`);
+    validateAbiType(a.type, `argument #${i} ("${a.name}")`);
     assertStructFieldNames(a.type, `argument #${i} ("${a.name}")`);
     return Object.freeze(typeToAbiParam(a.name, a.type));
   });
@@ -248,7 +250,7 @@ export function buildScriptAbi(
       );
     }
     seenReturns.add(r.name);
-    validateV0Type(r.type, `return component "${r.name}"`);
+    validateAbiType(r.type, `return component "${r.name}"`);
     assertStructFieldNames(r.type, `return component "${r.name}"`);
     return Object.freeze(typeToAbiParam(r.name, r.type));
   });
@@ -296,7 +298,7 @@ export function buildScriptAbi(
       }
       seenParams.add(p.name);
       const ty = abiParamToType(p);
-      validateV0Type(ty, where);
+      validateAbiType(ty, where);
       assertStructFieldNames(ty, where);
     });
     return Object.freeze({ type: 'error', name: e.name, inputs: Object.freeze(e.inputs) });
@@ -415,12 +417,14 @@ export function describePanic(code: bigint): { codeHex: string; meaning: string 
  */
 function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
   if (p.type.startsWith('tuple')) {
-    // one level of tuple-array nesting (`tuple[]`) is supported; `tuple[][]` (and deeper)
-    // is not supported yet (#4) — reject with UNSUPPORTED_V0.
-    if (p.type !== 'tuple' && p.type !== 'tuple[]') {
+    // any tuple-array suffix chain is admitted (`tuple[]`, `tuple[2]`, `tuple[][]`, …) up to
+    // MAX_ARRAY_DEPTH levels (deeper → UNSUPPORTED_V0); a malformed tag (`tuple[0]`,
+    // `tuple(uint256)`) is ABI_SHAPE.
+    assertArrayDepth(p.type, where);
+    if (!isTupleTag(p.type)) {
       throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${where}: type ${JSON.stringify(p.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
+        'ABI_SHAPE',
+        `${where}: malformed tuple type ${JSON.stringify(p.type)} (expected 'tuple' followed by \`[]\`/\`[N]\` suffixes)`,
       );
     }
     const components = 'components' in p ? p.components : undefined;
@@ -441,7 +445,7 @@ function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
       ),
     });
   }
-  validateV0Type(p.type, where);
+  validateAbiType(p.type, where);
   return Object.freeze({ name: p.name ?? '', type: p.type });
 }
 
@@ -575,8 +579,9 @@ export function encodeLiteralWord(type: WordType, value: unknown): Hex {
 
 /**
  * Pre-encoded memref payload `[len:32][payload…]`: strings/bytes are raw
- * bytes zero-padded to a word boundary; arrays are one canonical word per element. This is
- * exactly the ABI tail of the type, i.e. viem's `encodeAbiParameters` output minus the
+ * bytes zero-padded to a word boundary; word-element arrays (dynamic `T[]` or fixed `T[N]`, whose
+ * literal must have exactly N elements) are one canonical word per element. This is exactly the
+ * ABI tail of the dynamic form of the type, i.e. viem's `encodeAbiParameters` output minus the
  * leading 32-byte head offset.
  */
 export function encodeLiteralData(type: DynType | ArrayType, value: unknown): Hex {
@@ -617,6 +622,12 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
         `${type} literal: a composite-element array has no flat memref literal — build it via the recorder (s.newArray / an array literal arg or return)`,
       );
     }
+    if (layout.length !== null && value.length !== layout.length) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${type} literal must have exactly ${layout.length} element(s), got ${value.length}`,
+      );
+    }
     const elemAbi = layout.elem.abi;
     coerced = value.map((el, i) => coerceWordLiteral(elemAbi, el, `${type}[${i}]: `));
   } else {
@@ -628,7 +639,12 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       `encodeLiteralData: tuple type ${JSON.stringify(type)} has no flat memref literal — build it via the recorder`,
     );
   }
-  const params: readonly AbiParameter[] = [{ type }];
+  // a fixed-size word array `T[N]` is encoded through its DYNAMIC twin `T[]`: the memref image is
+  // `[len][w0…]` in both cases (the memory model is length-prefixed for `T[N]` too, len === N),
+  // and only the dynamic form carries the `[len]` word on the wire.
+  const wireType: string =
+    layout.kind === 'array' && layout.length !== null ? `${layout.elem.abi}[]` : type;
+  const params: readonly AbiParameter[] = [{ type: wireType }];
   const full = encodeAbiParameters(params, [coerced]);
   // single dynamic param ⇒ [head: offset 0x20][tail: len + payload]; the memref is the tail.
   return `0x${full.slice(2 + 64)}`;

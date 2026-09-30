@@ -33,6 +33,7 @@ import {
   arrayTypeOf,
   bitsOf,
   elemTypeOf,
+  fixedLengthOf,
   IDENT_RE,
   installStagingTraps,
   isArgSpecValue,
@@ -101,7 +102,7 @@ interface CellInternals {
 interface ArrInternals {
   readonly owner: Recorder;
   readonly id: ValueId;
-  readonly elem: EvsType; // word | string | bytes | one-level T[] | tuple (composite element)
+  readonly elem: EvsType; // any value type (word, string/bytes, tuple, or an array — dynamic or fixed)
 }
 interface TupleInternals {
   readonly owner: Recorder;
@@ -218,8 +219,9 @@ function fromUnsignedN(type: WordType, u: bigint): bigint {
 }
 
 /**
- * Validates a type string for the builder surface; valid-Solidity-but-deferred shapes get
- * `UNSUPPORTED_V0`, garbage gets `TYPE_MISMATCH` (classification mirrors `abi/layout.ts`).
+ * Validates a type string for the builder surface: anything outside the vocabulary gets
+ * `TYPE_MISMATCH`, an array nested deeper than `MAX_ARRAY_DEPTH` gets `UNSUPPORTED_V0`
+ * (classification mirrors `abi/layout.ts`).
  */
 export function assertV0Type(type: unknown, what: string): asserts type is StringType {
   if (typeof type !== 'string') {
@@ -268,6 +270,19 @@ function memberName(comp: NamedType, index: number): string {
  *  `bytes[]`. A word-element array (`uint256[]`, `address[]`) is NOT composite. */
 function isCompositeElemArray(type: ArrayType | TupleType): boolean {
   return isDynamicType(elemTypeOf(type));
+}
+
+/** A staged handle of this builder family (an `Expr`, `Tuple`, `MutArray`, or `Field`) — as
+ *  opposed to a plain host literal. */
+function isStagedHandle(v: unknown): boolean {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (EXPR_INTERNALS.has(v) ||
+      TUPLE_INTERNALS.has(v) ||
+      ARR_INTERNALS.has(v) ||
+      FIELD_INTERNALS.has(v))
+  );
 }
 
 /** A short debug tag for a tuple value's `debugName` (field names, or the positional arity). */
@@ -1039,27 +1054,30 @@ export class Recorder {
       const { hex, logical } = this.wordLiteral(type, c.value);
       return this.wordConst(type, logical, hex);
     }
-    // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`) is built at
-    // record time as `arrnew` + per-element construction — reusing the same lowerings as a
-    // constructed array — rather than a flat data-segment const (word-element arrays still use the
-    // const path via `dataConst`). A `tuple[]` literal also lands here (`tuple` returned above).
-    if (isArrayValueType(type) && isCompositeElemArray(type)) {
-      return this.buildArrayLiteral(type, c.value, what);
-    }
-    if (isTupleType(type)) {
-      // a tuple-array type whose element is somehow non-composite never occurs (`tuple[]` is always
-      // composite); a still-deferred shape (`tuple[][]`) is rejected upstream by layout/validate.
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${what}: ${JSON.stringify(type.type)} literals are not supported yet`,
-      );
+    if (isArrayValueType(type)) {
+      // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`, any
+      // `T[N]` with a composite element) is built at record time as `arrnew` + per-element
+      // construction — reusing the same lowerings as a constructed array — rather than a flat
+      // data-segment const. A word-element array literal whose elements are ALL host literals uses
+      // the const path (`dataConst`, a CODECOPY-materialized data segment); one that mixes in a
+      // staged handle (`[x, 1n]` with `x` an Expr) is built element-wise the same way.
+      if (isCompositeElemArray(type) || (Array.isArray(c.value) && c.value.some(isStagedHandle))) {
+        return this.buildArrayLiteral(type, c.value, what);
+      }
+      if (isTupleType(type)) {
+        // unreachable: every tuple-array type has a composite (tuple) element
+        throw new EvsInternalError('INTERNAL', `${what}: tuple array with a word element`);
+      }
     }
     return this.dataConst(type, c.value);
   }
 
-  /** Builds a composite-element array LITERAL (`tuple[]`/`T[][]`/`string[]`/`bytes[]`) at record time:
-   *  `arrnew(elem, len)` then `arrset(i, coerceToId(value[i], elem))` per element — reusing the same
-   *  IR lowerings as a runtime-constructed array. The result aliases a fresh `[len][p0…]` block. */
+  /** Builds an array LITERAL element-wise at record time — a composite-element array
+   *  (`tuple[]`/`T[][]`/`string[]`/`bytes[]`), a fixed-size `T[N]` over a composite element (whose
+   *  literal must have exactly N elements), or a word array holding staged handles:
+   *  `arrnew(elem, len)` then `arrset(i, coerceToId(value[i], elem))` per element — reusing the
+   *  same IR lowerings as a runtime-constructed array. The result aliases a fresh `[len][p0…]`
+   *  block. */
   private buildArrayLiteral(type: ArrayType | TupleType, value: unknown, what: string): ValueId {
     if (!Array.isArray(value)) {
       throw new EvsTypeError(
@@ -1067,7 +1085,8 @@ export class Recorder {
         `${what}: a ${stringifyType(type)} literal must be a JS array, got ${describeHost(value)}`,
       );
     }
-    // validate the array type (rejects `tuple[][]`, deeper nesting, `T[N]`) via the layout classifier.
+    // validate the array type via the layout classifier (malformed → TYPE_MISMATCH, nested deeper
+    // than MAX_ARRAY_DEPTH → UNSUPPORTED_V0).
     try {
       layoutOfType(type);
     } catch (e) {
@@ -1077,12 +1096,25 @@ export class Recorder {
       throw e;
     }
     const elem = elemTypeOf(type);
+    const fixed = fixedLengthOf(type);
+    if (fixed !== null && value.length !== fixed) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: a ${stringifyType(type)} literal must have exactly ${fixed} element(s), got ${value.length}`,
+      );
+    }
     if (BigInt(value.length) >= 1n << 32n) {
       this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
     }
     const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
     const arrId = this.newValue(type, `${stringifyType(type)} literal`);
-    this.appendStmt({ k: 'arrnew', elem, length: lenId, out: arrId });
+    this.appendStmt({
+      k: 'arrnew',
+      elem,
+      length: lenId,
+      ...(fixed === null ? {} : { fixed }),
+      out: arrId,
+    });
     value.forEach((el, i) => {
       const valId = this.coerceToId(el, elem, `${what}[${i}]`);
       const iId = this.coerceToId(i, 'uint256', `${what}[${i}] index`);
@@ -1095,10 +1127,8 @@ export class Recorder {
    *  `tuplenew` from a literal struct/positional object. */
   private coerceTupleToId(v: unknown, type: TupleType, what: string): ValueId {
     if (type.type !== 'tuple') {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${what}: tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
-      );
+      // unreachable: coerceToId routes every array type (tuple arrays included) to the array arm
+      throw new EvsInternalError('INTERNAL', `${what}: tuple array reached the tuple coercion`);
     }
     if (typeof v === 'object' && v !== null) {
       const ti = TUPLE_INTERNALS.get(v);
@@ -1188,8 +1218,8 @@ export class Recorder {
     }
     if (type.type !== 'tuple') {
       throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `s.tuple(): tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
+        'TYPE_MISMATCH',
+        `s.tuple(): ${JSON.stringify(type.type)} is an ARRAY of tuples, not a tuple — build it with s.newArray(elemTuple, n) or pass a literal array where the value is expected`,
       );
     }
     const id = this.buildTupleNew(type, init, 's.tuple()');
@@ -1312,10 +1342,11 @@ export class Recorder {
       const { hex, logical } = this.wordLiteral(type, value);
       return makeExpr(this, this.wordConst(type, logical, hex));
     }
-    // a composite-element array literal (`string[]`/`uint256[][]`) is built at record time,
-    // exactly like a coerced array literal; word-element arrays / string / bytes use the const path.
-    if (type.endsWith('[]') && isArrayValueType(type) && isCompositeElemArray(type)) {
-      return makeExpr(this, this.buildArrayLiteral(type, value, 's.lit()'));
+    // an array literal takes the same route as a coerced one: composite elements (or staged
+    // handles among the elements) build element-wise; all-literal word arrays / string / bytes
+    // use the const path. A fixed-size type enforces its exact length either way.
+    if (isArrayValueType(type)) {
+      return makeExpr(this, this.coerceToId(value, type, 's.lit()'));
     }
     return makeExpr(this, this.dataConst(type, value));
   }
@@ -1373,10 +1404,38 @@ export class Recorder {
     this.appendStmt({ k: 'cellset', cell: cellId, value: valId });
   }
 
-  newArray(elem: unknown, length: unknown): MutArrayImpl {
+  /** `s.newArray(elem, length)` → a dynamic `elem[]`; `s.newArray(elem, N, { fixed: true })` → a
+   *  fixed-size `elem[N]` (N a literal, the block's length word is provably N). */
+  newArray(elem: unknown, length: unknown, opts?: unknown): MutArrayImpl {
     this.assertOpen('s.newArray()');
+    if (opts !== undefined && (typeof opts !== 'object' || opts === null || Array.isArray(opts))) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.newArray(): options must be an object ({ fixed?: boolean }), got ${describeHost(opts)}`,
+      );
+    }
+    const fixedOpt: unknown = opts === undefined ? undefined : (opts as { fixed?: unknown }).fixed;
+    if (fixedOpt !== undefined && typeof fixedOpt !== 'boolean') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.newArray(): \`fixed\` must be a boolean, got ${describeHost(fixedOpt)}`,
+      );
+    }
     const elemType = this.newArrayElemType(elem);
-    const arrType = arrayTypeOf(elemType);
+    let fixed: number | null = null;
+    if (fixedOpt === true) {
+      // the length of a fixed-size array is part of its TYPE, so it must be a record-time literal
+      const n = typeof length === 'bigint' ? Number(length) : length;
+      if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > 0xffffffff) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `s.newArray(…, { fixed: true }): the length of a fixed-size array must be a literal positive integer below 2^32, got ${describeHost(length)}`,
+        );
+      }
+      fixed = n;
+    }
+    const arrType = arrayTypeOf(elemType, fixed);
+    this.validateArrayType(arrType, 's.newArray()');
     const lenId = this.coerceToId(length, 'uint256', 's.newArray() length');
     const lenLit = this.litValues.get(lenId);
     if (lenLit !== undefined && lenLit >= 1n << 32n) {
@@ -1384,51 +1443,47 @@ export class Recorder {
     }
     const tag = stringifyType(elemType);
     const arrId = this.newValue(arrType, `s.newArray(${tag})`);
-    this.appendStmt({ k: 'arrnew', elem: elemType, length: lenId, out: arrId });
+    this.appendStmt({
+      k: 'arrnew',
+      elem: elemType,
+      length: lenId,
+      ...(fixed === null ? {} : { fixed }),
+      out: arrId,
+    });
     const lenOut = this.newValue('uint256', `s.newArray(${tag}).length`);
     this.appendStmt({ k: 'len', a: arrId, out: lenOut });
     return new MutArrayImpl(this, arrId, elemType, makeExpr(this, lenOut));
   }
 
-  /** Validate an `s.newArray` element type: word | string | bytes | one-level T[] | tuple.
-   *  Deferred shapes (`tuple[]` element, deeper string arrays, `T[N]`) raise UNSUPPORTED_V0; the
-   *  resulting array type is validated through `layoutOfType` so the classification mirrors layout. */
+  /** Validate an `s.newArray` element type: any value type — a word, `string`/`bytes`, a tuple
+   *  descriptor (plain or a tuple array), or any array (dynamic/fixed). The exact classification
+   *  (malformed → TYPE_MISMATCH, nested deeper than MAX_ARRAY_DEPTH → UNSUPPORTED_V0) is delegated
+   *  to the layout of the resulting array type (`validateArrayType`). */
   private newArrayElemType(elem: unknown): EvsType {
-    let elemType: EvsType;
     if (typeof elem === 'string') {
-      // classification (TYPE_MISMATCH vs UNSUPPORTED_V0 for `T[N]` etc.) is delegated to `layoutOfType`
-      // on the resulting array type below; a non-StringType string still produces a string we can tag.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; the layout check below rejects unsupported shapes with the right code.
-      elemType = elem as EvsType;
-    } else if (isTupleType(elem)) {
-      if (elem.type !== 'tuple') {
-        throw new EvsTypeError(
-          'UNSUPPORTED_V0',
-          `s.newArray(): a ${JSON.stringify(elem.type)} element (an array of tuple-arrays) is deferred — only one array level over a tuple/dynamic element`,
-        );
-      }
-      elemType = elem;
-    } else {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `s.newArray(): element type must be a t.* type (word | string | bytes | one-level T[] | tuple), got ${describeHost(elem)}`,
-      );
+      // a non-StringType string still produces a string we can tag; the layout check on the
+      // resulting array type rejects it with the shared TYPE_MISMATCH explanation.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; validateArrayType rejects malformed ones.
+      return elem as EvsType;
     }
-    // validate the resulting array type (rejects `tuple[]` element → `tuple[][]`, deeper string
-    // arrays, `T[N]`) through the layout classifier so codes match `abi/layout.ts`.
-    const arrType = arrayTypeOf(elemType);
+    if (isTupleType(elem)) return elem;
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `s.newArray(): element type must be a t.* type (a word, string/bytes, an array, or a t.struct/t.tuple), got ${describeHost(elem)}`,
+    );
+  }
+
+  /** Validates an array type through the layout classifier so the error text and code match
+   *  `abi/layout.ts`. */
+  private validateArrayType(arrType: EvsType, what: string): void {
     try {
       layoutOfType(arrType);
     } catch (e) {
       if (e instanceof EvsTypeError) {
-        throw new EvsTypeError(
-          e.code,
-          `s.newArray(): ${e.message.replace(/^layoutOf(Type)?: /, '')}`,
-        );
+        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
       }
       throw e;
     }
-    return elemType;
   }
 
   arrSet(arrId: ValueId, elem: EvsType, i: unknown, v: unknown, what: string): void {
@@ -2611,7 +2666,7 @@ export class Recorder {
    * Validates the `revertReturns` option (issue #35): `s.call` / `s.tryCall` only, never combined
    * with `struct: true` (revert-decoded outputs carry no names — declare one `t.struct` type
    * instead), and every entry a supported value type (the same vocabulary as ABI outputs, so an
-   * unsupported shape gets the same `UNSUPPORTED_V0` classification `layoutOfType` gives it).
+   * unsupported shape gets the same classification `layoutOfType` gives it).
    */
   private revertReturnTypes(
     raw: unknown,

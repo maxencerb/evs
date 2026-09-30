@@ -279,7 +279,11 @@ The calling surface is split into three verbs by mutability and call frame. All 
 same `{ address, abi, functionName, args }` shape (typed like viem's `readContract`: per-arg
 literal-or-`Expr` unions, outputs unwrapped one→`Expr`/many→tuple) and a `try*` variant returning
 `{ success: Expr<'bool'>, value }` (`success` false on failure **or** malformed returndata,
-`value` then zeros/empty — pair with `s.select` for defaults).
+`value` then zeros/empty — pair with `s.select` for defaults). The whole ABI type vocabulary
+flows through args, outputs and returns: words, `string`/`bytes`, structs/tuples
+(`t.struct`/`t.tuple`), and arrays of any element up to four levels deep, dynamic (`T[]`) or
+fixed-size (`T[N]`, `t.array(elem, N)`) — `tuple[]`, `tuple[][]`, `uint256[][][]`, `string[][]`,
+`uint256[2][]`, … — byte-exact vs viem and real solc.
 
 | Verb                           | Opcode                                | Functions                | State                                                           |
 | ------------------------------ | ------------------------------------- | ------------------------ | --------------------------------------------------------------- |

@@ -184,6 +184,83 @@ export class AsmWriter {
   nodes(): readonly AsmNode[] {
     return [...this.#nodes];
   }
+
+  /**
+   * @internal Speculative emission (the array decoder's budget-driven path choice): a
+   * checkpoint of the writer state — node count, label counter/names, referenced labels — that
+   * {@link rollback} restores exactly, so code emitted and then discarded leaves no trace (no
+   * label ids consumed, no shared tail marked referenced).
+   */
+  checkpoint(): WriterCheckpoint {
+    return {
+      nodes: this.#nodes.length,
+      nextLabel: this.#nextLabel,
+      names: new Map(this.#names),
+      referenced: new Set(this.#referenced),
+    };
+  }
+
+  /** @internal Discards everything emitted since `cp` (see {@link checkpoint}). */
+  rollback(cp: WriterCheckpoint): void {
+    this.#nodes.length = cp.nodes;
+    this.#nextLabel = cp.nextLabel;
+    this.#names = new Map(cp.names);
+    this.#referenced = new Set(cp.referenced);
+  }
+
+  /**
+   * @internal The highest operand-stack height the nodes emitted since `cp` reach, simulated
+   * linearly from `entryHeight` (the absolute height when `cp` was taken). Checked labels reset
+   * the height to their annotation; code after an unconditional JUMP/terminator is skipped until
+   * the next label; `'any'` regions (failure stubs) are ignored — the same model as the
+   * verifier's stack pass, restricted to one straight-line fragment.
+   */
+  peakHeightSince(cp: WriterCheckpoint, entryHeight: number): number {
+    let height = entryHeight;
+    let peak = entryHeight;
+    let live = true;
+    for (let k = cp.nodes; k < this.#nodes.length; k++) {
+      const node = this.#nodes[k];
+      if (node === undefined) break;
+      if (node.k === 'label') {
+        live = node.stack !== 'any';
+        if (live && node.stack !== 'any') height = node.stack;
+        continue;
+      }
+      if (!live) continue;
+      if (node.k === 'push' || node.k === 'pushBytes' || node.k === 'pushLabel') {
+        height += 1;
+      } else if (node.k === 'op') {
+        const info = OPS[node.op];
+        if (node.op === 'JUMP') {
+          live = false;
+          continue;
+        }
+        if (
+          node.op === 'RETURN' ||
+          node.op === 'REVERT' ||
+          node.op === 'STOP' ||
+          node.op === 'INVALID'
+        ) {
+          live = false;
+          continue;
+        }
+        height += info.pushes - info.pops;
+      } else {
+        continue;
+      }
+      if (height > peak) peak = height;
+    }
+    return peak;
+  }
+}
+
+/** @internal An {@link AsmWriter.checkpoint} snapshot. */
+export interface WriterCheckpoint {
+  readonly nodes: number;
+  readonly nextLabel: number;
+  readonly names: ReadonlyMap<LabelId, string>;
+  readonly referenced: ReadonlySet<LabelId>;
 }
 
 // ---------------------------------------------------------------------------

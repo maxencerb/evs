@@ -88,11 +88,19 @@ pointer assignment — reference semantics, not a copy.
 
 ```ts nocheck
 newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArray<e>;
+newArray<const e extends EvsType, const n extends number>(
+  elem: e,
+  length: n,
+  opts: { readonly fixed: true },
+): MutArray<e, n>;
 ```
 
-Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
-type, `string`/`bytes`, a one-level array of a word element (`uint256[]`, not `string[]`/`bytes[]`), or a struct/tuple (`tuple`) — the
-resulting array is then a `tuple[]`; a `tuple[]` *element* is rejected (`UNSUPPORTED_V0`). This is
+Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be any value
+type — a word type, `string`/`bytes`, a struct/tuple (the array is then a `tuple[]`), or an array
+(`uint256[]` → `uint256[][]`, `t.array(Position)` → `tuple[][]`, `t.array(t.uint256, 2)` →
+`uint256[2][]`), as long as the result stays within four array levels (`UNSUPPORTED_V0`
+otherwise). With `{ fixed: true }` and a *literal* positive length `n`, it allocates a fixed-size
+`elem[n]` instead (`expr()` is an `Expr<elem[n]>`). Unset slots hold their typed zero. This is
 the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
 (see [token balances](/examples/token-balances/)).
 

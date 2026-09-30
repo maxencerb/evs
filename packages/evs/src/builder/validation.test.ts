@@ -69,8 +69,8 @@ const overloadedAbi = [
   },
 ] as const satisfies Abi;
 
-// a tuple ARRAY output — composite scalars are supported now, but `tuple[]` is the deferred
-// follow-up and must still raise UNSUPPORTED_V0 naming the parameter.
+// a MALFORMED tuple-array output tag — every well-formed tuple array (`tuple[]`, `tuple[][]`,
+// `tuple[2]`, …) is supported since #4; a bad tag must still raise ABI_SHAPE naming the parameter.
 const tupleAbi = [
   {
     type: 'function',
@@ -79,9 +79,8 @@ const tupleAbi = [
     inputs: [],
     outputs: [
       {
-        // `tuple[][]` (two levels) is STILL deferred — `tuple[]` is now supported.
         name: 'data',
-        type: 'tuple[][]',
+        type: 'tuple[0]',
         components: [{ name: 'a', type: 'uint256' }],
       },
     ],
@@ -163,15 +162,44 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
     expect(script).toBeDefined();
   });
 
-  test('STILL deferred: an array nested deeper than [][] → UNSUPPORTED_V0', () => {
+  test('arrays nested deeper than [][] and fixed-size arrays are accepted args (issue #4)', () => {
+    for (const type of ['uint256[][][]', 'uint256[2]', 'string[2][]', 'address[][3]']) {
+      const script = evscript({ name: 'd', args: [type as never] }, (s: AnyBuilder, x: unknown) =>
+        s.return({ x } as never),
+      );
+      expect(script.ir.args[0]?.type).toBe(type);
+    }
+  });
+
+  test('STILL gated: an array nested deeper than MAX_ARRAY_DEPTH (4) → UNSUPPORTED_V0', () => {
+    for (const type of ['uint256[][][][][]', 'string[2][][][][]']) {
+      expectEvs(
+        () =>
+          evscript({ name: 'd', args: [type as never] }, (s: AnyBuilder, x: unknown) =>
+            s.return({ x } as never),
+          ),
+        EvsTypeError,
+        'UNSUPPORTED_V0',
+        /nests arrays 5 levels deep — at most 4/,
+      );
+    }
+    // four levels is the ceiling and still compiles
+    expect(
+      evscript({ name: 'd4', args: ['uint256[][][][]' as never] }, (s: AnyBuilder, x: unknown) =>
+        s.return({ x } as never),
+      ).ir.args[0]?.type,
+    ).toBe('uint256[][][][]');
+  });
+
+  test('a malformed array suffix in an arg type → TYPE_MISMATCH', () => {
     expectEvs(
       () =>
-        evscript({ name: 'd', args: ['uint256[][][]' as never] }, (s: AnyBuilder, x: unknown) =>
+        evscript({ name: 'd', args: ['uint256[0]' as never] }, (s: AnyBuilder, x: unknown) =>
           s.return({ x } as never),
         ),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported yet/,
+      'TYPE_MISMATCH',
+      /malformed array suffix/,
     );
   });
 
@@ -294,12 +322,30 @@ describe('checklist: literal out of range / wrong hex length / unsafe number', (
     ).not.toThrow();
   });
 
-  test('a string-array nested deeper than [][] in s.lit → UNSUPPORTED_V0 (still deferred)', () => {
+  test('s.lit builds deeper-nested and fixed-size array literals (issue #4)', () => {
+    expect(() =>
+      evscript({ name: 'lit3d' }, (s) =>
+        s.return({
+          c: s.lit('uint256[][][]' as never, [[[1n], []], []] as never),
+          p: s.lit('uint256[2]' as never, [1n, 2n] as never),
+          n: s.lit('string[2]' as never, ['a', 'b'] as never),
+        }),
+      ),
+    ).not.toThrow();
+  });
+
+  test('a fixed-size array literal of the wrong length → TYPE_MISMATCH', () => {
     expectEvs(
-      () => rec((s) => s.lit('uint256[][][]' as never, [] as never)),
+      () => rec((s) => s.lit('uint256[2]' as never, [1n] as never)),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported yet/,
+      'TYPE_MISMATCH',
+      /exactly 2 element/,
+    );
+    expectEvs(
+      () => rec((s) => s.lit('string[2]' as never, ['a', 'b', 'c'] as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /exactly 2 element/,
     );
   });
 });
@@ -476,27 +522,74 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
-  test('newArray now admits a composite element (string), but NOT a fixed-size element (T[N])', () => {
-    // string is a valid composite element — s.newArray('string', n) builds a string[] now.
+  test('newArray admits composite, fixed-size, and tuple-array elements (issue #4)', () => {
+    // string is a valid composite element — s.newArray('string', n) builds a string[].
     expect(() =>
       evscript({ name: 'mkStrings' }, (s) => {
         const xs = s.newArray('string' as never, 2n);
         return s.return({ xs: xs.expr() });
       }),
     ).not.toThrow();
-    // a fixed-size element is still deferred.
+    // a fixed-size element → `uint256[2][]`; a tuple[] element → `tuple[][]`.
+    const script = evscript({ name: 'mkNested' }, (s) => {
+      const ps = s.newArray('uint256[2]' as never, 1n);
+      const g = s.newArray(t.array(t.struct({ a: t.uint256 })) as never, 1n);
+      return s.return({ ps: ps.expr(), g: g.expr() });
+    });
+    expect(script.ir.returns[0]?.type).toBe('uint256[2][]');
+    expect(script.ir.returns[1]?.type).toEqual({
+      type: 'tuple[][]',
+      components: [{ name: 'a', type: 'uint256' }],
+    });
+    // a malformed element type is TYPE_MISMATCH
     expectEvs(
-      () => rec((s) => s.newArray('uint256[2]' as never, 1n)),
+      () => rec((s) => s.newArray('uint256[0]' as never, 1n)),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported/,
+      'TYPE_MISMATCH',
+      /malformed array suffix/,
     );
-    // a tuple[] element (→ tuple[][]) is still deferred.
+    // an element that would push the array past MAX_ARRAY_DEPTH is still UNSUPPORTED_V0
     expectEvs(
-      () => rec((s) => s.newArray(t.array(t.struct({ a: t.uint256 })) as never, 1n)),
+      () => rec((s) => s.newArray('uint256[][][][]' as never, 1n)),
       EvsTypeError,
       'UNSUPPORTED_V0',
-      /deferred|not supported/,
+      /at most 4/,
+    );
+    expectEvs(
+      () =>
+        rec((s) =>
+          s.newArray(
+            { type: 'tuple[][][][]', components: [{ name: 'a', type: 'uint256' }] } as never,
+            1n,
+          ),
+        ),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /at most 4/,
+    );
+  });
+
+  test('newArray({ fixed: true }) builds a fixed-size array from a literal length', () => {
+    const script = evscript({ name: 'mkFixed' }, (s) => {
+      const p = s.newArray(t.uint256, 2, { fixed: true });
+      p.set(0n, 1n);
+      return s.return({ p: p.expr() });
+    });
+    expect(script.ir.returns[0]?.type).toBe('uint256[2]');
+    const arrnew = script.ir.body.find((st) => st.k === 'arrnew');
+    expect(arrnew !== undefined && arrnew.k === 'arrnew' ? arrnew.fixed : null).toBe(2);
+    // the length of a fixed array is part of its type — it must be a literal
+    expectEvs(
+      () => rec((s, a) => s.newArray(t.uint256, a.x as never, { fixed: true })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /must be a literal/,
+    );
+    expectEvs(
+      () => rec((s) => s.newArray(t.uint256, 0, { fixed: true })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /must be a literal positive integer/,
     );
   });
 
@@ -809,12 +902,12 @@ describe('checklist: call-site ABI validation', () => {
     expect(e.message).toMatch(/get\(\), get\(uint256\)/);
   });
 
-  test('unsupported output type names the parameter', () => {
+  test('malformed output type names the parameter', () => {
     const e = expectEvs(
       () => rec((s, a) => s.read({ address: a.who, abi: tupleAbi, functionName: 'observe' })),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported yet/,
+      'ABI_SHAPE',
+      /malformed tuple type/,
     );
     expect(e.message).toMatch(/output parameter "data"/);
     expect(e.message).toMatch(/"observe"/);
@@ -1277,11 +1370,13 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
       'TYPE_MISMATCH',
       /duplicate param name/,
     );
+    // a tuple written as a STRING is a misuse (TYPE_MISMATCH); a composite param proper (a
+    // t.struct / t.tuple descriptor) is supported (#37), pinned in script.test.ts
     expectEvs(
       () => rec((s) => s.fn('d', [{ name: 'a', type: 'tuple' }] as never, () => {})),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /not supported yet/,
+      'TYPE_MISMATCH',
+      /descriptor/,
     );
   });
 

@@ -29,6 +29,7 @@ const CONTRACTS = [
   'MockVault',
   'Overloaded',
   'Reverter',
+  'Shapes',
 ];
 
 const contractsDir = fileURLToPath(new URL('..', import.meta.url));

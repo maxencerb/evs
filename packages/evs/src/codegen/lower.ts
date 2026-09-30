@@ -1165,7 +1165,8 @@ function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCt
 }
 
 function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.length, meta(`arrnew ${fmtType(s.elem)}[]`)); // [n]
+  const suffix = s.fixed === undefined ? '[]' : `[${s.fixed}]`;
+  loadOperand(w, ctx, s.length, meta(`arrnew ${fmtType(s.elem)}${suffix}`)); // [n]
   w.op('DUP1');
   w.push(0xffffffffn, { note: 'alloc cap 2^32−1' }); // [cap, n, n]
   w.op('LT'); // [cap < n, n]
@@ -1224,7 +1225,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('ISZERO');
   w.pushLabel(done);
   w.op('JUMPI'); // [p, end, ptr]
-  emitZeroValue(w, s.elem); // [zero, p, end, ptr]
+  emitZeroValue(w, s.elem, STMT_BASELINE + 3); // [zero, p, end, ptr]
   w.op('DUP2'); // [p, zero, p, end, ptr]
   w.op('MSTORE', { note: 'zero element' }); // [p, end, ptr]
   w.push(32);
@@ -1293,7 +1294,12 @@ function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: L
   w.op('DUP3'); // [ptr, cds, size, ptr]
   w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
   // omitted memref members → their typed zero (provided members are stored just below)
-  emitZeroMemrefMembers(w, ty.components, new Set(s.inits.map((init) => init.index))); // [ptr]
+  emitZeroMemrefMembers(
+    w,
+    ty.components,
+    STMT_BASELINE + 1,
+    new Set(s.inits.map((init) => init.index)),
+  ); // [ptr]
   // MSTORE each provided member at ptr + 32·index
   for (const init of s.inits) {
     loadOperand(w, ctx, init.value, meta(`member [${init.index}] ←`)); // [v, ptr]

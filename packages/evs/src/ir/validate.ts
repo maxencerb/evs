@@ -19,9 +19,11 @@
 import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
+  arrayDepthOf,
   arrayTypeOf,
   bitsOf,
   elemTypeOf,
+  fixedLengthOf,
   IDENT_RE,
   isArrayValueType,
   isBitsOperand,
@@ -30,8 +32,10 @@ import {
   isNumeric,
   isPackedEncodable,
   isSigned,
+  isTupleTag,
   isTupleType,
   isWordType,
+  MAX_ARRAY_DEPTH,
   stringifyType,
   typesEqual,
   type ArrayType,
@@ -78,6 +82,9 @@ class IrValidator {
   private readonly cellCreated: boolean[];
   /** fn → set of fns it fncalls (for acyclicity), indexed by FnId */
   private readonly fnCalls: Set<FnId>[];
+  /** word-const ValueIds → their canonical value (a fixed-size `arrnew` must take a const length
+   *  equal to its declared `fixed` size, so the memory length word always equals `N`) */
+  private readonly constWords = new Map<ValueId, bigint>();
   private scopes: Scope[] = [];
   private loopDepth = 0;
   private currentFn: FnId | null = null;
@@ -355,6 +362,7 @@ class IrValidator {
         }
         this.checkConstData(s.type, s.data, what);
         this.define(s.out, s.type, what);
+        if (s.data.kind === 'word') this.constWords.set(s.out, BigInt(s.data.hex));
         return;
       }
       case 'bin':
@@ -444,7 +452,20 @@ class IrValidator {
         const what = `${path} (arrnew)`;
         const elem = this.checkElemType(s.elem, what);
         this.use(s.length, 'uint256', what);
-        this.define(s.out, arrayTypeOf(elem), what); // elem validated by checkElemType
+        if (s.fixed !== undefined) {
+          // a fixed-size array `elem[N]`: the length operand must be the word const N, so the
+          // block's length word (what `.length`/encode/decode all read) provably equals N.
+          if (!Number.isSafeInteger(s.fixed) || s.fixed < 1 || s.fixed > 0xffffffff) {
+            this.fail(`${what}: fixed length must be an integer in [1, 2^32), got ${s.fixed}`);
+          }
+          const lit = this.constWords.get(s.length);
+          if (lit === undefined || lit !== BigInt(s.fixed)) {
+            this.fail(
+              `${what}: a fixed-size arrnew (${s.fixed}) must take a word const length equal to ${s.fixed}${lit === undefined ? ' (the length operand is not a const)' : ` (got ${lit})`}`,
+            );
+          }
+        }
+        this.define(s.out, arrayTypeOf(elem, s.fixed ?? null), what); // elem validated by checkElemType
         return;
       }
       case 'arrset': {
@@ -803,8 +824,8 @@ class IrValidator {
 
   private checkAbiParam(p: PlainAbiParam, what: string): void {
     if (p.type.startsWith('tuple')) {
-      if (p.type !== 'tuple' && p.type !== 'tuple[]' && p.type !== 'tuple[][]') {
-        this.fail(`${what}: unsupported tuple array depth ${JSON.stringify(p.type)}`);
+      if (!isTupleTag(p.type)) {
+        this.fail(`${what}: malformed tuple tag ${JSON.stringify(p.type)}`);
       }
       if (p.components === undefined || p.components.length === 0) {
         this.fail(`${what}: tuple type carries no components`);
@@ -823,31 +844,25 @@ class IrValidator {
   }
 
   /**
-   * Element type of an `arrnew`. Admits one level of array nesting over a composite/dynamic
-   * element: a word type, `string`/`bytes`, a one-level string array (`uint256[]` → `uint256[][]`),
-   * or a plain `tuple`. Not supported yet (`UNSUPPORTED_V0`, #4): `tuple[]` element (→ `tuple[][]`), a
-   * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
+   * Element type of an `arrnew`: any value type — a word, `string`/`bytes`, a tuple, or any array
+   * (dynamic or fixed-size, to any depth: `uint256[]` → `uint256[][]`, `tuple[]` → `tuple[][]`,
+   * `uint256[2]` → `uint256[2][]`, …). Only a malformed type is rejected.
    */
   private checkElemType(elem: EvsType, what: string): EvsType {
-    if (isWordType(elem) || elem === 'string' || elem === 'bytes') return elem;
-    if (isTupleType(elem)) {
-      if (elem.type !== 'tuple') {
-        this.fail(
-          `${what}: array element ${stringifyType(elem)} (a composite array element) is not supported (only one array nesting level over a tuple/dynamic element)`,
-        );
-      }
-      return elem;
+    if (!isEvsValueType(elem)) {
+      return this.fail(
+        `${what}: array element type is not a valid EvsType, got ${stringifyType(elem)}`,
+      );
     }
-    if (typeof elem === 'string' && elem.endsWith('[]')) {
-      // a one-level string array element (`uint256[]`) → the array node is `uint256[][]` (supported);
-      // a deeper element (`uint256[][]`) → `uint256[][][]` is still deferred.
-      const inner = elem.slice(0, -2);
-      if (inner.endsWith('[]')) {
-        this.fail(`${what}: array element '${elem}' nests deeper than one level — not supported`);
-      }
-      return elem;
+    // the narrowed #4 gate: the resulting array must stay within MAX_ARRAY_DEPTH (the element
+    // already carries up to MAX_ARRAY_DEPTH − 1 suffixes).
+    const tag = typeof elem === 'string' ? elem : elem.type;
+    if (arrayDepthOf(tag) >= MAX_ARRAY_DEPTH) {
+      this.fail(
+        `${what}: an array of ${stringifyType(elem)} nests arrays deeper than ${MAX_ARRAY_DEPTH} levels — not supported`,
+      );
     }
-    return this.fail(`${what}: array element type is not supported, got ${stringifyType(elem)}`);
+    return elem;
   }
 
   // -------------------------------------------------------------------------
@@ -891,6 +906,12 @@ class IrValidator {
           `${what}: array memref payload is ${payload} bytes, expected 32 × len = ${32n * len}`,
         );
       }
+      const fixed = fixedLengthOf(type);
+      if (fixed !== null && len !== BigInt(fixed)) {
+        this.fail(
+          `${what}: fixed-size array const '${stringifyType(type)}' carries length ${len}, expected exactly ${fixed}`,
+        );
+      }
       const elem = elemTypeOf(type);
       if (!isWordType(elem)) {
         this.fail(
@@ -921,7 +942,7 @@ class IrValidator {
 // ---------------------------------------------------------------------------
 
 function isArrayType(s: EvsType): s is ArrayType {
-  return typeof s === 'string' && s.endsWith('[]');
+  return typeof s === 'string' && s.endsWith(']');
 }
 
 /** legal `convert` pairs. */
