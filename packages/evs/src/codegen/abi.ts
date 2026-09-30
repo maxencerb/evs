@@ -424,11 +424,7 @@ export function emitLeafDynTail(
   // cursor += 32 + ceil32(nbytes) (arrays are word-exact already)
   pushNBytes(); // [n]
   if (!isArray) {
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(n)]
+    emitCeil32(w); // [ceil32(n)]
   }
   w.push(32);
   w.op('ADD'); // [inc]
@@ -842,11 +838,7 @@ function emitBytesFinalize(w: AsmWriter, note: string): void {
   w.op('DUP2'); // [ptr, total, ptr, cursor]
   w.op('MSTORE', { note }); // [ptr, cursor]           mem[ptr] = total
   w.op('SWAP1'); // [cursor, ptr]
-  w.push(31);
-  w.op('ADD');
-  w.push(31);
-  w.op('NOT');
-  w.op('AND'); // [ceil32(cursor), ptr]
+  emitCeil32(w); // [ceil32(cursor), ptr]
   w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]                              freePtr bumped past the payload
 }
@@ -1483,11 +1475,7 @@ export function emitCalldataDecode(
   if (hasTuple) {
     // size := ceil32(cds)
     w.op('CALLDATASIZE');
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [size]
+    emitCeil32(w); // [size]
     w.push(FREE_PTR);
     w.op('MLOAD'); // [snap, size]
     // freePtr := snap + size
@@ -1704,11 +1692,7 @@ function emitDynCalldataArg(
     w.op('SHL'); // [32·len, ptr, len, src]
   } else {
     w.op('DUP2');
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(len), ptr, len, src]
+    emitCeil32(w); // [ceil32(len), ptr, len, src]
   }
   w.push(32);
   w.op('ADD'); // [size, ptr, len, src]
@@ -1858,6 +1842,16 @@ export function emitReturnEncode(
 // ---------------------------------------------------------------------------
 // emitMemCopy — evmVersion lowering (MCOPY on cancun, @memcpy subroutine before)
 // ---------------------------------------------------------------------------
+
+/** @internal Shared by `codegen/call.ts`. Rounds the top of the stack up to a whole word:
+ *  `[x] → [ceil32(x)]` (`(x + 31) & ~31`). */
+export function emitCeil32(w: AsmWriter): void {
+  w.push(31);
+  w.op('ADD');
+  w.push(31);
+  w.op('NOT');
+  w.op('AND');
+}
 
 /**
  * Memory copy primitive. Stack contract: `[dst, src, len] → []`.

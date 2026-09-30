@@ -49,6 +49,7 @@ import {
 import { callOutputs, type ConstData, type SiteId, type Stmt } from '../ir/nodes.js';
 import {
   emitDecodeArrayToMem,
+  emitCeil32,
   emitDecodeTupleToMem,
   emitLeafDynTail,
   emitEncodeBlock,
@@ -699,11 +700,7 @@ function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: string):
 function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
   w.returndatacopyAll({ dupDepth: 1 }); // [buf]
   w.op('RETURNDATASIZE');
-  w.push(31);
-  w.op('ADD');
-  w.push(31);
-  w.op('NOT');
-  w.op('AND'); // [ceil32(rds), buf]
+  emitCeil32(w); // [ceil32(rds), buf]
   w.op('DUP2');
   w.op('ADD'); // [buf + ceil32(rds), buf]
   w.push(FREE_PTR);
@@ -1160,20 +1157,13 @@ export function emitSimulateCall(
   // W = buf + ceil32(L). It is NOT kept on the stack across the payload memcpy (the pre-cancun
   // `@memcpy` requires the stack to be EXACTLY [dst, src, len]); instead it is recomputed from the
   // stored argsSize as buf + ceil32(argsSize − 68) wherever needed.
-  const pushCeil32 = (): void => {
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(x)]
-  };
   const pushWrapperBase = (): void => {
     w.push(SIM_ARGSIZE_SLOT);
     w.op('MLOAD');
     w.push(SIM_HEADER);
     w.op('SWAP1');
     w.op('SUB'); // [L = argsSize − 68]
-    pushCeil32(); // [ceil32(L)]
+    emitCeil32(w); // [ceil32(L)]
     w.push(FREE_PTR);
     w.op('MLOAD');
     w.op('ADD'); // [W = buf + ceil32(L)]
