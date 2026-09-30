@@ -14,13 +14,20 @@ export {
   EvsTypeError,
 } from './core/errors.js';
 export type { EvsDiagnostic, EvsErrorCode } from './core/errors.js';
-export type { AbiFunctionSignature } from './core/signature.js'; // issue #4: `'name(type,…)'` of an ABI function
+export type {
+  AbiFunctionSignature, // issue #4: `'name(type,…)'` of an ABI function
+  AbiParameterSignature, // one parameter's canonical type (`'(uint256,address)[]'`)
+  AbiParametersSignature,
+  SignatureName, // the bare name of a signature reference (`'get(uint256)'` → `'get'`)
+} from './core/signature.js';
 export { namedArg, t } from './core/types.js';
 export type {
   AbiParamsToComponents, // issue #5: ABI-param → t.* type derivation helpers (t.fromOutputs/…)
   AbiParamToComponent,
   AbiParamToEvsType,
   Address,
+  ArgName, // a script arg's ABI name, from its declarator (+ ResolveArgName / ToArgSpec)
+  ArgsToInputs, // the `inputs` of ScriptAbi
   ArgSpec,
   ArgType,
   ArrayElemOf, // the element type of `Expr.at` (one `[]`/`[N]` suffix peeled)
@@ -42,6 +49,7 @@ export type {
   NamedType,
   NumericType,
   PeelArraySuffix, // issue #4: one `[]`/`[N]` suffix peeled off a type string, at any depth
+  ResolveArgName,
   ScalarType,
   StringType,
   StructTypeOf,
@@ -50,6 +58,7 @@ export type {
   TupleLitOf,
   TupleType,
   TupleTypeOf,
+  ToArgSpec,
   TypeToComponent,
   UintBits,
   UintType,
@@ -58,7 +67,7 @@ export type {
 
 // ir
 export { deserializeIr, serializeIr } from './ir/nodes.js';
-export type { ScriptIr } from './ir/nodes.js';
+export type { ScriptIr, SiteId } from './ir/nodes.js'; // SiteId: RevertExplanation / SourceMap site ids
 export { interpret } from './ir/interp.js';
 export type { InterpEnvOverrides, InterpResult, MockChain } from './ir/interp.js';
 export { dce, eliminateDeadCode } from './ir/dce.js'; // issue #40: the pass compile() runs, for tools
@@ -70,8 +79,8 @@ export type { ErrorsToAbi, ReturnSpecToComponents, ScriptAbi } from './abi/artif
 // asm
 export type { AsmNode, LabelId } from './asm/assembler.js';
 export { disassemble } from './asm/disasm.js';
-export type { Disassembly } from './asm/disasm.js';
-export type { EvmVersion } from './asm/ops.js';
+export type { Disassembly, DisasmLine } from './asm/disasm.js';
+export type { EvmVersion, Mnemonic } from './asm/ops.js'; // Mnemonic: AsmNode's `op`
 export { lookupPc } from './asm/sourcemap.js';
 export type { SourceMap } from './asm/sourcemap.js';
 
@@ -99,6 +108,7 @@ export type {
   IntoArray, // issue #5: array-typed slot accepts an Expr/literal or a bare MutArray
   IntoMember,
   IntoTuple,
+  LabelCarrier, // the default label parameter of EvsFn / ArgHandles
   LoopCtl,
   MutArray,
   MutArrayElem, // MutArray.get / .expr element helpers
@@ -133,7 +143,9 @@ export type {
   Tuple,
   TupleArrayElem,
   TupleArrayElemHandle, // issue #12 post-review: the `.at`/`s.forEach` tuple-array element handle
+  TupleArrayTag, // a tuple-array descriptor tag (`'tuple[]'`, `'tuple[2]'`, …): the s.forEach / .at bound
   TupleInit,
+  TypeOfReturn, // the type a return value contributes (ReturnSpecToComponents)
   UnwrapSingle, // the single-output unwrap of every read/call verb result
   ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
   WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket

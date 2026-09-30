@@ -116,7 +116,9 @@ export type LitOf<t extends EvsType> = t extends NumericType
                     ? readonly (LitOf<e> | Expr<e>)[] // `T[N]` — N enforced at recording (below)
                     : never
                   : t extends `${string}[${string}]`
-                    ? readonly unknown[] // `T[][N]`-style suffix chains: widened (see the note below)
+                    ? // a multi-level chain with a fixed OUTER suffix (`T[2][3]`, `T[][2]`): the
+                      // element comes from forward parsing, behind `NoInfer` (see the note below)
+                      readonly (LitOf<NoInfer<ArrayElemOf<t>>> | Expr<NoInfer<ArrayElemOf<t>>>)[]
                     : never;
 // Array literals — an element may be a host literal OR a staged `Expr` of the element type
 // (`[x, 1n]`): the recorder builds such a literal element-wise. The shape of this arm is
@@ -124,12 +126,15 @@ export type LitOf<t extends EvsType> = t extends NumericType
 // `t` BACKWARDS through `LitOf<t>` for every literal operand (`s.let(t.uint256, 0n)`,
 // `s.add(x, 1n)`, …); an `infer e extends StringType` placeholder or a `[${'' | 1 | … | 99}]` size
 // alphabet here made that inference ~15× slower (minutes per file). So the placeholders are
-// unconstrained (`e extends StringType` is re-checked as a plain conditional), a fixed-size `T[N]`
-// literal is typed as `readonly LitOf<T>[]` (NOT an N-tuple — the exact length is enforced at
-// recording with `TYPE_MISMATCH`), and only a dynamic-inside-fixed chain (`uint256[][2]`) widens to
-// `readonly unknown[]` (`${infer e}` stops at the FIRST `[`, so the element cannot be recovered
-// in one match; {@link ArrayElemOf} is not used here on purpose — a conditional in an inference
-// target position defeats the backward inference). The runtime validates every shape exactly.
+// unconstrained (`e extends StringType` is re-checked as a plain conditional), and a fixed-size
+// `T[N]` literal is typed as `readonly LitOf<T>[]` (NOT an N-tuple — the exact length is enforced
+// at recording with `TYPE_MISMATCH`). `${infer e}` stops at the FIRST `[`, so the two template
+// arms only cover chains whose outer suffix is `[]` (any depth) and single-level `T[N]`; a
+// multi-level chain whose OUTER suffix is fixed (`uint256[2][3]`, `uint256[][2]`, `bool[2][2]`)
+// gets its element from {@link ArrayElemOf} (forward parsing of the concrete `t`) wrapped in
+// `NoInfer`: a conditional in an inference target position would defeat the backward inference,
+// and `NoInfer` keeps the inference from entering it. Every array shape is thus element-checked
+// at the type level; lengths are validated exactly at recording.
 
 /**
  * Host literal of a tuple: delegated to abitype, which applies the exact named-vs-positional

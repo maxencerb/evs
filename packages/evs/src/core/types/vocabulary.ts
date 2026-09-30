@@ -114,6 +114,13 @@ type SplitArrayType<s extends string> = s extends `${infer leaf}[${infer tail}`
   ? [leaf, ArraySizes<`[${tail}`>]
   : [s, []];
 
+/** The size group of `s`'s OUTERMOST suffix, as written: `'uint256[2][3]'` → `'3'`,
+ *  `'tuple[2][]'` → `''` (dynamic); a suffix-less or malformed string → `null`. Forward parsing of
+ *  a concrete string (overload resolution's fixed-length check compares it against a literal
+ *  array's `` `${length}` ``, so no number parsing is involved). */
+export type OuterArraySize<s extends string> =
+  SplitArrayType<s> extends [string, [...string[], infer last extends string]] ? last : null;
+
 /**
  * The OUTERMOST suffix (`[]` or `[N]`) peeled off a type string, at any depth: `'uint256[][]'` →
  * `'uint256[]'`, `'address[3]'` → `'address'`, `'uint256[][2]'` → `'uint256[]'`, `'tuple[2][]'` →

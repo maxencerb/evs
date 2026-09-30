@@ -253,22 +253,32 @@ void balances;
 
 The rules, applied identically by the types and at recording:
 
-- **Arity first**, then each argument: a handle (`Expr`, `Tuple`, `MutArray`) must carry the
-  parameter's type (a `Tuple` handle is matched by its member names at the type level); a literal
-  only needs the right **JS kind** — `number`/`bigint` for every `uintN`/`intN`, a `0x…` string for
-  `address`/`bytesN`/`bytes`, any string for `string`, a boolean for `bool`, an array or a
-  name-keyed object for arrays and structs. Value ranges and byte lengths are not considered, so
-  `1n` fits both `uint8` and `uint256`.
+- **Arity first**: when a single overload takes that many arguments, it is chosen and the
+  arguments are then checked against it as for any call. Otherwise each argument must fit:
+  - a handle (`Expr`, `Tuple`, `MutArray`) must carry **exactly** the parameter's type: a
+    `MutArray` from `s.newArray(t.uint256, n)` is a `uint256[]` (not an `address[]`, nor a struct
+    array), one from `s.newArray(t.uint256, 2, { fixed: true })` a `uint256[2]`, and a struct
+    handle must have the same members with the same types (the types compare a struct's members by
+    name, since a `t.struct`'s key order is not visible to them; the recorder also checks the order);
+  - a literal only needs the right **JS kind**: `number`/`bigint` for every `uintN`/`intN`, a `0x…`
+    string for `address`/`bytesN`/`bytes`, any string for `string`, a boolean for `bool`, a
+    name-keyed object for a struct (an array for an unnamed tuple), and an array for an array type,
+    whose elements (literals or handles, e.g. `[x, 2n]`) must fit the element type, at any depth. A
+    fixed-size `T[N]` takes exactly N elements, so `[1n, 2n, 3n]` fits `uint256[]` but not
+    `uint256[2]`, and `5n` fits `uint256` but not `uint256[2]`. Value ranges and byte lengths are
+    not considered, so `1n` fits both `uint8` and `uint256`.
 - **Exactly one** overload must fit. Arguments that fit several are a compile error
   (`'evs: ambiguous overload'`) and, when types are bypassed, an `EvsTypeError` with code
-  `ABI_SHAPE` at recording naming the candidates; arguments that fit none are a `TYPE_MISMATCH`.
+  `ABI_SHAPE` at recording naming the candidates; arguments that fit none are a compile error too
+  (`'evs: no overload matches'`) and a `TYPE_MISMATCH` at recording.
 - To settle an ambiguity, **type the literal** (`s.lit(t.uint8, 18)`) or pass the overload's
   **canonical signature** as `functionName`: the name, then the parameter types without names or
   spaces, tuples written as their component list — `'price(uint8)'`,
   `'submit((uint256,address)[])'`. A signature selects exactly that entry (argument-based
   resolution is skipped), is offered in the `functionName` autocomplete, and works for
-  non-overloaded functions too. Spaces are tolerated at recording, but the typed result needs the
-  exact canonical spelling.
+  non-overloaded functions too. With an `as const` ABI the signature must be spelled exactly in
+  canonical form: `'price(uint8, address)'` (with a space) is a compile error. Only the recorder
+  tolerates spaces, i.e. with a non-`const` ABI or when the types are bypassed.
 
 `t.fromOutputs(abi, name)` has no arguments to resolve by, so for an overloaded function it takes
 the signature (`t.fromOutputs(vaultAbi, 'price(uint8)')`).

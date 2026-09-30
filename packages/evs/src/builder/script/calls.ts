@@ -15,10 +15,19 @@ import type {
   TupleType,
   AbiParamsToComponents,
   IntoExpr,
+  OuterArraySize,
+  PeelArraySuffix,
 } from '../../core/types.js';
-import type { Expr } from '../../core/types/expr.js';
+import type { Expr, exprBrand } from '../../core/types/expr.js';
 import type { ArgHandle } from './evscript.js';
-import type { AnyTuple, AnyMutArray, TupleArrayTag, Tuple } from './handles.js';
+import type {
+  AnyTuple,
+  AnyMutArray,
+  TupleArrayTag,
+  Tuple,
+  mutArrayBrand,
+  tupleBrand,
+} from './handles.js';
 
 // ---------------------------------------------------------------------------
 // calls
@@ -86,11 +95,12 @@ type IsUnion<u, all = u> = u extends unknown ? ([all] extends [u] ? false : true
 
 /**
  * Overload resolution by argument types (issue #4 — the `ExtractAbiFunctionForArgs` approach viem
- * ships, as a distributive filter instead of viem's `UnionToTuple`): among the overloads `name`
- * selects, keep those whose inputs accept `args` under the {@link LooseInput} rules — the SAME
- * rules the recorder's runtime resolution applies, so the statically chosen overload is the one
- * recorded. A single (non-overloaded) entry is returned as is. `args = readonly unknown[]` (the
- * default: no args known) keeps every overload.
+ * ships, as a distributive filter instead of viem's `UnionToTuple`). The type-level twin of
+ * `Recorder.resolveOverload` (builder/expr/calls.ts), step for step: among the overloads `name`
+ * selects, keep those of the args' arity; a single arity match is taken as is (the regular input
+ * checks then report a mismatch, like the recorder's coercion); otherwise keep the overloads every
+ * argument {@link FitsArg fits}. A single (non-overloaded) entry is returned as is. `args =
+ * readonly unknown[]` (the default: no args known) keeps every overload.
  */
 export type ResolveOverload<
   abi extends Abi | readonly unknown[],
@@ -103,75 +113,220 @@ export type ResolveOverload<
       ? readonly unknown[] extends args
         ? fns
         : // no `args` given (still the constraint union) → the zero-argument overload, like viem
-          PickOverload<fns, readonly [] extends args ? readonly [] : args>
+          ResolveByArgs<fns, readonly [] extends args ? readonly [] : args>
       : fns
     : never;
+
+/** Arity first; a lone arity match wins without looking at the args (the recorder's rule). */
+type ResolveByArgs<fns, args> = args extends { readonly length: infer n }
+  ? ByArity<fns, n> extends infer arity
+    ? true extends IsUnion<arity>
+      ? PickOverload<arity, args>
+      : arity
+    : never
+  : never;
+
+type ByArity<f, n> = f extends { readonly inputs: { readonly length: n } } ? f : never;
 
 type PickOverload<f, args> = f extends {
   readonly inputs: infer inputs extends readonly AbiParameter[];
 }
-  ? args extends LooseInputs<inputs>
+  ? [
+      {
+        [i in keyof inputs]: NoFit<
+          FitsArg<args[i & keyof args], inputs[i]['type'], ComponentsOf<inputs[i]>>
+        >;
+      }[number],
+    ] extends [never]
     ? f
     : never
   : never;
 
-type LooseInputs<inputs extends readonly AbiParameter[]> = {
-  readonly [i in keyof inputs]: LooseInput<inputs[i]>;
-};
+/** `'no'` for a definite misfit, `never` for a fit (`true`) or a maybe-fit (`boolean`, a union
+ *  argument some member of which fits) — so `[results] extends [never]` reads "all fit". */
+type NoFit<r> = true extends r ? never : 'no';
 
-/** A literal's JS kind per ABI type — what overload resolution matches on (value ranges and byte
- *  lengths are NOT considered: `5n` fits every `uintN`/`intN`). Mirrored by `Recorder.argFits`. */
-type LooseLiteral<t extends string> = t extends `${infer e}[]`
-  ? readonly LooseLiteral<e>[]
-  : t extends 'bool'
-    ? boolean
-    : t extends 'string'
-      ? string
-      : t extends 'address' | `bytes${string}`
-        ? `0x${string}`
-        : t extends `int${string}` | `uint${string}`
-          ? number | bigint
-          : never;
+type ComponentsOf<p> = p extends { readonly components: infer c extends readonly AbiParameter[] }
+  ? c
+  : readonly [];
 
-/** A tuple literal under the loose rules: a positional array (every component unnamed) or a
- *  name-keyed record, each member loose-matched (handles of the exact member type included). */
-type LooseStruct<comps extends readonly AbiParameter[]> = [
-  Exclude<comps[number]['name'], '' | undefined>,
+/**
+ * Whether the argument `v` can stand for a value of the ABI type `ty` (+ `comps` for a tuple tag)
+ * — the type-level twin of `Recorder.argFits` (builder/expr/calls.ts); the two must stay in
+ * lockstep (see CONTRIBUTING.md). A handle (`Expr`, `MutArray`, `Tuple`) fits iff it carries
+ * exactly that type ({@link SameType}); a literal fits by JS kind: an array type ← an array whose
+ * elements all fit (a fixed `T[N]` ← exactly N of them), a `tuple` ← a record keyed by member
+ * name (a positional array/record for an unnamed tuple) whose members all fit, bool ← boolean,
+ * (u)intN ← number | bigint, address/bytesN/bytes ← a `0x` string, string ← any string. Value
+ * ranges and byte lengths are NOT considered (`5n` fits every `uintN`).
+ */
+type FitsArg<v, ty extends string, comps> = 0 extends 1 & v
+  ? true // `any`
+  : v extends { readonly [exprBrand]: infer x }
+    ? SameType<x, ty, comps>
+    : v extends { readonly [mutArrayBrand]: infer x }
+      ? SameType<x, ty, comps>
+      : v extends { readonly [tupleBrand]: unknown; expr(): Expr<infer x> }
+        ? SameType<x, ty, comps>
+        : ty extends 'tuple'
+          ? FitsStruct<v, comps>
+          : ty extends `${string}]`
+            ? FitsArray<v, ty, comps>
+            : FitsScalar<v, ty>;
+
+type FitsScalar<v, ty extends string> = ty extends 'bool'
+  ? v extends boolean
+    ? true
+    : false
+  : ty extends 'string'
+    ? v extends string
+      ? true
+      : false
+    : ty extends 'address' | `bytes${string}`
+      ? v extends `0x${string}`
+        ? true
+        : false
+      : ty extends `int${string}` | `uint${string}`
+        ? v extends number | bigint
+          ? true
+          : false
+        : false;
+
+/** An array literal: every element fits the one-suffix-peeled element type, and a fixed `[N]`
+ *  outer suffix needs exactly N elements (an array of statically unknown length may fit). */
+type FitsArray<v, ty extends string, comps> = v extends readonly unknown[]
+  ? OuterArraySize<ty> extends infer size
+    ? size extends ''
+      ? AllElemsFit<v, PeelArraySuffix<ty>, comps>
+      : number extends v['length']
+        ? AllElemsFit<v, PeelArraySuffix<ty>, comps>
+        : `${v['length']}` extends size
+          ? AllElemsFit<v, PeelArraySuffix<ty>, comps>
+          : false
+    : false
+  : false;
+
+type AllElemsFit<v extends readonly unknown[], elem extends string, comps> = [
+  { [k in keyof v]: NoFit<FitsArg<v[k], elem, comps>> }[number],
 ] extends [never]
-  ? { readonly [i in keyof comps]: LooseInput<comps[i]> }
-  : { readonly [c in comps[number] as c['name'] & string]: LooseInput<c> };
+  ? true
+  : false;
 
-/** What one argument must be for an overload to stay a candidate: a handle of the input's type, or
- *  a literal of the right JS kind ({@link LooseLiteral}). */
-type LooseInput<p extends AbiParameter> = p extends {
-  readonly type: 'tuple';
-  readonly components: infer comps extends readonly AbiParameter[];
-}
-  ? // a Tuple handle is matched by its member NAMES only: `t.struct`'s component order is not
-    // recoverable at the type level (the brand is order-erased, see `Tuple`); the recorder then
-    // checks the exact type
-    | (AnyTuple & { readonly [c in comps[number] as c['name'] & string]: unknown })
-    | Expr<ParamToTupleType<p>>
-    | LooseStruct<comps>
-  : p extends {
-        readonly type: 'tuple[]';
-        readonly components: infer comps extends readonly AbiParameter[];
-      }
-    ? Expr<ParamToTupleArrayType<p>> | AnyMutArray | readonly LooseStruct<comps>[]
-    : Expr<p['type'] extends EvsType ? p['type'] : never> | LooseLiteral<p['type']>;
+/** A tuple literal: a positional array/record for an unnamed tuple, else a (non-array) record
+ *  keyed by member name; every member present and fitting. */
+type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
+  ? v extends object
+    ? [Exclude<comps[number]['name'], '' | undefined>] extends [never]
+      ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
+        ? true
+        : false
+      : v extends readonly unknown[]
+        ? false
+        : [
+              { [i in keyof comps]: NoFit<MemberFits<v, NameOf<comps[i]>, comps[i]>> }[number],
+            ] extends [never]
+          ? true
+          : false
+    : false
+  : false;
 
-/** @internal compile-time mirror of the recorder's ambiguous-overload error: `args` fitting
- *  several overloads turns into a missing-property error naming the fix. */
+type NameOf<c> = c extends { readonly name: infer n extends string } ? n : '';
+
+/** The member `key` of the literal `v` is present and fits the component `c`. */
+type MemberFits<v, key, c> = key extends keyof v
+  ? c extends AbiParameter
+    ? FitsArg<v[key], c['type'], ComponentsOf<c>>
+    : false
+  : false;
+
+/**
+ * Whether a handle's type `x` (a type string or a tuple descriptor) is exactly the ABI type
+ * (`ty`, `comps`) — the runtime `typesEqual`. Non-distributive: a loosely typed `Expr<EvsType>`
+ * fits nothing. One deliberate difference: NAMED tuple components are compared by name, not by
+ * position — a `t.struct`'s component order is not recoverable at the type level (see
+ * `StructTypeOf`), so a same-members struct in another order fits here and the recorder, which
+ * compares positions, then rejects it loudly (never a silently different overload).
+ */
+type SameType<x, ty extends string, comps> = [x] extends [string]
+  ? Exact<x, ty>
+  : [x] extends [{ readonly type: infer xt; readonly components: infer xc }]
+    ? Exact<xt, ty> extends true
+      ? SameComps<xc, comps>
+      : false
+    : false;
+
+type Exact<a, b> = [a] extends [b] ? ([b] extends [a] ? true : false) : false;
+
+// Named components are compared as a SET through `xc[number]`: a `t.struct` descriptor's
+// `components` is a mapped object over its `UnionToTuple` keys, not a real tuple (no usable
+// `length`). Positional components (`t.tuple`, an ABI-derived type) are compared index by index.
+type SameComps<xc, pc> = pc extends readonly AbiParameter[]
+  ? [Exclude<pc[number]['name'], '' | undefined>] extends [never]
+    ? xc extends readonly unknown[]
+      ? Exact<xc['length'], pc['length']> extends true
+        ? [
+            {
+              [i in keyof pc]: NoFit<i extends keyof xc ? SameComp<xc[i], pc[i]> : false>;
+            }[number],
+          ] extends [never]
+          ? true
+          : false
+        : false
+      : false
+    : xc extends { readonly [i: number]: infer xm }
+      ? [Exclude<NameOf<xm>, NameOf<pc[number]>>] extends [never] // no extra member
+        ? [
+            {
+              [i in keyof pc]: NoFit<
+                SameComp<Extract<xm, { readonly name: NameOf<pc[i]> }>, pc[i]>
+              >;
+            }[number],
+          ] extends [never]
+          ? true
+          : false
+        : false
+      : false
+  : false;
+
+type SameComp<xm, pm> = [xm] extends [never]
+  ? false // no member of that name
+  : [xm] extends [{ readonly type: infer xt extends string }]
+    ? pm extends { readonly type: infer pt extends string }
+      ? Exact<xt, pt> extends true
+        ? Exact<NameOf<xm>, NameOf<pm>> extends true
+          ? pt extends `tuple${string}`
+            ? SameComps<
+                xm extends { readonly components: infer c } ? c : readonly [],
+                ComponentsOf<pm>
+              >
+            : true
+          : false
+        : false
+      : false
+    : false;
+
+/** @internal compile-time mirror of the recorder's overload errors: `args` fitting several
+ *  overloads turns into a missing-property error naming the fix (the recorder's `ABI_SHAPE`
+ *  ambiguity); `args` fitting none of several same-arity overloads, likewise (its
+ *  `TYPE_MISMATCH`). */
 type OverloadGuard<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability,
   args,
 > =
-  true extends IsUnion<ResolveOverload<abi, name, mut, args>>
-    ? {
-        readonly 'evs: ambiguous overload': 'these args fit several overloads — pass typed values (s.lit(t.uint8, 1)) or name one by signature (functionName: "get(uint8)")';
-      }
+  ResolveOverload<abi, name, mut, args> extends infer picked
+    ? true extends IsUnion<picked>
+      ? {
+          readonly 'evs: ambiguous overload': 'these args fit several overloads — pass typed values (s.lit(t.uint8, 1)) or name one by signature (functionName: "get(uint8)")';
+        }
+      : [picked] extends [never]
+        ? true extends IsUnion<FnOf<abi, name, mut>>
+          ? {
+              readonly 'evs: no overload matches': 'these args fit none of the overloads of this arity — a handle must carry the parameter type exactly (s.lit(t.uint8, 1)), a T[N] literal needs exactly N elements; or name one by signature (functionName: "get(uint8)")';
+            }
+          : unknown
+        : unknown
     : unknown;
 
 /** An abitype `AbiParameter` for a `'tuple'` member → the matching {@link TupleType} descriptor. */

@@ -32,6 +32,7 @@ export type {
   PeelArraySuffix,
   ArrayElemOf,
   FixedLengthOf,
+  OuterArraySize,
   ArgType,
   NumericType,
   BitsType,

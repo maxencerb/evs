@@ -20,6 +20,7 @@ import {
   isTupleType,
   isArrayValueType,
   elemTypeOf,
+  fixedLengthOf,
   isNumeric,
   type TupleType,
 } from '../../core/types.js';
@@ -297,9 +298,11 @@ export abstract class RecorderCalls extends RecorderControl {
    * Whether `v` can stand for a value of `type` in overload resolution (never records anything).
    * A handle (Expr / Tuple / MutArray) fits iff its type equals `type`; a Cell/Field never fits.
    * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
-   * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit; a tuple
-   * ← a record keyed by member name (a positional array/record for an unnamed tuple) whose
-   * members all fit. Mirrored at the type level by `LooseInput` (builder/script/calls.ts).
+   * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit (a
+   * fixed `T[N]` ← exactly N of them); a tuple ← a record keyed by member name (a positional
+   * array/record for an unnamed tuple) whose members all fit. The type-level twin is `FitsArg`
+   * (builder/script/calls.ts) — keep the two in lockstep (the overload-lockstep tests pin every
+   * shape on both sides).
    */
   private argFits(v: unknown, type: EvsType): boolean {
     if (typeof v === 'object' && v !== null) {
@@ -323,6 +326,9 @@ export abstract class RecorderCalls extends RecorderControl {
     }
     if (isArrayValueType(type)) {
       if (!Array.isArray(v)) return false;
+      // a fixed `T[N]` takes exactly N elements (the coercion would reject any other length)
+      const fixed = fixedLengthOf(type);
+      if (fixed !== null && v.length !== fixed) return false;
       const elem = elemTypeOf(type);
       return v.every((el: unknown) => this.argFits(el, elem));
     }

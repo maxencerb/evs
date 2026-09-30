@@ -194,10 +194,17 @@ Releases: see [Releasing](#releasing) below.
 - **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
   `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
   exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`
-  (`builder/expr/calls.ts`) at run time and `ResolveOverload` / `LooseInput`
-  (`builder/script/calls.ts`) at the type level — arity, then exact handle types, then the
-  literal's JS kind (never its value), with several fits an ambiguity. A `functionName` containing `(` is a canonical signature
-  (`core/signature.ts`) and skips resolution.
+  (`builder/expr/calls.ts`) at run time and `ResolveOverload` / `FitsArg`
+  (`builder/script/calls.ts`) at the type level — arity (a lone arity match wins without
+  looking at the args), then per argument: a handle (`Expr`, `MutArray`, `Tuple`) of exactly the
+  parameter's type, or a literal of the right JS kind (never its value) — an array literal needs
+  fitting elements and, for a fixed `T[N]`, exactly N of them; several fits are an ambiguity, none
+  a mismatch (both also compile errors). The one intended difference: the types compare a named
+  struct's members by name, not position (a `t.struct`'s order is not visible to them). Any rule
+  change goes to both sides plus a case in the shared matrix
+  (`packages/evs/test/harness/overload-matrix.ts`), which `overload-lockstep.test-d.ts` and
+  `overload-lockstep.test.ts` assert on the types and the recorder respectively. A `functionName`
+  containing `(` is a canonical signature (`core/signature.ts`) and skips resolution.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.

@@ -27,6 +27,7 @@ export type {
   ThrowArgs,
   ArgHandle,
   ArgHandles,
+  LabelCarrier,
 } from './script/evscript.js';
 export type {
   Cell,
@@ -42,6 +43,7 @@ export type {
   Tuple,
   TupleArrayElem,
   TupleArrayElemHandle,
+  TupleArrayTag,
   tupleBrand,
   AnyTuple,
   mutArrayBrand,
