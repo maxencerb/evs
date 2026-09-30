@@ -13,12 +13,13 @@ import {
   type Abi,
   type Address,
   type Hex,
+  type TransactionReceipt,
   type WalletClient,
 } from 'viem';
 import { privateKeyToAccount } from 'viem/accounts';
 import { foundry } from 'viem/chains';
 
-import { publicClient, rpcUrl } from '../harness/anvil.js';
+import { publicClient, rpcUrl, testClient } from '../harness/anvil.js';
 
 /** anvil's well-known funded account #0 (mnemonic `test test … junk`). */
 export const DEPLOYER_KEY: Hex =
@@ -75,67 +76,113 @@ export async function write(params: WriteParams): Promise<void> {
   await publicClient.waitForTransactionReceipt({ hash });
 }
 
+/** How many transactions / receipt lookups a batch helper keeps in flight at once. */
+const BATCH_CONCURRENCY = 16;
+
+/** Maps `items` through `task` with at most {@link BATCH_CONCURRENCY} in flight, keeping order. */
+async function inChunks<T, R>(
+  items: readonly T[],
+  task: (item: T, index: number) => Promise<R>,
+): Promise<R[]> {
+  const out: R[] = [];
+  for (let start = 0; start < items.length; start += BATCH_CONCURRENCY) {
+    const chunk = items.slice(start, start + BATCH_CONCURRENCY);
+    out.push(...(await Promise.all(chunk.map((item, k) => task(item, start + k)))));
+  }
+  return out;
+}
+
 /**
- * Bulk variant of `deploy` for large fixture corpora: every transaction is sent at once
- * with an explicit nonce and gas limit (so viem skips the per-tx nonce fetch and gas
- * estimate), then all receipts are awaited together. anvil automines in nonce order, so N
- * deployments cost one round trip of sends plus one of receipts instead of 2N sequential
- * ones — on a loaded CI runner the sequential form ran into the test timeout.
+ * Sends one transaction per item from the deployer (`send(item, nonce)`, explicit nonce and gas so viem
+ * skips the per-tx nonce fetch and gas estimate) and returns their receipts in order.
+ *
+ * Automine is switched OFF for the batch: every transaction lands in the pool first, then
+ * `evm_mine` is called until the deployer's nonce has caught up. With automine on, anvil mines
+ * each transaction as it arrives, and concurrent sends reach it out of nonce order; a transaction
+ * whose predecessor is mid-block when it arrives gets parked as "queued" (future nonce) and is
+ * never promoted once that block lands. Nothing else is sent, so its receipt never comes and the
+ * `beforeAll` hook hangs until the 30 s hook timeout (the flagship CI flake). Mining explicitly
+ * after all sends are in keeps the single round trip of sends (bounded to
+ * {@link BATCH_CONCURRENCY} in flight, so one worker never floods the shared prool proxy) without
+ * any mining racing the submissions. The mining loop is bounded, so a transaction that cannot be
+ * included fails loudly instead of hanging.
+ */
+async function sendBatch<T>(
+  items: readonly T[],
+  send: (item: T, nonce: number) => Promise<Hex>,
+): Promise<TransactionReceipt[]> {
+  const count = items.length;
+  if (count === 0) return [];
+  const first = await publicClient.getTransactionCount({
+    address: deployer.address,
+    blockTag: 'pending',
+  });
+  await testClient.setAutomine(false);
+  let hashes: Hex[];
+  try {
+    hashes = await inChunks(items, (item, i) => send(item, first + i));
+    // Blocks fill by gas limit, so a large batch can take a few blocks; every mined block
+    // includes at least one of ours, so `count` blocks is a hard upper bound.
+    for (let mined = 0; ; mined++) {
+      await testClient.mine({ blocks: 1 });
+      const next = await publicClient.getTransactionCount({
+        address: deployer.address,
+        blockTag: 'latest',
+      });
+      if (next >= first + count) break;
+      if (mined >= count) {
+        throw new Error(`sendBatch: ${first + count - next} of ${count} transactions not mined`);
+      }
+    }
+  } finally {
+    await testClient.setAutomine(true);
+  }
+  return inChunks(hashes, (hash) => publicClient.getTransactionReceipt({ hash }));
+}
+
+/**
+ * Bulk variant of `deploy` for large fixture corpora: one batch of sends and a few explicit
+ * `evm_mine`s instead of 2N sequential round trips (on a loaded CI runner the sequential form ran
+ * into the test timeout). See {@link sendBatch} for why automine is off during the batch.
  */
 export async function deployMany(
   specs: readonly { abi: Abi; bytecode: Hex; args?: readonly unknown[] }[],
   gas = 3_000_000n,
 ): Promise<Address[]> {
-  const nonce = await publicClient.getTransactionCount({
-    address: deployer.address,
-    blockTag: 'pending',
-  });
-  const hashes = await Promise.all(
-    specs.map((spec, i) =>
-      walletClient.deployContract({
-        abi: spec.abi,
-        bytecode: spec.bytecode,
-        args: spec.args ?? [],
-        account: deployer,
-        chain: foundry,
-        nonce: nonce + i,
-        gas,
-      }),
-    ),
+  const receipts = await sendBatch(specs, (spec, nonce) =>
+    walletClient.deployContract({
+      abi: spec.abi,
+      bytecode: spec.bytecode,
+      args: spec.args ?? [],
+      account: deployer,
+      chain: foundry,
+      nonce,
+      gas,
+    }),
   );
-  const receipts = await Promise.all(
-    hashes.map((hash) => publicClient.waitForTransactionReceipt({ hash })),
-  );
-  return receipts.map((receipt, i) => {
+  return receipts.map((receipt) => {
     const address = receipt.contractAddress;
     if (address === null || address === undefined) {
-      throw new Error(`deployMany: no contractAddress in receipt for ${hashes[i]}`);
+      throw new Error(`deployMany: no contractAddress in receipt for ${receipt.transactionHash}`);
     }
     return getAddress(address);
   });
 }
 
-/** Bulk variant of `write`: same explicit-nonce fan-out as {@link deployMany}. */
+/** Bulk variant of `write`: same batched, explicitly mined send as {@link deployMany}. */
 export async function writeMany(calls: readonly WriteParams[], gas = 500_000n): Promise<void> {
-  const nonce = await publicClient.getTransactionCount({
-    address: deployer.address,
-    blockTag: 'pending',
-  });
-  const hashes = await Promise.all(
-    calls.map((call, i) =>
-      walletClient.writeContract({
-        address: call.address,
-        abi: call.abi,
-        functionName: call.functionName,
-        args: call.args,
-        account: deployer,
-        chain: foundry,
-        nonce: nonce + i,
-        gas,
-      }),
-    ),
+  await sendBatch(calls, (call, nonce) =>
+    walletClient.writeContract({
+      address: call.address,
+      abi: call.abi,
+      functionName: call.functionName,
+      args: call.args,
+      account: deployer,
+      chain: foundry,
+      nonce,
+      gas,
+    }),
   );
-  await Promise.all(hashes.map((hash) => publicClient.waitForTransactionReceipt({ hash })));
 }
 
 /**
