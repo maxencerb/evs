@@ -120,8 +120,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   published version via npm **OIDC trusted publishing** (filename must stay `release.yml`).
   Publishing is `changeset publish` → `pnpm publish` (pnpm ≥ 11 publishes natively, does the
   OIDC exchange itself and rewrites `catalog:`/`workspace:` specs) → git tag via
-  `CHANGESETS_OUTPUT`, then a step fails the job if npm shows no provenance attestation. pnpm
+  `CHANGESETS_OUTPUT` (no post-publish provenance check: it only ever failed on registry lag). pnpm
   attaches provenance automatically under OIDC for a public repo + public package and ignores
   `publishConfig.provenance` (kept `true` for npm); if the repo ever goes private, set it to
-  false and drop the provenance check step.
+  false.
 - Docs site CI/deploy is owned by Cloudflare Workers Builds (see Layout), not GitHub Actions.
