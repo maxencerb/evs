@@ -3,7 +3,7 @@ title: Writing scripts
 description: Structure of an evs script — the evscript entry point, the builder callback, reading args, returning values, and the two-timeline model.
 ---
 
-An evs script is an ordinary TypeScript value. You build one with `evscript`, giving it a header — `{ name, args }` — and a builder callback that records what the script does. Compiling it produces EVM runtime bytecode plus a literal-typed ABI; executing it is a single `eth_call`.
+An evs script is an ordinary TypeScript value. You build one with `evscript`, giving it a header — `{ name, args }`, plus optional declared `errors` — and a builder callback that records what the script does. Compiling it produces EVM runtime bytecode plus a literal-typed ABI; executing it is a single `eth_call`.
 
 ## Anatomy of a script
 
@@ -34,11 +34,11 @@ const compiled = tokenMeta.compile(); // bytecode + literal-typed ABI, ready for
 
 Three parts matter:
 
-- The **header** `{ name, args }` declares the script's ABI surface. `name` becomes the function name you pass to viem's `readContract`; `args` is an ordered list of `t.*` types (a lone type or a `readonly` list). It is optional — a zero-arg script omits it.
+- The **header** `{ name, args }` declares the script's ABI surface (an optional `errors: [...]` adds [custom errors](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow) for `s.throw`). `name` becomes the function name you pass to viem's `readContract`; `args` is an ordered list of `t.*` types (a lone type or a `readonly` list). It is optional — a zero-arg script omits it.
 - The **builder callback** receives `s` (a `ScriptBuilder`) followed by one positional handle per declared argument. It runs exactly once, on your machine — never on-chain.
 - The callback **must return `s.return(...)`**; the record you pass defines the script's outputs.
 
-`evscript` returns an `EvsScript` value with four members: `name`, `ir` (frozen, JSON-serializable), `abi` (the literal-typed ABI — it exists before you compile), and `compile(options?)`, which is sugar for the standalone `compile(script, options?)`. Exact signatures are in the [evscript reference](/reference/evscript/).
+`evscript` returns an `EvsScript` value with five members: `name`, `ir` (frozen, JSON-serializable), `abi` (the literal-typed ABI — it exists before you compile), `errors` (the declared `t.error` values, `[]` when none), and `compile(options?)`, which is sugar for the standalone `compile(script, options?)`. Exact signatures are in the [evscript reference](/reference/evscript/).
 
 `evscript` uses `const` type parameters, so you never write `as const` on the header or the return record — inference is literal by default.
 
@@ -46,7 +46,7 @@ Three parts matter:
 
 - `name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
 - `args` is a single `t.*` type or a `readonly` list of them (a lone type is sugar for a one-element list). It is optional. Declaration order is binding: it is the type-level order, the runtime encode order, and the ABI `inputs` order all at once. Call sites stay positional, viem style — `args: [token, owner]`. Each arg is auto-named `arg{i}` in the ABI (positional labels; viem infers `args` positionally).
-- Valid argument types: any word type, `string`, `bytes`, an array (including `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]`), or a struct/tuple (`t.struct`/`t.tuple`). Still-unsupported shapes — two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed `T[N]` — throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
+- Valid argument types: any word type, `string`, `bytes`, an array (including `tuple[]`, one-level `T[][]` of a word element such as `uint256[][]`, and `string[]`/`bytes[]`), or a struct/tuple (`t.struct`/`t.tuple`). Still-unsupported shapes — nested dynamic-leaf arrays (`string[][]`/`bytes[][]`, [#4](https://github.com/maxencerb/evs/issues/4)), two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed `T[N]` — throw a recording-time `EvsTypeError` (code `UNSUPPORTED_V0`). See [values and types](/guides/values-and-types/).
 - Header validation is immediate: invalid identifiers and unknown type shapes throw `EvsTypeError` before anything records.
 
 ## Reading arguments: positional params

@@ -10,20 +10,22 @@ narrative version (and the staging-misuse failure modes), see
 ## The t namespace
 
 ```ts
-import type { EvsType, StringType, TupleType } from '@maxencerb/evs';
+import type { ArgsInput, EvsErrorType, EvsType, StringType, TupleType } from '@maxencerb/evs';
 import type { Abi, AbiParameter } from 'viem';
 
 declare const t: { readonly [k in Exclude<StringType, `${string}[]`>]: k } & {
   array(elem: StringType | TupleType): StringType | TupleType;
   struct(spec: Record<string, EvsType>): TupleType;
   tuple(...items: readonly EvsType[]): TupleType;
+  error(name: string, params?: ArgsInput): EvsErrorType; // declare a custom error
   fromOutputs(abi: Abi, name: string): EvsType; // derive a type from a function's outputs
   fromAbiParameter(param: AbiParameter): EvsType; // derive a type from one ABI parameter
 };
 ```
 
 `t` is a frozen object whose every scalar property is its own literal type string — pure
-autocomplete sugar — plus three functions that build composite types. Raw type strings (and raw
+autocomplete sugar — plus six functions: three build composite types, `t.error` declares a
+custom error, and two derive a type from an ABI. Raw type strings (and raw
 `readonly AbiParameter[]` arrays, anywhere a tuple type is expected) are accepted everywhere
 `t.*` is.
 
@@ -36,9 +38,10 @@ autocomplete sugar — plus three functions that build composite types. Raw type
 | `t.bytes1` through `t.bytes32`   | `'bytes1'` … `'bytes32'`       | left-aligned fixed bytes, 32 keys                                           |
 | `t.string`                       | `'string'`                     | dynamic, UTF-8                                                              |
 | `t.bytes`                        | `'bytes'`                      | dynamic byte string                                                         |
-| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]`), or a `tuple[]` of a tuple element |
+| `t.array(elem)`                  | `` `${elem}[]` `` / `TupleType` | function: a dynamic array of a scalar/array element (`uint256[]`, `string[]`, `uint256[][]` — a nested array needs a word element; `string[][]`/`bytes[][]` are rejected), or a `tuple[]` of a tuple element |
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
+| `t.error(name, params?)`         | `EvsErrorType`                 | function: declare a custom error for a script's `errors: [...]` and `s.throw`; `params` takes the same shorthand as script args (bare types, `namedArg`, or a mixed list). Invalid, reserved (`Error`, `Panic`, the evs error names) or duplicate names throw `ERROR_DECL`. See [custom errors](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow) |
 | `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); overloaded/unknown name throws (a non-`const` ABI degrades to `EvsType`) |
 | `t.fromAbiParameter(param)`      | `EvsType`                      | function: derive a type from one ABI parameter (`AbiParamToEvsType`) — a `tuple…` param → a `TupleType`, else the type string |
 
@@ -104,12 +107,14 @@ type BitsType = UintType | BytesNType;
 | `WordType`    | Every type that fits one EVM word: unsigned and signed integers, `address`, `bool`, `bytesN`.|
 | `DynType`     | The dynamic byte-string types: `string` and `bytes`.                                         |
 | `ScalarType`  | `WordType` or `DynType` — every non-array, non-tuple type.                                   |
-| `ArrayType`   | String-encoded arrays of a scalar element, up to three `[]` deep — `uint256[]`, `address[][]`. |
+| `ArrayType`   | String-encoded arrays of a scalar element, up to three `[]` deep — `uint256[]`, `address[][]`. The alias admits `[][][]` and `string[][]` for typing, but recording rejects anything past `[][]` and a nested array of `string`/`bytes` (see [Composite types](#composite-types-tupletype)). |
 | `StringType`  | Every string-encoded type: a scalar or a string array.                                       |
 | `NamedType`   | One tuple/struct member — an abitype `AbiParameter`-shaped descriptor (recursive).           |
 | `TupleType`   | A struct/tuple type — `{ type, components }`. Built by `t.struct`/`t.tuple`; see [Composite types](#composite-types-tupletype). |
 | `EvsType`     | Every value type: word, dynamic, string array, or a `TupleType`.                              |
-| `ArgType`     | The script-argument value type — an alias for `EvsType` (word, dynamic, string array, or `TupleType`); types `ScriptIr.args` and `ArgSpec.type`. Named args/params are narrower (string-encoded only) — that bound lives on [`namedArg()`](/reference/evscript/#namedarg-and-argspec), not here. |
+| `ArgType`     | The script-argument value type — an alias for `EvsType` (word, dynamic, string array, or `TupleType`); types `ScriptIr.args` and `ArgSpec.type`. Named args and `s.fn` params accept the same types (see [`namedArg()`](/reference/evscript/#namedarg-and-argspec)). |
+| `EvsErrorType` | A declared custom error, built by `t.error`: `{ kind: 'error', name, params, abi }` (`params` normalized to `ArgSpec`s). |
+| `EvsErrorAbiEntry` | The literal `{ type: 'error', name, inputs }` ABI entry an `EvsErrorType` carries (its `abi` field), appended to the script ABI. |
 | `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
@@ -151,14 +156,17 @@ does — as a script arg (decoded into a [`Tuple` handle](/reference/builder/#st
 `s.tuple` — lives in [the builder reference](/reference/builder/#stuple).
 
 `t.array(Position)` lifts a struct to a `tuple[]` (a `TupleType` with `type: 'tuple[]'`). A
-composite-element array — `tuple[]`, a one-level nested array (`uint256[][]`), or a dynamic-leaf
+composite-element array — `tuple[]`, a one-level nested array of a word element (`uint256[][]`), or a dynamic-leaf
 array (`string[]`/`bytes[]`) — is an **array of pointers** in memory: the `[length]` prefix is
 followed by one pointer word per element, each pointing at the element's own block (a tuple
 block, an inner array, or a bytes block). It shares the word-array handle surface — `.length()`,
 `.at(i)`, `s.newArray` — and the same reference semantics; an `s.read` `tuple[]` output is an
 array handle whose `.at(i)` yields a typed [`Tuple`](/reference/builder/#tuple) element. The
 build/read/pass examples live in [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string).
-Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays
+A nested array needs a word element (`uint256[][]`, `address[][]`). Still rejected at recording
+(`UNSUPPORTED_V0`): nested dynamic-leaf arrays (`string[][]`/`bytes[][]` — not supported yet,
+tracked in [#4](https://github.com/maxencerb/evs/issues/4); the error message currently
+describes them as "nested deeper than `[][]`"), two-level tuple arrays (`tuple[][]`), arrays
 nested deeper than `[][]`, and fixed-size `T[N]`.
 
 Several type-level helpers are exported for advanced inference: `StructTypeOf`, `TupleTypeOf`,

@@ -41,7 +41,7 @@ Five subclasses partition the failures:
 | Class | Codes it uses | Thrown when |
 | --- | --- | --- |
 | `EvsStagingError` | `STAGING_MISUSE` | A staged `Expr` handle is used as a host value — the `valueOf`, `Symbol.toPrimitive`, `toString`, and `toJSON` traps all throw. See [values and types](/guides/values-and-types/) |
-| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE` | Type and literal validation at recording; also malformed host inputs to `compile`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
+| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` | Type and literal validation at recording; also malformed host inputs to `compile`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
 | `EvsScopeError` | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` | A handle or cell is used outside the scope it belongs to |
 | `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION` | Whole-program limits and option gating at compile time |
 | `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report` |
@@ -72,8 +72,10 @@ try {
 | `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself | Recording |
 | `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
 | `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
-| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: two-level tuple arrays `tuple[][]`, arrays nested deeper than `[][]`, fixed-size arrays `T[N]`, overloaded callee functions (tuples, `tuple[]`, one-level `T[][]`, and `string[]`/`bytes[]` are supported) | Recording |
+| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: nested dynamic-leaf arrays `string[][]`/`bytes[][]` (not supported yet, [#4](https://github.com/maxencerb/evs/issues/4) — the message currently says "nested deeper than `[][]`"), two-level tuple arrays `tuple[][]`, arrays nested deeper than `[][]`, fixed-size arrays `T[N]`, overloaded callee functions (tuples, `tuple[]`, one-level `T[][]` over a word element such as `uint256[][]`, and `string[]`/`bytes[]` are supported) | Recording |
 | `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid struct field names, duplicate or invalid return component names, or a malformed ABI fragment passed to `s.read`. (An invalid script *name* given to `evscript()` is caught at the entry point as `TYPE_MISMATCH`.) | Recording |
+| `ERROR_DECL` | `EvsTypeError` | An invalid custom-error declaration: a bad `t.error(...)` name or params, a non-`t.error` entry in the def's `errors: [...]`, a reserved name (`Error`, `Panic`, or the evs error names), a duplicate name, or a 4-byte selector clash | Recording |
+| `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` names an error that is not in the script's declared `errors` (or is declared under the same name with different params) | Recording |
 | `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget | Compile / interpret |
 | `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |
 | `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script | Any |
@@ -119,7 +121,7 @@ loc.column; // number
 
 | Code | Triggers when | Why it matters |
 | --- | --- | --- |
-| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, `s.tuple(...)` (struct/tuple flat-block allocation), an `s.read`/`s.tryRead` with outputs (each call snapshots returndata), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
+| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, `s.tuple(...)` (struct/tuple flat-block allocation), a sub-call with outputs — `s.read`, `s.call`, `s.simulate` or their `try*` forms (each call snapshots returndata), `s.encode`/`s.encodePacked` and `s.keccak256` over values that need encoding (a fresh bytes memref), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
 | `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
 | `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')` | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/) |
 

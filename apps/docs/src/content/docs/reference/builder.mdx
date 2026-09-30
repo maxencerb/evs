@@ -91,7 +91,7 @@ newArray<const e extends EvsType>(elem: e, length: IntoExpr<'uint256'>): MutArra
 ```
 
 Allocates a zero-filled mutable array with a runtime (or literal) length. `elem` may be a word
-type, `string`/`bytes`, a one-level array (`uint256[]`), or a struct/tuple (`tuple`) — the
+type, `string`/`bytes`, a one-level array of a word element (`uint256[]`, not `string[]`/`bytes[]`), or a struct/tuple (`tuple`) — the
 resulting array is then a `tuple[]`; a `tuple[]` *element* is rejected (`UNSUPPORTED_V0`). This is
 the building block for "loop over inputs, collect outputs" — the multicall replacement pattern
 (see [token balances](/examples/token-balances/)).
@@ -422,11 +422,12 @@ read<const abi extends Abi | readonly unknown[], name extends ContractFunctionNa
   readonly args?: SubcallInputs; // per parameter: ABI primitive/Expr; a tuple param: Tuple/s.tuple/literal object
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   readonly struct?: boolean; // opt-in: fuse multiple named outputs into ONE named Tuple (ABI order)
-}): CallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple (or one Tuple with struct:true)
+}): SubcallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple (or one Tuple with struct:true)
 ```
 
 A `STATICCALL` to another contract, typed like viem's `readContract` (`SubcallInputs` and
-`CallOutputs` stand in for package-internal helper types). The `address` can itself be an
+`SubcallOutputs` are exported helper types, generic over the ABI, function name and mutability;
+the excerpt elides their type arguments). The `address` can itself be an
 `Expr` — values flow between calls on-chain, which is the whole point. Key semantics
 (exhaustive treatment in [calls](/guides/calls/)):
 
@@ -478,13 +479,16 @@ const tokenInfo = evscript(
 ```ts nocheck
 tryRead<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'pure' | 'view'>>(
   p: SubcallParams, // identical to s.read
-): { readonly success: Expr<'bool'>; readonly value: CallOutputs };
+): { readonly success: Expr<'bool'>; readonly value: SubcallOutputs };
 ```
 
 Like `s.read`, but failure becomes data instead of a revert. `success` is `false` when the call
 fails **or** when the returndata is structurally malformed; `value` is then zeros, empty
 strings, empty arrays, or zero-filled tuples — always safe to use. (This is stricter than
-Solidity's `try/catch`, which would surface malformed returndata differently.)
+Solidity's `try/catch`, which would surface malformed returndata differently.) For a function
+with **no outputs**, a call to an address without code succeeds and `success` is `true` (for
+every `try*` verb) — there is nothing to decode, and evs adds no `extcodesize` check (see
+[calls](/guides/calls/#when-to-use-which)).
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -501,10 +505,10 @@ const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s,
 ```ts nocheck
 call<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'nonpayable' | 'payable'>>(
   p: SubcallParams, // identical to s.read, but functionName is filtered to nonpayable/payable
-): CallOutputs;
+): SubcallOutputs;
 call<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'nonpayable' | 'payable'>, const rr extends readonly EvsType[]>(
   p: SubcallParams & { readonly revertReturns: rr; readonly struct?: false },
-): CallOutputs; // typed from `rr`, NOT the ABI outputs: [] → void; [one] → Expr|Tuple; [many] → readonly tuple
+): SubcallOutputs; // typed from `rr`, NOT the ABI outputs: [] → void; [one] → Expr|Tuple; [many] → readonly tuple
 ```
 
 Identical encode/decode/verbatim-bubble path to [`s.read`](#sread), but emits a **`CALL` (value 0)**
@@ -515,7 +519,7 @@ same script (the same `eth_call` frame), though the `eth_call` result is still n
 on-chain. The target sees `msg.sender` = the **script's** address (frame-dependent — see
 [calls](/guides/calls/#mutable-calls-scall--strycall)), or a chosen address in
 [sender mode](/guides/execution/#sender-mode). `s.tryCall` is the `{ success, value }`
-variant.
+variant (with the same [no-outputs caveat](#stryread) as `s.tryRead`).
 
 **`revertReturns`** (the QuoterV1 pattern) — the output types carried by the target's **revert
 data**. When set it replaces the ABI outputs as the decode schema (the ABI's own outputs, if any,
@@ -588,7 +592,7 @@ const quote = evscript(
 ```ts nocheck
 simulate<const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, 'nonpayable' | 'payable'>>(
   p: SubcallParams, // identical to s.call
-): CallOutputs;
+): SubcallOutputs;
 ```
 
 Dry-runs a true write and reads back what it *would* return, then **rolls the write back** so it is
@@ -629,13 +633,13 @@ const previewDeposit = evscript(
 
 ```ts nocheck
 fn<
-  const params extends readonly ArgSpec[],
+  const params extends ArgsInput, // a bare type, a single namedArg, or a readonly list mixing both
   const r extends Expr | Tuple | MutArray | readonly (Expr | Tuple | MutArray)[] | void,
 >(
   name: string,
   params: params,
-  body: (...args: { [i in keyof params]: ArgHandle<params[i]['type']> }) => r,
-): (...args: { [i in keyof params]: IntoMember<params[i]['type']> }) => FreshHandles<r>;
+  body: (...args: FnArgHandles<NormalizeArgs<params>>) => r, // one ArgHandle per param
+): EvsFn<NormalizeArgs<params>, r>; // (...args: one IntoMember per param) => FreshHandles<r>
 ```
 
 Defines a reusable typed subroutine and returns a callable handle. A body may return a single
@@ -680,6 +684,43 @@ const pairBalances = evscript(
     });
   },
 );
+```
+
+## s.throw
+
+```ts nocheck
+throw<const e extends errs[number]>(error: e, ...args: ThrowArgs<e>): void;
+// errs: the script's declared errors (the def's `errors: [...]`)
+```
+
+Reverts with a declared custom error: `selector ‖ abi.encode(args)`, exactly Solidity's
+`revert NoBalance(...)` encoding. Only errors listed in the def's `errors` are accepted — any
+other `t.error` value is a TypeScript error (and `ERROR_UNDECLARED` at recording for untyped
+callers). `ThrowArgs<e>` (exported) shapes the arguments:
+
+- every param named (`namedArg`) → one required, name-keyed record;
+- any bare param → a positional tuple;
+- zero params → no argument.
+
+Arguments are `IntoExpr`/handle values like everywhere else; struct and array params work. A
+throw is usually conditional (inside `s.if`); recording continues after it, and statements
+recorded after an unconditional throw in the same block are dead. Errors thrown inside an
+`s.fn` body are checked against the same declared set. The declared errors are appended to the
+script ABI, so viem decodes them natively; see
+[errors and debugging](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow)
+for `matchScriptError`/`decodeScriptError` on the client.
+
+```ts
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const guard = evscript({ name: 'guard', args: [t.uint256], errors: [TooSmall] }, (s, x) => {
+  s.if(x.lt(10n), () => {
+    s.throw(TooSmall, { value: x });
+  });
+  return s.return({ x });
+});
 ```
 
 ## s.return
@@ -819,7 +860,7 @@ interface LoopCtl {
 }
 ```
 
-Passed to `s.while`/`s.for` bodies. Scoped: calling either method outside the recording of its
+Passed to `s.while`/`s.for`/`s.forEach` bodies. Scoped: calling either method outside the recording of its
 owning loop's body throws `EvsScopeError`.
 
 ## ScriptReturn
