@@ -5,7 +5,13 @@
  * and the end-to-end `evscript → compile → harness` smoke.
  */
 
-import { decodeFunctionResult, encodeErrorResult, encodeFunctionData, maxUint256 } from 'viem';
+import {
+  decodeFunctionResult,
+  encodeErrorResult,
+  encodeFunctionData,
+  maxUint256,
+  parseAbi,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
@@ -376,6 +382,24 @@ describe('EIP-170 enforcement', () => {
     expect(err.message).toMatch(/EIP-170 limit of 24576/);
     expect(err.message).toMatch(/dispatcher \d+, body \d+, fns \d+, tails \d+/);
     // the 25,056-byte data segment (+ INVALID guard) dominates the breakdown
+    expect(err.message).toMatch(/data segments 25\d{3}/);
+    expect(err.message).not.toMatch(/trampoline/); // no s.simulate → no trampoline bucket
+  });
+
+  test('the simulate trampoline gets its own bucket (not counted as body/fns)', () => {
+    const big = evscript({ name: 'bigSim', args: [t.address] }, (s, token) => {
+      const sim = s.simulate({
+        address: token,
+        abi: parseAbi(['function transfer(address,uint256) returns (bool)']),
+        functionName: 'transfer',
+        args: [token, 1n],
+      });
+      const blob = s.lit(t.bytes, `0x${'ab'.repeat(25_000)}`);
+      return s.return({ sim, blob });
+    });
+    const err = captureError(() => compile(big), EvsCompileError);
+    expect(err.code).toBe('COMPILE_LIMIT');
+    expect(err.message).toMatch(/dispatcher \d+, body \d+, fns 0, trampoline [1-9]\d*, tails \d+/);
     expect(err.message).toMatch(/data segments 25\d{3}/);
   });
 

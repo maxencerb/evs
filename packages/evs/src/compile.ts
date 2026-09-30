@@ -39,6 +39,8 @@ import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
 import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
+import { SIMULATE_TRAMPOLINE_LABEL } from './codegen/simulate.js';
+import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
 import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import {
   EvsCompileError,
@@ -292,20 +294,6 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
 // EIP-170 per-region breakdown
 // ---------------------------------------------------------------------------
 
-/** Shared-tail label names emitted by codegen/tails.ts. */
-const TAIL_LABEL_NAMES: ReadonlySet<string> = new Set([
-  'panic_overflow',
-  'panic_divzero',
-  'panic_bounds',
-  'panic_alloc',
-  'panic',
-  'badcd',
-  'decode_revert',
-  'memcpy',
-  'memcpy_loop',
-  'memcpy_done',
-]);
-
 function eip170Message(
   total: number,
   labelPcs: ReadonlyMap<LabelId, number>,
@@ -321,28 +309,34 @@ function eip170Message(
   };
 
   // program order: prologue+dispatcher · @main(arg decode + body + return encode) ·
-  // @fn_* subroutines · @dfail_* stubs + shared tails · INVALID guard + data segments
+  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
+  // tails · INVALID guard + data segments
   const mainPc = minPcWhere((n) => n === 'main') ?? 0;
   const fnPc = minPcWhere((n) => n.startsWith('fn_'));
-  const tailPc = minPcWhere((n) => n.startsWith('dfail_') || TAIL_LABEL_NAMES.has(n));
+  const trampolinePc = minPcWhere((n) => n === SIMULATE_TRAMPOLINE_LABEL);
+  const tailPc = minPcWhere((n) => n.startsWith('dfail_') || SHARED_TAIL_LABEL_NAMES.has(n));
   const firstDataPc = minPcWhere((n) => n.startsWith('data_'));
   const dataPc = firstDataPc === undefined ? undefined : firstDataPc - 1; // INVALID guard byte
 
   const dataStart = dataPc ?? total;
   const tailEnd = dataStart;
-  const fnEnd = tailPc ?? tailEnd;
+  const trampolineEnd = tailPc ?? tailEnd;
+  const fnEnd = trampolinePc ?? trampolineEnd;
   const bodyEnd = fnPc ?? fnEnd;
 
   const dispatcher = mainPc;
   const body = Math.max(bodyEnd - mainPc, 0);
   const fns = fnPc === undefined ? 0 : Math.max(fnEnd - fnPc, 0);
+  const trampoline =
+    trampolinePc === undefined ? '' : `trampoline ${Math.max(trampolineEnd - trampolinePc, 0)}, `;
   const tails = tailPc === undefined ? 0 : Math.max(tailEnd - tailPc, 0);
   const data = Math.max(total - dataStart, 0);
 
   return (
     `runtime bytecode is ${total} bytes — exceeds the EIP-170 limit of ${EIP170_LIMIT} by ` +
     `${total - EIP170_LIMIT} bytes (dispatcher ${dispatcher}, body ${body}, fns ${fns}, ` +
-    `tails ${tails}, data segments ${data}); split the script or move large literals off-chain`
+    `${trampoline}tails ${tails}, data segments ${data}); split the script or move large ` +
+    `literals off-chain`
   );
 }
 

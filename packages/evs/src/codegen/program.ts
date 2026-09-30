@@ -31,6 +31,7 @@ import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './
 import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
+  SIMULATE_TRAMPOLINE_LABEL,
   SIMULATE_TRAMPOLINE_SELECTOR,
   SIMULATE_TRAMPOLINE_SELECTOR_NUM,
 } from './simulate.js';
@@ -111,7 +112,7 @@ export function lowerProgram(
   };
   walkStmts(ir.body, markSimulate);
   for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
-  const trampoline = hasSimulate ? w.newLabel('simulate_trampoline') : null;
+  const trampoline = hasSimulate ? w.newLabel(SIMULATE_TRAMPOLINE_LABEL) : null;
 
   // -- dispatcher: size floor, selector match, fallback EvsInvalidCalldata --------
   // tuple args expand to their canonical `(t1,t2,…)` signature so the dispatcher selector is

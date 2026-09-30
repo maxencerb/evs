@@ -61,6 +61,9 @@ export const SIMULATE_MAGIC = 0xe7dc6cc8acb6dfffe16c5466c82c888cde4d25c3f822bd27
  */
 export const SIMULATE_PAYLOAD_OFFSET = 68;
 
+/** The trampoline's label name (`compile()`'s EIP-170 breakdown finds the region by it). */
+export const SIMULATE_TRAMPOLINE_LABEL = 'simulate_trampoline';
+
 /** PUSH20 0xff…ff — masks a raw word down to a canonical 20-byte address. */
 const ADDRESS_MASK = (1n << 160n) - 1n;
 
@@ -73,7 +76,7 @@ export function emitSimulateTrampoline(w: AsmWriter, entry: LabelId): void {
   // The dispatcher reaches this entry via `DUP1 … EQ JUMPI`, which leaves the matched selector on
   // the stack (it is reused for the main-selector compare on the fall-through path) — so the edge
   // carries one item. Annotate height 1 and drop it.
-  w.label(entry, 1, 'simulate_trampoline');
+  w.label(entry, 1, SIMULATE_TRAMPOLINE_LABEL);
   w.op('POP'); // discard the leftover selector
 
   // L = CALLDATASIZE − 68 (the target payload length; payload starts at calldata offset 0x44,
