@@ -57,6 +57,8 @@
 import { EvsInternalError } from '../core/errors.js';
 import { isWordType } from '../core/types.js';
 import {
+  stmtDefs,
+  stmtReads,
   walkStmts,
   type CellId,
   type FnId,
@@ -78,90 +80,6 @@ export function eliminateDeadCode(ir: ScriptIr): ScriptIr {
 
 /** Alias of {@link eliminateDeadCode}. */
 export const dce: (ir: ScriptIr) => ScriptIr = eliminateDeadCode;
-
-// ---------------------------------------------------------------------------
-// statement accessors
-// ---------------------------------------------------------------------------
-
-/** The ValueIds a statement reads (its own child blocks excluded — those are walked). */
-function readsOf(s: Stmt): readonly ValueId[] {
-  switch (s.k) {
-    case 'const':
-    case 'env':
-    case 'cellget':
-    case 'break':
-    case 'continue':
-      return [];
-    case 'bin':
-      return [s.a, s.b];
-    case 'un':
-    case 'convert':
-    case 'len':
-    case 'keccak256':
-      return [s.a];
-    case 'select':
-      return [s.cond, s.a, s.b];
-    case 'index':
-      return [s.arr, s.i];
-    case 'arrnew':
-      return [s.length];
-    case 'arrset':
-      return [s.arr, s.i, s.value];
-    case 'tuplenew':
-      return s.inits.map((init) => init.value);
-    case 'field':
-      return [s.tuple];
-    case 'tupleset':
-      return [s.tuple, s.value];
-    case 'encode':
-    case 'throw':
-    case 'fncall':
-      return s.args;
-    case 'cellnew':
-      return [s.init];
-    case 'cellset':
-      return [s.value];
-    case 'call':
-      return s.gas === undefined ? [s.target, ...s.args] : [s.target, ...s.args, s.gas];
-    case 'if':
-    case 'while':
-      return [s.cond];
-    default:
-      return unreachable(s);
-  }
-}
-
-/** The ValueIds a statement defines. */
-function outsOf(s: Stmt): readonly ValueId[] {
-  switch (s.k) {
-    case 'const':
-    case 'bin':
-    case 'un':
-    case 'env':
-    case 'convert':
-    case 'select':
-    case 'index':
-    case 'len':
-    case 'arrnew':
-    case 'tuplenew':
-    case 'field':
-    case 'encode':
-    case 'keccak256':
-    case 'cellget':
-      return [s.out];
-    case 'call':
-      return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];
-    case 'fncall':
-      return s.outs;
-    default:
-      return [];
-  }
-}
-
-function unreachable(s: never): never {
-  const kind = String((s as { k?: unknown }).k);
-  throw new EvsInternalError('INTERNAL', `dce: unknown statement kind '${kind}'`);
-}
 
 // ---------------------------------------------------------------------------
 // the pass
@@ -213,7 +131,7 @@ class Dce {
   private index(): void {
     for (const region of this.regions) {
       walkStmts(region.stmts, (s) => {
-        for (const out of outsOf(s)) this.defOf.set(out, s);
+        for (const out of stmtDefs(s)) this.defOf.set(out, s);
         if (s.k === 'cellnew' || s.k === 'cellset') {
           const bucket = this.cellWritesOf.get(s.cell);
           if (bucket === undefined) this.cellWritesOf.set(s.cell, [s]);
@@ -409,7 +327,7 @@ class Dce {
     if (this.liveStmts.has(s)) return;
     this.liveStmts.add(s);
     if (s.k === 'cellget') this.markCell(s.cell);
-    for (const v of readsOf(s)) this.markValue(v);
+    for (const v of stmtReads(s)) this.markValue(v);
   }
 
   /** An `if` is live iff a statement in either branch is; marking one may enliven more. */

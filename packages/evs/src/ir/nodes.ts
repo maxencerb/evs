@@ -762,6 +762,104 @@ export function deepFreeze(value: unknown): void {
 }
 
 // ---------------------------------------------------------------------------
+// statement def/use tables (shared by ir/dce and codegen/frame)
+// ---------------------------------------------------------------------------
+
+/**
+ * Every ValueId a statement reads (its operands; its own child blocks excluded — those are
+ * walked). Exhaustive over the statement kinds on purpose: a new kind must fail to compile here
+ * rather than have its operands go uncounted by DCE liveness or the frame allocator.
+ */
+export function stmtReads(s: Stmt): readonly ValueId[] {
+  switch (s.k) {
+    case 'const':
+    case 'env':
+    case 'cellget':
+    case 'break':
+    case 'continue':
+      return [];
+    case 'bin':
+      return [s.a, s.b];
+    case 'un':
+    case 'convert':
+    case 'len':
+    case 'keccak256':
+      return [s.a];
+    case 'select':
+      return [s.cond, s.a, s.b];
+    case 'index':
+      return [s.arr, s.i];
+    case 'arrnew':
+      return [s.length];
+    case 'arrset':
+      return [s.arr, s.i, s.value];
+    case 'tuplenew':
+      return s.inits.map((init) => init.value);
+    case 'field':
+      return [s.tuple];
+    case 'tupleset':
+      return [s.tuple, s.value];
+    case 'encode':
+    case 'throw':
+    case 'fncall':
+      return s.args;
+    case 'cellnew':
+      return [s.init];
+    case 'cellset':
+      return [s.value];
+    case 'call':
+      return s.gas === undefined ? [s.target, ...s.args] : [s.target, s.gas, ...s.args];
+    case 'if':
+    case 'while':
+      return [s.cond];
+    default:
+      return unknownStmt(s);
+  }
+}
+
+/** Every ValueId a statement defines. Exhaustive for the same reason as {@link stmtReads}. */
+export function stmtDefs(s: Stmt): readonly ValueId[] {
+  switch (s.k) {
+    case 'const':
+    case 'bin':
+    case 'un':
+    case 'env':
+    case 'convert':
+    case 'select':
+    case 'index':
+    case 'len':
+    case 'arrnew':
+    case 'cellget':
+    case 'tuplenew': // the tuple pointer
+    case 'field': // the member word or nested pointer
+    case 'encode': // the fresh bytes memref pointer
+    case 'keccak256': // the bytes32 hash word
+      return [s.out];
+    case 'call':
+      return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];
+    case 'fncall':
+      return s.outs;
+    case 'arrset':
+    case 'tupleset':
+    case 'throw':
+    case 'cellnew':
+    case 'cellset':
+    case 'if':
+    case 'while':
+    case 'break':
+    case 'continue':
+      return [];
+    default:
+      return unknownStmt(s);
+  }
+}
+
+function unknownStmt(s: never): never {
+  const kind = String((s as { k?: unknown }).k);
+  throw new EvsInternalError('INTERNAL', `unknown statement kind '${kind}' survived validateIr`);
+}
+
+// ---------------------------------------------------------------------------
 // walkStmts — statement-tree traversal
 // ---------------------------------------------------------------------------
 
