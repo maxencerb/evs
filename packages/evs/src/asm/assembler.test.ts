@@ -92,6 +92,24 @@ describe('AsmWriter', () => {
     expect(() => new AsmWriter().returndatacopyAll({ dupDepth: 14 })).not.toThrow();
   });
 
+  test('isReferenced tracks pushLabel references only', () => {
+    const w = new AsmWriter();
+    const used = w.newLabel('used');
+    const placedOnly = w.newLabel('placed');
+    const allocatedOnly = w.newLabel('allocated');
+    expect(w.isReferenced(used)).toBe(false);
+    w.pushLabel(used);
+    w.op('JUMP');
+    w.label(placedOnly, 'any');
+    w.label(used, 'any');
+    w.op('STOP');
+    expect(w.isReferenced(used)).toBe(true);
+    expect(w.isReferenced(placedOnly)).toBe(false); // defining a label is not a reference
+    expect(w.isReferenced(allocatedOnly)).toBe(false);
+    // an allocated-but-never-placed, never-referenced label assembles fine
+    expect(() => assemble(w.nodes(), { evmVersion: 'cancun' })).not.toThrow();
+  });
+
   test('nodes() returns a copy', () => {
     const w = new AsmWriter();
     w.op('STOP');

@@ -9,6 +9,8 @@
  * - All `data`/`dataLabel` nodes are placed after the last code node, preceded by exactly one
  *   `INVALID` (0xFE) guard byte inserted here; codegen must still place them last in the node
  *   stream (asserted).
+ * - An allocated label that is never placed is fine as long as no `pushLabel` names it (only
+ *   fixups resolve labels); `AsmWriter.isReferenced` lets emitters skip unreferenced regions.
  * - `verify: true` (default) runs the three passes from `asm/verify.ts`; failures are
  *   `EvsInternalError`s.
  */
@@ -67,6 +69,8 @@ export class AsmWriter {
   #nodes: AsmNode[] = [];
   #nextLabel = 0;
   #names = new Map<LabelId, string>();
+  /** Every label a `pushLabel` node has named so far — the only way a node references a label. */
+  #referenced = new Set<LabelId>();
 
   newLabel(name?: string): LabelId {
     const id = this.#nextLabel;
@@ -109,7 +113,17 @@ export class AsmWriter {
   }
 
   pushLabel(label: LabelId, meta?: NodeMeta): void {
+    this.#referenced.add(label);
     this.#nodes.push({ k: 'pushLabel', label, ...metaProps(meta) });
+  }
+
+  /**
+   * Whether any `pushLabel` emitted so far references `label`. Emitters that place optional
+   * regions last (the shared tails) use it to skip bodies nothing jumps to; the answer only
+   * covers references already written, so query it after the last possible referencing code.
+   */
+  isReferenced(label: LabelId): boolean {
+    return this.#referenced.has(label);
   }
 
   label(label: LabelId, stack: number | 'any', name?: string): void {

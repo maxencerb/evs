@@ -727,7 +727,7 @@ describe('dispatcher', () => {
       0x0005  6004        PUSH1 0x04
       0x0007  36          CALLDATASIZE
       0x0008  10          LT
-      0x0009  610088      PUSH2 0x0088 → @badcd
+      0x0009  610048      PUSH2 0x0048 → @badcd
       0x000c  57          JUMPI
       0x000d  5f          PUSH0
       0x000e  35          CALLDATALOAD
@@ -737,14 +737,14 @@ describe('dispatcher', () => {
       0x0017  14          EQ
       0x0018  610020      PUSH2 0x0020 → @main
       0x001b  57          JUMPI
-      0x001c  610088      PUSH2 0x0088 → @badcd
+      0x001c  610048      PUSH2 0x0048 → @badcd
       0x001f  56          JUMP
       @main:
       0x0020  5b          JUMPDEST  ; @main
       0x0021  6024        PUSH1 0x24  ; calldata floor 36
       0x0023  36          CALLDATASIZE
       0x0024  10          LT
-      0x0025  610088      PUSH2 0x0088 → @badcd
+      0x0025  610048      PUSH2 0x0048 → @badcd
       0x0028  57          JUMPI
       0x0029  6004        PUSH1 0x04  ; arg #0 head
       0x002b  35          CALLDATALOAD
@@ -770,60 +770,16 @@ describe('dispatcher', () => {
       0x0045  03          SUB
       0x0046  90          SWAP1
       0x0047  f3          RETURN  ; return tuple
-      @panic_overflow:
-      0x0048  5b          JUMPDEST  ; @panic_overflow
-      0x0049  6011        PUSH1 0x11  ; panic code 0x11
-      0x004b  610064      PUSH2 0x0064 → @panic
-      0x004e  56          JUMP
-      @panic_divzero:
-      0x004f  5b          JUMPDEST  ; @panic_divzero
-      0x0050  6012        PUSH1 0x12  ; panic code 0x12
-      0x0052  610064      PUSH2 0x0064 → @panic
-      0x0055  56          JUMP
-      @panic_bounds:
-      0x0056  5b          JUMPDEST  ; @panic_bounds
-      0x0057  6032        PUSH1 0x32  ; panic code 0x32
-      0x0059  610064      PUSH2 0x0064 → @panic
-      0x005c  56          JUMP
-      @panic_alloc:
-      0x005d  5b          JUMPDEST  ; @panic_alloc
-      0x005e  6041        PUSH1 0x41  ; panic code 0x41
-      0x0060  610064      PUSH2 0x0064 → @panic
-      0x0063  56          JUMP
-      @panic:
-      0x0064  5b          JUMPDEST  ; @panic
-      0x0065  634e487b71  PUSH4 0x4e487b71  ; selector 0x4e487b71
-      0x006a  60e0        PUSH1 0xe0
-      0x006c  1b          SHL
-      0x006d  5f          PUSH0
-      0x006e  52          MSTORE
-      0x006f  6004        PUSH1 0x04
-      0x0071  52          MSTORE
-      0x0072  6024        PUSH1 0x24
-      0x0074  5f          PUSH0
-      0x0075  fd          REVERT  ; Panic(code)
-      @decode_revert:
-      0x0076  5b          JUMPDEST  ; @decode_revert
-      0x0077  6320cf27b7  PUSH4 0x20cf27b7  ; selector 0x20cf27b7
-      0x007c  60e0        PUSH1 0xe0
-      0x007e  1b          SHL
-      0x007f  5f          PUSH0
-      0x0080  52          MSTORE
-      0x0081  6004        PUSH1 0x04
-      0x0083  52          MSTORE
-      0x0084  6024        PUSH1 0x24
-      0x0086  5f          PUSH0
-      0x0087  fd          REVERT  ; EvsDecodeError(site)
       @badcd:
-      0x0088  5b          JUMPDEST  ; @badcd
-      0x0089  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
-      0x008e  60e0        PUSH1 0xe0
-      0x0090  1b          SHL
-      0x0091  5f          PUSH0
-      0x0092  52          MSTORE
-      0x0093  6004        PUSH1 0x04
-      0x0095  5f          PUSH0
-      0x0096  fd          REVERT  ; EvsInvalidCalldata()"
+      0x0048  5b          JUMPDEST  ; @badcd
+      0x0049  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
+      0x004e  60e0        PUSH1 0xe0
+      0x0050  1b          SHL
+      0x0051  5f          PUSH0
+      0x0052  52          MSTORE
+      0x0053  6004        PUSH1 0x04
+      0x0055  5f          PUSH0
+      0x0056  fd          REVERT  ; EvsInvalidCalldata()"
     `);
   });
 

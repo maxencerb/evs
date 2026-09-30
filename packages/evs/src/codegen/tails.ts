@@ -8,6 +8,10 @@
  * unit tests, and by `lowerProgram`, which places panic tails / dfail stubs /
  * `@decode_revert` / `@memcpy` after the program body).
  *
+ * Only referenced tails are emitted (`emitSharedTails` checks `AsmWriter.isReferenced`), so a
+ * script that cannot divide carries no `@panic_divzero`, one without strict calls no
+ * `@decode_revert`, etc.
+ *
  * Tail shapes (byte-for-byte intent):
  *
  *   @panic_<kind>:   JUMPDEST PUSH1 <code> PUSH2 @panic JUMP                ('any')
@@ -68,7 +72,8 @@ const TAIL_LABEL = {
 export const SHARED_TAIL_LABEL_NAMES: ReadonlySet<string> = new Set(Object.values(TAIL_LABEL));
 
 /**
- * Allocates every `SharedTails` label on `w`. `memcpy` is `null` on cancun (MCOPY inlines).
+ * Allocates every `SharedTails` label on `w` (bodies are emitted only for the referenced ones —
+ * see `emitSharedTails`). `memcpy` is `null` on cancun (MCOPY inlines).
  * Call once per program, before any emitter references the tails; emit the bodies with
  * `emitSharedTails` after the last code region (and before any data segments).
  */
@@ -105,55 +110,69 @@ export function emitDecodeFailStub(
 }
 
 /**
- * Emits every shared tail body: the four panic stubs + `@panic` core, `@badcd`
- * (`EvsInvalidCalldata()`), `@decode_revert` (`EvsDecodeError(uint256 site)` — site pushed by
- * the per-site stub), and the `@memcpy` subroutine when `tails.memcpy` is non-null.
+ * Emits the shared tail bodies that something references: each panic stub (and the `@panic`
+ * core, only when at least one stub is emitted), `@decode_revert` (`EvsDecodeError(uint256
+ * site)` — site pushed by the per-site stub), `@badcd` (`EvsInvalidCalldata()`), and the
+ * `@memcpy` subroutine when `tails.memcpy` is non-null. A tail no `pushLabel` has named is
+ * dead code and is left out (its allocated label stays unplaced, which the assembler accepts).
  *
- * Must be emitted after all code that can fall through (every tail is unreachable by
- * fallthrough: panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a
- * checked subroutine entered only by `emitMemCopy` calls).
+ * Must be emitted after all code that can reference or fall through into a tail — i.e. last
+ * among the code regions (before data segments only), since reference tracking only sees
+ * `pushLabel`s already written. Tails reference only the `@panic` core (from the stubs) and
+ * `@memcpy`'s own loop labels, both handled here. Every tail is unreachable by fallthrough:
+ * panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a checked subroutine
+ * entered only by `emitMemCopy` calls.
  */
 export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
   // -- panic stubs + core ------------------------------------------------------
-  const panic = w.newLabel(TAIL_LABEL.panic);
   const stubs: readonly [LabelId, number][] = [
     [tails.panicOverflow, 0x11],
     [tails.panicDivZero, 0x12],
     [tails.panicBounds, 0x32],
     [tails.panicAlloc, 0x41],
   ];
-  for (const [label, code] of stubs) {
-    w.label(label, 'any');
-    w.push(code, { note: `panic code 0x${code.toString(16)}` });
-    w.pushLabel(panic);
-    w.op('JUMP');
+  const liveStubs = stubs.filter(([label]) => w.isReferenced(label));
+  if (liveStubs.length > 0) {
+    const panic = w.newLabel(TAIL_LABEL.panic);
+    for (const [label, code] of liveStubs) {
+      w.label(label, 'any');
+      w.push(code, { note: `panic code 0x${code.toString(16)}` });
+      w.pushLabel(panic);
+      w.op('JUMP');
+    }
+    w.label(panic, 'any'); // [code, …dead]
+    emitSelectorStore(w, PANIC_SELECTOR); // [code, …]
+    w.push(4);
+    w.op('MSTORE'); // mem[4..36) = code
+    w.push(0x24);
+    w.push(0);
+    w.op('REVERT', { note: 'Panic(code)' }); // revert(0, 36)
   }
-  w.label(panic, 'any'); // [code, …dead]
-  emitSelectorStore(w, PANIC_SELECTOR); // [code, …]
-  w.push(4);
-  w.op('MSTORE'); // mem[4..36) = code
-  w.push(0x24);
-  w.push(0);
-  w.op('REVERT', { note: 'Panic(code)' }); // revert(0, 36)
 
   // -- @decode_revert: EvsDecodeError(uint256 site) -------------------------------
-  w.label(tails.decodeRevert, 'any'); // [site, …dead]
-  emitSelectorStore(w, DECODE_ERROR_SELECTOR);
-  w.push(4);
-  w.op('MSTORE'); // mem[4..36) = site
-  w.push(0x24);
-  w.push(0);
-  w.op('REVERT', { note: 'EvsDecodeError(site)' }); // revert(0, 36)
+  if (w.isReferenced(tails.decodeRevert)) {
+    w.label(tails.decodeRevert, 'any'); // [site, …dead]
+    emitSelectorStore(w, DECODE_ERROR_SELECTOR);
+    w.push(4);
+    w.op('MSTORE'); // mem[4..36) = site
+    w.push(0x24);
+    w.push(0);
+    w.op('REVERT', { note: 'EvsDecodeError(site)' }); // revert(0, 36)
+  }
 
   // -- @badcd: EvsInvalidCalldata() ------------------------------------------------
-  w.label(tails.invalidCalldata, 'any');
-  emitSelectorStore(w, INVALID_CALLDATA_SELECTOR);
-  w.push(4);
-  w.push(0);
-  w.op('REVERT', { note: 'EvsInvalidCalldata()' }); // revert(0, 4)
+  if (w.isReferenced(tails.invalidCalldata)) {
+    w.label(tails.invalidCalldata, 'any');
+    emitSelectorStore(w, INVALID_CALLDATA_SELECTOR);
+    w.push(4);
+    w.push(0);
+    w.op('REVERT', { note: 'EvsInvalidCalldata()' }); // revert(0, 4)
+  }
 
   // -- @memcpy word-loop subroutine (pre-cancun only) ------------------------------
-  if (tails.memcpy !== null) emitMemcpySubroutine(w, tails.memcpy);
+  if (tails.memcpy !== null && w.isReferenced(tails.memcpy)) {
+    emitMemcpySubroutine(w, tails.memcpy);
+  }
 }
 
 /**

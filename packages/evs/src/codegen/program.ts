@@ -9,7 +9,8 @@
  *   @main       arg decode · body statement templates · return encode RETURN
  *   @fn_*       subroutines — uncalled fns dropped
  *   @dfail_*    per-strict-site decode-fail stubs → @decode_revert
- *   tails       @panic_* / @panic / @decode_revert / @badcd (+ @memcpy pre-cancun)
+ *   tails       @panic_* / @panic / @decode_revert / @badcd (+ @memcpy pre-cancun) — only
+ *               the referenced ones, so they must stay the last code region
  *   INVALID     data segments (dataLabel-addressed blobs, content-deduplicated) — LAST
  *
  * tryCall zero blocks are emitted inline at their call sites (they rejoin the program —
@@ -104,7 +105,8 @@ export function lowerProgram(
   // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
   // bytecode carries a second internal entrypoint reached by a reserved selector. Detect it across
   // the body and ALL recorded fns (a simulate inside an uncalled, dropped fn just leaves the
-  // trampoline unreachable — a few dozen bytes, like the always-emitted shared tails).
+  // trampoline unreachable — a few dozen bytes; unlike the shared tails, which are emitted only
+  // when referenced, the trampoline is not reference-tracked).
   let hasSimulate = false;
   const markSimulate = (s: Stmt): void => {
     if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
@@ -185,6 +187,8 @@ export function lowerProgram(
   if (trampoline !== null) emitSimulateTrampoline(w, trampoline);
 
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
+  // Shared tails are emitted only when referenced, so they must come after every region that
+  // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
   for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
   emitSharedTails(w, tails);
 
