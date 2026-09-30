@@ -9,9 +9,9 @@ Script args arrive as **positional callback params** after `s` — the `evscript
 arg exposes `tokens.length()` / `tokens.at(i)`.
 
 ```sh
-bun install && bun run build                 # once, from the repo root
-(cd packages/contracts && bun run codegen)   # once: forge build → the mock-contract artifacts
-bun examples/token-balances/index.ts
+vp install && vp run build                   # once, from the repo root
+(cd packages/contracts && vp run codegen)    # once: forge build → the mock-contract artifacts
+node examples/token-balances/index.ts
 ```
 
 Needs [foundry](https://getfoundry.sh) (`forge` + `anvil`) and the `forge-std` submodule

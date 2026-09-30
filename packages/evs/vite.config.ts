@@ -5,7 +5,7 @@ export default defineConfig({
     projects: [
       {
         // The harness self-tests (test/harness/*.test.ts, in-process @ethereumjs/evm —
-        // no anvil needed) run in the `unit` project so the regular `bun run test` flow
+        // no anvil needed) run in the `unit` project so the regular `vp run test` flow
         // exercises them. The `integration` project (test/integration/**) is unaffected.
         test: {
           name: 'unit',

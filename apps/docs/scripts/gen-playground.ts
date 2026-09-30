@@ -10,14 +10,17 @@
  *   `@maxencerb/evs` and `abitype`, plus a generated slim `viem` shim (real inference
  *   through abitype generics; the full viem types are 15 MB and stay out of the browser).
  *
- * Run via `bun scripts/gen-playground.ts` (wired into this package's dev/build scripts).
- * Requires the library built first (`bun run build` at the repo root), same as the
- * snippet gate.
+ * Run via `node scripts/gen-playground.ts` (wired into this package's dev/build/typecheck
+ * scripts). Requires the library built first (`pnpm run build` / `vp run build` at the repo
+ * root), same as the snippet gate.
  */
 
 import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises';
+import { createRequire } from 'node:module';
 import { dirname, join, relative, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
+
+import { build } from 'vite/rolldown';
 
 const docsRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 const repoRoot = resolve(docsRoot, '../..');
@@ -26,7 +29,7 @@ const outPublic = join(docsRoot, 'public/playground');
 const outGenerated = join(docsRoot, 'src/generated');
 
 // ---------------------------------------------------------------------------
-// 1. Runtime bundles (Bun.build → browser ESM)
+// 1. Runtime bundles (Rolldown → browser ESM)
 // ---------------------------------------------------------------------------
 
 const entryDir = join(docsRoot, 'scripts/.playground-entries');
@@ -60,22 +63,30 @@ export const http = ((url?: string, config?: Parameters<typeof _http>[1]) =>
 // `matchScriptError`) failed to recognise errors thrown by the user's copy — the custom-errors
 // example surfaced as a bare "reverted" instead of the decoded InsufficientBalance. One copy
 // also halves the bytes shipped.
-const common = { outdir: outPublic, target: 'browser', format: 'esm', minify: true } as const;
-const viemBuild = await Bun.build({ ...common, entrypoints: [viemEntry], naming: 'viem.[ext]' });
-const evsBuild = await Bun.build({
-  ...common,
-  entrypoints: [evsEntry],
-  naming: 'evs.[ext]',
-  external: ['viem'],
-});
-for (const build of [viemBuild, evsBuild]) {
-  if (!build.success) {
-    for (const log of build.logs) console.error(log);
-    throw new Error('playground runtime bundle failed');
-  }
+//
+// Bundled with Rolldown through the workspace's Vite+ core (`vite` is aliased to
+// @voidzero-dev/vite-plus-core, which exports Rolldown as `vite/rolldown`): plain Node, no `vp`
+// binary needed, so the Cloudflare docs build can run it.
+async function bundle(input: string, fileName: string, external: readonly string[] = []) {
+  await build({
+    input,
+    platform: 'browser',
+    external: [...external],
+    logLevel: 'warn',
+    output: {
+      file: join(outPublic, fileName),
+      format: 'esm',
+      minify: true,
+      // One self-contained file per bundle, like before: viem's lazy `import()`s (ccip, …)
+      // are inlined instead of split into chunks.
+      codeSplitting: false,
+    },
+  });
 }
+await bundle(viemEntry, 'viem.js');
+await bundle(evsEntry, 'evs.js', ['viem']);
 {
-  // Bun leaves the external specifier verbatim; point it at the sibling bundle. Relative
+  // Rolldown leaves the external specifier verbatim; point it at the sibling bundle. Relative
   // resolution works for both consumers: the browser imports evs.js from
   // `${origin}/playground/`, the headless gate from its filesystem path.
   const evsOut = join(outPublic, 'evs.js');
@@ -113,7 +124,10 @@ files['file:///node_modules/@maxencerb/evs/package.json'] = JSON.stringify({
 
 // abitype — the real declarations (evs's public types reference it, and the viem
 // shim's readContract inference is built on it).
-const abitypeRoot = dirname(Bun.resolveSync('abitype/package.json', evsRoot));
+// Resolved from the package that depends on them (pnpm keeps node_modules isolated per package).
+const resolveFrom = (specifier: string, fromDir: string) =>
+  createRequire(join(fromDir, 'package.json')).resolve(specifier);
+const abitypeRoot = dirname(resolveFrom('abitype/package.json', evsRoot));
 for (const file of await collectDts(join(abitypeRoot, 'dist/types'))) {
   const rel = relative(abitypeRoot, file);
   files[`file:///node_modules/abitype/${rel}`] = await readFile(file, 'utf8');
@@ -127,7 +141,7 @@ files['file:///node_modules/abitype/package.json'] = JSON.stringify({
 // viem shim — hand-typed subset with real inference. erc20Abi's declaration is
 // lifted verbatim from the installed viem's own d.ts so the literal type (readonly
 // modifiers included — inference needs them) exactly matches runtime.
-const viemRoot = dirname(Bun.resolveSync('viem/package.json', docsRoot));
+const viemRoot = dirname(resolveFrom('viem/package.json', docsRoot));
 const abisDts = await readFile(join(viemRoot, '_types/constants/abis.d.ts'), 'utf8');
 const abiMatch = abisDts.match(/export declare const erc20Abi: (readonly \[\{[\s\S]*?\n\}\]);/);
 if (!abiMatch?.[1]) throw new Error('could not extract erc20Abi declaration from viem');

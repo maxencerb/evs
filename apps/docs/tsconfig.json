@@ -2,8 +2,8 @@
   "extends": "astro/tsconfigs/strict",
   "compilerOptions": {
     // TypeScript 6 no longer auto-includes every @types/* package (`types` defaults to []);
-    // the build scripts under scripts/ use the Bun global.
-    "types": ["bun"]
+    // the build scripts under scripts/ run on Node (type stripping) and use its globals.
+    "types": ["node"]
   },
   "include": [".astro/types.d.ts", "**/*"],
   "exclude": ["dist", ".snippets", "node_modules", "public", "scripts/.playground-entries"]

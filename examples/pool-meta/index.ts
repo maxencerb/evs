@@ -8,7 +8,7 @@
  *
  * Args arrive as positional callback params after `s` — no `s.args`.
  *
- * Run: bun examples/pool-meta/index.ts   (spawns a local anvil; needs foundry + `bun run codegen`
+ * Run: node examples/pool-meta/index.ts   (spawns a local anvil; needs foundry + `vp run codegen`
  *      in packages/contracts first — see README.md)
  */
 
@@ -17,7 +17,7 @@ import { erc20Abi, parseEther } from 'viem';
 import { evscript, t } from '@maxencerb/evs';
 import { startAnvil } from '@maxencerb/evs-examples-shared/run-anvil';
 
-import { Composite, MockERC20, MockUniV3Pool } from '../../packages/evs/test/generated/index.js';
+import { Composite, MockERC20, MockUniV3Pool } from '../../packages/evs/test/generated/index.ts';
 
 // `args: [t.address, t.address]` → the body callback receives `(s, pool, user)` positionally.
 const poolMeta = evscript({ name: 'poolMeta', args: [t.address, t.address] }, (s, pool, user) => {

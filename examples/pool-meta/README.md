@@ -12,9 +12,9 @@ decodes into a `Tuple` handle whose fields are read by name (`slot0.tick.get()`,
 `int24`), and the whole struct flows out as a typed object.
 
 ```sh
-bun install && bun run build                 # once, from the repo root
-(cd packages/contracts && bun run codegen)   # once: forge build → the mock-contract artifacts
-bun examples/pool-meta/index.ts
+vp install && vp run build                   # once, from the repo root
+(cd packages/contracts && vp run codegen)    # once: forge build → the mock-contract artifacts
+node examples/pool-meta/index.ts
 ```
 
 Needs [foundry](https://getfoundry.sh) (`forge` + `anvil`) and the `forge-std` submodule

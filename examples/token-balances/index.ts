@@ -3,7 +3,7 @@
  * A loop + tryRead over N tokens compiles to one script;
  * non-token addresses yield 0 instead of reverting the whole batch.
  *
- * Run: bun examples/token-balances/index.ts   (spawns a local anvil; needs foundry + `bun run codegen`
+ * Run: node examples/token-balances/index.ts   (spawns a local anvil; needs foundry + `vp run codegen`
  *      in packages/contracts first — see README.md)
  */
 
@@ -12,7 +12,7 @@ import { erc20Abi, parseEther, type Address } from 'viem';
 import { evscript, t } from '@maxencerb/evs';
 import { startAnvil } from '@maxencerb/evs-examples-shared/run-anvil';
 
-import { MockERC20 } from '../../packages/evs/test/generated/index.js';
+import { MockERC20 } from '../../packages/evs/test/generated/index.ts';
 
 // `args: [t.array(t.address), t.address]` → the callback receives `(s, tokens, owner)`.
 const balances = evscript(

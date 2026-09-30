@@ -3,7 +3,7 @@
  * Spawns a dedicated forked anvil (separate from the per-worker proxy instance) and reads
  * mainnet WETH metadata through a compiled script in both execution modes.
  *
- * Locally: ANVIL_FORK_URL=https://… bun run test:integration
+ * Locally: ANVIL_FORK_URL=https://… vp run test:integration
  * CI runs this only on a manual workflow_dispatch of ci.yml (fork-tests job), never per-PR.
  */
 

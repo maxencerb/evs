@@ -1,7 +1,7 @@
 /**
  * Premade playground scripts. Each is a complete program: it defines a script,
  * compiles it, runs it through viem against the RPC in the toolbar, and logs the
- * result — exactly what you'd run locally with `bun run`.
+ * result — exactly what you'd run locally with `node`.
  *
  * Kept in sync with the runtime by `scripts/check-playground-examples.ts`, which
  * type-checks every example against the same d.ts payload Monaco loads and
