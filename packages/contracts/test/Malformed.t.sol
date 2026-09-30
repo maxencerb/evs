@@ -138,4 +138,15 @@ contract MalformedTest is Test {
         vm.expectRevert();
         this.decodeHugeOffsetTyped();
     }
+
+    function testEchoRawIsVerbatim() public view {
+        bytes memory payload = abi.encodePacked(uint256(0x20), uint256(1 << 64) - 1, uint256(7));
+        (bool ok, bytes memory data) =
+            address(m).staticcall(abi.encodeWithSignature("echoRaw(bytes)", payload));
+        assertTrue(ok, "echoRaw must SUCCEED");
+        assertEq(data, payload);
+        (ok, data) = address(m).staticcall(abi.encodeWithSignature("echoRaw(bytes)", bytes("")));
+        assertTrue(ok);
+        assertEq(data.length, 0);
+    }
 }

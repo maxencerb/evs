@@ -217,8 +217,9 @@ const gridAbi = [
 ] as const satisfies Abi;
 
 // Array decode paths (#4, #52). The first two cases are the #52 regression corpus: one- and
-// two-level composite arrays decode on the STACK fast path, and their bytes must stay exactly
-// what they were before the heap-frame decoder existed. The rest pin the new shapes, which take
+// two-level composite arrays decode on the STACK fast path, and their size and gas must stay what
+// they were before the heap-frame decoder existed (the body bounds check moved ahead of the
+// allocation in the 0.2.0 codec review — same instructions, reordered). The rest pin the new shapes, which take
 // the heap-frame path (fixed-size `T[N]`, `tuple[][]`, `uint256[][][]`) and the typed zeros of
 // fixed-size arrays.
 const ARRAY_DECODE: readonly Case[] = [

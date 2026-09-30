@@ -1,0 +1,5 @@
+---
+'@maxencerb/evs': patch
+---
+
+Harden the array and struct decoders against malformed data. A length word the returndata or calldata cannot back (anything up to `2^64−1`) is now rejected before anything is allocated: `s.tryRead`/`s.tryCall`/`s.trySimulate` return `success = false` with the zero value, strict verbs revert `EvsDecodeError(site)` and script arguments revert `EvsInvalidCalldata`. Before, such a length could run the whole script out of gas. A nested dynamic struct whose head is cut short is now rejected too, where before the bytecode read past the end of the data and accepted it. When two outputs share bytes through overlapping offsets, a narrow-element array (`uint8[]`, …) no longer changes the other output: it is normalized into its own copy. Deeply nested structs and struct/array chains compile deeper than before (for example 12 nested structs as a script argument, up from 6). A type too deep for the EVM stack now fails with `EvsCompileError` (`UNSUPPORTED_V0`) instead of an internal error.

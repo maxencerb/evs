@@ -19,7 +19,8 @@ import {
   isRecursiveArray,
   emitDecodeArrayToMem,
   wordNeedsNormalize,
-  emitNormalizeElemsLoop,
+  emitCopyNormalizeWordArray,
+  emitWithinStackBudget,
 } from '../abi.js';
 import { FREE_PTR, MAX_U64 } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
@@ -80,7 +81,17 @@ export function emitStaticCall(
     throw internal(`strict call to ${fnAbi.name} (site ${siteId}): successRef must be null`);
   }
 
-  const emitDecodeFail = makeDecodeFail(w, plan, tryMode, 'call');
+  // tuple outputs AND composite-element array outputs (`tuple[]`/`T[][]`/`string[]`) decode from
+  // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
+  // base/end (the decoders churn the free ptr, so a stack-resident base would drift).
+  const hasTupleOut = outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))));
+  // try mode over such outputs: a decode failure after the snapshot rolls the free pointer back
+  // to the snapshot base on its way to the zero block (see emitTryEpilogue). Failures before the
+  // snapshot (the head-size guard) go straight to the zero block.
+  const restore = tryMode && hasTupleOut ? w.newLabel(`call_restore_${siteId}`) : null;
+  const emitDecodeFailPre = makeDecodeFail(w, plan, tryMode, 'call');
+  const emitDecodeFail =
+    restore === null ? emitDecodeFailPre : makeDecodeFail(w, plan, tryMode, 'call', restore);
 
   // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
@@ -145,16 +156,12 @@ export function emitStaticCall(
   if (outputs.length > 0) {
     const outOffsets = headOffsets(outputs); // cumulative (static tuple outputs inline)
     const minSize = headBytes(outputs);
-    // tuple outputs AND composite-element array outputs (`tuple[]`/`T[][]`/`string[]`) decode from
-    // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
-    // base/end (the decoders churn the free ptr, so a stack-resident base would drift).
-    const hasTupleOut = outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))));
 
     // staticMinSize guard: rds ≥ headBytes(outputs)
     w.op('RETURNDATASIZE');
     w.push(minSize, { note: `staticMinSize ${minSize}` });
     w.op('GT'); // [minSize > rds, buf]
-    emitDecodeFail(1); // [buf]
+    emitDecodeFailPre(1); // [buf]
 
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
     // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
@@ -184,6 +191,7 @@ export function emitStaticCall(
       if (layout.kind === 'tuple') {
         // decode the tuple from the snapshot into a flat-pointer block; alias dynamic members.
         // base/end are read from scratch so the decoder's free-ptr churn never disturbs them.
+        if (!isTupleType(type)) throw internal(`out #${j} layout is tuple but type is not`);
         let pushBase: PushBase;
         if (layout.dynamic) {
           // offset word at buf+headOffset (relative to buf); bounds, then base = buf+off
@@ -199,13 +207,13 @@ export function emitStaticCall(
           emitDecodeFail(2); // [off, buf]
           pushSnap(w);
           w.op('ADD'); // [base, buf]
-          w.op('DUP1');
-          w.push(32);
-          w.op('ADD'); // [base+32, base, buf]
+          // its whole head must fit: base + headBytes(components) ≤ end (the interpreter's
+          // `decodeBlock` guard; the tuple decoder reads every head word unchecked)
+          w.push(headBytes(type.components));
+          w.op('ADD'); // [base+head, buf]   (base is re-derived inside the thunk)
           pushSnapEnd(w);
-          w.op('LT'); // [end < base+32, base, buf]
-          emitDecodeFail(2); // [base, buf]
-          w.op('POP'); // [buf]   (base is re-derived inside the thunk)
+          w.op('LT'); // [end < base+head, buf]
+          emitDecodeFail(1); // [buf]
           pushBase = () => pushSnapOffsetBase(w, headOffset);
         } else {
           pushBase = () => {
@@ -216,8 +224,13 @@ export function emitStaticCall(
             }
           };
         }
-        if (!isTupleType(type)) throw internal(`out #${j} layout is tuple but type is not`);
-        emitDecodeTupleToMem(w, type.components, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
+        const components = type.components;
+        emitWithinStackBudget(
+          w,
+          1,
+          () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
+          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1),
+        ); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
         return;
@@ -260,7 +273,12 @@ export function emitStaticCall(
             } // [base = buf+headOffset]
           };
         }
-        emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
+        emitWithinStackBudget(
+          w,
+          1,
+          () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
+          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1),
+        ); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
         return;
@@ -308,38 +326,30 @@ export function emitStaticCall(
       w.op('LT'); // [buf+rds < end, ptr, buf]
       emitDecodeFail(2); // [ptr, buf]
 
+      let copied = false;
       if (layout.kind === 'array') {
-        // dynamic word-element array (every other array was handled above): eager element
-        // normalization over the aliased snapshot region.
+        // dynamic word-element array (every other array was handled above): full-word elements
+        // alias the snapshot; narrow ones are normalized into a copy.
         if (layout.elem.kind !== 'word' || isRecursiveArray(layout)) {
           throw internal('recursive-codec array reached the word-array decode path');
         }
         const elemAbi = layout.elem.abi;
         if (wordNeedsNormalize(elemAbi)) {
-          // eager element normalization over the aliased snapshot
-          w.op('DUP1');
-          w.op('MLOAD');
-          w.push(5);
-          w.op('SHL'); // [nbytes, ptr, buf]
-          w.op('DUP2');
-          w.op('ADD');
-          w.push(32);
-          w.op('ADD'); // [end, ptr, buf]
-          w.op('DUP2');
-          w.push(32);
-          w.op('ADD'); // [cur, end, ptr, buf]
-          emitNormalizeElemsLoop(w, elemAbi, 2);
-          w.op('POP');
-          w.op('POP'); // [ptr, buf]
+          // narrow elements: normalize into a fresh copy, never in place — another output may
+          // alias the same snapshot bytes (overlapping offsets in non-canonical returndata)
+          emitCopyNormalizeWordArray(w, elemAbi, 1); // [copy, buf]
+          copied = true;
         }
       }
 
       w.push(ref.slot);
-      w.op('MSTORE', { note: `out #${j} ${out.type} (memref aliases snapshot)` }); // [buf]
+      w.op('MSTORE', {
+        note: `out #${j} ${out.type} (${copied ? 'normalized copy' : 'memref aliases snapshot'})`,
+      }); // [buf]
     });
   }
   w.op('POP'); // []
 
   // -- 4. try mode: success flag, zero block (checked — rejoins), join --------------------
-  if (tryMode) emitTryEpilogue(w, plan, 'call');
+  if (tryMode) emitTryEpilogue(w, plan, 'call', restore);
 }

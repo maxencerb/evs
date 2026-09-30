@@ -3,15 +3,18 @@
  * self-call into the trampoline (issue #1), decoding the whole tuple then scattering it.
  */
 
-import { headBytes } from '../../abi/layout.js';
+import { headBytes, layoutOfType } from '../../abi/layout.js';
 import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
+import { abiParamToType } from '../../core/types.js';
 import {
   type SharedTails,
   emitCeil32,
   emitMemCopy,
   type PushBase,
   emitDecodeTupleToMem,
+  needsMemorySnapshot,
+  emitWithinStackBudget,
 } from '../abi.js';
 import { SCRATCH_1, FREE_PTR } from '../memory.js';
 import {
@@ -86,7 +89,16 @@ export function emitSimulateCall(
     throw internal(`strict simulate ${fnAbi.name} (site ${siteId}): successRef must be null`);
   }
 
-  const emitDecodeFail = makeDecodeFail(w, plan, tryMode, 'sim');
+  // try mode over composite outputs: a failure after the snapshot rolls the free pointer back to
+  // the snapshot base on its way to the zero block (see emitTryEpilogue); the one failure before
+  // the snapshot (no trampoline payload) goes straight to the zero block.
+  const restore =
+    tryMode && outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))))
+      ? w.newLabel(`sim_restore_${siteId}`)
+      : null;
+  const emitDecodeFailPre = makeDecodeFail(w, plan, tryMode, 'sim');
+  const emitDecodeFail =
+    restore === null ? emitDecodeFailPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
 
   // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
@@ -182,7 +194,7 @@ export function emitSimulateCall(
   w.push(64);
   w.op('RETURNDATASIZE');
   w.op('LT'); // [rds < 64]
-  emitDecodeFail(0); // []
+  emitDecodeFailPre(0); // []
 
   // snapshot the whole returndata (the trampoline revert payload) at buf; SNAP_SLOT = buf
   w.push(FREE_PTR);
@@ -208,8 +220,8 @@ export function emitSimulateCall(
   // innerSuccess == 0 (target reverted):
   if (tryMode) {
     w.op('POP'); // []
-    w.pushLabel(plan.dfailLabel);
-    w.op('JUMP'); // → zero block
+    w.pushLabel(restore ?? plan.dfailLabel);
+    w.op('JUMP'); // → zero block (via the free-pointer restore)
   } else {
     // strict: bubble the target's revert verbatim — revert(buf+64, rds−64)
     w.op('RETURNDATASIZE');
@@ -242,7 +254,12 @@ export function emitSimulateCall(
       w.op('ADD'); // [buf+64]
     };
     const pushEnd = (): void => pushSnapEnd(w);
-    emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
+    emitWithinStackBudget(
+      w,
+      1,
+      () => `the outputs of ${fnAbi.name} (site ${siteId})`,
+      () => emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1),
+    ); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
       if (ref === undefined) throw internal(`simulate missing out ref #${j}`);
@@ -260,5 +277,5 @@ export function emitSimulateCall(
   w.op('POP'); // []
 
   // -- 6. try mode: success flag, zero block (checked — rejoins), join ------------------------
-  if (tryMode) emitTryEpilogue(w, plan, 'sim');
+  if (tryMode) emitTryEpilogue(w, plan, 'sim', restore);
 }
