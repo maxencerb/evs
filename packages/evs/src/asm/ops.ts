@@ -166,12 +166,13 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
 } satisfies Record<Mnemonic, OpInfo>);
 
 /**
- * Bytes that must never appear as opcodes in evs output (the verifier's shape lint):
+ * Bytes that must never appear as opcodes in evs output:
  * SLOAD, SSTORE, TLOAD, TSTORE, LOG0–LOG4, CREATE, CALLCODE, DELEGATECALL, CREATE2,
  * SELFDESTRUCT. Scripts never read/write their own storage (SLOAD/SSTORE are allowed nowhere).
  * `CALL` (0xf1) was removed from this set by issue #1 — it is emitted ONLY by the
- * `s.call`/`s.simulate` mutable-call surface; the verifier still rejects every
- * frame-escaping or state-persisting opcode below.
+ * `s.call`/`s.simulate` mutable-call surface. The set is disjoint from `OPS` (no `Mnemonic` names
+ * one — pinned by `ops.test.ts`), and `verifyJumpdests` rejects any of these bytes met as an
+ * opcode in the assembled code region.
  */
 export const FORBIDDEN: ReadonlySet<number> = new Set([
   0x54, // SLOAD
