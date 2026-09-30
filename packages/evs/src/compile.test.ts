@@ -493,6 +493,26 @@ describe('toViem()', () => {
     // the plain stateOverride shape never carries `account` (the user composes it themselves)
     expect(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('account');
   });
+
+  test('stateOverride + sender: the public path validates sender and its agreement with address', () => {
+    const compiled = compile(sumScript());
+    const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
+    // the typed sender overload has no `address`; untyped callers can still restate the sender
+    // (any casing) and get the same shape …
+    const restated = { mode: 'stateOverride', sender, address: sender.toLowerCase() };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime branch under test
+    expect(compiled.toViem(restated as never)).toEqual(
+      compiled.toViem({ mode: 'stateOverride', sender }),
+    );
+    // … but a different address contradicts sender mode
+    const contradicting = { mode: 'stateOverride', sender, address: DEFAULT_SCRIPT_ADDRESS };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime branch under test
+    expect(() => compiled.toViem(contradicting as never)).toThrowError(/sender.*address.*disagree/);
+    // a malformed sender is rejected up front, before viem ever sees it
+    const badSender = () => compiled.toViem({ mode: 'stateOverride', sender: '0x1234' });
+    expect(badSender).toThrowError(EvsTypeError);
+    expect(badSender).toThrowError(/`sender` must be a 20-byte 0x address/);
+  });
 });
 
 // ---------------------------------------------------------------------------
