@@ -18,8 +18,8 @@
  *   flow   a live statement makes every value it reads live; a live value makes its defining
  *          statement live, and every `arrset`/`tupleset` that mutates memory the value may
  *          alias (see aliasing); an `if` is live iff any statement in either branch is live
- *          (then its condition is live); everything else — `const`, `bin`, `un`, `env`,
- *          `convert`, `select`, `index`, `len`, `arrnew`, `arrset`, `tuplenew`, `field`,
+ *          (then its condition is live); everything else — `const`, `bin`, `un`, `modarith`,
+ *          `env`, `convert`, `select`, `index`, `len`, `arrnew`, `arrset`, `tuplenew`, `field`,
  *          `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a pure fn — is pure
  *          and dropped when nothing live depends on it.
  *   cells  a cell is live iff a LIVE `cellget` of it exists anywhere (a `cellget` nobody reads
@@ -38,9 +38,9 @@
  * (transitively) has no `call`, `throw`, `while`, impure `fncall`, or `arrset`/`tupleset` on
  * memory aliased with one of its params. Every other `fncall` stays live.
  *
- * REVERT GUARDS ARE NOT SIDE EFFECTS. Checked arithmetic (`bin` add/sub/mul/div/mod →
- * `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x11)`), bounds-checked `index`/`arrset`
- * (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
+ * REVERT GUARDS ARE NOT SIDE EFFECTS. Checked arithmetic (`bin` add/sub/mul/div/mod/pow and
+ * `modarith` addmod/mulmod → `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x11)`),
+ * bounds-checked `index`/`arrset` (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
  * only guarded a value nothing reads is itself dead work: a script that overflows while
  * computing an unused sum returns instead of panicking. This is the same rule the Solidity
  * optimizer applies to unused expressions, and it is what makes the pass an optimizer rather

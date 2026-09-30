@@ -276,6 +276,17 @@ is checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/
 | `mul`  | `mul(rhs: IntoExpr<t>): Expr<t>` | Panic `0x11` on overflow                                          |
 | `div`  | `div(rhs: IntoExpr<t>): Expr<t>` | Panic `0x12` on zero divisor; Panic `0x11` on signed `minN / -1`  |
 | `mod`  | `mod(rhs: IntoExpr<t>): Expr<t>` | Panic `0x12` on zero divisor                                      |
+| `pow`  | `pow(exponent: IntoExpr<'uint256'> \| Expr<UintType>): Expr<t>` | Panic `0x11` when the power leaves `t`'s range; `0 ** 0 == 1`; unsigned exponent |
+
+### Modular arithmetic
+
+Available on `Expr<'uint256'>` only, like Solidity's `addmod` / `mulmod` builtins. The
+intermediate sum or product is computed at full precision (`ADDMOD` / `MULMOD` never wrap).
+
+| Method   | Signature                                                                            | Checked semantics            |
+| -------- | ------------------------------------------------------------------------------------ | ---------------------------- |
+| `addmod` | `addmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>` | `(a + b) % n`; Panic `0x12` on `n == 0` |
+| `mulmod` | `mulmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>` | `(a * b) % n`; Panic `0x12` on `n == 0` |
 
 ### Comparisons
 
@@ -296,14 +307,15 @@ For conditional execution use `s.if` ([control flow](/guides/control-flow/)).
 
 ### Bitwise and shifts
 
-Available on `BitsType` `Expr`s (`uintN` or `bytesN`). Results are re-canonicalized to the
-operand's width; shifts never panic — bits leaving the lane are dropped.
+The bitwise methods are available on `BitsType` `Expr`s (`uintN` or `bytesN`); the shifts also
+on `intN`. Results are re-canonicalized to the operand's width; shifts never panic — bits
+leaving the lane are dropped.
 
 | Method                        | Signature                                 | Notes                                         |
 | ----------------------------- | ----------------------------------------- | ---------------------------------------------- |
 | `bitAnd`, `bitOr`, `bitXor`   | `bitAnd(rhs: IntoExpr<t>): Expr<t>`       | Bitwise within the type's lane                |
 | `bitNot`                      | `bitNot(): Expr<t>`                       | Complement, re-masked to the type's width     |
-| `shl`, `shr`                  | `shl(bits: IntoExpr<'uint256'>): Expr<t>` | Shift amount is always `uint256`              |
+| `shl`, `shr`                  | `shl(bits: IntoExpr<'uint256'>): Expr<t>` | Shift amount is always `uint256`; on `intN`, `shr` is arithmetic (`SAR`, rounds toward −∞) and `shl` re-sign-extends |
 
 ### Conversions and casts
 

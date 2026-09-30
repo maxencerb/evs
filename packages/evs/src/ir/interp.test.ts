@@ -234,6 +234,37 @@ function runShift(type: WordType, op: 'shl' | 'shr', a: unknown, bits: bigint): 
   return interpret(script, [a, bits], deadChain);
 }
 
+/** `r = a ** e` (issue #10): base of `type`, exponent a uint256 arg. */
+function runPow(type: WordType, a: unknown, e: bigint): InterpResult {
+  const script = ir({
+    name: 'pow',
+    args: [
+      { name: 'a', type },
+      { name: 'e', type: 'uint256' },
+    ],
+    values: [vi(type, 'a'), vi('uint256', 'e'), vi(type)],
+    body: [mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 })],
+    returns: [{ name: 'r', type, value: 2 }],
+  });
+  return interpret(script, [a, e], deadChain);
+}
+
+/** `r = addmod/mulmod(a, b, n)` over three uint256 args (issue #10). */
+function runModArith(op: 'addmod' | 'mulmod', a: bigint, b: bigint, n: bigint): InterpResult {
+  const script = ir({
+    name: op,
+    args: [
+      { name: 'a', type: 'uint256' },
+      { name: 'b', type: 'uint256' },
+      { name: 'n', type: 'uint256' },
+    ],
+    values: [vi('uint256', 'a'), vi('uint256', 'b'), vi('uint256', 'n'), vi('uint256')],
+    body: [mk({ k: 'modarith', op, a: 0, b: 1, n: 2, out: 3 })],
+    returns: [{ name: 'r', type: 'uint256', value: 3 }],
+  });
+  return interpret(script, [a, b, n], deadChain);
+}
+
 function runUn(type: WordType, op: UnOp, a: unknown): InterpResult {
   const outType: EvsType = op === 'bitnot' ? type : 'bool';
   const script = ir({
@@ -724,6 +755,39 @@ describe('bitwise — results re-canonicalized to width', () => {
     expect(asBig(retOf(runShift('int256', 'shr', -2n, 300n)).r)).toBe(-1n); // SAR ≥256, negative
     expect(asBig(retOf(runShift('int256', 'shr', 64n, 1n)).r)).toBe(32n);
     expect(asBig(retOf(runShift('uint256', 'shr', U256_MAX, 256n)).r)).toBe(0n);
+  });
+});
+
+describe('pow / addmod / mulmod (issue #10)', () => {
+  test('pow is the exact power, Panic 0x11 out of range, 0 ** 0 == 1', () => {
+    expect(asBig(retOf(runPow('uint256', 0n, 0n)).r)).toBe(1n);
+    expect(asBig(retOf(runPow('uint256', 0n, U256_MAX)).r)).toBe(0n);
+    expect(asBig(retOf(runPow('uint256', 1n, U256_MAX)).r)).toBe(1n);
+    expect(asBig(retOf(runPow('uint256', 2n, 255n)).r)).toBe(2n ** 255n);
+    expectPanic(runPow('uint256', 2n, 256n), 0x11);
+    expectPanic(runPow('uint256', 3n, U256_MAX), 0x11);
+    expect(asBig(retOf(runPow('uint8', 15n, 2n)).r)).toBe(225n);
+    expectPanic(runPow('uint8', 16n, 2n), 0x11);
+  });
+  test('signed pow: negative bases, the asymmetric minimum', () => {
+    expect(asBig(retOf(runPow('int8', -2n, 7n)).r)).toBe(-128n);
+    expectPanic(runPow('int8', 2n, 7n), 0x11);
+    expectPanic(runPow('int8', -2n, 8n), 0x11);
+    expect(asBig(retOf(runPow('int8', -1n, U256_MAX)).r)).toBe(-1n);
+    expect(asBig(retOf(runPow('int8', -1n, U256_MAX - 1n)).r)).toBe(1n);
+    expect(asBig(retOf(runPow('int256', -2n, 255n)).r)).toBe(-(2n ** 255n));
+    expectPanic(runPow('int256', -(2n ** 255n), 2n), 0x11);
+    expect(asBig(retOf(runPow('int256', -(2n ** 255n), 1n)).r)).toBe(-(2n ** 255n));
+  });
+  test('addmod / mulmod are full precision; a zero modulus panics 0x12', () => {
+    expect(asBig(retOf(runModArith('addmod', U256_MAX, U256_MAX, 10n)).r)).toBe(
+      (2n * U256_MAX) % 10n,
+    );
+    expect(asBig(retOf(runModArith('mulmod', U256_MAX, U256_MAX, U256_MAX - 1n)).r)).toBe(
+      (U256_MAX * U256_MAX) % (U256_MAX - 1n),
+    );
+    expectPanic(runModArith('addmod', 1n, 2n, 0n), 0x12);
+    expectPanic(runModArith('mulmod', 0n, 0n, 0n), 0x12);
   });
 });
 

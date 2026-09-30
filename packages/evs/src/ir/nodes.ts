@@ -58,6 +58,7 @@ export type BinOp =
   | 'mul'
   | 'div'
   | 'mod'
+  | 'pow' // checked exponentiation (solc `**`): `a` numeric, `b` (the exponent) any uintN
   | 'lt'
   | 'gt'
   | 'lte'
@@ -72,6 +73,8 @@ export type BinOp =
   | 'shl'
   | 'shr';
 export type UnOp = 'not' | 'bitnot' | 'iszero';
+/** Full-precision modular ops (issue #10): `(a op b) % n` over uint256, Panic 0x12 on `n == 0`. */
+export type ModArithOp = 'addmod' | 'mulmod';
 export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
 
 export type ConstData =
@@ -104,6 +107,8 @@ export type Stmt = { readonly site: SiteId } & (
   | { k: 'const'; out: ValueId; data: ConstData; type: EvsType }
   | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'un'; op: UnOp; a: ValueId; out: ValueId }
+  // ADDMOD / MULMOD (issue #10): uint256 operands, `n` the modulus (Panic 0x12 when zero)
+  | { k: 'modarith'; op: ModArithOp; a: ValueId; b: ValueId; n: ValueId; out: ValueId }
   | { k: 'env'; op: EnvOp; out: ValueId }
   | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
@@ -458,6 +463,7 @@ const BIN_OPS: ReadonlySet<string> = new Set([
   'mul',
   'div',
   'mod',
+  'pow',
   'lt',
   'gt',
   'lte',
@@ -473,6 +479,7 @@ const BIN_OPS: ReadonlySet<string> = new Set([
   'shr',
 ] satisfies BinOp[]);
 const UN_OPS: ReadonlySet<string> = new Set(['not', 'bitnot', 'iszero'] satisfies UnOp[]);
+const MOD_ARITH_OPS: ReadonlySet<string> = new Set(['addmod', 'mulmod'] satisfies ModArithOp[]);
 const ENV_OPS: ReadonlySet<string> = new Set([
   'address',
   'caller',
@@ -486,6 +493,9 @@ function isBinOp(s: string): s is BinOp {
 }
 function isUnOp(s: string): s is UnOp {
   return UN_OPS.has(s);
+}
+function isModArithOp(s: string): s is ModArithOp {
+  return MOD_ARITH_OPS.has(s);
 }
 /** An {@link EnvOp} name (shared with the builder's `s.env` check). */
 export function isEnvOp(s: string): s is EnvOp {
@@ -526,6 +536,19 @@ function decodeStmt(v: unknown, path: string): Stmt {
       const op = asString(o['op'], `${path}.op`);
       if (!isUnOp(op)) fail(`${path}.op`, `unknown un op ${describe(op)}`);
       return { site, k, op, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+    }
+    case 'modarith': {
+      const op = asString(o['op'], `${path}.op`);
+      if (!isModArithOp(op)) fail(`${path}.op`, `unknown modarith op ${describe(op)}`);
+      return {
+        site,
+        k,
+        op,
+        a: asId(o['a'], `${path}.a`),
+        b: asId(o['b'], `${path}.b`),
+        n: asId(o['n'], `${path}.n`),
+        out: asId(o['out'], `${path}.out`),
+      };
     }
     case 'env': {
       const op = asString(o['op'], `${path}.op`);
@@ -740,6 +763,8 @@ export function stmtReads(s: Stmt): readonly ValueId[] {
       return [s.a];
     case 'select':
       return [s.cond, s.a, s.b];
+    case 'modarith':
+      return [s.a, s.b, s.n];
     case 'index':
       return [s.arr, s.i];
     case 'arrnew':
@@ -776,6 +801,7 @@ export function stmtDefs(s: Stmt): readonly ValueId[] {
     case 'const':
     case 'bin':
     case 'un':
+    case 'modarith':
     case 'env':
     case 'convert':
     case 'select':

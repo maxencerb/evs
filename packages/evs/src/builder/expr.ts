@@ -65,6 +65,7 @@ import {
   type CellInfo,
   type FnId,
   type FnIr,
+  type ModArithOp,
   type PlainAbiError,
   type PlainAbiParam,
   type ScriptIr,
@@ -151,6 +152,7 @@ const NUMERIC_OPS: ReadonlySet<BinOp> = new Set([
   'mul',
   'div',
   'mod',
+  'pow',
   'lt',
   'gt',
   'lte',
@@ -335,6 +337,17 @@ function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
       if (b === 0n) return { ok: false, panic: 0x12, reason: `${a} % 0 takes modulo zero` };
       return { ok: true, value: a % b }; // sign of the dividend, like EVM SMOD
     }
+    case 'pow': {
+      // exact power + range check (solc checked `**`); b is the unsigned exponent
+      if (b === 0n || a === 0n || a === 1n) return { ok: true, value: b === 0n ? 1n : a };
+      if (a === -1n) return { ok: true, value: b % 2n === 0n ? 1n : -1n };
+      const [min, max] = rangeOf(type);
+      const r = b > 256n ? null : a ** b; // |a| ≥ 2 ⇒ out of range past 2^256 anyway
+      if (r === null || r < min || r > max) {
+        return { ok: false, panic: 0x11, reason: `${a} ** ${b} overflows ${type}` };
+      }
+      return { ok: true, value: r };
+    }
     case 'lt':
       return { ok: true, value: a < b ? 1n : 0n };
     case 'gt':
@@ -406,6 +419,15 @@ class ExprHandle {
   }
   mod(rhs: unknown): Expr {
     return internalsOf(this).owner.bin('mod', this, rhs, '.mod()');
+  }
+  pow(exponent: unknown): Expr {
+    return internalsOf(this).owner.bin('pow', this, exponent, '.pow()');
+  }
+  addmod(rhs: unknown, modulus: unknown): Expr {
+    return internalsOf(this).owner.modArithOp('addmod', this, rhs, modulus, '.addmod()');
+  }
+  mulmod(rhs: unknown, modulus: unknown): Expr {
+    return internalsOf(this).owner.modArithOp('mulmod', this, rhs, modulus, '.mulmod()');
   }
   lt(rhs: unknown): Expr {
     return internalsOf(this).owner.bin('lt', this, rhs, '.lt()');
@@ -1453,21 +1475,22 @@ export class Recorder {
   bin(op: BinOp, a: unknown, b: unknown, what: string): Expr {
     this.assertOpen(what);
     const isShift = op === 'shl' || op === 'shr';
+    const isPow = op === 'pow';
     const isEquality = op === 'eq' || op === 'neq';
     const ca = this.classifyOperand(a, `${what} left operand`, isEquality);
     const cb = this.classifyOperand(
       b,
-      `${what} ${isShift ? 'shift amount' : 'right operand'}`,
+      `${what} ${isShift ? 'shift amount' : isPow ? 'exponent' : 'right operand'}`,
       isEquality,
     );
 
     // infer the operation type from the Expr operand(s)
     let ty: EvsType;
-    if (isShift) {
+    if (isShift || isPow) {
       if (ca.kind !== 'expr') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: the shifted operand must be an Expr — type a literal with s.lit(type, value)`,
+          `${what}: the ${isPow ? 'base' : 'shifted operand'} must be an Expr — type a literal with s.lit(type, value)`,
         );
       }
       ty = ca.type;
@@ -1499,7 +1522,8 @@ export class Recorder {
     if (isEquality && !isWordType(ty)) return this.memrefEquality(op, a, b, ty, what);
 
     this.checkBinDomain(op, ty, what);
-    const bTy: EvsType = isShift ? 'uint256' : ty;
+    // shift amounts are uint256; a pow exponent is any uintN (solc: an unsigned exponent)
+    const bTy: EvsType = isShift ? 'uint256' : isPow ? this.exponentType(cb, what) : ty;
     const resultTy: EvsType = CMP_OPS.has(op) || op === 'and' || op === 'or' ? 'bool' : ty;
 
     // resolve operands to (id, logical) pairs without materializing raw literals yet
@@ -1517,6 +1541,53 @@ export class Recorder {
     const ib = rb.id ?? this.materializeWord(bTy, rb);
     const out = this.newValue(resultTy);
     this.appendStmt({ k: 'bin', op, a: ia, b: ib, out });
+    return makeExpr(this, out);
+  }
+
+  /** The exponent type of `pow`: an unsigned `Expr`'s own type, else (a literal) `uint256`. */
+  private exponentType(c: Operand, what: string): EvsType {
+    if (c.kind !== 'expr') return 'uint256';
+    if (!isNumeric(c.type) || isSigned(c.type)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: the exponent must be an unsigned Expr<'uintN'> (or a non-negative literal), got Expr<'${stringifyType(c.type)}'>`,
+      );
+    }
+    return c.type;
+  }
+
+  /**
+   * `addmod` / `mulmod` (issue #10): `(a op b) % n` at full precision over uint256 — every operand
+   * is coerced to `uint256` (an `Expr<'uint256'>` or a literal). All-literal operands fold (a
+   * literal zero modulus is a CERTAIN_PANIC); otherwise the zero-modulus guard is emitted unless
+   * the modulus is a nonzero literal (codegen's constant-divisor elision).
+   */
+  modArithOp(op: ModArithOp, a: unknown, b: unknown, n: unknown, what: string): Expr {
+    this.assertOpen(what);
+    const names = ['left operand', 'right operand', 'modulus'] as const;
+    const resolved = [a, b, n].map((v, i) =>
+      this.resolveOperand(
+        this.classify(v, `${what} ${names[i]}`),
+        'uint256',
+        `${what} ${names[i]}`,
+      ),
+    );
+    const [ra, rb, rn] = resolved;
+    if (ra === undefined || rb === undefined || rn === undefined) {
+      throw new EvsInternalError('INTERNAL', `${what}: operand resolution lost an operand`);
+    }
+    if (ra.logical !== null && rb.logical !== null && rn.logical !== null) {
+      if (rn.logical === 0n) {
+        this.certainPanic(what, `${op}(${ra.logical}, ${rb.logical}, 0) takes modulo zero`, 0x12);
+      }
+      const r = (op === 'addmod' ? ra.logical + rb.logical : ra.logical * rb.logical) % rn.logical;
+      return makeExpr(this, this.wordConst('uint256', r));
+    }
+    const ia = ra.id ?? this.materializeWord('uint256', ra);
+    const ib = rb.id ?? this.materializeWord('uint256', rb);
+    const iN = rn.id ?? this.materializeWord('uint256', rn);
+    const out = this.newValue('uint256');
+    this.appendStmt({ k: 'modarith', op, a: ia, b: ib, n: iN, out });
     return makeExpr(this, out);
   }
 

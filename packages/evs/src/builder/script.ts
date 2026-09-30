@@ -40,12 +40,14 @@ import type {
   EvsType,
   Expr,
   IntoExpr,
+  IntType,
   LitOf,
   NamedType,
   NormalizeArgs,
   NumericType,
   StringType,
   TupleType,
+  UintType,
 } from '../core/types.js';
 import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
 import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
@@ -1153,6 +1155,22 @@ export interface ScriptBuilder<
   mul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   div<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   mod<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  // checked `**` (the base must be an Expr: its type is the result type); exponent unsigned
+  pow<t extends NumericType>(
+    base: Expr<t>,
+    exponent: IntoExpr<'uint256'> | Expr<UintType>,
+  ): Expr<t>;
+  // full-precision (a + b) % n / (a · b) % n over uint256; Panic 0x12 on n == 0
+  addmod(
+    a: IntoExpr<'uint256'>,
+    b: IntoExpr<'uint256'>,
+    modulus: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  mulmod(
+    a: IntoExpr<'uint256'>,
+    b: IntoExpr<'uint256'>,
+    modulus: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
   lt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   gt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   lte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
@@ -1166,8 +1184,8 @@ export interface ScriptBuilder<
   bitOr<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   bitXor<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   bitNot<t extends BitsType>(a: Expr<t>): Expr<t>;
-  shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
-  shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shl<t extends BitsType | IntType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr<t extends BitsType | IntType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // SAR on intN
 
   // ABI encoding + hashing (issue #17, amended by #24). `keccak256` hashes the
   // STANDARD encoding — `keccak256(abi.encode(...))` — of any encodable values (a single
@@ -1278,6 +1296,9 @@ function makeBuilder(r: Recorder): ScriptBuilder {
     mul: (a: unknown, b: unknown) => r.bin('mul', a, b, 's.mul()'),
     div: (a: unknown, b: unknown) => r.bin('div', a, b, 's.div()'),
     mod: (a: unknown, b: unknown) => r.bin('mod', a, b, 's.mod()'),
+    pow: (a: unknown, e: unknown) => r.bin('pow', a, e, 's.pow()'),
+    addmod: (a: unknown, b: unknown, n: unknown) => r.modArithOp('addmod', a, b, n, 's.addmod()'),
+    mulmod: (a: unknown, b: unknown, n: unknown) => r.modArithOp('mulmod', a, b, n, 's.mulmod()'),
     lt: (a: unknown, b: unknown) => r.bin('lt', a, b, 's.lt()'),
     gt: (a: unknown, b: unknown) => r.bin('gt', a, b, 's.gt()'),
     lte: (a: unknown, b: unknown) => r.bin('lte', a, b, 's.lte()'),

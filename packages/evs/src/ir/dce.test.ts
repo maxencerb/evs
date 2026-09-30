@@ -613,6 +613,31 @@ describe('revert guards are not side effects', () => {
     });
   });
 
+  test('pow / mulmod / addmod are pure: dead ones go with their Panic 0x11 / 0x12 (issue #10)', () => {
+    const MAX = (1n << 256n) - 1n;
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('uint256'), vi('uint256'), vi('uint256'), vi('uint256')],
+      body: [
+        constU(1, 0n),
+        mk({ k: 'bin', op: 'pow', a: 0, b: 0, out: 2 }), // MAX ** MAX overflows
+        mk({ k: 'modarith', op: 'mulmod', a: 0, b: 2, n: 1, out: 3 }), // modulus 0
+        mk({ k: 'modarith', op: 'addmod', a: 0, b: 0, n: 1, out: 4 }), // modulus 0
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    const out = check(x);
+    expect(out.body).toEqual([]);
+    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('revert');
+    expect(interpret(out, [MAX], NO_CHAIN).outcome).toMatchObject({
+      kind: 'return',
+      values: { a: MAX },
+    });
+    // a live one keeps its operands (and its guard)
+    const live = ir({ ...x, returns: [{ name: 'r', type: 'uint256', value: 4 }] });
+    expect(check(live).body).toEqual([live.body[0], live.body[3]]);
+  });
+
   test('the same add feeding a return is untouched and keeps panicking', () => {
     const MAX = (1n << 256n) - 1n;
     const x = ir({

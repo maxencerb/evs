@@ -103,6 +103,21 @@ export interface Expr<t extends EvsType = EvsType> {
   mul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
   div(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
   mod(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  // checked exponentiation (solc `**`): Panic 0x11 when the power leaves t's range; the exponent
+  // is unsigned — a literal or any Expr<'uintN'> (0 ** 0 == 1)
+  pow(this: Expr<t & NumericType>, exponent: IntoExpr<'uint256'> | Expr<UintType>): Expr<t>;
+  // full-precision modular arithmetic (ADDMOD / MULMOD — the intermediate never wraps), uint256
+  // only like Solidity's builtins; Panic 0x12 on a zero modulus
+  addmod(
+    this: Expr<'uint256'>,
+    rhs: IntoExpr<'uint256'>,
+    modulus: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  mulmod(
+    this: Expr<'uint256'>,
+    rhs: IntoExpr<'uint256'>,
+    modulus: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
 
   // comparisons — LT/GT vs SLT/SGT chosen from the static type
   lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
@@ -124,8 +139,10 @@ export interface Expr<t extends EvsType = EvsType> {
   bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
   bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
   bitNot(this: Expr<t & BitsType>): Expr<t>;
-  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
-  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>; // SAR for intN via s.shr
+  // shifts are unchecked (Solidity): the result is re-canonicalized to t's width; on intN, `shl`
+  // re-sign-extends and `shr` is the arithmetic SAR (rounds toward −∞, like solc's `>>`)
+  shl(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
 
   // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range)
   toUint<const u extends UintType>(target: u): Expr<u>;

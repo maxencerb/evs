@@ -1,6 +1,6 @@
 ---
 title: Arithmetic and comparisons
-description: Checked arithmetic, comparison, boolean, bitwise, and conversion operations on Expr values, with solc 0.8 panic semantics.
+description: Checked arithmetic, exponentiation, modular arithmetic, comparison, boolean, bitwise, and conversion operations on Expr values, with solc 0.8 panic semantics.
 ---
 
 All arithmetic in evs is **checked**, matching solc 0.8 semantics exactly: overflow reverts with `Panic(0x11)`, division by zero with `Panic(0x12)`. Operations are methods on `Expr`, with the operand domain enforced by the type system.
@@ -10,14 +10,16 @@ All arithmetic in evs is **checked**, matching solc 0.8 semantics exactly: overf
 | Group              | `Expr` methods                                  | Operands                                       | Result          |
 | ------------------ | ----------------------------------------------- | ---------------------------------------------- | --------------- |
 | Checked arithmetic | `add` `sub` `mul` `div` `mod`                   | numeric (`uintN` / `intN`), same type          | same type       |
+| Exponentiation     | `pow`                                           | numeric base; unsigned exponent (any `uintN` or literal) | base type |
+| Modular arithmetic | `addmod` `mulmod`                               | `uint256` (value, operand, modulus)            | `Expr<'uint256'>` |
 | Ordering           | `lt` `gt` `lte` `gte`                           | numeric, same type                             | `Expr<'bool'>`  |
 | Equality           | `eq` `neq`                                      | any word type, same type                       | `Expr<'bool'>`  |
 | Boolean            | `and` `or` `not`                                | `bool`                                         | `Expr<'bool'>`  |
 | Bitwise            | `bitAnd` `bitOr` `bitXor` `bitNot`              | `uintN` / `bytesN`, same type                  | same type       |
-| Shifts             | `shl` `shr`                                     | value `uintN` / `bytesN`; shift amount `uint256` | same as value |
+| Shifts             | `shl` `shr`                                     | value `uintN` / `intN` / `bytesN`; shift amount `uint256` | same as value |
 | Conversions        | `toUint` `toInt` `asAddress` `asUint256` `asBytes32` | see [Conversions](#conversions)          | target type     |
 
-Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`).
+Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, `s.pow(base, e)`, `s.mulmod(a, b, n)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`). The exceptions are `addmod` / `mulmod`, whose operands are always `uint256` (all-literal calls simply fold), and `pow` and the shifts, whose left operand must be an `Expr` (its type is the result type).
 
 Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and-types/): `x.add(1n)`, `tick.lt(0n)`, `flag.and(true)`.
 
@@ -30,13 +32,49 @@ Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and
 | `add` / `sub` / `mul` result out of range for the operand type  | `Panic(0x11)` |
 | `div` / `mod` by zero                                           | `Panic(0x12)` |
 | signed division of the type's minimum value by −1               | `Panic(0x11)` |
+| `pow` result out of range for the base type                     | `Panic(0x11)` |
+| `addmod` / `mulmod` with a zero modulus                         | `Panic(0x12)` |
 | checked narrowing out of range (`toUint` / `toInt` / `asAddress`) | `Panic(0x11)` |
 
 Checks run at the operand type's width, not at 256 bits: a `uint64` addition overflows at 2^64. The signed-division edge case is handled explicitly — the EVM's `SDIV` silently wraps `−2^255 / −1`, but evs (like solc) reverts with `Panic(0x11)`.
 
 Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate sites in your script that can raise that panic. See [errors and debugging](/guides/errors-and-debugging/).
 
-Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` (the typed surface admits only these; an arithmetic `SAR` lowering exists at the IR level for signed operands but is not exposed on the builder yet — see [#10](https://github.com/maxencerb/evs/issues/10)). Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
+Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` and an arithmetic shift (`SAR`) for `intN`: it rounds toward negative infinity, exactly like Solidity's `>>` on signed integers (`-3 >> 1 == -2`). `shl` on `intN` re-sign-extends from the width, so `int8(127).shl(1)` is `-2`. Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
+
+## Exponentiation
+
+`a.pow(e)` is Solidity's `a ** e` under checked arithmetic: the exact power, `Panic(0x11)` when it does not fit the **base's** type, and `0 ** 0 == 1`. The result has the base's type; the exponent is unsigned — a non-negative literal or an `Expr` of any `uintN` width (a signed exponent is a type error, as in Solidity). Signed bases follow the asymmetric range exactly: `(-2) ** 7` is `-128` and fits `int8`, `2 ** 7` overflows it, and `(-1) ** e` never overflows whatever `e` is.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const scale = evscript({ name: 'scale', args: [t.uint256, t.uint8] }, (s, amount, decimals) => {
+  // 10 ** decimals — a literal base compiles to one bound check (decimals ≤ 77) and one EXP
+  const unit = s.lit(t.uint256, 10n).pow(decimals);
+  // a literal exponent compiles to one check on the base (amount ≤ ⌊(2^256 − 1)^(1/3)⌋) and one EXP
+  const cubed = amount.pow(3n);
+  return s.return({ whole: amount.div(unit), cubed });
+});
+```
+
+What it costs depends on what is known at recording time. A **literal base** (`s.lit(t.uint256, 2n).pow(e)`) is one comparison against the largest exponent that fits plus one `EXP` — for `2 ** e` on `uint256` exactly solc's `e > 255` check. A **literal exponent** (`x.pow(3n)`) is one range check on the base against the precomputed integer root of the type's bound, then one `EXP`. When both are runtime values evs runs solc's square-and-multiply loop, with an overflow check before every squaring: at most 7 iterations (an exponent above 255 with a base of magnitude ≥ 2 panics straight away), about 1,100 gas in the worst case against roughly 100 for the literal-base and literal-exponent forms, and a single `EXP` when the base is `0`/`±1` or the exponent is `0`.
+
+## Modular arithmetic
+
+`a.addmod(b, n)` and `a.mulmod(b, n)` are Solidity's `addmod(a, b, n)` / `mulmod(a, b, n)`: `(a + b) % n` and `(a * b) % n` computed at **full precision** — the intermediate sum or product is never truncated to 256 bits, so `mulmod(x, y, p)` is the right tool for modular arithmetic over a large prime where `x.mul(y).mod(p)` would overflow. They are `uint256`-only (value, operand and modulus), and a zero modulus reverts with `Panic(0x12)`, like `div` / `mod`. A nonzero literal modulus drops that runtime check, as a literal divisor does for `div` / `mod`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const P = 21888242871839275222246405745257275088548364400416034343698204186575808495617n;
+
+const field = evscript({ name: 'field', args: [t.uint256, t.uint256] }, (s, x, y) => {
+  const prod = x.mulmod(y, P); // (x * y) mod P, no 512-bit overflow
+  const sum = s.addmod(x, y, P);
+  return s.return({ prod, sum });
+});
+```
 
 ## Signedness selects the comparison
 

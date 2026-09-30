@@ -360,6 +360,15 @@ class IrValidator {
       case 'bin':
         this.checkBin(s, path);
         return;
+      case 'modarith': {
+        // addmod / mulmod (issue #10): uint256 only, like Solidity's builtins
+        const what = `${path} (modarith ${s.op})`;
+        this.use(s.a, 'uint256', what);
+        this.use(s.b, 'uint256', what);
+        this.use(s.n, 'uint256', `${what} modulus`);
+        this.define(s.out, 'uint256', what);
+        return;
+      }
       case 'un': {
         const what = `${path} (un ${s.op})`;
         if (s.op === 'not') {
@@ -646,6 +655,19 @@ class IrValidator {
           this.fail(`${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`);
         }
         this.use(s.b, ta, what);
+        this.define(s.out, ta, what);
+        return;
+      }
+      case 'pow': {
+        // checked exponentiation (issue #10): numeric base, UNSIGNED exponent of any width (solc)
+        const ta = this.use(s.a, null, what);
+        if (!isNumeric(ta)) {
+          this.fail(`${what}: base must be numeric (uintN/intN), got '${stringifyType(ta)}'`);
+        }
+        const tb = this.use(s.b, null, `${what} exponent`);
+        if (!isNumeric(tb) || isSigned(tb)) {
+          this.fail(`${what}: exponent must be an unsigned uintN, got '${stringifyType(tb)}'`);
+        }
         this.define(s.out, ta, what);
         return;
       }

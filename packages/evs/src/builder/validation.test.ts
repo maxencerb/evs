@@ -329,6 +329,48 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     expect(e.message).toMatch(/toUint\('uint256'\)/);
   });
 
+  test('pow: the exponent must be unsigned, the base an Expr (issue #10)', () => {
+    expectEvs(
+      () => rec((s, a) => a.x.pow(a.s8 as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /exponent must be an unsigned Expr<'uintN'>.*got Expr<'int8'>/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.pow(2n as never, a.x)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /the base must be an Expr/,
+    );
+    expectEvs(
+      () => rec((s, a) => a.x.pow(-1n)),
+      EvsTypeError,
+      'LITERAL_RANGE',
+      /uint256 literal -1n is out of range/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.pow(a.who as never, 2n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /must be numeric/,
+    );
+  });
+
+  test('addmod / mulmod take uint256 operands only (issue #10)', () => {
+    expectEvs(
+      () => rec((s, a) => (a.s8 as unknown as Expr<'uint256'>).mulmod(1n, 3n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /\.mulmod\(\) left operand.*expected 'uint256', got Expr<'int8'>/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.addmod(a.x, a.x, s.lit(t.uint128, 5n) as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.addmod\(\) modulus/,
+    );
+  });
+
   test('arithmetic on a non-numeric type', () => {
     expectEvs(
       () => rec((s, a) => s.add(a.who as never, a.who as never)),
@@ -595,6 +637,42 @@ describe('checklist: all-literal certain-panic folds', () => {
       'CERTAIN_PANIC',
       /Panic\(0x12\)/,
     );
+  });
+
+  test('pow overflow → Panic(0x11) (issue #10)', () => {
+    expectEvs(
+      () => rec((s) => s.lit(t.uint8, 2).pow(8n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /2 \*\* 8 overflows uint8.*Panic\(0x11\)/s,
+    );
+    expectEvs(
+      () => rec((s) => s.lit(t.int8, -2).pow(8n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /overflows int8/,
+    );
+    expectEvs(
+      () => rec((s) => s.lit(t.uint256, 2n).pow(1n << 200n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /overflows uint256/,
+    );
+    // in-range literal powers fold, including the int8 minimum and 0 ** 0
+    expect(() =>
+      rec((s) => s.return({ a: s.lit(t.int8, -2).pow(7n), z: s.lit(t.uint8, 0).pow(0n) })),
+    ).not.toThrow();
+  });
+
+  test('addmod / mulmod by a literal zero modulus → Panic(0x12) (issue #10)', () => {
+    expectEvs(
+      () => rec((s) => s.mulmod(2n, 3n, 0n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /mulmod\(2, 3, 0\) takes modulo zero.*Panic\(0x12\)/s,
+    );
+    // with a runtime operand the zero modulus is recorded (a runtime Panic, like x.div(0n))
+    expect(() => rec((s, a) => s.return({ r: a.x.addmod(1n, 0n) }))).not.toThrow();
   });
 
   test('out-of-range narrowing conversion → Panic(0x11)', () => {
