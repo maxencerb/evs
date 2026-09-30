@@ -68,9 +68,10 @@ jobs:
         run: bunx changeset status --since origin/main
         continue-on-error: true
 
-  # Manual (workflow_dispatch) mainnet-fork suite; add a `schedule:` trigger to run it periodically.
+  # Manual (workflow_dispatch) mainnet-fork suite. The job condition already accepts `schedule`,
+  # so adding a `schedule:` trigger under `on:` is all it takes to run it periodically.
   fork-tests:
-    name: Mainnet-fork suite (scheduled / manual)
+    name: Mainnet-fork suite (manual)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:

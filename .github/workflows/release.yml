@@ -96,4 +96,4 @@ jobs:
           script: vp run changeset:publish
           create-github-releases: true
         env:
-          NODE_AUTH_TOKEN: '' # nothing must shadow OIDC (npm-oidc-release.md §2)
+          NODE_AUTH_TOKEN: '' # nothing must shadow OIDC (a set token would take precedence over it)
