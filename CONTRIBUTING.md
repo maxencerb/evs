@@ -90,10 +90,12 @@ Releases: see [Releasing](#releasing) below.
   observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
   calls are the roots; a revert that only guarded an unused value is dead work too, like in
   the Solidity optimizer — then codegen lowers each surviving statement through fixed
-  memory-slot templates to an assembly stream, the assembler resolves jumps (`PUSH2` fixups),
-  and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST` scan, a
-  stack-height simulation (the operand stack must be empty at every statement boundary),
-  opcode/fork lints, and the EIP-170 size check. The artifact's `ir` stays the recorded IR;
+  memory-slot templates to an assembly stream, the assembler lays it out, enforces the EIP-170
+  size check (through the `onLayout` hook `compile()` passes, before any fixup is patched, so a
+  program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps (`PUSH2`
+  fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
+  scan, a stack-height simulation (the operand stack must be empty at every statement
+  boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
   the differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`.
   An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
   frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn

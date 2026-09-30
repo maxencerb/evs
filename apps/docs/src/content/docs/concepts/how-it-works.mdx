@@ -23,8 +23,8 @@ AsmNode[]           codegen: frame layout (liveness-packed with optimize: true) 
       |             dispatcher -> statement templates ->
       |             call/ABI emitters -> shared revert tails -> data segments
       |  optimize: true -> built-in peephole pass (off by default)
-      |  peephole hook (default: identity) -> assemble: PUSH2 fixups -> layout -> patch
-      |  verify: JUMPDEST scan + stack-height simulation + shape lints, then EIP-170
+      |  peephole hook (default: identity) -> assemble: layout -> EIP-170 size check
+      |  -> patch PUSH2 fixups -> verify: JUMPDEST scan + stack-height simulation + shape lints
       v
 CompiledEvsScript   runtimeBytecode, initBytecode, literal-typed abi, sourceMap, ir,
                     toViem(), disassemble(), explainRevert()
@@ -124,8 +124,9 @@ during this stage through the `onDiagnostic` callback — `compile()` never logs
 
 The assembler turns the node stream into bytes: opcodes, minimal-width `PUSH` immediates, and
 label pushes. Label pushes are always emitted as `PUSH2` plus a fixup that is patched in after
-layout — the EIP-170 size cap keeps every offset within 16 bits, so `PUSH2` always suffices and
-no narrowing pass exists to get wrong. Data segments are placed after the last code byte behind
+layout — the EIP-170 size cap, checked as soon as layout fixes the final length and before any
+fixup is patched, keeps every offset within 16 bits, so `PUSH2` always suffices and no
+narrowing pass exists to get wrong. Data segments are placed after the last code byte behind
 a single `INVALID` (`0xFE`) guard byte, so execution can never fall through into data.
 
 Between codegen and assembly sits the optimizer seam. By default nothing runs there and the
@@ -171,7 +172,9 @@ report"), never silently ships bad bytecode.
 
 Runtime bytecode is capped at 24,576 bytes (EIP-170). Exceeding it throws `EvsCompileError`
 with a per-region size breakdown (dispatcher, body, functions, shared tails, data segments) so you can see
-what to trim. The artifact that comes out the other side — `runtimeBytecode`, the deployless
+what to trim. The check runs from the assembler's layout pass, before label fixups are patched
+and before the verifiers, so every oversized script gets this error however large it is — even
+one that host-side loops unrolled past 64 KiB. The artifact that comes out the other side — `runtimeBytecode`, the deployless
 `initBytecode` wrapper, the literal-typed ABI, the source map, and the debugging methods — is
 documented in [The compiled artifact](/reference/artifact/).
 

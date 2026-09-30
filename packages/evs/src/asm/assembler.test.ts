@@ -222,19 +222,55 @@ describe('assemble — label fixups', () => {
     expect(() => assemble(nodes, { evmVersion: 'cancun', verify: false })).toThrow(/defined twice/);
   });
 
-  test('label beyond 0xffff cannot be patched (PUSH2 reach)', () => {
+  const pastPush2Reach = (): AsmNode[] => {
     const nodes: AsmNode[] = [
       { k: 'pushLabel', label: 0 },
       { k: 'op', op: 'POP' },
     ];
-    // 2200 × (PUSH32 + 32 bytes) = 72,600 bytes of filler past the 16-bit boundary
+    // 2200 × (PUSH32 + 32 bytes + POP) = 74,800 bytes of filler past the 16-bit boundary
     for (let i = 0; i < 2200; i++) {
       nodes.push({ k: 'pushBytes', bytes: new Uint8Array(32) }, { k: 'op', op: 'POP' });
     }
     nodes.push({ k: 'label', label: 0, stack: 'any' }, { k: 'op', op: 'STOP' });
-    expect(() => assemble(nodes, { evmVersion: 'cancun', verify: false })).toThrow(
+    return nodes;
+  };
+
+  test('label beyond 0xffff cannot be patched (PUSH2 reach assertion)', () => {
+    expect(() => assemble(pastPush2Reach(), { evmVersion: 'cancun', verify: false })).toThrow(
       /PUSH2 fixups cannot reach/,
     );
+  });
+
+  test('onLayout sees the final length + label pcs before fixups, and can reject first', () => {
+    const seen: { totalLen: number; label0: number | undefined }[] = [];
+    const reject = new Error('too big');
+    expect(() =>
+      assemble(pastPush2Reach(), {
+        evmVersion: 'cancun',
+        verify: false,
+        onLayout: (totalLen, labelPcs) => {
+          seen.push({ totalLen, label0: labelPcs.get(0) });
+          throw reject;
+        },
+      }),
+    ).toThrow(reject);
+    // 3 (PUSH2) + 1 (POP) + 2200 × 34 + 1 (JUMPDEST) + 1 (STOP)
+    expect(seen).toEqual([{ totalLen: 74_806, label0: 74_804 }]);
+
+    // a hook that accepts leaves the output untouched
+    const w = new AsmWriter();
+    w.push(1n);
+    w.op('STOP');
+    let calls = 0;
+    const hooked = assemble(w.nodes(), {
+      evmVersion: 'cancun',
+      onLayout: (totalLen) => {
+        calls++;
+        expect(totalLen).toBe(3);
+      },
+    });
+    expect(calls).toBe(1);
+    expect(hooked.bytecode).toEqual(assemble(w.nodes(), { evmVersion: 'cancun' }).bytecode);
   });
 });
 
