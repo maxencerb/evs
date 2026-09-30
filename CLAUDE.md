@@ -58,7 +58,8 @@ Tests run on **vitest** through `vp test` (prool per-worker anvil via
 - `packages/evs` — the published library. Code in `src/` (`core/ ir/ abi/ builder/ asm/
 codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type tests
   `src/**/*.test-d.ts`, integration tests + harnesses in `test/`. Built with `vp pack`
-  (tsdown, unbundled ESM + `.d.ts` + maps into `dist/`), ESM-only. The committed `version` is the **last released** one —
+  (tsdown, unbundled ESM + `.d.ts` + JS maps with embedded sources into `dist/`; no
+  declaration maps, and `src/` is not published), ESM-only. The committed `version` is the **last released** one —
   only the changesets "Version Packages" PR (titled "chore(release): version packages")
   changes it.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,

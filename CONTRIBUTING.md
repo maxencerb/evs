@@ -66,8 +66,12 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 
 `packages/evs` builds with `vp pack` (tsdown, the `pack` block in its `vite.config.ts`): entry
 `src/index.ts`, unbundled ESM (one `dist/` module per reachable source file, `.js` / `.d.ts`
-names so `exports` / `main` / `types` are unchanged), JS source maps and declaration maps
-(`files` ships `src/` so they resolve). No tsdown compatibility settings are set:
+names so `exports` / `main` / `types` are unchanged) and JS source maps. The maps embed the
+TypeScript sources (`sourcesContent`, pinned with `outputOptions.sourcemapExcludeSources: false`)
+so stack traces and debuggers resolve to the original code, which is why `src/` is **not**
+shipped (`files` is `dist` only). There are no declaration maps: go-to-definition lands on the
+`.d.ts`, which keeps the JSDoc. Do not re-add `src` to `files` or turn on `dts.sourcemap` without
+the other — declaration maps carry no sources and would point at missing files. No tsdown compatibility settings are set:
 `deps.resolveDepSubpath` does not matter (every external is imported by its bare name) and
 attw runs in CI with the `esm-only` profile, not inside the build. Differences from the former
 `tsc -p tsconfig.build.json` emit: declarations are generated only for modules reachable from
@@ -157,7 +161,8 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets); 
    each package whose version is not on npm yet (`prepublishOnly` rebuilds `dist/`), then
    creates the `@maxencerb/evs@X.Y.Z` tag and reports it through `CHANGESETS_OUTPUT`; the action
    pushes the tag and creates the GitHub release. The committed version is always the last
-   released one.
+   released one. The tarball is `dist/` + README + LICENSE + package.json only (see
+   [Library build](#library-build-vp-pack): sources live inside the `.js.map` files).
 
 Why this works without a token or the npm CLI: since pnpm 11, `pnpm publish` is native (it no
 longer shells out to `npm publish`) and implements npm trusted publishing itself — it reads
