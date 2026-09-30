@@ -3,7 +3,7 @@
  * `ScriptBuilder`, `Cell`, `MutArray`, `LoopCtl`, `ScriptReturn`.
  *
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
- * in `builder/expr.ts`; this file owns the frozen types and wires the typed facade onto it.
+ * in `builder/expr.ts`; this file owns the public types and wires the typed facade onto it.
  */
 import type {
   Abi,
@@ -811,7 +811,7 @@ export interface TrySubcallVerb<mut extends AbiStateMutability> {
   };
 }
 
-/** `s.read` — STATICCALL of a `view`/`pure` function (the frozen read surface). */
+/** `s.read` — STATICCALL of a `view`/`pure` function. */
 export type ReadVerb = SubcallVerb<ViewMutability>;
 /** `s.tryRead` — STATICCALL, never reverts the script (`{ success, value }`). */
 export type TryReadVerb = TrySubcallVerb<ViewMutability>;
@@ -1036,7 +1036,7 @@ export interface ScriptBuilder<
   // calls — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
   // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the
   // mutability bucket its `functionName`/arg/output handles are filtered by:
-  //   read     / tryRead     → STATICCALL of view/pure          (the renamed frozen read surface)
+  //   read     / tryRead     → STATICCALL of view/pure
   //   call     / tryCall     → CALL of nonpayable/payable        (non-static frame, NO rollback)
   //                            + the `revertReturns` opt-in (issue #35: decode the REVERT payload)
   //   simulate / trySimulate → CALL of nonpayable/payable        (write dry-run, state rolled back)
@@ -1144,7 +1144,7 @@ function makeBuilder(r: Recorder): ScriptBuilder {
 
     return: (values: unknown) => r.ret(values),
   };
-  // the facade implements the frozen `ScriptBuilder` surface; types are enforced at the surface,
+  // the facade implements the declared `ScriptBuilder` surface; types are enforced at the surface,
   // the engine is dynamic
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
   return builder as unknown as ScriptBuilder;

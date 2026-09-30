@@ -2,7 +2,7 @@
  * `builder/expr.ts` — the module-private recording engine.
  *
  * Implements the builder's recording invariants (value semantics, scope rule, staging traps,
- * constant folding). This file has no frozen exports of its own — the public surface lives in
+ * constant folding). This file has no public exports of its own — the public surface lives in
  * `builder/script.ts`; everything here is internal to the builder module.
  *
  * Key mechanisms:
@@ -19,7 +19,7 @@
  *   documented escape hatch (route one operand through a cell).
  */
 /* oxlint-disable unicorn/no-thenable --
- * the frozen IR schema names the if-statement branch field `then`. */
+ * the IR schema names the if-statement branch field `then`. */
 
 import type { AbiFunction } from 'abitype';
 
@@ -815,7 +815,7 @@ export class Recorder {
   }
 
   appendStmt(body: Record<string, unknown>, loc: SourceLoc | null): void {
-    // statement bodies are built per the frozen Stmt union (re-checked by ir/validate)
+    // statement bodies are built per the declared Stmt union (re-checked by ir/validate)
     this.top().stmts.push(unsafeCast<Stmt>({ ...body, loc, site: this.nextSite++ }));
   }
 

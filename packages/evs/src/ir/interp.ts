@@ -2,7 +2,7 @@
  * `ir/interp.ts` — the reference interpreter over `ScriptIr` against a `MockChain`.
  *
  * It is the differential oracle for the compiler and implements the canonical word invariant,
- * the normative checked-arithmetic table, the call semantics (bubbling, staticMinSize guard,
+ * the checked-arithmetic rules (see binOp), the call semantics (bubbling, staticMinSize guard,
  * decode bounds, normalization, tryCall zeroing) and the ABI encode shapes.
  *
  * Binding invariant: bit-for-bit agreement with the compiled bytecode on both returndata and
@@ -812,7 +812,7 @@ class Interp {
 }
 
 // ---------------------------------------------------------------------------
-// checked arithmetic + word ops (the normative table)
+// checked arithmetic + word ops
 // ---------------------------------------------------------------------------
 
 function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {

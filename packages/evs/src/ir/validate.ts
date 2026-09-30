@@ -9,7 +9,7 @@
  * call-graph acyclicity, return-name validity, fnAbi type validity, and `successOut` ⇔ try mode.
  *
  * Script args bind positionally to the first `args.length` entries of the value table
- * (ValueIds `0 … args.length-1`) — the only binding the frozen `ScriptIr` shape admits, since
+ * (ValueIds `0 … args.length-1`) — the only binding the `ScriptIr` shape admits, since
  * `args` entries carry no explicit ValueId and no "load arg" statement kind exists.
  *
  * All failures throw `EvsInternalError` (compiler-produced IR is supposed to be valid — a

@@ -133,12 +133,12 @@ export type CompiledOf<s> =
     ? CompiledEvsScript<n, a, r, e>
     : never;
 
-// DEVIATION (recorded): the frozen signature is `compile<s extends EvsScript>`, but a concrete
-// multi-return script is NOT assignable to the default-instantiated `EvsScript` — the
-// `ScriptAbi` default collapses `Record<string, Expr>` components to a 1-tuple via
-// UnionToTuple, so `EvsScript<'x', […], { a; b }>` fails the constraint and every real
-// script would be rejected. The constraint below is the minimal structural relaxation;
-// `CompiledOf<s>` (and therefore the result type) is exactly the frozen signature's.
+// The natural constraint `s extends EvsScript` does not work: a concrete multi-return script is
+// NOT assignable to the default-instantiated `EvsScript` — the `ScriptAbi` default collapses
+// `Record<string, Expr>` components to a 1-tuple via UnionToTuple, so
+// `EvsScript<'x', […], { a; b }>` fails the constraint and every real script would be rejected.
+// The constraint below is the minimal structural relaxation; `CompiledOf<s>` still gives the
+// precise result type.
 export function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
 >(script: s, options?: CompileOptions): CompiledOf<s> {

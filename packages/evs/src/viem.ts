@@ -5,9 +5,9 @@
  *   fails SILENTLY (empirically verified). The artifact therefore only
  *   ever exposes creation bytecode under a key named `code`; the raw fields are named
  *   `runtimeBytecode` / `initBytecode` deliberately.
- * - The locked 10-byte wrapper is `61 RRRR 80 600A 5F 39 5F F3` (RRRR = runtime length,
- *   big-endian PUSH2 immediate). The paris variant swaps `5F` (PUSH0) for `3D`
- *   (RETURNDATASIZE — zero at the start of an init frame):
+ * - The fixed 10-byte wrapper (golden-tested in viem.test.ts) is `61 RRRR 80 600A 5F 39 5F F3`
+ *   (RRRR = runtime length, big-endian PUSH2 immediate). The paris variant swaps `5F` (PUSH0)
+ *   for `3D` (RETURNDATASIZE — zero at the start of an init frame):
  *
  *     61 RRRR   PUSH2 len        [len]
  *     80        DUP1             [len, len]
@@ -40,7 +40,7 @@ import { abiParamToType, type Hex } from './core/types.js';
 import type { PlainAbiParam } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
-// init wrapper (the locked 10-byte builder)
+// init wrapper (the fixed 10-byte builder)
 // ---------------------------------------------------------------------------
 
 /** EIP-170 keeps runtimes ≤ 24,576, far below the PUSH2 immediate ceiling. */
