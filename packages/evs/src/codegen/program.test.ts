@@ -11,7 +11,7 @@
  *   zeroing / gas cap;
  * - data segments: placed last behind INVALID, content-deduplicated;
  * - diagnostics: LOOP_ALLOCATION (call-with-outputs / arrnew / dynamic literal in a loop)
- *   and LARGE_FRAME; sites table; labelNames; locations:false stripping; determinism;
+ *   and LARGE_FRAME; sites table; labelNames; determinism;
  *   sourceMap segment coverage; uncalled fns dropped.
  */
 
@@ -31,7 +31,6 @@ import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble, type LabelId } from '../asm/assembler.js';
 import { disassemble } from '../asm/disasm.js';
 import type { EvmVersion } from '../asm/ops.js';
-import type { SourceLoc } from '../core/errors.js';
 import {
   isEvsType,
   isWordType,
@@ -65,34 +64,32 @@ function wordHex(v: bigint): Hex {
 }
 
 /** A `Stmt` minus the bookkeeping the builder fills in (distributed over the union). */
-type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'loc' | 'site'> : never) : never;
+type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'site'> : never) : never;
 
 class IrB {
   readonly name: string;
   readonly argsList: { name: string; type: EvsType }[];
-  values: { type: EvsType; loc: null }[] = [];
-  cells: { type: EvsType; loc: null }[] = [];
+  values: { type: EvsType }[] = [];
+  cells: { type: EvsType }[] = [];
   fns: {
     name: string;
     params: { name: string; type: EvsType; value: ValueId }[];
     results: { type: EvsType }[];
     body: readonly Stmt[];
     resultValues: readonly ValueId[];
-    loc: null;
   }[] = [];
   returnsList: { name: string; type: EvsType; value: ValueId }[] = [];
-  loc: SourceLoc | null = null; // applied to subsequently emitted stmts
   private blocks: Stmt[][] = [[]];
   private nextSite = 0;
 
   constructor(name: string, args: readonly (readonly [string, EvsType])[] = []) {
     this.name = name;
     this.argsList = args.map(([n, t]) => ({ name: n, type: t }));
-    for (const a of this.argsList) this.values.push({ type: a.type, loc: null });
+    for (const a of this.argsList) this.values.push({ type: a.type });
   }
 
   val(type: EvsType): ValueId {
-    this.values.push({ type, loc: null });
+    this.values.push({ type });
     return this.values.length - 1;
   }
 
@@ -105,7 +102,7 @@ class IrB {
   private emit(body: StmtBody): void {
     const block = this.blocks[this.blocks.length - 1];
     if (block === undefined) throw new Error('IrB: no open block');
-    block.push({ loc: this.loc, site: this.nextSite++, ...body });
+    block.push({ site: this.nextSite++, ...body });
   }
 
   word(type: WordType, v: bigint): ValueId {
@@ -155,7 +152,7 @@ class IrB {
   }
 
   cell(type: EvsType, init: ValueId): CellId {
-    this.cells.push({ type, loc: null });
+    this.cells.push({ type });
     const cell = this.cells.length - 1;
     this.emit({ k: 'cellnew', cell, init });
     return cell;
@@ -220,7 +217,6 @@ class IrB {
       results: resultValues.map((rv) => ({ type: this.typeOf(rv) })),
       body,
       resultValues: [...resultValues],
-      loc: null,
     });
     return this.fns.length - 1;
   }
@@ -259,7 +255,6 @@ class IrB {
       fns: this.fns,
       body,
       returns: this.returnsList,
-      loc: null,
     };
   }
 }
@@ -270,14 +265,14 @@ class IrB {
 
 function compileIr(
   ir: ScriptIr,
-  opts?: { evmVersion?: EvmVersion; locations?: boolean },
+  opts?: { evmVersion?: EvmVersion },
 ): {
   runtime: Hex;
   lowered: ReturnType<typeof lowerProgram>;
   sourceMap: import('../asm/sourcemap.js').SourceMap;
 } {
   const evmVersion = opts?.evmVersion ?? 'cancun';
-  const lowered = lowerProgram(ir, { evmVersion, locations: opts?.locations ?? true });
+  const lowered = lowerProgram(ir, { evmVersion });
   const { bytecode, sourceMap } = assemble(lowered.nodes, { evmVersion });
   return { runtime: bytesToHex(bytecode), lowered, sourceMap };
 }
@@ -373,12 +368,11 @@ function fragmentListing(spec: FragmentSpec): string {
     irVersion: 1,
     name: 'fragment',
     args: [],
-    values: spec.values.map((type) => ({ type, loc: null })),
-    cells: (spec.cellTypes ?? []).map((type) => ({ type, loc: null })),
+    values: spec.values.map((type) => ({ type })),
+    cells: (spec.cellTypes ?? []).map((type) => ({ type })),
     fns: [],
     body: spec.body,
     returns: [],
-    loc: null,
   };
   const segments: { label: LabelId; bytes: Uint8Array }[] = [];
   const ctx: LowerCtx = {
@@ -416,7 +410,7 @@ function fragmentListing(spec: FragmentSpec): string {
 
 let fragSite = 100;
 function st(body: StmtBody, site?: number): Stmt {
-  return { loc: null, site: site ?? fragSite++, ...body };
+  return { site: site ?? fragSite++, ...body };
 }
 
 // ---------------------------------------------------------------------------
@@ -1062,7 +1056,7 @@ describe('data segments', () => {
   test('data nodes are last in the node stream (assemble plants the INVALID guard)', () => {
     const b = new IrB('lit');
     b.ret('s', b.data('string', concatHex(word(2n), `0x${'6869'.padEnd(64, '0')}`)));
-    const { nodes } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { nodes } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const firstData = nodes.findIndex((n) => n.k === 'data' || n.k === 'dataLabel');
     expect(firstData).toBeGreaterThan(0);
     for (const node of nodes.slice(firstData)) {
@@ -1092,7 +1086,7 @@ describe('diagnostics', () => {
       },
     );
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
     expect(loopAllocs).toHaveLength(3);
     for (const d of loopAllocs) expect(d.severity).toBe('warning');
@@ -1102,7 +1096,7 @@ describe('diagnostics', () => {
     const b = new IrB('flat', [['n', 'uint256']]);
     b.arrnew('uint256', 0);
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     expect(diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION')).toHaveLength(0);
   });
 
@@ -1113,7 +1107,6 @@ describe('diagnostics', () => {
     b.ret('n', 0);
     const { diagnostics, frameEnd } = lowerProgram(b.build(), {
       evmVersion: 'cancun',
-      locations: true,
     });
     expect(frameEnd).toBeGreaterThan(0x8000);
     expect(diagnostics.some((d) => d.code === 'LARGE_FRAME')).toBe(true);
@@ -1140,7 +1133,7 @@ describe('diagnostics', () => {
       },
     );
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
     expect(loopAllocs.some((d) => d.message.includes('fn "mid"'))).toBe(true);
     expect(loopAllocs.some((d) => d.message.includes('fn "pure"'))).toBe(false);
@@ -1154,7 +1147,7 @@ describe('diagnostics', () => {
     });
     b.fncall(leaf, [0]);
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     expect(diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION')).toHaveLength(0);
   });
 
@@ -1168,7 +1161,7 @@ describe('diagnostics', () => {
     void caller;
     void self;
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
     expect(envDiags).toHaveLength(2);
     expect(envDiags.some((d) => d.message.includes("s.env('caller')"))).toBe(true);
@@ -1182,7 +1175,6 @@ describe('diagnostics', () => {
     blockCtx.ret('n', 0);
     const blockDiags = lowerProgram(blockCtx.build(), {
       evmVersion: 'cancun',
-      locations: true,
     }).diagnostics;
     expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
   });
@@ -1194,7 +1186,7 @@ describe('diagnostics', () => {
     void dropped;
     b.fncall(called, [0]);
     b.ret('n', 0);
-    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun', locations: true });
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
     expect(envDiags).toHaveLength(1);
     expect(envDiags[0]?.message).toContain("s.env('caller')");
@@ -1202,18 +1194,15 @@ describe('diagnostics', () => {
 });
 
 // ---------------------------------------------------------------------------
-// sites, labelNames, locations, determinism, coverage, uncalled fns
+// sites, labelNames, determinism, coverage, uncalled fns
 // ---------------------------------------------------------------------------
 
 describe('LowerResult metadata', () => {
-  const LOC: SourceLoc = { file: 'pools.ts', line: 9, column: 18 };
-
   function richIr(): { ir: ScriptIr; callSite: number; trySite: number } {
     const b = new IrB('rich', [
       ['token', 'address'],
       ['xs', 'uint256[]'],
     ]);
-    b.loc = LOC;
     const strict = b.call({ target: 0, abi: fnAbi('symbol', [], ['string']) });
     const tryC = b.call({ target: 0, abi: fnAbi('decimals', [], ['uint8']), mode: 'try' });
     const one = b.word('uint256', 1n);
@@ -1231,11 +1220,10 @@ describe('LowerResult metadata', () => {
 
   test('sites: strict call → decode, try call → call, checked ops → panic', () => {
     const { ir, callSite, trySite } = richIr();
-    const { sites } = lowerProgram(ir, { evmVersion: 'cancun', locations: true });
+    const { sites } = lowerProgram(ir, { evmVersion: 'cancun' });
     const byId = new Map(sites.map((s) => [s.id, s]));
     expect(byId.get(callSite)?.kind).toBe('decode');
     expect(byId.get(callSite)?.detail).toContain('symbol');
-    expect(byId.get(callSite)?.loc).toEqual(LOC);
     expect(byId.get(trySite)?.kind).toBe('call');
     expect(sites.some((s) => s.kind === 'panic' && s.detail.includes('add'))).toBe(true);
     expect(sites.some((s) => s.kind === 'panic' && s.detail.includes('0x32'))).toBe(true);
@@ -1245,7 +1233,7 @@ describe('LowerResult metadata', () => {
 
   test('labelNames: main, tails, fn entries; uncalled fns are dropped', () => {
     const { ir } = richIr();
-    const { labelNames } = lowerProgram(ir, { evmVersion: 'cancun', locations: true });
+    const { labelNames } = lowerProgram(ir, { evmVersion: 'cancun' });
     const names = [...labelNames.values()];
     expect(names).toContain('main');
     expect(names).toContain('panic_overflow');
@@ -1254,21 +1242,6 @@ describe('LowerResult metadata', () => {
     expect(names).toContain('fn_inc');
     expect(names).not.toContain('fn_ghost');
     expect(names.some((n) => n.startsWith('dfail_'))).toBe(true);
-  });
-
-  test('locations: false strips locs from nodes, sites and diagnostics', () => {
-    const { ir } = richIr();
-    const { nodes, sites } = lowerProgram(ir, { evmVersion: 'cancun', locations: false });
-    const nodesWithLoc = nodes.filter((n) => 'loc' in n && n.loc !== undefined && n.loc !== null);
-    expect(nodesWithLoc).toEqual([]);
-    const sitesWithLoc = sites.filter((s) => s.loc !== null);
-    expect(sitesWithLoc).toEqual([]);
-  });
-
-  test('locations: true forwards stmt locs into nodes', () => {
-    const { ir } = richIr();
-    const { nodes } = lowerProgram(ir, { evmVersion: 'cancun', locations: true });
-    expect(nodes.some((n) => 'loc' in n && n.loc !== undefined && n.loc !== null)).toBe(true);
   });
 
   test('lowering is deterministic (identical bytecode twice)', () => {
@@ -1295,7 +1268,7 @@ describe('LowerResult metadata', () => {
 
   test('frameEnd in the result matches the prologue immediate', () => {
     const ir = echoIr();
-    const { frameEnd, nodes } = lowerProgram(ir, { evmVersion: 'cancun', locations: true });
+    const { frameEnd, nodes } = lowerProgram(ir, { evmVersion: 'cancun' });
     expect(nodes[0]).toMatchObject({ k: 'push', value: BigInt(frameEnd) });
   });
 });

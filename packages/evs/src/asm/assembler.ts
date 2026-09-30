@@ -13,7 +13,7 @@
  *   `EvsInternalError`s.
  */
 
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import { OPS, type EvmVersion, type Mnemonic } from './ops.js';
 import type { SourceMap } from './sourcemap.js';
 import { verifyJumpdests, verifyShapes, verifyStack } from './verify.js';
@@ -21,16 +21,15 @@ import { verifyJumpdests, verifyShapes, verifyStack } from './verify.js';
 export type LabelId = number;
 
 export type AsmNode =
-  | { k: 'op'; op: Mnemonic; loc?: SourceLoc | null; note?: string }
-  | { k: 'push'; value: bigint; loc?: SourceLoc | null; note?: string } // minimal-width; 0→PUSH0 (paris: PUSH1 00)
-  | { k: 'pushBytes'; bytes: Uint8Array; loc?: SourceLoc | null; note?: string } // exact-width PUSH<len>
-  | { k: 'pushLabel'; label: LabelId; loc?: SourceLoc | null; note?: string } // ALWAYS PUSH2 + fixup
+  | { k: 'op'; op: Mnemonic; note?: string }
+  | { k: 'push'; value: bigint; note?: string } // minimal-width; 0→PUSH0 (paris: PUSH1 00)
+  | { k: 'pushBytes'; bytes: Uint8Array; note?: string } // exact-width PUSH<len>
+  | { k: 'pushLabel'; label: LabelId; note?: string } // ALWAYS PUSH2 + fixup
   | { k: 'label'; label: LabelId; stack: number | 'any'; name?: string } // emits JUMPDEST
   | { k: 'dataLabel'; label: LabelId; name?: string } // no JUMPDEST
   | { k: 'data'; bytes: Uint8Array; note?: string };
 
 interface NodeMeta {
-  loc?: SourceLoc | null;
   note?: string;
 }
 
@@ -60,7 +59,6 @@ const SNAPSHOT_DUPS: readonly Mnemonic[] = [
 
 function metaProps(meta?: NodeMeta): NodeMeta {
   const m: NodeMeta = {};
-  if (meta?.loc !== undefined) m.loc = meta.loc;
   if (meta?.note !== undefined) m.note = meta.note;
   return m;
 }
@@ -229,7 +227,7 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
 
   // single layout pass — every node has a fixed width (pushLabel is always PUSH2+2).
   const chunks: Uint8Array[] = [];
-  const segments: { pc: number; len: number; loc: SourceLoc | null; note?: string }[] = [];
+  const segments: { pc: number; len: number; note?: string }[] = [];
   const labels: { pc: number; name: string }[] = [];
   const labelPcs = new Map<LabelId, number>();
   const codeLabels = new Set<LabelId>();
@@ -237,14 +235,10 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   let pc = 0;
   let dataStart = -1; // pc of the INVALID guard byte; -1 = no data segment
 
-  const emit = (bytes: Uint8Array, meta?: { loc?: SourceLoc | null; note?: string }): void => {
+  const emit = (bytes: Uint8Array, meta?: { note?: string }): void => {
     if (bytes.length === 0) return;
     chunks.push(bytes);
-    const seg: { pc: number; len: number; loc: SourceLoc | null; note?: string } = {
-      pc,
-      len: bytes.length,
-      loc: meta?.loc ?? null,
-    };
+    const seg: { pc: number; len: number; note?: string } = { pc, len: bytes.length };
     if (meta?.note !== undefined) seg.note = meta.note;
     segments.push(seg);
     pc += bytes.length;

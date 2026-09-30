@@ -25,7 +25,6 @@ declare function evscript<
     s: ScriptBuilder<NormalizeErrors<errs>>,
     ...args: ArgHandles<NormalizeArgs<args>>
   ) => ScriptReturn<ret>,
-  opts?: { locations?: boolean }, // default true: capture source locations
 ): EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
 ```
 
@@ -88,29 +87,8 @@ Recording-time validation (each violation throws `EvsTypeError` with the call-si
 Everything the builder itself can throw during recording is catalogued in
 [diagnostics](/reference/diagnostics/).
 
-### The locations option
-
-`opts.locations` (default `true`) controls source-location capture during recording. When
-enabled, every recorded statement stores a `SourceLoc` parsed from a stack trace, which powers
-error messages, `sourceMap`, `explainRevert`, and diagnostics. Pass `{ locations: false }` to
-skip the per-statement stack capture (faster recording; locations in errors and the source map
-become `null`):
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const fast = evscript(
-  { name: 'fast', args: [t.uint256] },
-  (s, x) => s.return({ x }),
-  { locations: false },
-);
-```
-
-`compile` has its own independent `locations` option (below) for the emitted source map.
-
-On a runtime with no `import.meta.url` (bundled workerd, some bundler outputs) evs cannot
-identify its own stack frames, so captured locations may point at library internals or resolve
-to `<unknown>` — see [writing scripts](/guides/writing-scripts/#source-locations-the-locations-option).
+Builder errors are thrown synchronously while `body` runs, so a recording-time error's stack
+trace includes the line of your script that caused it.
 
 ## EvsScript
 
@@ -301,7 +279,6 @@ interface CompileOptions {
   optimize?: boolean;
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[];
   onDiagnostic?: (d: EvsDiagnostic) => void;
-  locations?: boolean;
 }
 ```
 
@@ -311,7 +288,6 @@ interface CompileOptions {
 | `optimize`     | `false`      | Enables the built-in optimizer passes: the liveness-based frame allocator ([#41](https://github.com/maxencerb/evs/issues/41) — dead values' slots are reused; args, cells and fn params stay dedicated) and the conservative asm-level peephole pass `evsPeephole` ([#39](https://github.com/maxencerb/evs/issues/39): store-then-reload folding, constant folding, stack identities). `false` is byte-identical to the plain lowering. |
 | `peephole`     | identity     | Optimizer seam: a user hook over the assembler node stream before layout. With `optimize: true` it runs **after** the built-in pass and sees its output. The mandatory verifiers run on the final stream either way. |
 | `onDiagnostic` | no-op        | Receives every compile-time warning (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`). evs never logs; without a callback, diagnostics are silently dropped.          |
-| `locations`    | `true`       | Whether source locations are carried into the emitted source map.                                                                                                             |
 
 The compiled artifact exposes the fully resolved options as
 `options: Readonly<Required<CompileOptions>>` — defaults filled in (`options.peephole` is always

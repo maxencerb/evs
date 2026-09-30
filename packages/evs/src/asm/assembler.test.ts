@@ -1,12 +1,10 @@
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import { AsmWriter, assemble, type AsmNode } from './assembler.js';
 
 const hex = (bytes: Uint8Array): string =>
   [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 describe('AsmWriter', () => {
   test('newLabel returns increasing ids and remembers names', () => {
@@ -22,17 +20,17 @@ describe('AsmWriter', () => {
     ]);
   });
 
-  test('op/push/pushBytes/pushLabel record nodes with loc and note', () => {
+  test('op/push/pushBytes/pushLabel record nodes with their note', () => {
     const w = new AsmWriter();
     const l = w.newLabel();
-    w.op('ADD', { loc: LOC, note: 'checked add' });
+    w.op('ADD', { note: 'checked add' });
     w.push(5n, { note: 'literal' });
-    w.pushBytes(Uint8Array.of(0xde, 0xad), { loc: null });
+    w.pushBytes(Uint8Array.of(0xde, 0xad));
     w.pushLabel(l);
     expect(w.nodes()).toEqual([
-      { k: 'op', op: 'ADD', loc: LOC, note: 'checked add' },
+      { k: 'op', op: 'ADD', note: 'checked add' },
       { k: 'push', value: 5n, note: 'literal' },
-      { k: 'pushBytes', bytes: Uint8Array.of(0xde, 0xad), loc: null },
+      { k: 'pushBytes', bytes: Uint8Array.of(0xde, 0xad) },
       { k: 'pushLabel', label: l },
     ]);
   });
@@ -306,11 +304,11 @@ describe('assemble — sourceMap', () => {
     const w = new AsmWriter();
     const main = w.newLabel('main');
     const blob = w.newLabel('blob');
-    w.pushLabel(main, { loc: LOC });
+    w.pushLabel(main);
     w.op('JUMP');
     w.label(main, 0);
-    w.push(0x2an, { loc: LOC, note: 'answer' });
-    w.op('POP', { loc: null });
+    w.push(0x2an, { note: 'answer' });
+    w.op('POP');
     w.push(0n);
     w.push(0n);
     w.op('RETURN');
@@ -334,7 +332,7 @@ describe('assemble — sourceMap', () => {
       { pc: 12, name: 'blob' },
     ]);
     const answer = sourceMap.segments.find((s) => s.note === 'answer');
-    expect(answer?.loc).toEqual(LOC);
+    expect(answer).toBeDefined();
     expect(sourceMap.segments.some((s) => s.note === 'data segment guard')).toBe(true);
     expect(sourceMap.segments.some((s) => s.note === 'blob bytes')).toBe(true);
   });

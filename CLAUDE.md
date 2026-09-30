@@ -72,7 +72,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in
   CONTRIBUTING.md's "Docs site" section; its build command uses plain `pnpm …` and must not
   depend on the global `vp` CLI — everything it runs resolves from `node_modules`: the local
-  `vite-plus` for `vp pack`, `vite/rolldown` for the playground bundles, node for the scripts). Deploys stay on wrangler (`apps/docs/wrangler.jsonc`), not the `cf` CLI
+  `vite-plus` for `vp pack`, node for the scripts). Deploys stay on wrangler (`apps/docs/wrangler.jsonc`), not the `cf` CLI
   beta: `cf build`/`cf deploy` cannot ship a static Astro build without the Cloudflare adapter
   (details in CONTRIBUTING.md) — do not run `cf migrate` on it.
   Every ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:

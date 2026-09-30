@@ -2,10 +2,6 @@ import type { Abi } from 'abitype';
 /**
  * Builder unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
  * constant folding, scope positives, and recorded-IR validity (`validateIr` on every script).
- *
- * Snapshot scripts are recorded with `{ locations: false }` so the serialized IR is
- * deterministic (no absolute paths / line numbers); loc-sensitive assertions live in
- * `validation.test.ts`.
  */
 import { describe, expect, test } from 'vite-plus/test';
 
@@ -15,8 +11,6 @@ import { eliminateDeadCode } from '../ir/dce.js';
 import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
-
-const NO_LOC = { locations: false } as const;
 
 const erc20Abi = [
   {
@@ -101,10 +95,8 @@ const recMemrefCompare = (
 // ---------------------------------------------------------------------------
 
 describe('script shell', () => {
-  const script = evscript(
-    { name: 'shell', args: [t.address, t.uint256] },
-    (s, pool, n) => s.return({ pool, n }),
-    NO_LOC,
+  const script = evscript({ name: 'shell', args: [t.address, t.uint256] }, (s, pool, n) =>
+    s.return({ pool, n }),
   );
 
   test('IR snapshot', () => {
@@ -165,7 +157,6 @@ describe('named args (namedArg)', () => {
     const script = evscript(
       { name: 'named', args: [namedArg('token', t.address), t.uint24, namedArg('who', t.address)] },
       (s, token, _fee, who) => s.return({ token, who }),
-      NO_LOC,
     );
     expect(script.ir.args).toEqual([
       { name: 'token', type: 'address' },
@@ -182,10 +173,8 @@ describe('named args (namedArg)', () => {
   });
 
   test('single-arg shorthand: a lone namedArg (no array wrapper)', () => {
-    const script = evscript(
-      { name: 'lone', args: namedArg('amount', t.uint256) },
-      (s, amount) => s.return({ amount }),
-      NO_LOC,
+    const script = evscript({ name: 'lone', args: namedArg('amount', t.uint256) }, (s, amount) =>
+      s.return({ amount }),
     );
     expect(script.ir.args).toEqual([{ name: 'amount', type: 'uint256' }]);
     expect(script.abi[0].inputs).toEqual([{ name: 'amount', type: 'uint256' }]);
@@ -197,7 +186,6 @@ describe('named args (namedArg)', () => {
       evscript(
         { name: 'dup', args: [namedArg('x', t.address), namedArg('x', t.uint256)] },
         (s, a) => s.return({ a }),
-        NO_LOC,
       );
     } catch (e) {
       if (e instanceof EvsError) code = e.code;
@@ -210,7 +198,6 @@ describe('named args (namedArg)', () => {
     const script = evscript(
       { name: 'position', args: [namedArg('marketParams', MarketParams)] },
       (s, marketParams) => s.return({ loan: marketParams.loanToken.get() }),
-      NO_LOC,
     );
     expect(script.ir.args).toEqual([{ name: 'marketParams', type: MarketParams }]);
     expect(script.abi[0].inputs).toEqual([
@@ -230,16 +217,12 @@ describe('named args (namedArg)', () => {
   // -- s.fn composite params (issue #37): a struct/tuple param binds like a script arg ---------
   test('s.fn accepts a t.struct param (namedArg and bare): the body gets a Tuple handle', () => {
     const Pair = t.struct({ token: t.address, fee: t.uint24 });
-    const script = evscript(
-      { name: 'fnc', args: [t.address, t.uint24] },
-      (s, token, fee) => {
-        const feeOf = s.fn('feeOf', namedArg('pair', Pair), (pair) => pair.fee.get());
-        const tokenOf = s.fn('tokenOf', Pair, (pair) => pair.token.get());
-        const built = s.tuple(Pair, { token, fee });
-        return s.return({ fee: feeOf(built), token: tokenOf(built) });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'fnc', args: [t.address, t.uint24] }, (s, token, fee) => {
+      const feeOf = s.fn('feeOf', namedArg('pair', Pair), (pair) => pair.fee.get());
+      const tokenOf = s.fn('tokenOf', Pair, (pair) => pair.token.get());
+      const built = s.tuple(Pair, { token, fee });
+      return s.return({ fee: feeOf(built), token: tokenOf(built) });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     // the param type is recorded as the full descriptor (named / positional `arg0` fallback).
     expect(script.ir.fns[0]?.params).toEqual([{ name: 'pair', type: Pair, value: 2 }]);
@@ -247,7 +230,7 @@ describe('named args (namedArg)', () => {
     expect(script.ir.values[2]).toMatchObject({ type: Pair, debugName: 'feeOf(pair)' });
     // the body's `pair.fee.get()` is a `field` read off the PARAM value — a memref pointer word.
     expect(script.ir.fns[0]?.body).toEqual([
-      { k: 'field', tuple: 2, index: 1, out: 3, loc: null, site: expect.any(Number) },
+      { k: 'field', tuple: 2, index: 1, out: 3, site: expect.any(Number) },
     ]);
     expect(script.ir.fns[0]?.results).toEqual([{ type: 'uint24' }]);
     expect(script.ir.returns.map((r) => r.type)).toEqual(['uint24', 'address']);
@@ -256,18 +239,14 @@ describe('named args (namedArg)', () => {
 
   test('s.fn struct param: a script-arg Tuple passes straight through; literal objects coerce', () => {
     const Pair = t.struct({ token: t.address, fee: t.uint24 });
-    const script = evscript(
-      { name: 'fnpass', args: [namedArg('pair', Pair)] },
-      (s, pair) => {
-        const feeOf = s.fn('feeOf', [namedArg('p', Pair)] as const, (p) => p.fee.get());
-        // the script-arg Tuple handle is passed by reference (its ValueId, no copy)…
-        const fromArg = feeOf(pair);
-        // …and a literal object builds a fresh tuplenew at the call site.
-        const fromLit = feeOf({ token: '0x0000000000000000000000000000000000000001', fee: 500 });
-        return s.return({ fromArg, fromLit });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'fnpass', args: [namedArg('pair', Pair)] }, (s, pair) => {
+      const feeOf = s.fn('feeOf', [namedArg('p', Pair)] as const, (p) => p.fee.get());
+      // the script-arg Tuple handle is passed by reference (its ValueId, no copy)…
+      const fromArg = feeOf(pair);
+      // …and a literal object builds a fresh tuplenew at the call site.
+      const fromLit = feeOf({ token: '0x0000000000000000000000000000000000000001', fee: 500 });
+      return s.return({ fromArg, fromLit });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     const calls = script.ir.body.filter((st) => st.k === 'fncall');
     expect(calls).toHaveLength(2);
@@ -316,7 +295,6 @@ describe('named args (namedArg)', () => {
         const [b, name, nIds, nInners, a0] = summary(outer, inners);
         return s.return({ b, name, nIds, nInners, a0 });
       },
-      NO_LOC,
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(script.ir.fns[0]?.params.map((p) => p.type)).toEqual([Outer, t.array(Inner)]);
@@ -348,15 +326,11 @@ describe('named args (namedArg)', () => {
   });
 
   test('s.fn: bare-type and lone-namedArg shorthand; names land in the fn IR params', () => {
-    const script = evscript(
-      { name: 'fnnames', args: [t.uint256] },
-      (s, n) => {
-        const dbl = s.fn('dbl', t.uint256, (x) => x.add(x)); // bare-type shorthand
-        const inc = s.fn('inc', namedArg('a', t.uint256), (a) => a.add(1n)); // lone namedArg
-        return s.return({ a: dbl(n), b: inc(n) });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'fnnames', args: [t.uint256] }, (s, n) => {
+      const dbl = s.fn('dbl', t.uint256, (x) => x.add(x)); // bare-type shorthand
+      const inc = s.fn('inc', namedArg('a', t.uint256), (a) => a.add(1n)); // lone namedArg
+      return s.return({ a: dbl(n), b: inc(n) });
+    });
     const [dblFn, incFn] = script.ir.fns;
     expect(dblFn?.params.map((p) => ({ name: p.name, type: p.type }))).toEqual([
       { name: 'arg0', type: 'uint256' }, // bare → positional fallback
@@ -371,21 +345,17 @@ describe('named args (namedArg)', () => {
 // ---------------------------------------------------------------------------
 
 describe('literals (s.lit + coercion)', () => {
-  const script = evscript(
-    { name: 'lits', args: [] },
-    (s) => {
-      const u8 = s.lit(t.uint8, 250);
-      const i24 = s.lit(t.int24, -2n);
-      const addr = s.lit(t.address, '0x00000000000000000000000000000000DeaDBeef');
-      const flag = s.lit(t.bool, true);
-      const b4 = s.lit(t.bytes4, '0x95d89b41');
-      const str = s.lit(t.string, 'hello evs');
-      const raw = s.lit(t.bytes, '0xdeadbeef');
-      const arr = s.lit(t.array(t.uint24), [100n, 500n, 3000n]);
-      return s.return({ u8, i24, addr, flag, b4, str, raw, arr });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'lits', args: [] }, (s) => {
+    const u8 = s.lit(t.uint8, 250);
+    const i24 = s.lit(t.int24, -2n);
+    const addr = s.lit(t.address, '0x00000000000000000000000000000000DeaDBeef');
+    const flag = s.lit(t.bool, true);
+    const b4 = s.lit(t.bytes4, '0x95d89b41');
+    const str = s.lit(t.string, 'hello evs');
+    const raw = s.lit(t.bytes, '0xdeadbeef');
+    const arr = s.lit(t.array(t.uint24), [100n, 500n, 3000n]);
+    return s.return({ u8, i24, addr, flag, b4, str, raw, arr });
+  });
 
   test('IR snapshot (word canonicalization + memref data consts)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -404,16 +374,12 @@ describe('literals (s.lit + coercion)', () => {
   });
 
   test('identical literals dedupe to the same ValueId; distinct types do not', () => {
-    const script2 = evscript(
-      { name: 'dedup', args: [] },
-      (s) => {
-        const a = s.lit(t.uint256, 7n);
-        const b = s.lit(t.uint256, 7);
-        const c = s.lit(t.uint8, 7n);
-        return s.return({ a, b, c });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'dedup', args: [] }, (s) => {
+      const a = s.lit(t.uint256, 7n);
+      const b = s.lit(t.uint256, 7);
+      const c = s.lit(t.uint8, 7n);
+      return s.return({ a, b, c });
+    });
     const [ra, rb, rc] = script2.ir.returns;
     expect(ra?.value).toBe(rb?.value); // same (type, hex) → interned
     expect(ra?.value).not.toBe(rc?.value); // different type → distinct const
@@ -426,54 +392,50 @@ describe('literals (s.lit + coercion)', () => {
 // ---------------------------------------------------------------------------
 
 describe('arithmetic / comparison / bool / bitwise families', () => {
-  const script = evscript(
-    { name: 'ops', args: [t.uint256, t.uint256, t.int8] },
-    (s, a, b, s8) => {
-      const sum = a.add(b);
-      const diff = s.sub(a, 1n); // literal-right
-      const prod = s.mul(2n, b); // literal-left
-      const quot = a.div(b);
-      const rem = a.mod(b);
-      const ltc = a.lt(b);
-      const gtc = s.gt(a, 100n);
-      const lec = s.lte(a, b);
-      const gec = a.gte(0n);
-      const eqc = s.eq(a, b);
-      const nec = s8.neq(-1n);
-      const both = ltc.and(gtc);
-      const either = s.or(eqc, nec);
-      const nope = s.not(both);
-      const band = a.bitAnd(0xffn);
-      const bor = s.bitOr(a, 1n);
-      const bxor = s.bitXor(a, b);
-      const bnot = s.bitNot(a);
-      const left = s.shl(a, 8n);
-      const right = a.shr(4n);
-      return s.return({
-        sum,
-        diff,
-        prod,
-        quot,
-        rem,
-        ltc,
-        gtc,
-        lec,
-        gec,
-        eqc,
-        nec,
-        both,
-        either,
-        nope,
-        band,
-        bor,
-        bxor,
-        bnot,
-        left,
-        right,
-      });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'ops', args: [t.uint256, t.uint256, t.int8] }, (s, a, b, s8) => {
+    const sum = a.add(b);
+    const diff = s.sub(a, 1n); // literal-right
+    const prod = s.mul(2n, b); // literal-left
+    const quot = a.div(b);
+    const rem = a.mod(b);
+    const ltc = a.lt(b);
+    const gtc = s.gt(a, 100n);
+    const lec = s.lte(a, b);
+    const gec = a.gte(0n);
+    const eqc = s.eq(a, b);
+    const nec = s8.neq(-1n);
+    const both = ltc.and(gtc);
+    const either = s.or(eqc, nec);
+    const nope = s.not(both);
+    const band = a.bitAnd(0xffn);
+    const bor = s.bitOr(a, 1n);
+    const bxor = s.bitXor(a, b);
+    const bnot = s.bitNot(a);
+    const left = s.shl(a, 8n);
+    const right = a.shr(4n);
+    return s.return({
+      sum,
+      diff,
+      prod,
+      quot,
+      rem,
+      ltc,
+      gtc,
+      lec,
+      gec,
+      eqc,
+      nec,
+      both,
+      either,
+      nope,
+      band,
+      bor,
+      bxor,
+      bnot,
+      left,
+      right,
+    });
+  });
 
   test('IR snapshot', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -506,7 +468,6 @@ describe('conversions', () => {
       const asB = x.asBytes32();
       return s.return({ narrowed, widened, signed, crossed, addr1, addr2, asU, asB });
     },
-    NO_LOC,
   );
 
   test('IR snapshot + result types', () => {
@@ -531,19 +492,15 @@ describe('conversions', () => {
 // ---------------------------------------------------------------------------
 
 describe('env', () => {
-  const script = evscript(
-    { name: 'envs', args: [] },
-    (s) => {
-      return s.return({
-        self: s.env('address'),
-        caller: s.env('caller'),
-        ts: s.env('timestamp'),
-        bn: s.env('blocknumber'),
-        chain: s.env('chainid'),
-      });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'envs', args: [] }, (s) => {
+    return s.return({
+      self: s.env('address'),
+      caller: s.env('caller'),
+      ts: s.env('timestamp'),
+      bn: s.env('blocknumber'),
+      chain: s.env('chainid'),
+    });
+  });
 
   test('IR snapshot + out types (address/caller → address, others → uint256)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -564,19 +521,15 @@ describe('env', () => {
 // ---------------------------------------------------------------------------
 
 describe('cells (s.let)', () => {
-  const script = evscript(
-    { name: 'cells', args: [t.uint256] },
-    (s, x) => {
-      const c = s.let(t.uint256, 0n); // (type, literal) overload
-      const d = s.let(x); // (Expr) overload — type inferred
-      c.set(x);
-      c.set(5n);
-      const snap = c.get();
-      d.set(snap);
-      return s.return({ snap, last: d.get() });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'cells', args: [t.uint256] }, (s, x) => {
+    const c = s.let(t.uint256, 0n); // (type, literal) overload
+    const d = s.let(x); // (Expr) overload — type inferred
+    c.set(x);
+    c.set(5n);
+    const snap = c.get();
+    d.set(snap);
+    return s.return({ snap, last: d.get() });
+  });
 
   test('IR snapshot (cellnew/cellget/cellset)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -585,16 +538,12 @@ describe('cells (s.let)', () => {
   });
 
   test('each .get() is a fresh snapshot (distinct ValueIds)', () => {
-    const script2 = evscript(
-      { name: 'snaps', args: [] },
-      (s) => {
-        const c = s.let(t.uint256, 1n);
-        const one = c.get();
-        const two = c.get();
-        return s.return({ one, two });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'snaps', args: [] }, (s) => {
+      const c = s.let(t.uint256, 1n);
+      const one = c.get();
+      const two = c.get();
+      return s.return({ one, two });
+    });
     const [one, two] = script2.ir.returns;
     expect(one?.value).not.toBe(two?.value);
   });
@@ -605,16 +554,12 @@ describe('cells (s.let)', () => {
 // ---------------------------------------------------------------------------
 
 describe('MutArray (s.newArray)', () => {
-  const script = evscript(
-    { name: 'arrs', args: [t.uint256] },
-    (s, n) => {
-      const out = s.newArray(t.uint256, n);
-      out.set(0n, 42n);
-      const first = out.get(0n);
-      return s.return({ first, len: out.length, all: out.expr() });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'arrs', args: [t.uint256] }, (s, n) => {
+    const out = s.newArray(t.uint256, n);
+    out.set(0n, 42n);
+    const first = out.get(0n);
+    return s.return({ first, len: out.length, all: out.expr() });
+  });
 
   test('IR snapshot (arrnew/len/arrset/index)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -629,10 +574,8 @@ describe('MutArray (s.newArray)', () => {
   });
 
   test('indexing args arrays via .at() and .length()', () => {
-    const script2 = evscript(
-      { name: 'argarr', args: [t.array(t.address)] },
-      (s, xs) => s.return({ n: xs.length(), first: xs.at(0n) }),
-      NO_LOC,
+    const script2 = evscript({ name: 'argarr', args: [t.array(t.address)] }, (s, xs) =>
+      s.return({ n: xs.length(), first: xs.at(0n) }),
     );
     expect(JSON.parse(serializeIr(script2.ir))).toMatchSnapshot();
     expect(() => validateIr(script2.ir)).not.toThrow();
@@ -667,14 +610,10 @@ describe('Tuple (s.tuple + field get/set)', () => {
   const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 
   test('s.tuple allocates a tuplenew, MSTORE-ing provided members; fields read via field stmt', () => {
-    const script = evscript(
-      { name: 'mkPos', args: [t.address] },
-      (s, owner) => {
-        const pos = s.tuple(Position, { liquidity: 42n, owner });
-        return s.return({ liq: pos.liquidity.get(), owner: pos.owner.get(), pos: pos.expr() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
+      const pos = s.tuple(Position, { liquidity: 42n, owner });
+      return s.return({ liq: pos.liquidity.get(), owner: pos.owner.get(), pos: pos.expr() });
+    });
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const news = allStmts(script.ir).filter((s) => s.k === 'tuplenew');
@@ -688,16 +627,12 @@ describe('Tuple (s.tuple + field get/set)', () => {
   });
 
   test('Field.set records a tupleset; reference semantics share the block', () => {
-    const script = evscript(
-      { name: 'mut', args: [] },
-      (s) => {
-        const pos = s.tuple(Position);
-        pos.liquidity.set(7n);
-        pos.at(1).set('0x00000000000000000000000000000000deadbeef');
-        return s.return({ liq: pos.liquidity.get() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'mut', args: [] }, (s) => {
+      const pos = s.tuple(Position);
+      pos.liquidity.set(7n);
+      pos.at(1).set('0x00000000000000000000000000000000deadbeef');
+      return s.return({ liq: pos.liquidity.get() });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(allStmts(script.ir).filter((s) => s.k === 'tupleset')).toHaveLength(2);
   });
@@ -714,7 +649,6 @@ describe('Tuple (s.tuple + field get/set)', () => {
         });
         return s.return({ liquidity: pos.liquidity.get(), pos: pos.expr() });
       },
-      NO_LOC,
     );
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
@@ -736,7 +670,6 @@ describe('Tuple (s.tuple + field get/set)', () => {
         });
         return s.return({ liquidity: pos.liquidity.get(), pos });
       },
-      NO_LOC,
     );
     // … vs. the explicit `.expr()` form.
     const viaExpr = evscript(
@@ -750,7 +683,6 @@ describe('Tuple (s.tuple + field get/set)', () => {
         });
         return s.return({ liquidity: pos.liquidity.get(), pos: pos.expr() });
       },
-      NO_LOC,
     );
     expect(() => validateIr(direct.ir)).not.toThrow();
     // byte-identical IR: the bare handle is the same memref ValueId the `.expr()` would re-wrap.
@@ -761,22 +693,14 @@ describe('Tuple (s.tuple + field get/set)', () => {
   });
 
   test('an s.tuple(...) result is returnable directly too (same IR as .expr())', () => {
-    const direct = evscript(
-      { name: 'mkPos', args: [t.address] },
-      (s, owner) => {
-        const pos = s.tuple(Position, { liquidity: 42n, owner });
-        return s.return({ pos });
-      },
-      NO_LOC,
-    );
-    const viaExpr = evscript(
-      { name: 'mkPos', args: [t.address] },
-      (s, owner) => {
-        const pos = s.tuple(Position, { liquidity: 42n, owner });
-        return s.return({ pos: pos.expr() });
-      },
-      NO_LOC,
-    );
+    const direct = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
+      const pos = s.tuple(Position, { liquidity: 42n, owner });
+      return s.return({ pos });
+    });
+    const viaExpr = evscript({ name: 'mkPos', args: [t.address] }, (s, owner) => {
+      const pos = s.tuple(Position, { liquidity: 42n, owner });
+      return s.return({ pos: pos.expr() });
+    });
     expect(() => validateIr(direct.ir)).not.toThrow();
     expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
     expect(direct.ir.returns.find((r) => r.name === 'pos')?.type).toMatchObject({ type: 'tuple' });
@@ -784,17 +708,15 @@ describe('Tuple (s.tuple + field get/set)', () => {
 
   test('a foreign Tuple handle returned directly throws FOREIGN_HANDLE naming both scripts', () => {
     let foreign: Tuple<typeof Position> | undefined;
-    evscript(
-      { name: 'donor', args: [t.address] },
-      (s, owner) => {
-        foreign = s.tuple(Position, { liquidity: 1n, owner });
-        return s.return({ ok: owner });
-      },
-      NO_LOC,
-    );
+    evscript({ name: 'donor', args: [t.address] }, (s, owner) => {
+      foreign = s.tuple(Position, { liquidity: 1n, owner });
+      return s.return({ ok: owner });
+    });
     expect(() =>
-      evscript({ name: 'thief', args: [t.address] }, (s) => s.return({ stolen: foreign! }), NO_LOC),
-    ).toThrow(/Tuple belongs to script "donor".*cannot be used in script "thief"/s);
+      evscript({ name: 'thief', args: [t.address] }, (s) => s.return({ stolen: foreign! })),
+    ).toThrow(
+      /Tuple \(#\d+ ← s\.tuple\(liquidity, owner\)\) belongs to script "donor".*cannot be used in script "thief"/s,
+    );
   });
 });
 
@@ -813,7 +735,6 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
         const out = s.encode(x, str, arr, pair);
         return s.return({ out });
       },
-      NO_LOC,
     );
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
@@ -825,15 +746,11 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
   });
 
   test('s.encodePacked records encode(packed); s.keccak256 standard-encodes then hashes (#24)', () => {
-    const script = evscript(
-      { name: 'hashes', args: [t.uint256, t.string] },
-      (s, x, str) => {
-        const packed = s.encodePacked(x, str);
-        const h = s.keccak256(x, str);
-        return s.return({ packed, h });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'hashes', args: [t.uint256, t.string] }, (s, x, str) => {
+      const packed = s.encodePacked(x, str);
+      const h = s.keccak256(x, str);
+      return s.return({ packed, h });
+    });
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
@@ -846,10 +763,8 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
   });
 
   test('s.keccak256 of a single bytes/string value hashes it directly (no encode stmt)', () => {
-    const script = evscript(
-      { name: 'direct', args: [t.bytes, t.string] },
-      (s, b, str) => s.return({ hb: s.keccak256(b), hs: s.keccak256(str) }),
-      NO_LOC,
+    const script = evscript({ name: 'direct', args: [t.bytes, t.string] }, (s, b, str) =>
+      s.return({ hb: s.keccak256(b), hs: s.keccak256(str) }),
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(allStmts(script.ir).filter((s) => s.k === 'encode')).toHaveLength(0);
@@ -860,10 +775,8 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
   });
 
   test('s.keccak256 of a single word standard-encodes it first (keccak256(abi.encode(x)) — #24)', () => {
-    const script = evscript(
-      { name: 'word', args: [t.uint8] },
-      (s, x) => s.return({ h: s.keccak256(x) }),
-      NO_LOC,
+    const script = evscript({ name: 'word', args: [t.uint8] }, (s, x) =>
+      s.return({ h: s.keccak256(x) }),
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     const enc = allStmts(script.ir).find((s) => s.k === 'encode');
@@ -871,14 +784,10 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
   });
 
   test('s.keccak256 accepts structs and composite arrays directly (#24)', () => {
-    const script = evscript(
-      { name: 'structHash', args: [t.array(t.string)] },
-      (s, strs) => {
-        const pair = s.tuple(Pair, { fee: 500 });
-        return s.return({ hp: s.keccak256(pair), hs: s.keccak256(strs, pair) });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'structHash', args: [t.array(t.string)] }, (s, strs) => {
+      const pair = s.tuple(Pair, { fee: 500 });
+      return s.return({ hp: s.keccak256(pair), hs: s.keccak256(strs, pair) });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
     expect(encs.map((s) => s.k === 'encode' && s.mode)).toEqual(['abi', 'abi']);
@@ -922,14 +831,10 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     ).toThrowError(/cannot be packed-encoded/);
     // …while s.encode / s.keccak256 accept the same values (standard ABI covers composites — #24)
     expect(() =>
-      evscript(
-        { name: 'ok', args: [t.array(t.string)] },
-        (s, strs) => {
-          const pair = s.tuple(Pair);
-          return s.return({ x: s.encode(pair, strs), h: s.keccak256(pair, strs) });
-        },
-        NO_LOC,
-      ),
+      evscript({ name: 'ok', args: [t.array(t.string)] }, (s, strs) => {
+        const pair = s.tuple(Pair);
+        return s.return({ x: s.encode(pair, strs), h: s.keccak256(pair, strs) });
+      }),
     ).not.toThrow();
   });
 });
@@ -958,7 +863,6 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
     const script = evscript(
       { name: 'streq', args: [t.string, t.string, t.bytes, t.bytes] },
       (s, a, b, c, d) => s.return({ eq: a.eq(b), neq: c.neq(d) }),
-      NO_LOC,
     );
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
@@ -979,7 +883,6 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
     const script = evscript(
       { name: 'arreq', args: [t.array(t.uint256), t.array(t.uint256), 'string[]', 'string[]'] },
       (s, a, b, c, d) => s.return({ eq: s.eq(a, b), neq: s.neq(c, d) }),
-      NO_LOC,
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     const { bins, hashes, encodes } = eqShape(script.ir);
@@ -996,10 +899,8 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
   });
 
   test('is exactly the stmts of the explicit s.keccak256(a).eq(s.keccak256(b)) spelling', () => {
-    const sugar = evscript(
-      { name: 'cmp', args: [t.string, t.array(t.uint256)] },
-      (s, str, arr) => s.return({ a: str.eq('hello'), b: arr.neq([1n, 2n]) }),
-      NO_LOC,
+    const sugar = evscript({ name: 'cmp', args: [t.string, t.array(t.uint256)] }, (s, str, arr) =>
+      s.return({ a: str.eq('hello'), b: arr.neq([1n, 2n]) }),
     );
     const explicit = evscript(
       { name: 'cmp', args: [t.string, t.array(t.uint256)] },
@@ -1008,28 +909,23 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
           a: s.keccak256(str).eq(s.keccak256(s.lit(t.string, 'hello'))),
           b: s.keccak256(arr).neq(s.keccak256(s.lit(t.array(t.uint256), [1n, 2n]))),
         }),
-      NO_LOC,
     );
     expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
   });
 
   test('literal rhs is coerced like any IntoExpr (string / array / struct literals)', () => {
-    const script = evscript(
-      { name: 'lits', args: [t.string, 'string[]'] },
-      (s, str, strs) => {
-        const pair = s.tuple(Pair, {
-          token: '0x00000000000000000000000000000000deadbeef',
-          fee: 500n,
-        });
-        return s.return({
-          a: str.eq('hello'),
-          b: strs.eq(['x', 'y']),
-          c: pair.expr().eq({ token: '0x00000000000000000000000000000000deadbeef', fee: 500 }),
-          d: s.neq('', str), // literal-left free form
-        });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'lits', args: [t.string, 'string[]'] }, (s, str, strs) => {
+      const pair = s.tuple(Pair, {
+        token: '0x00000000000000000000000000000000deadbeef',
+        fee: 500n,
+      });
+      return s.return({
+        a: str.eq('hello'),
+        b: strs.eq(['x', 'y']),
+        c: pair.expr().eq({ token: '0x00000000000000000000000000000000deadbeef', fee: 500 }),
+        d: s.neq('', str), // literal-left free form
+      });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     const stmts = allStmts(script.ir);
     // 'hello', '' and the two elements of the string[] literal
@@ -1046,20 +942,16 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
   });
 
   test('bare MutArray / Tuple handles are accepted as their memref (like s.encode)', () => {
-    const script = evscript(
-      { name: 'bare', args: [t.array(t.uint256)] },
-      (s, arr) => {
-        const mut = s.newArray(t.uint256, 2n);
-        const pair = s.tuple(Pair, { fee: 500n });
-        return s.return({
-          // @ts-expect-error — a bare MutArray is not an IntoExpr (runtime acceptance pinned)
-          a: s.eq(arr, mut),
-          // @ts-expect-error — a bare Tuple is not an IntoExpr (runtime acceptance pinned)
-          b: s.eq(pair, pair.expr()),
-        });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'bare', args: [t.array(t.uint256)] }, (s, arr) => {
+      const mut = s.newArray(t.uint256, 2n);
+      const pair = s.tuple(Pair, { fee: 500n });
+      return s.return({
+        // @ts-expect-error — a bare MutArray is not an IntoExpr (runtime acceptance pinned)
+        a: s.eq(arr, mut),
+        // @ts-expect-error — a bare Tuple is not an IntoExpr (runtime acceptance pinned)
+        b: s.eq(pair, pair.expr()),
+      });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(allStmts(script.ir).filter((x) => x.k === 'bin')).toHaveLength(2);
   });
@@ -1088,26 +980,22 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
 });
 
 describe('s.if', () => {
-  const script = evscript(
-    { name: 'iffy', args: [t.uint256] },
-    (s, x) => {
-      const big = s.let(t.bool, false);
-      s.if(
-        x.gt(100n),
-        () => {
-          big.set(true);
-        },
-        () => {
-          big.set(false);
-        },
-      );
-      s.if(x.eq(0n), () => {
+  const script = evscript({ name: 'iffy', args: [t.uint256] }, (s, x) => {
+    const big = s.let(t.bool, false);
+    s.if(
+      x.gt(100n),
+      () => {
+        big.set(true);
+      },
+      () => {
         big.set(false);
-      }); // no else
-      return s.return({ big: big.get() });
-    },
-    NO_LOC,
-  );
+      },
+    );
+    s.if(x.eq(0n), () => {
+      big.set(false);
+    }); // no else
+    return s.return({ big: big.get() });
+  });
 
   test('IR snapshot (cond evaluated once, before the branches; empty else)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -1119,28 +1007,24 @@ describe('s.if', () => {
 });
 
 describe('s.while', () => {
-  const script = evscript(
-    { name: 'looped', args: [t.uint256] },
-    (s, n) => {
-      const total = s.let(t.uint256, 0n);
-      const i = s.let(t.uint256, 0n);
-      s.while(
-        () => i.get().lt(n),
-        (loop) => {
-          s.if(i.get().eq(7n), () => {
-            loop.break();
-          });
-          s.if(i.get().eq(3n), () => {
-            loop.continue();
-          });
-          total.set(total.get().add(i.get()));
-          i.set(i.get().add(1n));
-        },
-      );
-      return s.return({ total: total.get() });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'looped', args: [t.uint256] }, (s, n) => {
+    const total = s.let(t.uint256, 0n);
+    const i = s.let(t.uint256, 0n);
+    s.while(
+      () => i.get().lt(n),
+      (loop) => {
+        s.if(i.get().eq(7n), () => {
+          loop.break();
+        });
+        s.if(i.get().eq(3n), () => {
+          loop.continue();
+        });
+        total.set(total.get().add(i.get()));
+        i.set(i.get().add(1n));
+      },
+    );
+    return s.return({ total: total.get() });
+  });
 
   test('IR snapshot (header block + cond + body with break/continue)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -1152,41 +1036,33 @@ describe('s.while', () => {
   });
 
   test('header values are visible in the body (header dominates the body)', () => {
-    const script2 = evscript(
-      { name: 'hdr', args: [t.uint256] },
-      (s, n) => {
-        const i = s.let(t.uint256, 0n);
-        let snapshot: Expr<'uint256'> | undefined;
-        s.while(
-          () => {
-            snapshot = i.get(); // recorded in the header
-            return snapshot.lt(n);
-          },
-          () => {
-            if (snapshot === undefined) throw new Error('unreachable');
-            i.set(snapshot.add(1n)); // used in the body — legal
-          },
-        );
-        return s.return({ i: i.get() });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'hdr', args: [t.uint256] }, (s, n) => {
+      const i = s.let(t.uint256, 0n);
+      let snapshot: Expr<'uint256'> | undefined;
+      s.while(
+        () => {
+          snapshot = i.get(); // recorded in the header
+          return snapshot.lt(n);
+        },
+        () => {
+          if (snapshot === undefined) throw new Error('unreachable');
+          i.set(snapshot.add(1n)); // used in the body — legal
+        },
+      );
+      return s.return({ i: i.get() });
+    });
     expect(() => validateIr(script2.ir)).not.toThrow();
   });
 });
 
 describe('s.for', () => {
-  const script = evscript(
-    { name: 'fored', args: [t.uint256] },
-    (s, n) => {
-      const acc = s.let(t.uint256, 0n);
-      s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-        acc.set(acc.get().add(i));
-      });
-      return s.return({ acc: acc.get() });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'fored', args: [t.uint256] }, (s, n) => {
+    const acc = s.let(t.uint256, 0n);
+    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+      acc.set(acc.get().add(i));
+    });
+    return s.return({ acc: acc.get() });
+  });
 
   test('IR snapshot (sugar over while + an internal cell; step defaults to 1)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -1194,20 +1070,16 @@ describe('s.for', () => {
   });
 
   test('loop.continue() records the step before the continue (jump "to the step")', () => {
-    const script2 = evscript(
-      { name: 'forcont', args: [t.uint64] },
-      (s, n) => {
-        const acc = s.let(t.uint64, 0n);
-        s.for({ type: t.uint64, from: 0n, until: n, step: 2n }, (i, loop) => {
-          s.if(i.eq(4n), () => {
-            loop.continue();
-          });
-          acc.set(acc.get().add(i));
+    const script2 = evscript({ name: 'forcont', args: [t.uint64] }, (s, n) => {
+      const acc = s.let(t.uint64, 0n);
+      s.for({ type: t.uint64, from: 0n, until: n, step: 2n }, (i, loop) => {
+        s.if(i.eq(4n), () => {
+          loop.continue();
         });
-        return s.return({ acc: acc.get() });
-      },
-      NO_LOC,
-    );
+        acc.set(acc.get().add(i));
+      });
+      return s.return({ acc: acc.get() });
+    });
     expect(() => validateIr(script2.ir)).not.toThrow();
     const wh = allStmts(script2.ir).find((s) => s.k === 'while');
     expect(wh?.k).toBe('while');
@@ -1223,60 +1095,44 @@ describe('s.for', () => {
   });
 
   test('generic over signed word types', () => {
-    const script3 = evscript(
-      { name: 'forint', args: [] },
-      (s) => {
-        const last = s.let(t.int16, 0n);
-        s.for({ type: t.int16, from: -3n, until: 3n }, (i) => {
-          last.set(i);
-        });
-        return s.return({ last: last.get() });
-      },
-      NO_LOC,
-    );
+    const script3 = evscript({ name: 'forint', args: [] }, (s) => {
+      const last = s.let(t.int16, 0n);
+      s.for({ type: t.int16, from: -3n, until: 3n }, (i) => {
+        last.set(i);
+      });
+      return s.return({ last: last.get() });
+    });
     expect(() => validateIr(script3.ir)).not.toThrow();
   });
 
   test('range.type is optional and defaults to uint256 — IR identical to the typed form (issue #12)', () => {
-    const typed = evscript(
-      { name: 'fordef', args: [t.uint256] },
-      (s, n) => {
-        const acc = s.let(t.uint256, 0n);
-        s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-          acc.set(acc.get().add(i));
-        });
-        return s.return({ acc: acc.get() });
-      },
-      NO_LOC,
-    );
-    const untyped = evscript(
-      { name: 'fordef', args: [t.uint256] },
-      (s, n) => {
-        const acc = s.let(t.uint256, 0n);
-        s.for({ from: 0n, until: n }, (i) => {
-          acc.set(acc.get().add(i));
-        });
-        return s.return({ acc: acc.get() });
-      },
-      NO_LOC,
-    );
+    const typed = evscript({ name: 'fordef', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
+        acc.set(acc.get().add(i));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    const untyped = evscript({ name: 'fordef', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        acc.set(acc.get().add(i));
+      });
+      return s.return({ acc: acc.get() });
+    });
     expect(serializeIr(untyped.ir)).toEqual(serializeIr(typed.ir));
     expect(() => validateIr(untyped.ir)).not.toThrow();
   });
 });
 
 describe('s.forEach', () => {
-  const script = evscript(
-    { name: 'summed', args: [t.array(t.uint256)] },
-    (s, xs) => {
-      const total = s.let(t.uint256, 0n);
-      s.forEach(xs, (x, i) => {
-        total.set(total.get().add(x).add(i));
-      });
-      return s.return({ total: total.get() });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'summed', args: [t.array(t.uint256)] }, (s, xs) => {
+    const total = s.let(t.uint256, 0n);
+    s.forEach(xs, (x, i) => {
+      total.set(total.get().add(x).add(i));
+    });
+    return s.return({ total: total.get() });
+  });
 
   test('IR snapshot (one len snapshot before the loop; index per iteration; step tail)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -1293,34 +1149,26 @@ describe('s.forEach', () => {
   });
 
   test('sugar only — IR identical to the manual s.for + .at(i) spelling (post-review pin)', () => {
-    const manual = evscript(
-      { name: 'summed', args: [t.array(t.uint256)] },
-      (s, xs) => {
-        const total = s.let(t.uint256, 0n);
-        const len = xs.length();
-        s.for({ from: 0n, until: len }, (i) => {
-          const x = xs.at(i);
-          total.set(total.get().add(x).add(i));
-        });
-        return s.return({ total: total.get() });
-      },
-      NO_LOC,
-    );
+    const manual = evscript({ name: 'summed', args: [t.array(t.uint256)] }, (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      const len = xs.length();
+      s.for({ from: 0n, until: len }, (i) => {
+        const x = xs.at(i);
+        total.set(total.get().add(x).add(i));
+      });
+      return s.return({ total: total.get() });
+    });
     expect(stripDebugNames(script.ir)).toEqual(stripDebugNames(manual.ir));
   });
 
   test('the element load is always recorded; a body that omits `elem` leaves it to DCE (#40)', () => {
-    const counted = evscript(
-      { name: 'counted', args: [t.array(t.uint256)] },
-      (s, xs) => {
-        const count = s.let(t.uint256, 0n);
-        s.forEach(xs, () => {
-          count.set(count.get().add(1n));
-        });
-        return s.return({ count: count.get() });
-      },
-      NO_LOC,
-    );
+    const counted = evscript({ name: 'counted', args: [t.array(t.uint256)] }, (s, xs) => {
+      const count = s.let(t.uint256, 0n);
+      s.forEach(xs, () => {
+        count.set(count.get().add(1n));
+      });
+      return s.return({ count: count.get() });
+    });
     expect(() => validateIr(counted.ir)).not.toThrow();
     // recorded unconditionally (no builder special case) …
     expect(allStmts(counted.ir).filter((s) => s.k === 'index')).toHaveLength(1);
@@ -1334,17 +1182,13 @@ describe('s.forEach', () => {
 
   test('a tuple[] STRUCT MEMBER .get() hands back an Expr the loop iterates (post-review fix)', () => {
     const Book = t.struct({ owner: t.address, items: t.array(t.struct({ x: t.uint256 })) });
-    const script5 = evscript(
-      { name: 'book', args: [Book] },
-      (s, book) => {
-        const total = s.let(t.uint256, 0n);
-        s.forEach(book.items.get(), (item) => {
-          total.set(total.get().add(item.x.get()));
-        });
-        return s.return({ total: total.get() });
-      },
-      NO_LOC,
-    );
+    const script5 = evscript({ name: 'book', args: [Book] }, (s, book) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(book.items.get(), (item) => {
+        total.set(total.get().add(item.x.get()));
+      });
+      return s.return({ total: total.get() });
+    });
     expect(() => validateIr(script5.ir)).not.toThrow();
     // field (read .items off the arg tuple) + per-iteration field (read .x off the element)
     expect(allStmts(script5.ir).filter((s) => s.k === 'field')).toHaveLength(2);
@@ -1353,23 +1197,19 @@ describe('s.forEach', () => {
   });
 
   test('loop.continue() records the step before the continue; loop.break() works', () => {
-    const script2 = evscript(
-      { name: 'ctl', args: [t.array(t.uint256)] },
-      (s, xs) => {
-        const total = s.let(t.uint256, 0n);
-        s.forEach(xs, (x, i, loop) => {
-          s.if(i.eq(0n), () => {
-            loop.continue();
-          });
-          s.if(x.gt(100n), () => {
-            loop.break();
-          });
-          total.set(total.get().add(x));
+    const script2 = evscript({ name: 'ctl', args: [t.array(t.uint256)] }, (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x, i, loop) => {
+        s.if(i.eq(0n), () => {
+          loop.continue();
         });
-        return s.return({ total: total.get() });
-      },
-      NO_LOC,
-    );
+        s.if(x.gt(100n), () => {
+          loop.break();
+        });
+        total.set(total.get().add(x));
+      });
+      return s.return({ total: total.get() });
+    });
     expect(() => validateIr(script2.ir)).not.toThrow();
     const wh = allStmts(script2.ir).find((s) => s.k === 'while');
     if (wh?.k !== 'while') throw new Error('expected a while statement');
@@ -1381,17 +1221,13 @@ describe('s.forEach', () => {
 
   test('a tuple[] array hands the body a Tuple element handle', () => {
     const Pair = t.struct({ token: t.address, fee: t.uint24 });
-    const script3 = evscript(
-      { name: 'pairs', args: [t.array(Pair)] },
-      (s, pairs) => {
-        const last = s.let(t.address, '0x0000000000000000000000000000000000000000');
-        s.forEach(pairs, (pair) => {
-          last.set(pair.token.get());
-        });
-        return s.return({ last: last.get() });
-      },
-      NO_LOC,
-    );
+    const script3 = evscript({ name: 'pairs', args: [t.array(Pair)] }, (s, pairs) => {
+      const last = s.let(t.address, '0x0000000000000000000000000000000000000000');
+      s.forEach(pairs, (pair) => {
+        last.set(pair.token.get());
+      });
+      return s.return({ last: last.get() });
+    });
     expect(() => validateIr(script3.ir)).not.toThrow();
     // the element arrives as a Tuple: reading .token records a field stmt off the index out
     expect(allStmts(script3.ir).filter((s) => s.k === 'field')).toHaveLength(1);
@@ -1403,24 +1239,19 @@ describe('s.forEach', () => {
     // the shape), so `TupleArrayElemHandle`'s Expr<tuple[]> row arm cannot be exercised at
     // runtime today — this pins the rejection the type-level dispatch is anticipating.
     expect(() =>
-      evscript(
-        { name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] },
-        (s) => s.return({ z: s.lit(t.uint256, 0n) }),
-        NO_LOC,
+      evscript({ name: 'nested', args: [t.array(t.array(t.struct({ x: t.uint256 })))] }, (s) =>
+        s.return({ z: s.lit(t.uint256, 0n) }),
       ),
     ).toThrowError(/tuple\[\]\[\]" is not supported yet/);
   });
 });
 
 describe('s.select', () => {
-  const script = evscript(
-    { name: 'sel', args: [t.bool, t.uint256, t.uint256] },
-    (s, c, a, b) =>
-      s.return({
-        picked: s.select(c, a, b),
-        defaulted: s.select(c, a, 0n),
-      }),
-    NO_LOC,
+  const script = evscript({ name: 'sel', args: [t.bool, t.uint256, t.uint256] }, (s, c, a, b) =>
+    s.return({
+      picked: s.select(c, a, b),
+      defaulted: s.select(c, a, 0n),
+    }),
   );
 
   test('IR snapshot (eager both sides)', () => {
@@ -1429,15 +1260,11 @@ describe('s.select', () => {
   });
 
   test('literal condition folds to the chosen operand (no select stmt)', () => {
-    const script2 = evscript(
-      { name: 'self', args: [t.uint256, t.uint256] },
-      (s, a, b) => {
-        const picked = s.select(true, a, b);
-        const dropped = s.select(false, a, b);
-        return s.return({ picked, dropped });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'self', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const picked = s.select(true, a, b);
+      const dropped = s.select(false, a, b);
+      return s.return({ picked, dropped });
+    });
     expect(allStmts(script2.ir).filter((s) => s.k === 'select')).toHaveLength(0);
     expect(script2.ir.returns[0]?.value).toBe(0); // aliases args.a
     expect(script2.ir.returns[1]?.value).toBe(1); // aliases args.b
@@ -1449,24 +1276,20 @@ describe('s.select', () => {
 // ---------------------------------------------------------------------------
 
 describe('s.call / s.tryCall', () => {
-  const script = evscript(
-    { name: 'calls', args: [t.address, t.address] },
-    (s, pool, user) => {
-      const symbol = s.read({ address: pool, abi: erc20Abi, functionName: 'symbol' });
-      const bal = s.read({
-        address: pool,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [user],
-        gas: 100_000n,
-      });
-      const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
-      const dec = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
-      const decimals = s.select(dec.success, dec.value, s.lit(t.uint8, 18));
-      return s.return({ symbol, bal, tick: slot0[1], decimals });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'calls', args: [t.address, t.address] }, (s, pool, user) => {
+    const symbol = s.read({ address: pool, abi: erc20Abi, functionName: 'symbol' });
+    const bal = s.read({
+      address: pool,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [user],
+      gas: 100_000n,
+    });
+    const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
+    const dec = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
+    const decimals = s.select(dec.success, dec.value, s.lit(t.uint8, 18));
+    return s.return({ symbol, bal, tick: slot0[1], decimals });
+  });
 
   test('IR snapshot (strict + try, literal/expr args, gas, multi-output)', () => {
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
@@ -1491,21 +1314,17 @@ describe('s.call / s.tryCall', () => {
   });
 
   test('void output → undefined; literal address arg works', () => {
-    const script2 = evscript(
-      { name: 'voidcall', args: [t.address] },
-      (s, pool) => {
-        const nothing = s.read({ address: pool, abi: poolAbi, functionName: 'poke' });
-        expect(nothing).toBeUndefined();
-        const bal = s.read({
-          address: '0x00000000000000000000000000000000deadbeef',
-          abi: erc20Abi,
-          functionName: 'balanceOf',
-          args: ['0x1111111111111111111111111111111111111111'],
-        });
-        return s.return({ bal });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'voidcall', args: [t.address] }, (s, pool) => {
+      const nothing = s.read({ address: pool, abi: poolAbi, functionName: 'poke' });
+      expect(nothing).toBeUndefined();
+      const bal = s.read({
+        address: '0x00000000000000000000000000000000deadbeef',
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: ['0x1111111111111111111111111111111111111111'],
+      });
+      return s.return({ bal });
+    });
     expect(() => validateIr(script2.ir)).not.toThrow();
   });
 
@@ -1533,7 +1352,6 @@ describe('s.fn', () => {
       const b = balOf(tokens.at(1n), owner);
       return s.return({ a, b });
     },
-    NO_LOC,
   );
 
   test('IR snapshot (fn body recorded once; two fncalls)', () => {
@@ -1549,47 +1367,35 @@ describe('s.fn', () => {
   });
 
   test('tuple results and void fns', () => {
-    const script2 = evscript(
-      { name: 'fnshapes', args: [t.uint256] },
-      (s, x) => {
-        const pair = s.fn(
-          'pair',
-          [namedArg('a', t.uint256)] as const,
-          (a) => [a.add(1n), a.eq(0n)] as const,
-        );
-        const noop = s.fn('noop', [] as const, () => {});
-        const r = pair(x);
-        expect(noop()).toBeUndefined();
-        return s.return({ plus: r[0], isZero: r[1] });
-      },
-      NO_LOC,
-    );
+    const script2 = evscript({ name: 'fnshapes', args: [t.uint256] }, (s, x) => {
+      const pair = s.fn(
+        'pair',
+        [namedArg('a', t.uint256)] as const,
+        (a) => [a.add(1n), a.eq(0n)] as const,
+      );
+      const noop = s.fn('noop', [] as const, () => {});
+      const r = pair(x);
+      expect(noop()).toBeUndefined();
+      return s.return({ plus: r[0], isZero: r[1] });
+    });
     expect(() => validateIr(script2.ir)).not.toThrow();
     expect(script2.ir.fns.map((f) => f.results.length)).toEqual([2, 0]);
   });
 
   test('uncalled fns are still recorded in ir.fns (codegen drops them)', () => {
-    const script3 = evscript(
-      { name: 'uncalled', args: [t.uint256] },
-      (s, x) => {
-        s.fn('unused', [namedArg('a', t.uint256)] as const, (a) => a.add(1n));
-        return s.return({ x });
-      },
-      NO_LOC,
-    );
+    const script3 = evscript({ name: 'uncalled', args: [t.uint256] }, (s, x) => {
+      s.fn('unused', [namedArg('a', t.uint256)] as const, (a) => a.add(1n));
+      return s.return({ x });
+    });
     expect(script3.ir.fns).toHaveLength(1);
     expect(() => validateIr(script3.ir)).not.toThrow();
   });
 
   test('fn literals coerce against param types at the call site', () => {
-    const script4 = evscript(
-      { name: 'fnlit', args: [] },
-      (s) => {
-        const inc = s.fn('inc', [namedArg('a', t.uint8)] as const, (a) => a.add(1n));
-        return s.return({ two: inc(1n) });
-      },
-      NO_LOC,
-    );
+    const script4 = evscript({ name: 'fnlit', args: [] }, (s) => {
+      const inc = s.fn('inc', [namedArg('a', t.uint8)] as const, (a) => a.add(1n));
+      return s.return({ two: inc(1n) });
+    });
     expect(() => validateIr(script4.ir)).not.toThrow();
   });
 });
@@ -1600,36 +1406,32 @@ describe('s.fn', () => {
 
 describe('all-literal folding', () => {
   test('arithmetic, comparison, bool, bitwise, shift, and convert folds collapse to consts', () => {
-    const script = evscript(
-      { name: 'folds', args: [] },
-      (s) => {
-        const sum = s.lit(t.uint8, 250).add(5); // 255
-        const cmp = s.lit(t.uint256, 3n).lt(4n); // true
-        const bothWays = s.lit(t.bool, true).and(false); // false
-        const masked = s.lit(t.uint16, 0xabcdn).bitAnd(0xff00n); // 0xab00
-        const flipped = s.lit(t.uint8, 0).bitNot(); // 0xff
-        const shifted = s.lit(t.bytes4, '0x11223344').shl(8n); // 0x22334400
-        const inverted = s.not(false); // true
-        const narrowed = s.lit(t.uint256, 200n).toUint(t.uint8); // 200 fits
-        const signedDiv = s.lit(t.int8, -7n).div(2n); // −3 (trunc toward zero)
-        // intN shifts are outside the typed BitsType surface; the engine implements SAR
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberate type-surface bypass
-        const signedShr = (s.lit(t.int16, -8n) as Expr<never>).shr(1n); // SAR → −4
-        return s.return({
-          sum,
-          cmp,
-          bothWays,
-          masked,
-          flipped,
-          shifted,
-          inverted,
-          narrowed,
-          signedDiv,
-          signedShr,
-        });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'folds', args: [] }, (s) => {
+      const sum = s.lit(t.uint8, 250).add(5); // 255
+      const cmp = s.lit(t.uint256, 3n).lt(4n); // true
+      const bothWays = s.lit(t.bool, true).and(false); // false
+      const masked = s.lit(t.uint16, 0xabcdn).bitAnd(0xff00n); // 0xab00
+      const flipped = s.lit(t.uint8, 0).bitNot(); // 0xff
+      const shifted = s.lit(t.bytes4, '0x11223344').shl(8n); // 0x22334400
+      const inverted = s.not(false); // true
+      const narrowed = s.lit(t.uint256, 200n).toUint(t.uint8); // 200 fits
+      const signedDiv = s.lit(t.int8, -7n).div(2n); // −3 (trunc toward zero)
+      // intN shifts are outside the typed BitsType surface; the engine implements SAR
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberate type-surface bypass
+      const signedShr = (s.lit(t.int16, -8n) as Expr<never>).shr(1n); // SAR → −4
+      return s.return({
+        sum,
+        cmp,
+        bothWays,
+        masked,
+        flipped,
+        shifted,
+        inverted,
+        narrowed,
+        signedDiv,
+        signedShr,
+      });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     // every stmt in the body is a const — no bin/un/convert survived
     expect(allStmts(script.ir).every((s) => s.k === 'const')).toBe(true);
@@ -1650,15 +1452,11 @@ describe('all-literal folding', () => {
   });
 
   test('mixed literal/expr does not fold; expr-literal + raw literal does', () => {
-    const script = evscript(
-      { name: 'mixed', args: [t.uint256] },
-      (s, x) => {
-        const live = x.add(1n); // bin stmt survives
-        const folded = s.lit(t.uint256, 2n).mul(3n); // folds to 6
-        return s.return({ live, folded });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'mixed', args: [t.uint256] }, (s, x) => {
+      const live = x.add(1n); // bin stmt survives
+      const folded = s.lit(t.uint256, 2n).mul(3n); // folds to 6
+      return s.return({ live, folded });
+    });
     const kinds = allStmts(script.ir).map((s) => s.k);
     expect(kinds.filter((k) => k === 'bin')).toHaveLength(1);
     const folded = script.ir.returns.find((r) => r.name === 'folded');
@@ -1667,14 +1465,10 @@ describe('all-literal folding', () => {
 
   test('the documented escape hatch defers a certain panic to runtime', () => {
     const max = 2n ** 256n - 1n;
-    const script = evscript(
-      { name: 'hatch', args: [] },
-      (s) => {
-        const v = s.let(t.uint256, max).get().add(1n); // would fold-panic without the cell
-        return s.return({ v });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'hatch', args: [] }, (s) => {
+      const v = s.let(t.uint256, max).get().add(1n); // would fold-panic without the cell
+      return s.return({ v });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(allStmts(script.ir).some((s) => s.k === 'bin' && s.op === 'add')).toBe(true);
   });
@@ -1686,79 +1480,40 @@ describe('all-literal folding', () => {
 
 describe('value semantics', () => {
   test('handle reuse re-reads the slot — no re-execution, no new stmts', () => {
-    const script = evscript(
-      { name: 'reuse', args: [t.uint256] },
-      (s, x) => {
-        const doubled = x.mul(2n);
-        const a = doubled.add(1n);
-        const b = doubled.add(2n); // reuses `doubled`, records only one extra bin
-        return s.return({ a, b });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'reuse', args: [t.uint256] }, (s, x) => {
+      const doubled = x.mul(2n);
+      const a = doubled.add(1n);
+      const b = doubled.add(2n); // reuses `doubled`, records only one extra bin
+      return s.return({ a, b });
+    });
     const bins = allStmts(script.ir).filter((s) => s.k === 'bin');
     expect(bins).toHaveLength(3); // mul, add, add — `doubled` never re-executed
   });
 
   test('builder facade is reusable across helper functions (plain JS composition)', () => {
-    const script = evscript(
-      { name: 'compose', args: [] },
-      (s) => {
-        const x = s.lit(t.uint256, 21n);
-        const cell = s.let(t.uint256, x);
-        return s.return({ y: twice(s, cell.get()) });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'compose', args: [] }, (s) => {
+      const x = s.lit(t.uint256, 21n);
+      const cell = s.let(t.uint256, x);
+      return s.return({ y: twice(s, cell.get()) });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
   test('loops record their body exactly once', () => {
     let bodyRuns = 0;
-    const script = evscript(
-      { name: 'once', args: [t.uint256] },
-      (s, n) => {
-        const i = s.let(t.uint256, 0n);
-        s.while(
-          () => i.get().lt(n),
-          () => {
-            bodyRuns += 1;
-            i.set(i.get().add(1n));
-          },
-        );
-        return s.return({ i: i.get() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'once', args: [t.uint256] }, (s, n) => {
+      const i = s.let(t.uint256, 0n);
+      s.while(
+        () => i.get().lt(n),
+        () => {
+          bodyRuns += 1;
+          i.set(i.get().add(1n));
+        },
+      );
+      return s.return({ i: i.get() });
+    });
     expect(bodyRuns).toBe(1);
     expect(() => validateIr(script.ir)).not.toThrow();
-  });
-});
-
-// ---------------------------------------------------------------------------
-// locations (default on)
-// ---------------------------------------------------------------------------
-
-describe('source locations', () => {
-  test('locations: true (default) captures the evscript call site and stmt locs in this file', () => {
-    const script = evscript({ name: 'located', args: [t.uint256] }, (s, x) =>
-      s.return({ y: x.add(1n) }),
-    );
-    expect(script.ir.loc?.file).toMatch(/script\.test\.ts/);
-    const bin = allStmts(script.ir).find((s) => s.k === 'bin');
-    expect(bin?.loc?.file).toMatch(/script\.test\.ts/);
-    expect(bin?.loc?.line).toBeGreaterThan(0);
-  });
-
-  test('locations: false yields null locs everywhere', () => {
-    const script = evscript(
-      { name: 'unlocated', args: [t.uint256] },
-      (s, x) => s.return({ y: x.add(1n) }),
-      NO_LOC,
-    );
-    expect(script.ir.loc).toBeNull();
-    for (const st of allStmts(script.ir)) expect(st.loc).toBeNull();
-    for (const v of script.ir.values) expect(v.loc).toBeNull();
   });
 });
 
@@ -1783,35 +1538,31 @@ describe('integration-shaped recording', () => {
       },
     ] as const satisfies Abi;
     const ZERO = '0x0000000000000000000000000000000000000000';
-    const script = evscript(
-      { name: 'firstPool', args: [t.address, t.address] },
-      (s, a, b) => {
-        const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]);
-        const found = s.let(t.address, ZERO);
-        const feeOut = s.let(t.uint24, 0n);
-        const i = s.let(t.uint256, 0n);
-        s.while(
-          () => i.get().lt(fees.length()),
-          (loop: LoopCtl) => {
-            const fee = fees.at(i.get());
-            const pool = s.read({
-              address: FACTORY,
-              abi: factoryAbi,
-              functionName: 'getPool',
-              args: [a, b, fee],
-            });
-            s.if(pool.neq(ZERO), () => {
-              found.set(pool);
-              feeOut.set(fee);
-              loop.break();
-            });
-            i.set(i.get().add(1n));
-          },
-        );
-        return s.return({ pool: found.get(), fee: feeOut.get() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'firstPool', args: [t.address, t.address] }, (s, a, b) => {
+      const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]);
+      const found = s.let(t.address, ZERO);
+      const feeOut = s.let(t.uint24, 0n);
+      const i = s.let(t.uint256, 0n);
+      s.while(
+        () => i.get().lt(fees.length()),
+        (loop: LoopCtl) => {
+          const fee = fees.at(i.get());
+          const pool = s.read({
+            address: FACTORY,
+            abi: factoryAbi,
+            functionName: 'getPool',
+            args: [a, b, fee],
+          });
+          s.if(pool.neq(ZERO), () => {
+            found.set(pool);
+            feeOut.set(fee);
+            loop.break();
+          });
+          i.set(i.get().add(1n));
+        },
+      );
+      return s.return({ pool: found.get(), fee: feeOut.get() });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
   });
@@ -1827,36 +1578,28 @@ describe('issue #5 ergonomics', () => {
 
   // -- ask #1: s.fn returns a struct/composite directly -----------------------------------
   test('s.fn returns a struct directly — byte-identical IR to .expr(); the result type is the struct', () => {
-    const direct = evscript(
-      { name: 'meta', args: [t.address] },
-      (s, token) => {
-        const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
-          s.tuple(TokenMeta, {
+    const direct = evscript({ name: 'meta', args: [t.address] }, (s, token) => {
+      const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
+        s.tuple(TokenMeta, {
+          symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
+          decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
+        }),
+      );
+      const m = getMeta(token);
+      return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
+    });
+    const viaExpr = evscript({ name: 'meta', args: [t.address] }, (s, token) => {
+      const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
+        s
+          .tuple(TokenMeta, {
             symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
             decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
-          }),
-        );
-        const m = getMeta(token);
-        return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
-      },
-      NO_LOC,
-    );
-    const viaExpr = evscript(
-      { name: 'meta', args: [t.address] },
-      (s, token) => {
-        const getMeta = s.fn('getMeta', [namedArg('tok', t.address)] as const, (tok) =>
-          s
-            .tuple(TokenMeta, {
-              symbol: s.read({ address: tok, abi: erc20Abi, functionName: 'symbol' }),
-              decimals: s.read({ address: tok, abi: erc20Abi, functionName: 'decimals' }),
-            })
-            .expr(),
-        );
-        const m = getMeta(token);
-        return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
-      },
-      NO_LOC,
-    );
+          })
+          .expr(),
+      );
+      const m = getMeta(token);
+      return s.return({ symbol: m.symbol.get(), decimals: m.decimals.get(), meta: m });
+    });
     expect(() => validateIr(direct.ir)).not.toThrow();
     // the bare-Tuple fn return is byte-identical to wrapping it in `.expr()`.
     expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
@@ -1870,19 +1613,15 @@ describe('issue #5 ergonomics', () => {
   });
 
   test('s.fn can return a MutArray (composite/array result) — call site gets an array Expr', () => {
-    const script = evscript(
-      { name: 'mkArr', args: [t.uint256] },
-      (s, n) => {
-        const build = s.fn('build', [namedArg('len', t.uint256)] as const, (len) => {
-          const arr = s.newArray(t.uint256, len);
-          arr.set(0n, 7n);
-          return arr;
-        });
-        const a = build(n);
-        return s.return({ all: a, len: a.length() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'mkArr', args: [t.uint256] }, (s, n) => {
+      const build = s.fn('build', [namedArg('len', t.uint256)] as const, (len) => {
+        const arr = s.newArray(t.uint256, len);
+        arr.set(0n, 7n);
+        return arr;
+      });
+      const a = build(n);
+      return s.return({ all: a, len: a.length() });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(script.ir.fns[0]?.results[0]?.type).toBe('uint256[]');
     expect(script.ir.returns.find((r) => r.name === 'all')?.type).toBe('uint256[]');
@@ -1893,14 +1632,10 @@ describe('issue #5 ergonomics', () => {
 
   // -- ask #2: struct: true named multi-output decode --------------------------------------
   test('s.read({ struct: true }) decodes named multi-outputs into one Tuple (tuplenew over outputs)', () => {
-    const script = evscript(
-      { name: 'pool', args: [t.address] },
-      (s, pool) => {
-        const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
-        return s.return({ price: slot0.sqrtPriceX96.get(), tick: slot0.tick.get(), slot0 });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'pool', args: [t.address] }, (s, pool) => {
+      const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+      return s.return({ price: slot0.sqrtPriceX96.get(), tick: slot0.tick.get(), slot0 });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     // ONE tuplenew composes the three decoded outputs; the default positional path emits none.
@@ -1918,14 +1653,10 @@ describe('issue #5 ergonomics', () => {
   });
 
   test('the default [many] shape is unchanged without struct: true (no tuplenew, positional)', () => {
-    const script = evscript(
-      { name: 'pos', args: [t.address] },
-      (s, pool) => {
-        const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
-        return s.return({ price: slot0[0], tick: slot0[1] });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'pos', args: [t.address] }, (s, pool) => {
+      const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' });
+      return s.return({ price: slot0[0], tick: slot0[1] });
+    });
     expect(allStmts(script.ir).filter((st) => st.k === 'tuplenew')).toHaveLength(0);
     expect(script.ir.returns.find((r) => r.name === 'price')?.type).toBe('uint160');
   });
@@ -1944,26 +1675,19 @@ describe('issue #5 ergonomics', () => {
       },
     ] as const satisfies Abi;
     expect(() =>
-      evscript(
-        { name: 'bad', args: [t.address] },
-        (s, x) =>
-          s.return({
-            r: s.read({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
-          }),
-        NO_LOC,
+      evscript({ name: 'bad', args: [t.address] }, (s, x) =>
+        s.return({
+          r: s.read({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
+        }),
       ),
     ).toThrow(/unnamed/);
   });
 
   test('struct: true works through tryCall too', () => {
-    const script = evscript(
-      { name: 'trySlot', args: [t.address] },
-      (s, pool) => {
-        const r = s.tryRead({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
-        return s.return({ ok: r.success, tick: r.value.tick.get() });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'trySlot', args: [t.address] }, (s, pool) => {
+      const r = s.tryRead({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
+      return s.return({ ok: r.success, tick: r.value.tick.get() });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(allStmts(script.ir).filter((st) => st.k === 'tuplenew')).toHaveLength(1);
     expect(script.ir.returns.find((r) => r.name === 'tick')?.type).toBe('int24');
@@ -1971,24 +1695,16 @@ describe('issue #5 ergonomics', () => {
 
   // -- ask #5: bare MutArray return --------------------------------------------------------
   test('s.return accepts a bare MutArray handle — byte-identical IR to .expr()', () => {
-    const direct = evscript(
-      { name: 'arr', args: [t.uint256] },
-      (s, n) => {
-        const out = s.newArray(t.uint256, n);
-        out.set(0n, 42n);
-        return s.return({ all: out });
-      },
-      NO_LOC,
-    );
-    const viaExpr = evscript(
-      { name: 'arr', args: [t.uint256] },
-      (s, n) => {
-        const out = s.newArray(t.uint256, n);
-        out.set(0n, 42n);
-        return s.return({ all: out.expr() });
-      },
-      NO_LOC,
-    );
+    const direct = evscript({ name: 'arr', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      out.set(0n, 42n);
+      return s.return({ all: out });
+    });
+    const viaExpr = evscript({ name: 'arr', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      out.set(0n, 42n);
+      return s.return({ all: out.expr() });
+    });
     expect(() => validateIr(direct.ir)).not.toThrow();
     expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
     expect(direct.ir.returns.find((r) => r.name === 'all')?.type).toBe('uint256[]');
@@ -1996,22 +1712,14 @@ describe('issue #5 ergonomics', () => {
 
   test('a tuple[] MutArray is returnable bare (the flagship `s.return({ metadata })` shape)', () => {
     const Item = t.struct({ a: t.uint256, b: t.address });
-    const direct = evscript(
-      { name: 'items', args: [t.uint256] },
-      (s, n) => {
-        const arr = s.newArray(Item, n);
-        return s.return({ metadata: arr });
-      },
-      NO_LOC,
-    );
-    const viaExpr = evscript(
-      { name: 'items', args: [t.uint256] },
-      (s, n) => {
-        const arr = s.newArray(Item, n);
-        return s.return({ metadata: arr.expr() });
-      },
-      NO_LOC,
-    );
+    const direct = evscript({ name: 'items', args: [t.uint256] }, (s, n) => {
+      const arr = s.newArray(Item, n);
+      return s.return({ metadata: arr });
+    });
+    const viaExpr = evscript({ name: 'items', args: [t.uint256] }, (s, n) => {
+      const arr = s.newArray(Item, n);
+      return s.return({ metadata: arr.expr() });
+    });
     expect(() => validateIr(direct.ir)).not.toThrow();
     expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
     expect(direct.ir.returns.find((r) => r.name === 'metadata')?.type).toMatchObject({
@@ -2021,15 +1729,11 @@ describe('issue #5 ergonomics', () => {
 
   test('a bare MutArray passed as a struct array member aliases the array (no copy)', () => {
     const Wrapper = t.struct({ xs: t.array(t.uint256) });
-    const script = evscript(
-      { name: 'wrap', args: [t.uint256] },
-      (s, n) => {
-        const xs = s.newArray(t.uint256, n);
-        const w = s.tuple(Wrapper, { xs });
-        return s.return({ w });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'wrap', args: [t.uint256] }, (s, n) => {
+      const xs = s.newArray(t.uint256, n);
+      const w = s.tuple(Wrapper, { xs });
+      return s.return({ w });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     // the tuplenew member init points straight at the arrnew out (reference, not a rebuild).
     const arrnew = allStmts(script.ir).find((st) => st.k === 'arrnew');
@@ -2044,14 +1748,10 @@ describe('issue #5 ergonomics', () => {
     // guard in `coerceToId` is what rejects a `bool[]` where a `uint256[]` is expected.
     const Wrapper = t.struct({ xs: t.array(t.uint256) });
     expect(() =>
-      evscript(
-        { name: 'wrongElem', args: [t.uint256] },
-        (s, n) => {
-          const wrong = s.newArray(t.bool, n);
-          return s.return({ w: s.tuple(Wrapper, { xs: wrong }) });
-        },
-        NO_LOC,
-      ),
+      evscript({ name: 'wrongElem', args: [t.uint256] }, (s, n) => {
+        const wrong = s.newArray(t.bool, n);
+        return s.return({ w: s.tuple(Wrapper, { xs: wrong }) });
+      }),
     ).toThrow(/expected 'uint256\[\]', got Expr<'bool\[\]'>/);
   });
 
@@ -2075,20 +1775,16 @@ describe('issue #5 ergonomics', () => {
       },
     ] as const satisfies Abi;
     const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
-    const script = evscript(
-      { name: 'callarg', args: [t.address, t.uint256] },
-      (s, target, n) => {
-        const arr = s.newArray(Pos, n);
-        const r = s.read({
-          address: target,
-          abi: consumerAbi,
-          functionName: 'useStructs',
-          args: [arr],
-        });
-        return s.return({ r });
-      },
-      NO_LOC,
-    );
+    const script = evscript({ name: 'callarg', args: [t.address, t.uint256] }, (s, target, n) => {
+      const arr = s.newArray(Pos, n);
+      const r = s.read({
+        address: target,
+        abi: consumerAbi,
+        functionName: 'useStructs',
+        args: [arr],
+      });
+      return s.return({ r });
+    });
     expect(() => validateIr(script.ir)).not.toThrow();
     const arrnew = allStmts(script.ir).find((st) => st.k === 'arrnew');
     const call = allStmts(script.ir).find((st) => st.k === 'call');
@@ -2110,7 +1806,6 @@ describe('issue #5 ergonomics', () => {
         const outer = s.tuple(Outer, { pos, tag: tokenId });
         return s.return({ outer });
       },
-      NO_LOC,
     );
     expect(() => validateIr(script.ir)).not.toThrow();
     // exactly ONE tuplenew (the outer struct) — the inner tuple aliases the call's decoded block.
@@ -2138,17 +1833,13 @@ describe('calling-verb facade shape', () => {
 
   test('tryRead/tryCall/trySimulate return a frozen { success, value } wrapper', () => {
     const wrappers: object[] = [];
-    evscript(
-      { name: 'shape', args: [t.address] },
-      (s, pool) => {
-        const a = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
-        const b = s.tryCall({ address: pool, abi: writeAbi, functionName: 'poke2' });
-        const c = s.trySimulate({ address: pool, abi: writeAbi, functionName: 'poke2' });
-        wrappers.push(a, b, c);
-        return s.return({ a: a.value, b: b.value, c: c.value });
-      },
-      NO_LOC,
-    );
+    evscript({ name: 'shape', args: [t.address] }, (s, pool) => {
+      const a = s.tryRead({ address: pool, abi: erc20Abi, functionName: 'decimals' });
+      const b = s.tryCall({ address: pool, abi: writeAbi, functionName: 'poke2' });
+      const c = s.trySimulate({ address: pool, abi: writeAbi, functionName: 'poke2' });
+      wrappers.push(a, b, c);
+      return s.return({ a: a.value, b: b.value, c: c.value });
+    });
     expect(wrappers).toHaveLength(3);
     for (const w of wrappers) {
       expect(Object.isFrozen(w)).toBe(true);
@@ -2179,26 +1870,22 @@ describe('s.call / s.tryCall revertReturns (issue #35)', () => {
     },
   ] as const satisfies Abi;
 
-  const script = evscript(
-    { name: 'rr', args: [t.address, t.uint256] },
-    (s, quoter, amountIn) => {
-      const amountOut = s.call({
-        address: quoter,
-        abi: quoterV1Abi,
-        functionName: 'quoteExactInput',
-        args: [amountIn],
-        revertReturns: [t.uint256],
-      });
-      const r = s.tryCall({
-        address: quoter,
-        abi: quoterV1Abi,
-        functionName: 'quoteWithOutputs',
-        revertReturns: [t.uint256, t.string, t.struct({ a: t.uint256, b: t.bool })],
-      });
-      return s.return({ amountOut, ok: r.success, first: r.value[0], s: r.value[1] });
-    },
-    NO_LOC,
-  );
+  const script = evscript({ name: 'rr', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
+    const amountOut = s.call({
+      address: quoter,
+      abi: quoterV1Abi,
+      functionName: 'quoteExactInput',
+      args: [amountIn],
+      revertReturns: [t.uint256],
+    });
+    const r = s.tryCall({
+      address: quoter,
+      abi: quoterV1Abi,
+      functionName: 'quoteWithOutputs',
+      revertReturns: [t.uint256, t.string, t.struct({ a: t.uint256, b: t.bool })],
+    });
+    return s.return({ amountOut, ok: r.success, first: r.value[0], s: r.value[1] });
+  });
 
   test('records `revertReturns` on the call stmt and types the outs from it, ignoring the ABI outputs', () => {
     const calls = allStmts(script.ir).filter((s) => s.k === 'call');
@@ -2235,50 +1922,43 @@ describe('s.call / s.tryCall revertReturns (issue #35)', () => {
   test('IR with revertReturns serializes and round-trips; IR without it carries no field', () => {
     const json = serializeIr(script.ir);
     expect(json).toContain('"revertReturns"');
-    const plain = evscript(
-      { name: 'plain', args: [t.address] },
-      (s, q) =>
-        s.return({
-          ok: s.tryCall({ address: q, abi: quoterV1Abi, functionName: 'quoteWithOutputs' }).success,
-        }),
-      NO_LOC,
+    const plain = evscript({ name: 'plain', args: [t.address] }, (s, q) =>
+      s.return({
+        ok: s.tryCall({ address: q, abi: quoterV1Abi, functionName: 'quoteWithOutputs' }).success,
+      }),
     );
     expect(serializeIr(plain.ir)).not.toContain('revertReturns');
   });
 
   test('the strict handle is unwrapped from the list; a struct entry yields a Tuple handle', () => {
-    evscript(
-      { name: 'handles', args: [t.address] },
-      (s, q) => {
-        const one = s.call({
-          address: q,
-          abi: quoterV1Abi,
-          functionName: 'quoteWithOutputs',
-          revertReturns: [t.uint256],
-        });
-        expect(typeof one.type).toBe('string'); // an Expr handle
-        const none = s.call({
-          address: q,
-          abi: quoterV1Abi,
-          functionName: 'quoteWithOutputs',
-          revertReturns: [],
-        });
-        expect(none).toBeUndefined();
-        const [n, st] = s.call({
-          address: q,
-          abi: quoterV1Abi,
-          functionName: 'quoteWithOutputs',
-          revertReturns: [t.uint256, t.struct({ a: t.uint256 })],
-        });
-        expect(n.type).toBe('uint256');
-        const tup: Tuple<{
-          readonly type: 'tuple';
-          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
-        }> = st;
-        expect(tup.a.get().type).toBe('uint256');
-        return s.return({ one, n, a: tup.a.get() });
-      },
-      NO_LOC,
-    );
+    evscript({ name: 'handles', args: [t.address] }, (s, q) => {
+      const one = s.call({
+        address: q,
+        abi: quoterV1Abi,
+        functionName: 'quoteWithOutputs',
+        revertReturns: [t.uint256],
+      });
+      expect(typeof one.type).toBe('string'); // an Expr handle
+      const none = s.call({
+        address: q,
+        abi: quoterV1Abi,
+        functionName: 'quoteWithOutputs',
+        revertReturns: [],
+      });
+      expect(none).toBeUndefined();
+      const [n, st] = s.call({
+        address: q,
+        abi: quoterV1Abi,
+        functionName: 'quoteWithOutputs',
+        revertReturns: [t.uint256, t.struct({ a: t.uint256 })],
+      });
+      expect(n.type).toBe('uint256');
+      const tup: Tuple<{
+        readonly type: 'tuple';
+        readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+      }> = st;
+      expect(tup.a.get().type).toBe('uint256');
+      return s.return({ one, n, a: tup.a.get() });
+    });
   });
 });

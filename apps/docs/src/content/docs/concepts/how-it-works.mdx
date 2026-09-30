@@ -12,7 +12,7 @@ produces an artifact you can inspect.
 
 ```txt
 your callback       s.read / a.add(b) / s.if / s.while / s.fn / s.return
-      |  recording: TS types + eager runtime validation + source locations
+      |  recording: TS types + eager runtime validation
       v
 ScriptIr            structured statement tree over a flat value table — plain JSON, frozen
       |  validateIr (always re-checked, even for IR you just recorded)
@@ -41,7 +41,7 @@ const compiled = compile(echo);
 
 const ir = compiled.ir; // stage 1: the recorded statement tree (also `echo.ir`)
 const bytecode = compiled.runtimeBytecode; // the verified runtime bytecode
-const listing = compiled.disassemble().format(); // annotated mnemonic listing, pc -> source line
+const listing = compiled.disassemble().format(); // annotated mnemonic listing: labels, jump targets, notes
 const map = compiled.sourceMap; // pc -> location segments + revert-site table
 ```
 
@@ -54,9 +54,8 @@ is versioned (`irVersion: 1`) — and it is frozen the moment recording ends. It
 `script.ir` and again as `compiled.ir`, which makes it snapshot-testable and attachable to bug
 reports. See [Writing scripts](/guides/writing-scripts/) for the recording model itself.
 
-Every statement carries a source location (captured from the recording stack) and a site id,
-which is how `explainRevert` and the source map trace a revert or a program counter back to
-your TypeScript line.
+Every statement carries a site id, which is how `explainRevert` and the source
+map trace a revert or a program counter back to the read, check, or call that produced it.
 
 ## Stage 2: `validateIr`
 
@@ -136,7 +135,7 @@ rewrite over the node stream: a store immediately reloaded from the same slot be
 `DUP1` + store, arithmetic over two immediates is folded (256-bit wraparound, EVM division-by-zero
 semantics, never widening the immediate), and stack identities such as `SWAP1 SWAP1`, `DUP1 POP`
 or `PUSH 0 ADD` are dropped. It never rewrites across a `JUMPDEST`, never touches a label or a
-jump target, keeps every source location, and runs **before** the verifiers below, so optimized
+jump target, keeps every source-map site, and runs **before** the verifiers below, so optimized
 output is checked exactly like unoptimized output. A user `peephole` hook in `CompileOptions`
 runs at the same position, after the built-in pass when both are on. The pass is exported as
 `evsPeephole` (`peephole: evsPeephole` runs only this pass; `optimize: true` also switches

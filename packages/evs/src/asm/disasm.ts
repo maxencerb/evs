@@ -2,7 +2,7 @@
  * `asm/disasm.ts` — the disassembler.
  *
  * Independent of the assembler: it consumes raw bytes (usable on foreign bytecode) and, when a
- * `SourceMap` is provided, annotates lines with labels, locs and notes. `assemble → disassemble`
+ * `SourceMap` is provided, annotates lines with labels and notes. `assemble → disassemble`
  * round-trips byte-exactly: concatenating every line's `raw` reproduces the input.
  *
  * Bytes that are not a known evs opcode (e.g. inside data segments) disassemble as
@@ -10,7 +10,7 @@
  */
 
 import { bytesToHex, HEX_BYTES_RE, hexToBytes } from '../core/bytes.js';
-import { EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsTypeError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import { OPS } from './ops.js';
 import { lookupPc, type SourceMap } from './sourcemap.js';
@@ -22,13 +22,12 @@ export interface DisasmLine {
   pushValue?: Hex;
   targetLabel?: string;
   label?: string;
-  loc?: SourceLoc | null;
   note?: string;
 }
 
 export interface Disassembly {
   readonly lines: readonly DisasmLine[];
-  format(opts?: { locs?: boolean }): string;
+  format(): string;
 }
 
 const PUSH1_CODE = 0x60;
@@ -53,21 +52,12 @@ function toBytes(input: Hex | Uint8Array): Uint8Array {
   return hexToBytes(input);
 }
 
-function formatLoc(loc: SourceLoc): string {
-  return `${loc.file}:${loc.line}:${loc.column}`;
-}
-
-function formatLine(line: DisasmLine, withLocs: boolean): string {
+function formatLine(line: DisasmLine): string {
   const pcHex = `0x${line.pc.toString(16).padStart(4, '0')}`;
   let text = `${pcHex}  ${line.raw.slice(2).padEnd(10)}  ${line.mnemonic}`;
   if (line.pushValue !== undefined) text += ` ${line.pushValue}`;
   if (line.targetLabel !== undefined) text += ` → @${line.targetLabel}`;
-  const comment: string[] = [];
-  if (line.note !== undefined) comment.push(line.note);
-  if (withLocs && line.loc !== undefined && line.loc !== null) {
-    comment.push(`— ${formatLoc(line.loc)}`);
-  }
-  if (comment.length > 0) text += `  ; ${comment.join(' ')}`;
+  if (line.note !== undefined) text += `  ; ${line.note}`;
   return text;
 }
 
@@ -115,10 +105,7 @@ export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): 
     if (ownLabel !== undefined) line.label = ownLabel;
     if (sourceMap !== undefined) {
       const hit = lookupPc(sourceMap, pc);
-      if (hit !== undefined) {
-        line.loc = hit.loc;
-        if (hit.note !== undefined) line.note = hit.note;
-      }
+      if (hit?.note !== undefined) line.note = hit.note;
     }
     lines.push(line);
     pc += size;
@@ -126,12 +113,11 @@ export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): 
 
   return {
     lines,
-    format(opts?: { locs?: boolean }): string {
-      const withLocs = opts?.locs ?? true;
+    format(): string {
       const out: string[] = [];
       for (const line of lines) {
         if (line.label !== undefined) out.push(`@${line.label}:`);
-        out.push(formatLine(line, withLocs));
+        out.push(formatLine(line));
       }
       return out.join('\n');
     },

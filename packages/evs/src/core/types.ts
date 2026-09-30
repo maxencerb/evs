@@ -3,8 +3,7 @@
  * predicates/metadata (single source of truth for all modules).
  */
 
-import { EvsStagingError, EvsTypeError, type SourceLoc } from './errors.js';
-import { captureLoc } from './loc.js';
+import { EvsStagingError, EvsTypeError } from './errors.js';
 
 // `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
@@ -207,7 +206,6 @@ export function namedArg<const name extends string, const type extends EvsType>(
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `invalid argument name ${JSON.stringify(name)}: must be a non-empty identifier matching /^[A-Za-z_]\\w*$/`,
-      { loc: captureLoc() },
     );
   }
   if (typeof type === 'string') {
@@ -216,7 +214,6 @@ export function namedArg<const name extends string, const type extends EvsType>(
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `argument "${name}": expected a type (use the \`t\` namespace), got ${describeTypeInput(type)}`,
-      { loc: captureLoc() },
     );
   }
   return Object.freeze({ name, type });
@@ -674,9 +671,7 @@ export function isSigned(s: EvsType): boolean {
 export function bitsOf(s: WordType): number {
   const bits = SETS.bits.get(s);
   if (bits === undefined) {
-    throw new EvsTypeError('TYPE_MISMATCH', `bitsOf: ${JSON.stringify(s)} is not a word type`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `bitsOf: ${JSON.stringify(s)} is not a word type`);
   }
   return bits;
 }
@@ -713,13 +708,10 @@ export function elemTypeOf(s: ArrayType | TupleType): EvsType {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `elemTypeOf: ${JSON.stringify(s)} is not an array type`,
-      { loc: captureLoc() },
     );
   }
   if (s.type === 'tuple') {
-    throw new EvsTypeError('TYPE_MISMATCH', `elemTypeOf: a tuple is not an array type`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `elemTypeOf: a tuple is not an array type`);
   }
   const innerTag = s.type.slice(0, -2); // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]'
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- peeling one [] off a tuple-array tag yields a valid TupleType tag
@@ -781,7 +773,6 @@ function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
   throw new EvsTypeError(
     'TYPE_MISMATCH',
     `${ctx}: expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
-    { loc: captureLoc() },
   );
 }
 
@@ -810,30 +801,23 @@ function normalizeComponents(components: readonly NamedType[], ctx: string): rea
 /** Validate + canonicalize a raw `readonly AbiParameter[]` into tuple components. */
 function componentsFromAbi(params: readonly unknown[], ctx: string): readonly NamedType[] {
   if (params.length === 0) {
-    throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: a tuple must have at least one component`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: a tuple must have at least one component`);
   }
   return Object.freeze(
     params.map((p, i) => {
       if (typeof p !== 'object' || p === null) {
-        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} is not an ABI parameter`, {
-          loc: captureLoc(),
-        });
+        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} is not an ABI parameter`);
       }
       const o = p as { name?: unknown; type?: unknown; components?: unknown };
       const name = typeof o.name === 'string' ? o.name : '';
       if (typeof o.type !== 'string') {
-        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} has no \`type\``, {
-          loc: captureLoc(),
-        });
+        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} has no \`type\``);
       }
       if (o.type.startsWith('tuple')) {
         if (!Array.isArray(o.components)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${ctx}: tuple component #${i} ("${name}") has no \`components\``,
-            { loc: captureLoc() },
           );
         }
         return Object.freeze({
@@ -853,21 +837,17 @@ function structTypeRT(spec: unknown): TupleType {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `t.struct(): expected a record of { field: type }, got ${describeTypeInput(spec)}`,
-      { loc: captureLoc() },
     );
   }
   const entries = Object.entries(spec);
   if (entries.length === 0) {
-    throw new EvsTypeError('TYPE_MISMATCH', `t.struct(): a struct must have at least one field`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `t.struct(): a struct must have at least one field`);
   }
   const components = entries.map(([name, ty]) => {
     if (!IDENT_RE.test(name)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `t.struct(): field name ${JSON.stringify(name)} must be a non-empty identifier (an empty/odd name would collapse the struct to a positional array on the viem side)`,
-        { loc: captureLoc() },
       );
     }
     return toComponentRT(name, ty, `t.struct() field "${name}"`);
@@ -877,9 +857,7 @@ function structTypeRT(spec: unknown): TupleType {
 
 function tupleTypeRT(items: readonly unknown[]): TupleType {
   if (items.length === 0) {
-    throw new EvsTypeError('TYPE_MISMATCH', `t.tuple(): a tuple must have at least one member`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `t.tuple(): a tuple must have at least one member`);
   }
   const components = items.map((ty, i) => toComponentRT('', ty, `t.tuple() member #${i}`));
   return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
@@ -898,9 +876,6 @@ function arrayTypeRT(elem: unknown): EvsType {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `t.array(): tuple array nesting deeper than [][] is not supported`,
-        {
-          loc: captureLoc(),
-        },
       );
     }
     return Object.freeze({
@@ -914,7 +889,6 @@ function arrayTypeRT(elem: unknown): EvsType {
   throw new EvsTypeError(
     'TYPE_MISMATCH',
     `t.array(): element type ${describeTypeInput(elem)} is not a type (use the \`t\` namespace)`,
-    { loc: captureLoc() },
   );
 }
 
@@ -925,9 +899,6 @@ function arrayDepthGuard(s: string): void {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
       `t.array(): array nesting deeper than [][][] is not supported`,
-      {
-        loc: captureLoc(),
-      },
     );
   }
 }
@@ -949,13 +920,10 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `t.fromOutputs(): functionName must be a string, got ${describeTypeInput(name)}`,
-      { loc: captureLoc() },
     );
   }
   if (!Array.isArray(abi)) {
-    throw new EvsTypeError('ABI_SHAPE', `t.fromOutputs("${name}"): abi must be an ABI array`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('ABI_SHAPE', `t.fromOutputs("${name}"): abi must be an ABI array`);
   }
   // `Array.isArray` narrows `abi` to `any[]`; re-widen to `unknown[]` so member access is guarded.
   const entries: readonly unknown[] = abi;
@@ -967,14 +935,12 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
     throw new EvsTypeError(
       'ABI_SHAPE',
       `t.fromOutputs("${name}"): the provided ABI has no function named "${name}"`,
-      { loc: captureLoc() },
     );
   }
   if (fns.length > 1) {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
       `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
-      { loc: captureLoc() },
     );
   }
   const outputs = fns[0]?.outputs;
@@ -982,7 +948,6 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
     throw new EvsTypeError(
       'ABI_SHAPE',
       `t.fromOutputs("${name}"): function "${name}" has no outputs to derive a type from`,
-      { loc: captureLoc() },
     );
   }
   const components = componentsFromAbi(outputs, `t.fromOutputs("${name}")`);
@@ -1021,14 +986,12 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
     throw new EvsTypeError(
       'ERROR_DECL',
       `t.error(): error name must be a non-empty identifier, got ${describeTypeInput(name)}`,
-      { loc: captureLoc() },
     );
   }
   if (RESERVED_ERROR_NAMES.has(name)) {
     throw new EvsTypeError(
       'ERROR_DECL',
       `t.error("${name}"): the name is reserved (Panic/Error are Solidity built-ins; EvsDecodeError/EvsInvalidCalldata belong to the evs runtime) — pick another name`,
-      { loc: captureLoc() },
     );
   }
   let decls: readonly unknown[];
@@ -1046,7 +1009,6 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
         throw new EvsTypeError(
           'ERROR_DECL',
           `${ctx}: invalid param name ${JSON.stringify(d.name)} (must be a non-empty identifier)`,
-          { loc: captureLoc() },
         );
       }
       const ty: unknown = d.type;
@@ -1058,7 +1020,6 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${ctx} ("${d.name}"): expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
-          { loc: captureLoc() },
         );
       }
       return { name: d.name, type: ty };
@@ -1071,7 +1032,6 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${ctx}: expected a type or namedArg(...), got ${describeTypeInput(d)}`,
-      { loc: captureLoc() },
     );
   });
   // resolved (arg{i}-fallback) input names must be unique — the decode utilities key args by name
@@ -1082,7 +1042,6 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
       throw new EvsTypeError(
         'ERROR_DECL',
         `t.error("${name}"): duplicate param name "${resolved}"`,
-        { loc: captureLoc() },
       );
     }
     seen.add(resolved);
@@ -1106,9 +1065,7 @@ function fromAbiParameterRT(param: unknown): EvsType {
   const components = componentsFromAbi([param], 't.fromAbiParameter()');
   const single = components[0];
   if (single === undefined) {
-    throw new EvsTypeError('ABI_SHAPE', `t.fromAbiParameter(): missing parameter`, {
-      loc: captureLoc(),
-    });
+    throw new EvsTypeError('ABI_SHAPE', `t.fromAbiParameter(): missing parameter`);
   }
   return abiParamToType(single);
 }
@@ -1125,7 +1082,7 @@ function looksDeferred(s: string): boolean {
 }
 
 /**
- * Eager type-string validation: throws `EvsTypeError` with the caller's loc, using
+ * Eager type-string validation: throws `EvsTypeError`, using
  * `UNSUPPORTED_V0` for valid-Solidity-but-not-yet-supported shapes (#4) and `TYPE_MISMATCH` otherwise.
  */
 function assertEvsType(s: string, context: string): asserts s is StringType {
@@ -1134,13 +1091,11 @@ function assertEvsType(s: string, context: string): asserts s is StringType {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
       `${context}: type ${JSON.stringify(s)} is not supported (fixed-size arrays \`T[N]\` are deferred — use a dynamic \`T[]\`)`,
-      { loc: captureLoc() },
     );
   }
   throw new EvsTypeError(
     'TYPE_MISMATCH',
     `${context}: unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, a \`T[]\` array, or a \`t.struct\`/\`t.tuple\`)`,
-    { loc: captureLoc() },
   );
 }
 
@@ -1148,36 +1103,35 @@ function assertEvsType(s: string, context: string): asserts s is StringType {
  * @internal Staging-misuse traps shared by every handle implementation.
  *
  * Installs throwing `valueOf` / `toString` / `toJSON` / `Symbol.toPrimitive` on `target`
- * (each throws `EvsStagingError` citing both the misuse site and where the handle was
- * recorded), plus a NON-throwing `nodejs.util.inspect.custom` returning `describe()` —
- * printing is debugging, not misuse. The builder layers `Expr` methods on top.
+ * (each throws `EvsStagingError` naming the misused handle), plus a NON-throwing
+ * `nodejs.util.inspect.custom` returning the handle's description — printing is debugging, not
+ * misuse. `target` is normally a handle class's PROTOTYPE (installed once, not per handle), so
+ * the traps receive the handle as `this` and `describe` resolves it; `describe` must tolerate a
+ * detached call (`this` not a handle).
  */
-export function installStagingTraps(
-  target: object,
-  info: { describe(): string; recordedAt(): SourceLoc | null },
-): void {
-  const explode = (operation: string): never => {
+export function installStagingTraps(target: object, describe: (handle: unknown) => string): void {
+  const explode = (handle: unknown, operation: string): never => {
     throw new EvsStagingError(
       'STAGING_MISUSE',
-      `${operation} on a staged handle (${info.describe()}): evs handles are recorded program values, not host values — use the builder ops (s.add, .eq, s.if, …) instead`,
-      {
-        loc: captureLoc(),
-        relatedLocs: [{ label: 'handle recorded at', loc: info.recordedAt() }],
-      },
+      `${operation} on a staged handle (${describe(handle)}): evs handles are recorded program values, not host values — use the builder ops (s.add, .eq, s.if, …) instead`,
     );
   };
-  const traps: PropertyDescriptorMap = {
-    valueOf: { value: () => explode('valueOf()'), enumerable: false },
-    toString: { value: () => explode('toString()'), enumerable: false },
-    toJSON: { value: () => explode('toJSON() / JSON.stringify'), enumerable: false },
-    [Symbol.toPrimitive]: {
-      value: () => explode('primitive coercion (Symbol.toPrimitive)'),
-      enumerable: false,
+  const trap = (operation: string): PropertyDescriptor => ({
+    value(this: unknown): never {
+      return explode(this, operation);
     },
+    enumerable: false,
+  });
+  Object.defineProperties(target, {
+    valueOf: trap('valueOf()'),
+    toString: trap('toString()'),
+    toJSON: trap('toJSON() / JSON.stringify'),
+    [Symbol.toPrimitive]: trap('primitive coercion (Symbol.toPrimitive)'),
     [Symbol.for('nodejs.util.inspect.custom')]: {
-      value: () => info.describe(),
+      value(this: unknown): string {
+        return describe(this);
+      },
       enumerable: false,
     },
-  };
-  Object.defineProperties(target, traps);
+  });
 }

@@ -1,23 +1,21 @@
 /**
- * `asm/sourcemap.ts` — PC→source map.
+ * `asm/sourcemap.ts` — the PC map: code segments (with their optional codegen notes), sites and
+ * labels.
  *
  * `segments` are sorted by `pc` and non-overlapping; together they cover every emitted code
  * byte (assemble guarantees this). `sites` are merged in by compile.ts (the assembler emits
  * `sites: []`).
  */
 
-import type { SourceLoc } from '../core/errors.js';
-
 // structural twin of `SiteId` from ir/nodes.js — asm may only import core/* (module DAG)
 type SiteId = number;
 
 export interface SourceMap {
   readonly version: 1;
-  readonly segments: readonly { pc: number; len: number; loc: SourceLoc | null; note?: string }[];
+  readonly segments: readonly { pc: number; len: number; note?: string }[];
   readonly sites: readonly {
     id: SiteId;
     kind: 'panic' | 'decode' | 'call' | 'stmt';
-    loc: SourceLoc | null;
     detail: string;
   }[];
   readonly labels: readonly { pc: number; name: string }[];
@@ -27,10 +25,7 @@ export interface SourceMap {
  * Finds the segment covering `pc` (binary search over the sorted, non-overlapping segments).
  * Returns `undefined` when no segment covers the pc.
  */
-export function lookupPc(
-  map: SourceMap,
-  pc: number,
-): { loc: SourceLoc | null; note?: string } | undefined {
+export function lookupPc(map: SourceMap, pc: number): { note?: string } | undefined {
   const segments = map.segments;
   let lo = 0;
   let hi = segments.length - 1;
@@ -43,7 +38,7 @@ export function lookupPc(
     } else if (pc >= seg.pc + seg.len) {
       lo = mid + 1;
     } else {
-      return seg.note === undefined ? { loc: seg.loc } : { loc: seg.loc, note: seg.note };
+      return seg.note === undefined ? {} : { note: seg.note };
     }
   }
   return undefined;

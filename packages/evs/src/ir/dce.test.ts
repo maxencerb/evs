@@ -11,7 +11,6 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
-import type { SourceLoc } from '../core/errors.js';
 import { t, type EvsType, type Hex } from '../core/types.js';
 import { dce, eliminateDeadCode } from './dce.js';
 import { interpret, type MockChain } from './interp.js';
@@ -31,16 +30,13 @@ import { validateIr } from './validate.js';
 
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-const LOC: SourceLoc = { file: '/home/dev/app/dead.ts', line: 3, column: 7 };
-const NO_LOC = { locations: false } as const;
-
 let nextSite = 0;
-function mk(body: DistOmit<Stmt, 'loc' | 'site'>, loc: SourceLoc | null = null): Stmt {
-  return { loc, site: nextSite++, ...body };
+function mk(body: DistOmit<Stmt, 'site'>): Stmt {
+  return { site: nextSite++, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
-  return debugName === undefined ? { type, loc: null } : { type, loc: LOC, debugName };
+  return debugName === undefined ? { type } : { type, debugName };
 }
 
 function ir(p: Partial<ScriptIr>): ScriptIr {
@@ -54,7 +50,6 @@ function ir(p: Partial<ScriptIr>): ScriptIr {
     fns: [],
     body: [],
     returns: [],
-    loc: null,
     ...p,
   };
 }
@@ -481,7 +476,6 @@ describe('fns', () => {
       mk({ k: 'bin', op: 'mul', a: 1, b: 1, out: 4 }), // dead inside the fn
     ],
     resultValues: [2],
-    loc: null,
   };
 
   test('a fncall to a pure fn with dead outs is dropped; the fn body is DCEd on its own', () => {
@@ -523,7 +517,6 @@ describe('fns', () => {
             mk({ k: 'call', target: 1, fnAbi: getterAbi, args: [], outs: [2], mode: 'strict' }),
           ],
           resultValues: [2],
-          loc: null,
         },
       ],
       body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [3] })],
@@ -558,7 +551,6 @@ describe('fns', () => {
             }),
           ],
           resultValues: [],
-          loc: null,
         },
         {
           name: 'wrapper',
@@ -566,7 +558,6 @@ describe('fns', () => {
           results: [{ type: 'uint256' }],
           body: [mk({ k: 'fncall', fn: 0, args: [3], outs: [] })],
           resultValues: [3],
-          loc: null,
         },
       ],
       body: [mk({ k: 'fncall', fn: 1, args: [0], outs: [4] })],
@@ -589,7 +580,6 @@ describe('fns', () => {
           results: [{ type: 'uint256' }],
           body: [constU(2, 0n), constU(3, 1n), mk({ k: 'arrset', arr: 1, i: 2, value: 3 })],
           resultValues: [3],
-          loc: null,
         },
       ],
       body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [4] })],
@@ -642,28 +632,20 @@ describe('revert guards are not side effects', () => {
 
 describe('through compile()', () => {
   test('s.forEach without `elem` compiles byte-identically to the manual counter loop', () => {
-    const counted = evscript(
-      { name: 'counted', args: [t.array(t.uint256)] },
-      (s, xs) => {
-        const count = s.let(t.uint256, 0n);
-        s.forEach(xs, () => {
-          count.set(count.get().add(1n));
-        });
-        return s.return({ count: count.get() });
-      },
-      NO_LOC,
-    );
-    const manual = evscript(
-      { name: 'counted', args: [t.array(t.uint256)] },
-      (s, xs) => {
-        const count = s.let(t.uint256, 0n);
-        s.for({ from: 0n, until: xs.length() }, () => {
-          count.set(count.get().add(1n));
-        });
-        return s.return({ count: count.get() });
-      },
-      NO_LOC,
-    );
+    const counted = evscript({ name: 'counted', args: [t.array(t.uint256)] }, (s, xs) => {
+      const count = s.let(t.uint256, 0n);
+      s.forEach(xs, () => {
+        count.set(count.get().add(1n));
+      });
+      return s.return({ count: count.get() });
+    });
+    const manual = evscript({ name: 'counted', args: [t.array(t.uint256)] }, (s, xs) => {
+      const count = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: xs.length() }, () => {
+        count.set(count.get().add(1n));
+      });
+      return s.return({ count: count.get() });
+    });
     // recorded: one index in the forEach spelling, none in the manual one …
     expect(allStmts(counted.ir).filter((s) => s.k === 'index')).toHaveLength(1);
     expect(allStmts(manual.ir).filter((s) => s.k === 'index')).toHaveLength(0);

@@ -845,7 +845,6 @@ export function emitStaticCall(
   pushWordRef(w, plan.targetRef, `target of ${fnAbi.name}`, 'target');
   pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
   w.op(useCall ? 'CALL' : 'STATICCALL', {
-    loc: stmt.loc,
     note: `${stmt.mode} ${useCall ? 'call' : 'read'} ${fnAbi.name}${revertMode ? ' [revertReturns]' : ''} (site ${siteId})`,
   }); // [success, buf]
 
@@ -1208,7 +1207,6 @@ export function emitSimulateCall(
   w.op('ADDRESS', { note: 'self (the script holds the trampoline)' }); // [self, …]
   w.op('GAS');
   w.op('CALL', {
-    loc: stmt.loc,
     note: `${stmt.mode} simulate ${fnAbi.name} (site ${siteId}) — self-call trampoline`,
   }); // [success]
   w.op('POP'); // []   self-call success ignored (the trampoline always reverts; MAGIC is the proof)

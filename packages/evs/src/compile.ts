@@ -42,12 +42,7 @@ import { lowerProgram } from './codegen/program.js';
 import { SIMULATE_TRAMPOLINE_LABEL } from './codegen/simulate.js';
 import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
 import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
-import {
-  EvsCompileError,
-  EvsTypeError,
-  type EvsDiagnostic,
-  type SourceLoc,
-} from './core/errors.js';
+import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { eliminateDeadCode } from './ir/dce.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
@@ -68,7 +63,6 @@ export interface CompileOptions {
   optimize?: boolean; // default false — enables the built-in optimizer passes (the liveness-based frame allocator + the asm peephole pass `evsPeephole`); output is still fully verified
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity — a user hook over the node stream; with `optimize` it runs AFTER the built-in passes
   onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION); never logged
-  locations?: boolean; // default true
 }
 
 export interface CompiledEvsScript<
@@ -118,8 +112,8 @@ export interface RevertExplanation {
   panicCode?: bigint;
   errorName?: string; // script-error only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // script-error only: name-keyed decoded args
-  site?: { id: SiteId; loc: SourceLoc | null; detail: string };
-  candidateSites?: readonly { id: SiteId; loc: SourceLoc | null; detail: string }[]; // Panic only
+  site?: { id: SiteId; detail: string };
+  candidateSites?: readonly { id: SiteId; detail: string }[]; // Panic only
   raw: Hex;
 }
 
@@ -170,7 +164,6 @@ function resolveOptions(options: CompileOptions | undefined): Readonly<Required<
     optimize: options?.optimize ?? false,
     peephole: options?.peephole ?? identityPeephole,
     onDiagnostic: options?.onDiagnostic ?? ignoreDiagnostic,
-    locations: options?.locations ?? true,
   });
 }
 
@@ -194,7 +187,6 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   validateIr(ir);
   const lowered = lowerProgram(eliminateDeadCode(ir), {
     evmVersion: resolved.evmVersion,
-    locations: resolved.locations,
     optimize: resolved.optimize,
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
@@ -214,7 +206,6 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     throw new EvsCompileError(
       'COMPILE_LIMIT',
       eip170Message(assembled.bytecode.length, assembled.labelPcs, lowered.labelNames),
-      { loc: ir.loc },
     );
   }
 
@@ -344,14 +335,10 @@ function eip170Message(
 // explainRevert
 // ---------------------------------------------------------------------------
 
-type SiteRef = { id: SiteId; loc: SourceLoc | null; detail: string };
+type SiteRef = { id: SiteId; detail: string };
 
 function toSiteRef(site: SourceMap['sites'][number]): SiteRef {
-  return { id: site.id, loc: site.loc, detail: site.detail };
-}
-
-function formatLoc(loc: SourceLoc | null): string {
-  return loc === null ? '<unknown location>' : `${loc.file}:${loc.line}:${loc.column}`;
+  return { id: site.id, detail: site.detail };
 }
 
 /**
@@ -407,7 +394,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
     const where =
       candidateSites.length > 0
         ? ` — ${candidateSites.length} candidate site(s) in this script: ${candidateSites
-            .map((s) => `${s.detail} at ${formatLoc(s.loc)}`)
+            .map((s) => `${s.detail} (site ${s.id})`)
             .join('; ')}`
         : ' — no candidate site of this panic kind exists in this script, so the payload was bubbled verbatim from a callee';
     return {
@@ -431,7 +418,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
       const ref = toSiteRef(site);
       return {
         kind: 'evs-decode',
-        message: `${ref.detail} failed (EvsDecodeError site ${ref.id}) — recorded at ${formatLoc(ref.loc)}${hedge}`,
+        message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${hedge}`,
         site: ref,
         raw,
       };

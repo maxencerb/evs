@@ -267,7 +267,6 @@ function buildCaseScript(c: EncodeCase) {
       }
       return s.return(rets);
     },
-    { locations: false },
   );
 }
 
@@ -341,10 +340,8 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
   });
 
   test('keccak256 of empty bytes is the canonical empty hash', async () => {
-    const script = evscript(
-      { name: 'emptyHash', args: [t.bytes] },
-      (s, b) => s.return({ h: s.keccak256(b) }),
-      { locations: false },
+    const script = evscript({ name: 'emptyHash', args: [t.bytes] }, (s, b) =>
+      s.return({ h: s.keccak256(b) }),
     );
     const compiled = compile(script);
     const calldata = encodeFunctionData({
@@ -374,7 +371,6 @@ describe('encode/encodePacked/keccak256 vs the viem oracle (issue #17)', () => {
           hc: s.keccak256(c),
           hap: s.keccak256(s.encodePacked(a)),
         }),
-      { locations: false },
     );
     const compiled = compile(script);
     const word: Hex = `0x${'ab'.repeat(32)}`;

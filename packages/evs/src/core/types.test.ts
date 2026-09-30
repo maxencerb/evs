@@ -146,7 +146,7 @@ describe('namedArg()', () => {
     }
   });
 
-  test('rejects invalid names with EvsTypeError + call-site loc', () => {
+  test('rejects invalid names with EvsTypeError', () => {
     for (const name of ['', '1abc', 'a-b', 'a b', 'é', 'foo.bar', 'a$', ' x']) {
       let caught: unknown;
       try {
@@ -158,9 +158,6 @@ describe('namedArg()', () => {
       const err = caught as EvsTypeError;
       expect(err.code).toBe('TYPE_MISMATCH');
       expect(err.message).toContain(JSON.stringify(name));
-      expect(err.loc).not.toBeNull();
-      expect(err.loc?.file).toMatch(/types\.test\.ts/);
-      expect(err.loc?.line).toBeGreaterThan(0);
     }
   });
 
@@ -175,7 +172,6 @@ describe('namedArg()', () => {
       expect(caught).toBeInstanceOf(EvsTypeError);
       const err = caught as EvsTypeError;
       expect(err.code).toBe('TYPE_MISMATCH');
-      expect(err.loc?.file).toMatch(/types\.test\.ts/);
     }
   });
 
@@ -192,7 +188,7 @@ describe('namedArg()', () => {
     expect(namedArg('markets', structArray).type).toBe(structArray);
   });
 
-  test('rejects malformed tuple descriptors with TYPE_MISMATCH + call-site loc (issue #25)', () => {
+  test('rejects malformed tuple descriptors with TYPE_MISMATCH (issue #25)', () => {
     const bad = [
       { type: 'tuple' }, // no components
       { type: 'tuple', components: [{ name: 'x', type: 'uint7' }] }, // invalid member type
@@ -209,7 +205,6 @@ describe('namedArg()', () => {
       expect(caught).toBeInstanceOf(EvsTypeError);
       const err = caught as EvsTypeError;
       expect(err.code).toBe('TYPE_MISMATCH');
-      expect(err.loc?.file).toMatch(/types\.test\.ts/);
     }
   });
 
@@ -227,7 +222,6 @@ describe('namedArg()', () => {
       const err = caught as EvsTypeError;
       expect(err.code).toBe('UNSUPPORTED_V0');
       expect(err.message).toContain('not supported');
-      expect(err.loc?.file).toMatch(/types\.test\.ts/);
     }
   });
 });
@@ -434,10 +428,7 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
 
 function makeHandle(): Record<PropertyKey, unknown> {
   const target: Record<PropertyKey, unknown> = { type: 'uint256' };
-  installStagingTraps(target, {
-    describe: () => 'Expr<uint256> #4 ← s.read(token0) at pools.ts:9:18',
-    recordedAt: () => ({ file: 'pools.ts', line: 9, column: 18 }),
-  });
+  installStagingTraps(target, (h) => (h === target ? 'Expr<uint256> #4 ← s.read(token0)' : '?'));
   return target;
 }
 
@@ -468,7 +459,7 @@ describe('staging traps (installStagingTraps)', () => {
     expect(() => JSON.stringify(x)).toThrow(EvsStagingError);
   });
 
-  test('the thrown error cites the misuse site and the recording site', () => {
+  test('the thrown error names the misused handle', () => {
     const x = makeHandle();
     let caught: unknown;
     try {
@@ -480,16 +471,12 @@ describe('staging traps (installStagingTraps)', () => {
     const err = caught as EvsStagingError;
     expect(err.code).toBe('STAGING_MISUSE');
     expect(err.message).toContain('Expr<uint256> #4');
-    expect(err.loc?.file).toMatch(/types\.test\.ts/); // misuse site
-    expect(err.relatedLocs).toEqual([
-      { label: 'handle recorded at', loc: { file: 'pools.ts', line: 9, column: 18 } },
-    ]);
   });
 
   test('nodejs.util.inspect.custom is NON-throwing and returns the description', () => {
     const x = makeHandle();
-    const inspect = x[Symbol.for('nodejs.util.inspect.custom')] as () => string;
-    expect(inspect()).toBe('Expr<uint256> #4 ← s.read(token0) at pools.ts:9:18');
+    const inspect = x[Symbol.for('nodejs.util.inspect.custom')] as (this: unknown) => string;
+    expect(inspect.call(x)).toBe('Expr<uint256> #4 ← s.read(token0)');
   });
 
   test('traps are non-enumerable (the handle still JSON-walks its data props only)', () => {

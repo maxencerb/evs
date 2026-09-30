@@ -206,7 +206,7 @@ try {
   if (e instanceof BaseError) {
     const revert = e.walk((err) => err instanceof ContractFunctionRevertedError);
     if (revert instanceof ContractFunctionRevertedError && revert.raw !== undefined) {
-      // human-readable: panic / EVS error / bubbled callee revert, with your source line
+      // human-readable: panic / EVS error / bubbled callee revert, naming the failing site
       throw new Error(compiled.explainRevert(revert.raw).message, { cause: e });
     }
   }
@@ -222,7 +222,7 @@ see [sender mode](/guides/execution/#sender-mode)). Pinning
 `blockNumber` works in either mode because everything is plain `eth_call`. When a call
 reverts, pull the raw revert data off viem's `ContractFunctionRevertedError` and feed it to
 `compiled.explainRevert` — panics, the EVS error ABI, and bubbled callee reverts all decode
-back to a message with your source location. See [execution](/guides/execution/) and
+back to a message naming the failing site. See [execution](/guides/execution/) and
 [errors and debugging](/guides/errors-and-debugging/).
 
 :::caution

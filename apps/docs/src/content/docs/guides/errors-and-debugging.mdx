@@ -12,14 +12,14 @@ An evs script can fail on three distinct timelines, and each one fails different
 | Run time — the `eth_call`         | revert payloads: `Panic(uint256)`, the evs error ABI, bubbled callee reverts | overflow, out-of-bounds indexing, malformed returndata, a callee reverting                       |
 
 Every TS-side error extends `EvsError`, which carries a machine-readable `code`
-(`EvsErrorCode`), a `loc` (`{ file, line, column }` of the offending call, or `null`), and
-`relatedLocs` when two source locations are involved. The full code list lives in the
+(`EvsErrorCode`) and a message. The full code list lives in the
 [diagnostics reference](/reference/diagnostics/).
 
 ## Recording-time errors
 
 The builder callback runs exactly once, and evs validates everything it can the moment a
-builder method is called — so the stack trace points at *your* line:
+builder method is called. The error is thrown synchronously from inside your `evscript`
+callback, so the ordinary JavaScript stack trace points at *your* line:
 
 ```ts
 import { evscript, EvsTypeError, t } from '@maxencerb/evs';
@@ -32,7 +32,7 @@ try {
 } catch (e) {
   if (e instanceof EvsTypeError) {
     const code = e.code; // 'LITERAL_RANGE'
-    const where = e.loc; // { file, line, column } of the offending .add(300n)
+    const where = e.stack; // the stack trace includes the line of the offending .add(300n)
   }
 }
 ```
@@ -82,7 +82,7 @@ try {
 }
 ```
 
-Each `EvsDiagnostic` is `{ severity: 'warning', code, message, loc }` with three possible
+Each `EvsDiagnostic` is `{ severity: 'warning', code, message }` with three possible
 codes: `LOOP_ALLOCATION` (memory allocated on every loop iteration — evs never resets the free
 pointer), `LARGE_FRAME`, and `ENV_FRAME_DEPENDENT` (`s.env('caller')`/`s.env('address')` —
 covered in [executing scripts](/guides/execution/)).
@@ -224,10 +224,10 @@ built-in arms for `Panic` (code + meaning), `Error` (reason), `unknown` (selecto
 a callee error bubbled verbatim), and `empty`. It returns `undefined` when the input is not
 revert-shaped.
 
-## `explainRevert` — from a viem error to your source line
+## `explainRevert` — from a viem error to the failing site
 
 The artifact's `explainRevert(data)` classifies any revert payload and, where possible, maps it
-back to the script line that produced it. The full flow — catch the viem error, extract the raw
+back to the site (a numbered read, check, or call in your script) that produced it. The full flow — catch the viem error, extract the raw
 payload, explain it:
 
 ```ts
@@ -261,10 +261,9 @@ try {
       const explanation = compiled.explainRevert(reverted.raw);
       // explanation.kind    → 'evs-decode'
       // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 0)
-      //                        — recorded at token-meta.ts:11:20 — note: the script performs
-      //                        sub-calls and a callee may have reverted with this evs selector
-      //                        verbatim (…)"
-      // explanation.site    → { id, loc, detail } for the s.read that failed
+      //                        — note: the script performs sub-calls and a callee may have
+      //                        reverted with this evs selector verbatim (…)"
+      // explanation.site    → { id, detail } for the s.read that failed
     }
   }
 }
@@ -276,7 +275,7 @@ The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` a
 | `kind`                   | Payload                          | Source attribution                                                                  |
 | ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
-| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode, with its recorded loc  |
+| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode (id + detail)          |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
 | `'script-error'`         | a DECLARED custom error          | `errorName` + `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
 | `'error-string'`         | `Error(string)`                  | none — bubbled verbatim from a callee                                                 |
@@ -294,7 +293,7 @@ anything, so their attributions are authoritative.
 ## `disassemble()` — read the bytecode
 
 `disassemble()` returns the annotated instruction listing of the runtime bytecode; `format()`
-renders it with labels, jump targets, notes, and source locations:
+renders it with labels, jump targets, and notes:
 
 ```ts
 import { compile, evscript, lookupPc, t } from '@maxencerb/evs';
@@ -308,7 +307,7 @@ const listing = compiled.disassemble().format();
 // pc, raw bytes, mnemonic, jump targets, notes — see below
 
 const hit = lookupPc(compiled.sourceMap, 0x29);
-// hit → { loc: { file, line, column } | null, note?: string } | undefined
+// hit → { note?: string } | undefined
 ```
 
 The first lines of the real listing for this `echo(uint256)` script (cancun target):
@@ -331,17 +330,16 @@ The first lines of the real listing for this `echo(uint256)` script (cancun targ
 0x0018  610020      PUSH2 0x0020 → @main
 ```
 
-`disassemble` also works on foreign bytecode — it is a free export taking raw bytes or hex —
-and `format({ locs: false })` drops the source-location comments.
+`disassemble` also works on foreign bytecode — it is a free export taking raw bytes or hex.
 
 ## `sourceMap` and `lookupPc`
 
-The artifact's `sourceMap` is the data behind both tools: `segments` map every pc range to the
-source location that produced it, `sites` give each panic/decode/call site an id, a kind, and a
-human-readable detail (this is what `explainRevert` resolves `EvsDecodeError(site)` against),
-and `labels` name the pcs of internal jump targets. `lookupPc(map, pc)` binary-searches the
-segments — handy for decorating an execution trace from a node or a fork tool with script
-source lines.
+The artifact's `sourceMap` is the data behind both tools: `segments` cover every emitted pc
+range (with a short note on what the code does), `sites` give each panic/decode/call site an
+id, a kind, and a human-readable detail (this is what `explainRevert` resolves
+`EvsDecodeError(site)` against), and `labels` name the pcs of internal jump targets.
+`lookupPc(map, pc)` binary-searches the segments — handy for decorating an execution trace from
+a node or a fork tool with what each pc range belongs to.
 
 For debugging script *logic* without a node at all, run the IR oracle instead — see
 [testing scripts](/guides/testing-scripts/). Full artifact shapes are in the

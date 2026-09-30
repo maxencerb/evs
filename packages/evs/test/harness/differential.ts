@@ -150,14 +150,6 @@ export interface AnyScript {
 
 export type Outcome = { kind: 'return' | 'revert'; data: Hex };
 
-/** The distinct source locations a source map carries (order-free). */
-export function mappedLocs(map: CompiledEvsScript['sourceMap']): string[] {
-  const keys = map.segments.map((seg) =>
-    seg.loc === null ? 'null' : `${seg.loc.file}:${seg.loc.line}:${seg.loc.column}`,
-  );
-  return [...new Set(keys)].toSorted();
-}
-
 /**
  * Compiles twice — the default output AND its `optimize: true` twin (the built-in passes: the
  * liveness-based frame allocator, issue #41, and the peephole pass, issue #39) — checks the
@@ -165,7 +157,7 @@ export function mappedLocs(map: CompiledEvsScript['sourceMap']): string[] {
  * idempotence), then for every arg set asserts byte-exact agreement between the reference
  * interpreter and BOTH compiled runtimes on the harness EVM. The optimized twin must also
  * never be larger, never use a larger frame, never cost more gas, and carry exactly the same
- * mapped source locations.
+ * site table (explainRevert attribution).
  * Returns the (agreed) outcomes so callers can pin expectations for specific cases.
  */
 export async function expectAgreement(
@@ -187,11 +179,9 @@ export async function expectAgreement(
   expect(optimized.runtimeBytecode.length, `${twinLabel}: size`).toBeLessThanOrEqual(
     compiled.runtimeBytecode.length,
   );
-  expect(mappedLocs(optimized.sourceMap), `${twinLabel}: mapped locations`).toEqual(
-    mappedLocs(compiled.sourceMap),
-  );
+  expect(optimized.sourceMap.sites, `${twinLabel}: site table`).toEqual(compiled.sourceMap.sites);
   const frameEndOf = (optimize: boolean): number =>
-    lowerProgram(script.ir, { evmVersion, locations: true, optimize }).frameEnd;
+    lowerProgram(script.ir, { evmVersion, optimize }).frameEnd;
   expect(frameEndOf(true), `${twinLabel}: frame`).toBeLessThanOrEqual(frameEndOf(false));
   const fixture = fixtureOf(table);
   const chain = chainOf(table);

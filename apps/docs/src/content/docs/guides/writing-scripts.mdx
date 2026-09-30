@@ -124,36 +124,13 @@ When the data is only known at run time — a runtime `address[]` argument, a va
 Native JS `if`/`for`/`&&` cannot branch on EVM values. An `Expr` is an object, and objects are always truthy — `if (someExpr)` records the branch unconditionally and JS cannot trap it. See the [staging misuse rules](/guides/values-and-types/) for what is trapped and what is not.
 :::
 
-## Source locations: the `locations` option
+## Finding where an error came from
 
-`evscript` takes an optional third argument, `{ locations?: boolean }` (default `true`). When enabled, every recorded statement captures the file, line, and column of the builder call that produced it. That is what makes the diagnostics good:
-
-- recording-time errors point at the offending line in your script;
-- the compiled `sourceMap`, `explainRevert`, and `disassemble().format()` map bytecode program counters back to your source lines.
-
-Pass `{ locations: false }` to skip capture — statements then carry no locations, and diagnostics lose their `file:line` attribution:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const lean = evscript(
-  { name: 'lean', args: [t.uint256] },
-  (s, x) => s.return({ doubled: x.mul(2n) }),
-  { locations: false }, // recorded statements carry no source locations
-);
-```
-
-`compile()` has its own `locations` option with the same default; see [errors and debugging](/guides/errors-and-debugging/) for the full diagnostics story.
-
-:::note[Runtimes without `import.meta.url`]
-Locations come from JS stack traces, and evs recognises its *own* frames by this module's URL so
-the reported site is your call, not library internals. A few runtimes provide no
-`import.meta.url` — a bundled Cloudflare Worker (workerd) is the common one, and some bundler
-outputs too. There, evs cannot recognise its own frames: captured locations still work but may
-point at library internals or resolve to `<unknown>`. Nothing throws, and everything else — the
-compiler, the bytecode, execution — is unaffected. Pass `{ locations: false }` on such a runtime
-to skip the capture entirely.
-:::
+Builder calls validate eagerly and throw synchronously from inside your `evscript` callback, so
+a recording-time error's ordinary JavaScript stack trace already points at the offending line
+of your script. Compile-time diagnostics and runtime reverts name the construct and the site id
+involved instead; see [errors and debugging](/guides/errors-and-debugging/) for the full
+diagnostics story.
 
 ## Next
 

@@ -9,6 +9,8 @@ import starlightThemeRapide from 'starlight-theme-rapide';
 // https://astro.build/config
 export default defineConfig({
   site: 'https://evs.maxencerb.com',
+  // The in-browser playground was removed; keep old links landing somewhere useful.
+  redirects: { '/playground': '/' },
   integrations: [
     starlight({
       title: 'evs',
@@ -42,8 +44,7 @@ export default defineConfig({
             { label: 'npm package', url: 'https://www.npmjs.com/package/@maxencerb/evs' },
           ],
         }),
-        // /playground is a custom (non-Starlight) page the validator can't see.
-        starlightLinksValidator({ exclude: ['/playground/'] }),
+        starlightLinksValidator(),
       ],
       sidebar: [
         {
@@ -52,7 +53,6 @@ export default defineConfig({
             { label: 'Why evs?', slug: 'getting-started/why-evs' },
             { label: 'Installation', slug: 'getting-started/installation' },
             { label: 'Quick start', slug: 'getting-started/quick-start' },
-            { label: 'Playground', link: '/playground' },
           ],
         },
         {

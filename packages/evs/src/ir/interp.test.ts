@@ -18,7 +18,7 @@ import {
 import { describe, expect, test } from 'vite-plus/test';
 
 import { canonicalTypeSignature } from '../abi/artifact.js';
-import { EvsCompileError, EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsCompileError, EvsTypeError } from '../core/errors.js';
 import {
   typeToAbiParam,
   type EvsType,
@@ -35,14 +35,12 @@ import type { BinOp, PlainAbiFunction, ScriptIr, Stmt, UnOp, ValueInfo } from '.
 
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
-
-function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0): Stmt {
-  return { loc: LOC, site, ...body };
+function mk(body: DistOmit<Stmt, 'site'>, site = 0): Stmt {
+  return { site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
-  return debugName === undefined ? { type, loc: null } : { type, loc: LOC, debugName };
+  return debugName === undefined ? { type } : { type, debugName };
 }
 
 function ir(p: Partial<ScriptIr>): ScriptIr {
@@ -55,7 +53,6 @@ function ir(p: Partial<ScriptIr>): ScriptIr {
     fns: [],
     body: [],
     returns: [],
-    loc: null,
     ...p,
   };
 }
@@ -984,7 +981,7 @@ describe('arrays + cells', () => {
         vi('uint256'),
         vi('uint256'),
       ],
-      cells: [{ type: 'uint256[]', loc: null }],
+      cells: [{ type: 'uint256[]' }],
       body: [
         mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(2n) }, type: 'uint256' }),
         mk({ k: 'arrnew', elem: 'uint256', length: 0, out: 1 }),
@@ -1133,7 +1130,7 @@ describe('control flow', () => {
       name: 'branch',
       args: [{ name: 'c', type: 'bool' }],
       values: [vi('bool'), vi('uint256'), vi('uint256'), vi('uint256'), vi('uint256')],
-      cells: [{ type: 'uint256', loc: null }],
+      cells: [{ type: 'uint256' }],
       body: [
         mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
         mk({ k: 'cellnew', cell: 0, init: 1 }),
@@ -1175,8 +1172,8 @@ describe('control flow', () => {
       vi('uint256'), // v10 final total
     ],
     cells: [
-      { type: 'uint256', loc: null, debugName: 'total' },
-      { type: 'uint256', loc: null, debugName: 'i' },
+      { type: 'uint256', debugName: 'total' },
+      { type: 'uint256', debugName: 'i' },
     ],
     body: [
       mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
@@ -1226,7 +1223,7 @@ describe('control flow', () => {
         vi('uint256'), // v9 i+1
         vi('uint256'), // v10 final
       ],
-      cells: [{ type: 'uint256', loc: null, debugName: 'i' }],
+      cells: [{ type: 'uint256', debugName: 'i' }],
       body: [
         mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
         mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint256' }),
@@ -1277,8 +1274,8 @@ describe('control flow', () => {
         vi('uint256'), // v13 final
       ],
       cells: [
-        { type: 'uint256', loc: null, debugName: 'i' },
-        { type: 'uint256', loc: null, debugName: 'total' },
+        { type: 'uint256', debugName: 'i' },
+        { type: 'uint256', debugName: 'total' },
       ],
       body: [
         mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
@@ -1332,7 +1329,6 @@ describe('control flow', () => {
           results: [{ type: 'uint256' }],
           body: [mk({ k: 'bin', op: 'add', a: 1, b: 1, out: 2 })],
           resultValues: [2],
-          loc: null,
         },
       ],
       body: [
@@ -2029,7 +2025,7 @@ describe('maxSteps + trace', () => {
       name: 'traced',
       args: [{ name: 'c', type: 'bool' }],
       values: [vi('bool'), vi('uint256'), vi('uint256')],
-      cells: [{ type: 'uint256', loc: null }],
+      cells: [{ type: 'uint256' }],
       body: [
         mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint256' }),
         mk({ k: 'cellnew', cell: 0, init: 1 }),
@@ -2051,7 +2047,6 @@ describe('maxSteps + trace', () => {
     expect(paths).toEqual(['0', '1', '2', '2.0.0', '3']);
     const notes = (traced.trace ?? []).map((t) => t.note);
     expect(notes).toEqual(['const uint256', 'cellnew #0', 'if', 'cellset #0', 'cellget #0']);
-    expect((traced.trace ?? [])[0]?.loc).toEqual(LOC);
   });
 
   test('fn-body trace entries are prefixed with the fn name', () => {
@@ -2066,7 +2061,6 @@ describe('maxSteps + trace', () => {
           results: [{ type: 'uint256' }],
           body: [mk({ k: 'bin', op: 'add', a: 1, b: 1, out: 2 })],
           resultValues: [2],
-          loc: null,
         },
       ],
       body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [3] })],
@@ -2121,7 +2115,7 @@ describe('regressions', () => {
     const script = ir({
       name: 'looped',
       values: [vi('uint256'), vi('uint256'), vi('uint256'), vi('bool'), vi('uint256')],
-      cells: [{ type: 'uint256', loc: null }],
+      cells: [{ type: 'uint256' }],
       body: [
         mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint256' }),
         mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),

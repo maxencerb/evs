@@ -60,20 +60,19 @@ function wordHex(v: bigint): Hex {
 }
 
 /** A `Stmt` minus the bookkeeping the builder fills in (distributed over the union). */
-type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'loc' | 'site'> : never) : never;
+type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'site'> : never) : never;
 
 class IrB {
   readonly name: string;
   readonly argsList: { name: string; type: EvsType }[];
-  values: { type: EvsType; loc: null }[] = [];
-  cells: { type: EvsType; loc: null }[] = [];
+  values: { type: EvsType }[] = [];
+  cells: { type: EvsType }[] = [];
   fns: {
     name: string;
     params: { name: string; type: EvsType; value: ValueId }[];
     results: { type: EvsType }[];
     body: readonly Stmt[];
     resultValues: readonly ValueId[];
-    loc: null;
   }[] = [];
   returnsList: { name: string; type: EvsType; value: ValueId }[] = [];
   private blocks: Stmt[][] = [[]];
@@ -82,11 +81,11 @@ class IrB {
   constructor(name: string, args: readonly (readonly [string, EvsType])[] = []) {
     this.name = name;
     this.argsList = args.map(([n, t]) => ({ name: n, type: t }));
-    for (const a of this.argsList) this.values.push({ type: a.type, loc: null });
+    for (const a of this.argsList) this.values.push({ type: a.type });
   }
 
   val(type: EvsType): ValueId {
-    this.values.push({ type, loc: null });
+    this.values.push({ type });
     return this.values.length - 1;
   }
 
@@ -99,7 +98,7 @@ class IrB {
   private emit(body: StmtBody): void {
     const block = this.blocks[this.blocks.length - 1];
     if (block === undefined) throw new Error('IrB: no open block');
-    block.push({ loc: null, site: this.nextSite++, ...body });
+    block.push({ site: this.nextSite++, ...body });
   }
 
   word(type: WordType, v: bigint): ValueId {
@@ -171,7 +170,7 @@ class IrB {
   }
 
   cell(type: EvsType, init: ValueId): CellId {
-    this.cells.push({ type, loc: null });
+    this.cells.push({ type });
     const cell = this.cells.length - 1;
     this.emit({ k: 'cellnew', cell, init });
     return cell;
@@ -235,7 +234,6 @@ class IrB {
       results: resultValues.map((rv) => ({ type: this.typeOf(rv) })),
       body,
       resultValues: [...resultValues],
-      loc: null,
     });
     return this.fns.length - 1;
   }
@@ -293,7 +291,6 @@ class IrB {
       fns: this.fns,
       body,
       returns: this.returnsList,
-      loc: null,
     };
   }
 }
@@ -303,7 +300,7 @@ class IrB {
 // ---------------------------------------------------------------------------
 
 function compileIr(ir: ScriptIr, evmVersion: EvmVersion = 'cancun'): Hex {
-  const lowered = lowerProgram(ir, { evmVersion, locations: true });
+  const lowered = lowerProgram(ir, { evmVersion });
   const { bytecode } = assemble(lowered.nodes, { evmVersion });
   return bytesToHex(bytecode);
 }

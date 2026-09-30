@@ -2,12 +2,6 @@
  * `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
  */
 
-export interface SourceLoc {
-  file: string;
-  line: number;
-  column: number;
-}
-
 export type EvsErrorCode =
   | 'STAGING_MISUSE'
   | 'TYPE_MISMATCH'
@@ -27,22 +21,11 @@ export type EvsErrorCode =
 
 export class EvsError extends Error {
   readonly code: EvsErrorCode;
-  readonly loc: SourceLoc | null;
-  readonly relatedLocs: readonly { label: string; loc: SourceLoc | null }[];
 
-  constructor(
-    code: EvsErrorCode,
-    message: string,
-    opts?: {
-      loc?: SourceLoc | null;
-      relatedLocs?: readonly { label: string; loc: SourceLoc | null }[];
-    },
-  ) {
+  constructor(code: EvsErrorCode, message: string) {
     super(message);
     this.name = new.target.name;
     this.code = code;
-    this.loc = opts?.loc ?? null;
-    this.relatedLocs = opts?.relatedLocs ?? [];
   }
 }
 
@@ -55,18 +38,10 @@ export class EvsCompileError extends EvsError {}
 const INTERNAL_MARKER = 'bug in evs, please report';
 
 export class EvsInternalError extends EvsError {
-  constructor(
-    code: EvsErrorCode,
-    message: string,
-    opts?: {
-      loc?: SourceLoc | null;
-      relatedLocs?: readonly { label: string; loc: SourceLoc | null }[];
-    },
-  ) {
+  constructor(code: EvsErrorCode, message: string) {
     super(
       code,
       message.includes(INTERNAL_MARKER) ? message : `${message} (this is a ${INTERNAL_MARKER})`,
-      opts,
     );
   }
 }
@@ -78,5 +53,4 @@ export interface EvsDiagnostic {
   // stateOverride modes.
   code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT';
   message: string;
-  loc: SourceLoc | null;
 }

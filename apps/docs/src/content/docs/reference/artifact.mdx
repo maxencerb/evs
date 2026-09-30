@@ -199,8 +199,7 @@ const script = evscript({ name: 'one', args: [] }, (s) => {
 });
 const dis = compile(script).disassemble();
 
-const annotated: string = dis.format(); // listing with file:line:column comments
-const bare: string = dis.format({ locs: false }); // same listing without source locations
+const listing: string = dis.format(); // listing with labels, jump targets and notes
 for (const line of dis.lines) {
   line.pc; // byte offset
   line.mnemonic; // opcode name
@@ -208,7 +207,7 @@ for (const line of dis.lines) {
 }
 ```
 
-`Disassembly` is `{ lines, format(opts?) }`. Each element of `lines` has:
+`Disassembly` is `{ lines, format() }`. Each element of `lines` has:
 
 | Field | Type | Meaning |
 | --- | --- | --- |
@@ -218,11 +217,10 @@ for (const line of dis.lines) {
 | `pushValue?` | `Hex` | Immediate of a `PUSH1`–`PUSH32` |
 | `targetLabel?` | `string` | Label whose pc matches a small push immediate |
 | `label?` | `string` | Label defined at this pc |
-| `loc?` | `SourceLoc \| null` | Source location from the source map |
 | `note?` | `string` | Codegen annotation (for example `free-ptr init`) |
 
 The first lines of the `totalSupplyOf` artifact from the top of this page
-(`format({ locs: false })`, real compiler output):
+(`format()`, real compiler output):
 
 ```txt
 0x0000  60c0        PUSH1 0xc0  ; frameEnd
@@ -263,7 +261,6 @@ const compiled = compile(script);
 
 const hit = lookupPc(compiled.sourceMap, 0);
 if (hit !== undefined) {
-  hit.loc; // SourceLoc | null
   hit.note; // optional codegen annotation
 }
 
@@ -278,14 +275,13 @@ for (const site of compiled.sourceMap.sites) {
 | Field | Shape | Notes |
 | --- | --- | --- |
 | `version` | `1` | Format version |
-| `segments` | `readonly { pc, len, loc, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte |
-| `sites` | `readonly { id, kind, loc, detail }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number |
+| `segments` | `readonly { pc, len, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte |
+| `sites` | `readonly { id, kind, detail }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number |
 | `labels` | `readonly { pc, name }[]` | Label name per jump-destination pc |
 
-`lookupPc(map, pc)` binary-searches the segments and returns
-`{ loc: SourceLoc | null; note?: string }`, or `undefined` when no segment covers the pc. The
-`sites` table powers `explainRevert` and the `EvsDecodeError(site)` round trip. Source locations
-are only recorded when the `locations` option is enabled (the default).
+`lookupPc(map, pc)` binary-searches the segments and returns `{ note?: string }`, or
+`undefined` when no segment covers the pc. The `sites` table powers `explainRevert` and the
+`EvsDecodeError(site)` round trip.
 
 ## `explainRevert(data)` — `RevertExplanation`
 
@@ -308,17 +304,15 @@ explanation.panicCode; // 17n (0x11 — arithmetic overflow or underflow)
 explanation.message; // quoted below
 ```
 
-Output (the location points at the `s.add` call in your source file):
+Output (the candidate names the `s.add` site by what it is and its site id):
 
 ```txt
-Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script: checked add — Panic 0x11 at add-one.ts:4:26
+Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script: checked add — Panic 0x11 (site 1)
 ```
 
 The result shape (site ids are plain numbers):
 
 ```ts
-import type { SourceLoc } from '@maxencerb/evs';
-
 interface RevertExplanation {
   kind:
     | 'panic'
@@ -332,8 +326,8 @@ interface RevertExplanation {
   panicCode?: bigint; // kind 'panic' only
   errorName?: string; // kind 'script-error' only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // kind 'script-error' only: name-keyed decoded args
-  site?: { id: number; loc: SourceLoc | null; detail: string }; // kind 'evs-decode' only
-  candidateSites?: readonly { id: number; loc: SourceLoc | null; detail: string }[]; // 'panic' only
+  site?: { id: number; detail: string }; // kind 'evs-decode' only
+  candidateSites?: readonly { id: number; detail: string }[]; // 'panic' only
   raw: `0x${string}`;
 }
 ```
@@ -455,5 +449,5 @@ payloads are bit-for-bit what the compiled bytecode produces. `InterpEnvOverride
 
 `compiled.options` is the frozen, fully resolved `Readonly<Required<CompileOptions>>` the
 artifact was built with — defaults applied: `evmVersion: 'cancun'`, `optimize: false`,
-`locations: true`, identity `peephole`, no-op `onDiagnostic`. See [evscript](/reference/evscript/) for the option-by-option
+identity `peephole`, no-op `onDiagnostic`. See [evscript](/reference/evscript/) for the option-by-option
 reference and [EVM targets](/guides/evm-targets/) for choosing `evmVersion`.

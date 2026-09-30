@@ -53,7 +53,7 @@ import {
   padWordAligned,
   u256ToBytes as wordToBytes,
 } from '../core/bytes.js';
-import { EvsCompileError, EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsCompileError, EvsInternalError, EvsTypeError } from '../core/errors.js';
 import {
   abiParamToType,
   bitsOf,
@@ -118,7 +118,7 @@ export interface InterpResult {
   outcome:
     | { kind: 'return'; data: Hex; values: Record<string, unknown> } // data = ABI-encoded returndata
     | { kind: 'revert'; data: Hex }; // byte-exact revert payload
-  trace?: readonly { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[];
+  trace?: readonly { stmtPath: readonly number[]; note: string }[];
 }
 
 /**
@@ -296,8 +296,7 @@ class Interp {
   private readonly maxSteps: number;
   private readonly tracing: boolean;
   private readonly env: ResolvedEnv;
-  private readonly trace: { stmtPath: readonly number[]; loc: SourceLoc | null; note: string }[] =
-    [];
+  private readonly trace: { stmtPath: readonly number[]; note: string }[] = [];
   private readonly values = new Map<ValueId, Value>();
   private readonly cells = new Map<CellId, Value>();
   private steps = 0;
@@ -324,11 +323,10 @@ class Interp {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `interpret: script "${ir.name}" takes ${ir.args.length} argument(s), got ${args.length}`,
-        { loc: ir.loc },
       );
     }
     ir.args.forEach((a, i) => {
-      this.values.set(i, coerceArg(a.name, a.type, args[i], ir.loc));
+      this.values.set(i, coerceArg(a.name, a.type, args[i]));
     });
     let outcome: InterpResult['outcome'];
     try {
@@ -361,7 +359,6 @@ class Interp {
       throw new EvsCompileError(
         'COMPILE_LIMIT',
         `interpret: script "${this.ir.name}" exceeded maxSteps = ${this.maxSteps} (likely an unbounded loop; raise opts.maxSteps if intentional)`,
-        { loc: this.ir.loc },
       );
     }
   }
@@ -370,7 +367,7 @@ class Interp {
     this.tick();
     if (this.tracing) {
       const prefix = this.fnStack.length > 0 ? `fn "${this.fnStack.join('"."')}": ` : '';
-      this.trace.push({ stmtPath: path, loc: s.loc, note: `${prefix}${noteOf(s)}` });
+      this.trace.push({ stmtPath: path, note: `${prefix}${noteOf(s)}` });
     }
   }
 
@@ -700,10 +697,9 @@ class Interp {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `interpret: MockChain.${oracle} returned a malformed result for ${s.fnAbi.name}()`,
-        { loc: s.loc },
       );
     }
-    const data = hexToBytesChecked(res.data, `MockChain returndata for ${s.fnAbi.name}()`, s.loc);
+    const data = hexToBytesChecked(res.data, `MockChain returndata for ${s.fnAbi.name}()`);
     if (s.revertReturns === undefined) {
       if (!res.success) {
         if (s.mode === 'strict') throw new RevertSignal(data); // bubble verbatim
@@ -1332,28 +1328,28 @@ function decodeDynamic(type: EvsType, data: Uint8Array, ptr: number, end: number
 // script-arg coercion (the JS mirror of the calldata trust boundary)
 // ---------------------------------------------------------------------------
 
-function coerceArg(name: string, type: EvsType, value: unknown, loc: SourceLoc | null): Value {
+function coerceArg(name: string, type: EvsType, value: unknown): Value {
   const where = `interpret: argument "${name}" (${stringifyType(type)})`;
-  return coerceValue(type, value, where, loc);
+  return coerceValue(type, value, where);
 }
 
 /** Coerces a host literal to a {@link Value} of `type` (the JS mirror of the trust boundary,
  *  recursing through tuple components — named object when all members named, positional otherwise). */
-function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLoc | null): Value {
-  if (isPlainTuple(type)) return coerceTuple(type, value, where, loc); // a tuple[] falls through to the array arm
-  if (isWordType(type)) return coerceWordArg(type, value, where, loc);
+function coerceValue(type: EvsType, value: unknown, where: string): Value {
+  if (isPlainTuple(type)) return coerceTuple(type, value, where); // a tuple[] falls through to the array arm
+  if (isWordType(type)) return coerceWordArg(type, value, where);
   if (type === 'string') {
     if (typeof value !== 'string') {
-      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a string`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a string`);
     }
     return { kind: 'bytes', bytes: TEXT_ENCODER.encode(value) };
   }
   if (type === 'bytes') {
-    return { kind: 'bytes', bytes: coerceHexArg(value, null, where, loc) };
+    return { kind: 'bytes', bytes: coerceHexArg(value, null, where) };
   }
   const elem = elemTypeOf(asArrayType(type));
   if (!Array.isArray(value)) {
-    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected an array`, { loc });
+    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected an array`);
   }
   const raw: readonly unknown[] = value;
   // recurse per element: a word element coerces to a canonical word, a composite/dynamic element
@@ -1361,18 +1357,18 @@ function coerceValue(type: EvsType, value: unknown, where: string, loc: SourceLo
   return {
     kind: 'array',
     elem,
-    items: raw.map((el, i) => coerceValue(elem, el, `${where}[${i}]`, loc)),
+    items: raw.map((el, i) => coerceValue(elem, el, `${where}[${i}]`)),
   };
 }
 
 /** Coerces a host literal struct/tuple to a {@link TupleVal}: a name-keyed object when every
  *  member is named (abitype's all-named rule), or a positional array otherwise. */
-function coerceTuple(type: TupleType, value: unknown, where: string, loc: SourceLoc | null): Value {
+function coerceTuple(type: TupleType, value: unknown, where: string): Value {
   const comps = type.components;
   const allNamed = comps.every((c) => c.name !== '');
   if (allNamed && !Array.isArray(value)) {
     if (typeof value !== 'object' || value === null) {
-      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a struct object`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a struct object`);
     }
     return {
       kind: 'tuple',
@@ -1382,47 +1378,40 @@ function coerceTuple(type: TupleType, value: unknown, where: string, loc: Source
           // own properties only (Object.entries semantics) — never the prototype chain
           Object.hasOwn(value, c.name) ? (Reflect.get(value, c.name) as unknown) : undefined,
           `${where}.${c.name}`,
-          loc,
         ),
       ),
     };
   }
   if (!Array.isArray(value)) {
-    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a positional tuple array`, { loc });
+    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a positional tuple array`);
   }
   const items: readonly unknown[] = value;
   if (items.length !== comps.length) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${where}: expected ${comps.length} members, got ${items.length}`,
-      { loc },
     );
   }
   return {
     kind: 'tuple',
-    fields: comps.map((c, i) => coerceValue(abiParamToType(c), items[i], `${where}[${i}]`, loc)),
+    fields: comps.map((c, i) => coerceValue(abiParamToType(c), items[i], `${where}[${i}]`)),
   };
 }
 
-function coerceWordArg(
-  type: WordType,
-  value: unknown,
-  where: string,
-  loc: SourceLoc | null,
-): bigint {
+function coerceWordArg(type: WordType, value: unknown, where: string): bigint {
   if (type === 'bool') {
     if (typeof value !== 'boolean') {
-      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a boolean`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a boolean`);
     }
     return value ? 1n : 0n;
   }
   if (type === 'address') {
-    const bytes = coerceHexArg(value, 20, where, loc);
+    const bytes = coerceHexArg(value, 20, where);
     return readPartialWord(bytes, 0, 20);
   }
   if (type.startsWith('bytes')) {
     const size = Number(type.slice('bytes'.length));
-    const bytes = coerceHexArg(value, size, where, loc);
+    const bytes = coerceHexArg(value, size, where);
     return readPartialWord(bytes, 0, size) << BigInt(8 * (32 - size)); // left-aligned
   }
   // numeric
@@ -1432,30 +1421,20 @@ function coerceWordArg(
   } else if (typeof value === 'number' && Number.isSafeInteger(value)) {
     v = BigInt(value);
   } else {
-    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a bigint or safe-integer number`, {
-      loc,
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `${where}: expected a bigint or safe-integer number`);
   }
   const [min, max] = numericRange(type);
   if (v < min || v > max) {
-    throw new EvsTypeError('LITERAL_RANGE', `${where}: ${v}n is out of range [${min}, ${max}]`, {
-      loc,
-    });
+    throw new EvsTypeError('LITERAL_RANGE', `${where}: ${v}n is out of range [${min}, ${max}]`);
   }
   return fromLogical(v);
 }
 
-function coerceHexArg(
-  value: unknown,
-  exactBytes: number | null,
-  where: string,
-  loc: SourceLoc | null,
-): Uint8Array {
+function coerceHexArg(value: unknown, exactBytes: number | null, where: string): Uint8Array {
   if (!isHexString(value)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${where}: expected a 0x-prefixed even-length hex string`,
-      { loc },
     );
   }
   const bytes = hexToBytes(value);
@@ -1463,7 +1442,6 @@ function coerceHexArg(
     throw new EvsTypeError(
       'LITERAL_RANGE',
       `${where}: expected exactly ${exactBytes} bytes, got ${bytes.length}`,
-      { loc },
     );
   }
   return bytes;
@@ -1538,12 +1516,11 @@ function jsWord(type: WordType, word: bigint): unknown {
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 
-function hexToBytesChecked(value: unknown, what: string, loc: SourceLoc | null): Uint8Array {
+function hexToBytesChecked(value: unknown, what: string): Uint8Array {
   if (!isHexString(value)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `interpret: ${what} must be an even-length 0x-hex string`,
-      { loc },
     );
   }
   return hexToBytes(value);

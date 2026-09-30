@@ -169,7 +169,7 @@ function buildCallRuntime(cfg: CallCfg): BuiltCall {
   };
   const fnAbi = toPlainAbiFunction(fnItem);
 
-  const base = { k: 'call' as const, loc: null, site: SITE, target: 0, fnAbi, args: [], outs: [] };
+  const base = { k: 'call' as const, site: SITE, target: 0, fnAbi, args: [], outs: [] };
   const stmt: Extract<Stmt, { k: 'call' }> =
     cfg.mode === 'try' ? { ...base, mode: 'try', successOut: 0 } : { ...base, mode: 'strict' };
 

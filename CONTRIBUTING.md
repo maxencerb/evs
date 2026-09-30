@@ -77,7 +77,7 @@ exports that are not part of the public graph — `exports` never allowed deep i
 `declare module '../core/types.js'` augmentation in `builder/script.d.ts` as written (valid
 because the layout is unbundled; tsdown logs a note about it). The public surface —
 137 exports of `dist/index.d.ts` — is identical by name, kind and type. Consumers are checked by
-publint, attw, the docs snippet gate, the playground payload and the examples; the type tests
+publint, attw, the docs snippet gate and the examples; the type tests
 (`*.test-d.ts`) run against `src/`.
 
 Releases: see [Releasing](#releasing) below.
@@ -100,7 +100,7 @@ Releases: see [Releasing](#releasing) below.
   params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
   for the whole loop) and a peephole pass between codegen and assembly (exported as
   `evsPeephole`) that folds store-then-reload slot pairs, constants and stack identities, never
-  crosses a `JUMPDEST` and keeps every source location. Both outputs go through the same
+  crosses a `JUMPDEST` and never touches a label or jump target. Both outputs go through the same
   verifiers. It is off by default so the default bytes stay the plain lowering.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures point at), a **static frame from `0x80`**
@@ -113,8 +113,10 @@ Releases: see [Releasing](#releasing) below.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
   narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
   differentially against a solc-compiled reference contract.
-- **Errors at build time** (`EvsTypeError`, `EvsStagingError`) point at your source line; at run
-  time the artifact's `explainRevert(data)` maps revert payloads back to the recording site.
+- **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
+  the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
+  captures no source locations of its own); at run time the artifact's `explainRevert(data)`
+  maps revert payloads back to the site (kind, detail and site id) that produced them.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.
@@ -189,8 +191,7 @@ Build):
   `npx wrangler versions upload -c apps/docs/wrangler.jsonc` for a preview URL)
 
 The build does not need the global `vp` CLI: everything resolves from `node_modules` — `vp pack`
-is the project-local binary of `vite-plus`, the playground bundles use Rolldown through
-`vite/rolldown` (the Vite+ core), and the docs scripts run on plain Node. `wrangler.jsonc` sets
+is the project-local binary of `vite-plus` and the docs scripts run on plain Node. `wrangler.jsonc` sets
 `workers_dev: false` (the custom domain is the only production route) and `preview_urls: true`
 explicitly: wrangler syncs both flags on every deploy, and with `preview_urls` absent it
 follows the workers.dev flag, so each merge to `main` used to switch branch preview URLs back
@@ -205,8 +206,8 @@ Deployment deliberately stays on **wrangler**, not Cloudflare's `cf` CLI (evalua
 ends). `cf migrate` maps every `wrangler.jsonc` setting faithfully (name, compatibility date,
 `workersDev: false`, `previewUrls: true`, `notFoundHandling: "404-page"`, the custom domain), but
 its output still bundles through wrangler (a `wrangler.config.ts` importing
-`wrangler/experimental-config`, so wrangler stays installed), and `cf build` / `cf deploy` run a
-bare `astro build` (skipping `gen:playground`) and then require Build Output under
+`wrangler/experimental-config`, so wrangler stays installed), and `cf build` / `cf deploy` run
+`astro build` and then require Build Output under
 `.cloudflare/output/v0/`, which a static Astro build only emits with the `@astrojs/cloudflare`
 adapter. Revisit once `cf` can deploy a prebuilt static-assets directory without an adapter;
 until then keep `wrangler.jsonc` and the dashboard commands above unchanged.

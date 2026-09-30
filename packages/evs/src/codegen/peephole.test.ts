@@ -2,7 +2,7 @@
  * Unit tests — `codegen/peephole.ts` (issue #39): every rewrite as an input → output node
  * stream AND as the same tiny program executed on the in-process EVM before/after; the guard
  * rails (label / pushLabel barriers, the 16-item template budget, the fold size guard);
- * `loc`/`note` inheritance; purity + idempotence; and the constant folders checked opcode by
+ * `note` inheritance; purity + idempotence; and the constant folders checked opcode by
  * opcode against the EVM itself.
  */
 
@@ -13,7 +13,6 @@ import { assemble, AsmWriter, type AsmNode } from '../asm/assembler.js';
 import type { Mnemonic } from '../asm/ops.js';
 import { evscript } from '../builder/script.js';
 import { bytesToHex } from '../core/bytes.js';
-import type { SourceLoc } from '../core/errors.js';
 import { t, type Hex } from '../core/types.js';
 import { evsPeephole, foldBinary, foldUnary } from './peephole.js';
 import { lowerProgram } from './program.js';
@@ -23,15 +22,13 @@ import { lowerProgram } from './program.js';
 // ---------------------------------------------------------------------------
 
 const MAX = (1n << 256n) - 1n;
-const LOC_A: SourceLoc = { file: 'a.ts', line: 1, column: 1 };
-const LOC_B: SourceLoc = { file: 'b.ts', line: 2, column: 2 };
 
-const push = (value: bigint, meta?: { loc?: SourceLoc; note?: string }): AsmNode => ({
+const push = (value: bigint, meta?: { note?: string }): AsmNode => ({
   k: 'push',
   value,
   ...meta,
 });
-const op = (m: Mnemonic, meta?: { loc?: SourceLoc; note?: string }): AsmNode => ({
+const op = (m: Mnemonic, meta?: { note?: string }): AsmNode => ({
   k: 'op',
   op: m,
   ...meta,
@@ -95,18 +92,12 @@ describe('rewrite 1 — PUSH s MSTORE PUSH s MLOAD → DUP1 PUSH s MSTORE', () =
     expect(data).toBe(word(14n));
   });
 
-  test('the DUP1 inherits the reload loc/note; the store keeps its own nodes by reference', () => {
-    const store = push(0x80n, { loc: LOC_A, note: 'store' });
+  test('the DUP1 inherits the reload note; the store keeps its own nodes by reference', () => {
+    const store = push(0x80n, { note: 'store' });
     const mstore = op('MSTORE');
-    const input = [
-      push(7n),
-      store,
-      mstore,
-      push(0x80n, { loc: LOC_B, note: 'cell 0 →' }),
-      op('MLOAD'),
-    ];
+    const input = [push(7n), store, mstore, push(0x80n, { note: 'cell 0 →' }), op('MLOAD')];
     const out = evsPeephole([...input, ...RETURN_TOP]);
-    expect(out[1]).toEqual({ k: 'op', op: 'DUP1', loc: LOC_B, note: 'cell 0 →' });
+    expect(out[1]).toEqual({ k: 'op', op: 'DUP1', note: 'cell 0 →' });
     expect(out[2]).toBe(store);
     expect(out[3]).toBe(mstore);
   });
@@ -149,15 +140,15 @@ describe('rewrite 2 — PUSH s MLOAD PUSH s MLOAD → PUSH s MLOAD DUP1', () => 
     expect(data).toBe(word(18n));
   });
 
-  test('the DUP1 inherits the second load loc', () => {
+  test('the DUP1 inherits the second load note', () => {
     const out = evsPeephole([
-      push(0x80n, { loc: LOC_A }),
+      push(0x80n, { note: 'first' }),
       op('MLOAD'),
-      push(0x80n, { loc: LOC_B }),
+      push(0x80n, { note: 'second' }),
       op('MLOAD'),
       op('STOP'),
     ]);
-    expect(out[2]).toEqual({ k: 'op', op: 'DUP1', loc: LOC_B });
+    expect(out[2]).toEqual({ k: 'op', op: 'DUP1', note: 'second' });
   });
 });
 
@@ -202,14 +193,9 @@ describe('rewrite 3 — constant folding', () => {
     expect(evsPeephole(not)).toEqual(not);
   });
 
-  test('the folded push inherits the first defined loc and note', () => {
-    const out = evsPeephole([
-      push(0x80n, { loc: LOC_A, note: 'base' }),
-      push(0x20n, { loc: LOC_B }),
-      op('ADD'),
-      op('STOP'),
-    ]);
-    expect(out[0]).toEqual({ k: 'push', value: 0xa0n, loc: LOC_A, note: 'base' });
+  test('the folded push inherits the first defined note', () => {
+    const out = evsPeephole([push(0x80n, { note: 'base' }), push(0x20n), op('ADD'), op('STOP')]);
+    expect(out[0]).toEqual({ k: 'push', value: 0xa0n, note: 'base' });
   });
 
   test('pushBytes / pushLabel operands are never folded', () => {
@@ -492,7 +478,7 @@ describe('guard rails', () => {
       return s.return({ acc: acc.get() });
     });
     for (const evmVersion of ['paris', 'shanghai', 'cancun'] as const) {
-      const lowered = lowerProgram(script.ir, { evmVersion, locations: true }).nodes;
+      const lowered = lowerProgram(script.ir, { evmVersion }).nodes;
       const once = evsPeephole(lowered);
       expect(once.length).toBeLessThan(lowered.length);
       expect(evsPeephole(once)).toEqual(once);

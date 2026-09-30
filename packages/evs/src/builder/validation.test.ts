@@ -2,12 +2,12 @@
  * these tests deliberately defeat the type surface (`as never`) to prove the RUNTIME checks
  * catch the same misuses; every assertion below is a seeded violation. */
 /* oxlint-disable vitest/expect-expect --
- * every test asserts through the expectEvs()/catchEvs() helpers (class + code + message + loc);
+ * every test asserts through the expectEvs()/catchEvs() helpers (class + code + message);
  * the rule only recognizes direct expect* calls. */
 /**
  * Builder unit tests — the recording-time validation checklist:
- * every item asserts the error class, the error code, a message substring, AND the loc
- * (pointing into this file). Plus staging traps, foreign/cross-scope handles, and LoopCtl
+ * every item asserts the error class, the error code and a message substring. Plus staging
+ * traps, foreign/cross-scope handles, and LoopCtl
  * scoping.
  */
 import { inspect } from 'node:util';
@@ -122,7 +122,7 @@ function catchEvs(fn: () => unknown): EvsError {
   throw new Error('expected an EvsError to be thrown');
 }
 
-/** class + code + message substring + loc-in-this-file, in one assertion helper. */
+/** class + code + message substring, in one assertion helper. */
 function expectEvs(
   fn: () => unknown,
   cls: abstract new (...a: never[]) => EvsError,
@@ -133,9 +133,6 @@ function expectEvs(
   expect(e).toBeInstanceOf(cls);
   expect(e.code).toBe(code);
   expect(e.message).toMatch(msg);
-  expect(e.loc).not.toBeNull();
-  expect(e.loc?.file).toMatch(/validation\.test\.ts/);
-  expect(e.loc?.line).toBeGreaterThan(0);
   return e;
 }
 
@@ -793,8 +790,7 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
       'FOREIGN_HANDLE',
       /belongs to script "donor".*script "tst"/s,
     );
-    expect(e.relatedLocs.length).toBeGreaterThan(0);
-    expect(e.relatedLocs[0]?.label).toMatch(/donor/);
+    expect(e.message).toMatch(/this Expr \(Expr<uint256> #\d+/);
   });
 
   test('forged handle-shaped object → FOREIGN_HANDLE', () => {
@@ -822,8 +818,7 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
       /if-then block that has finished recording/,
     );
     expect(e.message).toMatch(/cells \(s\.let\)/);
-    expect(e.relatedLocs[0]?.label).toBe('value recorded at');
-    expect(e.relatedLocs[0]?.loc?.file).toMatch(/validation\.test\.ts/);
+    expect(e.message).toMatch(/this value \(Expr<uint256> #\d+\)/);
   });
 
   test('while-body value used after the loop closes', () => {
@@ -861,7 +856,7 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
         }),
       EvsScopeError,
       'SCOPE_VIOLATION',
-      /cell was declared in a if-then block/,
+      /cell \(Cell<uint256> #\d+\) was declared in a if-then block/,
     );
   });
 
@@ -1012,7 +1007,7 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
 
 describe('checklist: LoopCtl outside its loop', () => {
   test('escaped LoopCtl used after the loop → SCOPE_VIOLATION', () => {
-    const e = expectEvs(
+    expectEvs(
       () =>
         rec((s, a) => {
           let escaped: LoopCtl | undefined;
@@ -1031,7 +1026,6 @@ describe('checklist: LoopCtl outside its loop', () => {
       'SCOPE_VIOLATION',
       /outside its owning loop/,
     );
-    expect(e.relatedLocs[0]?.label).toBe('owning loop recorded at');
   });
 
   test("outer loop's LoopCtl used inside an inner loop → SCOPE_VIOLATION", () => {
@@ -1087,7 +1081,7 @@ describe('checklist: LoopCtl outside its loop', () => {
 // ---------------------------------------------------------------------------
 
 describe('checklist: s.fn capture / results / params / return-inside', () => {
-  test('capturing an outer Expr → SCOPE_VIOLATION naming both locations', () => {
+  test('capturing an outer Expr → SCOPE_VIOLATION naming the captured value', () => {
     const e = expectEvs(
       () =>
         rec((s, a) =>
@@ -1104,10 +1098,7 @@ describe('checklist: s.fn capture / results / params / return-inside', () => {
       'SCOPE_VIOLATION',
       /s\.fn\("meta"\) bodies cannot capture/,
     );
-    expect(e.relatedLocs).toHaveLength(2);
-    expect(e.relatedLocs[0]?.label).toBe('captured value recorded at');
-    expect(e.relatedLocs[1]?.label).toBe('fn "meta" defined at');
-    expect(e.relatedLocs[1]?.loc?.file).toMatch(/validation\.test\.ts/);
+    expect(e.message).toMatch(/captured Expr<address> #\d+ ← args\.arg1/);
   });
 
   test('capturing an outer Cell → SCOPE_VIOLATION', () => {
@@ -1217,7 +1208,7 @@ describe('staging traps', () => {
       'STAGING_MISUSE',
       /staged handle/,
     );
-    expect(e.relatedLocs[0]?.label).toBe('handle recorded at');
+    expect(e.message).toMatch(/Expr<uint256> #\d+/);
   });
 
   test('template literal interpolation throws', () => {
@@ -1259,13 +1250,13 @@ describe('staging traps', () => {
   test('node inspect (console.log) is NON-throwing and shows type/id/name', () => {
     rec((s, a) => {
       const printed = inspect(a.x);
-      expect(printed).toMatch(/^Expr<uint256> #0 ← args\.arg0 at /);
+      expect(printed).toMatch(/^Expr<uint256> #0 ← args\.arg0$/);
       const sym = s.read({
         address: a.who,
         abi: erc20Abi,
         functionName: 'decimals',
       });
-      expect(inspect(sym)).toMatch(/^Expr<uint8> #\d+ ← s\.read\(decimals\) at /);
+      expect(inspect(sym)).toMatch(/^Expr<uint8> #\d+ ← s\.read\(decimals\)$/);
       return s.return({ x: a.x });
     });
   });

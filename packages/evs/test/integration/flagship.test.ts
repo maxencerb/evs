@@ -233,8 +233,6 @@ describe.each(MODES)(
       expect(explained.kind).toBe('evs-decode');
       // the FIRST call (token0) is the one that fails — not token1 / fee / slot0
       expect(explained.site?.detail).toBe('decoding token0() returndata');
-      expect(explained.site?.loc).not.toBeNull();
-      expect(explained.site?.loc?.file).toContain('flagship.test.ts');
     });
 
     test('Malformed callee → EvsDecodeError with the right site', async () => {
@@ -257,10 +255,8 @@ describe.each(MODES)(
       });
       const explained = compiled.explainRevert(raw);
       expect(explained.kind).toBe('evs-decode');
-      // the site names the malformed call, with its recording location
+      // the site names the malformed call
       expect(explained.site?.detail).toBe('decoding emptyReturn() returndata');
-      expect(explained.site?.loc).not.toBeNull();
-      expect(explained.site?.loc?.file).toContain('flagship.test.ts');
     });
   },
 );

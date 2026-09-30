@@ -203,8 +203,7 @@ both frames — and read [Executing scripts](/guides/execution/) before relying 
 ## Tracing and the step budget
 
 Pass `{ trace: true }` and the result carries a `trace` array with one entry per executed
-statement — `{ stmtPath, loc, note }`: the statement's path in the IR tree, its recording-time
-source location, and a short note such as `call symbol() [strict] site 0`. It is the quickest
+statement — `{ stmtPath, note }`: the statement's path in the IR tree and a short note such as `call symbol() [strict] site 0`. It is the quickest
 way to see which branch ran or how many loop iterations executed.
 
 Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement plus

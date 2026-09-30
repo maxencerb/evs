@@ -17,7 +17,6 @@ import { decodeAbiParameters, encodeAbiParameters, toFunctionSelector } from 'vi
 
 import type { ReturnValue, TypeOfReturn } from '../builder/script.js';
 import { EvsTypeError } from '../core/errors.js';
-import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   bitsOf,
@@ -140,7 +139,7 @@ function validateV0Type(type: TupleType | string, where: string): void {
     else layoutOfType(type);
   } catch (e) {
     if (e instanceof EvsTypeError) {
-      throw new EvsTypeError(e.code, `${where}: ${e.message}`, { loc: captureLoc() });
+      throw new EvsTypeError(e.code, `${where}: ${e.message}`);
     }
     throw e;
   }
@@ -160,7 +159,6 @@ function assertStructFieldNames(type: EvsType, where: string): void {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `${where}: tuple field #${i} has an invalid name ${JSON.stringify(c.name)} (every named struct field must be a non-empty identifier or viem degrades the result to a positional array)`,
-        { loc: captureLoc() },
       );
     }
     if (c.components !== undefined) {
@@ -201,7 +199,6 @@ export function buildScriptAbi(
     throw new EvsTypeError(
       'ABI_SHAPE',
       `buildScriptAbi: invalid script name ${JSON.stringify(name)} (must match /^[A-Za-z_]\\w*$/)`,
-      { loc: captureLoc() },
     );
   }
   const seenArgs = new Set<string>();
@@ -210,14 +207,12 @@ export function buildScriptAbi(
       throw new EvsTypeError(
         'ABI_SHAPE',
         `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)} (must match /^[A-Za-z_]\\w*$/)`,
-        { loc: captureLoc() },
       );
     }
     if (seenArgs.has(a.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `buildScriptAbi: duplicate argument name ${JSON.stringify(a.name)}`,
-        { loc: captureLoc() },
       );
     }
     seenArgs.add(a.name);
@@ -233,14 +228,12 @@ export function buildScriptAbi(
       throw new EvsTypeError(
         'ABI_SHAPE',
         `buildScriptAbi: return component #${i} has an invalid name ${JSON.stringify(r.name)} (every component must be a non-empty identifier or viem degrades the result object to a positional array)`,
-        { loc: captureLoc() },
       );
     }
     if (seenReturns.has(r.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `buildScriptAbi: duplicate return component name ${JSON.stringify(r.name)}`,
-        { loc: captureLoc() },
       );
     }
     seenReturns.add(r.name);
@@ -266,18 +259,13 @@ export function buildScriptAbi(
       throw new EvsTypeError(
         'ERROR_DECL',
         `buildScriptAbi: invalid error name ${JSON.stringify(e.name)} (must match /^[A-Za-z_]\\w*$/)`,
-        { loc: captureLoc() },
       );
     }
     if (RESERVED_ERROR_NAMES.has(e.name)) {
-      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: error name "${e.name}" is reserved`, {
-        loc: captureLoc(),
-      });
+      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: error name "${e.name}" is reserved`);
     }
     if (seenErrors.has(e.name)) {
-      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: duplicate error name "${e.name}"`, {
-        loc: captureLoc(),
-      });
+      throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: duplicate error name "${e.name}"`);
     }
     seenErrors.add(e.name);
     const seenParams = new Set<string>();
@@ -287,14 +275,12 @@ export function buildScriptAbi(
         throw new EvsTypeError(
           'ERROR_DECL',
           `buildScriptAbi: ${where}: invalid input name (must be a non-empty identifier — the decode utilities key args by name)`,
-          { loc: captureLoc() },
         );
       }
       if (seenParams.has(p.name)) {
         throw new EvsTypeError(
           'ERROR_DECL',
           `buildScriptAbi: error "${e.name}" has a duplicate input name "${p.name}"`,
-          { loc: captureLoc() },
         );
       }
       seenParams.add(p.name);
@@ -415,14 +401,11 @@ function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `${where}: type ${JSON.stringify(p.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
-        { loc: captureLoc() },
       );
     }
     const components = 'components' in p ? p.components : undefined;
     if (components === undefined || components.length === 0) {
-      throw new EvsTypeError('ABI_SHAPE', `${where}: tuple type carries no \`components\``, {
-        loc: captureLoc(),
-      });
+      throw new EvsTypeError('ABI_SHAPE', `${where}: tuple type carries no \`components\``);
     }
     // recurse: each component validates its own (leaf or nested-tuple) type.
     return Object.freeze({
@@ -478,7 +461,6 @@ function coerceHexLiteral(type: string, value: unknown, exactBytes: number | nul
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${type} literal must be a 0x-prefixed hex string, got ${describeValue(value)}`,
-      { loc: captureLoc() },
     );
   }
   const body = value.slice(2);
@@ -486,14 +468,12 @@ function coerceHexLiteral(type: string, value: unknown, exactBytes: number | nul
     throw new EvsTypeError(
       'LITERAL_RANGE',
       `${type} literal ${JSON.stringify(value)} is not valid even-length hex`,
-      { loc: captureLoc() },
     );
   }
   if (exactBytes !== null && body.length !== 2 * exactBytes) {
     throw new EvsTypeError(
       'LITERAL_RANGE',
       `${type} literal must be exactly ${exactBytes} bytes (${2 * exactBytes} hex chars), got ${body.length / 2} bytes`,
-      { loc: captureLoc() },
     );
   }
   // lowercase: checksum is NOT enforced (viem-permissive) and viem's encoder
@@ -518,7 +498,6 @@ function coerceNumericLiteral(type: WordType, value: unknown, where: string): bi
       throw new EvsTypeError(
         'LITERAL_RANGE',
         `${where}${type} literal ${String(value)} is not a safe integer (use a bigint for values beyond 2^53)`,
-        { loc: captureLoc() },
       );
     }
     v = BigInt(value);
@@ -526,7 +505,6 @@ function coerceNumericLiteral(type: WordType, value: unknown, where: string): bi
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${where}${type} literal must be a number or bigint, got ${describeValue(value)}`,
-      { loc: captureLoc() },
     );
   }
   const bits = BigInt(bitsOf(type));
@@ -537,7 +515,6 @@ function coerceNumericLiteral(type: WordType, value: unknown, where: string): bi
     throw new EvsTypeError(
       'LITERAL_RANGE',
       `${where}${type} literal ${v}n is out of range [${min}, ${max}]`,
-      { loc: captureLoc() },
     );
   }
   return v;
@@ -550,7 +527,6 @@ function coerceWordLiteral(type: WordType, value: unknown, where = ''): bigint |
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${where}bool literal must be a boolean, got ${describeValue(value)}`,
-        { loc: captureLoc() },
       );
     }
     return value;
@@ -571,7 +547,6 @@ export function encodeLiteralWord(type: WordType, value: unknown): Hex {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `encodeLiteralWord: ${JSON.stringify(type)} is not a word type`,
-      { loc: captureLoc() },
     );
   }
   const params: readonly AbiParameter[] = [{ type }];
@@ -591,7 +566,6 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `encodeLiteralData: ${JSON.stringify(type)} is a word type — use encodeLiteralWord`,
-      { loc: captureLoc() },
     );
   } else if (layout.kind === 'bytes') {
     if (layout.abi === 'string') {
@@ -599,7 +573,6 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `string literal must be a JS string, got ${describeValue(value)}`,
-          { loc: captureLoc() },
         );
       }
       coerced = value; // UTF-8 encoded by the ABI encoder
@@ -611,7 +584,6 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${type} literal must be an array, got ${describeValue(value)}`,
-        { loc: captureLoc() },
       );
     }
     if (layout.elem.kind !== 'word') {
@@ -623,7 +595,6 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${type} literal: a composite-element array has no flat memref literal — build it via the recorder (s.newArray / an array literal arg or return)`,
-        { loc: captureLoc() },
       );
     }
     const elemAbi = layout.elem.abi;
@@ -635,7 +606,6 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `encodeLiteralData: tuple type ${JSON.stringify(type)} has no flat memref literal — build it via the recorder`,
-      { loc: captureLoc() },
     );
   }
   const params: readonly AbiParameter[] = [{ type }];

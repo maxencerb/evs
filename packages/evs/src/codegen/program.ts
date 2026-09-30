@@ -22,7 +22,7 @@ import { AsmWriter, type AsmNode, type LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
-import { EvsInternalError, type EvsDiagnostic, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
 import { walkStmts, type FnId, type ScriptIr, type SiteId, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
@@ -62,7 +62,7 @@ function internal(message: string): EvsInternalError {
 
 export function lowerProgram(
   ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; locations: boolean; optimize?: boolean },
+  opts: { evmVersion: EvmVersion; optimize?: boolean },
 ): LowerResult {
   validateIr(ir);
   // `optimize` (compile's single optimizer switch) selects the liveness-based frame allocator
@@ -95,7 +95,6 @@ export function lowerProgram(
     dataSeg,
   };
   const state = lowerInternals(ctx);
-  state.locations = opts.locations;
 
   // -- prologue: free-pointer init --------------------------------
   w.push(frame.frameEnd, { note: 'frameEnd' });
@@ -199,9 +198,9 @@ export function lowerProgram(
   return {
     nodes,
     frameEnd: frame.frameEnd,
-    sites: collectSites(ir, state.fnQueue, opts.locations),
+    sites: collectSites(ir, state.fnQueue),
     labelNames: collectLabelNames(nodes),
-    diagnostics: collectDiagnostics(ir, frame, state.fnQueue, opts.locations),
+    diagnostics: collectDiagnostics(ir, frame, state.fnQueue),
   };
 }
 
@@ -223,23 +222,14 @@ function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, stri
 // sites — the SiteId table behind explainRevert / EvsDecodeError
 // ---------------------------------------------------------------------------
 
-function collectSites(
-  ir: ScriptIr,
-  emittedFns: readonly FnId[],
-  locations: boolean,
-): SourceMap['sites'] {
-  const sites: {
-    id: SiteId;
-    kind: 'panic' | 'decode' | 'call' | 'stmt';
-    loc: SourceLoc | null;
-    detail: string;
-  }[] = [];
+function collectSites(ir: ScriptIr, emittedFns: readonly FnId[]): SourceMap['sites'] {
+  const sites: { id: SiteId; kind: 'panic' | 'decode' | 'call' | 'stmt'; detail: string }[] = [];
   const seen = new Set<SiteId>();
   const add = (s: Stmt): void => {
     if (seen.has(s.site)) return;
     seen.add(s.site);
     const [kind, detail] = classifySite(s);
-    sites.push({ id: s.site, kind, loc: locations ? s.loc : null, detail });
+    sites.push({ id: s.site, kind, detail });
   };
   walkStmts(ir.body, add);
   for (const f of emittedFns) {
@@ -328,7 +318,6 @@ function collectDiagnostics(
   ir: ScriptIr,
   frame: FrameLayout,
   emittedFns: readonly FnId[],
-  locations: boolean,
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
 
@@ -374,7 +363,6 @@ function collectDiagnostics(
           message:
             `${what} allocates memory on every loop iteration; evs never resets the free ` +
             `pointer, so memory grows monotonically for the lifetime of the call`,
-          loc: locations ? s.loc : null,
         });
       }
       if (s.k === 'env') {
@@ -384,7 +372,6 @@ function collectDiagnostics(
             severity: 'warning',
             code: 'ENV_FRAME_DEPENDENT',
             message,
-            loc: locations ? s.loc : null,
           });
         }
       }
@@ -409,7 +396,6 @@ function collectDiagnostics(
       message:
         `the static frame spans ${frame.frameEnd} bytes (${(frame.frameEnd - FRAME_BASE) / 32} slots); ` +
         `memory-expansion gas grows quadratically — consider splitting the script`,
-      loc: locations ? ir.loc : null,
     });
   }
   return diagnostics;

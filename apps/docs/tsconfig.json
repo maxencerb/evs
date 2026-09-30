@@ -6,5 +6,5 @@
     "types": ["node"]
   },
   "include": [".astro/types.d.ts", "**/*"],
-  "exclude": ["dist", ".snippets", "node_modules", "public", "scripts/.playground-entries"]
+  "exclude": ["dist", ".snippets", "node_modules", "public"]
 }

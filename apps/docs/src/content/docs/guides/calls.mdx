@@ -328,7 +328,7 @@ Two failure modes are distinguished:
 - **The call succeeded but the returndata does not decode** against the ABI (too short,
   out-of-bounds offsets, a non-contract address returning nothing) — the script reverts with
   the `EvsDecodeError(site)` custom error. This error is part of the script's own ABI, so viem
-  names it, and `explainRevert` maps the site id back to the source line of the offending
+  names it, and `explainRevert` maps the site id back to the offending
   call. See [errors and debugging](/guides/errors-and-debugging/).
 
 Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-lenient): a
