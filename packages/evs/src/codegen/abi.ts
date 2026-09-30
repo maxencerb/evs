@@ -38,6 +38,7 @@ import {
   type NamedType,
   type WordType,
 } from '../core/types.js';
+import { FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1 } from './memory.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -63,14 +64,8 @@ export interface SlotRef {
 // shared constants / helpers
 // ---------------------------------------------------------------------------
 
-/** 2^64 − 1 — the overflow-free bound for every decoded offset/length. */
-const MAX_U64 = 0xffffffffffffffffn;
-
-/** Free-memory-pointer slot. */
-const FREE_PTR = 0x40;
-
 /** Scratch slot for running tail cursors (intra-template temporary). */
-const TAIL_CURSOR = 0x00;
+const TAIL_CURSOR = SCRATCH_0;
 
 /** Words per reserved encode loop frame: `{arrPtr, D, len, i}`. */
 const FRAME_SLOTS = 4;
@@ -95,10 +90,10 @@ export interface EncodeOpts {
  * {@link emitDecodeArrayToMem}. The recursive element decoders re-derive their
  * base from `MLOAD(ELEM_BASE)` so the base is stack-depth-independent across their internal churn.
  * Each `emitDecodeArrayToMem` brackets this slot with save/restore, so nested array decodes never
- * clobber a parent's base. It is `0x20` — free during *decode* (the snapshot/calldata base lives in
- * `0x00`, `STAGING_SLOT 0x20` is only live during tuple-arg *encode*, which never overlaps a decode).
+ * clobber a parent's base. It is scratch `0x20` — free during *decode* (see the ownership table
+ * in `codegen/memory.ts`).
  */
-const ELEM_BASE = 0x20;
+const ELEM_BASE = SCRATCH_1;
 
 function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);

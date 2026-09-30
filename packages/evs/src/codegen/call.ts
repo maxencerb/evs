@@ -65,6 +65,7 @@ import {
   type SharedTails,
   type SlotRef,
 } from './abi.js';
+import { FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1, ZERO_SLOT } from './memory.js';
 import {
   SIMULATE_MAGIC,
   SIMULATE_PAYLOAD_OFFSET,
@@ -92,12 +93,9 @@ export interface CallSitePlan {
 // helpers
 // ---------------------------------------------------------------------------
 
-const MAX_U64 = 0xffffffffffffffffn;
-const FREE_PTR = 0x40;
-const TAIL_CURSOR = 0x00; // scratch — calldata-template tail cursor (transient)
-const SNAP_SLOT = 0x00; // scratch — returndata snapshot base during tuple-output decode (transient,
+const TAIL_CURSOR = SCRATCH_0; // scratch — calldata-template tail cursor (transient)
+const SNAP_SLOT = SCRATCH_0; // scratch — returndata snapshot base during tuple-output decode (transient,
 //                         dead once the calldata cursor's job is done — the call already happened)
-const ZERO_SLOT = 0x60;
 
 /** Const segments at or under this size are PUSH-chunked; larger ones go to a data segment. */
 const CONST_SEGMENT_INLINE_MAX = 96;
@@ -512,7 +510,7 @@ function emitZeroValue(w: AsmWriter, type: EvsType): void {
 // ---------------------------------------------------------------------------
 
 /** Scratch slot holding the data-literal staging base for the duration of a tuple-bearing build. */
-const STAGING_SLOT = 0x20;
+const STAGING_SLOT = SCRATCH_1;
 
 /**
  * Builds the calldata for a subcall that has at least one tuple arg, via the recursive head/tail
@@ -1137,7 +1135,7 @@ export function emitStaticCall(
 const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
 /** Scratch slot holding the wrapper argsSize (68 + payload length) across the payload memcpy
  *  (the pre-cancun `@memcpy` only clobbers scratch 0x00, so 0x20 survives it). */
-const SIM_ARGSIZE_SLOT = 0x20;
+const SIM_ARGSIZE_SLOT = SCRATCH_1;
 /** Byte length of the wire header `[trampSel(4)][target(32)][gas(32)]` (= the payload offset). */
 const SIM_HEADER = SIMULATE_PAYLOAD_OFFSET;
 

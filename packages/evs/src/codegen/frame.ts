@@ -59,6 +59,7 @@ import {
   type Stmt,
   type ValueId,
 } from '../ir/nodes.js';
+import { FRAME_BASE } from './memory.js';
 
 export interface FrameLayout {
   slotOfValue(v: ValueId): number | null; // null = folded const (operand becomes push)
@@ -72,8 +73,6 @@ export interface FrameOptions {
   optimize?: boolean;
 }
 
-/** Start of the static frame (just above the `0x60` zero slot). */
-const FRAME_BASE = 0x80;
 const SLOT_BYTES = 32;
 
 function internal(message: string): EvsInternalError {

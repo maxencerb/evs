@@ -28,6 +28,7 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
   SIMULATE_TRAMPOLINE_SELECTOR,
@@ -97,7 +98,7 @@ export function lowerProgram(
 
   // -- prologue: free-pointer init --------------------------------
   w.push(frame.frameEnd, { note: 'frameEnd' });
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE', { note: 'free-ptr init' });
 
   // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
@@ -405,7 +406,7 @@ function collectDiagnostics(
       severity: 'warning',
       code: 'LARGE_FRAME',
       message:
-        `the static frame spans ${frame.frameEnd} bytes (${(frame.frameEnd - 0x80) / 32} slots); ` +
+        `the static frame spans ${frame.frameEnd} bytes (${(frame.frameEnd - FRAME_BASE) / 32} slots); ` +
         `memory-expansion gas grows quadratically — consider splitting the script`,
       loc: locations ? ir.loc : null,
     });

@@ -58,6 +58,7 @@ import {
 } from './abi.js';
 import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
+import { FREE_PTR } from './memory.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -373,7 +374,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
-  w.push(0x40, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
+  w.push(FREE_PTR, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
   w.op('MLOAD'); // [ptr]
   w.push(padded.length); // [size, ptr]
   w.pushLabel(label); // [src, size, ptr]
@@ -382,7 +383,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   w.op('DUP1');
   w.push(padded.length);
   w.op('ADD'); // [ptr+size, ptr]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]          freePtr bumped
   storeOut(w, ctx, s.out); // []
 }
@@ -851,7 +852,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('LT'); // [cap < n, n]
   w.pushLabel(ctx.tails.panicAlloc);
   w.op('JUMPI'); // [n]                   Panic 0x41 on len ≥ 2^32
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MLOAD'); // [ptr, n]
   // freePtr += 32 + 32·n
   w.op('DUP2'); // [n, ptr, n]
@@ -861,7 +862,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('ADD'); // [size, ptr, n]
   w.op('DUP2'); // [ptr, size, ptr, n]
   w.op('ADD'); // [ptr+size, ptr, n]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr, n]
   // zero-fill [ptr, ptr+size) — CALLDATACOPY from past the calldata end reads zeros
   w.op('DUP2');
@@ -918,13 +919,13 @@ function tupleArity(ctx: LowerCtx, v: ValueId): number {
 function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
   const n = tupleArity(ctx, s.out);
   const size = 32 * n;
-  w.push(0x40, meta(ctx, s, `tuplenew ${n} words`));
+  w.push(FREE_PTR, meta(ctx, s, `tuplenew ${n} words`));
   w.op('MLOAD'); // [ptr]
   // freePtr += size
   w.op('DUP1'); // [ptr, ptr]
   w.push(size);
   w.op('ADD'); // [ptr+size, ptr]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]
   // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros. At stack
   // height exactly [ptr] here; the @memcpy contract is not used (no memref copy).
