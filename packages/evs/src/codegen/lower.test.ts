@@ -482,6 +482,101 @@ describe('checked arithmetic — boundary matrix', () => {
 });
 
 // ---------------------------------------------------------------------------
+// div / mod by a folded constant divisor (issue #72): the Panic 0x12 zero check is elided
+// for a nonzero const, and signed div's minN / −1 check for a const other than −1
+// ---------------------------------------------------------------------------
+
+function constDivScript(type: NumericType, op: 'div' | 'mod', divisor: bigint): ScriptIr {
+  const b = new IrB('f', [['a', type]]);
+  b.ret('r', b.bin(op, 0, b.word(type, divisor)));
+  return b.build();
+}
+
+function constDivisorsOf(c: WidthClass): readonly bigint[] {
+  const { min, max } = rangeOf(c);
+  return c.signed ? [0n, 1n, 2n, 3n, max, -1n, -2n, -3n, min] : [0n, 1n, 2n, 3n, max - 1n, max];
+}
+
+/** Number of PUSH2 references to the tail label named `name` in a lowered script. */
+function jumpsTo(ir: ScriptIr, name: string): number {
+  const { nodes } = lowerProgram(ir, { evmVersion: 'cancun' });
+  const ids = new Set(nodes.flatMap((n) => (n.k === 'label' && n.name === name ? [n.label] : [])));
+  return nodes.filter((n) => n.k === 'pushLabel' && ids.has(n.label)).length;
+}
+
+describe('checked div / mod by a folded constant divisor', () => {
+  for (const width of WIDTHS) {
+    for (const op of ['div', 'mod'] as const) {
+      test(`${op} ${width.type} by constants`, async () => {
+        const dividends = operandsOf(width);
+        const cases = constDivisorsOf(width).flatMap((d) => dividends.map((a) => [a, d] as const));
+        await Promise.all(
+          cases.map(async ([a, d]) => {
+            const ir = constDivScript(width.type, op, d);
+            const expected = refArith(op, width, a, d);
+            const want =
+              typeof expected === 'number'
+                ? { success: false, data: panicHex(expected) }
+                : {
+                    success: true,
+                    data: tupleHex([{ name: 'r', type: width.type }], { r: expected }),
+                  };
+            const res = await run(ir, [a]);
+            const label = `${width.type}: ${a} ${op} const ${d}`;
+            expect({ label, success: res.success, data: res.data }).toEqual({ label, ...want });
+          }),
+        );
+      }, 30_000);
+    }
+  }
+
+  test('the zero check is emitted only for a variable or zero divisor', () => {
+    for (const op of ['div', 'mod'] as const) {
+      for (const type of ['uint256', 'int8', 'int256'] as const) {
+        expect(jumpsTo(constDivScript(type, op, 7n), 'panic_divzero'), `${op} ${type} by 7`).toBe(
+          0,
+        );
+        expect(jumpsTo(constDivScript(type, op, -1n), 'panic_divzero'), `${op} ${type} by −1`).toBe(
+          0,
+        );
+        expect(jumpsTo(constDivScript(type, op, 0n), 'panic_divzero'), `${op} ${type} by 0`).toBe(
+          1,
+        );
+        expect(jumpsTo(binScript(type, op), 'panic_divzero'), `${op} ${type} by var`).toBe(1);
+      }
+    }
+  });
+
+  test('signed div keeps the minN / −1 check only for a −1 or variable divisor', () => {
+    for (const type of ['int8', 'int200', 'int256'] as const) {
+      expect(jumpsTo(constDivScript(type, 'div', -2n), 'panic_overflow'), `${type} / −2`).toBe(0);
+      expect(jumpsTo(constDivScript(type, 'div', 3n), 'panic_overflow'), `${type} / 3`).toBe(0);
+      expect(jumpsTo(constDivScript(type, 'div', -1n), 'panic_overflow'), `${type} / −1`).toBe(1);
+      expect(jumpsTo(binScript(type, 'div'), 'panic_overflow'), `${type} / var`).toBe(1);
+      // smod never overflows: no check with any divisor
+      expect(jumpsTo(constDivScript(type, 'mod', -1n), 'panic_overflow'), `${type} % −1`).toBe(0);
+    }
+  });
+
+  test('minN / −1 by a literal −1 still panics 0x11 (int8, int256)', async () => {
+    const cases = [
+      ['int8', -128n],
+      ['int256', -(1n << 255n)],
+    ] as const;
+    await Promise.all(
+      cases.map(async ([type, min]) => {
+        const res = await run(constDivScript(type, 'div', -1n), [min]);
+        expect({ type, success: res.success, data: res.data }).toEqual({
+          type,
+          success: false,
+          data: panicHex(0x11),
+        });
+      }),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // comparisons, equality, bool logic
 // ---------------------------------------------------------------------------
 

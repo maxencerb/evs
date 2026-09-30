@@ -97,6 +97,42 @@ describe('checked arithmetic (boundary matrix)', () => {
   }
 });
 
+describe('checked div / mod by literal divisors (const-divisor guard elision)', () => {
+  // a folded nonzero divisor drops the Panic 0x12 zero check and, unless it is −1, signed
+  // div's minN / −1 check — a literal 0 and a literal −1 keep them (issue #72)
+  function constScript(type: NumericType, op: 'div' | 'mod', divisor: bigint) {
+    return evscript({ name: `const_${op}`, args: [type] }, (s, a) =>
+      s.return({ r: op === 'div' ? s.div(a, divisor) : s.mod(a, divisor) }),
+    );
+  }
+  for (const type of WIDTHS) {
+    const { min, max } = rangeOf(type);
+    const divisors =
+      min < 0n ? [0n, 1n, 3n, max, -1n, -2n, -7n, min] : [0n, 1n, 7n, 1_000_003n % (max + 1n), max];
+    const dividends = min < 0n ? [[0n], [1n], [-1n], [min], [max], [-100n]] : [[0n], [1n], [max]];
+    for (const op of ['div', 'mod'] as const) {
+      test(`${op} ${type} by literals`, async () => {
+        await Promise.all(
+          divisors.map((d) => expectAgreement(constScript(type, op, d), dividends)),
+        );
+      });
+    }
+  }
+
+  test('the issue #72 repro: mod / mul / div by literals', async () => {
+    const script = evscript({ name: 'arith', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const x = a.mod(1_000_003n);
+      const w = x.mul(7n).add(b).div(7n);
+      return s.return({ w });
+    });
+    await expectAgreement(script, [
+      [0n, 0n],
+      [123_456_789n, 42n],
+      [(1n << 256n) - 1n, 5n],
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2. comparisons, bool logic, bitwise, shifts, conversions
 // ---------------------------------------------------------------------------
