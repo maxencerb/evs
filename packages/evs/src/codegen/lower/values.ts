@@ -1,0 +1,169 @@
+/**
+ * `codegen/lower/values.ts` — the word-valued statement templates: `const` (folded PUSH operands
+ * or CODECOPY'd data literals), `un`, `env` and `convert`.
+ */
+
+import type { AsmWriter } from '../../asm/assembler.js';
+import { padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
+import { isSigned } from '../../core/types.js';
+import type { Stmt } from '../../ir/nodes.js';
+import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
+import { FREE_PTR } from '../memory.js';
+import {
+  type LowerCtx,
+  wordConstValue,
+  meta,
+  storeOut,
+  internal,
+  typeOf,
+  loadOperand,
+  asWordType,
+  numClass,
+  emitFixpointCheck,
+  emitMaxCheck,
+  maxUint,
+  maxInt,
+} from './context.js';
+
+// ---------------------------------------------------------------------------
+// const — word consts fold to PUSH operands; data consts materialize via CODECOPY
+// ---------------------------------------------------------------------------
+
+export function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCtx): void {
+  if (s.data.kind === 'word') {
+    const slot = ctx.frame.slotOfValue(s.out);
+    if (slot === null) return; // folded — operands PUSH it directly
+    // returned consts keep a slot (the return encoder reads memory): materialize it
+    w.push(wordConstValue(s.data, `const #${s.out}`), meta(`const ${fmtType(s.type)}`));
+    w.push(slot);
+    w.op('MSTORE');
+    return;
+  }
+  // dynamic literal: data segment + CODECOPY into a fresh allocation.
+  // The image is the memref `[len:32][payload…]`, zero-padded to a word boundary so the
+  // trailing partial word lands clean (memory above the free pointer is not zero).
+  const bytes = literalBytes(s.data.hex, `const #${s.out}`);
+  const padded = padWordAligned(bytes);
+  const label = ctx.dataSeg(padded);
+  w.push(FREE_PTR, meta(`literal ${fmtType(s.type)} (${bytes.length}B)`));
+  w.op('MLOAD'); // [ptr]
+  w.push(padded.length); // [size, ptr]
+  w.pushLabel(label); // [src, size, ptr]
+  w.op('DUP3'); // [ptr, src, size, ptr]
+  w.op('CODECOPY'); // [ptr]
+  w.op('DUP1');
+  w.push(padded.length);
+  w.op('ADD'); // [ptr+size, ptr]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [ptr]          freePtr bumped
+  storeOut(w, ctx, s.out); // []
+}
+
+function literalBytes(hex: string, what: string): Uint8Array {
+  if (!HEX_BYTES_RE.test(hex)) throw internal(`${what}: malformed hex ${hex}`);
+  return hexToBytes(hex);
+}
+
+// ---------------------------------------------------------------------------
+// un / env / convert
+// ---------------------------------------------------------------------------
+
+export function lowerUn(w: AsmWriter, s: Extract<Stmt, { k: 'un' }>, ctx: LowerCtx): void {
+  const type = typeOf(ctx, s.a);
+  loadOperand(w, ctx, s.a, meta(`${s.op} ${fmtType(type)}`));
+  if (s.op === 'not' || s.op === 'iszero') {
+    w.op('ISZERO'); // canonical 0/1 bool
+  } else {
+    // bitnot — NOT denormalizes uintN (high bits) and bytesN (low bits); it preserves
+    // sign-extension for intN, so only the unsigned lanes re-mask.
+    w.op('NOT');
+    const wt = asWordType(type);
+    if (!isSigned(wt) && wordNeedsNormalize(wt)) {
+      emitNormalizeWord(w, wt);
+    }
+  }
+  storeOut(w, ctx, s.out);
+}
+
+export function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: LowerCtx): void {
+  switch (s.op) {
+    case 'address':
+      w.op('ADDRESS', meta('env address'));
+      break;
+    case 'caller':
+      w.op('CALLER', meta('env caller'));
+      break;
+    case 'timestamp':
+      w.op('TIMESTAMP', meta('env timestamp'));
+      break;
+    case 'blocknumber':
+      w.op('NUMBER', meta('env blocknumber'));
+      break;
+    case 'chainid':
+      w.op('CHAINID', meta('env chainid'));
+      break;
+    default: {
+      const op = String((s as { op: unknown }).op);
+      throw internal(`unknown env op '${op}' survived validateIr`);
+    }
+  }
+  storeOut(w, ctx, s.out);
+}
+
+/**
+ * convert: free widening / free reinterpret where lossless; otherwise the logical value
+ * is range-checked against the target (Panic 0x11) — matching the reference interpreter:
+ * checked narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check.
+ */
+export function lowerConvert(
+  w: AsmWriter,
+  s: Extract<Stmt, { k: 'convert' }>,
+  ctx: LowerCtx,
+): void {
+  const from = typeOf(ctx, s.a);
+  const to = typeOf(ctx, s.out);
+  loadOperand(w, ctx, s.a, meta(`convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
+
+  const reinterpret =
+    from === to ||
+    (from === 'uint256' && to === 'bytes32') ||
+    (from === 'bytes32' && to === 'uint256');
+  if (reinterpret) {
+    storeOut(w, ctx, s.out);
+    return;
+  }
+  if (to === 'address') {
+    // asAddress: high 96 bits must be zero
+    w.op('DUP1'); // [v, v]
+    w.push(160);
+    w.op('SHR'); // [v >> 160, v]
+    w.pushLabel(ctx.tails.panicOverflow);
+    w.op('JUMPI'); // [v]
+    storeOut(w, ctx, s.out);
+    return;
+  }
+
+  const f = numClass(from);
+  const t = numClass(to);
+  if (f.signed === t.signed) {
+    if (t.bits < f.bits) {
+      // checked narrowing
+      if (t.signed) emitFixpointCheck(w, ctx, t.bits);
+      else emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
+    } // else free widening
+  } else if (!f.signed && t.signed) {
+    // uintN → intM: free iff N < M (the value range fits the sign bit), else checked
+    if (f.bits >= t.bits) emitMaxCheck(w, ctx, maxInt(t.bits), `max ${fmtType(to)}`);
+  } else if (t.bits === 256) {
+    // intN → uint256: only negativity can fail (sign-extended negatives are ≥ 2^255)
+    w.op('DUP1'); // [v, v]
+    w.push(255);
+    w.op('SHR'); // [sign, v]
+    w.pushLabel(ctx.tails.panicOverflow);
+    w.op('JUMPI'); // [v]
+  } else {
+    // intN → uintM (M < 256): negatives are huge unsigned ⇒ one upper-bound check covers both
+    emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
+  }
+  storeOut(w, ctx, s.out);
+}
