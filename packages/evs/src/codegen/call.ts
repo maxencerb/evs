@@ -712,6 +712,32 @@ function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
   }
 }
 
+/** `[] → [buf]`: the returndata snapshot base, read back from scratch `SNAP_SLOT`. */
+function pushSnap(w: AsmWriter): void {
+  w.push(SNAP_SLOT);
+  w.op('MLOAD'); // [buf]
+}
+
+/** `[] → [buf + rds]`: the end of the returndata snapshot. */
+function pushSnapEnd(w: AsmWriter): void {
+  pushSnap(w);
+  w.op('RETURNDATASIZE');
+  w.op('ADD'); // [buf + rds]
+}
+
+/** `[] → [buf + MLOAD(buf + headOffset)]`: the base of a dynamic output whose head word at
+ *  `headOffset` holds a buf-relative offset (bounds-checked by the caller beforehand). */
+function pushSnapOffsetBase(w: AsmWriter, headOffset: number): void {
+  pushSnap(w); // [buf]
+  w.op('DUP1');
+  if (headOffset !== 0) {
+    w.push(headOffset);
+    w.op('ADD');
+  }
+  w.op('MLOAD'); // [off, buf]
+  w.op('ADD'); // [base]
+}
+
 /**
  * try-mode epilogue: success flag := 1, jump to join; the site's dfail label opens the
  * (checked, height-0) zero block — success := 0 and a zero value per output (word outs = 0,
@@ -866,6 +892,7 @@ export function emitStaticCall(
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
     // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
     emitSnapshotReturndata(w, hasTupleOut); // [buf]
+    const pushEnd = (): void => pushSnapEnd(w);
 
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
@@ -890,20 +917,10 @@ export function emitStaticCall(
       if (layout.kind === 'tuple') {
         // decode the tuple from the snapshot into a flat-pointer block; alias dynamic members.
         // base/end are read from scratch so the decoder's free-ptr churn never disturbs them.
-        const pushSnap = (): void => {
-          w.push(SNAP_SLOT);
-          w.op('MLOAD'); // [buf]
-        };
-        const pushEnd = (): void => {
-          pushSnap();
-          w.op('RETURNDATASIZE');
-          w.op('ADD'); // [buf + rds]
-        };
-        const fail: typeof emitDecodeFail = emitDecodeFail;
         let pushBase: PushBase;
         if (layout.dynamic) {
           // offset word at buf+headOffset (relative to buf); bounds, then base = buf+off
-          pushSnap();
+          pushSnap(w);
           if (headOffset !== 0) {
             w.push(headOffset);
             w.op('ADD');
@@ -913,28 +930,19 @@ export function emitStaticCall(
           w.push(MAX_U64);
           w.op('LT'); // [off > max, off, buf]
           emitDecodeFail(2); // [off, buf]
-          pushSnap();
+          pushSnap(w);
           w.op('ADD'); // [base, buf]
           w.op('DUP1');
           w.push(32);
           w.op('ADD'); // [base+32, base, buf]
-          pushEnd();
+          pushSnapEnd(w);
           w.op('LT'); // [end < base+32, base, buf]
           emitDecodeFail(3); // [base, buf]
           w.op('POP'); // [buf]   (base is re-derived inside the thunk)
-          pushBase = () => {
-            pushSnap(); // [buf]
-            w.op('DUP1');
-            if (headOffset !== 0) {
-              w.push(headOffset);
-              w.op('ADD');
-            }
-            w.op('MLOAD'); // [off, buf]
-            w.op('ADD'); // [base]
-          };
+          pushBase = () => pushSnapOffsetBase(w, headOffset);
         } else {
           pushBase = () => {
-            pushSnap();
+            pushSnap(w);
             if (headOffset !== 0) {
               w.push(headOffset);
               w.op('ADD');
@@ -942,7 +950,7 @@ export function emitStaticCall(
           };
         }
         if (!isTupleType(type)) throw internal(`out #${j} layout is tuple but type is not`);
-        emitDecodeTupleToMem(w, type.components, pushBase, pushEnd, fail, 1); // [flat, buf]
+        emitDecodeTupleToMem(w, type.components, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
         return;
@@ -954,17 +962,8 @@ export function emitStaticCall(
         // SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would drift),
         // exactly like the tuple-output path above. The head word at buf+headOffset is an offset
         // relative to buf; bounds it, then base = buf+off.
-        const pushSnap = (): void => {
-          w.push(SNAP_SLOT);
-          w.op('MLOAD'); // [buf]
-        };
-        const pushEnd = (): void => {
-          pushSnap();
-          w.op('RETURNDATASIZE');
-          w.op('ADD'); // [buf + rds]
-        };
         // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
-        pushSnap();
+        pushSnap(w);
         if (headOffset !== 0) {
           w.push(headOffset);
           w.op('ADD');
@@ -981,16 +980,7 @@ export function emitStaticCall(
         w.op('LT'); // [rds < off+32, off, buf]
         emitDecodeFail(2); // [off, buf]
         w.op('POP'); // [buf]   (base re-derived inside the thunk)
-        const pushArrBase: PushBase = () => {
-          pushSnap(); // [buf]
-          w.op('DUP1');
-          if (headOffset !== 0) {
-            w.push(headOffset);
-            w.op('ADD');
-          }
-          w.op('MLOAD'); // [off, buf]
-          w.op('ADD'); // [base]
-        };
+        const pushArrBase: PushBase = () => pushSnapOffsetBase(w, headOffset);
         emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
@@ -1281,17 +1271,11 @@ export function emitSimulateCall(
 
     // decode the outputs as one tuple from [SNAP+64, SNAP+rds) into a flat block, then scatter.
     const pushBase: PushBase = () => {
-      w.push(SNAP_SLOT);
-      w.op('MLOAD');
+      pushSnap(w);
       w.push(64);
       w.op('ADD'); // [buf+64]
     };
-    const pushEnd = (): void => {
-      w.push(SNAP_SLOT);
-      w.op('MLOAD');
-      w.op('RETURNDATASIZE');
-      w.op('ADD'); // [buf+rds]
-    };
+    const pushEnd = (): void => pushSnapEnd(w);
     emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
