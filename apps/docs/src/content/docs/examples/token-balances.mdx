@@ -123,7 +123,7 @@ size cap is irrelevant here). The real budgets are:
   gas cap, not a block limit: anvil defaults to 30M, geth's default cap is 50M. A 50-token
   batch sits far inside either; thousands of tokens per call are realistic before the cap
   matters.
-- **A misbehaving target.** `tryCall` forwards all remaining gas by default; if a listed
+- **A misbehaving target.** `s.tryRead` forwards all remaining gas by default; if a listed
   address could burn the whole budget, pass the per-call `gas` option to cap it — see
   [calls](/guides/calls/).
 - **Allocation.** `s.newArray` reverts with Panic `0x41` if the runtime length is at or above
@@ -134,6 +134,6 @@ size cap is irrelevant here). The real budgets are:
 A runnable version —
 [examples/token-balances](https://github.com/maxencerb/evs/tree/main/examples/token-balances)
 — spawns a local anvil, deploys mock ERC-20s, appends an EOA to the batch to demonstrate the
-`tryCall` zero default, and prints every balance. For dependent (not just parallel) reads, see
+`s.tryRead` zero default, and prints every balance. For dependent (not just parallel) reads, see
 the flagship [pool metadata](/examples/pool-metadata/) example; for more loop and subroutine
 recipes, see [patterns](/examples/patterns/).

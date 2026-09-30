@@ -139,7 +139,7 @@ console.log('total:', formatUnits(res.total, 6), 'USD');
 const structReads = `import { evscript, t } from '@maxencerb/evs';
 import { createPublicClient, http } from 'viem';
 
-// A function with several outputs reads back as a NAMED struct — slot0's five
+// A function with several outputs reads back as a NAMED struct — slot0's seven
 // outputs become one typed tuple, returned alongside fee in the same call.
 const poolAbi = [
   {
@@ -152,6 +152,8 @@ const poolAbi = [
       { name: 'tick', type: 'int24' },
       { name: 'observationIndex', type: 'uint16' },
       { name: 'observationCardinality', type: 'uint16' },
+      { name: 'observationCardinalityNext', type: 'uint16' },
+      { name: 'feeProtocol', type: 'uint8' },
       { name: 'unlocked', type: 'bool' },
     ],
   },
@@ -165,7 +167,7 @@ const poolAbi = [
 ] as const;
 
 export const poolState = evscript({ name: 'poolState', args: [t.address] }, (s, pool) => {
-  // struct: true → one named Tuple handle over all five outputs
+  // struct: true → one named Tuple handle over all seven outputs
   const slot0 = s.read({ address: pool, abi: poolAbi, functionName: 'slot0', struct: true });
   const fee = s.read({ address: pool, abi: poolAbi, functionName: 'fee' });
   return s.return({ slot0, fee });
