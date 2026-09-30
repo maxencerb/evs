@@ -103,7 +103,9 @@ Releases: see [Releasing](#releasing) below.
   crosses a `JUMPDEST` and never touches a label or jump target. Both outputs go through the same
   verifiers. It is off by default so the default bytes stay the plain lowering.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
-  zero slot (the canonical empty value `try*` failures point at), a **static frame from `0x80`**
+  zero slot (the canonical empty value `try*` failures, unset `s.newArray` elements and omitted
+  `s.tuple` members point at — a zero-filled pointer slot would alias scratch, so memref slots
+  are always initialised; `emitZeroValue` in `codegen/memory.ts`), a **static frame from `0x80`**
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata
   snapshots, dynamic values, mutable arrays, the return tuple). Every word in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);

@@ -41,10 +41,8 @@ import { bytesToBigInt, HEX_BYTES_RE, hexToBytes, u256ToBytes } from '../core/by
 import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
-  isDynamicType,
   isTupleType,
   typesEqual,
-  type EvsType,
   type Hex,
   type NamedType,
 } from '../core/types.js';
@@ -69,7 +67,7 @@ import {
   type SharedTails,
   type SlotRef,
 } from './abi.js';
-import { FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1, ZERO_SLOT } from './memory.js';
+import { emitZeroValue, FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1 } from './memory.js';
 import {
   SIMULATE_MAGIC,
   SIMULATE_PAYLOAD_OFFSET,
@@ -420,44 +418,6 @@ function emitCalldataBuild(
       opts,
     );
   }
-}
-
-/**
- * Pushes a zero value of `type` onto the stack (net +1): `0` for a word, the `0x60` zero slot for
- * a string/bytes/T[] (an empty memref), or a freshly-allocated zero-filled flat block for a tuple
- * (its dynamic members point at `0x60`, nested tuples recurse). Matches the interpreter's
- * `zeroValue`. Used by the try-mode zero block.
- */
-function emitZeroValue(w: AsmWriter, type: EvsType): void {
-  if (!isTupleType(type)) {
-    w.push(isDynamicType(type) ? ZERO_SLOT : 0);
-    return;
-  }
-  const n = type.components.length;
-  // allocate 32·n, zero-fill via CALLDATACOPY past the calldata end (memory above freePtr is dirty)
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [flat]
-  w.op('DUP1');
-  w.push(32 * n);
-  w.op('ADD'); // [flat+32n, flat]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [flat]   freePtr bumped
-  w.push(32 * n);
-  w.op('CALLDATASIZE');
-  w.op('DUP3'); // [flat, cds, 32n, flat]
-  w.op('CALLDATACOPY', { note: 'zero-fill tuple' }); // [flat]
-  // set non-word members: dynamic → 0x60; nested tuple → its own zero block
-  type.components.forEach((c, j) => {
-    const ct = abiParamToType(c);
-    if (!isDynamicType(ct)) return; // word member stays 0 (zero-filled)
-    emitZeroValue(w, ct); // [member, flat]
-    w.op('DUP2'); // [flat, member, flat]
-    if (j !== 0) {
-      w.push(32 * j);
-      w.op('ADD');
-    }
-    w.op('MSTORE'); // [flat]
-  });
 }
 
 // ---------------------------------------------------------------------------

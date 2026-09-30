@@ -32,11 +32,13 @@ import { HEX_BYTES_RE, hexToBytes, padWordAligned, selectorBytes } from '../core
 import { EvsInternalError } from '../core/errors.js';
 import {
   bitsOf,
+  isDynamicType,
   isSigned,
   isTupleType,
   isWordType,
   typeToAbiParam,
   type EvsType,
+  type TupleType,
   type WordType,
 } from '../core/types.js';
 import {
@@ -58,7 +60,7 @@ import {
 } from './abi.js';
 import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
-import { FREE_PTR } from './memory.js';
+import { emitZeroMemrefMembers, emitZeroValue, FREE_PTR } from './memory.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -872,8 +874,45 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('DUP2'); // [n, ptr, n]
   w.op('DUP2'); // [ptr, n, ptr, n]
   w.op('MSTORE'); // [ptr, n]
-  storeOut(w, ctx, s.out); // [n]
-  w.op('POP'); // []
+  if (!isDynamicType(s.elem)) {
+    // word elements: the zero-filled slots already are their zero value
+    storeOut(w, ctx, s.out); // [n]
+    w.op('POP'); // []
+    return;
+  }
+  // memref elements: a zeroed slot is pointer 0x00 (scratch), not a zero value. Store each slot's
+  // typed zero — 0x60 for string/bytes/T[], a FRESH zeroed block per slot for a tuple (tuples are
+  // references: a shared block would leak a .set() through one element into the others).
+  w.op('SWAP1'); // [n, ptr]
+  w.push(5);
+  w.op('SHL'); // [32n, ptr]
+  w.op('DUP2'); // [ptr, 32n, ptr]
+  w.push(32);
+  w.op('ADD'); // [p = ptr+32, 32n, ptr]
+  w.op('SWAP1'); // [32n, p, ptr]
+  w.op('DUP2'); // [p, 32n, p, ptr]
+  w.op('ADD'); // [end, p, ptr]
+  w.op('SWAP1'); // [p, end, ptr]
+  const head = w.newLabel('arrnew_zero');
+  const done = w.newLabel('arrnew_zero_done');
+  w.label(head, STMT_BASELINE + 3); // [p, end, ptr]
+  w.op('DUP2'); // [end, p, end, ptr]
+  w.op('DUP2'); // [p, end, p, end, ptr]
+  w.op('LT'); // [p < end, p, end, ptr]
+  w.op('ISZERO');
+  w.pushLabel(done);
+  w.op('JUMPI'); // [p, end, ptr]
+  emitZeroValue(w, s.elem); // [zero, p, end, ptr]
+  w.op('DUP2'); // [p, zero, p, end, ptr]
+  w.op('MSTORE', { note: 'zero element' }); // [p, end, ptr]
+  w.push(32);
+  w.op('ADD'); // [p+32, end, ptr]
+  w.pushLabel(head);
+  w.op('JUMP');
+  w.label(done, STMT_BASELINE + 3); // [p, end, ptr]
+  w.op('POP');
+  w.op('POP'); // [ptr]
+  storeOut(w, ctx, s.out); // []
 }
 
 function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: LowerCtx): void {
@@ -902,17 +941,20 @@ function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: Lower
 // canonical; a dynamic/composite member's word is a memref pointer.
 // ---------------------------------------------------------------------------
 
-/** The component count of the tuple-typed out value (the flat block has exactly this many words). */
-function tupleArity(ctx: LowerCtx, v: ValueId): number {
+/** The tuple type of a tuple-typed value (its flat block has one word per component). */
+function tupleTypeOf(ctx: LowerCtx, v: ValueId): TupleType {
   const ty = typeOf(ctx, v);
   if (!isTupleType(ty)) throw internal(`tuple op over a non-tuple value (ValueId ${v})`);
-  return ty.components.length;
+  return ty;
 }
 
-/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end), MSTORE each
- *  provided member at `ptr + 32·i`. Omitted/literal-0 members need no MSTORE (the block is zero). */
+/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end), store the typed
+ *  zero of each omitted memref member (string/bytes/T[] → `0x60`, nested tuple → a fresh zeroed
+ *  block — a zeroed slot would be pointer `0x00`, i.e. scratch), then MSTORE each provided member
+ *  at `ptr + 32·i`. Only omitted/literal-0 WORD members rely on the zero-fill alone. */
 function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
-  const n = tupleArity(ctx, s.out);
+  const ty = tupleTypeOf(ctx, s.out);
+  const n = ty.components.length;
   const size = 32 * n;
   w.push(FREE_PTR, meta(`tuplenew ${n} words`));
   w.op('MLOAD'); // [ptr]
@@ -928,6 +970,8 @@ function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: L
   w.op('CALLDATASIZE'); // [cds, size, ptr]
   w.op('DUP3'); // [ptr, cds, size, ptr]
   w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
+  // omitted memref members → their typed zero (provided members are stored just below)
+  emitZeroMemrefMembers(w, ty.components, new Set(s.inits.map((init) => init.index))); // [ptr]
   // MSTORE each provided member at ptr + 32·index
   for (const init of s.inits) {
     loadOperand(w, ctx, init.value, meta(`member [${init.index}] ←`)); // [v, ptr]
