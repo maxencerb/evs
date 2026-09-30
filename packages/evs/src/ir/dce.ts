@@ -39,7 +39,7 @@
  * memory aliased with one of its params. Every other `fncall` stays live.
  *
  * REVERT GUARDS ARE NOT SIDE EFFECTS. Checked arithmetic (`bin` add/sub/mul/div/mod →
- * `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x21)`), bounds-checked `index`/`arrset`
+ * `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x11)`), bounds-checked `index`/`arrset`
  * (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
  * only guarded a value nothing reads is itself dead work: a script that overflows while
  * computing an unused sum returns instead of panicking. This is the same rule the Solidity

@@ -73,9 +73,9 @@ Releases: see [Releasing](#releasing) below.
   dynamic values and tuples are pointers. No slot reuse or fusion by default, on purpose — the
   disassembly stays legible and the stack invariant machine-checkable; `optimize: true` packs
   dead values' slots without changing the templates.
-- **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow, 0x12
-  division by zero, 0x21 enum/narrowing, 0x32 out-of-bounds), verified differentially against a
-  solc-compiled reference contract.
+- **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
+  narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
+  differentially against a solc-compiled reference contract.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) point at your source line; at run
   time the artifact's `explainRevert(data)` maps revert payloads back to the recording site.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
@@ -86,16 +86,17 @@ Releases: see [Releasing](#releasing) below.
 
 Three tiers, all run by CI (`ci.yml`):
 
-- **unit** (`src/**/*.test.ts`) — in-process EVM harness (`@ethereumjs/evm`), including the
-  anti-miscompilation core: the IR **interpreter vs the compiled bytecode** must agree
-  byte-for-byte on returndata and revert payloads for every fixture — for the default output
-  and its `optimize: true` twin alike; ABI codecs vs viem's
-  `encodeAbiParameters` / `encodeFunctionData`; checked arithmetic vs the solc reference
-  contract (`packages/contracts`, forge tests + codegen'd artifacts).
+- **unit** (`src/**/*.test.ts`, `test/harness/**/*.test.ts`) — in-process EVM harness
+  (`@ethereumjs/evm`), including the anti-miscompilation core: the IR **interpreter vs the
+  compiled bytecode** must agree byte-for-byte on returndata and revert payloads for every
+  fixture — for the default output and its `optimize: true` twin alike; ABI codecs vs viem's
+  `encodeAbiParameters` / `encodeFunctionData`.
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
-  [anvil](https://getfoundry.sh) spawned by prool, both execution modes; an env-gated
+  [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
+  arithmetic vs the solc 0.8.30 `EvsReference` contract (codegen'd from `packages/contracts`,
+  whose own forge tests run in CI's contracts step); an env-gated
   mainnet-fork suite (`ANVIL_FORK_URL`) covers the flagship scenario.
 
 Tests run on vitest through `vp test` — **never `bun test`** (prool's per-worker anvil and
