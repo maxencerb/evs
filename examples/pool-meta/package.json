@@ -5,7 +5,6 @@
   "dependencies": {
     "@maxencerb/evs": "workspace:*",
     "@maxencerb/evs-examples-shared": "workspace:*",
-    "prool": "catalog:testing",
     "viem": "catalog:"
   }
 }

@@ -18,11 +18,15 @@ declare function evscript<
   const name extends string,
   const args extends ArgsInput, // ArgInput | readonly ArgInput[]; ArgInput = EvsType | ArgSpec
   ret extends Record<string, ReturnValue>, // each value: Expr | Tuple | MutArray
+  const errs extends ErrorsInput, // EvsErrorType | readonly EvsErrorType[] (t.error values)
 >(
-  def: { name: name; args?: args },
-  body: (s: ScriptBuilder, ...args: ArgHandles<NormalizeArgs<args>>) => ScriptReturn<ret>,
+  def: { name: name; args?: args; errors?: errs },
+  body: (
+    s: ScriptBuilder<NormalizeErrors<errs>>,
+    ...args: ArgHandles<NormalizeArgs<args>>
+  ) => ScriptReturn<ret>,
   opts?: { locations?: boolean }, // default true: capture source locations
-): EvsScript<name, NormalizeArgs<args>, ret>;
+): EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
 ```
 
 `evscript` records a script: it runs `body` exactly once, at recording time, against a
@@ -37,6 +41,11 @@ is optional; a zero-arg script omits it. A lone declarator is sugar for a one-el
 (`args: t.uint256` ≡ `args: [t.uint256]`). A `namedArg` labels the arg in the viem `args` tuple; a
 bare arg keeps the positional `arg0`/`arg1`/… name. The `const` type parameters mean inline `args`
 need no `as const`.
+
+`errors` (optional) declares the script's [custom errors](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow):
+a single [`t.error(...)`](/reference/types/#the-t-namespace) value or a `readonly` list of them.
+Only declared errors can be thrown with [`s.throw`](/reference/builder/#sthrow), and each one is
+appended to the script's ABI.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -58,6 +67,8 @@ The relevant type helpers (all exported):
 | `NormalizeArgs<a>`    | Normalizes to `readonly ArgSpec[]` (a lone declarator → a one-element list).        |
 | `ArgHandle<t>`        | `t extends TupleType ? Tuple<t> : Expr<t>` — one arg's body handle.                 |
 | `ArgHandles<specs>`   | The positional handle tuple spread into the body after `s`, labeled by arg name.    |
+| `ErrorsInput`         | `EvsErrorType \| readonly EvsErrorType[]` — the accepted `errors` input.           |
+| `NormalizeErrors<e>`  | Normalizes to `readonly EvsErrorType[]` (a lone declaration → a one-element list).   |
 
 Recording-time validation (each violation throws `EvsTypeError` with the call-site location):
 
@@ -67,9 +78,11 @@ Recording-time validation (each violation throws `EvsTypeError` with the call-si
   auto-named `arg{i}` (the names are positional labels; viem infers `args` positionally regardless).
   Duplicate arg names are rejected (`ABI_SHAPE`).
 - Every arg type must be a valid `EvsType` — a word/dynamic type, an array (a scalar array, a
-  one-level nested array `T[][]`, or a `tuple[]`), or a `TupleType` (struct/tuple). Shapes
-  outside the supported set — `tuple[][]`, deeper-than-`[][]` nesting, fixed `T[N]` — throw with
-  code `UNSUPPORTED_V0`.
+  one-level nested array `T[][]` of a word element, or a `tuple[]`), or a `TupleType`
+  (struct/tuple). Shapes outside the supported set — `string[][]`/`bytes[][]`, `tuple[][]`,
+  deeper-than-`[][]` nesting, fixed `T[N]` — throw with code `UNSUPPORTED_V0`.
+- `def.errors`, when present, must be a `t.error` value or a list of them, with no duplicate
+  name or selector clash (`ERROR_DECL`).
 - `body` must be a function.
 
 Everything the builder itself can throw during recording is catalogued in
@@ -110,6 +123,7 @@ import type {
   CompileOptions,
   ReturnValue,
   ScriptAbi,
+  EvsErrorType,
   ScriptIr,
 } from '@maxencerb/evs';
 
@@ -117,11 +131,13 @@ interface EvsScript<
   name extends string = string,
   args extends readonly ArgSpec[] = readonly ArgSpec[],
   ret extends Record<string, ReturnValue> = Record<string, ReturnValue>,
+  errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
 > {
   readonly name: name;
   readonly ir: ScriptIr; // frozen, JSON-serializable
-  readonly abi: ScriptAbi<name, args, ret>; // literal-typed value, exists pre-compile
-  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret>; // sugar for compile()
+  readonly abi: ScriptAbi<name, args, ret, errs>; // literal-typed value, exists pre-compile
+  readonly errors: errs; // the declared t.error values (frozen; [] when none)
+  compile(options?: CompileOptions): CompiledEvsScript<name, args, ret, errs>; // sugar for compile()
 }
 ```
 
@@ -131,7 +147,9 @@ interface EvsScript<
   fallback for a bare arg) and its type.
 - `ir` — the recorded program. Serialize it with `serializeIr` or run it with the `interpret`
   oracle without compiling; see [testing scripts](/guides/testing-scripts/).
-- `abi` — the literal-typed `ScriptAbi` (one `view` function plus the two evs error entries).
+- `errors` — the declared `t.error` values, in declaration order (`[]` when the def has none).
+- `abi` — the literal-typed `ScriptAbi`: one `view` function, the two evs error entries, then
+  one entry per declared error.
   It exists before you compile, so viem type inference works without any artifact. See
   [the artifact reference](/reference/artifact/) for its shape.
 - `compile(options?)` — identical to the free-standing `compile(script, options)`.
@@ -164,9 +182,8 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
   `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
   one). Only top-level args are named as a whole; nested composite fields are named via
   `t.struct`. Not-yet-supported Solidity shapes (fixed-size `T[N]` arrays, [#4](https://github.com/maxencerb/evs/issues/4)) throw `EvsTypeError` with
-  code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. Note `s.fn` params remain
-  word/string-typed — a composite param is rejected when the fn is defined (see
-  [functions](/guides/functions/)).
+  code `UNSUPPORTED_V0`; malformed inputs throw `TYPE_MISMATCH`. `s.fn` params take any evs
+  type too, struct/tuple included (see [functions](/guides/functions/#struct-params)).
 
 ```ts
 import { evscript, namedArg, t } from '@maxencerb/evs';
@@ -217,7 +234,15 @@ viem-native positional (`args: [pool, fee]`). The full type vocabulary lives in
 ## compile()
 
 ```ts
-import type { ArgSpec, CompiledEvsScript, CompileOptions, EvsScript, ReturnValue, ScriptIr } from '@maxencerb/evs';
+import type {
+  ArgSpec,
+  CompiledEvsScript,
+  CompileOptions,
+  EvsErrorType,
+  EvsScript,
+  ReturnValue,
+  ScriptIr,
+} from '@maxencerb/evs';
 
 declare function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
@@ -227,9 +252,10 @@ declare function compile<
 ): s extends EvsScript<
   infer n extends string,
   infer a extends readonly ArgSpec[],
-  infer r extends Record<string, ReturnValue>
+  infer r extends Record<string, ReturnValue>,
+  infer e extends readonly EvsErrorType[]
 >
-  ? CompiledEvsScript<n, a, r>
+  ? CompiledEvsScript<n, a, r, e>
   : never;
 ```
 

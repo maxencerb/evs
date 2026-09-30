@@ -5,7 +5,13 @@
  * and the end-to-end `evscript → compile → harness` smoke.
  */
 
-import { decodeFunctionResult, encodeErrorResult, encodeFunctionData, maxUint256 } from 'viem';
+import {
+  decodeFunctionResult,
+  encodeErrorResult,
+  encodeFunctionData,
+  maxUint256,
+  parseAbi,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
@@ -377,6 +383,24 @@ describe('EIP-170 enforcement', () => {
     expect(err.message).toMatch(/dispatcher \d+, body \d+, fns \d+, tails \d+/);
     // the 25,056-byte data segment (+ INVALID guard) dominates the breakdown
     expect(err.message).toMatch(/data segments 25\d{3}/);
+    expect(err.message).not.toMatch(/trampoline/); // no s.simulate → no trampoline bucket
+  });
+
+  test('the simulate trampoline gets its own bucket (not counted as body/fns)', () => {
+    const big = evscript({ name: 'bigSim', args: [t.address] }, (s, token) => {
+      const sim = s.simulate({
+        address: token,
+        abi: parseAbi(['function transfer(address,uint256) returns (bool)']),
+        functionName: 'transfer',
+        args: [token, 1n],
+      });
+      const blob = s.lit(t.bytes, `0x${'ab'.repeat(25_000)}`);
+      return s.return({ sim, blob });
+    });
+    const err = captureError(() => compile(big), EvsCompileError);
+    expect(err.code).toBe('COMPILE_LIMIT');
+    expect(err.message).toMatch(/dispatcher \d+, body \d+, fns 0, trampoline [1-9]\d*, tails \d+/);
+    expect(err.message).toMatch(/data segments 25\d{3}/);
   });
 
   test('a comfortably-sized script compiles', () => {
@@ -468,6 +492,26 @@ describe('toViem()', () => {
     });
     // the plain stateOverride shape never carries `account` (the user composes it themselves)
     expect(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('account');
+  });
+
+  test('stateOverride + sender: the public path validates sender and its agreement with address', () => {
+    const compiled = compile(sumScript());
+    const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
+    // the typed sender overload has no `address`; untyped callers can still restate the sender
+    // (any casing) and get the same shape …
+    const restated = { mode: 'stateOverride', sender, address: sender.toLowerCase() };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime branch under test
+    expect(compiled.toViem(restated as never)).toEqual(
+      compiled.toViem({ mode: 'stateOverride', sender }),
+    );
+    // … but a different address contradicts sender mode
+    const contradicting = { mode: 'stateOverride', sender, address: DEFAULT_SCRIPT_ADDRESS };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime branch under test
+    expect(() => compiled.toViem(contradicting as never)).toThrowError(/sender.*address.*disagree/);
+    // a malformed sender is rejected up front, before viem ever sees it
+    const badSender = () => compiled.toViem({ mode: 'stateOverride', sender: '0x1234' });
+    expect(badSender).toThrowError(EvsTypeError);
+    expect(badSender).toThrowError(/`sender` must be a 20-byte 0x address/);
   });
 });
 

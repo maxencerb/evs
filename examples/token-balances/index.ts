@@ -1,9 +1,10 @@
 /**
  * E2 — Batch reads over a runtime `address[]` arg: the multicall replacement
- * A loop + tryCall over N tokens compiles to one script;
+ * A loop + tryRead over N tokens compiles to one script;
  * non-token addresses yield 0 instead of reverting the whole batch.
  *
- * Run: bun examples/token-balances/index.ts
+ * Run: node examples/token-balances/index.ts   (spawns a local anvil; needs foundry + `vp run codegen`
+ *      in packages/contracts first — see README.md)
  */
 
 import { erc20Abi, parseEther, type Address } from 'viem';
@@ -11,7 +12,7 @@ import { erc20Abi, parseEther, type Address } from 'viem';
 import { evscript, t } from '@maxencerb/evs';
 import { startAnvil } from '@maxencerb/evs-examples-shared/run-anvil';
 
-import { MockERC20 } from '../../packages/evs/test/generated/index.js';
+import { MockERC20 } from '../../packages/evs/test/generated/index.ts';
 
 // `args: [t.array(t.address), t.address]` → the callback receives `(s, tokens, owner)`.
 const balances = evscript(
@@ -50,7 +51,7 @@ try {
     });
     tokens.push(token);
   }
-  tokens.push(chain.account.address); // an EOA — tryCall defaults its balance to 0
+  tokens.push(chain.account.address); // an EOA — tryRead defaults its balance to 0
 
   const res = await chain.client.readContract({
     ...balances.compile().toViem(),

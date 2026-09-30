@@ -14,9 +14,9 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
 import { returner, reverter, RUNTIME_SPIN, word } from '../../test/harness/fixtures.js';
-import { t } from '../builder/args.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
+import { t } from '../core/types.js';
 import type { Hex } from '../core/types.js';
 import { interpret, type MockChain } from '../ir/interp.js';
 
@@ -448,7 +448,9 @@ describe('issue #36 — `gas` caps the inner target call', () => {
     const res = await execRuntime(
       compiled.runtimeBytecode,
       encodeFunctionData({ abi: compiled.abi, functionName: 'uncapped', args: [TARGET] }),
-      { contracts: { [TARGET]: RUNTIME_SPIN } },
+      // a 1M eth_call budget: the 1/64 reserve does not depend on the limit, and burning 30M
+      // through the spinner would dominate the unit tier's wall time
+      { contracts: { [TARGET]: RUNTIME_SPIN }, gasLimit: 1_000_000n },
     );
     // the trampoline keeps 1/64 of its gas after the inner CALL, enough for its MAGIC-tagged
     // REVERT — so the dry-run reports success=false instead of losing the magic …
@@ -456,8 +458,9 @@ describe('issue #36 — `gas` caps the inner target call', () => {
     expect(
       decodeFunctionResult({ abi: compiled.abi, functionName: 'uncapped', data: res.data }),
     ).toEqual({ ok: false });
-    // … but the target burned (almost) the entire 30M budget — exactly what `gas` prevents
-    expect(res.gasUsed).toBeGreaterThan(25_000_000n);
+    // … but the target burned (almost) the entire eth_call budget (1M here) — exactly what `gas`
+    // prevents
+    expect(res.gasUsed).toBeGreaterThan(900_000n);
   });
 });
 

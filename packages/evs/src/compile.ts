@@ -25,8 +25,11 @@ import type { Address } from 'abitype';
 import {
   canonicalTypeSignature,
   decodeErrorArgsRecord,
-  PANIC_MEANINGS,
-  selectorOf,
+  describePanic,
+  ERROR_STRING_SELECTOR,
+  EVS_DECODE_ERROR_SELECTOR,
+  EVS_INVALID_CALLDATA_SELECTOR,
+  PANIC_SELECTOR,
   type ScriptAbi,
 } from './abi/artifact.js';
 import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
@@ -36,6 +39,8 @@ import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
 import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
+import { SIMULATE_TRAMPOLINE_LABEL } from './codegen/simulate.js';
+import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
 import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import {
   EvsCompileError,
@@ -48,7 +53,7 @@ import { eliminateDeadCode } from './ir/dce.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import {
-  DEFAULT_SCRIPT_ADDRESS,
+  assertEvmVersion,
   toCreationBytecode,
   toViemDeployless,
   toViemStateOverride,
@@ -128,12 +133,12 @@ export type CompiledOf<s> =
     ? CompiledEvsScript<n, a, r, e>
     : never;
 
-// DEVIATION (recorded): the frozen signature is `compile<s extends EvsScript>`, but a concrete
-// multi-return script is NOT assignable to the default-instantiated `EvsScript` — the
-// `ScriptAbi` default collapses `Record<string, Expr>` components to a 1-tuple via
-// UnionToTuple, so `EvsScript<'x', […], { a; b }>` fails the constraint and every real
-// script would be rejected. The constraint below is the minimal structural relaxation;
-// `CompiledOf<s>` (and therefore the result type) is exactly the frozen signature's.
+// The natural constraint `s extends EvsScript` does not work: a concrete multi-return script is
+// NOT assignable to the default-instantiated `EvsScript` — the `ScriptAbi` default collapses
+// `Record<string, Expr>` components to a 1-tuple via UnionToTuple, so
+// `EvsScript<'x', […], { a; b }>` fails the constraint and every real script would be rejected.
+// The constraint below is the minimal structural relaxation; `CompiledOf<s>` still gives the
+// precise result type.
 export function compile<
   s extends { readonly name: string; readonly ir: ScriptIr; readonly abi: readonly unknown[] },
 >(script: s, options?: CompileOptions): CompiledOf<s> {
@@ -148,7 +153,6 @@ export function compile<
 // ---------------------------------------------------------------------------
 
 const EIP170_LIMIT = 24_576;
-const EVM_VERSIONS: ReadonlySet<string> = new Set(['paris', 'shanghai', 'cancun']);
 
 function identityPeephole(nodes: readonly AsmNode[]): AsmNode[] {
   return [...nodes];
@@ -160,12 +164,7 @@ function ignoreDiagnostic(_d: EvsDiagnostic): void {
 
 function resolveOptions(options: CompileOptions | undefined): Readonly<Required<CompileOptions>> {
   const evmVersion = options?.evmVersion ?? 'cancun';
-  if (!EVM_VERSIONS.has(evmVersion)) {
-    throw new EvsCompileError(
-      'EVM_VERSION',
-      `compile: unknown evmVersion ${JSON.stringify(evmVersion)} — expected 'paris', 'shanghai' or 'cancun'`,
-    );
-  }
+  assertEvmVersion(evmVersion, 'compile: ');
   return Object.freeze({
     evmVersion,
     optimize: options?.optimize ?? false,
@@ -258,21 +257,21 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
         account: Address;
       } {
     if (o?.mode === 'stateOverride') {
-      if (o.sender !== undefined) {
-        // validation (address shape, sender/address agreement) lives in toViemStateOverride
-        const shape = toViemStateOverride(
-          { abi, runtimeBytecode },
-          o.address === undefined ? { sender: o.sender } : { sender: o.sender, address: o.address },
-        );
-        return {
-          abi,
-          address: shape.address,
-          stateOverride: [{ address: shape.address, code: runtimeBytecode }],
-          account: shape.account,
-        };
+      // toViemStateOverride owns the address default and the sender checks (shape, agreement
+      // with `address`); the tuple is rebuilt here because its shape types `stateOverride` as
+      // viem's wide StateOverride.
+      const at = o.address === undefined ? {} : { address: o.address };
+      if (o.sender === undefined) {
+        const { address } = toViemStateOverride({ abi, runtimeBytecode }, at);
+        return { abi, address, stateOverride: [{ address, code: runtimeBytecode }] };
       }
-      const address = o.address ?? DEFAULT_SCRIPT_ADDRESS;
-      return { abi, address, stateOverride: [{ address, code: runtimeBytecode }] };
+      const shape = toViemStateOverride({ abi, runtimeBytecode }, { ...at, sender: o.sender });
+      return {
+        abi,
+        address: shape.address,
+        stateOverride: [{ address: shape.address, code: runtimeBytecode }],
+        account: shape.account,
+      };
     }
     return toViemDeployless({ abi, initBytecode });
   }
@@ -295,20 +294,6 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
 // EIP-170 per-region breakdown
 // ---------------------------------------------------------------------------
 
-/** Shared-tail label names emitted by codegen/tails.ts. */
-const TAIL_LABEL_NAMES: ReadonlySet<string> = new Set([
-  'panic_overflow',
-  'panic_divzero',
-  'panic_bounds',
-  'panic_alloc',
-  'panic',
-  'badcd',
-  'decode_revert',
-  'memcpy',
-  'memcpy_loop',
-  'memcpy_done',
-]);
-
 function eip170Message(
   total: number,
   labelPcs: ReadonlyMap<LabelId, number>,
@@ -324,43 +309,40 @@ function eip170Message(
   };
 
   // program order: prologue+dispatcher · @main(arg decode + body + return encode) ·
-  // @fn_* subroutines · @dfail_* stubs + shared tails · INVALID guard + data segments
+  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
+  // tails · INVALID guard + data segments
   const mainPc = minPcWhere((n) => n === 'main') ?? 0;
   const fnPc = minPcWhere((n) => n.startsWith('fn_'));
-  const tailPc = minPcWhere((n) => n.startsWith('dfail_') || TAIL_LABEL_NAMES.has(n));
+  const trampolinePc = minPcWhere((n) => n === SIMULATE_TRAMPOLINE_LABEL);
+  const tailPc = minPcWhere((n) => n.startsWith('dfail_') || SHARED_TAIL_LABEL_NAMES.has(n));
   const firstDataPc = minPcWhere((n) => n.startsWith('data_'));
   const dataPc = firstDataPc === undefined ? undefined : firstDataPc - 1; // INVALID guard byte
 
   const dataStart = dataPc ?? total;
   const tailEnd = dataStart;
-  const fnEnd = tailPc ?? tailEnd;
+  const trampolineEnd = tailPc ?? tailEnd;
+  const fnEnd = trampolinePc ?? trampolineEnd;
   const bodyEnd = fnPc ?? fnEnd;
 
   const dispatcher = mainPc;
   const body = Math.max(bodyEnd - mainPc, 0);
   const fns = fnPc === undefined ? 0 : Math.max(fnEnd - fnPc, 0);
+  const trampoline =
+    trampolinePc === undefined ? '' : `trampoline ${Math.max(trampolineEnd - trampolinePc, 0)}, `;
   const tails = tailPc === undefined ? 0 : Math.max(tailEnd - tailPc, 0);
   const data = Math.max(total - dataStart, 0);
 
   return (
     `runtime bytecode is ${total} bytes — exceeds the EIP-170 limit of ${EIP170_LIMIT} by ` +
     `${total - EIP170_LIMIT} bytes (dispatcher ${dispatcher}, body ${body}, fns ${fns}, ` +
-    `tails ${tails}, data segments ${data}); split the script or move large literals off-chain`
+    `${trampoline}tails ${tails}, data segments ${data}); split the script or move large ` +
+    `literals off-chain`
   );
 }
 
 // ---------------------------------------------------------------------------
 // explainRevert
 // ---------------------------------------------------------------------------
-
-// selectors computed once via `abi/artifact.ts`'s `selectorOf` (the single selector helper)
-const PANIC_SELECTOR = selectorOf('Panic', ['uint256']); // 0x4e487b71
-const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']); // 0x08c379a0
-const DECODE_ERROR_SELECTOR = selectorOf('EvsDecodeError', ['uint256']);
-const INVALID_CALLDATA_SELECTOR = selectorOf('EvsInvalidCalldata', []);
-
-// PANIC_MEANINGS moved to abi/artifact.ts (issue #15) — shared with the client-side
-// decodeScriptError; imported above.
 
 type SiteRef = { id: SiteId; loc: SourceLoc | null; detail: string };
 
@@ -418,8 +400,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
 
   if (selector === PANIC_SELECTOR && bytes.length === 36) {
     const code = bytesToBigInt(bytes, 4);
-    const codeHex = `0x${code.toString(16).padStart(2, '0')}`;
-    const meaning = PANIC_MEANINGS[codeHex] ?? 'unknown panic code';
+    const { codeHex, meaning } = describePanic(code);
     const candidateSites = map.sites
       .filter((s) => s.kind === 'panic' && s.detail.includes(codeHex))
       .map(toSiteRef);
@@ -438,7 +419,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
     };
   }
 
-  if (selector === DECODE_ERROR_SELECTOR && bytes.length === 36) {
+  if (selector === EVS_DECODE_ERROR_SELECTOR && bytes.length === 36) {
     const id = bytesToBigInt(bytes, 4);
     const idNum = id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : -1;
     const site = idNum >= 0 ? siteById(map, idNum) : undefined;
@@ -472,7 +453,7 @@ function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanati
     };
   }
 
-  if (selector === INVALID_CALLDATA_SELECTOR && bytes.length === 4) {
+  if (selector === EVS_INVALID_CALLDATA_SELECTOR && bytes.length === 4) {
     const signature = `${ir.name}(${ir.args.map((a) => canonicalTypeSignature(a.type)).join(',')})`;
     const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
     return {
@@ -553,11 +534,8 @@ function tryDecodeErrorString(bytes: Uint8Array): string | null {
   const start = lenAt + 32;
   const end = start + Number(len);
   if (end > bytes.length) return null;
-  try {
-    return new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(start, end));
-  } catch {
-    return null;
-  }
+  // non-fatal: malformed UTF-8 decodes to U+FFFD, never throws
+  return new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(start, end));
 }
 
 // ---------------------------------------------------------------------------

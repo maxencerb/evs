@@ -260,8 +260,10 @@ try {
     if (reverted instanceof ContractFunctionRevertedError && reverted.raw !== undefined) {
       const explanation = compiled.explainRevert(reverted.raw);
       // explanation.kind    → 'evs-decode'
-      // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 1)
-      //                        — recorded at token-meta.ts:5:20"
+      // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 0)
+      //                        — recorded at token-meta.ts:11:20 — note: the script performs
+      //                        sub-calls and a callee may have reverted with this evs selector
+      //                        verbatim (…)"
       // explanation.site    → { id, loc, detail } for the s.read that failed
     }
   }

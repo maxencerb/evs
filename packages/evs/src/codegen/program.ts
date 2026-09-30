@@ -28,8 +28,10 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
+  SIMULATE_TRAMPOLINE_LABEL,
   SIMULATE_TRAMPOLINE_SELECTOR,
   SIMULATE_TRAMPOLINE_SELECTOR_NUM,
 } from './simulate.js';
@@ -90,16 +92,14 @@ export function lowerProgram(
     tails,
     opts: evm,
     loop: null,
-    fnBaseline: 0,
     dataSeg,
-    siteOf: (s: Stmt): SiteId => s.site,
   };
   const state = lowerInternals(ctx);
   state.locations = opts.locations;
 
   // -- prologue: free-pointer init --------------------------------
   w.push(frame.frameEnd, { note: 'frameEnd' });
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE', { note: 'free-ptr init' });
 
   // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
@@ -112,7 +112,7 @@ export function lowerProgram(
   };
   walkStmts(ir.body, markSimulate);
   for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
-  const trampoline = hasSimulate ? w.newLabel('simulate_trampoline') : null;
+  const trampoline = hasSimulate ? w.newLabel(SIMULATE_TRAMPOLINE_LABEL) : null;
 
   // -- dispatcher: size floor, selector match, fallback EvsInvalidCalldata --------
   // tuple args expand to their canonical `(t1,t2,…)` signature so the dispatcher selector is
@@ -164,7 +164,7 @@ export function lowerProgram(
     if (slot === null) throw internal(`arg #${i} ("${a.name}") has no frame slot`);
     return { slot, type: a.type };
   });
-  emitCalldataDecode(w, argRefs, tails, evm);
+  emitCalldataDecode(w, argRefs, tails);
 
   // -- body --------------------------------------------------------------------------------
   lowerStmts(w, ir.body, ctx);
@@ -183,11 +183,11 @@ export function lowerProgram(
   emitFnSubroutines(w, ctx);
 
   // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
-  if (trampoline !== null) emitSimulateTrampoline(w, trampoline, evm);
+  if (trampoline !== null) emitSimulateTrampoline(w, trampoline);
 
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
-  emitSharedTails(w, tails, evm);
+  emitSharedTails(w, tails);
 
   // -- data segments LAST (the assembler plants the INVALID guard) -------------------------
   for (const seg of segments) {
@@ -407,7 +407,7 @@ function collectDiagnostics(
       severity: 'warning',
       code: 'LARGE_FRAME',
       message:
-        `the static frame spans ${frame.frameEnd} bytes (${(frame.frameEnd - 0x80) / 32} slots); ` +
+        `the static frame spans ${frame.frameEnd} bytes (${(frame.frameEnd - FRAME_BASE) / 32} slots); ` +
         `memory-expansion gas grows quadratically — consider splitting the script`,
       loc: locations ? ir.loc : null,
     });

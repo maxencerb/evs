@@ -18,14 +18,14 @@ implements (the checked-arithmetic tables, the call decode bounds, the ABI shape
 codegen bug and an interpreter bug would have to make the *same* mistake to slip through.
 
 The differential suite runs a corpus of scripts covering every operation family, control flow,
-calls against mocks, `tryCall`, and dynamic returns through both sides: `interpret()` on one,
+calls against mocks, the `try*` verbs, and dynamic returns through both sides: `interpret()` on one,
 and the compiled `runtimeBytecode` executed on an in-process EVM (`@ethereumjs/evm`) on the
 other. Both sides see identical callee behavior — the mock chain and the EVM fixtures are
 generated from the same table — and must agree **byte for byte** on:
 
 - returndata, and
 - revert payloads: `Panic(code)` bytes, `EvsDecodeError(site)` ids, callee reverts bubbled
-  verbatim, and `tryCall` zeroing.
+  verbatim, and `try*` zeroing.
 
 The same corpus gates the dead-code elimination pass `compile()` runs
 ([How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)): for every script,
@@ -84,50 +84,51 @@ Independently of the test suite, [three mandatory verifier passes](/concepts/how
 run inside every `compile()` call: a consensus-identical JUMPDEST scan, a full stack-height
 simulation (empty stack at every statement boundary, depth at most 16 inside templates), and
 shape lints that make the dangerous constructs unrepresentable — only the two intrinsically
-safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, no state-mutating
-opcode ever. A verifier failure throws `EvsInternalError` instead of shipping the bytecode.
+safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, and no storage,
+log or contract-creation opcode in the script's own code. The only `CALL` frames are the ones
+`s.call`/`s.simulate` emit, and their effects are never committed because the whole execution is
+an `eth_call`. A verifier failure throws `EvsInternalError` instead of shipping the bytecode.
 
 ## Adversarial returndata
 
 Decode soundness is tested against attacker-shaped callees, not just well-behaved ones:
 hand-assembled fixtures (and a `Malformed.sol` mirror on anvil) return huge head offsets, huge
-lengths, off-by-one truncations, dirty high bits, and empty returndata. The suite asserts the
-script reverts with `EvsDecodeError(site)` — attributable to the exact `s.read` line — and
-**never** hits an exceptional halt that would consume all gas (gas usage is sanity-checked).
+lengths, off-by-one truncations, and empty returndata. The suite asserts the script reverts
+with `EvsDecodeError(site)` — attributable to the exact `s.read` line — and **never** hits an
+exceptional halt that would consume all gas (gas usage is sanity-checked). Dirty high bits in
+word-typed outputs are the deliberate exception: they are normalized (masked, sign-extended or
+booleanized, like viem's decoder), not reverted — see [Calls](/guides/calls/).
 A real solc `Reverter` contract covers the bubbling path end to end: `Error(string)`, `Panic`,
 custom errors, and empty reverts must all surface through the script unchanged.
 
 ## The honesty rule
 
-Every bytecode listing in this documentation is generated compiler output. A doc-sync
-test recompiles the documented example scripts through the public API and fails CI if any
-listing drifts from what the compiler actually emits today. No documented example shows an
-optimization the compiler does not perform.
+Every bytecode listing in this documentation was generated from real compiler output at the
+time of writing, not written by hand. No documented example shows an optimization the compiler
+does not perform.
 
 ## What CI gates on every pull request
 
-Two producer jobs run first — build the library and build + test the contracts (with codegen).
-The remaining checks then fan out and run in parallel (from the repo's `ci.yml`); each job restores
-the artifacts it needs and runs `bun install --frozen-lockfile` (viem is exact-pinned — its types
-move in patches):
+CI (the repo's `ci.yml`) is one serial job, run on every push to `main` and every pull
+request, after a single cached `vp install --frozen-lockfile` (viem is exact-pinned — its types
+move in patches). Its steps, in order:
 
-| Job                                             | What it proves                                                                  |
-| ----------------------------------------------- | ------------------------------------------------------------------------------- |
-| `build` — `bun run build`                       | the library builds with `tsc` (declarations included)                           |
-| `contracts` — `forge build && forge test && bun run codegen` | the solc 0.8.30 reference and mock contracts compile, pass their own tests, and emit codegen artifacts |
-| `lint` — `bun run fmt:check` + `bun run lint:ci` | formatting and type-aware lint                                                  |
-| `typecheck` — `bun run --filter '@maxencerb/evs' typecheck` | strict typecheck of the library                                     |
-| `docs-typecheck` — `bun run --filter '@maxencerb/evs-docs' typecheck` | the docs site type-checks (`astro check`)                  |
-| `test` — `bun run test`                         | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
-| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.8.1 for determinism)                       |
-| `package-health` — `publint` + `@arethetypeswrong/cli --pack` | the published package shape resolves correctly (ESM-only profile)  |
+| Step                                                     | What it proves                                                                                          |
+| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `forge build && forge test && vp run codegen`            | the solc 0.8.30 reference and mock contracts compile, pass their own tests, and emit codegen artifacts   |
+| `vp run build`                                           | the library builds with `tsc` (declarations included)                                                   |
+| `vp run fmt:check` + `vp run lint:ci`                    | formatting and type-aware lint                                                                          |
+| `vp run typecheck`                                       | strict typecheck of every workspace, including the docs site (`astro check`)                            |
+| `vp run test`                                            | unit tests (differential oracle, codecs, verifiers) + type-level tests                                  |
+| `vp run test:integration`                                | the anvil suite (foundry pinned for determinism)                                                        |
+| `publint` + `@arethetypeswrong/cli --pack`               | the published package shape resolves correctly (ESM-only profile)                                       |
 
 The integration tier executes compiled scripts through every supported path on a real node:
 `setCode` plus a plain `readContract`, the state-override mode, and the deployless `code`
-path — including a permanent regression test for anvil's historical deployless bug and a
-canary asserting that passing *runtime* bytecode where init code belongs still fails loudly.
-A scheduled job additionally runs a fork-mode suite against real mainnet state at a pinned
-block.
+path — plus a canary asserting that passing *runtime* bytecode where init code belongs fails
+with an empty `0x` revert carrying no diagnostic data, which is why `toViem()` always hands
+out `initBytecode`. A manually dispatched (`workflow_dispatch`) job additionally runs a
+fork-mode smoke test that reads real mainnet state.
 
 ## Test tiers
 

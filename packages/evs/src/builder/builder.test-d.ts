@@ -875,7 +875,7 @@ test('#2 s.read({ struct: true }) returns ONE named Tuple over the outputs (opt-
     expectTypeOf(slot0.tick.get()).toEqualTypeOf<Expr<'int24'>>();
     expectTypeOf(slot0.unlocked.get()).toEqualTypeOf<Expr<'bool'>>();
 
-    // the DEFAULT (no struct) keeps the frozen positional `[many]` shape — unchanged.
+    // the DEFAULT (no struct) keeps the positional `[many]` shape — unchanged.
     const positional = s.read({ address: pool, abi: poolFixture, functionName: 'slot0' });
     expectTypeOf(positional).toEqualTypeOf<
       readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]

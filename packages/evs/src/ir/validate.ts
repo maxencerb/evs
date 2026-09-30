@@ -9,7 +9,7 @@
  * call-graph acyclicity, return-name validity, fnAbi type validity, and `successOut` ⇔ try mode.
  *
  * Script args bind positionally to the first `args.length` entries of the value table
- * (ValueIds `0 … args.length-1`) — the only binding the frozen `ScriptIr` shape admits, since
+ * (ValueIds `0 … args.length-1`) — the only binding the `ScriptIr` shape admits, since
  * `args` entries carry no explicit ValueId and no "load arg" statement kind exists.
  *
  * All failures throw `EvsInternalError` (compiler-produced IR is supposed to be valid — a
@@ -19,9 +19,12 @@
 import { EvsInternalError, type SourceLoc } from '../core/errors.js';
 import {
   abiParamToType,
+  arrayTypeOf,
   bitsOf,
   elemTypeOf,
+  IDENT_RE,
   isArrayValueType,
+  isBitsOperand,
   isEvsType,
   isEvsValueType,
   isNumeric,
@@ -29,10 +32,10 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  stringifyType,
   typesEqual,
   type ArrayType,
   type EvsType,
-  type TupleType,
   type WordType,
 } from '../core/types.js';
 import {
@@ -54,7 +57,6 @@ export function validateIr(ir: ScriptIr): void {
 // implementation (module-private)
 // ---------------------------------------------------------------------------
 
-const IDENT_RE = /^[A-Za-z_]\w*$/;
 const SELECTOR_RE = /^0x[0-9a-fA-F]{8}$/;
 const WORD_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
 const DATA_HEX_RE = /^0x(?:[0-9a-fA-F]{2})+$/;
@@ -472,7 +474,7 @@ class IrValidator {
         const what = `${path} (arrnew)`;
         const elem = this.checkElemType(s.elem, what, s.loc);
         this.use(s.length, 'uint256', what, s.loc);
-        this.define(s.out, arrayOf(elem), what, s.loc);
+        this.define(s.out, arrayTypeOf(elem), what, s.loc); // elem validated by checkElemType
         return;
       }
       case 'arrset': {
@@ -982,26 +984,6 @@ class IrValidator {
 
 function isArrayType(s: EvsType): s is ArrayType {
   return typeof s === 'string' && s.endsWith('[]');
-}
-
-/** The array type whose element is `elem` (validated by `checkElemType`): a string element yields
- *  `${elem}[]`; a plain `tuple` yields a `tuple[]` {@link TupleType}. */
-function arrayOf(elem: EvsType): ArrayType | TupleType {
-  if (typeof elem === 'string') {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- `elem` was validated as a one-level-or-shallower string/word/array element, so `${elem}[]` is a valid ArrayType.
-    return `${elem}[]` as ArrayType;
-  }
-  return Object.freeze({ type: 'tuple[]', components: elem.components });
-}
-
-/** Human-readable rendering of a value type for error messages (tuples → their components). */
-function stringifyType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
-}
-
-/** bitwise/shift operand domain: uintN, intN, bytesN. */
-function isBitsOperand(s: EvsType): boolean {
-  return isWordType(s) && s !== 'address' && s !== 'bool';
 }
 
 /** legal `convert` pairs. */

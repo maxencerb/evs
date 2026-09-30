@@ -2,7 +2,7 @@
  * `ir/interp.ts` — the reference interpreter over `ScriptIr` against a `MockChain`.
  *
  * It is the differential oracle for the compiler and implements the canonical word invariant,
- * the normative checked-arithmetic table, the call semantics (bubbling, staticMinSize guard,
+ * the checked-arithmetic rules (see binOp), the call semantics (bubbling, staticMinSize guard,
  * decode bounds, normalization, tryCall zeroing) and the ABI encode shapes.
  *
  * Binding invariant: bit-for-bit agreement with the compiled bytecode on both returndata and
@@ -44,7 +44,7 @@
 
 import { getAddress, keccak256 as viemKeccak256 } from 'viem';
 
-import { selectorOf } from '../abi/artifact.js';
+import { EVS_DECODE_ERROR_SELECTOR, PANIC_SELECTOR } from '../abi/artifact.js';
 import {
   bytesToBigInt as readPartialWord,
   bytesToHex,
@@ -61,6 +61,7 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  stringifyType,
   type ArrayType,
   type EvsType,
   type Hex,
@@ -216,10 +217,9 @@ function resolveEnv(env: InterpEnvOverrides | undefined): ResolvedEnv {
   };
 }
 
-/** `Panic(uint256)` selector bytes. */
-const PANIC_SELECTOR = Uint8Array.of(0x4e, 0x48, 0x7b, 0x71);
-/** `EvsDecodeError(uint256)` selector — single source of truth is abi/artifact.ts's selectorOf. */
-const DECODE_ERROR_SELECTOR = hexToBytes(selectorOf('EvsDecodeError', ['uint256']));
+/** `Panic(uint256)` / `EvsDecodeError(uint256)` selector bytes. */
+const PANIC_SELECTOR_BYTES = hexToBytes(PANIC_SELECTOR);
+const DECODE_ERROR_SELECTOR_BYTES = hexToBytes(EVS_DECODE_ERROR_SELECTOR);
 
 // ---------------------------------------------------------------------------
 // value model
@@ -279,11 +279,11 @@ class LoopSignal {
 }
 
 function panicSignal(code: number): RevertSignal {
-  return new RevertSignal(concatBytes([PANIC_SELECTOR, wordToBytes(BigInt(code))]));
+  return new RevertSignal(concatBytes([PANIC_SELECTOR_BYTES, wordToBytes(BigInt(code))]));
 }
 
 function decodeErrorSignal(site: number): RevertSignal {
-  return new RevertSignal(concatBytes([DECODE_ERROR_SELECTOR, wordToBytes(BigInt(site))]));
+  return new RevertSignal(concatBytes([DECODE_ERROR_SELECTOR_BYTES, wordToBytes(BigInt(site))]));
 }
 
 // ---------------------------------------------------------------------------
@@ -812,7 +812,7 @@ class Interp {
 }
 
 // ---------------------------------------------------------------------------
-// checked arithmetic + word ops (the normative table)
+// checked arithmetic + word ops
 // ---------------------------------------------------------------------------
 
 function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {
@@ -1607,11 +1607,6 @@ function asWordElem(t: EvsType): WordType {
     );
   }
   return t;
-}
-
-/** Human-readable rendering of a value type (tuples → their JSON descriptor). */
-function stringifyType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
 /** short trace note per statement (prefixed with the fn-name stack inside fn bodies). */

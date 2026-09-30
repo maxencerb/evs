@@ -233,7 +233,6 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   const labels: { pc: number; name: string }[] = [];
   const labelPcs = new Map<LabelId, number>();
   const codeLabels = new Set<LabelId>();
-  const dataLabels = new Set<LabelId>();
   const fixups: Fixup[] = [];
   let pc = 0;
   let dataStart = -1; // pc of the INVALID guard byte; -1 = no data segment
@@ -259,7 +258,7 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   ): void => {
     if (labelPcs.has(label)) throw assembleError(`label #${label} is defined twice`);
     labelPcs.set(label, at);
-    (kind === 'code' ? codeLabels : dataLabels).add(label);
+    if (kind === 'code') codeLabels.add(label);
     if (name !== undefined) labels.push({ pc: at, name });
   };
 

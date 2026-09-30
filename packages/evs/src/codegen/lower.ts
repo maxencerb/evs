@@ -58,6 +58,7 @@ import {
 } from './abi.js';
 import { emitSimulateCall, emitStaticCall, type CallSitePlan } from './call.js';
 import { fnReturnAddressSlot, type FrameLayout } from './frame.js';
+import { FREE_PTR } from './memory.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -69,10 +70,14 @@ export interface LowerCtx {
   tails: SharedTails;
   opts: { evmVersion: EvmVersion };
   loop: { breakTo: LabelId; continueTo: LabelId } | null;
-  fnBaseline: 0 | 1; // stack baseline (1 inside fn bodies)
   dataSeg: (bytes: Uint8Array) => LabelId;
-  siteOf(stmt: Stmt): SiteId;
 }
+
+/**
+ * Operand-stack height at every statement boundary — also inside fn bodies, which spill their
+ * return address on entry (see the fncall convention in the module header).
+ */
+const STMT_BASELINE = 0;
 
 export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx): void {
   for (const s of stmts) lowerStmt(w, s, ctx);
@@ -369,7 +374,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
-  w.push(0x40, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
+  w.push(FREE_PTR, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
   w.op('MLOAD'); // [ptr]
   w.push(padded.length); // [size, ptr]
   w.pushLabel(label); // [src, size, ptr]
@@ -378,7 +383,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   w.op('DUP1');
   w.push(padded.length);
   w.op('ADD'); // [ptr+size, ptr]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]          freePtr bumped
   storeOut(w, ctx, s.out); // []
 }
@@ -804,7 +809,7 @@ function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: Low
 // ---------------------------------------------------------------------------
 
 function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const takeA = w.newLabel(`select_a_${s.site}`);
   const done = w.newLabel(`select_done_${s.site}`);
   loadOperand(w, ctx, s.cond, meta(ctx, s, 'select')); // [cond]
@@ -847,7 +852,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('LT'); // [cap < n, n]
   w.pushLabel(ctx.tails.panicAlloc);
   w.op('JUMPI'); // [n]                   Panic 0x41 on len ≥ 2^32
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MLOAD'); // [ptr, n]
   // freePtr += 32 + 32·n
   w.op('DUP2'); // [n, ptr, n]
@@ -857,7 +862,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
   w.op('ADD'); // [size, ptr, n]
   w.op('DUP2'); // [ptr, size, ptr, n]
   w.op('ADD'); // [ptr+size, ptr, n]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr, n]
   // zero-fill [ptr, ptr+size) — CALLDATACOPY from past the calldata end reads zeros
   w.op('DUP2');
@@ -914,13 +919,13 @@ function tupleArity(ctx: LowerCtx, v: ValueId): number {
 function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
   const n = tupleArity(ctx, s.out);
   const size = 32 * n;
-  w.push(0x40, meta(ctx, s, `tuplenew ${n} words`));
+  w.push(FREE_PTR, meta(ctx, s, `tuplenew ${n} words`));
   w.op('MLOAD'); // [ptr]
   // freePtr += size
   w.op('DUP1'); // [ptr, ptr]
   w.push(size);
   w.op('ADD'); // [ptr+size, ptr]
-  w.push(0x40);
+  w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]
   // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros. At stack
   // height exactly [ptr] here; the @memcpy contract is not used (no memref copy).
@@ -1058,7 +1063,7 @@ function lowerKeccak256(w: AsmWriter, s: Extract<Stmt, { k: 'keccak256' }>, ctx:
 function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx): void {
   const state = lowerInternals(ctx);
   const tryMode = s.mode === 'try';
-  const site = ctx.siteOf(s);
+  const site = s.site;
   const dfailLabel = w.newLabel(tryMode ? `zero_${site}` : `dfail_${site}`);
   if (!tryMode) state.dfailStubs.push({ label: dfailLabel, site });
 
@@ -1127,7 +1132,7 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
   w.pushLabel(ret, s.args.length === 0 ? meta(ctx, s, `fncall ${fn.name}`) : undefined); // [ret]
   w.pushLabel(entry);
   w.op('JUMP'); // → callee (entry label carries stack 1)
-  w.label(ret, ctx.fnBaseline);
+  w.label(ret, STMT_BASELINE);
 
   // result region → per-callsite out slots (two calls never alias)
   s.outs.forEach((o, j) => {
@@ -1144,7 +1149,7 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
 // ---------------------------------------------------------------------------
 
 function lowerIf(w: AsmWriter, s: Extract<Stmt, { k: 'if' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const hasElse = s.else.length > 0;
   const elseL = hasElse ? w.newLabel(`else_${s.site}`) : null;
   const endL = w.newLabel(`endif_${s.site}`);
@@ -1163,7 +1168,7 @@ function lowerIf(w: AsmWriter, s: Extract<Stmt, { k: 'if' }>, ctx: LowerCtx): vo
 }
 
 function lowerWhile(w: AsmWriter, s: Extract<Stmt, { k: 'while' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const head = w.newLabel(`while_${s.site}`);
   const end = w.newLabel(`endwhile_${s.site}`);
   w.label(head, base); // re-executed every iteration

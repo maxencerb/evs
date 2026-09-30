@@ -51,6 +51,15 @@ describe('verifyJumpdests', () => {
     const code = bytes('5b00');
     expect(() => verifyJumpdests(code, new Set([7]), code.length)).toThrow(EvsInternalError);
   });
+
+  test('rejects a FORBIDDEN opcode byte, but not inside push data or the data segment', () => {
+    // 54 00 — SLOAD; STOP
+    const sload = bytes('5400');
+    expect(() => verifyJumpdests(sload, new Set(), sload.length)).toThrow(/forbidden opcode 0x54/);
+    // 60 55 00 fe ff — PUSH1 0x55; STOP | guard fe | data ff
+    const hidden = bytes('605500feff');
+    expect(() => verifyJumpdests(hidden, new Set(), 3)).not.toThrow();
+  });
 });
 
 describe('verifyStack — checked labels', () => {
@@ -371,7 +380,7 @@ describe('verifyShapes — RETURNDATACOPY windows', () => {
   });
 });
 
-describe('verifyShapes — fork gating and forbidden ops', () => {
+describe('verifyShapes — fork gating', () => {
   test('MCOPY on paris and shanghai is rejected; on cancun it passes', () => {
     const nodes: readonly AsmNode[] = [
       { k: 'op', op: 'MCOPY' },

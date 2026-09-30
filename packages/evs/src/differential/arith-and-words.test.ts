@@ -85,6 +85,9 @@ function operandPairs(type: NumericType): readonly (readonly [bigint, bigint])[]
 }
 
 describe('checked arithmetic (boundary matrix)', () => {
+  // agreement only: the exact Panic payloads of the hard boundaries (uint192 wrap-back,
+  // minN / −1, division by zero) are pinned per side in codegen/lower.test.ts and
+  // ir/interp.test.ts, so agreeing with the interpreter pins both builds to them
   for (const type of WIDTHS) {
     for (const op of BIN_OPS) {
       test(`${op} ${type}`, async () => {
@@ -92,29 +95,6 @@ describe('checked arithmetic (boundary matrix)', () => {
       });
     }
   }
-
-  test('uint192 mul wrap-past-2^256 panics 0x11 on both sides (pinned)', async () => {
-    const [o] = await expectAgreement(binScript('uint192', 'mul'), [
-      [1n << 191n, (1n << 65n) + 1n],
-    ]);
-    expect(o?.kind).toBe('revert');
-    expect(o?.data).toBe(panicData(0x11n));
-  });
-
-  test('int256 −2^255 / −1 panics 0x11 on both sides (pinned)', async () => {
-    const [o] = await expectAgreement(binScript('int256', 'div'), [[-(1n << 255n), -1n]]);
-    expect(o?.kind).toBe('revert');
-    expect(o?.data).toBe(panicData(0x11n));
-  });
-
-  test('int8 −128 / −1 panics 0x11; division by zero panics 0x12 (pinned)', async () => {
-    const [a, b] = await expectAgreement(binScript('int8', 'div'), [
-      [-128n, -1n],
-      [5n, 0n],
-    ]);
-    expect(a?.data).toBe(panicData(0x11n));
-    expect(b?.data).toBe(panicData(0x12n));
-  });
 });
 
 // ---------------------------------------------------------------------------

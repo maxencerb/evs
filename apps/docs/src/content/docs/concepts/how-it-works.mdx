@@ -19,7 +19,8 @@ ScriptIr            structured statement tree over a flat value table — plain 
       |  eliminateDeadCode: drop statements whose results nothing observable reads
       |  (re-validated)
       v
-AsmNode[]           codegen: frame layout -> dispatcher -> statement templates ->
+AsmNode[]           codegen: frame layout (liveness-packed with optimize: true) ->
+      |             dispatcher -> statement templates ->
       |             call/ABI emitters -> shared revert tails -> data segments
       |  optimize: true -> built-in peephole pass (off by default)
       |  peephole hook (default: identity) -> assemble: PUSH2 fixups -> layout -> patch
@@ -109,7 +110,9 @@ function parameter/result — see the memory model below), then emits, as one no
   to its frame slot;
 - one **statement template** per IR statement — load operands from slots, compute, store the
   result back;
-- the **call and ABI emitters** for `s.read`/`s.tryRead` and the return-tuple encoder;
+- the **call emitters** for every sub-call verb (`s.read`, `s.call`, `s.simulate` and their
+  `try*` forms), the **ABI encoders** (`s.encode`, `s.encodePacked`) and the return-tuple
+  encoder;
 - the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
   `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback;
 - **data segments** for large constants, referenced only by `CODECOPY`.
@@ -136,7 +139,8 @@ or `PUSH 0 ADD` are dropped. It never rewrites across a `JUMPDEST`, never touche
 jump target, keeps every source location, and runs **before** the verifiers below, so optimized
 output is checked exactly like unoptimized output. A user `peephole` hook in `CompileOptions`
 runs at the same position, after the built-in pass when both are on. The pass is exported as
-`evsPeephole` (`optimize: true` is exactly `peephole: evsPeephole`).
+`evsPeephole` (`peephole: evsPeephole` runs only this pass; `optimize: true` also switches
+codegen to the liveness-based frame allocator described in [the memory model](#the-memory-model)).
 
 ## Stage 6: mandatory verifiers
 
@@ -157,9 +161,12 @@ report"), never silently ships bad bytecode.
    (`offset 0`, `size RETURNDATASIZE` — which can never read out of bounds, so the
    all-gas-consuming halt is unreachable by construction); no opcode newer than the selected
    `evmVersion` may appear (catches a stray `MCOPY` in a `paris` build — see
-   [EVM targets](/guides/evm-targets/)); and the state-mutating opcode family (`SSTORE`,
-   `TSTORE`, `LOG*`, `CREATE*`, `CALL`, `DELEGATECALL`, `CALLCODE`, `SELFDESTRUCT`) must never
-   appear — scripts are STATICCALL-clean by construction.
+   [EVM targets](/guides/evm-targets/)); and `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`,
+   `CREATE`, `CREATE2`, `CALLCODE`, `DELEGATECALL` and `SELFDESTRUCT` must never appear — a
+   script never touches its own storage, emits logs or deploys contracts. `CALL` is allowed, and
+   emitted only by the mutable-call verbs `s.call`/`s.simulate` (and their `try*` forms): its
+   effects stay inside the `eth_call` and are discarded when it ends (`s.simulate` additionally
+   reverts its own frame).
 
 ## Stage 7: the EIP-170 size check
 
@@ -177,7 +184,7 @@ Scripts use Solidity's memory layout verbatim:
 | ---------------- | --------------------------------------------------------------------------------------- |
 | `0x00`–`0x3f`    | scratch — revert-payload assembly and intra-template temporaries only                   |
 | `0x40`–`0x5f`    | free-memory pointer                                                                     |
-| `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`tryCall` failure values point here) |
+| `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`try*` failure values point here) |
 | `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result (packed by liveness with `optimize: true`) |
 | `frameEnd`…      | bump allocations: returndata snapshots, dynamic values, mutable arrays, the return tuple |
 
@@ -202,8 +209,10 @@ From there:
   as one canonical word per element.
 - **Allocation only bumps.** New buffers advance the free pointer and are never freed, so
   allocations inside a loop grow memory monotonically — `compile()` warns with a
-  `LOOP_ALLOCATION` diagnostic when a call with outputs, `s.newArray`, or a dynamic literal
-  sits inside a loop.
+  `LOOP_ALLOCATION` diagnostic when an allocating statement sits inside a loop: a sub-call with
+  outputs (any verb), `s.newArray`, `s.tuple(…)`/struct construction, `s.encode`/`s.encodePacked`
+  (and `s.keccak256` over values that need encoding), a dynamic literal, or a call to an `s.fn`
+  whose body allocates (see [`LOOP_ALLOCATION`](/reference/diagnostics/)).
 - **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
   transiently without bumping, so the return encoder zero-pads dynamic tails explicitly and
   `s.newArray` zero-fills its buffer.
@@ -220,21 +229,24 @@ evs optimizes for *auditable correctness* over gas:
   ([#41](https://github.com/maxencerb/evs/issues/41)) reuses the slots of dead values — nothing
   more. There is no stack scheduling: every value is still stored to and loaded from memory. The
   remaining overhead is a cost in gas, never in correctness, and `eth_call` gas budgets are
-  enormous (a sum loop costs roughly 1.4M gas for 10,000 iterations, far inside any node's cap).
+  enormous (a sum loop costs roughly 2M gas for 10,000 iterations — about 200 gas per
+  iteration — far inside any node's cap).
 - **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
   100; evs does not dedupe repeated calls.
 - **Structs and tuples are supported** (including nested structs), and so are **arrays of
   structs (`tuple[]`), one-level nested arrays (`uint256[][]`), and dynamic-leaf arrays
   (`string[]`/`bytes[]`)** — across script args, returns, and call ABIs, byte-exact vs viem and
-  real solc. **Two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and
-  fixed-size arrays (`uint256[3]`)** are still rejected with a recording-time error
-  ([#4](https://github.com/maxencerb/evs/issues/4)).
-- **Read-only by construction.** No state writes, no logs, no deployment — enforced by the
-  shape lints above.
+  real solc. A nested array needs a word element (`uint256[][]`, `address[][]`). **Nested
+  dynamic-leaf arrays (`string[][]`/`bytes[][]`), two-level tuple arrays (`tuple[][]`), arrays
+  nested deeper than `[][]`, and fixed-size arrays (`uint256[3]`)** are not supported yet and
+  are rejected with a recording-time error ([#4](https://github.com/maxencerb/evs/issues/4)).
+- **Read-only by construction.** The script's own code never writes storage, emits logs or
+  deploys contracts (enforced by the shape lints above), and the effects of `s.call`/`s.simulate`
+  `CALL` frames are never committed, because the whole execution is an `eth_call`.
 
 :::note
-Every bytecode listing in this documentation is real compiler output, regenerated and
-machine-checked in CI — no example shows an optimization the compiler does not perform. The
+Every bytecode listing in this documentation was generated from real compiler output at the
+time of writing — no example shows an optimization the compiler does not perform. The
 broader verification story (differential testing against an independent interpreter, viem's
 codecs, and real solc) is covered in [Why trust the bytecode?](/concepts/trust-and-testing/).
 :::

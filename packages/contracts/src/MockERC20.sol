@@ -2,7 +2,7 @@
 pragma solidity 0.8.30;
 
 /// @title MockERC20 — minimal, fully standard ERC-20 integration fixture
-/// @notice Read surface used by the evs flagship scenario (api.md E1/E2):
+/// @notice Read surface used by the evs flagship scenarios (pool-meta, token-balances):
 ///         name() / symbol() / decimals() / totalSupply() / balanceOf(address) /
 ///         allowance(address,address) — all matching viem's `erc20Abi`.
 ///         State is set up via the constructor and the unrestricted mint() helper.

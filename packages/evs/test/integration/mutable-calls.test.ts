@@ -2,7 +2,7 @@
  * Issue #1 — the mutable-call surface against real anvil state (the tier that observes the one
  * thing the stateless unit oracle cannot: whether a write PERSISTS).
  *
- * The whole demonstration runs INSIDE a single `eth_call` against a freshly-deployed MockVault:
+ * The whole demonstration runs INSIDE a single `eth_call` against a deployed MockVault:
  *
  * - `s.call(vault.deposit(amount))` opens a real CALL frame, so the write lands in the eth_call's
  *   state and a SUBSEQUENT `s.read(vault.totalShares())` in the same script SEES it (mutation).
@@ -15,7 +15,7 @@
  */
 
 import { encodeFunctionData } from 'viem';
-import { beforeEach, describe, expect, test } from 'vite-plus/test';
+import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockQuoter, MockVault } from '../generated/index.js';
@@ -25,7 +25,10 @@ import { callExpectRevert, deploy } from './helpers.js';
 let vault: `0x${string}`;
 let quoter: `0x${string}`;
 
-beforeEach(async () => {
+// one deployment for the file: every test is an eth_call that never commits (asserted at the
+// end of each), so a shared vault isolates exactly as well as a fresh one — and a leaked commit
+// would now also fail every later test
+beforeAll(async () => {
   vault = await deploy(MockVault.abi, MockVault.bytecode);
   quoter = await deploy(MockQuoter.abi, MockQuoter.bytecode);
 });

@@ -4,7 +4,14 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
 import type { TupleType, WordType } from '../core/types.js';
-import { headBytes, isDynamic, layoutOf, layoutOfType, type TypeLayout } from './layout.js';
+import {
+  headBytes,
+  isDynamic,
+  layoutOf,
+  layoutOfType,
+  staticSize,
+  type TypeLayout,
+} from './layout.js';
 
 // ---------------------------------------------------------------------------
 // the full evs type vocabulary, built independently of the implementation
@@ -217,6 +224,35 @@ describe('headBytes', () => {
     ).toBe(32);
     // genuinely-unsupported shapes still throw
     expect(() => headBytes([{ name: 'a', type: 'uint256[2]' }])).toThrowError(EvsTypeError);
+  });
+});
+
+describe('staticSize', () => {
+  test('a word is 32 bytes; a static tuple inlines what headBytes gives its components', () => {
+    expect(staticSize(layoutOf('uint8'))).toBe(32);
+    const components = [
+      { name: 'a', type: 'uint256' },
+      {
+        name: 'b',
+        type: 'tuple',
+        components: [
+          { name: 'x', type: 'address' },
+          { name: 'y', type: 'tuple', components: [{ name: 'z', type: 'bytes4' }] },
+        ],
+      },
+    ] as const;
+    const nested = layoutOfType({ type: 'tuple', components } as unknown as TupleType);
+    expect(staticSize(nested)).toBe(32 * 3);
+    expect(staticSize(nested)).toBe(headBytes(components));
+  });
+
+  test('a dynamic layout has no static size', () => {
+    expect(() => staticSize(layoutOf('string'))).toThrow(/is dynamic/);
+    const dynTuple = layoutOfType({
+      type: 'tuple',
+      components: [{ name: 'x', type: 'bytes' }],
+    } as unknown as TupleType);
+    expect(() => staticSize(dynTuple)).toThrow(/is dynamic/);
   });
 });
 

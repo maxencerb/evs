@@ -29,7 +29,7 @@
  */
 
 import type { AsmNode } from '../asm/assembler.js';
-import { OPS, type Mnemonic } from '../asm/ops.js';
+import { isDupOp, isSwapOp, OPS, type Mnemonic } from '../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../asm/verify.js';
 import type { SourceLoc } from '../core/errors.js';
 
@@ -130,7 +130,9 @@ function protectedIndices(nodes: readonly AsmNode[]): ReadonlySet<number> {
  * program start, reset to the label annotation at every `label`, `null` while unreachable
  * (after JUMP/RETURN/REVERT/STOP/INVALID until the next label) and inside `'any'` regions.
  * Rewrites preserve every window's net stack effect, so heights computed on the round's input
- * stay exact for every later window of the same round.
+ * stay exact for every later window of the same round. Should this walk ever drift from
+ * `verifyStack`, the cost is a skipped rewrite or a loud verifier failure at assemble time (the
+ * verifier runs on the peephole's output) — never an unchecked stream.
  */
 function checkedHeights(nodes: readonly AsmNode[]): (number | null)[] {
   const heights: (number | null)[] = nodes.map((): number | null => null);
@@ -348,8 +350,8 @@ function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
   if (a === undefined || b === undefined) return null;
 
   if (a.k === 'op' && b.k === 'op') {
-    if (isSwap(a.op) && a.op === b.op) return drop(2);
-    if (isDup(a.op) && b.op === 'POP') return drop(2);
+    if (isSwapOp(a.op) && a.op === b.op) return drop(2);
+    if (isDupOp(a.op) && b.op === 'POP') return drop(2);
     if (a.op === 'NOT' && b.op === 'NOT') return drop(2);
     if (a.op === 'ISZERO' && b.op === 'ISZERO' && isOp(nodes[i + 2], 'ISZERO')) {
       return { len: 3, out: [a], outPeak: null };
@@ -506,17 +508,6 @@ function isPush(node: AsmNode | undefined): node is PushNode {
 
 function isOp(node: AsmNode | undefined, op: Mnemonic): node is OpNode {
   return node !== undefined && node.k === 'op' && node.op === op;
-}
-
-const SWAP_RE = /^SWAP(?:[1-9]|1[0-6])$/;
-const DUP_RE = /^DUP(?:[1-9]|1[0-6])$/;
-
-function isSwap(op: Mnemonic): boolean {
-  return SWAP_RE.test(op);
-}
-
-function isDup(op: Mnemonic): boolean {
-  return DUP_RE.test(op);
 }
 
 /**

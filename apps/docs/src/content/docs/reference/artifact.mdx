@@ -43,7 +43,7 @@ const supply: bigint = result.supply;
 
 | Member | Type | Description |
 | --- | --- | --- |
-| `abi` | `ScriptAbi<name, args, ret>` | Literal-typed ABI value: `[function, EvsInvalidCalldata, EvsDecodeError]` |
+| `abi` | `ScriptAbi<name, args, ret, errs>` | Literal-typed ABI value: `[function, EvsInvalidCalldata, EvsDecodeError, ...declared errors]` |
 | `runtimeBytecode` | `Hex` | Deployed-form bytecode; at most 24,576 bytes (EIP-170), enforced |
 | `initBytecode` | `Hex` | The 10-byte init wrapper followed by the runtime — creation bytecode |
 | `sourceMap` | `SourceMap` | PC-to-source segments, revert sites, labels |
@@ -60,7 +60,8 @@ and their defaults.
 ## `abi` — the `ScriptAbi`
 
 The ABI is a value with a literal type: one `view` function named after the script, followed by
-the two evs error entries. The function has exactly one output — a tuple named `result` whose
+the two evs error entries, then one `error` entry per custom error declared in the def's
+`errors: [...]` (in declaration order; none for the script below). The function has exactly one output — a tuple named `result` whose
 components are the keys of your `s.return({ ... })` record. Because every component is named,
 viem infers an object, not a positional array.
 
@@ -106,17 +107,17 @@ object from the fully-named tuple, and objects are order-insensitive.
   stub that CODECOPYs everything after itself and returns it as the deployed code:
 
 ```txt
-61 RRRR   PUSH2 <runtime length>
+61 RRRR   PUSH2 len      ; runtime length, big-endian
 80        DUP1
-60 0A     PUSH1 0x0A
-5F        PUSH0          (paris target: 3D RETURNDATASIZE)
-39        CODECOPY
-5F        PUSH0          (paris target: 3D)
-F3        RETURN
+60 0A     PUSH1 0x0A     ; the wrapper is 10 bytes; runtime starts right after
+5F        PUSH0          ; paris target: 3D (RETURNDATASIZE — zero in an init frame)
+39        CODECOPY       ; mem[0..len) = code[10..10+len)
+5F        PUSH0          ; paris target: 3D
+F3        RETURN         ; return the runtime as the deployed code
 ```
 
 The init form exists because viem's deployless `code` call parameter expects **creation**
-bytecode — passing runtime bytecode fails silently. The artifact deliberately has no field named
+bytecode — passing runtime bytecode fails with an empty revert that carries no diagnostic data. The artifact deliberately has no field named
 `code` or `bytecode`; the only place a `code` key appears is in the `toViem()` results, where it
 is always the correct form for that mode.
 
@@ -182,8 +183,11 @@ EVS_ERROR_ABI[1]; // { type: 'error', name: 'EvsDecodeError', inputs: [{ name: '
 | `EvsDecodeError(uint256 site)` | `0x20cf27b7` | A strict `s.read` got returndata that fails to decode; `site` identifies the recorded call site |
 
 Because both entries are in every script's ABI, viem decodes these reverts into named errors out
-of the box. All other reverts (callee `Error(string)`, custom errors, panics) bubble through the
-script byte-exactly — see [calls](/guides/calls/).
+of the box. The same holds for the custom errors a script declares and throws with
+[`s.throw`](/reference/builder/#sthrow): they are part of the script ABI, and `explainRevert`
+reports them as kind `'script-error'`. All other reverts (callee `Error(string)`, callee custom
+errors, panics) bubble through the script byte-exactly — decode those against the callee's ABI;
+see [calls](/guides/calls/).
 
 ## `disassemble()` — `Disassembly`
 
@@ -316,9 +320,18 @@ The result shape (site ids are plain numbers):
 import type { SourceLoc } from '@maxencerb/evs';
 
 interface RevertExplanation {
-  kind: 'panic' | 'evs-decode' | 'evs-invalid-calldata' | 'error-string' | 'custom' | 'empty';
+  kind:
+    | 'panic'
+    | 'evs-decode'
+    | 'evs-invalid-calldata'
+    | 'error-string'
+    | 'script-error'
+    | 'custom'
+    | 'empty';
   message: string;
   panicCode?: bigint; // kind 'panic' only
+  errorName?: string; // kind 'script-error' only: the declared error's name
+  errorArgs?: Readonly<Record<string, unknown>>; // kind 'script-error' only: name-keyed decoded args
   site?: { id: number; loc: SourceLoc | null; detail: string }; // kind 'evs-decode' only
   candidateSites?: readonly { id: number; loc: SourceLoc | null; detail: string }[]; // 'panic' only
   raw: `0x${string}`;
@@ -330,6 +343,7 @@ interface RevertExplanation {
 | `'panic'` | `Panic(uint256)` (selector `0x4e487b71`, 36 bytes) | `panicCode`, plus `candidateSites` — every recorded site of that panic kind in this script |
 | `'evs-decode'` | `EvsDecodeError(uint256)` (36 bytes) | `site` when the id resolves to a returndata-decode site in this artifact's source map |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()` (exactly 4 bytes) | Message names the expected function signature |
+| `'script-error'` | A custom error declared in the script's `errors` | `errorName` and `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
 | `'error-string'` | `Error(string)` | Bubbled verbatim from a callee; message quotes the reason |
 | `'custom'` | Any other selector (or a payload shorter than 4 bytes) | Decode it against the callee's ABI |
 | `'empty'` | Zero-length returndata | A bare `revert()`/`require(false)` bubbled, or the frame failed without a reason |
@@ -344,6 +358,38 @@ authoritative.
 
 The panic-code meaning table (including codes evs itself never emits but callees can bubble) is
 in [diagnostics](/reference/diagnostics/).
+
+## `decodeScriptError` and `matchScriptError`
+
+Two free functions decode a revert against a script's ABI on the client — typed over the
+script's declared errors. Both take the script or the compiled artifact (anything with an
+`abi`) and either a caught viem error or raw revert hex:
+
+```ts nocheck
+declare function decodeScriptError<const abi extends Abi | readonly unknown[]>(
+  script: { readonly abi: abi },
+  input: unknown, // a caught (viem) error or 0x-hex revert data
+): DecodedScriptError<abi> | undefined; // undefined when the input is not revert-shaped
+
+declare function matchScriptError<
+  const abi extends Abi | readonly unknown[],
+  const handlers extends ScriptErrorHandlers<abi, unknown>,
+>(script: { readonly abi: abi }, error: unknown, handlers: handlers): HandlerResult<handlers>;
+// HandlerResult (exported): the union of the handlers' return types
+```
+
+| Type | Meaning |
+| --- | --- |
+| `DecodedScriptError<abi>` | A `name`-discriminated union: one arm per ABI error entry (`{ name, args, raw }` — the declared errors and the two evs built-ins), plus `DecodedBuiltinError` |
+| `DecodedBuiltinError` | The built-in arms: `Panic` (`code`, `meaning`), `Error` (`reason`), `unknown` (`selector` — e.g. a callee error bubbled verbatim) and `empty` |
+| `ErrorArgsOf<e>` | One error entry's decoded args, as a name-keyed record |
+| `HandlerResult<handlers>` | The union of the handlers' return types — what `matchScriptError` returns |
+| `ScriptErrorHandlers<abi, r>` | The `matchScriptError` handler record: one handler per declared error (receives the typed args and the decoded arm) plus a required `_` default for everything else |
+
+`matchScriptError` is exhaustive over the declared set — adding an error to the script without a
+handler is a type error — and rethrows a value that carries no revert data (a network error, a
+timeout) instead of routing it to `_`. The walkthrough is in
+[errors and debugging](/guides/errors-and-debugging/#decoding-script-errors-on-the-client).
 
 ## `ir`, `serializeIr`, `deserializeIr`
 
@@ -398,8 +444,9 @@ Stability notes:
 ## Testing without a node
 
 The IR is directly executable by the exported reference interpreter:
-`interpret(ir, args, chain, opts?)` runs a script against a `MockChain` (a single
-`staticcall({ to, data })` hook) and returns an `InterpResult` whose returndata and revert
+`interpret(ir, args, chain, opts?)` runs a script against a `MockChain` (a
+`staticcall({ to, data })` hook, plus an optional `call({ to, data, kind, gas? })` oracle for the
+`s.call`/`s.simulate` verbs) and returns an `InterpResult` whose returndata and revert
 payloads are bit-for-bit what the compiled bytecode produces. `InterpEnvOverrides` (the
 `opts.env` extension) models frame-dependent `s.env` values per call. See
 [testing scripts](/guides/testing-scripts/) for the full workflow.

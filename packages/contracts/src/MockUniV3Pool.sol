@@ -2,7 +2,7 @@
 pragma solidity 0.8.30;
 
 /// @title MockUniV3Pool — Uniswap V3 pool fixture for the evs flagship scenario
-/// @notice Exposes the read surface the api.md E1 `poolMeta` script consumes:
+/// @notice Exposes the read surface the flagship `poolMeta` script consumes:
 ///         token0() / token1() / fee() / tickSpacing() / liquidity() and the
 ///         seven-output slot0() getter, signature-identical to IUniswapV3Pool.
 ///         slot0 values and liquidity are configurable via the set* test helpers.

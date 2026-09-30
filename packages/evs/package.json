@@ -14,7 +14,6 @@
     "!src/**/*.test.ts",
     "!src/**/*.test-d.ts",
     "!src/**/__snapshots__",
-    "!src/**/.gitkeep",
     "!dist/**/*.test.*"
   ],
   "type": "module",
@@ -33,11 +32,11 @@
     "provenance": true
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "vp pack",
     "typecheck": "tsc --noEmit",
     "test": "vp test run --project unit --project types",
     "test:integration": "vp test run --project integration",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "vp pack"
   },
   "dependencies": {
     "abitype": "catalog:"
@@ -47,7 +46,7 @@
     "prool": "catalog:testing",
     "typescript": "catalog:",
     "viem": "catalog:",
-    "vite-plus": "catalog:testing"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "typescript": ">=5.5",
@@ -61,5 +60,5 @@
   "engines": {
     "node": ">=20.19"
   },
-  "//publishConfig": "provenance MUST stay false while the repo is private — npm cannot generate provenance for private repos and the publish would fail/skip it confusingly. FLIP provenance to true (and keep --access public) the moment the repo goes public."
+  "//publishConfig": "provenance: the release publishes with `changeset publish` → `pnpm publish` under npm OIDC trusted publishing, where pnpm attaches provenance automatically for a public repo + public package (pnpm does not read this field; npm does, so it stays true for any manual `npm publish`). If the repo ever goes private, set this to false."
 }

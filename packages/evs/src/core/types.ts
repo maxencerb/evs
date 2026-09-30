@@ -186,7 +186,8 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
   readonly type: type;
 }
 
-const IDENT_RE = /^[A-Za-z_]\w*$/;
+/** A Solidity-style identifier (arg / param / field / error names). */
+export const IDENT_RE = /^[A-Za-z_]\w*$/;
 
 /**
  * Names a **top-level** arg/param so the name surfaces in the resulting type (issue #9): in a
@@ -472,7 +473,7 @@ const SETS = buildWordTypeSets();
 
 // frozen namespace: the overloaded method types are the authority; the impls are intentionally
 // `unknown`-typed and validate at runtime (double-cast through `unknown`).
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion
+/* oxlint-disable typescript/no-unsafe-type-assertion */
 export const t: TypeNamespace = Object.freeze({
   address: 'address',
   bool: 'bool',
@@ -593,15 +594,19 @@ export const t: TypeNamespace = Object.freeze({
     return fromAbiParameterRT(param);
   },
 } as const) as unknown as TypeNamespace;
+/* oxlint-enable typescript/no-unsafe-type-assertion */
 
 // ---------------------------------------------------------------------------
 // runtime type predicates / metadata
 // ---------------------------------------------------------------------------
 
-/** Recognizes a string-encoded type (word, dynamic, or a nested array of such). */
-export function isStringType(s: string): s is StringType {
+/**
+ * String type validity: a word, dynamic, or nested array of such. Tuples are objects — see
+ * {@link isEvsValueType}.
+ */
+export function isEvsType(s: string): s is StringType {
   if (isWordType(s) || s === 'string' || s === 'bytes') return true;
-  return s.endsWith('[]') && isStringType(s.slice(0, -2));
+  return s.endsWith('[]') && isEvsType(s.slice(0, -2));
 }
 
 /** A composite (tuple/struct) type descriptor — the only non-string {@link EvsType}. */
@@ -617,7 +622,7 @@ export function isTupleType(v: unknown): v is TupleType {
 /** Any valid {@link EvsType} value (string-encoded or a tuple descriptor). */
 export function isEvsValueType(v: unknown): v is EvsType {
   return (
-    (typeof v === 'string' && isStringType(v)) || (isTupleType(v) && componentsValid(v.components))
+    (typeof v === 'string' && isEvsType(v)) || (isTupleType(v) && componentsValid(v.components))
   );
 }
 
@@ -628,17 +633,32 @@ function componentsValid(components: readonly unknown[]): boolean {
     if (typeof o.name !== 'string' || typeof o.type !== 'string') return false;
     if (o.type.startsWith('tuple'))
       return Array.isArray(o.components) && componentsValid(o.components);
-    return isStringType(o.type) && o.components === undefined;
+    return isEvsType(o.type) && o.components === undefined;
   });
-}
-
-/** String type validity (word, dynamic, nested arrays). Tuples are objects — see {@link isEvsValueType}. */
-export function isEvsType(s: string): s is StringType {
-  return isStringType(s);
 }
 
 export function isWordType(s: string | TupleType): s is WordType {
   return typeof s === 'string' && SETS.word.has(s);
+}
+
+/** bitwise/shift operand domain: uintN, intN, bytesN. */
+export function isBitsOperand(s: EvsType): s is WordType {
+  return isWordType(s) && s !== 'address' && s !== 'bool';
+}
+
+/** The array type whose element is `elem`: a string element yields `${elem}[]`; a plain `tuple`
+ *  yields a `tuple[]` {@link TupleType}. Callers pass an already-validated element type. */
+export function arrayTypeOf(elem: EvsType): ArrayType | TupleType {
+  if (typeof elem === 'string') {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType; `${elem}[]` is a valid ArrayType (further classified by layoutOfType).
+    return `${elem}[]` as ArrayType;
+  }
+  return Object.freeze({ type: 'tuple[]', components: elem.components });
+}
+
+/** Human-readable rendering of a value type for error messages (a tuple → its JSON descriptor). */
+export function stringifyType(type: EvsType): string {
+  return typeof type === 'string' ? type : JSON.stringify(type);
 }
 
 export function isNumeric(s: EvsType): s is NumericType {
@@ -689,7 +709,7 @@ export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
 export function elemTypeOf(s: ArrayType | TupleType): EvsType {
   if (typeof s === 'string') {
     const elem: string = s.endsWith('[]') ? s.slice(0, -2) : '';
-    if (isStringType(elem)) return elem;
+    if (isEvsType(elem)) return elem;
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `elemTypeOf: ${JSON.stringify(s)} is not an array type`,
@@ -986,9 +1006,13 @@ const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
   '_',
 ]);
 
-/** A {@link namedArg}-produced {@link ArgSpec} value (a bare type is a string; a bare composite
- *  type is a {@link TupleType}, which has no `name`). Mirror of the builder's declarator check. */
-function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
+/**
+ * A {@link namedArg}-produced {@link ArgSpec} value: a plain object carrying a string `name` (a bare
+ * type is a string; a bare composite type is a {@link TupleType} object, which has no `name`). Used
+ * to distinguish a named declarator from a bare one when normalizing `evscript` args / `s.fn` params
+ * / `t.error` params.
+ */
+export function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
   return isRecordObject(v) && typeof (v as { name?: unknown }).name === 'string' && 'type' in v;
 }
 
@@ -1105,7 +1129,7 @@ function looksDeferred(s: string): boolean {
  * `UNSUPPORTED_V0` for valid-Solidity-but-not-yet-supported shapes (#4) and `TYPE_MISMATCH` otherwise.
  */
 function assertEvsType(s: string, context: string): asserts s is StringType {
-  if (isStringType(s)) return;
+  if (isEvsType(s)) return;
   if (looksDeferred(s)) {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',

@@ -1,11 +1,12 @@
 /**
- * Execution paths covered, every release:
- *   1. anvil_setCode + plain readContract
- *   2. stateOverride mode
- *   3. deployless `code` path (initBytecode) — incl. the raw-runtime silent-failure canary
+ * Execution-path mechanics, every release:
+ *   - deployless `code` path: toViem() hands viem the INIT bytecode — incl. the raw-runtime
+ *     silent-failure canary
+ *   - stateOverride at a custom `address`
  *
- * One nontrivial script (cross-call data flow + arithmetic) runs through all three paths
- * and must return identical, fully-decoded results.
+ * One nontrivial script (cross-call data flow + arithmetic) must return identical, fully-decoded
+ * results. The plain three-path matrix (deployless / stateOverride / anvil_setCode) lives in
+ * flagship.test.ts (E1, default and optimized) and composite.test.ts (struct outputs).
  */
 
 import { encodeFunctionData, erc20Abi, getAddress, parseEther } from 'viem';
@@ -13,7 +14,7 @@ import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
 import { MockERC20 } from '../generated/index.js';
-import { publicClient, testClient } from '../harness/anvil.js';
+import { publicClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy, deployer, write } from './helpers.js';
 
 const tokenMeta = evscript(
@@ -34,8 +35,6 @@ const tokenMeta = evscript(
 
 const compiled = tokenMeta.compile();
 
-const SCRIPT_AT = '0x00000000000000000000000000000000000eff01' as const;
-
 let token: `0x${string}`;
 
 beforeAll(async () => {
@@ -55,27 +54,7 @@ const expected = () => ({
   doubled: parseEther('246'),
 });
 
-describe('three execution paths', () => {
-  test('path 1: anvil_setCode + plain readContract', async () => {
-    await testClient.setCode({ address: SCRIPT_AT, bytecode: compiled.runtimeBytecode });
-    const out = await publicClient.readContract({
-      address: SCRIPT_AT,
-      abi: compiled.abi,
-      functionName: 'tokenMeta',
-      args: [token, deployer.address],
-    });
-    expect(out).toStrictEqual(expected());
-  });
-
-  test('path 2: stateOverride mode', async () => {
-    const out = await publicClient.readContract({
-      ...compiled.toViem({ mode: 'stateOverride' }),
-      functionName: 'tokenMeta',
-      args: [token, deployer.address],
-    });
-    expect(out).toStrictEqual(expected());
-  });
-
+describe('execution-path mechanics', () => {
   test('path 2b: stateOverride at a custom address', async () => {
     const custom = getAddress('0x00000000000000000000000000000000000eff02');
     const viemParams = compiled.toViem({ mode: 'stateOverride', address: custom });

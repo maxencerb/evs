@@ -1,7 +1,8 @@
 {
-  // scripts/codegen.ts runs on bun (`bun run codegen`); this config only exists so type-aware
-  // lint / `vp check` type-check it with bun's globals instead of a bare default project.
+  // scripts/codegen.ts runs on Node (type stripping: `node scripts/codegen.ts`); this config only
+  // exists so type-aware lint / `vp check` type-check it with Node's types instead of a bare
+  // default project.
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "noEmit": true, "types": ["bun"] },
+  "compilerOptions": { "noEmit": true, "types": ["node"] },
   "include": ["scripts"]
 }

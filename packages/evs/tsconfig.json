@@ -1,5 +1,8 @@
 {
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "noEmit": true },
+  // allowImportingTsExtensions: test/generated/index.ts (contracts codegen) re-exports with `.ts`
+  // specifiers so the examples can import it under plain Node; noEmit here, the library build
+  // (vp pack) only reads src/.
+  "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true },
   "include": ["src", "test"]
 }

@@ -10,7 +10,7 @@
  * browser run path (import rewrite included). Network-dependent, so not part of
  * the build; run it locally when touching examples or the gen script.
  *
- * Requires `bun scripts/gen-playground.ts` to have run first.
+ * Requires `node scripts/gen-playground.ts` (`pnpm run gen:playground`) to have run first.
  */
 
 import { spawnSync } from 'node:child_process';
@@ -21,7 +21,7 @@ import { fileURLToPath } from 'node:url';
 
 import ts from 'typescript';
 
-import payload from '../src/generated/playground-dts.json';
+import payload from '../src/generated/playground-dts.json' with { type: 'json' };
 import { examples } from '../src/playground/examples.ts';
 import { REGISTRY_KEY, rewriteImports } from '../src/playground/rewrite.ts';
 
@@ -59,7 +59,11 @@ try {
     }),
   );
 
-  const tsc = spawnSync('bunx', ['tsc', '-p', work], { cwd: docsRoot, encoding: 'utf8' });
+  const tscBin = fileURLToPath(import.meta.resolve('typescript/bin/tsc'));
+  const tsc = spawnSync(process.execPath, [tscBin, '-p', work], {
+    cwd: docsRoot,
+    encoding: 'utf8',
+  });
   if (tsc.status !== 0) {
     console.error(tsc.stdout || tsc.stderr);
     console.error('playground examples FAILED typecheck against the Monaco d.ts payload');
@@ -84,7 +88,7 @@ try {
       ].join('\n');
       const file = join(work, `${example.id}.run.mjs`);
       writeFileSync(file, `${prelude}\n${rewritten}`);
-      const run = spawnSync('bun', [file], { encoding: 'utf8', timeout: 60_000 });
+      const run = spawnSync(process.execPath, [file], { encoding: 'utf8', timeout: 60_000 });
       if (run.status !== 0) {
         console.error(run.stdout);
         console.error(run.stderr);

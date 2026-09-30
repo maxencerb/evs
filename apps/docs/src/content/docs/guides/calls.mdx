@@ -180,10 +180,11 @@ hard type errors where viem is also permissive:
   `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
 - **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
   the overload you want.
-- **Restricted shapes** — two-level tuple arrays (`tuple[][]`), arrays nested deeper than
+- **Restricted shapes** — nested dynamic-leaf arrays (`string[][]`/`bytes[][]`, not supported
+  yet — [#4](https://github.com/maxencerb/evs/issues/4)), two-level tuple arrays (`tuple[][]`), arrays nested deeper than
   `[][]`, and fixed `T[N]` in an argument or output throw `EvsTypeError` at recording, naming the
   parameter. Plain structs/tuples, arrays of structs (`tuple[]`), one-level nested arrays
-  (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
+  of a word element (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
   [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs).
 
 ## Struct and array arguments and outputs
@@ -690,39 +691,8 @@ installed at `sender` through `stateOverride` and the script self-calls through 
 sub-call — including the simulated write — sees `msg.sender = sender`, and `s.env('caller')` /
 `s.env('address')` read `sender` too.
 
-```ts
-import { evscript, t } from '@maxencerb/evs';
-import { createPublicClient, http } from 'viem';
-
-const vaultAbi = [
-  {
-    type: 'function',
-    name: 'withdraw',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'assets', type: 'uint256' }],
-    outputs: [{ name: 'shares', type: 'uint256' }],
-  },
-] as const;
-
-const previewWithdraw = evscript(
-  { name: 'previewWithdraw', args: [t.address, t.uint256] },
-  (s, vault, assets) => {
-    // withdraw() burns msg.sender's shares — it needs the OWNER as msg.sender to succeed
-    const shares = s.simulate({ address: vault, abi: vaultAbi, functionName: 'withdraw', args: [assets] });
-    return s.return({ shares });
-  },
-);
-
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-const owner = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
-
-const result = await client.readContract({
-  ...previewWithdraw.compile().toViem({ mode: 'stateOverride', sender: owner }),
-  functionName: 'previewWithdraw',
-  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // sDAI
-});
-// result: { shares: bigint } — withdraw() ran with msg.sender = owner, then rolled back
-```
+The complete example — previewing an ERC-4626 `withdraw` that burns the owner's shares — is in
+[executing scripts: sender mode](/guides/execution/#sender-mode).
 
 :::caution[Frame dependence: `msg.sender` is the script]
 `s.call` and `s.simulate` make a real call in which the **target sees `msg.sender` = the script's
@@ -743,8 +713,11 @@ Pick the verb by the callee's mutability first, then by what you need from the r
   translation); reach for `s.tryRead` when:
   - the data is optional (`decimals()` on nonstandard tokens, with a default via `s.select`);
   - you are probing addresses that may not implement the function — or may not be contracts at
-    all. A `STATICCALL` to an address without code "succeeds" with empty returndata, which
-    `s.read` reverts as `EvsDecodeError` but `s.tryRead` reports as `success = false`;
+    all. A `STATICCALL` to an address without code "succeeds" with empty returndata. If the
+    function declares outputs, `s.read` reverts as `EvsDecodeError` and `s.tryRead` reports
+    `success = false`. For a function with **no outputs** there is nothing to decode, so `s.read`
+    and `s.call` succeed and the `try*` verbs report `success = true` — that proves nothing about
+    whether the target is a contract (unlike Solidity ≥ 0.8.10, evs adds no `extcodesize` check);
   - one bad element must not kill a batch loop — see
     [batch token balances](/examples/token-balances/).
 - **`s.call` / `s.tryCall`** — a `nonpayable`/`payable` function you need a real frame for but whose

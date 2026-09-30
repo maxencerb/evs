@@ -3,17 +3,17 @@
  * Spawns a dedicated forked anvil (separate from the per-worker proxy instance) and reads
  * mainnet WETH metadata through a compiled script in both execution modes.
  *
- * Locally: ANVIL_FORK_URL=https://… bun run test:integration
- * CI runs this on a scheduled job, never per-PR.
+ * Locally: ANVIL_FORK_URL=https://… vp run test:integration
+ * CI runs this only on a manual workflow_dispatch of ci.yml (fork-tests job), never per-PR.
  */
 
 import { Instance } from 'prool';
-import { createPublicClient, erc20Abi, http } from 'viem';
+import { createPublicClient, erc20Abi, http, type PublicClient } from 'viem';
 import { mainnet } from 'viem/chains';
 import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
-import { poolId } from '../harness/anvil.js';
+import { getFreePort } from '../harness/anvil.js';
 
 const forkUrl = process.env.ANVIL_FORK_URL ?? process.env.RPC_URL;
 
@@ -26,23 +26,19 @@ const wethMeta = evscript({ name: 'wethMeta', args: [t.address] }, (s, token) =>
 });
 
 describe.runIf(forkUrl !== undefined)('fork mode: real mainnet WETH', () => {
-  const port = 8945 + poolId; // clear of the prool proxy on 8545
-  const anvil = Instance.anvil({
-    forkUrl: forkUrl ?? '',
-    port,
-    chainId: 1,
-  });
-  const client = createPublicClient({
-    chain: mainnet,
-    transport: http(`http://127.0.0.1:${port}`),
-  });
+  // a free port of its own: clear of the prool proxy and of any concurrent run
+  let anvil: ReturnType<typeof Instance.anvil> | undefined;
+  let client: PublicClient;
 
   beforeAll(async () => {
+    const port = await getFreePort();
+    anvil = Instance.anvil({ forkUrl: forkUrl ?? '', port, chainId: 1 });
+    client = createPublicClient({ chain: mainnet, transport: http(`http://127.0.0.1:${port}`) });
     await anvil.start();
   }, 60_000);
 
   afterAll(async () => {
-    await anvil.stop();
+    await anvil?.stop();
   });
 
   const compiled = wethMeta.compile();

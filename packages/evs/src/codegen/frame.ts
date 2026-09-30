@@ -52,6 +52,8 @@
 
 import { EvsInternalError } from '../core/errors.js';
 import {
+  stmtDefs,
+  stmtReads,
   walkStmts,
   type CellId,
   type FnId,
@@ -59,6 +61,7 @@ import {
   type Stmt,
   type ValueId,
 } from '../ir/nodes.js';
+import { FRAME_BASE } from './memory.js';
 
 export interface FrameLayout {
   slotOfValue(v: ValueId): number | null; // null = folded const (operand becomes push)
@@ -72,8 +75,6 @@ export interface FrameOptions {
   optimize?: boolean;
 }
 
-/** Start of the static frame (just above the `0x60` zero slot). */
-const FRAME_BASE = 0x80;
 const SLOT_BYTES = 32;
 
 function internal(message: string): EvsInternalError {
@@ -126,90 +127,13 @@ function reachableFns(ir: ScriptIr): ReadonlySet<FnId> {
   return seen;
 }
 
-/** Every ValueId a statement defines. */
-function outsOf(s: Stmt): readonly ValueId[] {
-  switch (s.k) {
-    case 'const':
-    case 'un':
-    case 'env':
-    case 'convert':
-    case 'select':
-    case 'index':
-    case 'len':
-    case 'arrnew':
-    case 'cellget':
-    case 'bin':
-    case 'tuplenew': // one frame slot — the tuple pointer
-    case 'field': // one frame slot — the member word or nested pointer
-    case 'encode': // one frame slot — the fresh bytes memref pointer
-    case 'keccak256': // one frame slot — the bytes32 hash word
-      return [s.out];
-    case 'call':
-      return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];
-    case 'fncall':
-      return s.outs;
-    default:
-      return [];
-  }
-}
-
 /**
- * Every ValueId a statement reads (its operands), EXCLUDING a `while`'s `cond` — that read
- * happens after the header on every iteration and is positioned separately by `linearize`.
- * Exhaustive over the statement kinds on purpose: a new kind whose operands went uncounted
- * would free slots too early, so adding one must fail to compile here.
+ * Every ValueId a statement reads, EXCLUDING a `while`'s `cond` — that read happens after the
+ * header on every iteration and is positioned separately by `linearize`. `stmtReads`/`stmtDefs`
+ * are exhaustive over the statement kinds, so a new kind cannot go uncounted here.
  */
 function insOf(s: Stmt): readonly ValueId[] {
-  switch (s.k) {
-    case 'const':
-    case 'env':
-    case 'cellget':
-    case 'break':
-    case 'continue':
-    case 'while':
-      return [];
-    case 'bin':
-      return [s.a, s.b];
-    case 'un':
-    case 'convert':
-    case 'len':
-    case 'keccak256':
-      return [s.a];
-    case 'select':
-      return [s.cond, s.a, s.b];
-    case 'index':
-      return [s.arr, s.i];
-    case 'arrnew':
-      return [s.length];
-    case 'arrset':
-      return [s.arr, s.i, s.value];
-    case 'tuplenew':
-      return s.inits.map((init) => init.value);
-    case 'field':
-      return [s.tuple];
-    case 'tupleset':
-      return [s.tuple, s.value];
-    case 'encode':
-    case 'throw':
-      return s.args;
-    case 'cellnew':
-      return [s.init];
-    case 'cellset':
-      return [s.value];
-    case 'call':
-      return s.gas === undefined ? [s.target, ...s.args] : [s.target, s.gas, ...s.args];
-    case 'fncall':
-      return s.args;
-    case 'if':
-      return [s.cond];
-    default:
-      return unreachableStmt(s);
-  }
-}
-
-function unreachableStmt(s: never): never {
-  const kind = String((s as { k: unknown }).k);
-  throw internal(`unknown statement kind '${kind}' survived validateIr`);
+  return s.k === 'while' ? [] : stmtReads(s);
 }
 
 // ---------------------------------------------------------------------------
@@ -249,7 +173,7 @@ function linearize(stmts: readonly Stmt[]): Linearized {
     for (const s of block) {
       const pos = out.count++;
       for (const v of insOf(s)) out.reads.push({ pos, value: v });
-      for (const v of outsOf(s)) out.defs.push({ pos, value: v });
+      for (const v of stmtDefs(s)) out.defs.push({ pos, value: v });
       if (s.k === 'if') {
         visit(s.then);
         visit(s.else);
@@ -389,7 +313,7 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
   const folded = new Set<ValueId>();
   const scanBlock = (stmts: readonly Stmt[]): void => {
     walkStmts(stmts, (s) => {
-      for (const out of outsOf(s)) defined.add(out);
+      for (const out of stmtDefs(s)) defined.add(out);
       if (s.k === 'const' && s.data.kind === 'word') folded.add(s.out);
     });
   };
@@ -425,7 +349,7 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
     const poolOf = (stmts: readonly Stmt[]): Set<ValueId> => {
       const pool = new Set<ValueId>();
       walkStmts(stmts, (s) => {
-        for (const out of outsOf(s)) {
+        for (const out of stmtDefs(s)) {
           if (out >= ir.args.length && !folded.has(out)) pool.add(out);
         }
       });

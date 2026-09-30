@@ -1,9 +1,10 @@
 /**
  * `asm/verify.ts` — the three always-on verification passes.
  *
- * 1. `verifyJumpdests` — consensus-identical JUMPDEST scan (PUSH immediates are not jumpdests).
+ * 1. `verifyJumpdests` — consensus-identical JUMPDEST scan (PUSH immediates are not jumpdests);
+ *    the same linear opcode scan rejects any FORBIDDEN opcode byte in the code region.
  * 2. `verifyStack` — stack-height simulation with `checked` and `'any'` label classes.
- * 3. `verifyShapes` — RETURNDATACOPY windows, fork gating, forbidden opcodes.
+ * 3. `verifyShapes` — RETURNDATACOPY windows, fork gating.
  *
  * Every failure is an `EvsInternalError` ("bug in evs, please report"): these passes guard
  * compiler output, not user input.
@@ -11,7 +12,7 @@
 
 import { EvsInternalError } from '../core/errors.js';
 import type { AsmNode, LabelId } from './assembler.js';
-import { FORBIDDEN, OPS, type EvmVersion, type Mnemonic } from './ops.js';
+import { FORBIDDEN, isDupOp, OPS, type EvmVersion, type Mnemonic } from './ops.js';
 
 function fail(message: string): never {
   throw new EvsInternalError('INTERNAL', `asm verifier: ${message}`);
@@ -30,7 +31,9 @@ const JUMPDEST_CODE = 0x5b;
  * a single linear scan from offset 0 in which PUSH immediates are skipped; a `0x5B`
  * encountered *as an opcode* is a valid destination, a `0x5B` inside push data is not.
  * `dataStart` is the offset of the INVALID guard byte (or `bytecode.length` when there is no
- * data segment); no jump target may point at or past it.
+ * data segment); no jump target may point at or past it. The scan also rejects every FORBIDDEN
+ * opcode (`asm/ops.ts`) it meets — push data and the data segment are skipped, so only real
+ * opcodes count.
  */
 export function verifyJumpdests(
   bytecode: Uint8Array,
@@ -43,6 +46,7 @@ export function verifyJumpdests(
     const op = bytecode[pc];
     if (op === undefined) break;
     if (op === JUMPDEST_CODE) valid.add(pc);
+    if (FORBIDDEN.has(op)) fail(`forbidden opcode 0x${op.toString(16)} at pc 0x${pc.toString(16)}`);
     if (op >= PUSH1_CODE && op <= PUSH32_CODE) pc += op - PUSH1_CODE + 1;
     pc += 1;
   }
@@ -281,10 +285,8 @@ const FORK_RANK: Readonly<Record<EvmVersion | 'frontier', number>> = Object.free
   cancun: 3,
 });
 
-const DUP_MNEMONIC_RE = /^DUP(?:[1-9]|1[0-6])$/;
-
 function isDup(node: AsmNode): boolean {
-  return node.k === 'op' && DUP_MNEMONIC_RE.test(node.op);
+  return node.k === 'op' && isDupOp(node.op);
 }
 
 /**
@@ -294,7 +296,9 @@ function isDup(node: AsmNode): boolean {
  *     `(0, 0, rds)` / `(base, 0, rds)`. A `push 0` node counts as PUSH0 (the assembler owns
  *     zero-push lowering, so the window stays fork-portable).
  * (b) no opcode with `since` newer than `opts.evmVersion` (catches a stray MCOPY on paris).
- * (c) no FORBIDDEN opcode byte.
+ *
+ * Forbidden opcodes are not a node-level lint: no `Mnemonic` maps to one (pinned by `ops.test.ts`),
+ * so `verifyJumpdests` checks the emitted bytes instead.
  */
 export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmVersion }): void {
   const maxRank = FORK_RANK[opts.evmVersion];
@@ -305,9 +309,6 @@ export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmV
     const info = OPS[op];
     if (FORK_RANK[info.since] > maxRank) {
       fail(`${op} requires evmVersion >= ${info.since}, but the build targets ${opts.evmVersion}`);
-    }
-    if (FORBIDDEN.has(info.code)) {
-      fail(`forbidden opcode ${op} (0x${info.code.toString(16)}) in the node stream`);
     }
     if (op === 'RETURNDATACOPY') {
       const a = nodes[i - 3];

@@ -16,3 +16,4 @@ apps/docs/scripts/.playground-entries/
 *.tsbuildinfo
 .idea
 .DS_Store
+.vitest/

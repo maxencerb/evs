@@ -46,25 +46,15 @@ simulated call (via `CREATE2`), calls it, and returns the result. No state-overr
 required from the provider, which makes this the maximally portable mode.
 
 :::note[Why `code` must be init bytecode — the 10-byte wrapper]
-viem's `code` parameter expects **creation** bytecode. Passing runtime bytecode fails
-*silently* — which is why the artifact names its fields `runtimeBytecode` and `initBytecode`
-and never exposes a field named `code`; only `toViem()` produces one, always from
-`initBytecode`. The init bytecode is the runtime prefixed with the locked 10-byte wrapper
-`61RRRR80600A5F395FF3` (`RRRR` = runtime length, big-endian):
-
-```txt
-61 RRRR   PUSH2 len      ; runtime length
-80        DUP1
-60 0A     PUSH1 0x0A     ; the wrapper is 10 bytes; runtime starts right after
-5F        PUSH0          ; paris target: 3D (RETURNDATASIZE — zero in an init frame)
-39        CODECOPY       ; mem[0..len) = code[10..10+len)
-5F        PUSH0          ; paris target: 3D
-F3        RETURN         ; return the runtime as the deployed code
-```
-
-It copies everything after itself into memory and returns it as the deployed code, so your
-runtime executes unchanged. On the `paris` target the two `PUSH0` bytes become
-`RETURNDATASIZE` — see [EVM targets](/guides/evm-targets/).
+viem's `code` parameter expects **creation** bytecode. Passing runtime bytecode fails with an
+empty revert that carries no diagnostic data — which is why the artifact names its fields
+`runtimeBytecode` and `initBytecode` and never exposes a field named `code`; only `toViem()`
+produces one, always from `initBytecode`. The init bytecode is the runtime prefixed with the
+locked 10-byte wrapper `61RRRR80600A5F395FF3` (`RRRR` = runtime length, big-endian), which copies
+everything after itself into memory and returns it as the deployed code, so your runtime
+executes unchanged. The opcode-by-opcode listing is in
+[the artifact reference](/reference/artifact/#runtimebytecode-and-initbytecode); on the `paris`
+target the two `PUSH0` bytes become `RETURNDATASIZE` — see [EVM targets](/guides/evm-targets/).
 :::
 
 ## State-override mode
@@ -143,13 +133,17 @@ const previewWithdraw = evscript(
 const compiled = compile(previewWithdraw);
 const client = createPublicClient({ transport: http('https://eth.merkle.io') });
 
+// The sender must OWN the shares: an address without enough sDAI makes withdraw() revert
+// (SavingsDai/insufficient-balance). This one held sDAI at the time of writing — use your own.
+const owner = '0x1715a3E4A142d8b698131108995174F37aEBA10D';
+
 const result = await client.readContract({
-  ...compiled.toViem({ mode: 'stateOverride', sender: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045' }),
+  ...compiled.toViem({ mode: 'stateOverride', sender: owner }),
   // → { abi, address: sender, stateOverride: [{ address: sender, code }], account: sender }
   functionName: 'previewWithdraw',
-  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n],
+  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // sDAI, 1e6 wei of DAI
 });
-// result: { shares: bigint } — withdraw() ran with msg.sender = the owner, then rolled back
+// result: { shares: bigint } — withdraw() ran with msg.sender = owner, then rolled back
 ```
 
 `toViem({ mode: 'stateOverride', sender })` returns `{ abi, address, stateOverride, account }` with
@@ -173,10 +167,19 @@ instead and revert.
 | ----------------- | --------------------------------------------------------------- | ----------------------------------------------------------- |
 | RPC requirement   | plain two-parameter `eth_call` — every provider                  | provider must support the third `eth_call` parameter        |
 | `address(this)`   | counterfactual CREATE2 address, different per compiled script    | `DEFAULT_SCRIPT_ADDRESS`, or the `address` you pass         |
-| `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted)      |
+| `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted — but see the multicall note below) |
 | `msg.sender` seen by sub-call targets | the counterfactual script address — not controllable | the script address, or a chosen `sender` in [sender mode](#sender-mode) |
 | Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
 | Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls |
+
+:::caution[`batch.multicall` clients change the state-override caller]
+A client created with `batch: { multicall: … }` (wagmi enables this by default) routes a
+state-override call that has **no `account`** through Multicall3's `aggregate3`. The state
+override is forwarded, so the script still runs at its override address, but `msg.sender` —
+and `s.env('caller')` — becomes the Multicall3 contract instead of the zero address. Pass
+`account` (or use a client without `batch.multicall`) when the caller matters. Deployless mode (no `to`)
+and [sender mode](#sender-mode) (`account` is set) are never batched.
+:::
 
 ### Provider support
 
@@ -203,7 +206,7 @@ identical in both modes; two depend on the call frame `toViem()` produces:
 
 | `s.env(...)`    | Result            | Deployless                                                                 | State override                                       |
 | --------------- | ----------------- | -------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `'caller'`      | `Expr<'address'>` | viem's wrapper contract (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) — never your `account` | the `account` call parameter (zero address if omitted) |
+| `'caller'`      | `Expr<'address'>` | viem's wrapper contract (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) — never your `account` | the `account` call parameter (zero address if omitted; the Multicall3 contract on a `batch.multicall` client — see below) |
 | `'address'`     | `Expr<'address'>` | a per-script counterfactual CREATE2 address                                 | the override address                                  |
 | `'timestamp'`   | `Expr<'uint256'>` | block timestamp — identical in both modes                                   | identical                                             |
 | `'blocknumber'` | `Expr<'uint256'>` | block number — identical                                                    | identical                                             |

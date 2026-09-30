@@ -25,7 +25,7 @@ import {
 } from './viem.js';
 
 // ---------------------------------------------------------------------------
-// the flagship-shaped script (api.md E1, trimmed): full inference end to end
+// the flagship-shaped script (the pool-meta example, trimmed): full inference end to end
 // ---------------------------------------------------------------------------
 
 const poolAbi = [
@@ -165,7 +165,7 @@ test('args is the labeled positional tuple in declaration order (auto-named arg0
 });
 
 // ---------------------------------------------------------------------------
-// viem.ts helper shapes (frozen signatures)
+// viem.ts helper shapes
 // ---------------------------------------------------------------------------
 
 test('toViemDeployless preserves the literal abi and yields { abi, code }', () => {

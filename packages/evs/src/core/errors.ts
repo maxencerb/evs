@@ -73,7 +73,7 @@ export class EvsInternalError extends EvsError {
 
 export interface EvsDiagnostic {
   severity: 'warning';
-  // 'ENV_FRAME_DEPENDENT' extends the frozen union: s.env('caller')/s.env('address') read
+  // 'ENV_FRAME_DEPENDENT': s.env('caller')/s.env('address') read
   // the execution frame, whose shape differs between toViem() deployless (default) and
   // stateOverride modes.
   code: 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT';

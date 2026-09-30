@@ -1,9 +1,10 @@
 /**
- * `codegen/call.ts` — the STATICCALL site emitter.
+ * `codegen/call.ts` — the external-call site emitters: `emitStaticCall` (STATICCALL for `s.read`,
+ * CALL with value 0 for `s.call`) and `emitSimulateCall` (the `s.simulate` self-call).
  *
  * `CallSitePlan` carries the call *target* location (and optional gas cap) alongside the args
  * — `targetRef` (required) and `gasRef` (optional) mirror `argRefs`'
- * `SlotRef | { literal: ConstData }` shape — since `emitStaticCall` cannot emit `STATICCALL`
+ * `SlotRef | { literal: ConstData }` shape — since the emitters cannot emit the call opcode
  * without them.
  *
  * Shapes:
@@ -13,8 +14,9 @@
  *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
  *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
  *   scratch `MLOAD(0x40)` and is NOT bumped.
- * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` — retSize 0 always; returndata is fetched
- *   via the two sanctioned RETURNDATACOPY shapes only (`w.returndatacopyAll`).
+ * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds a `value = 0` word) — retSize 0
+ *   always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
+ *   (`w.returndatacopyAll`).
  * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
  *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).
  * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata to a
@@ -49,14 +51,16 @@ import {
 import { callOutputs, type ConstData, type SiteId, type Stmt } from '../ir/nodes.js';
 import {
   emitDecodeArrayToMem,
+  emitCeil32,
   emitDecodeTupleToMem,
+  emitLeafDynTail,
   emitEncodeBlock,
   fmtType,
   emitMemCopy,
   emitNormalizeElemsLoop,
   emitNormalizeWord,
   encodeFramesOf,
-  headOffsetsOf,
+  headOffsets,
   reserveEncodeFrames,
   needsMemorySnapshot,
   wordNeedsNormalize,
@@ -65,6 +69,7 @@ import {
   type SharedTails,
   type SlotRef,
 } from './abi.js';
+import { FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1, ZERO_SLOT } from './memory.js';
 import {
   SIMULATE_MAGIC,
   SIMULATE_PAYLOAD_OFFSET,
@@ -77,7 +82,7 @@ import {
 
 export interface CallSitePlan {
   stmt: Extract<Stmt, { k: 'call' }>;
-  /** Where the callee address lives (slot or folded literal). DEVIATION: see module header. */
+  /** Where the callee address lives (slot or folded literal); see the module header. */
   targetRef: SlotRef | { literal: ConstData };
   /** Optional gas cap operand (slot or folded literal); absent → forward all via GAS. */
   gasRef?: SlotRef | { literal: ConstData };
@@ -92,12 +97,9 @@ export interface CallSitePlan {
 // helpers
 // ---------------------------------------------------------------------------
 
-const MAX_U64 = 0xffffffffffffffffn;
-const FREE_PTR = 0x40;
-const TAIL_CURSOR = 0x00; // scratch — calldata-template tail cursor (transient)
-const SNAP_SLOT = 0x00; // scratch — returndata snapshot base during tuple-output decode (transient,
+const TAIL_CURSOR = SCRATCH_0; // scratch — calldata-template tail cursor (transient)
+const SNAP_SLOT = SCRATCH_0; // scratch — returndata snapshot base during tuple-output decode (transient,
 //                         dead once the calldata cursor's job is done — the call already happened)
-const ZERO_SLOT = 0x60;
 
 /** Const segments at or under this size are PUSH-chunked; larger ones go to a data segment. */
 const CONST_SEGMENT_INLINE_MAX = 96;
@@ -405,67 +407,18 @@ function emitCalldataBuild(
       continue;
     }
 
+    // memref member: [len][payload…] tail at the cursor, cursor += 32 + ceil32(n)
     const { slot, isArray } = part;
-    /** Reload the memref's payload byte count onto the stack. */
-    const pushNBytes = (): void => {
-      w.push(slot);
-      w.op('MLOAD');
-      w.op('MLOAD'); // [len]
-      if (isArray) {
-        w.push(5);
-        w.op('SHL'); // [32·len]
-      }
-    };
-
-    // length word: MSTORE(tail, len)
-    w.push(slot);
-    w.op('MLOAD');
-    w.op('MLOAD'); // [len]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [tail, len]
-    w.op('MSTORE'); // []
-
-    // payload copy at exactly [dst, src, len] (memcpy convention)
-    pushNBytes(); // [n]
-    w.push(slot);
-    w.op('MLOAD');
-    w.push(32);
-    w.op('ADD'); // [src, n]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD');
-    w.push(32);
-    w.op('ADD'); // [dst, src, n]
-    emitMemCopy(w, tails, opts); // []
-
-    if (!isArray) {
-      // explicit zero-pad of the trailing partial word (after the copy — the pre-cancun
-      // word loop over-copies whole words)
-      w.push(0); // [0]
-      pushNBytes(); // [n, 0]
-      w.push(TAIL_CURSOR);
-      w.op('MLOAD');
-      w.op('ADD'); // [tail+n, 0]
-      w.push(32);
-      w.op('ADD'); // [tail+32+n, 0]
-      w.op('MSTORE'); // []
-    }
-
-    // tail += 32 + ceil32(n) (arrays are word-exact already)
-    pushNBytes(); // [n]
-    if (!isArray) {
-      w.push(31);
-      w.op('ADD');
-      w.push(31);
-      w.op('NOT');
-      w.op('AND'); // [ceil32(n)]
-    }
-    w.push(32);
-    w.op('ADD'); // [inc]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD');
-    w.op('ADD'); // [tail']
-    w.push(TAIL_CURSOR);
-    w.op('MSTORE'); // []
+    emitLeafDynTail(
+      w,
+      () => {
+        w.push(slot);
+        w.op('MLOAD');
+      },
+      isArray,
+      tails,
+      opts,
+    );
   }
 }
 
@@ -512,7 +465,7 @@ function emitZeroValue(w: AsmWriter, type: EvsType): void {
 // ---------------------------------------------------------------------------
 
 /** Scratch slot holding the data-literal staging base for the duration of a tuple-bearing build. */
-const STAGING_SLOT = 0x20;
+const STAGING_SLOT = SCRATCH_1;
 
 /**
  * Builds the calldata for a subcall that has at least one tuple arg, via the recursive head/tail
@@ -749,11 +702,7 @@ function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: string):
 function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
   w.returndatacopyAll({ dupDepth: 1 }); // [buf]
   w.op('RETURNDATASIZE');
-  w.push(31);
-  w.op('ADD');
-  w.push(31);
-  w.op('NOT');
-  w.op('AND'); // [ceil32(rds), buf]
+  emitCeil32(w); // [ceil32(rds), buf]
   w.op('DUP2');
   w.op('ADD'); // [buf + ceil32(rds), buf]
   w.push(FREE_PTR);
@@ -763,6 +712,32 @@ function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
     w.push(SNAP_SLOT);
     w.op('MSTORE'); // [buf]   scratch[SNAP_SLOT] = snapshot base
   }
+}
+
+/** `[] → [buf]`: the returndata snapshot base, read back from scratch `SNAP_SLOT`. */
+function pushSnap(w: AsmWriter): void {
+  w.push(SNAP_SLOT);
+  w.op('MLOAD'); // [buf]
+}
+
+/** `[] → [buf + rds]`: the end of the returndata snapshot. */
+function pushSnapEnd(w: AsmWriter): void {
+  pushSnap(w);
+  w.op('RETURNDATASIZE');
+  w.op('ADD'); // [buf + rds]
+}
+
+/** `[] → [buf + MLOAD(buf + headOffset)]`: the base of a dynamic output whose head word at
+ *  `headOffset` holds a buf-relative offset (bounds-checked by the caller beforehand). */
+function pushSnapOffsetBase(w: AsmWriter, headOffset: number): void {
+  pushSnap(w); // [buf]
+  w.op('DUP1');
+  if (headOffset !== 0) {
+    w.push(headOffset);
+    w.op('ADD');
+  }
+  w.op('MLOAD'); // [off, buf]
+  w.op('ADD'); // [base]
 }
 
 /**
@@ -903,7 +878,7 @@ export function emitStaticCall(
   // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate). Under revertReturns
   //       the returndata IS the revert payload — the sequence is byte-identical. ----------------
   if (outputs.length > 0) {
-    const headOffsets = headOffsetsOf(outputs); // cumulative (static tuple outputs inline)
+    const outOffsets = headOffsets(outputs); // cumulative (static tuple outputs inline)
     const minSize = headBytes(outputs);
     // tuple outputs AND composite-element array outputs (`tuple[]`/`T[][]`/`string[]`) decode from
     // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
@@ -919,13 +894,14 @@ export function emitStaticCall(
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
     // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
     emitSnapshotReturndata(w, hasTupleOut); // [buf]
+    const pushEnd = (): void => pushSnapEnd(w);
 
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
       if (ref === undefined) throw internal(`missing out ref #${j}`);
       const type = abiParamToType(out);
       const layout = layoutOfType(type);
-      const headOffset = headOffsets[j] ?? 32 * j;
+      const headOffset = outOffsets[j] ?? 32 * j;
 
       if (layout.kind === 'word') {
         w.op('DUP1');
@@ -943,20 +919,10 @@ export function emitStaticCall(
       if (layout.kind === 'tuple') {
         // decode the tuple from the snapshot into a flat-pointer block; alias dynamic members.
         // base/end are read from scratch so the decoder's free-ptr churn never disturbs them.
-        const pushSnap = (): void => {
-          w.push(SNAP_SLOT);
-          w.op('MLOAD'); // [buf]
-        };
-        const pushEnd = (): void => {
-          pushSnap();
-          w.op('RETURNDATASIZE');
-          w.op('ADD'); // [buf + rds]
-        };
-        const fail: typeof emitDecodeFail = emitDecodeFail;
         let pushBase: PushBase;
         if (layout.dynamic) {
           // offset word at buf+headOffset (relative to buf); bounds, then base = buf+off
-          pushSnap();
+          pushSnap(w);
           if (headOffset !== 0) {
             w.push(headOffset);
             w.op('ADD');
@@ -966,28 +932,19 @@ export function emitStaticCall(
           w.push(MAX_U64);
           w.op('LT'); // [off > max, off, buf]
           emitDecodeFail(2); // [off, buf]
-          pushSnap();
+          pushSnap(w);
           w.op('ADD'); // [base, buf]
           w.op('DUP1');
           w.push(32);
           w.op('ADD'); // [base+32, base, buf]
-          pushEnd();
+          pushSnapEnd(w);
           w.op('LT'); // [end < base+32, base, buf]
           emitDecodeFail(3); // [base, buf]
           w.op('POP'); // [buf]   (base is re-derived inside the thunk)
-          pushBase = () => {
-            pushSnap(); // [buf]
-            w.op('DUP1');
-            if (headOffset !== 0) {
-              w.push(headOffset);
-              w.op('ADD');
-            }
-            w.op('MLOAD'); // [off, buf]
-            w.op('ADD'); // [base]
-          };
+          pushBase = () => pushSnapOffsetBase(w, headOffset);
         } else {
           pushBase = () => {
-            pushSnap();
+            pushSnap(w);
             if (headOffset !== 0) {
               w.push(headOffset);
               w.op('ADD');
@@ -995,7 +952,7 @@ export function emitStaticCall(
           };
         }
         if (!isTupleType(type)) throw internal(`out #${j} layout is tuple but type is not`);
-        emitDecodeTupleToMem(w, type.components, pushBase, pushEnd, fail, 1); // [flat, buf]
+        emitDecodeTupleToMem(w, type.components, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
         return;
@@ -1007,17 +964,8 @@ export function emitStaticCall(
         // SNAP_SLOT (the array decoder churns the free ptr, so a stack-resident base would drift),
         // exactly like the tuple-output path above. The head word at buf+headOffset is an offset
         // relative to buf; bounds it, then base = buf+off.
-        const pushSnap = (): void => {
-          w.push(SNAP_SLOT);
-          w.op('MLOAD'); // [buf]
-        };
-        const pushEnd = (): void => {
-          pushSnap();
-          w.op('RETURNDATASIZE');
-          w.op('ADD'); // [buf + rds]
-        };
         // off bounds: off ≤ 2^64−1, off + 32 ≤ rds
-        pushSnap();
+        pushSnap(w);
         if (headOffset !== 0) {
           w.push(headOffset);
           w.op('ADD');
@@ -1034,16 +982,7 @@ export function emitStaticCall(
         w.op('LT'); // [rds < off+32, off, buf]
         emitDecodeFail(2); // [off, buf]
         w.op('POP'); // [buf]   (base re-derived inside the thunk)
-        const pushArrBase: PushBase = () => {
-          pushSnap(); // [buf]
-          w.op('DUP1');
-          if (headOffset !== 0) {
-            w.push(headOffset);
-            w.op('ADD');
-          }
-          w.op('MLOAD'); // [off, buf]
-          w.op('ADD'); // [base]
-        };
+        const pushArrBase: PushBase = () => pushSnapOffsetBase(w, headOffset);
         emitDecodeArrayToMem(w, layout.elem, pushArrBase, pushEnd, emitDecodeFail, 1); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
@@ -1137,7 +1076,7 @@ export function emitStaticCall(
 const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
 /** Scratch slot holding the wrapper argsSize (68 + payload length) across the payload memcpy
  *  (the pre-cancun `@memcpy` only clobbers scratch 0x00, so 0x20 survives it). */
-const SIM_ARGSIZE_SLOT = 0x20;
+const SIM_ARGSIZE_SLOT = SCRATCH_1;
 /** Byte length of the wire header `[trampSel(4)][target(32)][gas(32)]` (= the payload offset). */
 const SIM_HEADER = SIMULATE_PAYLOAD_OFFSET;
 
@@ -1210,20 +1149,13 @@ export function emitSimulateCall(
   // W = buf + ceil32(L). It is NOT kept on the stack across the payload memcpy (the pre-cancun
   // `@memcpy` requires the stack to be EXACTLY [dst, src, len]); instead it is recomputed from the
   // stored argsSize as buf + ceil32(argsSize − 68) wherever needed.
-  const pushCeil32 = (): void => {
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(x)]
-  };
   const pushWrapperBase = (): void => {
     w.push(SIM_ARGSIZE_SLOT);
     w.op('MLOAD');
     w.push(SIM_HEADER);
     w.op('SWAP1');
     w.op('SUB'); // [L = argsSize − 68]
-    pushCeil32(); // [ceil32(L)]
+    emitCeil32(w); // [ceil32(L)]
     w.push(FREE_PTR);
     w.op('MLOAD');
     w.op('ADD'); // [W = buf + ceil32(L)]
@@ -1341,17 +1273,11 @@ export function emitSimulateCall(
 
     // decode the outputs as one tuple from [SNAP+64, SNAP+rds) into a flat block, then scatter.
     const pushBase: PushBase = () => {
-      w.push(SNAP_SLOT);
-      w.op('MLOAD');
+      pushSnap(w);
       w.push(64);
       w.op('ADD'); // [buf+64]
     };
-    const pushEnd = (): void => {
-      w.push(SNAP_SLOT);
-      w.op('MLOAD');
-      w.op('RETURNDATASIZE');
-      w.op('ADD'); // [buf+rds]
-    };
+    const pushEnd = (): void => pushSnapEnd(w);
     emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];

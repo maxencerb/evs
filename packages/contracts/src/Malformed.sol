@@ -2,7 +2,8 @@
 pragma solidity 0.8.30;
 
 /// @title Malformed — attacker-shaped returndata generator
-/// @notice The on-anvil mirror of the evs harness decode-bounds suite (testing.md §4.3).
+/// @notice The on-anvil mirror of the evs decode-bounds unit tests (src/codegen/call.test.ts),
+///         run case by case against anvil by test/integration/revert-bubbling.test.ts.
 ///         Every function SUCCEEDS (no revert) but hand-builds returndata via inline
 ///         assembly that violates the ABI shape its Solidity signature declares: wrong
 ///         lengths, returndata shorter than the head, absurd/huge head offsets, huge

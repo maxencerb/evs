@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  FOUNDRY_VERSION: v1.8.1 # pinned: anvil/forge determinism
+  FOUNDRY_VERSION: v1.8.3 # pinned: anvil/forge determinism
 
 jobs:
   # One serial gate on purpose (fewer concurrent runners, no artifact plumbing):
@@ -59,18 +59,19 @@ jobs:
         # esm-only profile: CJSResolvesToESM is the accepted cost of shipping ESM-only;
         # attw exits 1 on ANY problem without the profile.
         run: |
-          bunx publint
-          bunx @arethetypeswrong/cli --pack . --profile esm-only
+          vp exec publint
+          vp exec attw --pack . --profile esm-only
 
       # Informational (continue-on-error): tooling-only PRs legitimately have no changeset.
       - name: Changeset present?
         if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'changeset-release/')
-        run: bunx changeset status --since origin/main
+        run: vp exec changeset status --since origin/main
         continue-on-error: true
 
-  # Manual (workflow_dispatch) mainnet-fork suite; add a `schedule:` trigger to run it periodically.
+  # Manual (workflow_dispatch) mainnet-fork suite. The job condition already accepts `schedule`,
+  # so adding a `schedule:` trigger under `on:` is all it takes to run it periodically.
   fork-tests:
-    name: Mainnet-fork suite (scheduled / manual)
+    name: Mainnet-fork suite (manual)
     if: github.event_name == 'workflow_dispatch' || github.event_name == 'schedule'
     runs-on: ubuntu-latest
     steps:

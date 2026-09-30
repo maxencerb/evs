@@ -387,13 +387,11 @@ function fragmentListing(spec: FragmentSpec): string {
     tails,
     opts: { evmVersion },
     loop: null,
-    fnBaseline: 0,
     dataSeg: (bytes) => {
       const label = w.newLabel(`data_${segments.length}`);
       segments.push({ label, bytes });
       return label;
     },
-    siteOf: (s) => s.site,
   };
   spec.pre?.(w);
   lowerStmts(w, spec.body, ctx);
@@ -401,7 +399,7 @@ function fragmentListing(spec: FragmentSpec): string {
   for (const stub of lowerInternals(ctx).dfailStubs) {
     emitDecodeFailStub(w, stub.label, stub.site, tails);
   }
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   for (const seg of segments) {
     w.dataLabel(seg.label);
     w.data(seg.bytes);

@@ -50,6 +50,23 @@ function emitSelectorStore(w: AsmWriter, selector: Hex): void {
 // label allocation + emission
 // ---------------------------------------------------------------------------
 
+/** Every label name the shared tails allocate (`compile()`'s EIP-170 breakdown finds the tails
+ *  region by these names). */
+const TAIL_LABEL = {
+  panicOverflow: 'panic_overflow',
+  panicDivZero: 'panic_divzero',
+  panicBounds: 'panic_bounds',
+  panicAlloc: 'panic_alloc',
+  panic: 'panic',
+  invalidCalldata: 'badcd',
+  decodeRevert: 'decode_revert',
+  memcpy: 'memcpy',
+  memcpyLoop: 'memcpy_loop',
+  memcpyDone: 'memcpy_done',
+} as const;
+
+export const SHARED_TAIL_LABEL_NAMES: ReadonlySet<string> = new Set(Object.values(TAIL_LABEL));
+
 /**
  * Allocates every `SharedTails` label on `w`. `memcpy` is `null` on cancun (MCOPY inlines).
  * Call once per program, before any emitter references the tails; emit the bodies with
@@ -57,13 +74,13 @@ function emitSelectorStore(w: AsmWriter, selector: Hex): void {
  */
 export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }): SharedTails {
   return {
-    panicOverflow: w.newLabel('panic_overflow'),
-    panicDivZero: w.newLabel('panic_divzero'),
-    panicBounds: w.newLabel('panic_bounds'),
-    panicAlloc: w.newLabel('panic_alloc'),
-    invalidCalldata: w.newLabel('badcd'),
-    decodeRevert: w.newLabel('decode_revert'),
-    memcpy: opts.evmVersion === 'cancun' ? null : w.newLabel('memcpy'),
+    panicOverflow: w.newLabel(TAIL_LABEL.panicOverflow),
+    panicDivZero: w.newLabel(TAIL_LABEL.panicDivZero),
+    panicBounds: w.newLabel(TAIL_LABEL.panicBounds),
+    panicAlloc: w.newLabel(TAIL_LABEL.panicAlloc),
+    invalidCalldata: w.newLabel(TAIL_LABEL.invalidCalldata),
+    decodeRevert: w.newLabel(TAIL_LABEL.decodeRevert),
+    memcpy: opts.evmVersion === 'cancun' ? null : w.newLabel(TAIL_LABEL.memcpy),
   };
 }
 
@@ -96,13 +113,9 @@ export function emitDecodeFailStub(
  * fallthrough: panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a
  * checked subroutine entered only by `emitMemCopy` calls).
  */
-export function emitSharedTails(
-  w: AsmWriter,
-  tails: SharedTails,
-  _opts: { evmVersion: EvmVersion },
-): void {
+export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
   // -- panic stubs + core ------------------------------------------------------
-  const panic = w.newLabel('panic');
+  const panic = w.newLabel(TAIL_LABEL.panic);
   const stubs: readonly [LabelId, number][] = [
     [tails.panicOverflow, 0x11],
     [tails.panicDivZero, 0x12],
@@ -151,8 +164,8 @@ export function emitSharedTails(
  * then returns via dynamic JUMP with everything consumed.
  */
 function emitMemcpySubroutine(w: AsmWriter, entry: LabelId): void {
-  const loop = w.newLabel('memcpy_loop');
-  const done = w.newLabel('memcpy_done');
+  const loop = w.newLabel(TAIL_LABEL.memcpyLoop);
+  const done = w.newLabel(TAIL_LABEL.memcpyDone);
   w.label(entry, 4); // [ret, dst, src, len]
   w.op('SWAP3'); // [len, dst, src, ret]
   w.push(31);

@@ -25,7 +25,7 @@ import {
 
 // ---------------------------------------------------------------------------
 // interning trap setup — intern 'tick' / 'fee' / 'owner' early (as output/input names of an
-// unrelated ABI, exactly the research repro) before the script types reference them.
+// unrelated ABI, the shape that first reproduced the trap) before the script types reference them.
 // ---------------------------------------------------------------------------
 
 const realisticPoolAbi = [

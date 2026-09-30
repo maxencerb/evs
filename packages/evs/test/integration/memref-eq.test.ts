@@ -138,7 +138,8 @@ function asExpr(v: unknown): Expr {
 function buildScript(c: Case) {
   return evscript({ name: c.fn, args: [c.type, c.type] }, (s, ...rawArgs) => {
     const [a, b] = [asExpr(rawArgs[0]), asExpr(rawArgs[1])];
-    // both spellings per case: the method form and the free-function form record the same IR
+    // one spelling per case: eq cases use the method form, neq cases the free-function form
+    // (the other two record the same IR; src/differential/control-flow.test.ts runs them)
     const r = c.op === 'eq' ? a.eq(b) : s.neq(a, b);
     return s.return({ r });
   });
@@ -155,18 +156,27 @@ describe('memref eq/neq: evs hash equality vs solc 0.8.30 keccak idiom (EvsRefer
     const compiled = compile(buildScript(c));
     const deployless = compiled.toViem();
 
-    for (const values of c.corpus) {
-      const solc = await publicClient.readContract({
-        address: reference,
-        abi: EvsReference.abi as Abi,
-        functionName: c.fn,
-        args: values as never,
-      });
-      const evs = (await publicClient.readContract({
-        ...deployless,
-        functionName: c.fn,
-        args: values as never,
-      })) as { r: unknown };
+    // the corpus in flight at once (stateless eth_calls); asserted below in corpus order
+    const rows = await Promise.all(
+      c.corpus.map(async (values) => {
+        const [solc, evs] = await Promise.all([
+          publicClient.readContract({
+            address: reference,
+            abi: EvsReference.abi as Abi,
+            functionName: c.fn,
+            args: values as never,
+          }),
+          publicClient.readContract({
+            ...deployless,
+            functionName: c.fn,
+            args: values as never,
+          }) as Promise<{ r: unknown }>,
+        ]);
+        return { values, solc, evs };
+      }),
+    );
+
+    for (const { values, solc, evs } of rows) {
       const label = `${c.fn}(${JSON.stringify(values, (_k, v: unknown) => (typeof v === 'bigint' ? String(v) : v))})`;
       expect(typeof solc, `${label}: solc oracle returns a bool`).toBe('boolean');
       expect(evs.r, `${label}: evs vs solc`).toBe(solc);

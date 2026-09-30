@@ -3,7 +3,7 @@
  * `ScriptBuilder`, `Cell`, `MutArray`, `LoopCtl`, `ScriptReturn`.
  *
  * The recording engine (scope stack, handle internals, folding, validation checklist) lives
- * in `builder/expr.ts`; this file owns the frozen types and wires the typed facade onto it.
+ * in `builder/expr.ts`; this file owns the public types and wires the typed facade onto it.
  */
 import type {
   Abi,
@@ -16,8 +16,11 @@ import type { ContractFunctionName } from 'viem';
 
 import {
   buildScriptAbi,
+  ERROR_STRING_SELECTOR,
   errorSelectorOf,
-  selectorOf,
+  EVS_DECODE_ERROR_SELECTOR,
+  EVS_INVALID_CALLDATA_SELECTOR,
+  PANIC_SELECTOR,
   type ResolveArgName,
   type ScriptAbi,
 } from '../abi/artifact.js';
@@ -25,7 +28,7 @@ import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc, setLocCapture } from '../core/loc.js';
-import { isEvsValueType, typeToAbiParam } from '../core/types.js';
+import { IDENT_RE, isArgSpecValue, isEvsValueType, typeToAbiParam } from '../core/types.js';
 import type {
   AbiParamsToComponents,
   ArgsInput,
@@ -160,23 +163,6 @@ export type ArgHandles<
     : never;
 };
 
-const IDENT_RE = /^[A-Za-z_]\w*$/;
-
-/**
- * A {@link namedArg}-produced {@link ArgSpec} value: a plain object carrying a string `name` (a bare
- * type is a string; a bare composite type is a {@link TupleType} object, which has no `name`). Used
- * to distinguish a named declarator from a bare one when normalizing `evscript` args / `s.fn` params.
- */
-function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    !Array.isArray(v) &&
-    typeof (v as { name?: unknown }).name === 'string' &&
-    'type' in v
-  );
-}
-
 /** A `t.error`-produced value (issue #15): the `kind: 'error'` discriminant plus the frozen
  *  shape `t.error` builds. Param/type validity is re-checked below — a hand-built value
  *  cannot smuggle junk into the IR or the ABI. */
@@ -191,10 +177,10 @@ function isEvsErrorValue(v: unknown): v is EvsErrorType {
 // buildScriptAbi); this catches the astronomically-unlikely selector collision under a
 // DIFFERENT name, which would corrupt every decode path.
 const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
-  [selectorOf('Panic', ['uint256']), 'Panic(uint256)'],
-  [selectorOf('Error', ['string']), 'Error(string)'],
-  [selectorOf('EvsDecodeError', ['uint256']), 'EvsDecodeError(uint256)'],
-  [selectorOf('EvsInvalidCalldata', []), 'EvsInvalidCalldata()'],
+  [PANIC_SELECTOR, 'Panic(uint256)'],
+  [ERROR_STRING_SELECTOR, 'Error(string)'],
+  [EVS_DECODE_ERROR_SELECTOR, 'EvsDecodeError(uint256)'],
+  [EVS_INVALID_CALLDATA_SELECTOR, 'EvsInvalidCalldata()'],
 ]);
 
 /** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry
@@ -364,13 +350,14 @@ export function evscript<
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so
   // the ABI inputs are labeled accordingly (issue #9).
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement pinned by abi tests
+  /* oxlint-disable typescript/no-unsafe-type-assertion -- runtime↔type agreement pinned by abi tests */
   const abi = buildScriptAbi(
     def.name,
     ir.args,
     returns,
     errorDecls.map((d) => d.ir),
   ) as unknown as ScriptAbi<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
+  /* oxlint-enable typescript/no-unsafe-type-assertion */
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- decls carry the original t.error values verbatim
   const errors = Object.freeze(errorDecls.map((d) => d.value)) as unknown as NormalizeErrors<errs>;
   const script: EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> = {
@@ -824,7 +811,7 @@ export interface TrySubcallVerb<mut extends AbiStateMutability> {
   };
 }
 
-/** `s.read` — STATICCALL of a `view`/`pure` function (the frozen read surface). */
+/** `s.read` — STATICCALL of a `view`/`pure` function. */
 export type ReadVerb = SubcallVerb<ViewMutability>;
 /** `s.tryRead` — STATICCALL, never reverts the script (`{ success, value }`). */
 export type TryReadVerb = TrySubcallVerb<ViewMutability>;
@@ -1049,7 +1036,7 @@ export interface ScriptBuilder<
   // calls — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
   // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the
   // mutability bucket its `functionName`/arg/output handles are filtered by:
-  //   read     / tryRead     → STATICCALL of view/pure          (the renamed frozen read surface)
+  //   read     / tryRead     → STATICCALL of view/pure
   //   call     / tryCall     → CALL of nonpayable/payable        (non-static frame, NO rollback)
   //                            + the `revertReturns` opt-in (issue #35: decode the REVERT payload)
   //   simulate / trySimulate → CALL of nonpayable/payable        (write dry-run, state rolled back)
@@ -1157,7 +1144,7 @@ function makeBuilder(r: Recorder): ScriptBuilder {
 
     return: (values: unknown) => r.ret(values),
   };
-  // the facade implements the frozen `ScriptBuilder` surface; types are enforced at the surface,
+  // the facade implements the declared `ScriptBuilder` surface; types are enforced at the surface,
   // the engine is dynamic
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
   return builder as unknown as ScriptBuilder;

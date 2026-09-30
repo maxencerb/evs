@@ -11,15 +11,17 @@
  * - fences that intentionally do not typecheck (staging-misuse demos etc.) opt out with a
  *   `nocheck` word in the fence meta: ```ts nocheck
  *
- * Requires `@maxencerb/evs` to be built first (`bun run build` at the repo root) — the
- * package resolves through its dist/ types. Run via `bun run check:snippets`.
+ * Requires `@maxencerb/evs` to be built first (`pnpm run build` / `vp run build` at the repo
+ * root) — the package resolves through its dist/ types. Run via `pnpm run check:snippets` (plain
+ * Node, no Vite+ needed: the Cloudflare docs build runs it).
  */
 
 import { spawnSync } from 'node:child_process';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
-const docsRoot = new URL('..', import.meta.url).pathname;
+const docsRoot = fileURLToPath(new URL('..', import.meta.url));
 const contentDir = join(docsRoot, 'src/content/docs');
 const scratchDir = join(docsRoot, '.snippets');
 
@@ -105,10 +107,13 @@ await writeFile(
 
 console.log(`checking ${all.length} snippet(s) from ${pages.length} page(s)…`);
 
-const tsc = spawnSync('bunx', ['tsc', '-p', join(scratchDir, 'tsconfig.json'), '--pretty'], {
-  cwd: docsRoot,
-  stdio: 'inherit',
-});
+// The workspace's own TypeScript, run on the current Node (no package-manager executor needed).
+const tscBin = fileURLToPath(import.meta.resolve('typescript/bin/tsc'));
+const tsc = spawnSync(
+  process.execPath,
+  [tscBin, '-p', join(scratchDir, 'tsconfig.json'), '--pretty'],
+  { cwd: docsRoot, stdio: 'inherit' },
+);
 if (tsc.status !== 0) {
   console.error(
     '\nsnippet typecheck FAILED — each .snippets/*.ts header names its source page:line.',

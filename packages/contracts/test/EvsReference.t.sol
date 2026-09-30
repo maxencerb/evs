@@ -4,7 +4,7 @@ pragma solidity 0.8.30;
 import {Test, stdError} from "forge-std/Test.sol";
 import {EvsReference} from "../src/EvsReference.sol";
 
-/// @notice Sanity checks pinning the EvsReference oracle to the architecture.md §6
+/// @notice Sanity checks pinning the EvsReference oracle to the evs checked-arithmetic
 ///         boundary semantics: happy paths compute, every documented edge case reverts
 ///         with the exact Panic code the evs codegen must reproduce.
 contract EvsReferenceTest is Test {
@@ -189,7 +189,7 @@ contract EvsReferenceTest is Test {
         assertEq(ref.modI8(-128, 3), -2);
     }
 
-    /// @dev mod never overflows: minN % -1 == 0, NO panic (pins §6 "SMOD: zero-check only").
+    /// @dev mod never overflows: minN % -1 == 0, NO panic (SMOD: zero-check only).
     function testModMinByMinusOneIsZero() public view {
         assertEq(ref.modI8(-128, -1), 0);
         assertEq(ref.modI200(type(int200).min, -1), 0);

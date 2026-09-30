@@ -46,14 +46,14 @@ function echoRuntime(types: readonly EvsType[], evmVersion: EvmVersion): Hex {
   w.op('MSTORE');
   const tails = createSharedTails(w, { evmVersion });
   const refs: SlotRef[] = types.map((type, i) => ({ slot: FRAME_BASE + 32 * i, type }));
-  emitCalldataDecode(w, refs, tails, { evmVersion });
+  emitCalldataDecode(w, refs, tails);
   emitReturnEncode(
     w,
     refs.map((ref, i) => ({ name: `v${i}`, ref })),
     tails,
     { evmVersion },
   );
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   return bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 }
 
@@ -449,7 +449,7 @@ describe('return encode from hand-built state', () => {
         tails,
         { evmVersion },
       );
-      emitSharedTails(w, tails, { evmVersion });
+      emitSharedTails(w, tails);
       const res = await execRuntime(bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode), '0x');
       expect(res.success).toBe(true);
       expect(res.data).toBe(
@@ -490,7 +490,7 @@ describe('return encode from hand-built state', () => {
       tails,
       { evmVersion: 'cancun' },
     );
-    emitSharedTails(w, tails, { evmVersion: 'cancun' });
+    emitSharedTails(w, tails);
     const res = await execRuntime(
       bytesToHex(assemble(w.nodes(), { evmVersion: 'cancun' }).bytecode),
       '0x',
@@ -519,7 +519,7 @@ describe('return encode from hand-built state', () => {
     w.op('MSTORE');
     const tails = createSharedTails(w, { evmVersion: 'cancun' });
     emitReturnEncode(w, [], tails, { evmVersion: 'cancun' });
-    emitSharedTails(w, tails, { evmVersion: 'cancun' });
+    emitSharedTails(w, tails);
     const res = await execRuntime(
       bytesToHex(assemble(w.nodes(), { evmVersion: 'cancun' }).bytecode),
       '0x',

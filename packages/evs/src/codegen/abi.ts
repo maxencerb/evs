@@ -38,6 +38,7 @@ import {
   type NamedType,
   type WordType,
 } from '../core/types.js';
+import { FREE_PTR, MAX_U64, SCRATCH_0, SCRATCH_1 } from './memory.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -63,14 +64,8 @@ export interface SlotRef {
 // shared constants / helpers
 // ---------------------------------------------------------------------------
 
-/** 2^64 − 1 — the overflow-free bound for every decoded offset/length. */
-const MAX_U64 = 0xffffffffffffffffn;
-
-/** Free-memory-pointer slot. */
-const FREE_PTR = 0x40;
-
 /** Scratch slot for running tail cursors (intra-template temporary). */
-const TAIL_CURSOR = 0x00;
+const TAIL_CURSOR = SCRATCH_0;
 
 /** Words per reserved encode loop frame: `{arrPtr, D, len, i}`. */
 const FRAME_SLOTS = 4;
@@ -95,10 +90,10 @@ export interface EncodeOpts {
  * {@link emitDecodeArrayToMem}. The recursive element decoders re-derive their
  * base from `MLOAD(ELEM_BASE)` so the base is stack-depth-independent across their internal churn.
  * Each `emitDecodeArrayToMem` brackets this slot with save/restore, so nested array decodes never
- * clobber a parent's base. It is `0x20` — free during *decode* (the snapshot/calldata base lives in
- * `0x00`, `STAGING_SLOT 0x20` is only live during tuple-arg *encode*, which never overlaps a decode).
+ * clobber a parent's base. It is scratch `0x20` — free during *decode* (see the ownership table
+ * in `codegen/memory.ts`).
  */
-const ELEM_BASE = 0x20;
+const ELEM_BASE = SCRATCH_1;
 
 function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);
@@ -227,13 +222,7 @@ export type PushBase = () => void;
 
 /** @internal Shared by `codegen/call.ts`. Cumulative ABI head offset (bytes) of component `i`
  *  within `components` (static inner tuples inline their whole head; everything else is one word). */
-export function headOffsetsOf(components: readonly NamedType[]): number[] {
-  return headOffsets(components);
-}
-
-/** Cumulative ABI head offset (bytes) of component `i` within `components` (static inner tuples
- *  inline their whole head; everything else is one word). */
-function headOffsets(components: readonly NamedType[]): number[] {
+export function headOffsets(components: readonly NamedType[]): number[] {
   const offs: number[] = [];
   let cursor = 0;
   for (const c of components) {
@@ -374,12 +363,13 @@ function emitSubTupleBase(w: AsmWriter, pushBase: PushBase, ho: number): void {
 }
 
 /**
- * Appends a leaf dynamic member's tail (`[len][payload]`) at the scratch cursor and advances it.
+ * @internal Shared by `codegen/call.ts` (calldata templates). Appends a leaf dynamic member's
+ * tail (`[len][payload]`) at the scratch cursor and advances it.
  * `pushPtr` pushes the member's memref pointer (`[len][payload…]`). `isArray` distinguishes
  * `32·len` (word-array) from `len` (bytes/string, zero-padded). The cursor stays in scratch so
  * `emitMemCopy` runs at exactly `[dst, src, len]`.
  */
-function emitLeafDynTail(
+export function emitLeafDynTail(
   w: AsmWriter,
   pushPtr: () => void,
   isArray: boolean,
@@ -428,11 +418,7 @@ function emitLeafDynTail(
   // cursor += 32 + ceil32(nbytes) (arrays are word-exact already)
   pushNBytes(); // [n]
   if (!isArray) {
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(n)]
+    emitCeil32(w); // [ceil32(n)]
   }
   w.push(32);
   w.op('ADD'); // [inc]
@@ -541,7 +527,7 @@ function emitFrameStore(w: AsmWriter, frameDepth: number, k: number): void {
  * `[dst, src, len]` (the pre-cancun `@memcpy` height contract), even when this array nests inside a
  * tuple member at arbitrary tuple-encode depth.
  */
-export function emitEncodeArrayTail(
+function emitEncodeArrayTail(
   w: AsmWriter,
   elemLayout: TypeLayout,
   pushArrPtr: PushBase,
@@ -846,11 +832,7 @@ function emitBytesFinalize(w: AsmWriter, note: string): void {
   w.op('DUP2'); // [ptr, total, ptr, cursor]
   w.op('MSTORE', { note }); // [ptr, cursor]           mem[ptr] = total
   w.op('SWAP1'); // [cursor, ptr]
-  w.push(31);
-  w.op('ADD');
-  w.push(31);
-  w.op('NOT');
-  w.op('AND'); // [ceil32(cursor), ptr]
+  emitCeil32(w); // [ceil32(cursor), ptr]
   w.push(FREE_PTR);
   w.op('MSTORE'); // [ptr]                              freePtr bumped past the payload
 }
@@ -1427,14 +1409,13 @@ function emitDecodeElement(
 
 /** A tuple layout's components as `NamedType[]` (reconstructed for the recursive decoders). */
 function tupleComponents(l: Extract<TypeLayout, { kind: 'tuple' }>): readonly NamedType[] {
-  return l.components.map((c, i) => layoutToNamed(c, i));
+  return l.components.map((c) => layoutToNamed(c));
 }
 
-function layoutToNamed(l: TypeLayout, i: number): NamedType {
+function layoutToNamed(l: TypeLayout): NamedType {
   if (l.kind === 'tuple') {
-    return { name: '', type: l.abi, components: l.components.map((c, k) => layoutToNamed(c, k)) };
+    return { name: '', type: l.abi, components: l.components.map((c) => layoutToNamed(c)) };
   }
-  void i;
   return { name: '', type: l.abi };
 }
 
@@ -1465,7 +1446,6 @@ export function emitCalldataDecode(
   w: AsmWriter,
   args: readonly SlotRef[],
   tails: SharedTails,
-  _opts: { evmVersion: EvmVersion },
 ): void {
   const params = args.map((ref) => typeToAbiParam('', ref.type));
   const headOffs = headOffsets(params); // cumulative head byte offsets within the args region
@@ -1487,11 +1467,7 @@ export function emitCalldataDecode(
   if (hasTuple) {
     // size := ceil32(cds)
     w.op('CALLDATASIZE');
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [size]
+    emitCeil32(w); // [size]
     w.push(FREE_PTR);
     w.op('MLOAD'); // [snap, size]
     // freePtr := snap + size
@@ -1708,11 +1684,7 @@ function emitDynCalldataArg(
     w.op('SHL'); // [32·len, ptr, len, src]
   } else {
     w.op('DUP2');
-    w.push(31);
-    w.op('ADD');
-    w.push(31);
-    w.op('NOT');
-    w.op('AND'); // [ceil32(len), ptr, len, src]
+    emitCeil32(w); // [ceil32(len), ptr, len, src]
   }
   w.push(32);
   w.op('ADD'); // [size, ptr, len, src]
@@ -1794,7 +1766,9 @@ function emitDynCalldataArg(
  *
  * The running tail cursor lives in scratch `0x00` so every `emitMemCopy` call happens with
  * the stack being exactly `[dst, src, len]` (the pre-cancun `@memcpy` convention). The free
- * pointer is never bumped here — RETURN terminates the program.
+ * pointer is bumped at most once — by `reserveEncodeFrames`, before `out` is read, and only when
+ * the return type has a composite-element array — never during the encode; RETURN terminates the
+ * program.
  */
 export function emitReturnEncode(
   w: AsmWriter,
@@ -1862,6 +1836,16 @@ export function emitReturnEncode(
 // ---------------------------------------------------------------------------
 // emitMemCopy — evmVersion lowering (MCOPY on cancun, @memcpy subroutine before)
 // ---------------------------------------------------------------------------
+
+/** @internal Shared by `codegen/call.ts`. Rounds the top of the stack up to a whole word:
+ *  `[x] → [ceil32(x)]` (`(x + 31) & ~31`). */
+export function emitCeil32(w: AsmWriter): void {
+  w.push(31);
+  w.op('ADD');
+  w.push(31);
+  w.op('NOT');
+  w.op('AND');
+}
 
 /**
  * Memory copy primitive. Stack contract: `[dst, src, len] → []`.

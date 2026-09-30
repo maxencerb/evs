@@ -49,8 +49,8 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: changesets/action/version@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
-          # changeset version + `bun install --lockfile-only` so bun.lock's workspace
-          # version stays in sync (a stale lock breaks `bun pm pack`, oven-sh/bun#20477)
+          # plain `changeset version`: pnpm-lock.yaml links workspace packages without recording
+          # their version, so a bump needs no lockfile resync
           script: vp run changeset:version
           commit-message: 'chore(release): version packages'
           pr-title: 'chore(release): version packages'
@@ -71,14 +71,7 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
-          version: v1.8.1 # keep in sync with ci.yml
-
-      # npm >= 11.5.1 is required for OIDC; Node 24 (from .node-version) bundles >= 11.13.
-      # Node's own npm is used on purpose — `bun publish` has no OIDC support (oven-sh/bun#22423).
-      - name: Ensure npm supports OIDC trusted publishing (>= 11.5.1)
-        run: |
-          npm install -g npm@latest
-          npm --version
+          version: v1.8.3 # keep in sync with ci.yml
 
       - name: Full gate (contracts, build, check, tests)
         run: |
@@ -87,13 +80,42 @@ jobs:
           vp run check
           vp run test
           vp run test:integration
+          (cd packages/evs && vp exec publint && vp exec attw --pack . --profile esm-only)
 
-      # scripts/publish.ts: `bun pm pack` (rewrites catalog:/workspace: specs) →
-      # `npm publish <tgz> --provenance` (OIDC) → `changeset git-tag`. The action reads the
-      # tag events (CHANGESETS_OUTPUT), pushes the tag and creates the GitHub release.
-      - uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
+      # `changeset publish` (changesets CLI 3) publishes with the workspace's package manager:
+      # `pnpm publish --access public --tag <latest|pre tag> --no-git-checks` for every package
+      # whose version is not on npm yet. pnpm >= 11 publishes natively (no npm CLI) and does the
+      # OIDC trusted-publishing exchange itself (ACTIONS_ID_TOKEN_REQUEST_* from `id-token:
+      # write`; no token anywhere), attaches sigstore provenance automatically for a public repo +
+      # public package, and rewrites `catalog:` / `workspace:` specs in the packed manifest.
+      # `prepublishOnly` rebuilds dist/ with `vp pack`. It then creates the
+      # `@maxencerb/evs@X.Y.Z` tag and reports it through CHANGESETS_OUTPUT (set by the action,
+      # passed through `vp run`); the action pushes the tag and creates the GitHub release.
+      - id: publish
+        uses: changesets/action/publish@ae32849d5ba541f9ae29e40e22a623bc13562f51 # v2.1.2
         with:
           script: vp run changeset:publish
           create-github-releases: true
+
+      # pnpm skips (with a warning, not an error) provenance it cannot attach; fail loudly
+      # instead so a release without an attestation is noticed.
+      - name: Verify the published version carries provenance
+        if: steps.publish.outputs.published == 'true'
         env:
-          NODE_AUTH_TOKEN: '' # nothing must shadow OIDC (npm-oidc-release.md §2)
+          PUBLISHED: ${{ steps.publish.outputs.published-packages }}
+        run: |
+          node -e '
+            const { execFileSync } = require("node:child_process");
+            const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+            for (const { name, version } of JSON.parse(process.env.PUBLISHED)) {
+              let att = null;
+              // the registry metadata can lag the publish by a few seconds
+              for (let i = 0; i < 12 && !att?.provenance; i++) {
+                if (i > 0) sleep(10_000);
+                const out = execFileSync("npm", ["view", `${name}@${version}`, "dist.attestations", "--json"], { encoding: "utf8" });
+                att = out.trim() ? JSON.parse(out) : null;
+              }
+              if (!att?.provenance) throw new Error(`${name}@${version}: no provenance attestation on npm`);
+              console.log(`${name}@${version}: provenance ${att.provenance.predicateType}`);
+            }
+          '

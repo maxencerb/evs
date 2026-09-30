@@ -620,6 +620,15 @@ describe('composite arrays CALL-ARG encode + construct against real solc', () =>
       args: [composite],
     });
     expect(override).toStrictEqual({ sum: expectedSum });
+    const at = '0x00000000000000000000000000000000000c0003' as const;
+    await testClient.setCode({ address: at, bytecode: compiled.runtimeBytecode });
+    const setCode = await publicClient.readContract({
+      address: at,
+      abi: compiled.abi,
+      functionName: 'mkAndSum',
+      args: [composite],
+    });
+    expect(setCode).toStrictEqual({ sum: expectedSum });
   });
 
   test('construct a uint256[][] in the evs script and return it → deep-equals expected', async () => {
@@ -657,10 +666,9 @@ describe('failure path: positions at an EOA → EvsDecodeError', () => {
     });
     const explained = compiled.explainRevert(raw);
     expect(explained.kind).toBe('evs-decode');
-    const site = explained.site;
-    expect(site).toBeDefined();
-    if (site !== undefined && site.loc !== null) {
-      expect(site.loc.file).toContain('composite.test.ts');
-    }
+    // the site names the positions() call, with its recording location
+    expect(explained.site?.detail).toBe('decoding positions() returndata');
+    expect(explained.site?.loc).not.toBeNull();
+    expect(explained.site?.loc?.file).toContain('composite.test.ts');
   });
 });

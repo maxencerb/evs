@@ -10,26 +10,12 @@
  * content changes only when the contracts change. Idempotent: unchanged files are not
  * rewritten; stale files are pruned (this script is the directory's only writer).
  *
- * Run with: `bun scripts/codegen.ts` (any cwd — paths resolve from this file).
+ * Run with: `node scripts/codegen.ts` (Node >= 22.18 type stripping; any cwd — paths resolve
+ * from this file), or `vp run codegen`.
  */
-import { readdir, rm } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
-
-// Minimal typed surface of the Bun globals used here. `bun-types` is deliberately not a
-// workspace dependency; this script only ever runs under the bun runtime (`bun run codegen`).
-interface BunShellPromise extends Promise<unknown> {
-  cwd(dir: string): BunShellPromise;
-}
-interface BunFileLike {
-  exists(): Promise<boolean>;
-  text(): Promise<string>;
-  json(): Promise<unknown>;
-}
-declare const Bun: {
-  $(strings: TemplateStringsArray, ...expressions: readonly unknown[]): BunShellPromise;
-  file(path: string): BunFileLike;
-  write(path: string, content: string): Promise<number>;
-};
 
 const CONTRACTS = [
   'Composite',
@@ -138,11 +124,11 @@ function assertHex(value: unknown, what: string): string {
 
 async function readArtifact(name: string): Promise<ContractArtifact> {
   const path = `${contractsDir}out/${name}.sol/${name}.json`;
-  const file = Bun.file(path);
-  if (!(await file.exists())) {
+  const text = await readFile(path, 'utf8').catch((): undefined => undefined);
+  if (text === undefined) {
     throw new Error(`codegen: missing forge artifact ${path} — did forge build fail?`);
   }
-  const raw: unknown = await file.json();
+  const raw: unknown = JSON.parse(text);
   if (!isRecord(raw)) throw new Error(`codegen: ${name}.json is not an object`);
   const abi = raw['abi'];
   if (!Array.isArray(abi)) throw new Error(`codegen: ${name}.json has no abi array`);
@@ -172,7 +158,7 @@ function renderModule(name: string, artifact: ContractArtifact): string {
   const abiText = indentLines(JSON.stringify(abi, null, 2), '  ');
   return [
     '// AUTO-GENERATED FILE — DO NOT EDIT.',
-    '// Emitted by packages/contracts/scripts/codegen.ts (`bun run codegen`).',
+    '// Emitted by packages/contracts/scripts/codegen.ts (`vp run codegen`).',
     `// Source: packages/contracts/src/${name}.sol — solc 0.8.30, optimizer off, via_ir off.`,
     '',
     `export const ${name} = {`,
@@ -187,27 +173,26 @@ function renderModule(name: string, artifact: ContractArtifact): string {
 function renderBarrel(names: readonly string[]): string {
   return [
     '// AUTO-GENERATED FILE — DO NOT EDIT.',
-    '// Emitted by packages/contracts/scripts/codegen.ts (`bun run codegen`).',
+    '// Emitted by packages/contracts/scripts/codegen.ts (`vp run codegen`).',
     '',
-    ...names.toSorted().map((n) => `export { ${n} } from './${n}.js';`),
+    // `.ts` specifiers: the examples import this barrel under plain Node (type stripping does
+    // not map `.js` onto `.ts`); vitest and tsc (allowImportingTsExtensions) accept both.
+    ...names.toSorted().map((n) => `export { ${n} } from './${n}.ts';`),
     '',
   ].join('\n');
 }
 
 /** Writes only when content differs; returns whether the file changed. */
 async function writeIfChanged(path: string, content: string): Promise<boolean> {
-  const file = Bun.file(path);
-  if (await file.exists()) {
-    const existing = await file.text();
-    if (existing === content) return false;
-  }
-  await Bun.write(path, content);
+  const existing = await readFile(path, 'utf8').catch((): undefined => undefined);
+  if (existing === content) return false;
+  await writeFile(path, content);
   return true;
 }
 
 async function main(): Promise<void> {
   process.stdout.write('codegen: forge build…\n');
-  await Bun.$`forge build`.cwd(contractsDir);
+  execFileSync('forge', ['build'], { cwd: contractsDir, stdio: 'inherit' });
 
   const outputs = [
     ...(await Promise.all(
@@ -219,15 +204,15 @@ async function main(): Promise<void> {
     { fileName: 'index.ts', content: renderBarrel(CONTRACTS) },
   ];
 
+  await mkdir(generatedDir, { recursive: true });
   const written = await Promise.all(
     outputs.map(async ({ fileName, content }) => ({
       fileName,
       changed: await writeIfChanged(`${generatedDir}${fileName}`, content),
     })),
   );
-  for (const { fileName, changed } of written.filter((w) => w.changed)) {
+  for (const { fileName } of written.filter((w) => w.changed)) {
     process.stdout.write(`codegen: wrote test/generated/${fileName}\n`);
-    void changed;
   }
 
   // Prune stale files (this script is the directory's only writer).
