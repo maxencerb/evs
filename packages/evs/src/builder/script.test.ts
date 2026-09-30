@@ -108,7 +108,7 @@ describe('script shell', () => {
   );
 
   test('IR snapshot', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
   });
 
   test('args bind to ValueIds 0…n−1, in declaration order, auto-named with debugNames', () => {
@@ -251,7 +251,7 @@ describe('named args (namedArg)', () => {
     ]);
     expect(script.ir.fns[0]?.results).toEqual([{ type: 'uint24' }]);
     expect(script.ir.returns.map((r) => r.type)).toEqual(['uint24', 'address']);
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
   });
 
   test('s.fn struct param: a script-arg Tuple passes straight through; literal objects coerce', () => {
@@ -388,7 +388,7 @@ describe('literals (s.lit + coercion)', () => {
   );
 
   test('IR snapshot (word canonicalization + memref data consts)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -476,7 +476,7 @@ describe('arithmetic / comparison / bool / bitwise families', () => {
   );
 
   test('IR snapshot', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -510,7 +510,7 @@ describe('conversions', () => {
   );
 
   test('IR snapshot + result types', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const types = Object.fromEntries(script.ir.returns.map((r) => [r.name, r.type]));
     expect(types).toEqual({
@@ -546,7 +546,7 @@ describe('env', () => {
   );
 
   test('IR snapshot + out types (address/caller → address, others → uint256)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const types = Object.fromEntries(script.ir.returns.map((r) => [r.name, r.type]));
     expect(types).toEqual({
@@ -579,7 +579,7 @@ describe('cells (s.let)', () => {
   );
 
   test('IR snapshot (cellnew/cellget/cellset)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(script.ir.cells).toHaveLength(2);
   });
@@ -617,7 +617,7 @@ describe('MutArray (s.newArray)', () => {
   );
 
   test('IR snapshot (arrnew/len/arrset/index)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -634,7 +634,7 @@ describe('MutArray (s.newArray)', () => {
       (s, xs) => s.return({ n: xs.length(), first: xs.at(0n) }),
       NO_LOC,
     );
-    expect(serializeIr(script2.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script2.ir))).toMatchSnapshot();
     expect(() => validateIr(script2.ir)).not.toThrow();
     expect(script2.ir.returns.find((r) => r.name === 'first')?.type).toBe('address');
   });
@@ -675,7 +675,7 @@ describe('Tuple (s.tuple + field get/set)', () => {
       },
       NO_LOC,
     );
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const news = allStmts(script.ir).filter((s) => s.k === 'tuplenew');
     expect(news).toHaveLength(1);
@@ -716,7 +716,7 @@ describe('Tuple (s.tuple + field get/set)', () => {
       },
       NO_LOC,
     );
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     // the single tuple output yields a Tuple handle whose field read is uint128-typed
     expect(script.ir.returns.find((r) => r.name === 'liquidity')?.type).toBe('uint128');
@@ -815,7 +815,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
       },
       NO_LOC,
     );
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const enc = allStmts(script.ir).filter((s) => s.k === 'encode');
     expect(enc).toHaveLength(1);
@@ -834,7 +834,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
       },
       NO_LOC,
     );
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const encs = allStmts(script.ir).filter((s) => s.k === 'encode');
     expect(encs).toHaveLength(2);
@@ -960,7 +960,7 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
       (s, a, b, c, d) => s.return({ eq: a.eq(b), neq: c.neq(d) }),
       NO_LOC,
     );
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const { bins, hashes, encodes } = eqShape(script.ir);
     expect(encodes).toHaveLength(0);
@@ -1110,7 +1110,7 @@ describe('s.if', () => {
   );
 
   test('IR snapshot (cond evaluated once, before the branches; empty else)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const ifs = allStmts(script.ir).filter((s) => s.k === 'if');
     expect(ifs).toHaveLength(2);
@@ -1143,7 +1143,7 @@ describe('s.while', () => {
   );
 
   test('IR snapshot (header block + cond + body with break/continue)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const wh = allStmts(script.ir).find((s) => s.k === 'while');
     if (wh?.k !== 'while') throw new Error('expected a while statement');
@@ -1189,7 +1189,7 @@ describe('s.for', () => {
   );
 
   test('IR snapshot (sugar over while + an internal cell; step defaults to 1)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -1279,7 +1279,7 @@ describe('s.forEach', () => {
   );
 
   test('IR snapshot (one len snapshot before the loop; index per iteration; step tail)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     const stmts = allStmts(script.ir);
     // the array length is snapshot ONCE, outside the while
@@ -1424,7 +1424,7 @@ describe('s.select', () => {
   );
 
   test('IR snapshot (eager both sides)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -1469,7 +1469,7 @@ describe('s.call / s.tryCall', () => {
   );
 
   test('IR snapshot (strict + try, literal/expr args, gas, multi-output)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
   });
 
@@ -1537,7 +1537,7 @@ describe('s.fn', () => {
   );
 
   test('IR snapshot (fn body recorded once; two fncalls)', () => {
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(script.ir.fns).toHaveLength(1);
     expect(allStmts(script.ir).filter((s) => s.k === 'fncall')).toHaveLength(2);
@@ -1633,7 +1633,7 @@ describe('all-literal folding', () => {
     expect(() => validateIr(script.ir)).not.toThrow();
     // every stmt in the body is a const — no bin/un/convert survived
     expect(allStmts(script.ir).every((s) => s.k === 'const')).toBe(true);
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
 
     const hex = (name: string): string | undefined =>
       constHexOf(script.ir, script.ir.returns.find((r) => r.name === name)?.value ?? -1);
@@ -1813,7 +1813,7 @@ describe('integration-shaped recording', () => {
       NO_LOC,
     );
     expect(() => validateIr(script.ir)).not.toThrow();
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
   });
 });
 
@@ -1860,7 +1860,7 @@ describe('issue #5 ergonomics', () => {
     expect(() => validateIr(direct.ir)).not.toThrow();
     // the bare-Tuple fn return is byte-identical to wrapping it in `.expr()`.
     expect(serializeIr(direct.ir)).toBe(serializeIr(viaExpr.ir));
-    expect(serializeIr(direct.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(direct.ir))).toMatchSnapshot();
     // the fn result type is recorded as the full struct.
     expect(direct.ir.fns[0]?.results[0]?.type).toMatchObject({ type: 'tuple' });
     // the call site receives a Tuple handle (field reads are member-typed via `field` stmts).
@@ -1902,7 +1902,7 @@ describe('issue #5 ergonomics', () => {
       NO_LOC,
     );
     expect(() => validateIr(script.ir)).not.toThrow();
-    expect(serializeIr(script.ir)).toMatchSnapshot();
+    expect(JSON.parse(serializeIr(script.ir))).toMatchSnapshot();
     // ONE tuplenew composes the three decoded outputs; the default positional path emits none.
     const news = allStmts(script.ir).filter((st) => st.k === 'tuplenew');
     expect(news).toHaveLength(1);
