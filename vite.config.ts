@@ -109,16 +109,6 @@ export default defineConfig({
     jsPlugins: [{ name: 'vite-plus', specifier: 'vite-plus/oxlint-plugin' }],
   },
   test: {
-    // Vitest v4 compatibility: preserve mock call history.
-    // Remove after tests no longer rely on calls from setup or earlier tests.
-    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
-    // https://vitest.dev/guide/migration/#clearmocks-is-enabled-by-default
-    clearMocks: false,
-    // Vitest v4 compatibility: keep separate Vite servers for inline projects.
-    // Remove when plugins and config hooks can run once for shared projects.
-    // https://viteplus.dev/guide/vitest-v5#remove-unneeded-compatibility-settings
-    // https://vitest.dev/guide/migration/#inline-projects-share-the-vite-server-by-default
-    sharedViteServer: false,
     projects: evsProjects,
     // Vitest 5 matches coverage globs against paths relative to the project root
     // (packages/evs); the old repo-relative `packages/evs/src/**` matched nothing there.
