@@ -1,19 +1,23 @@
 /**
  * Unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per solc's
  * `Panic(uint256)` encoding, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts, and
- * the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`.
+ * the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`, and tail elision (only
+ * referenced tails are emitted — issue #73).
  *
  * Everything assembles with full verification (jumpdests, stack heights, shapes) and runs on
  * the in-process EVM harness (test/harness/evm.ts).
  */
 
+import { encodeErrorResult, encodeFunctionData, erc20Abi, maxUint256 } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime } from '../../test/harness/evm.js';
 import { selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import type { Hex } from '../core/types.js';
+import { evscript } from '../builder/script.js';
+import { compile } from '../compile.js';
+import { t, type Hex } from '../core/types.js';
 import { emitMemCopy, type SharedTails } from './abi.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
@@ -192,5 +196,140 @@ describe('memcpy lowering', () => {
     const res = await execRuntime(bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode), '0x');
     expect(res.success).toBe(true);
     expect(res.data).toBe(`0x${'ab'.repeat(32)}`);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tail elision (issue #73): only referenced tails are emitted
+// ---------------------------------------------------------------------------
+
+const ALL_TAILS = [
+  'panic_overflow',
+  'panic_divzero',
+  'panic_bounds',
+  'panic_alloc',
+  'panic',
+  'decode_revert',
+  'badcd',
+  'memcpy',
+] as const;
+type TailName = (typeof ALL_TAILS)[number];
+
+/** The shared-tail labels placed in a compiled script's runtime. */
+function placedTails(art: { disassemble(): { format(): string } }): Set<TailName> {
+  const lines = art.disassemble().format().split('\n');
+  return new Set(ALL_TAILS.filter((name) => lines.includes(`@${name}:`)));
+}
+
+const addScript = () =>
+  evscript({ name: 'add', args: [t.uint256, t.uint256] }, (s, a, b) => s.return({ sum: a.add(b) }));
+
+describe('tail elision (issue #73)', () => {
+  test('emitSharedTails emits nothing when no tail is referenced', () => {
+    for (const evmVersion of FORKS) {
+      const w = new AsmWriter();
+      emitSharedTails(w, createSharedTails(w, { evmVersion }));
+      expect(w.nodes()).toEqual([]);
+    }
+  });
+
+  test('emitSharedTails emits only the referenced stub + the @panic core', () => {
+    const w = new AsmWriter();
+    const tails = createSharedTails(w, { evmVersion: 'cancun' });
+    w.pushLabel(tails.panicBounds);
+    w.op('JUMP');
+    emitSharedTails(w, tails);
+    const names = w
+      .nodes()
+      .flatMap((n) => (n.k === 'label' && n.name !== undefined ? [n.name] : []));
+    expect(names).toEqual(['panic_bounds', 'panic']);
+  });
+
+  for (const optimize of [false, true]) {
+    test(`add: only @panic_overflow + @panic + @badcd are emitted (optimize: ${optimize})`, () => {
+      for (const evmVersion of FORKS) {
+        expect(placedTails(compile(addScript(), { evmVersion, optimize }))).toEqual(
+          new Set(['panic_overflow', 'panic', 'badcd']),
+        );
+      }
+    });
+  }
+
+  test('add: overflow still reverts Panic(0x11) and explainRevert works without the other tails', async () => {
+    const art = compile(addScript());
+    const calldata = encodeFunctionData({
+      abi: art.abi,
+      functionName: 'add',
+      args: [maxUint256, 1n],
+    });
+    const res = await execRuntime(art.runtimeBytecode, calldata);
+    expect(res.success).toBe(false);
+    const panic = art.explainRevert(res.data);
+    expect(panic.kind).toBe('panic');
+    expect(panic.panicCode).toBe(0x11n);
+    // a payload whose tail is absent from this script still explains (bubbled-callee wording)
+    const divzero = art.explainRevert(
+      encodeErrorResult({
+        abi: [{ type: 'error', name: 'Panic', inputs: [{ name: 'code', type: 'uint256' }] }],
+        errorName: 'Panic',
+        args: [0x12n],
+      }),
+    );
+    expect(divzero.kind).toBe('panic');
+    expect(divzero.candidateSites).toEqual([]);
+    const decode = art.explainRevert(
+      encodeErrorResult({
+        abi: [
+          { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
+        ],
+        errorName: 'EvsDecodeError',
+        args: [0n],
+      }),
+    );
+    expect(decode.kind).toBe('evs-decode');
+    // and a bad-calldata call still hits the (referenced) @badcd tail
+    const bad = await execRuntime(art.runtimeBytecode, '0x');
+    expect(bad.data).toBe(selectorOf('EvsInvalidCalldata', []));
+  });
+
+  test('a tail-free script (no checked arithmetic) carries no panic tails at all', () => {
+    const id = evscript({ name: 'id', args: [t.address] }, (s, a) => s.return({ a }));
+    expect(placedTails(compile(id))).toEqual(new Set(['badcd']));
+  });
+
+  test('each tail is emitted once something references it', async () => {
+    const div = evscript({ name: 'div', args: [t.uint256, t.uint256] }, (s, a, b) =>
+      s.return({ q: a.div(b) }),
+    );
+    expect(placedTails(compile(div))).toContain('panic_divzero');
+    expect(placedTails(compile(div))).toContain('panic');
+    const divArt = compile(div);
+    const res = await execRuntime(
+      divArt.runtimeBytecode,
+      encodeFunctionData({ abi: divArt.abi, functionName: 'div', args: [1n, 0n] }),
+    );
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(concat('0x4e487b71', word(0x12n)));
+
+    const at = evscript({ name: 'at', args: [t.array(t.uint256), t.uint256] }, (s, xs, i) =>
+      s.return({ x: xs.at(i) }),
+    );
+    expect(placedTails(compile(at))).toContain('panic_bounds');
+
+    const alloc = evscript({ name: 'alloc', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      return s.return({ out: out.expr() });
+    });
+    expect(placedTails(compile(alloc))).toContain('panic_alloc');
+
+    // strict s.read → per-site @dfail stub → @decode_revert; pre-cancun string copy → @memcpy
+    const sym = evscript({ name: 'sym', args: [t.address] }, (s, token) =>
+      s.return({ symbol: s.read({ address: token, abi: erc20Abi, functionName: 'symbol' }) }),
+    );
+    expect(placedTails(compile(sym))).toContain('decode_revert');
+    expect(placedTails(compile(sym, { evmVersion: 'shanghai' }))).toContain('memcpy');
+    expect(placedTails(compile(sym, { evmVersion: 'cancun' }))).not.toContain('memcpy');
+    // … and a script without memory copies drops @memcpy even pre-cancun
+    expect(placedTails(compile(addScript(), { evmVersion: 'paris' }))).not.toContain('memcpy');
   });
 });
