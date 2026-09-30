@@ -1,4 +1,4 @@
-# token-balances — batch reads (api.md E2)
+# token-balances — batch reads (E2)
 
 The multicall replacement: one compiled script loops over a **runtime** `address[]`,
 `tryRead`s `balanceOf` on each (EOAs default to `0` instead of reverting the batch), and

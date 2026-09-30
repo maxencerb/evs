@@ -1,4 +1,4 @@
-# pool-meta — flagship example (api.md E1)
+# pool-meta — flagship example (E1)
 
 Reads a Uniswap-V3-style pool's `token0`/`token1`/`fee`/`slot0`, then each token's
 `symbol` (data flowing between calls **on-chain**), a `tryRead`'d `decimals` with a

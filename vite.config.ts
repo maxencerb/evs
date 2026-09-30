@@ -4,7 +4,7 @@ import evsConfig from './packages/evs/vite.config.ts';
 
 // Shared toolchain config for the whole workspace (Vite+): formatter, linter, and the test
 // projects. Per-package Vite/Vitest config stays next to the package; the library's test
-// projects (packages/evs/vite.config.ts, the single source of truth per testing.md §1) are
+// projects (packages/evs/vite.config.ts, the single source of truth) are
 // re-rooted here so `vp test --project unit|types|integration` works from the repo root —
 // vitest does not flatten nested `projects` out of a referenced package config.
 const evsProjects = (evsConfig.test?.projects ?? []).map((project) => {

@@ -4,7 +4,7 @@ export default defineConfig({
   test: {
     projects: [
       {
-        // The M10 harness self-tests (test/harness/*.test.ts, in-process @ethereumjs/evm —
+        // The harness self-tests (test/harness/*.test.ts, in-process @ethereumjs/evm —
         // no anvil needed) run in the `unit` project so the regular `bun run test` flow
         // exercises them. The `integration` project (test/integration/**) is unaffected.
         test: {
