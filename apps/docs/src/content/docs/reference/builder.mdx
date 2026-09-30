@@ -484,7 +484,8 @@ elides their type arguments). The `address` can itself be an
   `readonly (Expr | Tuple)[]` — never a hard type error.
 - An overloaded name is resolved by the `args`' types (`ResolveOverload`), and the result is typed
   from the chosen overload; args fitting several overloads fail to compile and throw
-  `EvsTypeError` (`ABI_SHAPE`) at recording. A canonical signature (`functionName: 'get(uint8)'`)
+  `EvsTypeError` (`ABI_SHAPE`) at recording, args fitting none of several same-arity overloads
+  fail to compile and throw `TYPE_MISMATCH`. A canonical signature (`functionName: 'get(uint8)'`)
   names one overload exactly. See [calls — overloaded functions](/guides/calls/#overloaded-functions).
 - ABI parameter types outside the current scope throw `EvsTypeError` at recording.
 

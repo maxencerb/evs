@@ -227,7 +227,8 @@ type LitOf<t extends EvsType> = t extends NumericType
                     ? readonly (LitOf<e> | Expr<e>)[] // `T[N]` — N enforced at recording
                     : never
                   : t extends `${string}[${string}]`
-                    ? readonly unknown[] // `T[][N]`-style chains: widened, validated at recording
+                    ? // `T[2][3]`, `T[][2]`, …: the element peeled by forward parsing
+                      readonly (LitOf<NoInfer<ArrayElemOf<t>>> | Expr<NoInfer<ArrayElemOf<t>>>)[]
                     : never;
 
 type IntoExpr<t extends EvsType> = Expr<t> | LitOf<t>;
