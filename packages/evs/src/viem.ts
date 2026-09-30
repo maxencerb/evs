@@ -28,7 +28,9 @@ import type { StateOverride } from 'viem';
 import {
   canonicalTypeSignature,
   decodeErrorArgsRecord,
-  PANIC_MEANINGS,
+  describePanic,
+  ERROR_STRING_SELECTOR,
+  PANIC_SELECTOR,
   selectorOf,
 } from './abi/artifact.js';
 import type { EvmVersion } from './asm/ops.js';
@@ -46,11 +48,15 @@ const PUSH2_MAX = 0xffff;
 
 const EVM_VERSIONS: ReadonlySet<string> = new Set(['paris', 'shanghai', 'cancun']);
 
-function assertEvmVersion(evmVersion: string): void {
+/** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). */
+export function assertEvmVersion(
+  evmVersion: string,
+  prefix = '',
+): asserts evmVersion is EvmVersion {
   if (!EVM_VERSIONS.has(evmVersion)) {
     throw new EvsCompileError(
       'EVM_VERSION',
-      `unknown evmVersion ${JSON.stringify(evmVersion)} — expected 'paris', 'shanghai' or 'cancun'`,
+      `${prefix}unknown evmVersion ${JSON.stringify(evmVersion)} — expected 'paris', 'shanghai' or 'cancun'`,
     );
   }
 }
@@ -172,8 +178,6 @@ export type DecodedScriptError<abi extends Abi | readonly unknown[] = Abi> =
   | DecodedAbiError<abi>
   | DecodedBuiltinError;
 
-const PANIC_SELECTOR = selectorOf('Panic', ['uint256']);
-const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']);
 const ERROR_STRING_INPUTS: readonly PlainAbiParam[] = [{ name: 'reason', type: 'string' }];
 
 /** One (untrusted) ABI parameter → a `PlainAbiParam` (`name` defaulted to '', recursive over
@@ -278,8 +282,7 @@ function decodeRevertData(abi: Abi | readonly unknown[], raw: Hex): DecodedScrip
 
   if (selector === PANIC_SELECTOR && bytes.length === 36) {
     const code = bytesToBigInt(bytes, 4);
-    const codeHex = `0x${code.toString(16).padStart(2, '0')}`;
-    return { name: 'Panic', code, meaning: PANIC_MEANINGS[codeHex] ?? 'unknown panic code', raw };
+    return { name: 'Panic', code, meaning: describePanic(code).meaning, raw };
   }
   if (selector === ERROR_STRING_SELECTOR) {
     const decoded = decodeErrorArgsRecord(ERROR_STRING_INPUTS, payload);

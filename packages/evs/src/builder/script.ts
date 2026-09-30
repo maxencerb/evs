@@ -16,8 +16,11 @@ import type { ContractFunctionName } from 'viem';
 
 import {
   buildScriptAbi,
+  ERROR_STRING_SELECTOR,
   errorSelectorOf,
-  selectorOf,
+  EVS_DECODE_ERROR_SELECTOR,
+  EVS_INVALID_CALLDATA_SELECTOR,
+  PANIC_SELECTOR,
   type ResolveArgName,
   type ScriptAbi,
 } from '../abi/artifact.js';
@@ -174,10 +177,10 @@ function isEvsErrorValue(v: unknown): v is EvsErrorType {
 // buildScriptAbi); this catches the astronomically-unlikely selector collision under a
 // DIFFERENT name, which would corrupt every decode path.
 const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
-  [selectorOf('Panic', ['uint256']), 'Panic(uint256)'],
-  [selectorOf('Error', ['string']), 'Error(string)'],
-  [selectorOf('EvsDecodeError', ['uint256']), 'EvsDecodeError(uint256)'],
-  [selectorOf('EvsInvalidCalldata', []), 'EvsInvalidCalldata()'],
+  [PANIC_SELECTOR, 'Panic(uint256)'],
+  [ERROR_STRING_SELECTOR, 'Error(string)'],
+  [EVS_DECODE_ERROR_SELECTOR, 'EvsDecodeError(uint256)'],
+  [EVS_INVALID_CALLDATA_SELECTOR, 'EvsInvalidCalldata()'],
 ]);
 
 /** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry

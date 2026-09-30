@@ -44,7 +44,7 @@
 
 import { getAddress, keccak256 as viemKeccak256 } from 'viem';
 
-import { selectorOf } from '../abi/artifact.js';
+import { EVS_DECODE_ERROR_SELECTOR, PANIC_SELECTOR } from '../abi/artifact.js';
 import {
   bytesToBigInt as readPartialWord,
   bytesToHex,
@@ -217,10 +217,9 @@ function resolveEnv(env: InterpEnvOverrides | undefined): ResolvedEnv {
   };
 }
 
-/** `Panic(uint256)` selector bytes. */
-const PANIC_SELECTOR = Uint8Array.of(0x4e, 0x48, 0x7b, 0x71);
-/** `EvsDecodeError(uint256)` selector — single source of truth is abi/artifact.ts's selectorOf. */
-const DECODE_ERROR_SELECTOR = hexToBytes(selectorOf('EvsDecodeError', ['uint256']));
+/** `Panic(uint256)` / `EvsDecodeError(uint256)` selector bytes. */
+const PANIC_SELECTOR_BYTES = hexToBytes(PANIC_SELECTOR);
+const DECODE_ERROR_SELECTOR_BYTES = hexToBytes(EVS_DECODE_ERROR_SELECTOR);
 
 // ---------------------------------------------------------------------------
 // value model
@@ -280,11 +279,11 @@ class LoopSignal {
 }
 
 function panicSignal(code: number): RevertSignal {
-  return new RevertSignal(concatBytes([PANIC_SELECTOR, wordToBytes(BigInt(code))]));
+  return new RevertSignal(concatBytes([PANIC_SELECTOR_BYTES, wordToBytes(BigInt(code))]));
 }
 
 function decodeErrorSignal(site: number): RevertSignal {
-  return new RevertSignal(concatBytes([DECODE_ERROR_SELECTOR, wordToBytes(BigInt(site))]));
+  return new RevertSignal(concatBytes([DECODE_ERROR_SELECTOR_BYTES, wordToBytes(BigInt(site))]));
 }
 
 // ---------------------------------------------------------------------------

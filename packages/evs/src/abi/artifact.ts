@@ -371,8 +371,17 @@ export function decodeErrorArgsRecord(
 }
 
 /**
+ * The built-in error selectors every decode path recognizes: Solidity's `Panic(uint256)` and
+ * `Error(string)`, plus the evs runtime errors.
+ */
+export const PANIC_SELECTOR = selectorOf('Panic', ['uint256']); // 0x4e487b71
+export const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']); // 0x08c379a0
+export const EVS_DECODE_ERROR_SELECTOR = selectorOf('EvsDecodeError', ['uint256']);
+export const EVS_INVALID_CALLDATA_SELECTOR = selectorOf('EvsInvalidCalldata', []);
+
+/**
  * Solidity `Panic(uint256)` code meanings (shared by `explainRevert` and the client-side
- * `decodeScriptError` — issue #15 moved the table here from compile.ts, which re-uses it).
+ * `decodeScriptError`).
  */
 export const PANIC_MEANINGS: Readonly<Record<string, string>> = Object.freeze({
   '0x00': 'generic compiler panic',
@@ -386,6 +395,12 @@ export const PANIC_MEANINGS: Readonly<Record<string, string>> = Object.freeze({
   '0x41': 'allocation too large (out of memory)',
   '0x51': 'call to a zero-initialized internal function',
 });
+
+/** A `Panic(uint256)` code as its `0x`-hex form (at least two digits) and its meaning. */
+export function describePanic(code: bigint): { codeHex: string; meaning: string } {
+  const codeHex = `0x${code.toString(16).padStart(2, '0')}`;
+  return { codeHex, meaning: PANIC_MEANINGS[codeHex] ?? 'unknown panic code' };
+}
 
 /**
  * One `AbiParameter` → `PlainAbiParam`, recursing through tuple components so `s.call` accepts
