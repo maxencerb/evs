@@ -88,10 +88,18 @@ describe('execRuntime — gas accounting', () => {
     expect(result.gasUsed).toBe(100_000n);
   });
 
-  test('default gas limit is 30M (spinner without fixture burns exactly 30M)', async () => {
-    const result = await execRuntime(RUNTIME_SPIN, '0x');
-    expect(result.success).toBe(false);
-    expect(result.gasUsed).toBe(DEFAULT_GAS_LIMIT);
+  test('default gas limit is 30M (GAS at entry = limit - 2)', async () => {
+    // 5a        GAS             ; costs 2, pushes what is left
+    // 5f        PUSH0
+    // 52        MSTORE          ; mstore(0, gas)
+    // 6020      PUSH1 0x20
+    // 5f        PUSH0
+    // f3        RETURN          ; return(0, 32)
+    // (reading the limit beats burning it: a 30M spinner costs ~1s; the exhaustion accounting
+    // itself is pinned by the 100k test above)
+    const result = await execRuntime('0x5a5f5260205ff3', '0x');
+    expect(result.success).toBe(true);
+    expect(BigInt(result.data)).toBe(DEFAULT_GAS_LIMIT - 2n);
   });
 });
 
