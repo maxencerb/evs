@@ -4,6 +4,12 @@
  */
 
 import { EvsStagingError, EvsTypeError } from './errors.js';
+import {
+  functionsByRef,
+  functionSignature,
+  type AbiFunctionSignature,
+  type SignatureName,
+} from './signature.js';
 
 // `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
 export type { Address } from 'abitype';
@@ -397,13 +403,26 @@ export type AbiParamToEvsType<p extends AbiParameter> = p extends {
     }
   : Extract<p['type'], EvsType>;
 
-/** The view/pure-or-any `function` entry of `abi` named `name` (a union if overloaded). */
+/** The `function` entry of `abi` that `name` selects: a bare name (a union if overloaded) or a
+ *  canonical signature `'get(uint256)'` naming one overload (issue #4). */
 type AbiFnNamed<abi, name extends string> = abi extends Abi
-  ? Extract<abi[number], { readonly type: 'function'; readonly name: name }>
+  ? name extends `${string}(${string}`
+    ? MatchAbiSignature<
+        Extract<abi[number], { readonly type: 'function'; readonly name: SignatureName<name> }>,
+        name
+      >
+    : Extract<abi[number], { readonly type: 'function'; readonly name: name }>
+  : never;
+
+type MatchAbiSignature<f, ref extends string> = f extends unknown
+  ? AbiFunctionSignature<f> extends ref
+    ? f
+    : never
   : never;
 
 /**
- * `t.fromOutputs(abi, name)` → the {@link EvsType} of the function's outputs: a SINGLE output →
+ * `t.fromOutputs(abi, name)` → the {@link EvsType} of the function's outputs (`name` is a bare
+ * function name or, for an overloaded function, its canonical signature): a SINGLE output →
  * that output's type (a {@link TupleType} for a tuple output, else the scalar/array string); MANY
  * outputs → a {@link TupleType} struct over the (named, ABI-ordered) outputs. A non-`const` ABI /
  * unknown name degrades to {@link EvsType} (never a hard error — mirrors `s.call` widening).
@@ -909,8 +928,10 @@ function isRecordObject(v: unknown): v is Record<string, unknown> {
 }
 
 /**
- * `t.fromOutputs(abi, name)` runtime: locate the single function named `name` (overloads are not
- * supported yet — #4 — mirroring `s.call`), validate + canonicalize its outputs through {@link componentsFromAbi},
+ * `t.fromOutputs(abi, name)` runtime: locate the single function `name` selects — a bare name, or a
+ * canonical signature `'get(uint256)'` for an overloaded function (issue #4; there are no args to
+ * resolve overloads by, so an overloaded bare name is an `ABI_SHAPE` ambiguity listing the
+ * signatures) — validate + canonicalize its outputs through {@link componentsFromAbi},
  * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
  * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
  * does and round-trips with a `s.read({…, struct: true})` decode of the same function.
@@ -927,20 +948,20 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
   }
   // `Array.isArray` narrows `abi` to `any[]`; re-widen to `unknown[]` so member access is guarded.
   const entries: readonly unknown[] = abi;
-  const fns = entries.filter(
-    (it): it is Record<string, unknown> =>
-      isRecordObject(it) && it['type'] === 'function' && it['name'] === name,
-  );
+  const { entries: found, bySignature } = functionsByRef(entries, name);
+  // identical entries (an ABI listing the same function twice) are one function
+  const fns = [...new Map(found.map((f) => [functionSignature(f), f] as const)).values()];
   if (fns.length === 0) {
+    const what = bySignature ? `with signature "${name}"` : `named "${name}"`;
     throw new EvsTypeError(
       'ABI_SHAPE',
-      `t.fromOutputs("${name}"): the provided ABI has no function named "${name}"`,
+      `t.fromOutputs("${name}"): the provided ABI has no function ${what}`,
     );
   }
   if (fns.length > 1) {
     throw new EvsTypeError(
-      'UNSUPPORTED_V0',
-      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.length} entries) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
+      'ABI_SHAPE',
+      `t.fromOutputs("${name}"): function "${name}" is overloaded (${fns.map(functionSignature).join(', ')}) — name one by its signature, e.g. t.fromOutputs(abi, "${functionSignature(fns[0] ?? {})}")`,
     );
   }
   const outputs = fns[0]?.outputs;

@@ -706,14 +706,29 @@ describe('checklist: call-site ABI validation', () => {
     );
   });
 
-  test('overloaded name → UNSUPPORTED_V0 with the pruned-ABI workaround', () => {
+  test('overloaded name → resolved by the args (issue #4); no matching arity → TYPE_MISMATCH', () => {
+    expect(() =>
+      rec((s, a) => {
+        s.read({ address: a.who, abi: overloadedAbi, functionName: 'get' });
+        s.read({ address: a.who, abi: overloadedAbi, functionName: 'get', args: [a.x] });
+        return s.return({ ok: a.flag });
+      }),
+    ).not.toThrow();
     const e = expectEvs(
-      () => rec((s, a) => s.read({ address: a.who, abi: overloadedAbi, functionName: 'get' })),
+      () =>
+        rec((s, a) =>
+          s.read({
+            address: a.who,
+            abi: overloadedAbi,
+            functionName: 'get',
+            args: [a.x, a.x] as never,
+          }),
+        ),
       EvsTypeError,
-      'UNSUPPORTED_V0',
-      /overloaded/,
+      'TYPE_MISMATCH',
+      /no overload of "get" takes 2 argument/,
     );
-    expect(e.message).toMatch(/prune the ABI/);
+    expect(e.message).toMatch(/get\(\), get\(uint256\)/);
   });
 
   test('unsupported output type names the parameter', () => {

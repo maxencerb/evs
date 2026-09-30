@@ -14,6 +14,7 @@ export {
   EvsTypeError,
 } from './core/errors.js';
 export type { EvsDiagnostic, EvsErrorCode } from './core/errors.js';
+export type { AbiFunctionSignature } from './core/signature.js'; // issue #4: `'name(type,…)'` of an ABI function
 export { namedArg, t } from './core/types.js';
 export type {
   AbiParamsToComponents, // issue #5: ABI-param → t.* type derivation helpers (t.fromOutputs/…)
@@ -108,10 +109,13 @@ export type {
   RebuildExprs,
   RebuildFnResult,
   ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
+  ResolvedSubcallParams, // issue #4: the verb parameter object with `args` inferred for overload resolution
+  ResolveOverload, // issue #4: the overload an overloaded `functionName` resolves to for given args
   RevertReturnHandles, // issue #35: the handles of a `revertReturns` list
   RevertReturnsParams, // issue #35: the s.call / s.tryCall `revertReturns` parameter object
   ScriptBuilder,
   ScriptReturn,
+  SubcallFunctionName, // issue #4: what `functionName` accepts — names + canonical signatures
   SubcallInputs, // issue #1: per-verb arg/output/struct helpers, generic over the mutability bucket
   SubcallOutputs,
   SubcallParams,

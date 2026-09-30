@@ -42,7 +42,7 @@ custom error, and two derive a type from an ABI. Raw type strings (and raw
 | `t.struct(spec)`                 | `TupleType` (named components) | function: a struct — `Object.keys(spec)` order is the encode order          |
 | `t.tuple(...items)`              | `TupleType` (positional)       | function: an unnamed positional tuple                                       |
 | `t.error(name, params?)`         | `EvsErrorType`                 | function: declare a custom error for a script's `errors: [...]` and `s.throw`; `params` takes the same shorthand as script args (bare types, `namedArg`, or a mixed list). Invalid, reserved (`Error`, `Panic`, `EvsDecodeError`, `EvsInvalidCalldata`, `empty`, `unknown`, `_`) or duplicate names throw `ERROR_DECL`. See [custom errors](/guides/errors-and-debugging/#declared-custom-errors--terror-and-sthrow) |
-| `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); overloaded/unknown name throws (a non-`const` ABI degrades to `EvsType`) |
+| `t.fromOutputs(abi, name)`       | `EvsType` (a `TupleType` for many/tuple outputs) | function: derive a type from an `as const` ABI function's outputs — one output → that output's type, several → a named-component struct in ABI order ([`FromAbiOutputs`](#deriving-a-type-from-an-abi)); `name` may be an overload's canonical signature (`'get(uint256)'`); an overloaded bare name or unknown name throws (a non-`const` ABI degrades to `EvsType`) |
 | `t.fromAbiParameter(param)`      | `EvsType`                      | function: derive a type from one ABI parameter (`AbiParamToEvsType`) — a `tuple…` param → a `TupleType`, else the type string |
 
 `t.array` validates its element at the call site. `t.struct`/`t.tuple` build a
@@ -183,7 +183,8 @@ narrative and a runnable example. Their return types are exported:
 
 - **`FromAbiOutputs<abi, name>`** — the type of `t.fromOutputs(abi, name)`: a single output's type,
   or a `TupleType` struct over several outputs (named, in ABI declaration order). An unknown name
-  or a non-`const` ABI widens to `EvsType`; an overloaded name throws at recording.
+  or a non-`const` ABI widens to `EvsType`; an overloaded function is named by its canonical
+  signature (`'get(uint256)'`), and an overloaded bare name throws at recording.
 - **`AbiParamToEvsType<p>`** — the type of `t.fromAbiParameter(p)`: a `TupleType` for a `tuple…`
   parameter, else the scalar/array type string.
 

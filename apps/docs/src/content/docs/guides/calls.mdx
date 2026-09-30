@@ -178,14 +178,99 @@ hard type errors where viem is also permissive:
 
 - **Graceful widening** — an ABI without `as const` degrades to `functionName: string`,
   `args: readonly unknown[]`, and `Expr`/`Tuple` outputs instead of erroring.
-- **Overloaded names** throw `EvsTypeError` at recording; disambiguate by pruning the ABI to
-  the overload you want.
+- **Overloaded names** resolve by the `args` — see
+  [overloaded functions](#overloaded-functions) below.
 - **Restricted shapes** — nested dynamic-leaf arrays (`string[][]`/`bytes[][]`, not supported
   yet — [#4](https://github.com/maxencerb/evs/issues/4)), two-level tuple arrays (`tuple[][]`), arrays nested deeper than
   `[][]`, and fixed `T[N]` in an argument or output throw `EvsTypeError` at recording, naming the
   parameter. Plain structs/tuples, arrays of structs (`tuple[]`), one-level nested arrays
   of a word element (`uint256[][]`), and dynamic-leaf arrays (`string[]`/`bytes[]`) are all supported — see
   [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs).
+
+## Overloaded functions
+
+When an ABI declares several functions with the same name (Solidity overloads), a bare
+`functionName` is resolved by the **types of the `args`** — the same approach as viem's
+`readContract` — and the result is typed from the overload that was picked. Only overloads in the
+verb's mutability bucket compete: a `nonpayable` overload is never a candidate under `s.read`, and
+a `view` one never under `s.call`/`s.simulate`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'owner', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'balanceOf',
+    stateMutability: 'view',
+    inputs: [
+      { name: 'owner', type: 'address' },
+      { name: 'id', type: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'uint128' }],
+  },
+  {
+    type: 'function',
+    name: 'price',
+    stateMutability: 'view',
+    inputs: [{ name: 'id', type: 'uint256' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'price',
+    stateMutability: 'view',
+    inputs: [{ name: 'decimals', type: 'uint8' }],
+    outputs: [{ name: '', type: 'int256' }],
+  },
+] as const;
+
+const balances = evscript(
+  { name: 'balances', args: [t.address, t.address, t.uint256] },
+  (s, vault, owner, id) => {
+    const total = s.read({ address: vault, abi: vaultAbi, functionName: 'balanceOf', args: [owner] });
+    //    ^? Expr<'uint256'> — balanceOf(address)
+    const ofId = s.read({ address: vault, abi: vaultAbi, functionName: 'balanceOf', args: [owner, id] });
+    //    ^? Expr<'uint128'> — balanceOf(address,uint256)
+    const byId = s.read({ address: vault, abi: vaultAbi, functionName: 'price', args: [id] });
+    //    ^? Expr<'uint256'> — the Expr<'uint256'> handle picks price(uint256)
+    const scaled = s.read({ address: vault, abi: vaultAbi, functionName: 'price(uint8)', args: [18] });
+    //    ^? Expr<'int256'> — `18` fits both price overloads: name one by signature
+    return s.return({ total, ofId, byId, scaled });
+  },
+);
+
+void balances;
+```
+
+The rules, applied identically by the types and at recording:
+
+- **Arity first**, then each argument: a handle (`Expr`, `Tuple`, `MutArray`) must carry the
+  parameter's type (a `Tuple` handle is matched by its member names at the type level); a literal
+  only needs the right **JS kind** — `number`/`bigint` for every `uintN`/`intN`, a `0x…` string for
+  `address`/`bytesN`/`bytes`, any string for `string`, a boolean for `bool`, an array or a
+  name-keyed object for arrays and structs. Value ranges and byte lengths are not considered, so
+  `1n` fits both `uint8` and `uint256`.
+- **Exactly one** overload must fit. Arguments that fit several are a compile error
+  (`'evs: ambiguous overload'`) and, when types are bypassed, an `EvsTypeError` with code
+  `ABI_SHAPE` at recording naming the candidates; arguments that fit none are a `TYPE_MISMATCH`.
+- To settle an ambiguity, **type the literal** (`s.lit(t.uint8, 18)`) or pass the overload's
+  **canonical signature** as `functionName`: the name, then the parameter types without names or
+  spaces, tuples written as their component list — `'price(uint8)'`,
+  `'submit((uint256,address)[])'`. A signature selects exactly that entry (argument-based
+  resolution is skipped), is offered in the `functionName` autocomplete, and works for
+  non-overloaded functions too. Spaces are tolerated at recording, but the typed result needs the
+  exact canonical spelling.
+
+`t.fromOutputs(abi, name)` has no arguments to resolve by, so for an overloaded function it takes
+the signature (`t.fromOutputs(vaultAbi, 'price(uint8)')`).
 
 ## Struct and array arguments and outputs
 
