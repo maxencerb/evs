@@ -22,12 +22,19 @@ viem inference.
 
 ## Toolchain: Vite+ (`vp`) on top of Bun
 
-The repo is driven by **[Vite+](https://viteplus.dev)** (`vp`, global CLI; `vite-plus` pinned in
-`catalog:testing`): it bundles vitest 4.1, oxlint, oxfmt and oxlint-tsgolint. Bun stays the
+The repo is driven by **[Vite+](https://viteplus.dev) 1.0** (`vp`, global CLI; `vite-plus`
+exact-pinned in `catalog:testing`): it bundles Vitest 5, oxlint, oxfmt, oxlint-tsgolint and
+tsdown (`vp toolchain` prints the exact versions). It needs Node `^22.18 || ^24.11 || >=26`
+(`.node-version` is `24`); the library's own `engines.node` is a separate, public contract.
+Upgrade it with `vp upgrade` (global CLI) then `vp migrate --no-interactive` from the repo root
+(never `--full`). Bun stays the
 **package manager / script runner** (`packageManager` pin; `vp install` delegates to bun).
 Config lives in the root `vite.config.ts` (`fmt`, `lint`, `test`) — there is no
 `.oxlintrc.json` / `.oxfmtrc.json` / `vitest.config.ts`. `packages/evs/vite.config.ts` owns the
-test projects (`unit`, `types`, `integration`).
+test projects (`unit`, `types`, `integration`); the root config re-roots them, so Vitest 5
+defaults apply (inline projects inherit the root `test` options, `coverage.include` globs are
+relative to `packages/evs`, `VITEST_POOL_ID` starts at 1). The library is still built by `tsc`,
+not `vp pack` (see CONTRIBUTING.md).
 
 ## IMPORTANT deviation from the default Bun template: testing
 
@@ -66,8 +73,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).
 - Dependency versions are pinned via **catalogs** in the root `package.json`. `viem` and
   `vite-plus` are exact-pinned (type tests depend on viem patch behavior; `vite-plus` must
-  match the `vite` alias override and the `vitest` override pin) — bump deliberately, then
-  re-run `vp install`.
+  match the `vite` → `@voidzero-dev/vite-plus-core` alias, which `vp migrate` keeps in both the
+  default and the `testing` catalog, and the `vite` override; there is no separate `vitest`
+  pin, `vite-plus` provides it) — bump through `vp migrate`, then re-run `vp install`.
+  TypeScript is on 6.x: `@astrojs/check` does not accept 7 yet, and TS 6 no longer
+  auto-includes `@types/*` (every tsconfig lists its `types`).
 
 ## Key commands
 

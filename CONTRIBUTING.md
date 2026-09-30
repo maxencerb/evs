@@ -17,15 +17,16 @@ presentation page (npm, GitHub) and stays user-facing.
 ## Development
 
 Bun workspaces monorepo driven by [Vite+](https://viteplus.dev) (`vp`): one toolchain for
-formatting (oxfmt), linting + type-aware checks (oxlint / tsgolint), tests (vitest 4) and the
-task runner. Bun stays the package manager (pinned via `packageManager`); `vp install`
+formatting (oxfmt), linting + type-aware checks (oxlint / tsgolint), tests (Vitest 5) and the
+task runner. Vite+ 1.0 needs Node `^22.18 || ^24.11 || >=26` (`.node-version` pins the 24
+line); upgrade with `vp upgrade` then `vp migrate --no-interactive` from the repo root. Bun stays the package manager (pinned via `packageManager`); `vp install`
 delegates to it. Tests execute on vitest (recorded decision — per-worker anvil via prool and
 typecheck tests need it; **never run `bun test` here**).
 
 ```sh
 curl -fsSL https://vite.plus | bash   # once: the global `vp` CLI
 vp install                # workspaces + pinned catalogs (= bun install)
-vp run build              # build @maxencerb/evs (tsc → dist/)
+vp run build              # build @maxencerb/evs (tsc → dist/, see below)
 vp run test               # unit + type tests (vitest via vp test)
 vp run test:integration   # anvil integration tests (requires foundry)
 vp check                  # format + lint + type-check (tsgolint) in one pass
@@ -35,6 +36,13 @@ vp run changeset          # add a changeset when a change should ship in the nex
 ```
 
 Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
+
+The library is built with `tsc -p tsconfig.build.json`, not `vp pack` (tsdown). A tsdown
+build (unbundled ESM, js + d.ts + maps) was evaluated for the Vite+ 1.0 upgrade and passed
+publint, attw and the consumer checks, but it gains nothing that matters here and costs two
+things: the declarations — this package's main product — would come from a second generator
+instead of the compiler the type tests run on, and the Cloudflare docs build (`bun run build`)
+would start depending on the Vite+ binary and its Node floor.
 Releases: see [Releasing](#releasing) below.
 
 ## Design notes (the parts worth knowing)

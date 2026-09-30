@@ -119,7 +119,7 @@ move in patches):
 | `typecheck` — `bun run --filter '@maxencerb/evs' typecheck` | strict typecheck of the library                                     |
 | `docs-typecheck` — `bun run --filter '@maxencerb/evs-docs' typecheck` | the docs site type-checks (`astro check`)                  |
 | `test` — `bun run test`                         | unit tests (differential oracle, codecs, verifiers) + type-level tests           |
-| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.8.1 for determinism)                       |
+| `integration` — `bun run test:integration`      | the anvil suite (foundry pinned at v1.8.3 for determinism)                       |
 | `package-health` — `publint` + `@arethetypeswrong/cli --pack` | the published package shape resolves correctly (ESM-only profile)  |
 
 The integration tier executes compiled scripts through every supported path on a real node:
