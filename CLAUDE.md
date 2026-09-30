@@ -55,7 +55,8 @@ via `VITEST_POOL_ID`/globalSetup and vitest `typecheck` type tests. Test files i
 codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type tests
   `src/**/*.test-d.ts`, integration tests + harnesses in `test/`. Built with `tsc`
   (`tsconfig.build.json`), ESM-only. The committed `version` is the **last released** one —
-  only the changesets "Version Packages" PR changes it.
+  only the changesets "Version Packages" PR (titled "chore(release): version packages")
+  changes it.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored). `forge-std` is a git submodule at
@@ -102,7 +103,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `changeset status`. `fork-tests` runs on `workflow_dispatch` only (`ANVIL_FORK_URL`).
   Every action is pinned to a commit SHA with the tag in a trailing comment — bump both.
 - `.github/workflows/release.yml` — **changesets** on every push to `main`: pending
-  changesets → opens/updates the "Version Packages" PR; otherwise publishes the not-yet-
+  changesets → opens/updates the "Version Packages" PR (titled "chore(release): version
+  packages"); otherwise publishes the not-yet-
   published version via npm **OIDC trusted publishing** (filename must stay `release.yml`).
   Publishing is `scripts/publish.ts` = `bun pm pack` → `npm publish <tgz> --provenance` →
   `changeset git-tag` — NOT `bun publish` (no OIDC support, oven-sh/bun#22423) and NOT

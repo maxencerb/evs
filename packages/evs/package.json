@@ -14,7 +14,6 @@
     "!src/**/*.test.ts",
     "!src/**/*.test-d.ts",
     "!src/**/__snapshots__",
-    "!src/**/.gitkeep",
     "!dist/**/*.test.*"
   ],
   "type": "module",
@@ -62,5 +61,5 @@
   "engines": {
     "node": ">=20.19"
   },
-  "//publishConfig": "provenance MUST stay false while the repo is private — npm cannot generate provenance for private repos and the publish would fail/skip it confusingly. FLIP provenance to true (and keep --access public) the moment the repo goes public."
+  "//publishConfig": "provenance is ON because the repo is public (npm cannot generate provenance for private repos). If the repo ever goes private again, set provenance to false here AND drop --provenance in scripts/publish.ts, or publishes fail."
 }
