@@ -26,6 +26,7 @@ const CONTRACTS = [
   'MockQuoter',
   'MockUniV3Pool',
   'MockVault',
+  'Overloaded',
   'Reverter',
 ];
 

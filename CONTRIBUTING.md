@@ -125,6 +125,13 @@ Releases: see [Releasing](#releasing) below.
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
   maps revert payloads back to the site (kind, detail and site id) that produced them.
+- **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
+  `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
+  exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`
+  (`builder/expr.ts`) at run time and `ResolveOverload` / `LooseInput` (`builder/script.ts`) at
+  the type level — arity, then exact handle types, then the literal's JS kind (never its value),
+  with several fits an ambiguity. A `functionName` containing `(` is a canonical signature
+  (`core/signature.ts`) and skips resolution.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.

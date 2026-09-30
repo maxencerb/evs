@@ -27,6 +27,7 @@ import {
 import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
+import type { AbiFunctionSignature, SignatureName } from '../core/signature.js';
 import { IDENT_RE, isArgSpecValue, isEvsValueType, typeToAbiParam } from '../core/types.js';
 import type {
   AbiParamsToComponents,
@@ -661,12 +662,141 @@ export type EnvTypeOf<k extends EnvKind> = k extends 'address' | 'caller' ? 'add
 export type ViewMutability = 'pure' | 'view';
 export type WriteMutability = 'nonpayable' | 'payable';
 
-type FnOf<abi, name, mut extends AbiStateMutability> = abi extends Abi
-  ? Extract<
-      abi[number],
-      { readonly type: 'function'; readonly name: name; readonly stateMutability: mut }
-    >
+/** The `function` entries of `abi` in the mutability bucket `mut`. */
+type FnsOf<abi, mut extends AbiStateMutability> = abi extends Abi
+  ? Extract<abi[number], { readonly type: 'function'; readonly stateMutability: mut }>
   : never;
+
+/**
+ * What `functionName` accepts (issue #4): every function name in the bucket (viem's
+ * `ContractFunctionName`, the autocomplete) OR a canonical signature (`'balanceOf(address)'`,
+ * {@link AbiFunctionSignature}) naming one overload exactly. A widened (non-`const`) ABI accepts any
+ * string.
+ */
+export type SubcallFunctionName<
+  abi extends Abi | readonly unknown[],
+  mut extends AbiStateMutability = ViewMutability,
+> = ContractFunctionName<abi, mut> | AbiFunctionSignature<FnsOf<abi, mut>>;
+
+/** Keeps the overloads of `f` whose canonical signature is `ref` (a signature reference). */
+type MatchSignature<f, ref extends string> = f extends unknown
+  ? AbiFunctionSignature<f> extends ref
+    ? f
+    : never
+  : never;
+
+/** The `function` entry (a union when overloaded) that `name` — a bare name or a canonical
+ *  signature — selects in the `mut` bucket. */
+type FnOf<abi, name extends string, mut extends AbiStateMutability> = abi extends Abi
+  ? name extends `${string}(${string}`
+    ? MatchSignature<
+        Extract<
+          abi[number],
+          {
+            readonly type: 'function';
+            readonly name: SignatureName<name>;
+            readonly stateMutability: mut;
+          }
+        >,
+        name
+      >
+    : Extract<
+        abi[number],
+        { readonly type: 'function'; readonly name: name; readonly stateMutability: mut }
+      >
+  : never;
+
+type IsUnion<u, all = u> = u extends unknown ? ([all] extends [u] ? false : true) : never;
+
+/**
+ * Overload resolution by argument types (issue #4 — the `ExtractAbiFunctionForArgs` approach viem
+ * ships, as a distributive filter instead of viem's `UnionToTuple`): among the overloads `name`
+ * selects, keep those whose inputs accept `args` under the {@link LooseInput} rules — the SAME
+ * rules the recorder's runtime resolution applies, so the statically chosen overload is the one
+ * recorded. A single (non-overloaded) entry is returned as is. `args = readonly unknown[]` (the
+ * default: no args known) keeps every overload.
+ */
+export type ResolveOverload<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+  args = readonly unknown[],
+> =
+  FnOf<abi, name, mut> extends infer fns
+    ? true extends IsUnion<fns>
+      ? readonly unknown[] extends args
+        ? fns
+        : // no `args` given (still the constraint union) → the zero-argument overload, like viem
+          PickOverload<fns, readonly [] extends args ? readonly [] : args>
+      : fns
+    : never;
+
+type PickOverload<f, args> = f extends {
+  readonly inputs: infer inputs extends readonly AbiParameter[];
+}
+  ? args extends LooseInputs<inputs>
+    ? f
+    : never
+  : never;
+
+type LooseInputs<inputs extends readonly AbiParameter[]> = {
+  readonly [i in keyof inputs]: LooseInput<inputs[i]>;
+};
+
+/** A literal's JS kind per ABI type — what overload resolution matches on (value ranges and byte
+ *  lengths are NOT considered: `5n` fits every `uintN`/`intN`). Mirrored by `Recorder.argFits`. */
+type LooseLiteral<t extends string> = t extends `${infer e}[]`
+  ? readonly LooseLiteral<e>[]
+  : t extends 'bool'
+    ? boolean
+    : t extends 'string'
+      ? string
+      : t extends 'address' | `bytes${string}`
+        ? `0x${string}`
+        : t extends `int${string}` | `uint${string}`
+          ? number | bigint
+          : never;
+
+/** A tuple literal under the loose rules: a positional array (every component unnamed) or a
+ *  name-keyed record, each member loose-matched (handles of the exact member type included). */
+type LooseStruct<comps extends readonly AbiParameter[]> = [
+  Exclude<comps[number]['name'], '' | undefined>,
+] extends [never]
+  ? { readonly [i in keyof comps]: LooseInput<comps[i]> }
+  : { readonly [c in comps[number] as c['name'] & string]: LooseInput<c> };
+
+/** What one argument must be for an overload to stay a candidate: a handle of the input's type, or
+ *  a literal of the right JS kind ({@link LooseLiteral}). */
+type LooseInput<p extends AbiParameter> = p extends {
+  readonly type: 'tuple';
+  readonly components: infer comps extends readonly AbiParameter[];
+}
+  ? // a Tuple handle is matched by its member NAMES only: `t.struct`'s component order is not
+    // recoverable at the type level (the brand is order-erased, see `Tuple`); the recorder then
+    // checks the exact type
+    | (AnyTuple & { readonly [c in comps[number] as c['name'] & string]: unknown })
+    | Expr<ParamToTupleType<p>>
+    | LooseStruct<comps>
+  : p extends {
+        readonly type: 'tuple[]';
+        readonly components: infer comps extends readonly AbiParameter[];
+      }
+    ? Expr<ParamToTupleArrayType<p>> | AnyMutArray | readonly LooseStruct<comps>[]
+    : Expr<p['type'] extends EvsType ? p['type'] : never> | LooseLiteral<p['type']>;
+
+/** @internal compile-time mirror of the recorder's ambiguous-overload error: `args` fitting
+ *  several overloads turns into a missing-property error naming the fix. */
+type OverloadGuard<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability,
+  args,
+> =
+  true extends IsUnion<ResolveOverload<abi, name, mut, args>>
+    ? {
+        readonly 'evs: ambiguous overload': 'these args fit several overloads — pass typed values (s.lit(t.uint8, 1)) or name one by signature (functionName: "get(uint8)")';
+      }
+    : unknown;
 
 /** An abitype `AbiParameter` for a `'tuple'` member → the matching {@link TupleType} descriptor. */
 type ParamToTupleType<p extends AbiParameter> = p extends {
@@ -713,25 +843,33 @@ type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
         | AbiParameterToPrimitiveType<p, 'inputs'>
         | Expr<p['type'] extends EvsType ? p['type'] : never>;
 
+/** The overload(s)' input tuple(s) → what `args` accepts: one tuple per overload (a union when the
+ *  name is overloaded — the concrete args then select the overload, {@link ResolveOverload}). */
+type InputsOf<f> = f extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
+  ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
+  : never;
+
+/** The overload(s)' outputs → the positional handle tuple(s). */
+type OutputsOf<f> = f extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  ? { readonly [i in keyof outs]: OutputHandle<outs[i]> }
+  : never;
+
 export type SubcallInputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
-  ? readonly unknown[]
-  : FnOf<abi, name, mut> extends { readonly inputs: infer inputs extends readonly AbiParameter[] }
-    ? { readonly [i in keyof inputs]: InputValue<inputs[i]> }
-    : readonly unknown[];
+> = [FnOf<abi, name, mut>] extends [never] ? readonly unknown[] : InputsOf<FnOf<abi, name, mut>>;
 
+/** The positional output handles of the function `name` selects; for an overloaded name, of the
+ *  overload `args` resolves to ({@link ResolveOverload}). */
 export type SubcallOutputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
+  args = readonly unknown[],
+> = [ResolveOverload<abi, name, mut, args>] extends [never]
   ? readonly (Expr | Tuple<TupleType>)[]
-  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
-    ? { readonly [i in keyof outs]: OutputHandle<outs[i]> }
-    : readonly (Expr | Tuple<TupleType>)[];
+  : OutputsOf<ResolveOverload<abi, name, mut, args>>;
 
 // outputs []  → void;  [one] → Expr<one> | Tuple<one>;  [many] → readonly tuple of handles (viem)
 export type UnwrapSingle<outs> = outs extends readonly []
@@ -747,25 +885,30 @@ export type UnwrapSingle<outs> = outs extends readonly []
  * to carry a name at record time. The struct type is in ABI declaration order, so it unifies with
  * `t.fromOutputs(abi, name)` and a `t.struct` declared in the same order (issue #5 asks #3/#4).
  */
+type StructOf<f> = f extends { readonly outputs: infer outs extends readonly AbiParameter[] }
+  ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>
+  : never;
+
 export type SubcallStruct<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
-> = [FnOf<abi, name, mut>] extends [never]
+  args = readonly unknown[],
+> = [ResolveOverload<abi, name, mut, args>] extends [never]
   ? Tuple<TupleType>
-  : FnOf<abi, name, mut> extends { readonly outputs: infer outs extends readonly AbiParameter[] }
-    ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>
-    : Tuple<TupleType>;
+  : StructOf<ResolveOverload<abi, name, mut, args>>;
 
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
-  name extends ContractFunctionName<abi, mut>,
+  name extends SubcallFunctionName<abi, mut>,
   mut extends AbiStateMutability = ViewMutability,
+  args = SubcallInputs<abi, name, mut>,
 > {
   readonly address: IntoExpr<'address'>;
   readonly abi: abi;
-  readonly functionName: name | ContractFunctionName<abi, mut>; // autocomplete union
-  readonly args?: SubcallInputs<abi, name, mut>;
+  // a bare name (overloads resolved by `args`) or a canonical signature `'get(uint256)'` (issue #4)
+  readonly functionName: name | SubcallFunctionName<abi, mut>; // autocomplete union
+  readonly args?: args;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
   // the default positional `[many]` array. See {@link SubcallStruct}.
@@ -778,35 +921,73 @@ export interface SubcallParams<
 // (STATICCALL); `call`/`tryCall`/`simulate`/`trySimulate` filter to WriteMutability (CALL).
 // ---------------------------------------------------------------------------
 
+/**
+ * The per-call params with `args` inferred (`const`) so an overloaded name resolves to one overload
+ * ({@link ResolveOverload}); args fitting several overloads fail to compile ({@link OverloadGuard}),
+ * mirroring the recorder's ambiguous-overload error.
+ */
+export type ResolvedSubcallParams<
+  abi extends Abi | readonly unknown[],
+  name extends SubcallFunctionName<abi, mut>,
+  mut extends AbiStateMutability,
+  args,
+> = SubcallParams<abi, name, mut, args & OverloadGuard<abi, name, mut, args>>;
+
 /** The strict result shape, parameterized over the mutability bucket. */
 export interface SubcallVerb<mut extends AbiStateMutability> {
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct: true },
-  ): SubcallStruct<abi, name, mut>;
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
-  ): UnwrapSingle<SubcallOutputs<abi, name, mut>>;
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut>,
-  ): SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct: true },
+  ): SubcallStruct<abi, name, mut, args>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct?: false },
+  ): UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args>,
+  ): SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
 }
 
 /** The try result shape (`{ success, value }`), parameterized over the mutability bucket. */
 export interface TrySubcallVerb<mut extends AbiStateMutability> {
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct: true },
-  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut> };
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut> & { readonly struct?: false },
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct: true },
+  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut, args> };
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct?: false },
   ): {
     readonly success: Expr<'bool'>;
-    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
   };
-  <const abi extends Abi | readonly unknown[], name extends ContractFunctionName<abi, mut>>(
-    p: SubcallParams<abi, name, mut>,
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: ResolvedSubcallParams<abi, name, mut, args>,
   ): {
     readonly success: Expr<'bool'>;
-    readonly value: SubcallStruct<abi, name, mut> | UnwrapSingle<SubcallOutputs<abi, name, mut>>;
+    readonly value:
+      | SubcallStruct<abi, name, mut, args>
+      | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
   };
 }
 
@@ -833,7 +1014,7 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  */
 export interface RevertReturnsParams<
   abi extends Abi | readonly unknown[],
-  name extends ContractFunctionName<abi, WriteMutability>,
+  name extends SubcallFunctionName<abi, WriteMutability>,
   rr extends readonly EvsType[],
 > extends SubcallParams<abi, name, WriteMutability> {
   readonly revertReturns: rr;
@@ -851,7 +1032,7 @@ export type RevertReturnHandles<rr extends readonly EvsType[]> = {
 export interface CallVerb extends WriteVerb {
   <
     const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, WriteMutability>,
+    name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
   >(
     p: RevertReturnsParams<abi, name, rr>,
@@ -862,7 +1043,7 @@ export interface CallVerb extends WriteVerb {
 export interface TryCallVerb extends TryWriteVerb {
   <
     const abi extends Abi | readonly unknown[],
-    name extends ContractFunctionName<abi, WriteMutability>,
+    name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
   >(
     p: RevertReturnsParams<abi, name, rr>,

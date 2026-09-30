@@ -217,8 +217,10 @@ A derived type flows everywhere a hand-written `t.struct`/`t.tuple` does — as 
 components come from the ABI in declaration order, a `t.fromOutputs(abi, name)` type is
 interchangeable with a `t.struct` written in the same order and with a
 [`s.read({ …, struct: true })`](/guides/calls/#decoding-multiple-outputs-into-a-struct) decode of
-that same function. An overloaded or unknown function name throws `EvsTypeError` at the call site
-(a non-`as const` ABI degrades to `EvsType` rather than erroring, mirroring `s.read`). The exact
+that same function. For an overloaded function, name the overload by its canonical signature
+(`t.fromOutputs(abi, 'price(uint8)')` — there are no args to
+[resolve it by](/guides/calls/#overloaded-functions)); an overloaded bare name or an unknown
+function throws `EvsTypeError` at the call site (a non-`as const` ABI degrades to `EvsType` rather than erroring, mirroring `s.read`). The exact
 return types (`FromAbiOutputs`, `AbiParamToEvsType`) are in the
 [types reference](/reference/types/#the-t-namespace).
 

@@ -393,7 +393,7 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
     expect(() => t.fromOutputs({} as never, 'slot0')).toThrow(/ABI array/);
   });
 
-  test('overloaded function name is not supported yet', () => {
+  test('overloaded function: named by signature (issue #4)', () => {
     const overloaded = [
       {
         type: 'function',
@@ -410,7 +410,11 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
         outputs: [{ name: 'b', type: 'bool' }],
       },
     ] as const;
-    expect(() => t.fromOutputs(overloaded, 'f')).toThrow(/overloaded/);
+    // no args to resolve by: an overloaded bare name is ambiguous — the signature names one
+    expect(() => t.fromOutputs(overloaded, 'f')).toThrow(/overloaded \(f\(\), f\(uint256\)\)/);
+    expect(t.fromOutputs(overloaded, 'f()')).toBe('uint256');
+    expect(t.fromOutputs(overloaded, 'f(uint256)')).toBe('bool');
+    expect(() => t.fromOutputs(overloaded, 'f(uint8)')).toThrow(/no function with signature/);
   });
 
   test('fromAbiParameter maps a scalar / tuple parameter to its EvsType', () => {

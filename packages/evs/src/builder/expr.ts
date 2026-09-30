@@ -27,6 +27,7 @@ import type { AbiFunction } from 'abitype';
 import { encodeLiteralData, encodeLiteralWord, toPlainAbiFunction } from '../abi/artifact.js';
 import { layoutOf, layoutOfType } from '../abi/layout.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError } from '../core/errors.js';
+import { functionsByRef, functionSignature, signatureRefName } from '../core/signature.js';
 import {
   abiParamToType,
   arrayTypeOf,
@@ -245,6 +246,17 @@ function describeHost(v: unknown): string {
 }
 
 /** A tuple member's human-facing name (its struct field name, or `[i]` for a positional member). */
+/** The comma-joined canonical signatures of ABI function entries (overload error messages). */
+function signatureList(fns: readonly Record<string, unknown>[]): string {
+  return fns.map(functionSignature).join(', ');
+}
+
+/** An ABI function entry's `inputs` (empty when malformed — validated after resolution). */
+function abiInputsOf(fn: Record<string, unknown>): readonly unknown[] {
+  const inputs: unknown = fn['inputs'];
+  return Array.isArray(inputs) ? inputs : [];
+}
+
 function memberName(comp: NamedType, index: number): string {
   return comp.name === '' ? `[${index}]` : comp.name;
 }
@@ -2284,26 +2296,21 @@ export class Recorder {
         `${label}: \`functionName\` is required (got ${describeHost(fname)})`,
       );
     }
-    const named = abi.filter(
-      (it) => isRecordObj(it) && it['type'] === 'function' && it['name'] === fname,
-    );
+    // a bare name selects every overload of that name; a canonical signature (`'get(uint256)'`,
+    // issue #4) selects exactly one entry and skips argument-based resolution.
+    const { entries: named, bySignature } = functionsByRef(abi, fname);
     if (named.length === 0) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `${label}: the provided ABI has no function named "${fname}"`,
-      );
+      throw new EvsTypeError('ABI_SHAPE', this.noSuchFunction(label, abi, fname, bySignature));
     }
     // mutability filter, split by call kind (issue #1): STATICCALL admits view/pure; CALL
     // (s.call/s.simulate) admits nonpayable/payable. The wrong bucket gets a steering error.
+    // Overloads outside the verb's bucket never compete in the resolution below.
     const allowedMuts: readonly string[] =
       kind === 'static' ? ['view', 'pure'] : ['nonpayable', 'payable'];
-    const matching = named.filter(
-      (it) => isRecordObj(it) && allowedMuts.includes(String(it['stateMutability'])),
-    );
+    const matching = named.filter((it) => allowedMuts.includes(String(it['stateMutability'])));
     if (matching.length === 0) {
       const muts = named
         .map((it) => {
-          if (!isRecordObj(it)) return 'unspecified';
           const m = it['stateMutability'];
           return typeof m === 'string' ? m : 'unspecified';
         })
@@ -2314,13 +2321,10 @@ export class Recorder {
           : `${label} runs under CALL and can only call nonpayable/payable functions — for a view/pure read use s.read`;
       throw new EvsTypeError('ABI_SHAPE', `${label}: function "${fname}" is ${muts}. ${steer}`);
     }
-    if (matching.length > 1) {
-      throw new EvsTypeError(
-        'UNSUPPORTED_V0',
-        `${label}: function "${fname}" is overloaded (${matching.length} ${allowedMuts.join('/')} overloads) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
-      );
-    }
-    const item = matching[0];
+    const item =
+      matching.length === 1
+        ? matching[0]
+        : this.resolveOverload(matching, params.args, label, fname);
     if (item === undefined || !Array.isArray(item['inputs']) || !Array.isArray(item['outputs'])) {
       throw new EvsTypeError(
         'ABI_SHAPE',
@@ -2329,6 +2333,8 @@ export class Recorder {
     }
     // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
     const plain = toPlainAbiFunction(unsafeCast<AbiFunction>(item));
+    // debug names use the entry's bare name, so a signature `functionName` records the same IR
+    const fnTag = plain.name;
     if (params.address === undefined) {
       throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`);
     }
@@ -2373,11 +2379,11 @@ export class Recorder {
       });
     const outIds = outTypes.map((oty, i) => {
       const tag =
-        outTypes.length === 1 ? `${callerName}(${fname})` : `${callerName}(${fname})[${i}]`;
+        outTypes.length === 1 ? `${callerName}(${fnTag})` : `${callerName}(${fnTag})[${i}]`;
       return this.newValue(oty, tag);
     });
     const successId =
-      mode === 'try' ? this.newValue('bool', `${callerName}(${fname}).success`) : undefined;
+      mode === 'try' ? this.newValue('bool', `${callerName}(${fnTag}).success`) : undefined;
     this.appendStmt({
       k: 'call',
       target,
@@ -2400,7 +2406,7 @@ export class Recorder {
       // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
       // `tuplenew` over the already-decoded output ValueIds — the default positional `[many]`
       // shape (above) is unchanged.
-      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fname);
+      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fnTag);
     } else {
       const first = outIds[0];
       const firstType = outTypes[0];
@@ -2413,6 +2419,121 @@ export class Recorder {
               Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
     }
     return { success: successId !== undefined ? makeExpr(this, successId) : null, value };
+  }
+
+  /** The `ABI_SHAPE` message for a `functionName` that selects no ABI entry — for a signature
+   *  reference, listing the signatures the name does have (a typo'd / non-canonical type). */
+  private noSuchFunction(
+    label: string,
+    abi: readonly unknown[],
+    fname: string,
+    bySignature: boolean,
+  ): string {
+    if (!bySignature) return `${label}: the provided ABI has no function named "${fname}"`;
+    const name = signatureRefName(fname);
+    const known = functionsByRef(abi, name).entries.map(functionSignature);
+    const have =
+      known.length === 0
+        ? `the ABI has no function named "${name}"`
+        : `the ABI has ${known.join(', ')}`;
+    return `${label}: the provided ABI has no function with signature "${fname}" (${have}) — a signature uses canonical types without names or spaces, tuples as (type,…), e.g. "transfer(address,uint256)"`;
+  }
+
+  /**
+   * Overload resolution (issue #4): picks the ONE overload among `candidates` (same name, same
+   * mutability bucket, 2+ entries) whose inputs accept `rawArgs`. Arity first; then per argument
+   * {@link argFits} — a handle must carry exactly the input's type, a literal only needs the right
+   * JS kind (value ranges and byte lengths are not considered, so `1n` fits every `uintN`). The
+   * same rules drive the type-level `ResolveOverload`, so the statically inferred overload is the
+   * one recorded. A single arity match is returned without checking the args (the regular
+   * coercion then reports the precise mismatch); several fitting overloads are an `ABI_SHAPE`
+   * ambiguity, none a `TYPE_MISMATCH`.
+   */
+  private resolveOverload(
+    candidates: readonly Record<string, unknown>[],
+    rawArgs: unknown,
+    label: string,
+    fname: string,
+  ): Record<string, unknown> {
+    // identical entries (an ABI listing the same function twice) are one function
+    const unique = [...new Map(candidates.map((c) => [functionSignature(c), c] as const)).values()];
+    const first = unique[0];
+    if (unique.length === 1 && first !== undefined) return first;
+    const args = rawArgs === undefined ? [] : rawArgs;
+    if (!Array.isArray(args)) {
+      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`args\` must be an array`);
+    }
+    const byArity = unique.filter((fn) => abiInputsOf(fn).length === args.length);
+    const only = byArity[0];
+    if (byArity.length === 1 && only !== undefined) return only;
+    if (byArity.length === 0) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: no overload of "${fname}" takes ${args.length} argument(s) (overloads: ${signatureList(unique)})`,
+      );
+    }
+    const fitting = byArity.filter((fn) =>
+      abiInputsOf(fn).every((inp, i) => {
+        if (!isRecordObj(inp) || typeof inp['type'] !== 'string') return false;
+        return this.argFits(args[i], abiParamToType(unsafeCast<NamedType>(inp)));
+      }),
+    );
+    const picked = fitting[0];
+    if (fitting.length === 1 && picked !== undefined) return picked;
+    const hint = `pass typed values (an Expr, or s.lit(t.uint8, 1) for a literal) or name the overload by signature (functionName: "${functionSignature(fitting[0] ?? only ?? first ?? {})}")`;
+    if (fitting.length === 0) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: the args match none of the overloads of "${fname}" taking ${args.length} argument(s): ${signatureList(byArity)} — ${hint}`,
+      );
+    }
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `${label}: call to overloaded function "${fname}" is ambiguous — the args fit ${signatureList(fitting)}; ${hint}`,
+    );
+  }
+
+  /**
+   * Whether `v` can stand for a value of `type` in overload resolution (never records anything).
+   * A handle (Expr / Tuple / MutArray) fits iff its type equals `type`; a Cell/Field never fits.
+   * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
+   * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit; a tuple
+   * ← a record keyed by member name (a positional array/record for an unnamed tuple) whose
+   * members all fit. Mirrored at the type level by `LooseInput` (builder/script.ts).
+   */
+  private argFits(v: unknown, type: EvsType): boolean {
+    if (typeof v === 'object' && v !== null) {
+      const ei = EXPR_INTERNALS.get(v);
+      if (ei !== undefined) return typesEqual(ei.owner.typeOfValue(ei.id), type);
+      const ti = TUPLE_INTERNALS.get(v);
+      if (ti !== undefined) return typesEqual(ti.tt, type);
+      const ai = ARR_INTERNALS.get(v);
+      if (ai !== undefined) return typesEqual(ai.owner.typeOfValue(ai.id), type);
+      if (CELL_INTERNALS.has(v) || FIELD_INTERNALS.has(v)) return false;
+    }
+    if (isTupleType(type) && type.type === 'tuple') {
+      if (typeof v !== 'object' || v === null) return false;
+      const positional = type.components.every((c) => c.name === '');
+      if (Array.isArray(v) && !positional) return false;
+      const rec = unsafeCast<Record<string, unknown>>(v);
+      return type.components.every((c, i) => {
+        const member = positional ? rec[i] : rec[c.name];
+        return member !== undefined && this.argFits(member, abiParamToType(c));
+      });
+    }
+    if (isArrayValueType(type)) {
+      if (!Array.isArray(v)) return false;
+      const elem = elemTypeOf(type);
+      return v.every((el: unknown) => this.argFits(el, elem));
+    }
+    if (typeof type !== 'string') return false;
+    if (type === 'bool') return typeof v === 'boolean';
+    if (type === 'string') return typeof v === 'string';
+    if (type === 'address' || type.startsWith('bytes')) {
+      return typeof v === 'string' && v.startsWith('0x');
+    }
+    if (isNumeric(type)) return typeof v === 'number' || typeof v === 'bigint';
+    return false;
   }
 
   /**
