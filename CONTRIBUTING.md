@@ -57,10 +57,10 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 - **minimumReleaseAge** (pnpm default: one day) refuses too-fresh versions at resolution time;
   pnpm itself writes exact-version `minimumReleaseAgeExclude` entries when a pin is newer, and
   prunes them once the lockfile no longer needs them.
-- No hoisting workarounds are needed: `wrangler` stays a **root** devDependency only so the
-  Cloudflare deploy command (`npx wrangler`, from the repo root) finds it in the root
-  `node_modules/.bin` (pnpm links a workspace's binaries into its own `node_modules` only). The
-  docs app's former direct `satteri` dependency (a bun resolution workaround) is gone.
+- No hoisting workarounds are needed: the Cloudflare tooling (`cf`, `wrangler`) is a devDependency
+  of `apps/docs`, whose package scripts are the deploy commands (pnpm links a workspace's
+  binaries into its own `node_modules` only). The docs app's former direct `satteri` dependency
+  (a bun resolution workaround) is gone.
 
 ### Library build (`vp pack`)
 
@@ -175,38 +175,57 @@ requests" is enabled in the repo settings.
 ## Docs site
 
 `apps/docs` is an Astro Starlight site deployed to <https://evs.maxencerb.com> by **Cloudflare
-Workers Builds** (not GitHub Actions). Worker `evs`, two build triggers ("Deploy default
-branch" for `main`, "Deploy non-production branches" for everything else; inspect or change them
-with `cf builds triggers list|update` or in the dashboard under Workers → `evs` → Settings →
-Build):
+Workers Builds** (not GitHub Actions) with Cloudflare's **`cf` CLI**. Worker `evs`, two build
+triggers ("Deploy default branch" for `main`, "Deploy non-production branches" for everything
+else; inspect or change them with `cf builds triggers list|update` or in the dashboard under
+Workers → `evs` → Settings → Build):
 
 - root directory `/`, path filter `*` (every push builds)
 - no build variables: the image detects Node from `.node-version` (24) and pnpm from
   `packageManager`, and runs `pnpm install --frozen-lockfile` itself before the build command
 - build command (both triggers)
   `pnpm --filter @maxencerb/evs run build && pnpm --filter @maxencerb/evs-docs run check:snippets && pnpm --filter @maxencerb/evs-docs run build`
-- deploy command `npx wrangler deploy -c apps/docs/wrangler.jsonc` (non-production branches:
-  `npx wrangler versions upload -c apps/docs/wrangler.jsonc` for a preview URL)
+- deploy command `pnpm --filter @maxencerb/evs-docs run deploy` (non-production branches:
+  `pnpm --filter @maxencerb/evs-docs run deploy:preview`)
 
-The build does not need the global `vp` CLI: everything resolves from `node_modules` — `vp pack`
-is the project-local binary of `vite-plus`, the playground bundles use Rolldown through
-`vite/rolldown` (the Vite+ core), and the docs scripts run on plain Node. `wrangler.jsonc` sets
-`workers_dev: false` (the custom domain is the only production route) and `preview_urls: true`
-explicitly: wrangler syncs both flags on every deploy, and with `preview_urls` absent it
-follows the workers.dev flag, so each merge to `main` used to switch branch preview URLs back
-off. `wrangler` is a **root** devDependency on purpose: the deploy command runs `npx wrangler`
-from the repo root, and pnpm only links a workspace's binaries into that workspace's own
-`node_modules`. Every ` ```ts ` fence under `apps/docs/src/content/docs/` must typecheck
+The build does not need the global `vp` or `cf` CLIs: everything resolves from `node_modules` —
+`vp pack` is the project-local binary of `vite-plus`, the playground bundles use Rolldown through
+`vite/rolldown` (the Vite+ core), the docs scripts run on plain Node, and `cf` (exact-pinned in
+the `docs` catalog while it is in beta) plus `wrangler` are `apps/docs` devDependencies that its
+package scripts call. Every ` ```ts ` fence under `apps/docs/src/content/docs/` must typecheck
 standalone against the built package (`pnpm run check:snippets` in `apps/docs`);
 ` ```ts nocheck ` opts out. `astro build` also validates every internal link.
 
-Deployment deliberately stays on **wrangler**, not Cloudflare's `cf` CLI (evaluated with
-`cf@1.0.0-beta.6` on 2026-09-30; wrangler stays supported for 18 months after the `cf` beta
-ends). `cf migrate` maps every `wrangler.jsonc` setting faithfully (name, compatibility date,
-`workersDev: false`, `previewUrls: true`, `notFoundHandling: "404-page"`, the custom domain), but
-its output still bundles through wrangler (a `wrangler.config.ts` importing
-`wrangler/experimental-config`, so wrangler stays installed), and `cf build` / `cf deploy` run a
-bare `astro build` (skipping `gen:playground`) and then require Build Output under
-`.cloudflare/output/v0/`, which a static Astro build only emits with the `@astrojs/cloudflare`
-adapter. Revisit once `cf` can deploy a prebuilt static-assets directory without an adapter;
-until then keep `wrangler.jsonc` and the dashboard commands above unchanged.
+Worker configuration:
+
+- `apps/docs/cloudflare.config.ts` is the Worker's single source of truth: an **assets-only**
+  Worker (no script) with `notFoundHandling: "404-page"` (unknown paths get `404.html` with a
+  404 status; trailing-slash redirects are the platform default `auto-trailing-slash`), the
+  custom domain `evs.maxencerb.com` as the only production route (`workersDev: false`), and
+  `previewUrls: true` set explicitly — every deploy syncs both flags, and with `previewUrls`
+  unset it follows `workersDev`, so each merge to `main` used to switch preview URLs back off.
+  It is a function of the build context: the custom domain is production-only, because Worker
+  Previews reject `domains`.
+- `apps/docs/wrangler.config.ts` only names the static-assets directory (`./dist`):
+  `cloudflare.config.ts` has no field for it, and `cf` delegates the Build Output step of a
+  project without a Vite plugin to wrangler.
+
+How a deploy runs: `pnpm run build` writes the static site to `apps/docs/dist` exactly as before.
+`pnpm run deploy` then runs `cf-wrangler build` (wrangler's `cf` delegate, the same step
+`cf build` runs for a wrangler-bundled project) to package `dist/` plus the config as Build
+Output under `apps/docs/.cloudflare/output/v0/` (gitignored), and `cf deploy --prebuilt`
+uploads it and promotes it to production. `pnpm run deploy:preview` builds the Build Output
+with `CLOUDFLARE_PREVIEW_BUILD=true` (a Preview build, which `cf deploy` refuses) and runs
+`cf previews deploy --prebuilt`: a **Worker Preview** named after the branch
+(`WORKERS_CI_BRANCH` in Workers Builds), served at
+`<branch-slug>-evs.<account-subdomain>.workers.dev` plus a per-deployment URL, and never
+production traffic. The account puts Cloudflare Access in front of these `workers.dev` preview
+hostnames, so opening one needs a login.
+
+Why not plain `cf build` / `cf deploy`: in `cf@1.0.0-beta.6` both run the framework's own
+command for a detected Astro project (a bare `astro build`, skipping `gen:playground`) and
+there is no build-command setting; the `@astrojs/cloudflare` adapter (14.3) cannot produce Build
+Output under the new config (it passes `config` to the Cloudflare Vite plugin, which rejects it
+alongside `cloudflare.config.ts`) and would turn the site into a Worker with KV sessions and an
+Images binding. Revisit when `cf build` can run a project's own build script, then fold
+`cf-wrangler build` + `cf deploy --prebuilt` into plain `cf deploy`.

@@ -72,9 +72,13 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in
   CONTRIBUTING.md's "Docs site" section; its build command uses plain `pnpm …` and must not
   depend on the global `vp` CLI — everything it runs resolves from `node_modules`: the local
-  `vite-plus` for `vp pack`, `vite/rolldown` for the playground bundles, node for the scripts). Deploys stay on wrangler (`apps/docs/wrangler.jsonc`), not the `cf` CLI
-  beta: `cf build`/`cf deploy` cannot ship a static Astro build without the Cloudflare adapter
-  (details in CONTRIBUTING.md) — do not run `cf migrate` on it.
+  `vite-plus` for `vp pack`, `vite/rolldown` for the playground bundles, node for the scripts). Deploys use Cloudflare's `cf` CLI
+  (project-local, `apps/docs` devDependency): `apps/docs/cloudflare.config.ts` is the Worker
+  config (assets-only; `wrangler.config.ts` only names the `./dist` assets directory), and the
+  trigger deploy commands are the package scripts `deploy` (`cf-wrangler build` → `cf deploy
+--prebuilt`) / `deploy:preview` (Worker Previews via `cf previews deploy --prebuilt`). Plain
+  `cf build`/`cf deploy` would run a bare `astro build` (skipping `gen:playground`); do not add
+  the `@astrojs/cloudflare` adapter or a `wrangler.jsonc` (details in CONTRIBUTING.md).
   Every ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:
   `pnpm run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
   opts out. Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).
