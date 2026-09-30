@@ -39,6 +39,7 @@ export default defineConfig({
       'apps/docs/src/content/**',
       '**/.astro/**',
       '**/.wrangler/**',
+      '**/.cloudflare/**',
       '**/.snippets/**',
       '.changeset/*.md',
       // Written by changesets on the "Version Packages" PR in its own markdown style

@@ -7,3 +7,6 @@ dist/
 
 # wrangler
 .wrangler/
+
+# cf CLI Build Output (`pnpm run deploy` / `deploy:preview`)
+.cloudflare/
