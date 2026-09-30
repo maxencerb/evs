@@ -50,6 +50,7 @@ import { callOutputs, type ConstData, type SiteId, type Stmt } from '../ir/nodes
 import {
   emitDecodeArrayToMem,
   emitDecodeTupleToMem,
+  emitLeafDynTail,
   emitEncodeBlock,
   fmtType,
   emitMemCopy,
@@ -403,67 +404,18 @@ function emitCalldataBuild(
       continue;
     }
 
+    // memref member: [len][payload…] tail at the cursor, cursor += 32 + ceil32(n)
     const { slot, isArray } = part;
-    /** Reload the memref's payload byte count onto the stack. */
-    const pushNBytes = (): void => {
-      w.push(slot);
-      w.op('MLOAD');
-      w.op('MLOAD'); // [len]
-      if (isArray) {
-        w.push(5);
-        w.op('SHL'); // [32·len]
-      }
-    };
-
-    // length word: MSTORE(tail, len)
-    w.push(slot);
-    w.op('MLOAD');
-    w.op('MLOAD'); // [len]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [tail, len]
-    w.op('MSTORE'); // []
-
-    // payload copy at exactly [dst, src, len] (memcpy convention)
-    pushNBytes(); // [n]
-    w.push(slot);
-    w.op('MLOAD');
-    w.push(32);
-    w.op('ADD'); // [src, n]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD');
-    w.push(32);
-    w.op('ADD'); // [dst, src, n]
-    emitMemCopy(w, tails, opts); // []
-
-    if (!isArray) {
-      // explicit zero-pad of the trailing partial word (after the copy — the pre-cancun
-      // word loop over-copies whole words)
-      w.push(0); // [0]
-      pushNBytes(); // [n, 0]
-      w.push(TAIL_CURSOR);
-      w.op('MLOAD');
-      w.op('ADD'); // [tail+n, 0]
-      w.push(32);
-      w.op('ADD'); // [tail+32+n, 0]
-      w.op('MSTORE'); // []
-    }
-
-    // tail += 32 + ceil32(n) (arrays are word-exact already)
-    pushNBytes(); // [n]
-    if (!isArray) {
-      w.push(31);
-      w.op('ADD');
-      w.push(31);
-      w.op('NOT');
-      w.op('AND'); // [ceil32(n)]
-    }
-    w.push(32);
-    w.op('ADD'); // [inc]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD');
-    w.op('ADD'); // [tail']
-    w.push(TAIL_CURSOR);
-    w.op('MSTORE'); // []
+    emitLeafDynTail(
+      w,
+      () => {
+        w.push(slot);
+        w.op('MLOAD');
+      },
+      isArray,
+      tails,
+      opts,
+    );
   }
 }
 

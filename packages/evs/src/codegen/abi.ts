@@ -369,12 +369,13 @@ function emitSubTupleBase(w: AsmWriter, pushBase: PushBase, ho: number): void {
 }
 
 /**
- * Appends a leaf dynamic member's tail (`[len][payload]`) at the scratch cursor and advances it.
+ * @internal Shared by `codegen/call.ts` (calldata templates). Appends a leaf dynamic member's
+ * tail (`[len][payload]`) at the scratch cursor and advances it.
  * `pushPtr` pushes the member's memref pointer (`[len][payload…]`). `isArray` distinguishes
  * `32·len` (word-array) from `len` (bytes/string, zero-padded). The cursor stays in scratch so
  * `emitMemCopy` runs at exactly `[dst, src, len]`.
  */
-function emitLeafDynTail(
+export function emitLeafDynTail(
   w: AsmWriter,
   pushPtr: () => void,
   isArray: boolean,
