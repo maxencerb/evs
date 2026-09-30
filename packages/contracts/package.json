@@ -5,6 +5,6 @@
   "scripts": {
     "build": "forge build",
     "test": "forge test",
-    "codegen": "bun scripts/codegen.ts"
+    "codegen": "node scripts/codegen.ts"
   }
 }

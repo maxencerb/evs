@@ -3,14 +3,14 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "bun run gen:playground && astro build",
-    "check:examples": "bun scripts/check-playground-examples.ts",
-    "check:snippets": "bun scripts/check-snippets.ts",
-    "deploy": "bun run build && wrangler deploy",
-    "dev": "bun run gen:playground && astro dev",
-    "gen:playground": "bun scripts/gen-playground.ts",
+    "build": "node scripts/gen-playground.ts && astro build",
+    "check:examples": "node scripts/check-playground-examples.ts",
+    "check:snippets": "node scripts/check-snippets.ts",
+    "deploy": "pnpm run build && wrangler deploy",
+    "dev": "node scripts/gen-playground.ts && astro dev",
+    "gen:playground": "node scripts/gen-playground.ts",
     "preview": "astro preview",
-    "typecheck": "bun run gen:playground && astro check"
+    "typecheck": "node scripts/gen-playground.ts && astro check"
   },
   "dependencies": {
     "@astrojs/starlight": "catalog:docs",
@@ -24,10 +24,10 @@
   "devDependencies": {
     "@astrojs/check": "catalog:docs",
     "@maxencerb/evs": "workspace:*",
-    "@types/bun": "^1.4.2",
-    "satteri": "catalog:docs",
+    "@types/node": "catalog:",
     "typescript": "catalog:",
     "viem": "catalog:",
+    "vite": "catalog:",
     "wrangler": "catalog:docs"
   }
 }

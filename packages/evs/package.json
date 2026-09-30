@@ -36,7 +36,7 @@
     "typecheck": "tsc --noEmit",
     "test": "vp test run --project unit --project types",
     "test:integration": "vp test run --project integration",
-    "prepublishOnly": "bun run build"
+    "prepublishOnly": "pnpm run build"
   },
   "dependencies": {
     "abitype": "catalog:"
@@ -46,8 +46,7 @@
     "prool": "catalog:testing",
     "typescript": "catalog:",
     "viem": "catalog:",
-    "vite": "catalog:testing",
-    "vite-plus": "catalog:testing"
+    "vite-plus": "catalog:"
   },
   "peerDependencies": {
     "typescript": ">=5.5",
