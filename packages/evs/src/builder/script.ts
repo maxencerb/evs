@@ -38,7 +38,6 @@ import type {
   BitsType,
   EvsErrorType,
   EvsType,
-  Expr,
   IntoExpr,
   IntType,
   LitOf,
@@ -50,6 +49,8 @@ import type {
   TupleType,
   UintType,
 } from '../core/types.js';
+// `Expr` from its declaring module: the augmentation below merges into that declaration.
+import type { Expr } from '../core/types/expr.js';
 import type { PlainAbiError, ScriptIr } from '../ir/nodes.js';
 import { assertV0Type, Recorder, type RecErrorDecl } from './expr.js';
 
@@ -546,8 +547,10 @@ export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray
 
 // `.at(i)` on a tuple-ARRAY Expr yields the element handle (the runtime `atOp` returns a Tuple
 // handle bound to the `index` out ValueId for a plain-tuple element, an Expr otherwise).
-// The base `Expr.at` overload in `core/types.ts` only matches string-element arrays; this
+// The base `Expr.at` overload in `core/types/expr.ts` only matches string-element arrays; this
 // augmentation adds the tuple-array case where `Tuple`/`Field`/`ComponentToType` are in scope.
+// It targets the module that DECLARES `Expr` (not the `core/types.ts` barrel): an augmentation
+// through a re-export does not merge into the emitted declarations.
 // Overload resolution picks the `this`-matching signature, so a `string[]`/`uint256[][]` Expr
 // keeps returning an `Expr` element. Sharpened by the issue-#12 follow-up: the receiver is
 // pinned to ARRAY tags (a plain-`tuple` Expr is now a compile error, matching the record-time
@@ -555,7 +558,7 @@ export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray
 // an `Expr<tuple[]>`, matching the runtime — it was wrongly a named-field `Tuple` before).
 // `.length()` gets the matching tuple-ARRAY overload (the base bound is `DynType | ArrayType`,
 // which a `tuple[]` Expr is not; the runtime `lenOp` accepts every dynamic memref).
-declare module '../core/types.js' {
+declare module '../core/types/expr.js' {
   interface Expr<t extends EvsType = EvsType> {
     at<C extends TupleType & { readonly type: TupleArrayTag }>(
       this: Expr<C>,
