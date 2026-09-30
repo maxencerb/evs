@@ -332,13 +332,16 @@ you.
 
 ## Runnable examples
 
-Both examples spawn a throwaway local [anvil](https://getfoundry.sh) and need zero
-configuration:
+Both examples spawn a throwaway local [anvil](https://getfoundry.sh) and deploy mock contracts
+generated from the repo's Foundry package, so they need [foundry](https://getfoundry.sh)
+(`forge` + `anvil`) and a clone with submodules (`git clone --recurse-submodules`, or
+`git submodule update --init`):
 
 ```sh
-bun install && bun run build
+bun install && bun run build                          # once, from the repo root
+(cd packages/contracts && bun run codegen)            # forge build → packages/evs/test/generated/
 bun examples/pool-meta/index.ts        # the quickstart script, end to end
-bun examples/token-balances/index.ts   # loop + tryCall over address[] — the multicall replacement
+bun examples/token-balances/index.ts   # loop + tryRead over address[] — the multicall replacement
 ```
 
 ## Documentation and contributing

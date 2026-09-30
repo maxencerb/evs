@@ -8,11 +8,11 @@ presentation page (npm, GitHub) and stays user-facing.
 
 ## Repository map
 
-| Path                                                                                  | What                                                                            |
-| ------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------- |
-| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)             | the published library: builder, IR + interpreter, codegen, assembler, viem glue |
-| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contract for differential tests    |
-| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                    | runnable example scripts (`bun examples/<name>/index.ts` after `bun run build`) |
+| Path                                                                                  | What                                                                                                |
+| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
+| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)             | the published library: builder, IR + interpreter, codegen, assembler, viem glue                     |
+| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contract for differential tests                        |
+| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                    | runnable example scripts (`bun examples/<name>/index.ts` after `bun run build` + contracts codegen) |
 
 ## Development
 

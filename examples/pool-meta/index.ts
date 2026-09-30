@@ -8,7 +8,8 @@
  *
  * Args arrive as positional callback params after `s` — no `s.args`.
  *
- * Run: bun examples/pool-meta/index.ts   (spawns a local anvil, no configuration needed)
+ * Run: bun examples/pool-meta/index.ts   (spawns a local anvil; needs foundry + `bun run codegen`
+ *      in packages/contracts first — see README.md)
  */
 
 import { erc20Abi, parseEther } from 'viem';
