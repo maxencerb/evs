@@ -1,35 +1,31 @@
 import { describe, expect, test } from 'vite-plus/test';
 
-import type { SourceLoc } from '../core/errors.js';
 import { lookupPc, siteById, type SourceMap } from './sourcemap.js';
-
-const LOC_A: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
-const LOC_B: SourceLoc = { file: '/home/dev/app/pools.ts', line: 12, column: 3 };
 
 const MAP: SourceMap = {
   version: 1,
   segments: [
-    { pc: 0, len: 2, loc: LOC_A, note: 'prologue' },
-    { pc: 2, len: 3, loc: null },
-    { pc: 5, len: 1, loc: LOC_B },
+    { pc: 0, len: 2, note: 'prologue' },
+    { pc: 2, len: 3 },
+    { pc: 5, len: 1 },
     // gap: pc 6..9
-    { pc: 10, len: 4, loc: null, note: 'data segment guard' },
+    { pc: 10, len: 4, note: 'data segment guard' },
   ],
   sites: [
-    { id: 7, kind: 'decode', loc: LOC_A, detail: 'decoding symbol() returndata' },
-    { id: 9, kind: 'panic', loc: LOC_B, detail: 'checked add' },
+    { id: 7, kind: 'decode', detail: 'decoding symbol() returndata' },
+    { id: 9, kind: 'panic', detail: 'checked add' },
   ],
   labels: [{ pc: 5, name: 'main' }],
 };
 
 describe('lookupPc', () => {
   test('hits inside a segment, including both boundaries', () => {
-    expect(lookupPc(MAP, 0)).toEqual({ loc: LOC_A, note: 'prologue' });
-    expect(lookupPc(MAP, 1)).toEqual({ loc: LOC_A, note: 'prologue' });
-    expect(lookupPc(MAP, 2)).toEqual({ loc: null });
-    expect(lookupPc(MAP, 4)).toEqual({ loc: null });
-    expect(lookupPc(MAP, 5)).toEqual({ loc: LOC_B });
-    expect(lookupPc(MAP, 13)).toEqual({ loc: null, note: 'data segment guard' });
+    expect(lookupPc(MAP, 0)).toEqual({ note: 'prologue' });
+    expect(lookupPc(MAP, 1)).toEqual({ note: 'prologue' });
+    expect(lookupPc(MAP, 2)).toEqual({});
+    expect(lookupPc(MAP, 4)).toEqual({});
+    expect(lookupPc(MAP, 5)).toEqual({});
+    expect(lookupPc(MAP, 13)).toEqual({ note: 'data segment guard' });
   });
 
   test('omits the note key entirely when the segment has none', () => {

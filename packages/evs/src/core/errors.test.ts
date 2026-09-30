@@ -8,35 +8,15 @@ import {
   EvsStagingError,
   EvsTypeError,
   type EvsErrorCode,
-  type SourceLoc,
 } from './errors.js';
 
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
-
 describe('EvsError', () => {
-  test('stores code, message; loc defaults to null, relatedLocs to []', () => {
+  test('stores code and message', () => {
     const e = new EvsError('TYPE_MISMATCH', 'boom');
     expect(e).toBeInstanceOf(Error);
     expect(e.code).toBe('TYPE_MISMATCH');
     expect(e.message).toBe('boom');
-    expect(e.loc).toBeNull();
-    expect(e.relatedLocs).toEqual([]);
     expect(e.name).toBe('EvsError');
-  });
-
-  test('stores loc and relatedLocs when provided', () => {
-    const related = [
-      { label: 'recorded at', loc: LOC },
-      { label: 'other script', loc: null },
-    ] as const;
-    const e = new EvsError('FOREIGN_HANDLE', 'boom', { loc: LOC, relatedLocs: related });
-    expect(e.loc).toBe(LOC);
-    expect(e.relatedLocs).toEqual([...related]);
-  });
-
-  test('accepts an explicit null loc', () => {
-    const e = new EvsError('SCOPE_VIOLATION', 'boom', { loc: null });
-    expect(e.loc).toBeNull();
   });
 
   test('every declared error code is constructible', () => {
@@ -68,13 +48,12 @@ describe('subclasses', () => {
       [EvsInternalError, 'EvsInternalError', 'INTERNAL'],
     ] as const;
     for (const [Ctor, name, code] of cases) {
-      const e = new Ctor(code, 'boom', { loc: LOC });
+      const e = new Ctor(code, 'boom');
       expect(e).toBeInstanceOf(Ctor);
       expect(e).toBeInstanceOf(EvsError);
       expect(e).toBeInstanceOf(Error);
       expect(e.name).toBe(name);
       expect(e.code).toBe(code);
-      expect(e.loc).toBe(LOC);
     }
   });
 

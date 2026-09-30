@@ -101,11 +101,6 @@ describe('explainRevert round-trip on EvsDecodeError', () => {
     expect(site).toBeDefined();
     if (site !== undefined) {
       expect(site.detail).toBe('decoding hugeOffset() returndata');
-      const loc = site.loc;
-      expect(loc).not.toBeNull();
-      if (loc !== null) {
-        expect(loc.file).toContain('revert-bubbling.test.ts');
-      }
     }
   });
 });
@@ -157,7 +152,6 @@ describe.each(['stateOverride', 'deployless'] as const)('Malformed fixture table
     const explained = compiled.explainRevert(raw);
     expect(explained.kind).toBe('evs-decode');
     expect(explained.site?.detail).toBe(`decoding ${fn}() returndata`);
-    expect(explained.site?.loc?.file).toContain('revert-bubbling.test.ts');
   });
 
   test.each(STRUCTURAL)('%s: try → success=false and a zero value', async (fn, zero) => {

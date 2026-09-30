@@ -666,9 +666,7 @@ describe('failure path: positions at an EOA → EvsDecodeError', () => {
     });
     const explained = compiled.explainRevert(raw);
     expect(explained.kind).toBe('evs-decode');
-    // the site names the positions() call, with its recording location
+    // the site names the positions() call
     expect(explained.site?.detail).toBe('decoding positions() returndata');
-    expect(explained.site?.loc).not.toBeNull();
-    expect(explained.site?.loc?.file).toContain('composite.test.ts');
   });
 });

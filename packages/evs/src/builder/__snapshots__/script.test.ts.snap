@@ -13,14 +13,12 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
       "elem": "uint256",
       "k": "arrnew",
       "length": 0,
-      "loc": null,
       "out": 1,
       "site": 0,
     },
     {
       "a": 1,
       "k": "len",
-      "loc": null,
       "out": 2,
       "site": 1,
     },
@@ -30,7 +28,6 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 2,
       "type": "uint256",
@@ -41,7 +38,6 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 3,
       "type": "uint256",
@@ -50,7 +46,6 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
       "arr": 1,
       "i": 3,
       "k": "arrset",
-      "loc": null,
       "site": 4,
       "value": 4,
     },
@@ -58,7 +53,6 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
       "arr": 1,
       "i": 3,
       "k": "index",
-      "loc": null,
       "out": 5,
       "site": 5,
     },
@@ -66,7 +60,6 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "arrs",
   "returns": [
     {
@@ -88,29 +81,23 @@ exports[`MutArray (s.newArray) > IR snapshot (arrnew/len/arrset/index) 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.newArray(uint256)",
-      "loc": null,
       "type": "uint256[]",
     },
     {
       "debugName": "s.newArray(uint256).length",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -129,7 +116,6 @@ exports[`MutArray (s.newArray) > indexing args arrays via .at() and .length() 1`
     {
       "a": 0,
       "k": "len",
-      "loc": null,
       "out": 1,
       "site": 0,
     },
@@ -139,7 +125,6 @@ exports[`MutArray (s.newArray) > indexing args arrays via .at() and .length() 1`
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 1,
       "type": "uint256",
@@ -148,7 +133,6 @@ exports[`MutArray (s.newArray) > indexing args arrays via .at() and .length() 1`
       "arr": 0,
       "i": 2,
       "k": "index",
-      "loc": null,
       "out": 3,
       "site": 2,
     },
@@ -156,7 +140,6 @@ exports[`MutArray (s.newArray) > indexing args arrays via .at() and .length() 1`
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "argarr",
   "returns": [
     {
@@ -173,19 +156,15 @@ exports[`MutArray (s.newArray) > indexing args arrays via .at() and .length() 1`
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address[]",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "address",
     },
   ],
@@ -236,7 +215,6 @@ exports[`Tuple (s.tuple + field get/set) > a tuple call output decodes into a Tu
         "selector": "0x99fbab88",
       },
       "k": "call",
-      "loc": null,
       "mode": "strict",
       "outs": [
         2,
@@ -247,7 +225,6 @@ exports[`Tuple (s.tuple + field get/set) > a tuple call output decodes into a Tu
     {
       "index": 0,
       "k": "field",
-      "loc": null,
       "out": 3,
       "site": 1,
       "tuple": 2,
@@ -256,7 +233,6 @@ exports[`Tuple (s.tuple + field get/set) > a tuple call output decodes into a Tu
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "getPos",
   "returns": [
     {
@@ -285,17 +261,14 @@ exports[`Tuple (s.tuple + field get/set) > a tuple call output decodes into a Tu
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.read(positions)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -311,7 +284,6 @@ exports[`Tuple (s.tuple + field get/set) > a tuple call output decodes into a Tu
       },
     },
     {
-      "loc": null,
       "type": "uint128",
     },
   ],
@@ -333,7 +305,6 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "uint128",
@@ -350,14 +321,12 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
         },
       ],
       "k": "tuplenew",
-      "loc": null,
       "out": 2,
       "site": 1,
     },
     {
       "index": 0,
       "k": "field",
-      "loc": null,
       "out": 3,
       "site": 2,
       "tuple": 2,
@@ -365,7 +334,6 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
     {
       "index": 1,
       "k": "field",
-      "loc": null,
       "out": 4,
       "site": 3,
       "tuple": 2,
@@ -374,7 +342,6 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "mkPos",
   "returns": [
     {
@@ -408,16 +375,13 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint128",
     },
     {
       "debugName": "s.tuple(liquidity, owner)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -433,11 +397,9 @@ exports[`Tuple (s.tuple + field get/set) > s.tuple allocates a tuplenew, MSTORE-
       },
     },
     {
-      "loc": null,
       "type": "uint128",
     },
     {
-      "loc": null,
       "type": "address",
     },
   ],
@@ -454,7 +416,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 0,
       "site": 0,
       "type": "uint8",
@@ -465,7 +426,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 1,
       "type": "uint8",
@@ -476,7 +436,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 2,
       "type": "uint256",
@@ -487,7 +446,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 3,
       "type": "bool",
@@ -498,7 +456,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 4,
       "type": "bool",
@@ -509,7 +466,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 5,
       "site": 5,
       "type": "uint16",
@@ -520,7 +476,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 6,
       "site": 6,
       "type": "uint16",
@@ -531,7 +486,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 7,
       "site": 7,
       "type": "uint8",
@@ -542,7 +496,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 8,
       "site": 8,
       "type": "bytes4",
@@ -553,7 +506,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 9,
       "site": 9,
       "type": "bytes4",
@@ -564,7 +516,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 10,
       "site": 10,
       "type": "uint256",
@@ -575,7 +526,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 11,
       "site": 11,
       "type": "uint8",
@@ -586,7 +536,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 12,
       "site": 12,
       "type": "int8",
@@ -597,7 +546,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 13,
       "site": 13,
       "type": "int8",
@@ -608,7 +556,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 14,
       "site": 14,
       "type": "int16",
@@ -619,7 +566,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 15,
       "site": 15,
       "type": "int16",
@@ -628,7 +574,6 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "folds",
   "returns": [
     {
@@ -684,67 +629,51 @@ exports[`all-literal folding > arithmetic, comparison, bool, bitwise, shift, and
   ],
   "values": [
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint16",
     },
     {
-      "loc": null,
       "type": "uint16",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "bytes4",
     },
     {
-      "loc": null,
       "type": "bytes4",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "int8",
     },
     {
-      "loc": null,
       "type": "int8",
     },
     {
-      "loc": null,
       "type": "int16",
     },
     {
-      "loc": null,
       "type": "int16",
     },
   ],
@@ -772,7 +701,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "add",
       "out": 3,
       "site": 0,
@@ -783,7 +711,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 1,
       "type": "uint256",
@@ -792,7 +719,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 4,
       "k": "bin",
-      "loc": null,
       "op": "sub",
       "out": 5,
       "site": 2,
@@ -803,7 +729,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 6,
       "site": 3,
       "type": "uint256",
@@ -812,7 +737,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 6,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "mul",
       "out": 7,
       "site": 4,
@@ -821,7 +745,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "div",
       "out": 8,
       "site": 5,
@@ -830,7 +753,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "mod",
       "out": 9,
       "site": 6,
@@ -839,7 +761,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "lt",
       "out": 10,
       "site": 7,
@@ -850,7 +771,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 11,
       "site": 8,
       "type": "uint256",
@@ -859,7 +779,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 11,
       "k": "bin",
-      "loc": null,
       "op": "gt",
       "out": 12,
       "site": 9,
@@ -868,7 +787,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "lte",
       "out": 13,
       "site": 10,
@@ -879,7 +797,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 14,
       "site": 11,
       "type": "uint256",
@@ -888,7 +805,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 14,
       "k": "bin",
-      "loc": null,
       "op": "gte",
       "out": 15,
       "site": 12,
@@ -897,7 +813,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "eq",
       "out": 16,
       "site": 13,
@@ -908,7 +823,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 17,
       "site": 14,
       "type": "int8",
@@ -917,7 +831,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 2,
       "b": 17,
       "k": "bin",
-      "loc": null,
       "op": "neq",
       "out": 18,
       "site": 15,
@@ -926,7 +839,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 10,
       "b": 12,
       "k": "bin",
-      "loc": null,
       "op": "and",
       "out": 19,
       "site": 16,
@@ -935,7 +847,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 16,
       "b": 18,
       "k": "bin",
-      "loc": null,
       "op": "or",
       "out": 20,
       "site": 17,
@@ -943,7 +854,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
     {
       "a": 19,
       "k": "un",
-      "loc": null,
       "op": "not",
       "out": 21,
       "site": 18,
@@ -954,7 +864,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 22,
       "site": 19,
       "type": "uint256",
@@ -963,7 +872,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 22,
       "k": "bin",
-      "loc": null,
       "op": "bitand",
       "out": 23,
       "site": 20,
@@ -972,7 +880,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 4,
       "k": "bin",
-      "loc": null,
       "op": "bitor",
       "out": 24,
       "site": 21,
@@ -981,7 +888,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 1,
       "k": "bin",
-      "loc": null,
       "op": "bitxor",
       "out": 25,
       "site": 22,
@@ -989,7 +895,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
     {
       "a": 0,
       "k": "un",
-      "loc": null,
       "op": "bitnot",
       "out": 26,
       "site": 23,
@@ -1000,7 +905,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 27,
       "site": 24,
       "type": "uint256",
@@ -1009,7 +913,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 27,
       "k": "bin",
-      "loc": null,
       "op": "shl",
       "out": 28,
       "site": 25,
@@ -1020,7 +923,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 29,
       "site": 26,
       "type": "uint256",
@@ -1029,7 +931,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
       "a": 0,
       "b": 29,
       "k": "bin",
-      "loc": null,
       "op": "shr",
       "out": 30,
       "site": 27,
@@ -1038,7 +939,6 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "ops",
   "returns": [
     {
@@ -1145,129 +1045,98 @@ exports[`arithmetic / comparison / bool / bitwise families > IR snapshot 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg2",
-      "loc": null,
       "type": "int8",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "int8",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -1289,7 +1158,6 @@ exports[`cells (s.let) > IR snapshot (cellnew/cellget/cellset) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "uint256",
@@ -1298,20 +1166,17 @@ exports[`cells (s.let) > IR snapshot (cellnew/cellget/cellset) 1`] = `
       "cell": 0,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 1,
     },
     {
       "cell": 1,
       "init": 0,
       "k": "cellnew",
-      "loc": null,
       "site": 2,
     },
     {
       "cell": 0,
       "k": "cellset",
-      "loc": null,
       "site": 3,
       "value": 0,
     },
@@ -1321,7 +1186,6 @@ exports[`cells (s.let) > IR snapshot (cellnew/cellget/cellset) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 4,
       "type": "uint256",
@@ -1329,45 +1193,38 @@ exports[`cells (s.let) > IR snapshot (cellnew/cellget/cellset) 1`] = `
     {
       "cell": 0,
       "k": "cellset",
-      "loc": null,
       "site": 5,
       "value": 2,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 3,
       "site": 6,
     },
     {
       "cell": 1,
       "k": "cellset",
-      "loc": null,
       "site": 7,
       "value": 3,
     },
     {
       "cell": 1,
       "k": "cellget",
-      "loc": null,
       "out": 4,
       "site": 8,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "cells",
   "returns": [
     {
@@ -1384,23 +1241,18 @@ exports[`cells (s.let) > IR snapshot (cellnew/cellget/cellset) 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -1427,56 +1279,48 @@ exports[`conversions > IR snapshot + result types 1`] = `
     {
       "a": 0,
       "k": "convert",
-      "loc": null,
       "out": 3,
       "site": 0,
     },
     {
       "a": 3,
       "k": "convert",
-      "loc": null,
       "out": 4,
       "site": 1,
     },
     {
       "a": 2,
       "k": "convert",
-      "loc": null,
       "out": 5,
       "site": 2,
     },
     {
       "a": 2,
       "k": "convert",
-      "loc": null,
       "out": 6,
       "site": 3,
     },
     {
       "a": 0,
       "k": "convert",
-      "loc": null,
       "out": 7,
       "site": 4,
     },
     {
       "a": 1,
       "k": "convert",
-      "loc": null,
       "out": 8,
       "site": 5,
     },
     {
       "a": 1,
       "k": "convert",
-      "loc": null,
       "out": 9,
       "site": 6,
     },
     {
       "a": 0,
       "k": "convert",
-      "loc": null,
       "out": 10,
       "site": 7,
     },
@@ -1484,7 +1328,6 @@ exports[`conversions > IR snapshot + result types 1`] = `
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "convs",
   "returns": [
     {
@@ -1531,49 +1374,38 @@ exports[`conversions > IR snapshot + result types 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "bytes32",
     },
     {
       "debugName": "args.arg2",
-      "loc": null,
       "type": "int128",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "int256",
     },
     {
-      "loc": null,
       "type": "uint128",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bytes32",
     },
   ],
@@ -1586,35 +1418,30 @@ exports[`env > IR snapshot + out types (address/caller → address, others → u
   "body": [
     {
       "k": "env",
-      "loc": null,
       "op": "address",
       "out": 0,
       "site": 0,
     },
     {
       "k": "env",
-      "loc": null,
       "op": "caller",
       "out": 1,
       "site": 1,
     },
     {
       "k": "env",
-      "loc": null,
       "op": "timestamp",
       "out": 2,
       "site": 2,
     },
     {
       "k": "env",
-      "loc": null,
       "op": "blocknumber",
       "out": 3,
       "site": 3,
     },
     {
       "k": "env",
-      "loc": null,
       "op": "chainid",
       "out": 4,
       "site": 4,
@@ -1623,7 +1450,6 @@ exports[`env > IR snapshot + out types (address/caller → address, others → u
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "envs",
   "returns": [
     {
@@ -1655,27 +1481,22 @@ exports[`env > IR snapshot + out types (address/caller → address, others → u
   "values": [
     {
       "debugName": "s.env(address)",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.env(caller)",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.env(timestamp)",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.env(blocknumber)",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.env(chainid)",
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -1706,14 +1527,12 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
     {
       "a": 0,
       "k": "keccak256",
-      "loc": null,
       "out": 4,
       "site": 0,
     },
     {
       "a": 1,
       "k": "keccak256",
-      "loc": null,
       "out": 5,
       "site": 1,
     },
@@ -1721,7 +1540,6 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
       "a": 4,
       "b": 5,
       "k": "bin",
-      "loc": null,
       "op": "eq",
       "out": 6,
       "site": 2,
@@ -1729,14 +1547,12 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
     {
       "a": 2,
       "k": "keccak256",
-      "loc": null,
       "out": 7,
       "site": 3,
     },
     {
       "a": 3,
       "k": "keccak256",
-      "loc": null,
       "out": 8,
       "site": 4,
     },
@@ -1744,7 +1560,6 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
       "a": 7,
       "b": 8,
       "k": "bin",
-      "loc": null,
       "op": "neq",
       "out": 9,
       "site": 5,
@@ -1753,7 +1568,6 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "streq",
   "returns": [
     {
@@ -1770,50 +1584,40 @@ exports[`eq/neq on memref types (hash equality — #38) > string/bytes: both ope
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "string",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "string",
     },
     {
       "debugName": "args.arg2",
-      "loc": null,
       "type": "bytes",
     },
     {
       "debugName": "args.arg3",
-      "loc": null,
       "type": "bytes",
     },
     {
       "debugName": ".eq() left operand hash",
-      "loc": null,
       "type": "bytes32",
     },
     {
       "debugName": ".eq() right operand hash",
-      "loc": null,
       "type": "bytes32",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
       "debugName": ".neq() left operand hash",
-      "loc": null,
       "type": "bytes32",
     },
     {
       "debugName": ".neq() right operand hash",
-      "loc": null,
       "type": "bytes32",
     },
     {
-      "loc": null,
       "type": "bool",
     },
   ],
@@ -1839,7 +1643,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         "kind": "data",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 0,
       "type": "uint24[]",
@@ -1850,7 +1653,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 1,
       "type": "address",
@@ -1859,7 +1661,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
       "cell": 0,
       "init": 3,
       "k": "cellnew",
-      "loc": null,
       "site": 2,
     },
     {
@@ -1868,7 +1669,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 3,
       "type": "uint24",
@@ -1877,7 +1677,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
       "cell": 1,
       "init": 4,
       "k": "cellnew",
-      "loc": null,
       "site": 4,
     },
     {
@@ -1886,7 +1685,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 5,
       "site": 5,
       "type": "uint256",
@@ -1895,7 +1693,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
       "cell": 2,
       "init": 5,
       "k": "cellnew",
-      "loc": null,
       "site": 6,
     },
     {
@@ -1903,7 +1700,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         {
           "cell": 2,
           "k": "cellget",
-          "loc": null,
           "out": 9,
           "site": 10,
         },
@@ -1911,7 +1707,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
           "arr": 2,
           "i": 9,
           "k": "index",
-          "loc": null,
           "out": 10,
           "site": 11,
         },
@@ -1921,7 +1716,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 11,
           "site": 12,
           "type": "address",
@@ -1957,7 +1751,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
             "selector": "0x1698ee82",
           },
           "k": "call",
-          "loc": null,
           "mode": "strict",
           "outs": [
             12,
@@ -1969,7 +1762,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
           "a": 12,
           "b": 3,
           "k": "bin",
-          "loc": null,
           "op": "neq",
           "out": 13,
           "site": 14,
@@ -1978,26 +1770,22 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
           "cond": 13,
           "else": [],
           "k": "if",
-          "loc": null,
           "site": 18,
           "then": [
             {
               "cell": 0,
               "k": "cellset",
-              "loc": null,
               "site": 15,
               "value": 12,
             },
             {
               "cell": 1,
               "k": "cellset",
-              "loc": null,
               "site": 16,
               "value": 10,
             },
             {
               "k": "break",
-              "loc": null,
               "site": 17,
             },
           ],
@@ -2005,7 +1793,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         {
           "cell": 2,
           "k": "cellget",
-          "loc": null,
           "out": 14,
           "site": 19,
         },
@@ -2015,7 +1802,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 15,
           "site": 20,
           "type": "uint256",
@@ -2024,7 +1810,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
           "a": 14,
           "b": 15,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 16,
           "site": 21,
@@ -2032,7 +1817,6 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         {
           "cell": 2,
           "k": "cellset",
-          "loc": null,
           "site": 22,
           "value": 16,
         },
@@ -2042,14 +1826,12 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
         {
           "cell": 2,
           "k": "cellget",
-          "loc": null,
           "out": 6,
           "site": 7,
         },
         {
           "a": 2,
           "k": "len",
-          "loc": null,
           "out": 7,
           "site": 8,
         },
@@ -2057,48 +1839,40 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
           "a": 6,
           "b": 7,
           "k": "bin",
-          "loc": null,
           "op": "lt",
           "out": 8,
           "site": 9,
         },
       ],
       "k": "while",
-      "loc": null,
       "site": 23,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 17,
       "site": 24,
     },
     {
       "cell": 1,
       "k": "cellget",
-      "loc": null,
       "out": 18,
       "site": 25,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint24",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "firstPool",
   "returns": [
     {
@@ -2115,81 +1889,62 @@ exports[`integration-shaped recording > E4-shaped script (data-segment literal a
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint24[]",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint24",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint24",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.read(getPool)",
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "uint24",
     },
   ],
@@ -2211,7 +1966,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
       ],
       "fn": 0,
       "k": "fncall",
-      "loc": null,
       "outs": [
         5,
       ],
@@ -2220,7 +1974,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
     {
       "index": 0,
       "k": "field",
-      "loc": null,
       "out": 6,
       "site": 4,
       "tuple": 5,
@@ -2228,7 +1981,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
     {
       "index": 1,
       "k": "field",
-      "loc": null,
       "out": 7,
       "site": 5,
       "tuple": 5,
@@ -2252,7 +2004,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
             "selector": "0x95d89b41",
           },
           "k": "call",
-          "loc": null,
           "mode": "strict",
           "outs": [
             2,
@@ -2274,7 +2025,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
             "selector": "0x313ce567",
           },
           "k": "call",
-          "loc": null,
           "mode": "strict",
           "outs": [
             3,
@@ -2294,12 +2044,10 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
             },
           ],
           "k": "tuplenew",
-          "loc": null,
           "out": 4,
           "site": 2,
         },
       ],
-      "loc": null,
       "name": "getMeta",
       "params": [
         {
@@ -2331,7 +2079,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
     },
   ],
   "irVersion": 1,
-  "loc": null,
   "name": "meta",
   "returns": [
     {
@@ -2365,27 +2112,22 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "getMeta(tok)",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.read(symbol)",
-      "loc": null,
       "type": "string",
     },
     {
       "debugName": "s.read(decimals)",
-      "loc": null,
       "type": "uint8",
     },
     {
       "debugName": "s.tuple(symbol, decimals)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -2402,7 +2144,6 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
     },
     {
       "debugName": "getMeta(…)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -2418,11 +2159,9 @@ exports[`issue #5 ergonomics > s.fn returns a struct directly — byte-identical
       },
     },
     {
-      "loc": null,
       "type": "string",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
   ],
@@ -2460,7 +2199,6 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
         "selector": "0x3850c7bd",
       },
       "k": "call",
-      "loc": null,
       "mode": "strict",
       "outs": [
         1,
@@ -2486,14 +2224,12 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
         },
       ],
       "k": "tuplenew",
-      "loc": null,
       "out": 4,
       "site": 1,
     },
     {
       "index": 0,
       "k": "field",
-      "loc": null,
       "out": 5,
       "site": 2,
       "tuple": 4,
@@ -2501,7 +2237,6 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
     {
       "index": 1,
       "k": "field",
-      "loc": null,
       "out": 6,
       "site": 3,
       "tuple": 4,
@@ -2510,7 +2245,6 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "pool",
   "returns": [
     {
@@ -2548,27 +2282,22 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.read(slot0)[0]",
-      "loc": null,
       "type": "uint160",
     },
     {
       "debugName": "s.read(slot0)[1]",
-      "loc": null,
       "type": "int24",
     },
     {
       "debugName": "s.read(slot0)[2]",
-      "loc": null,
       "type": "bool",
     },
     {
       "debugName": "s.read(slot0) struct",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -2588,11 +2317,9 @@ exports[`issue #5 ergonomics > s.read({ struct: true }) decodes named multi-outp
       },
     },
     {
-      "loc": null,
       "type": "uint160",
     },
     {
-      "loc": null,
       "type": "int24",
     },
   ],
@@ -2609,7 +2336,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 0,
       "site": 0,
       "type": "uint8",
@@ -2620,7 +2346,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 1,
       "type": "int24",
@@ -2631,7 +2356,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 2,
       "type": "address",
@@ -2642,7 +2366,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 3,
       "type": "bool",
@@ -2653,7 +2376,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 4,
       "type": "bytes4",
@@ -2664,7 +2386,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "data",
       },
       "k": "const",
-      "loc": null,
       "out": 5,
       "site": 5,
       "type": "string",
@@ -2675,7 +2396,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "data",
       },
       "k": "const",
-      "loc": null,
       "out": 6,
       "site": 6,
       "type": "bytes",
@@ -2686,7 +2406,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
         "kind": "data",
       },
       "k": "const",
-      "loc": null,
       "out": 7,
       "site": 7,
       "type": "uint24[]",
@@ -2695,7 +2414,6 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "lits",
   "returns": [
     {
@@ -2741,35 +2459,27 @@ exports[`literals (s.lit + coercion) > IR snapshot (word canonicalization + memr
   ],
   "values": [
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "int24",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bytes4",
     },
     {
-      "loc": null,
       "type": "string",
     },
     {
-      "loc": null,
       "type": "bytes",
     },
     {
-      "loc": null,
       "type": "uint24[]",
     },
   ],
@@ -2801,7 +2511,6 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
         },
       ],
       "k": "tuplenew",
-      "loc": null,
       "out": 6,
       "site": 2,
     },
@@ -2811,7 +2520,6 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
       ],
       "fn": 0,
       "k": "fncall",
-      "loc": null,
       "outs": [
         7,
       ],
@@ -2823,7 +2531,6 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
       ],
       "fn": 1,
       "k": "fncall",
-      "loc": null,
       "outs": [
         8,
       ],
@@ -2837,13 +2544,11 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
         {
           "index": 1,
           "k": "field",
-          "loc": null,
           "out": 3,
           "site": 0,
           "tuple": 2,
         },
       ],
-      "loc": null,
       "name": "feeOf",
       "params": [
         {
@@ -2878,13 +2583,11 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
         {
           "index": 0,
           "k": "field",
-          "loc": null,
           "out": 5,
           "site": 1,
           "tuple": 4,
         },
       ],
-      "loc": null,
       "name": "tokenOf",
       "params": [
         {
@@ -2916,7 +2619,6 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
     },
   ],
   "irVersion": 1,
-  "loc": null,
   "name": "fnc",
   "returns": [
     {
@@ -2933,17 +2635,14 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "uint24",
     },
     {
       "debugName": "feeOf(pair)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -2959,12 +2658,10 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
       },
     },
     {
-      "loc": null,
       "type": "uint24",
     },
     {
       "debugName": "tokenOf(arg0)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -2980,12 +2677,10 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
       },
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.tuple(token, fee)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -3002,12 +2697,10 @@ exports[`named args (namedArg) > s.fn accepts a t.struct param (namedArg and bar
     },
     {
       "debugName": "feeOf(…)",
-      "loc": null,
       "type": "uint24",
     },
     {
       "debugName": "tokenOf(…)",
-      "loc": null,
       "type": "address",
     },
   ],
@@ -3041,7 +2734,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
         "selector": "0x95d89b41",
       },
       "k": "call",
-      "loc": null,
       "mode": "strict",
       "outs": [
         2,
@@ -3055,7 +2747,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 1,
       "type": "uint256",
@@ -3082,7 +2773,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
       },
       "gas": 3,
       "k": "call",
-      "loc": null,
       "mode": "strict",
       "outs": [
         4,
@@ -3112,7 +2802,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
         "selector": "0x3850c7bd",
       },
       "k": "call",
-      "loc": null,
       "mode": "strict",
       "outs": [
         5,
@@ -3136,7 +2825,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
         "selector": "0x313ce567",
       },
       "k": "call",
-      "loc": null,
       "mode": "try",
       "outs": [
         8,
@@ -3151,7 +2839,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 10,
       "site": 5,
       "type": "uint8",
@@ -3161,7 +2848,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
       "b": 10,
       "cond": 9,
       "k": "select",
-      "loc": null,
       "out": 11,
       "site": 6,
     },
@@ -3169,7 +2855,6 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "calls",
   "returns": [
     {
@@ -3196,59 +2881,47 @@ exports[`s.call / s.tryCall > IR snapshot (strict + try, literal/expr args, gas,
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.read(symbol)",
-      "loc": null,
       "type": "string",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.read(balanceOf)",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.read(slot0)[0]",
-      "loc": null,
       "type": "uint160",
     },
     {
       "debugName": "s.read(slot0)[1]",
-      "loc": null,
       "type": "int24",
     },
     {
       "debugName": "s.read(slot0)[2]",
-      "loc": null,
       "type": "bool",
     },
     {
       "debugName": "s.tryRead(decimals)",
-      "loc": null,
       "type": "uint8",
     },
     {
       "debugName": "s.tryRead(decimals).success",
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
     {
-      "loc": null,
       "type": "uint8",
     },
   ],
@@ -3278,7 +2951,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 0,
       "type": "uint24",
@@ -3291,7 +2963,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
         },
       ],
       "k": "tuplenew",
-      "loc": null,
       "out": 4,
       "site": 1,
     },
@@ -3303,7 +2974,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
         4,
       ],
       "k": "encode",
-      "loc": null,
       "mode": "abi",
       "out": 5,
       "site": 2,
@@ -3312,7 +2982,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "enc",
   "returns": [
     {
@@ -3324,26 +2993,21 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "string",
     },
     {
       "debugName": "args.arg2",
-      "loc": null,
       "type": "uint256[]",
     },
     {
-      "loc": null,
       "type": "uint24",
     },
     {
       "debugName": "s.tuple(token, fee)",
-      "loc": null,
       "type": {
         "components": [
           {
@@ -3360,7 +3024,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encode records one encode(a
     },
     {
       "debugName": "s.encode(…)",
-      "loc": null,
       "type": "bytes",
     },
   ],
@@ -3386,7 +3049,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encodePacked records encode
         1,
       ],
       "k": "encode",
-      "loc": null,
       "mode": "packed",
       "out": 2,
       "site": 0,
@@ -3397,7 +3059,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encodePacked records encode
         1,
       ],
       "k": "encode",
-      "loc": null,
       "mode": "abi",
       "out": 3,
       "site": 1,
@@ -3405,7 +3066,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encodePacked records encode
     {
       "a": 3,
       "k": "keccak256",
-      "loc": null,
       "out": 4,
       "site": 2,
     },
@@ -3413,7 +3073,6 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encodePacked records encode
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "hashes",
   "returns": [
     {
@@ -3430,27 +3089,22 @@ exports[`s.encode / s.encodePacked / s.keccak256 > s.encodePacked records encode
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "string",
     },
     {
       "debugName": "s.encodePacked(…)",
-      "loc": null,
       "type": "bytes",
     },
     {
       "debugName": "s.keccak256(…) encoded bytes",
-      "loc": null,
       "type": "bytes",
     },
     {
       "debugName": "s.keccak256(…)",
-      "loc": null,
       "type": "bytes32",
     },
   ],
@@ -3476,7 +3130,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 5,
       "site": 1,
       "type": "uint256",
@@ -3485,7 +3138,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
       "arr": 1,
       "i": 5,
       "k": "index",
-      "loc": null,
       "out": 6,
       "site": 2,
     },
@@ -3496,7 +3148,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
       ],
       "fn": 0,
       "k": "fncall",
-      "loc": null,
       "outs": [
         7,
       ],
@@ -3508,7 +3159,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 8,
       "site": 4,
       "type": "uint256",
@@ -3517,7 +3167,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
       "arr": 1,
       "i": 8,
       "k": "index",
-      "loc": null,
       "out": 9,
       "site": 5,
     },
@@ -3528,7 +3177,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
       ],
       "fn": 0,
       "k": "fncall",
-      "loc": null,
       "outs": [
         10,
       ],
@@ -3560,7 +3208,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
             "selector": "0x70a08231",
           },
           "k": "call",
-          "loc": null,
           "mode": "strict",
           "outs": [
             4,
@@ -3569,7 +3216,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
           "target": 2,
         },
       ],
-      "loc": null,
       "name": "balOf",
       "params": [
         {
@@ -3594,7 +3240,6 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
     },
   ],
   "irVersion": 1,
-  "loc": null,
   "name": "fns",
   "returns": [
     {
@@ -3611,53 +3256,42 @@ exports[`s.fn > IR snapshot (fn body recorded once; two fncalls) 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "address[]",
     },
     {
       "debugName": "balOf(token)",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "balOf(who)",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "s.read(balanceOf)",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "balOf(…)",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "balOf(…)",
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -3679,7 +3313,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "uint256",
@@ -3688,14 +3321,12 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
       "cell": 0,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 1,
     },
     {
       "cell": 1,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 2,
     },
     {
@@ -3704,7 +3335,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 3,
       "type": "uint256",
@@ -3714,7 +3344,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         {
           "cell": 0,
           "k": "cellget",
-          "loc": null,
           "out": 5,
           "site": 6,
         },
@@ -3722,7 +3351,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
           "a": 5,
           "b": 3,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 6,
           "site": 7,
@@ -3730,14 +3358,12 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 8,
           "value": 6,
         },
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 7,
           "site": 9,
         },
@@ -3745,7 +3371,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
           "a": 7,
           "b": 2,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 8,
           "site": 10,
@@ -3753,7 +3378,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         {
           "cell": 1,
           "k": "cellset",
-          "loc": null,
           "site": 11,
           "value": 8,
         },
@@ -3763,7 +3387,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 3,
           "site": 4,
         },
@@ -3771,37 +3394,31 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
           "a": 3,
           "b": 0,
           "k": "bin",
-          "loc": null,
           "op": "lt",
           "out": 4,
           "site": 5,
         },
       ],
       "k": "while",
-      "loc": null,
       "site": 12,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 9,
       "site": 13,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "fored",
   "returns": [
     {
@@ -3813,43 +3430,33 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -3871,7 +3478,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "uint256",
@@ -3880,13 +3486,11 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
       "cell": 0,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 1,
     },
     {
       "a": 0,
       "k": "len",
-      "loc": null,
       "out": 2,
       "site": 2,
     },
@@ -3894,7 +3498,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
       "cell": 1,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 3,
     },
     {
@@ -3903,7 +3506,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 3,
       "site": 4,
       "type": "uint256",
@@ -3914,14 +3516,12 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "arr": 0,
           "i": 4,
           "k": "index",
-          "loc": null,
           "out": 6,
           "site": 7,
         },
         {
           "cell": 0,
           "k": "cellget",
-          "loc": null,
           "out": 7,
           "site": 8,
         },
@@ -3929,7 +3529,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "a": 7,
           "b": 6,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 8,
           "site": 9,
@@ -3938,7 +3537,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "a": 8,
           "b": 4,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 9,
           "site": 10,
@@ -3946,14 +3544,12 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 11,
           "value": 9,
         },
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 10,
           "site": 12,
         },
@@ -3961,7 +3557,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "a": 10,
           "b": 3,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 11,
           "site": 13,
@@ -3969,7 +3564,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         {
           "cell": 1,
           "k": "cellset",
-          "loc": null,
           "site": 14,
           "value": 11,
         },
@@ -3979,7 +3573,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 4,
           "site": 5,
         },
@@ -3987,37 +3580,31 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "a": 4,
           "b": 2,
           "k": "bin",
-          "loc": null,
           "op": "lt",
           "out": 5,
           "site": 6,
         },
       ],
       "k": "while",
-      "loc": null,
       "site": 15,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 12,
       "site": 16,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "summed",
   "returns": [
     {
@@ -4029,57 +3616,44 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256[]",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "s.forEach(…) length",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
       "debugName": "s.forEach(…) element",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -4101,7 +3675,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "bool",
@@ -4110,7 +3683,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
       "cell": 0,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 1,
     },
     {
@@ -4119,7 +3691,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 2,
       "site": 2,
       "type": "uint256",
@@ -4128,7 +3699,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
       "a": 0,
       "b": 2,
       "k": "bin",
-      "loc": null,
       "op": "gt",
       "out": 3,
       "site": 3,
@@ -4139,13 +3709,11 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 6,
           "value": 1,
         },
       ],
       "k": "if",
-      "loc": null,
       "site": 7,
       "then": [
         {
@@ -4154,7 +3722,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 4,
           "site": 4,
           "type": "bool",
@@ -4162,7 +3729,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 5,
           "value": 4,
         },
@@ -4174,7 +3740,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 5,
       "site": 8,
       "type": "uint256",
@@ -4183,7 +3748,6 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
       "a": 0,
       "b": 5,
       "k": "bin",
-      "loc": null,
       "op": "eq",
       "out": 6,
       "site": 9,
@@ -4192,13 +3756,11 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
       "cond": 6,
       "else": [],
       "k": "if",
-      "loc": null,
       "site": 11,
       "then": [
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 10,
           "value": 1,
         },
@@ -4207,20 +3769,17 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 7,
       "site": 12,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "bool",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "iffy",
   "returns": [
     {
@@ -4232,35 +3791,27 @@ exports[`s.if > IR snapshot (cond evaluated once, before the branches; empty els
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "bool",
     },
   ],
@@ -4289,7 +3840,6 @@ exports[`s.select > IR snapshot (eager both sides) 1`] = `
       "b": 2,
       "cond": 0,
       "k": "select",
-      "loc": null,
       "out": 3,
       "site": 0,
     },
@@ -4299,7 +3849,6 @@ exports[`s.select > IR snapshot (eager both sides) 1`] = `
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 4,
       "site": 1,
       "type": "uint256",
@@ -4309,7 +3858,6 @@ exports[`s.select > IR snapshot (eager both sides) 1`] = `
       "b": 4,
       "cond": 0,
       "k": "select",
-      "loc": null,
       "out": 5,
       "site": 2,
     },
@@ -4317,7 +3865,6 @@ exports[`s.select > IR snapshot (eager both sides) 1`] = `
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "sel",
   "returns": [
     {
@@ -4334,29 +3881,23 @@ exports[`s.select > IR snapshot (eager both sides) 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "bool",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "uint256",
     },
     {
       "debugName": "args.arg2",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -4378,7 +3919,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         "kind": "word",
       },
       "k": "const",
-      "loc": null,
       "out": 1,
       "site": 0,
       "type": "uint256",
@@ -4387,14 +3927,12 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
       "cell": 0,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 1,
     },
     {
       "cell": 1,
       "init": 1,
       "k": "cellnew",
-      "loc": null,
       "site": 2,
     },
     {
@@ -4402,7 +3940,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 4,
           "site": 5,
         },
@@ -4412,7 +3949,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 5,
           "site": 6,
           "type": "uint256",
@@ -4421,7 +3957,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "a": 4,
           "b": 5,
           "k": "bin",
-          "loc": null,
           "op": "eq",
           "out": 6,
           "site": 7,
@@ -4430,12 +3965,10 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "cond": 6,
           "else": [],
           "k": "if",
-          "loc": null,
           "site": 9,
           "then": [
             {
               "k": "break",
-              "loc": null,
               "site": 8,
             },
           ],
@@ -4443,7 +3976,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 7,
           "site": 10,
         },
@@ -4453,7 +3985,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 8,
           "site": 11,
           "type": "uint256",
@@ -4462,7 +3993,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "a": 7,
           "b": 8,
           "k": "bin",
-          "loc": null,
           "op": "eq",
           "out": 9,
           "site": 12,
@@ -4471,12 +4001,10 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "cond": 9,
           "else": [],
           "k": "if",
-          "loc": null,
           "site": 14,
           "then": [
             {
               "k": "continue",
-              "loc": null,
               "site": 13,
             },
           ],
@@ -4484,14 +4012,12 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 0,
           "k": "cellget",
-          "loc": null,
           "out": 10,
           "site": 15,
         },
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 11,
           "site": 16,
         },
@@ -4499,7 +4025,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "a": 10,
           "b": 11,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 12,
           "site": 17,
@@ -4507,14 +4032,12 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 0,
           "k": "cellset",
-          "loc": null,
           "site": 18,
           "value": 12,
         },
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 13,
           "site": 19,
         },
@@ -4524,7 +4047,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
             "kind": "word",
           },
           "k": "const",
-          "loc": null,
           "out": 14,
           "site": 20,
           "type": "uint256",
@@ -4533,7 +4055,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "a": 13,
           "b": 14,
           "k": "bin",
-          "loc": null,
           "op": "add",
           "out": 15,
           "site": 21,
@@ -4541,7 +4062,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 1,
           "k": "cellset",
-          "loc": null,
           "site": 22,
           "value": 15,
         },
@@ -4551,7 +4071,6 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
         {
           "cell": 1,
           "k": "cellget",
-          "loc": null,
           "out": 2,
           "site": 3,
         },
@@ -4559,37 +4078,31 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
           "a": 2,
           "b": 0,
           "k": "bin",
-          "loc": null,
           "op": "lt",
           "out": 3,
           "site": 4,
         },
       ],
       "k": "while",
-      "loc": null,
       "site": 23,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "loc": null,
       "out": 16,
       "site": 24,
     },
   ],
   "cells": [
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "looped",
   "returns": [
     {
@@ -4601,71 +4114,54 @@ exports[`s.while > IR snapshot (header block + cond + body with break/continue) 
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "bool",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
     {
-      "loc": null,
       "type": "uint256",
     },
   ],
@@ -4688,7 +4184,6 @@ exports[`script shell > IR snapshot 1`] = `
   "cells": [],
   "fns": [],
   "irVersion": 1,
-  "loc": null,
   "name": "shell",
   "returns": [
     {
@@ -4705,12 +4200,10 @@ exports[`script shell > IR snapshot 1`] = `
   "values": [
     {
       "debugName": "args.arg0",
-      "loc": null,
       "type": "address",
     },
     {
       "debugName": "args.arg1",
-      "loc": null,
       "type": "uint256",
     },
   ],

@@ -34,7 +34,7 @@ Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and
 
 Checks run at the operand type's width, not at 256 bits: a `uint64` addition overflows at 2^64. The signed-division edge case is handled explicitly — the EVM's `SDIV` silently wraps `−2^255 / −1`, but evs (like solc) reverts with `Panic(0x11)`.
 
-Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate source lines for that panic. See [errors and debugging](/guides/errors-and-debugging/).
+Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate sites in your script that can raise that panic. See [errors and debugging](/guides/errors-and-debugging/).
 
 Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` (the typed surface admits only these; an arithmetic `SAR` lowering exists at the IR level for signed operands but is not exposed on the builder yet — see [#10](https://github.com/maxencerb/evs/issues/10)). Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
 

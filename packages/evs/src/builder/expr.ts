@@ -10,7 +10,8 @@
  *   (`{ owner: Recorder; id }`) — unforgeable; lookup miss / owner mismatch →
  *   `EvsScopeError(FOREIGN_HANDLE)` naming both scripts.
  * - Staging traps (`valueOf`/`toString`/`toJSON`/`Symbol.toPrimitive` throw; node inspect is
- *   non-throwing) are installed on every `Expr` handle via core's `installStagingTraps`.
+ *   non-throwing) are installed once on the `Expr` / `Tuple` handle prototypes via core's
+ *   `installStagingTraps`.
  * - Scope stack: main → (if-then | if-else | while-header → while-body | fn-body). A value is
  *   usable iff its defining scope is on the current stack; the while body is a child of the
  *   header scope; `s.fn` bodies push an isolated stack (params only — no outer capture).
@@ -25,8 +26,7 @@ import type { AbiFunction } from 'abitype';
 
 import { encodeLiteralData, encodeLiteralWord, toPlainAbiFunction } from '../abi/artifact.js';
 import { layoutOf, layoutOfType } from '../abi/layout.js';
-import { EvsInternalError, EvsScopeError, EvsTypeError, type SourceLoc } from '../core/errors.js';
-import { captureLoc } from '../core/loc.js';
+import { EvsInternalError, EvsScopeError, EvsTypeError } from '../core/errors.js';
 import {
   abiParamToType,
   arrayTypeOf,
@@ -157,16 +157,6 @@ const NUMERIC_OPS: ReadonlySet<BinOp> = new Set([
 ]);
 const BITS_OPS: ReadonlySet<BinOp> = new Set(['bitand', 'bitor', 'bitxor', 'shl', 'shr']);
 
-function fmtLoc(loc: SourceLoc | null): string {
-  return loc === null ? '<unknown>' : `${loc.file}:${loc.line}:${loc.column}`;
-}
-
-function shortLoc(loc: SourceLoc | null): string {
-  if (loc === null) return '<unknown>';
-  const base = loc.file.split('/').pop() ?? loc.file;
-  return `${base}:${loc.line}:${loc.column}`;
-}
-
 /**
  * The single funnel for the recording engine's dynamic casts: every call site has just
  * runtime-validated the value's shape (the typed surface lives in `builder/script.ts`).
@@ -228,23 +218,18 @@ function fromUnsignedN(type: WordType, u: bigint): bigint {
  * Validates a type string for the builder surface; valid-Solidity-but-deferred shapes get
  * `UNSUPPORTED_V0`, garbage gets `TYPE_MISMATCH` (classification mirrors `abi/layout.ts`).
  */
-export function assertV0Type(
-  type: unknown,
-  what: string,
-  loc: SourceLoc | null,
-): asserts type is StringType {
+export function assertV0Type(type: unknown, what: string): asserts type is StringType {
   if (typeof type !== 'string') {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${what}: type must be a type string (use the \`t\` namespace), got ${describeHost(type)}`,
-      { loc },
     );
   }
   try {
     layoutOf(type);
   } catch (e) {
     if (e instanceof EvsTypeError) {
-      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf: /, '')}`, { loc });
+      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf: /, '')}`);
     }
     throw e;
   }
@@ -281,7 +266,7 @@ function tupleDebugTag(t: TupleType): string {
 
 /** A recording-time literal member index for `Tuple.at(i)` (the flat layout has no runtime member
  *  indexing — `i` must be a host number/bigint in `[0, n)`). */
-function asLiteralIndex(i: unknown, n: number, what: string, loc: SourceLoc | null): number {
+function asLiteralIndex(i: unknown, n: number, what: string): number {
   let idx: number;
   if (typeof i === 'number' && Number.isSafeInteger(i)) {
     idx = i;
@@ -291,14 +276,12 @@ function asLiteralIndex(i: unknown, n: number, what: string, loc: SourceLoc | nu
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${what}: the member index must be a literal number/bigint in [0, ${n}), got ${describeHost(i)}`,
-      { loc },
     );
   }
   if (idx < 0 || idx >= n) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${what}: member index ${idx} is out of range for a ${n}-member tuple`,
-      { loc },
     );
   }
   return idx;
@@ -390,10 +373,6 @@ function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
 class ExprHandle {
   constructor(owner: Recorder, id: ValueId) {
     EXPR_INTERNALS.set(this, { owner, id });
-    installStagingTraps(this, {
-      describe: () => owner.describeValue(id),
-      recordedAt: () => owner.valueLoc(id),
-    });
   }
 
   get type(): EvsType {
@@ -578,10 +557,6 @@ function arrInternalsOf(h: object): ArrInternals {
 class TupleHandle {
   constructor(owner: Recorder, id: ValueId, tt: TupleType) {
     TUPLE_INTERNALS.set(this, { owner, id, tt });
-    installStagingTraps(this, {
-      describe: () => owner.describeValue(id),
-      recordedAt: () => owner.valueLoc(id),
-    });
     // expose each NAMED component as an own accessor → a fresh Field handle on read.
     const fieldProps: PropertyDescriptorMap = {};
     tt.components.forEach((comp, index) => {
@@ -603,6 +578,19 @@ class TupleHandle {
     const t = tupleInternalsOf(this);
     return t.owner.tupleExpr(t.id, 'Tuple.expr()');
   }
+}
+
+// the staging traps live on the prototypes (installed once, not per handle): `this` is the handle
+installStagingTraps(ExprHandle.prototype, (h) => describeHandle(EXPR_INTERNALS, h, 'Expr'));
+installStagingTraps(TupleHandle.prototype, (h) => describeHandle(TUPLE_INTERNALS, h, 'Tuple'));
+
+function describeHandle(
+  internals: WeakMap<object, { owner: Recorder; id: ValueId }>,
+  handle: unknown,
+  kind: string,
+): string {
+  const i = typeof handle === 'object' && handle !== null ? internals.get(handle) : undefined;
+  return i === undefined ? `${kind}<?>` : i.owner.describeValue(i.id);
 }
 
 function tupleInternalsOf(h: object): TupleInternals {
@@ -652,47 +640,41 @@ function fieldInternalsOf(h: object): FieldInternals {
 class LoopCtlImpl {
   private readonly owner: Recorder;
   private readonly bodyScope: Scope;
-  private readonly loopLoc: SourceLoc | null;
 
-  constructor(owner: Recorder, bodyScope: Scope, loopLoc: SourceLoc | null) {
+  constructor(owner: Recorder, bodyScope: Scope) {
     this.owner = owner;
     this.bodyScope = bodyScope;
-    this.loopLoc = loopLoc;
   }
 
   /** Recording-time scoping check: valid only while the owning loop's body scope is open. */
-  guard(what: string, loc: SourceLoc | null): void {
-    this.owner.assertOpen(what, loc);
+  guard(what: string): void {
+    this.owner.assertOpen(what);
     const innermost = this.owner.innermostLoopBody();
     if (innermost === this.bodyScope) return;
     if (innermost !== null && this.owner.isScopeOnStack(this.bodyScope)) {
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
         `${what}: this LoopCtl belongs to an outer loop — break/continue the innermost loop with its own LoopCtl (an unlabeled break targets the innermost loop)`,
-        { loc, relatedLocs: [{ label: 'owning loop recorded at', loc: this.loopLoc }] },
       );
     }
     throw new EvsScopeError(
       'SCOPE_VIOLATION',
       `${what}: LoopCtl used outside its owning loop's body — it is only valid while that loop body is recording`,
-      { loc, relatedLocs: [{ label: 'owning loop recorded at', loc: this.loopLoc }] },
     );
   }
 
-  emit(kind: 'break' | 'continue', loc: SourceLoc | null): void {
-    this.owner.appendStmt({ k: kind }, loc);
+  emit(kind: 'break' | 'continue'): void {
+    this.owner.appendStmt({ k: kind });
   }
 
   break(): void {
-    const loc = captureLoc();
-    this.guard('loop.break()', loc);
-    this.emit('break', loc);
+    this.guard('loop.break()');
+    this.emit('break');
   }
 
   continue(): void {
-    const loc = captureLoc();
-    this.guard('loop.continue()', loc);
-    this.emit('continue', loc);
+    this.guard('loop.continue()');
+    this.emit('continue');
   }
 }
 
@@ -707,7 +689,6 @@ interface SubcallShape {
 
 export class Recorder {
   readonly name: string;
-  readonly scriptLoc: SourceLoc | null;
 
   private readonly argsList: readonly { name: string; type: EvsType }[];
   private readonly values: ValueInfo[] = [];
@@ -718,7 +699,7 @@ export class Recorder {
   private readonly cellScopes: Scope[] = [];
   private readonly fnIrs: (FnIr | null)[] = [];
   private readonly openFns = new Set<FnId>();
-  private readonly fnCtx: { name: string; loc: SourceLoc | null }[] = [];
+  private readonly fnCtx: { name: string }[] = [];
   private readonly mainScope: Scope;
   private stack: Scope[];
   private readonly savedStacks: Scope[][] = [];
@@ -734,11 +715,9 @@ export class Recorder {
   constructor(
     name: string,
     args: readonly { name: string; type: EvsType }[],
-    scriptLoc: SourceLoc | null,
     errors: readonly RecErrorDecl[] = [],
   ) {
     this.name = name;
-    this.scriptLoc = scriptLoc;
     this.argsList = args;
     this.errorDecls = errors;
     this.mainScope = newScope('main');
@@ -746,7 +725,7 @@ export class Recorder {
     // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple (NOT
     // a tuple ARRAY) arg yields a Tuple handle, a composite array / scalar an Expr.
     const handles: (Expr | object)[] = args.map((a) => {
-      const id = this.newValue(a.type, scriptLoc, `args.${a.name}`);
+      const id = this.newValue(a.type, `args.${a.name}`);
       return this.valueHandle(id, a.type);
     });
     this.argHandleList = Object.freeze(handles);
@@ -781,24 +760,32 @@ export class Recorder {
     return info.type;
   }
 
-  valueLoc(id: ValueId): SourceLoc | null {
-    return this.values[id]?.loc ?? null;
-  }
-
-  /** `Expr<type> #id ← debugName at file:line:col` — the non-throwing inspect string. */
+  /** `Expr<type> #id ← debugName` — the non-throwing inspect string. */
   describeValue(id: ValueId): string {
     const info = this.values[id];
     if (info === undefined) return `Expr<?> #${id}`;
     const name = info.debugName !== undefined ? ` ← ${info.debugName}` : '';
-    return `Expr<${stringifyType(info.type)}> #${id}${name} at ${shortLoc(info.loc)}`;
+    return `Expr<${stringifyType(info.type)}> #${id}${name}`;
   }
 
-  assertOpen(what: string, loc: SourceLoc | null): void {
+  /** `#id ← debugName` — names a Tuple / MutArray handle in error messages (no type: a tuple
+   *  type would print as its full JSON descriptor). */
+  valueRef(id: ValueId): string {
+    const name = this.values[id]?.debugName;
+    return name === undefined ? `#${id}` : `#${id} ← ${name}`;
+  }
+
+  /** `Cell<type> #id` — names a cell in error messages. */
+  private describeCell(id: CellId): string {
+    const info = this.cellInfos[id];
+    return info === undefined ? `Cell<?> #${id}` : `Cell<${stringifyType(info.type)}> #${id}`;
+  }
+
+  assertOpen(what: string): void {
     if (!this.sealed) return;
     throw new EvsScopeError(
       'RECORDING_CLOSED',
       `${what}: script "${this.name}" is sealed — s.return(...) already ran; the builder and its handles cannot record anything afterwards`,
-      { loc, relatedLocs: [{ label: 'script defined at', loc: this.scriptLoc }] },
     );
   }
 
@@ -814,9 +801,9 @@ export class Recorder {
     return this.stack.includes(scope);
   }
 
-  appendStmt(body: Record<string, unknown>, loc: SourceLoc | null): void {
+  appendStmt(body: Record<string, unknown>): void {
     // statement bodies are built per the declared Stmt union (re-checked by ir/validate)
-    this.top().stmts.push(unsafeCast<Stmt>({ ...body, loc, site: this.nextSite++ }));
+    this.top().stmts.push(unsafeCast<Stmt>({ ...body, site: this.nextSite++ }));
   }
 
   // -- internals --------------------------------------------------------------------------
@@ -829,9 +816,9 @@ export class Recorder {
     return s;
   }
 
-  private newValue(type: EvsType, loc: SourceLoc | null, debugName?: string): ValueId {
+  private newValue(type: EvsType, debugName?: string): ValueId {
     const id = this.values.length;
-    this.values.push(debugName === undefined ? { type, loc } : { type, loc, debugName });
+    this.values.push(debugName === undefined ? { type } : { type, debugName });
     this.valueScopes.push(this.top());
     return id;
   }
@@ -847,52 +834,41 @@ export class Recorder {
   }
 
   /** Classifies an operand: a usable Expr of this recorder, or a raw host literal. */
-  private classify(v: unknown, what: string, loc: SourceLoc | null): Operand {
+  private classify(v: unknown, what: string): Operand {
     if (typeof v === 'object' && v !== null) {
       const ei = EXPR_INTERNALS.get(v);
       if (ei !== undefined) {
         if (ei.owner !== this) {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
-            `${what}: this Expr belongs to script "${ei.owner.name}" (defined at ${fmtLoc(ei.owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
-            {
-              loc,
-              relatedLocs: [
-                { label: `script "${ei.owner.name}" defined at`, loc: ei.owner.scriptLoc },
-                { label: 'handle recorded at', loc: ei.owner.valueLoc(ei.id) },
-              ],
-            },
+            `${what}: this Expr (${ei.owner.describeValue(ei.id)}) belongs to script "${ei.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
           );
         }
-        this.checkVisible(ei.id, what, loc);
+        this.checkVisible(ei.id, what);
         return { kind: 'expr', id: ei.id, type: this.typeOfValue(ei.id) };
       }
       if (CELL_INTERNALS.has(v)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: a Cell is not an Expr — read a snapshot with .get()`,
-          { loc },
         );
       }
       if (ARR_INTERNALS.has(v)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: a MutArray is not an Expr — use .get(i) for an element or .expr() for the array memref`,
-          { loc },
         );
       }
       if (TUPLE_INTERNALS.has(v)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: a Tuple is not an Expr — use .expr() for its memref, or pass it where a tuple is expected`,
-          { loc },
         );
       }
       if (FIELD_INTERNALS.has(v)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: a Field is not an Expr — read a snapshot with .get()`,
-          { loc },
         );
       }
       if (!Array.isArray(v)) {
@@ -901,7 +877,6 @@ export class Recorder {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
             `${what}: value looks like an Expr handle but was not created by this copy of evs (forged object, or a duplicate @maxencerb/evs install)`,
-            { loc },
           );
         }
       }
@@ -910,68 +885,45 @@ export class Recorder {
   }
 
   /** Scope rule: a value is usable iff its defining scope is on the stack. */
-  private checkVisible(id: ValueId, what: string, loc: SourceLoc | null): void {
+  private checkVisible(id: ValueId, what: string): void {
     const scope = this.valueScopes[id];
     if (scope === undefined) {
       throw new EvsInternalError('INTERNAL', `ValueId ${id} has no scope in "${this.name}"`);
     }
     if (this.stack.includes(scope)) return;
-    const recordedAt = this.valueLoc(id);
     const fn = this.fnCtx[this.fnCtx.length - 1];
     if (fn !== undefined && this.savedStacks.some((st) => st.includes(scope))) {
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
-        `${what}: s.fn("${fn.name}") bodies cannot capture values from the enclosing script — pass them in as fn params instead`,
-        {
-          loc,
-          relatedLocs: [
-            { label: 'captured value recorded at', loc: recordedAt },
-            { label: `fn "${fn.name}" defined at`, loc: fn.loc },
-          ],
-        },
+        `${what}: s.fn("${fn.name}") bodies cannot capture values from the enclosing script (captured ${this.describeValue(id)}) — pass them in as fn params instead`,
       );
     }
     throw new EvsScopeError(
       'SCOPE_VIOLATION',
-      `${what}: this value was recorded in a ${scope.kind} block that has finished recording — values escape blocks only through cells (s.let)`,
-      { loc, relatedLocs: [{ label: 'value recorded at', loc: recordedAt }] },
+      `${what}: this value (${this.describeValue(id)}) was recorded in a ${scope.kind} block that has finished recording — values escape blocks only through cells (s.let)`,
     );
   }
 
-  private checkCellVisible(id: CellId, what: string, loc: SourceLoc | null): void {
+  private checkCellVisible(id: CellId, what: string): void {
     const scope = this.cellScopes[id];
     if (scope === undefined) {
       throw new EvsInternalError('INTERNAL', `CellId ${id} has no scope in "${this.name}"`);
     }
     if (this.stack.includes(scope)) return;
-    const info = this.cellInfos[id];
     const fn = this.fnCtx[this.fnCtx.length - 1];
     if (fn !== undefined && this.savedStacks.some((st) => st.includes(scope))) {
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
-        `${what}: s.fn("${fn.name}") bodies cannot capture cells from the enclosing script — pass values in as fn params instead`,
-        {
-          loc,
-          relatedLocs: [
-            { label: 'captured cell recorded at', loc: info?.loc ?? null },
-            { label: `fn "${fn.name}" defined at`, loc: fn.loc },
-          ],
-        },
+        `${what}: s.fn("${fn.name}") bodies cannot capture cells from the enclosing script (captured ${this.describeCell(id)}) — pass values in as fn params instead`,
       );
     }
     throw new EvsScopeError(
       'SCOPE_VIOLATION',
-      `${what}: this cell was declared in a ${scope.kind} block that has finished recording — declare the cell outside the block instead`,
-      { loc, relatedLocs: [{ label: 'cell declared at', loc: info?.loc ?? null }] },
+      `${what}: this cell (${this.describeCell(id)}) was declared in a ${scope.kind} block that has finished recording — declare the cell outside the block instead`,
     );
   }
 
-  private typeMismatch(
-    what: string,
-    expected: EvsType,
-    got: EvsType,
-    loc: SourceLoc | null,
-  ): never {
+  private typeMismatch(what: string, expected: EvsType, got: EvsType): never {
     let suggest = '';
     if (isNumeric(expected) && isNumeric(got)) {
       suggest = expected.startsWith('uint')
@@ -981,7 +933,6 @@ export class Recorder {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `${what}: expected '${stringifyType(expected)}', got Expr<'${stringifyType(got)}'>${suggest}`,
-      { loc },
     );
   }
 
@@ -1001,38 +952,37 @@ export class Recorder {
   }
 
   /** Interns a canonical word const (dedup per (type, hex) across the open scope stack). */
-  private wordConst(type: WordType, logical: bigint, loc: SourceLoc | null, hex?: Hex): ValueId {
+  private wordConst(type: WordType, logical: bigint, hex?: Hex): ValueId {
     const h = hex ?? canonicalHex(type, logical);
     const key = `w:${type}:${h}`;
     const found = this.lookupConst(key);
     if (found !== undefined) return found;
-    const id = this.newValue(type, loc);
-    this.appendStmt({ k: 'const', out: id, data: { kind: 'word', hex: h }, type }, loc);
+    const id = this.newValue(type);
+    this.appendStmt({ k: 'const', out: id, data: { kind: 'word', hex: h }, type });
     this.litValues.set(id, logical);
     this.top().consts.set(key, id);
     return id;
   }
 
   /** Interns a dynamic literal as a pre-encoded memref data const. */
-  private dataConst(type: DynType | ArrayType, value: unknown, loc: SourceLoc | null): ValueId {
+  private dataConst(type: DynType | ArrayType, value: unknown): ValueId {
     const hex = encodeLiteralData(type, value);
     const key = `d:${type}:${hex}`;
     const found = this.lookupConst(key);
     if (found !== undefined) return found;
-    const id = this.newValue(type, loc);
-    this.appendStmt({ k: 'const', out: id, data: { kind: 'data', hex }, type }, loc);
+    const id = this.newValue(type);
+    this.appendStmt({ k: 'const', out: id, data: { kind: 'data', hex }, type });
     this.top().consts.set(key, id);
     return id;
   }
 
   /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal coercion rules). */
-  private coerceToId(v: unknown, type: EvsType, what: string, loc: SourceLoc | null): ValueId {
+  private coerceToId(v: unknown, type: EvsType, what: string): ValueId {
     // a tuple (NOT tuple-array) target: a Tuple handle (reuse its ValueId — reference) or a literal
     // struct object (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field
     // handles. A tuple ARRAY (`tuple[]`) is a memref Expr like any other array — it falls through to
     // the Expr path (where the encode milestone's guard fires for a returned/passed composite array).
-    if (isTupleType(type) && !isArrayValueType(type))
-      return this.coerceTupleToId(v, type, what, loc);
+    if (isTupleType(type) && !isArrayValueType(type)) return this.coerceTupleToId(v, type, what);
     // a bare MutArray handle is accepted where an ARRAY value is expected (issue #5 ask #5): reuse
     // its ValueId verbatim (reference) when the types match — byte-identical IR to passing
     // `.expr()`. Routed before classify(), which rejects MutArray handles with the "use .expr()"
@@ -1040,27 +990,27 @@ export class Recorder {
     if (isArrayValueType(type) && typeof v === 'object' && v !== null) {
       const ai = ARR_INTERNALS.get(v);
       if (ai !== undefined) {
-        const id = this.arrHandleId(ai, what, loc);
+        const id = this.arrHandleId(ai, what);
         const at = this.typeOfValue(id);
-        if (!typesEqual(at, type)) this.typeMismatch(what, type, at, loc);
+        if (!typesEqual(at, type)) this.typeMismatch(what, type, at);
         return id;
       }
     }
-    const c = this.classify(v, what, loc);
+    const c = this.classify(v, what);
     if (c.kind === 'expr') {
-      if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type, loc);
+      if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type);
       return c.id;
     }
     if (isWordType(type)) {
       const { hex, logical } = this.wordLiteral(type, c.value);
-      return this.wordConst(type, logical, loc, hex);
+      return this.wordConst(type, logical, hex);
     }
     // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`) is built at
     // record time as `arrnew` + per-element construction — reusing the same lowerings as a
     // constructed array — rather than a flat data-segment const (word-element arrays still use the
     // const path via `dataConst`). A `tuple[]` literal also lands here (`tuple` returned above).
     if (isArrayValueType(type) && isCompositeElemArray(type)) {
-      return this.buildArrayLiteral(type, c.value, what, loc);
+      return this.buildArrayLiteral(type, c.value, what);
     }
     if (isTupleType(type)) {
       // a tuple-array type whose element is somehow non-composite never occurs (`tuple[]` is always
@@ -1068,26 +1018,19 @@ export class Recorder {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `${what}: ${JSON.stringify(type.type)} literals are not supported yet`,
-        { loc },
       );
     }
-    return this.dataConst(type, c.value, loc);
+    return this.dataConst(type, c.value);
   }
 
   /** Builds a composite-element array LITERAL (`tuple[]`/`T[][]`/`string[]`/`bytes[]`) at record time:
    *  `arrnew(elem, len)` then `arrset(i, coerceToId(value[i], elem))` per element — reusing the same
    *  IR lowerings as a runtime-constructed array. The result aliases a fresh `[len][p0…]` block. */
-  private buildArrayLiteral(
-    type: ArrayType | TupleType,
-    value: unknown,
-    what: string,
-    loc: SourceLoc | null,
-  ): ValueId {
+  private buildArrayLiteral(type: ArrayType | TupleType, value: unknown, what: string): ValueId {
     if (!Array.isArray(value)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: a ${stringifyType(type)} literal must be a JS array, got ${describeHost(value)}`,
-        { loc },
       );
     }
     // validate the array type (rejects `tuple[][]`, deeper nesting, `T[N]`) via the layout classifier.
@@ -1095,40 +1038,32 @@ export class Recorder {
       layoutOfType(type);
     } catch (e) {
       if (e instanceof EvsTypeError) {
-        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`, {
-          loc,
-        });
+        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
       }
       throw e;
     }
     const elem = elemTypeOf(type);
     if (BigInt(value.length) >= 1n << 32n) {
-      this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41, loc);
+      this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
     }
-    const lenId = this.coerceToId(value.length, 'uint256', `${what} length`, loc);
-    const arrId = this.newValue(type, loc, `${stringifyType(type)} literal`);
-    this.appendStmt({ k: 'arrnew', elem, length: lenId, out: arrId }, loc);
+    const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
+    const arrId = this.newValue(type, `${stringifyType(type)} literal`);
+    this.appendStmt({ k: 'arrnew', elem, length: lenId, out: arrId });
     value.forEach((el, i) => {
-      const valId = this.coerceToId(el, elem, `${what}[${i}]`, loc);
-      const iId = this.coerceToId(i, 'uint256', `${what}[${i}] index`, loc);
-      this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: valId }, loc);
+      const valId = this.coerceToId(el, elem, `${what}[${i}]`);
+      const iId = this.coerceToId(i, 'uint256', `${what}[${i}] index`);
+      this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: valId });
     });
     return arrId;
   }
 
   /** Tuple branch of {@link coerceToId}: reuse a Tuple handle's ValueId, or build a
    *  `tuplenew` from a literal struct/positional object. */
-  private coerceTupleToId(
-    v: unknown,
-    type: TupleType,
-    what: string,
-    loc: SourceLoc | null,
-  ): ValueId {
+  private coerceTupleToId(v: unknown, type: TupleType, what: string): ValueId {
     if (type.type !== 'tuple') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `${what}: tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
-        { loc },
       );
     }
     if (typeof v === 'object' && v !== null) {
@@ -1137,38 +1072,30 @@ export class Recorder {
         if (ti.owner !== this) {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
-            `${what}: this Tuple belongs to script "${ti.owner.name}" (defined at ${fmtLoc(ti.owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
-            {
-              loc,
-              relatedLocs: [
-                { label: `script "${ti.owner.name}" defined at`, loc: ti.owner.scriptLoc },
-                { label: 'handle recorded at', loc: ti.owner.valueLoc(ti.id) },
-              ],
-            },
+            `${what}: this Tuple (${ti.owner.valueRef(ti.id)}) belongs to script "${ti.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
           );
         }
-        this.checkVisible(ti.id, what, loc);
-        if (!typesEqual(ti.tt, type)) this.typeMismatch(what, type, ti.tt, loc);
+        this.checkVisible(ti.id, what);
+        if (!typesEqual(ti.tt, type)) this.typeMismatch(what, type, ti.tt);
         return ti.id; // reference: aliases the SAME flat block
       }
       // an Expr memref of the SAME tuple type (e.g. another tuple's `.expr()`) is also accepted.
       const ei = EXPR_INTERNALS.get(v);
       if (ei !== undefined) {
-        this.classify(v, what, loc); // ownership + visibility check (rethrows FOREIGN_HANDLE)
+        this.classify(v, what); // ownership + visibility check (rethrows FOREIGN_HANDLE)
         const et = this.typeOfValue(ei.id);
-        if (!typesEqual(et, type)) this.typeMismatch(what, type, et, loc);
+        if (!typesEqual(et, type)) this.typeMismatch(what, type, et);
         return ei.id;
       }
       if (FIELD_INTERNALS.has(v)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: a Field is not a tuple — read it with .get()`,
-          { loc },
         );
       }
     }
     // a plain object/array literal → build the tuple from its members.
-    return this.buildTupleNew(type, v, what, loc);
+    return this.buildTupleNew(type, v, what);
   }
 
   /** FOREIGN_HANDLE check for a bare {@link TupleHandle}/{@link MutArrayImpl} reused in a return /
@@ -1178,46 +1105,38 @@ export class Recorder {
     id: ValueId,
     kind: 'Tuple' | 'MutArray',
     what: string,
-    loc: SourceLoc | null,
   ): void {
     if (owner === this) return;
     throw new EvsScopeError(
       'FOREIGN_HANDLE',
-      `${what}: this ${kind} belongs to script "${owner.name}" (defined at ${fmtLoc(owner.scriptLoc)}) and cannot be used in script "${this.name}" — handles never cross scripts`,
-      {
-        loc,
-        relatedLocs: [
-          { label: `script "${owner.name}" defined at`, loc: owner.scriptLoc },
-          { label: 'handle recorded at', loc: owner.valueLoc(id) },
-        ],
-      },
+      `${what}: this ${kind} (${owner.valueRef(id)}) belongs to script "${owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
     );
   }
 
   /** The ValueId behind a bare {@link Tuple} handle, after owner + visibility checks. Reused by the
    *  direct-return paths (`s.return`, `s.fn` result — issue #5 ask #1). */
-  private tupleHandleId(ti: TupleInternals, what: string, loc: SourceLoc | null): ValueId {
-    this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what, loc);
-    this.checkVisible(ti.id, what, loc);
+  private tupleHandleId(ti: TupleInternals, what: string): ValueId {
+    this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what);
+    this.checkVisible(ti.id, what);
     return ti.id;
   }
 
   /** The ValueId behind a bare {@link MutArray} handle, after owner + visibility checks (issue #5
    *  ask #5 — a bare array handle is returnable / passable, byte-identical to `.expr()`). */
-  private arrHandleId(ai: ArrInternals, what: string, loc: SourceLoc | null): ValueId {
-    this.assertHandleOwner(ai.owner, ai.id, 'MutArray', what, loc);
-    this.checkVisible(ai.id, what, loc);
+  private arrHandleId(ai: ArrInternals, what: string): ValueId {
+    this.assertHandleOwner(ai.owner, ai.id, 'MutArray', what);
+    this.checkVisible(ai.id, what);
     return ai.id;
   }
 
   /** The ValueId behind a bare {@link Tuple} / {@link MutArray} handle (owner + visibility
    *  checked), or null when `v` is neither. */
-  private bareHandleId(v: unknown, what: string, loc: SourceLoc | null): ValueId | null {
+  private bareHandleId(v: unknown, what: string): ValueId | null {
     if (typeof v !== 'object' || v === null) return null;
     const ti = TUPLE_INTERNALS.get(v);
-    if (ti !== undefined) return this.tupleHandleId(ti, what, loc);
+    if (ti !== undefined) return this.tupleHandleId(ti, what);
     const ai = ARR_INTERNALS.get(v);
-    if (ai !== undefined) return this.arrHandleId(ai, what, loc);
+    if (ai !== undefined) return this.arrHandleId(ai, what);
     return null;
   }
 
@@ -1226,35 +1145,27 @@ export class Recorder {
   /** `s.tuple(type, init?)`: allocate a flat block, MSTORE provided members (omitted/literal-0 →
    *  no init), return a Tuple handle. */
   tuple(type: unknown, init: unknown): object {
-    const loc = captureLoc();
-    this.assertOpen('s.tuple()', loc);
+    this.assertOpen('s.tuple()');
     if (!isTupleType(type) || !isEvsValueType(type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.tuple(): type must be a t.struct/t.tuple descriptor (or readonly AbiParameter[]), got ${describeHost(type)}`,
-        { loc },
       );
     }
     if (type.type !== 'tuple') {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `s.tuple(): tuple-array type ${JSON.stringify(type.type)} is not supported yet (only one array level over a tuple is supported)`,
-        { loc },
       );
     }
-    const id = this.buildTupleNew(type, init, 's.tuple()', loc);
+    const id = this.buildTupleNew(type, init, 's.tuple()');
     return makeTuple(this, id, type);
   }
 
   /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),
    *  returning the new tuple ValueId. Members are name-keyed (struct) or positional (t.tuple);
    *  an omitted or literal-zero member is left to the zero-fill (no MSTORE). */
-  private buildTupleNew(
-    type: TupleType,
-    init: unknown,
-    what: string,
-    loc: SourceLoc | null,
-  ): ValueId {
+  private buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
     const isPositional = type.components.every((c) => c.name === '');
     let lookup: (comp: NamedType, index: number) => unknown;
     if (init === undefined) {
@@ -1264,7 +1175,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: this struct expects a name-keyed init record, not a positional array`,
-          { loc },
         );
       }
       lookup = (_comp, index) => init[index];
@@ -1276,7 +1186,6 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: init must be a record of members (or a positional array for a t.tuple), got ${describeHost(init)}`,
-        { loc },
       );
     }
 
@@ -1289,15 +1198,14 @@ export class Recorder {
         memberVal,
         memberType,
         `${what} member "${memberName(comp, index)}"`,
-        loc,
       );
       // a literal-zero word member is already covered by the zero-fill — skip its MSTORE.
       if (this.litValues.get(valId) === 0n) return;
       inits.push({ index, value: valId });
     });
 
-    const out = this.newValue(type, loc, `s.tuple(${tupleDebugTag(type)})`);
-    this.appendStmt({ k: 'tuplenew', inits, out }, loc);
+    const out = this.newValue(type, `s.tuple(${tupleDebugTag(type)})`);
+    this.appendStmt({ k: 'tuplenew', inits, out });
     return out;
   }
 
@@ -1309,10 +1217,9 @@ export class Recorder {
   /** `Tuple.at(i)`: a positional Field handle. The index must be a recording-time literal (the
    *  flat layout has no runtime member indexing). */
   tupleAt(tupleId: ValueId, tt: TupleType, i: unknown, what: string): FieldHandle {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(tupleId, what, loc);
-    const index = asLiteralIndex(i, tt.components.length, what, loc);
+    this.assertOpen(what);
+    this.checkVisible(tupleId, what);
+    const index = asLiteralIndex(i, tt.components.length, what);
     const comp = tt.components[index];
     if (comp === undefined) {
       throw new EvsInternalError('INTERNAL', `tupleAt: component ${index} missing`);
@@ -1322,20 +1229,18 @@ export class Recorder {
 
   /** `Tuple.expr()`: the raw memref Expr (reference semantics — aliases the SAME ValueId). */
   tupleExpr(tupleId: ValueId, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(tupleId, what, loc);
+    this.assertOpen(what);
+    this.checkVisible(tupleId, what);
     return makeExpr(this, tupleId);
   }
 
   /** `Field.get()`: read a member — `field` stmt. A composite member follows the pointer to a
    *  fresh Tuple handle; a scalar member yields an Expr. */
   fieldGet(tupleId: ValueId, index: number, memberType: EvsType, what: string): Expr | object {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(tupleId, what, loc);
-    const out = this.newValue(memberType, loc);
-    this.appendStmt({ k: 'field', tuple: tupleId, index, out }, loc);
+    this.assertOpen(what);
+    this.checkVisible(tupleId, what);
+    const out = this.newValue(memberType);
+    this.appendStmt({ k: 'field', tuple: tupleId, index, out });
     // a tuple (NOT tuple-array) member → a Tuple handle; a composite array / scalar member → an Expr.
     return this.valueHandle(out, memberType);
   }
@@ -1348,120 +1253,110 @@ export class Recorder {
     value: unknown,
     what: string,
   ): void {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(tupleId, what, loc);
-    const valId = this.coerceToId(value, memberType, what, loc);
-    this.appendStmt({ k: 'tupleset', tuple: tupleId, index, value: valId }, loc);
+    this.assertOpen(what);
+    this.checkVisible(tupleId, what);
+    const valId = this.coerceToId(value, memberType, what);
+    this.appendStmt({ k: 'tupleset', tuple: tupleId, index, value: valId });
   }
 
-  private certainPanic(what: string, reason: string, panic: number, loc: SourceLoc | null): never {
+  private certainPanic(what: string, reason: string, panic: number): never {
     throw new EvsTypeError(
       'CERTAIN_PANIC',
       `${what}: ${reason} — this would always revert with Panic(0x${panic.toString(16)}) at runtime, so recording refuses it. If a guaranteed runtime panic is intended, route one operand through a cell: s.let(t.uint256, x).get()`,
-      { loc },
     );
   }
 
   // -- values & state ---------------------------------------------------------------------
 
   lit(type: unknown, value: unknown): Expr {
-    const loc = captureLoc();
-    this.assertOpen('s.lit()', loc);
-    assertV0Type(type, 's.lit()', loc);
+    this.assertOpen('s.lit()');
+    assertV0Type(type, 's.lit()');
     if (isWordType(type)) {
       const { hex, logical } = this.wordLiteral(type, value);
-      return makeExpr(this, this.wordConst(type, logical, loc, hex));
+      return makeExpr(this, this.wordConst(type, logical, hex));
     }
     // a composite-element array literal (`string[]`/`uint256[][]`) is built at record time,
     // exactly like a coerced array literal; word-element arrays / string / bytes use the const path.
     if (type.endsWith('[]') && isArrayValueType(type) && isCompositeElemArray(type)) {
-      return makeExpr(this, this.buildArrayLiteral(type, value, 's.lit()', loc));
+      return makeExpr(this, this.buildArrayLiteral(type, value, 's.lit()'));
     }
-    return makeExpr(this, this.dataConst(type, value, loc));
+    return makeExpr(this, this.dataConst(type, value));
   }
 
   letCell(a: unknown, b: unknown): CellImpl {
-    const loc = captureLoc();
-    this.assertOpen('s.let()', loc);
+    this.assertOpen('s.let()');
     let type: EvsType;
     let init: unknown;
     if (typeof a === 'string') {
-      assertV0Type(a, 's.let()', loc);
+      assertV0Type(a, 's.let()');
       if (b === undefined) {
-        throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`, {
-          loc,
-        });
+        throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
       }
       type = a;
       init = b;
     } else {
-      const c = this.classify(a, 's.let()', loc);
+      const c = this.classify(a, 's.let()');
       if (c.kind !== 'expr') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `s.let(init): init must be an Expr when no type is given — use s.let(type, literal) to type a literal`,
-          { loc },
         );
       }
       type = c.type;
       init = a;
     }
-    return new CellImpl(this, this.makeCell(type, init, loc));
+    return new CellImpl(this, this.makeCell(type, init));
   }
 
-  private makeCell(type: EvsType, init: unknown, loc: SourceLoc | null): CellId {
-    const initId = this.coerceToId(init, type, 's.let() init', loc);
+  private makeCell(type: EvsType, init: unknown): CellId {
+    const initId = this.coerceToId(init, type, 's.let() init');
     const cellId = this.cellInfos.length;
-    this.cellInfos.push({ type, loc });
+    this.cellInfos.push({ type });
     this.cellScopes.push(this.top());
-    this.appendStmt({ k: 'cellnew', cell: cellId, init: initId }, loc);
+    this.appendStmt({ k: 'cellnew', cell: cellId, init: initId });
     return cellId;
   }
 
   cellGet(cellId: CellId, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkCellVisible(cellId, what, loc);
-    return makeExpr(this, this.cellGetId(cellId, loc));
+    this.assertOpen(what);
+    this.checkCellVisible(cellId, what);
+    return makeExpr(this, this.cellGetId(cellId));
   }
 
-  private cellGetId(cellId: CellId, loc: SourceLoc | null): ValueId {
-    const out = this.newValue(this.typeOfCell(cellId), loc);
-    this.appendStmt({ k: 'cellget', cell: cellId, out }, loc);
+  private cellGetId(cellId: CellId): ValueId {
+    const out = this.newValue(this.typeOfCell(cellId));
+    this.appendStmt({ k: 'cellget', cell: cellId, out });
     return out;
   }
 
   cellSet(cellId: CellId, value: unknown, what: string): void {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkCellVisible(cellId, what, loc);
-    const valId = this.coerceToId(value, this.typeOfCell(cellId), what, loc);
-    this.appendStmt({ k: 'cellset', cell: cellId, value: valId }, loc);
+    this.assertOpen(what);
+    this.checkCellVisible(cellId, what);
+    const valId = this.coerceToId(value, this.typeOfCell(cellId), what);
+    this.appendStmt({ k: 'cellset', cell: cellId, value: valId });
   }
 
   newArray(elem: unknown, length: unknown): MutArrayImpl {
-    const loc = captureLoc();
-    this.assertOpen('s.newArray()', loc);
-    const elemType = this.newArrayElemType(elem, loc);
+    this.assertOpen('s.newArray()');
+    const elemType = this.newArrayElemType(elem);
     const arrType = arrayTypeOf(elemType);
-    const lenId = this.coerceToId(length, 'uint256', 's.newArray() length', loc);
+    const lenId = this.coerceToId(length, 'uint256', 's.newArray() length');
     const lenLit = this.litValues.get(lenId);
     if (lenLit !== undefined && lenLit >= 1n << 32n) {
-      this.certainPanic('s.newArray()', `literal length ${lenLit} is ≥ 2^32`, 0x41, loc);
+      this.certainPanic('s.newArray()', `literal length ${lenLit} is ≥ 2^32`, 0x41);
     }
     const tag = stringifyType(elemType);
-    const arrId = this.newValue(arrType, loc, `s.newArray(${tag})`);
-    this.appendStmt({ k: 'arrnew', elem: elemType, length: lenId, out: arrId }, loc);
-    const lenOut = this.newValue('uint256', loc, `s.newArray(${tag}).length`);
-    this.appendStmt({ k: 'len', a: arrId, out: lenOut }, loc);
+    const arrId = this.newValue(arrType, `s.newArray(${tag})`);
+    this.appendStmt({ k: 'arrnew', elem: elemType, length: lenId, out: arrId });
+    const lenOut = this.newValue('uint256', `s.newArray(${tag}).length`);
+    this.appendStmt({ k: 'len', a: arrId, out: lenOut });
     return new MutArrayImpl(this, arrId, elemType, makeExpr(this, lenOut));
   }
 
   /** Validate an `s.newArray` element type: word | string | bytes | one-level T[] | tuple.
    *  Deferred shapes (`tuple[]` element, deeper string arrays, `T[N]`) raise UNSUPPORTED_V0; the
    *  resulting array type is validated through `layoutOfType` so the classification mirrors layout. */
-  private newArrayElemType(elem: unknown, loc: SourceLoc | null): EvsType {
+  private newArrayElemType(elem: unknown): EvsType {
     let elemType: EvsType;
     if (typeof elem === 'string') {
       // classification (TYPE_MISMATCH vs UNSUPPORTED_V0 for `T[N]` etc.) is delegated to `layoutOfType`
@@ -1473,7 +1368,6 @@ export class Recorder {
         throw new EvsTypeError(
           'UNSUPPORTED_V0',
           `s.newArray(): a ${JSON.stringify(elem.type)} element (an array of tuple-arrays) is deferred — only one array level over a tuple/dynamic element`,
-          { loc },
         );
       }
       elemType = elem;
@@ -1481,7 +1375,6 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.newArray(): element type must be a t.* type (word | string | bytes | one-level T[] | tuple), got ${describeHost(elem)}`,
-        { loc },
       );
     }
     // validate the resulting array type (rejects `tuple[]` element → `tuple[][]`, deeper string
@@ -1494,9 +1387,6 @@ export class Recorder {
         throw new EvsTypeError(
           e.code,
           `s.newArray(): ${e.message.replace(/^layoutOf(Type)?: /, '')}`,
-          {
-            loc,
-          },
         );
       }
       throw e;
@@ -1505,62 +1395,55 @@ export class Recorder {
   }
 
   arrSet(arrId: ValueId, elem: EvsType, i: unknown, v: unknown, what: string): void {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(arrId, what, loc);
-    const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    const vId = this.coerceToId(v, elem, `${what} value`, loc);
-    this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: vId }, loc);
+    this.assertOpen(what);
+    this.checkVisible(arrId, what);
+    const iId = this.coerceToId(i, 'uint256', `${what} index`);
+    const vId = this.coerceToId(v, elem, `${what} value`);
+    this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: vId });
   }
 
   arrGet(arrId: ValueId, elem: EvsType, i: unknown, what: string): Expr | object {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(arrId, what, loc);
-    const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    const out = this.newValue(elem, loc);
-    this.appendStmt({ k: 'index', arr: arrId, i: iId, out }, loc);
+    this.assertOpen(what);
+    this.checkVisible(arrId, what);
+    const iId = this.coerceToId(i, 'uint256', `${what} index`);
+    const out = this.newValue(elem);
+    this.appendStmt({ k: 'index', arr: arrId, i: iId, out });
     // a `tuple[]` element → a Tuple handle (same internals as a decoded tuple); else an Expr.
     return this.valueHandle(out, elem);
   }
 
   arrExpr(arrId: ValueId, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    this.checkVisible(arrId, what, loc);
+    this.assertOpen(what);
+    this.checkVisible(arrId, what);
     return makeExpr(this, arrId); // aliases the SAME ValueId (reference semantics)
   }
 
   env(kind: unknown): Expr {
-    const loc = captureLoc();
-    this.assertOpen('s.env()', loc);
+    this.assertOpen('s.env()');
     if (typeof kind !== 'string' || !isEnvOp(kind)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.env(): unknown kind ${describeHost(kind)} (expected 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid')`,
-        { loc },
       );
     }
     const op = kind;
     const outType: EvsType = op === 'address' || op === 'caller' ? 'address' : 'uint256';
-    const out = this.newValue(outType, loc, `s.env(${op})`);
-    this.appendStmt({ k: 'env', op, out }, loc);
+    const out = this.newValue(outType, `s.env(${op})`);
+    this.appendStmt({ k: 'env', op, out });
     return makeExpr(this, out);
   }
 
   // -- ops ----------------------------------------------------------------------------------
 
   bin(op: BinOp, a: unknown, b: unknown, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
+    this.assertOpen(what);
     const isShift = op === 'shl' || op === 'shr';
     const isEquality = op === 'eq' || op === 'neq';
-    const ca = this.classifyOperand(a, `${what} left operand`, isEquality, loc);
+    const ca = this.classifyOperand(a, `${what} left operand`, isEquality);
     const cb = this.classifyOperand(
       b,
       `${what} ${isShift ? 'shift amount' : 'right operand'}`,
       isEquality,
-      loc,
     );
 
     // infer the operation type from the Expr operand(s)
@@ -1570,7 +1453,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: the shifted operand must be an Expr — type a literal with s.lit(type, value)`,
-          { loc },
         );
       }
       ty = ca.type;
@@ -1583,7 +1465,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: operand types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)${suggest}`,
-          { loc },
         );
       }
       ty = ca.type;
@@ -1595,50 +1476,44 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: at least one operand must be an Expr — type a literal with s.lit(type, value)`,
-        { loc },
       );
     }
 
     // memref equality (issue #38): `a.eq(b)` on string/bytes/T[]/tuple values is HASH equality —
     // rewritten at record time to `keccak256(a) == keccak256(b)` with s.keccak256's lowering.
-    if (isEquality && !isWordType(ty)) return this.memrefEquality(op, a, b, ty, what, loc);
+    if (isEquality && !isWordType(ty)) return this.memrefEquality(op, a, b, ty, what);
 
-    this.checkBinDomain(op, ty, what, loc);
+    this.checkBinDomain(op, ty, what);
     const bTy: EvsType = isShift ? 'uint256' : ty;
     const resultTy: EvsType = CMP_OPS.has(op) || op === 'and' || op === 'or' ? 'bool' : ty;
 
     // resolve operands to (id, logical) pairs without materializing raw literals yet
-    const ra = this.resolveOperand(ca, ty, `${what} left operand`, loc);
-    const rb = this.resolveOperand(cb, bTy, `${what} right operand`, loc);
+    const ra = this.resolveOperand(ca, ty, `${what} left operand`);
+    const rb = this.resolveOperand(cb, bTy, `${what} right operand`);
 
     // all-literal fold — domain checks established ty/resultTy are word types
     if (ra.logical !== null && rb.logical !== null && isWordType(ty) && isWordType(resultTy)) {
       const f = foldBin(op, ty, ra.logical, rb.logical);
-      if (!f.ok) this.certainPanic(what, f.reason, f.panic, loc);
-      return makeExpr(this, this.wordConst(resultTy, f.value, loc));
+      if (!f.ok) this.certainPanic(what, f.reason, f.panic);
+      return makeExpr(this, this.wordConst(resultTy, f.value));
     }
 
-    const ia = ra.id ?? this.materializeWord(ty, ra, loc);
-    const ib = rb.id ?? this.materializeWord(bTy, rb, loc);
-    const out = this.newValue(resultTy, loc);
-    this.appendStmt({ k: 'bin', op, a: ia, b: ib, out }, loc);
+    const ia = ra.id ?? this.materializeWord(ty, ra);
+    const ib = rb.id ?? this.materializeWord(bTy, rb);
+    const out = this.newValue(resultTy);
+    this.appendStmt({ k: 'bin', op, a: ia, b: ib, out });
     return makeExpr(this, out);
   }
 
   /** `bin` operand classification. Equality additionally accepts a bare Tuple/MutArray handle as
    *  its memref (like `s.encode` / `s.return`); every other op keeps classify()'s "use .expr()"
    *  steer for those handles. */
-  private classifyOperand(
-    v: unknown,
-    what: string,
-    acceptBareHandles: boolean,
-    loc: SourceLoc | null,
-  ): Operand {
+  private classifyOperand(v: unknown, what: string, acceptBareHandles: boolean): Operand {
     if (acceptBareHandles) {
-      const bare = this.bareHandleId(v, what, loc);
+      const bare = this.bareHandleId(v, what);
       if (bare !== null) return { kind: 'expr', id: bare, type: this.typeOfValue(bare) };
     }
-    return this.classify(v, what, loc);
+    return this.classify(v, what);
   }
 
   /**
@@ -1655,47 +1530,39 @@ export class Recorder {
     b: unknown,
     ty: EvsType,
     what: string,
-    loc: SourceLoc | null,
   ): Expr {
     // left-to-right, hash-as-you-go: the stmt order is exactly what the explicit spelling records
     // (a literal operand's const lands between the two hashes, as `s.lit` in the rhs would).
     const ha = this.hashIds(
-      [this.coerceToId(a, ty, `${what} left operand`, loc)],
-      loc,
+      [this.coerceToId(a, ty, `${what} left operand`)],
       `${what} left operand hash`,
     );
     const hb = this.hashIds(
-      [this.coerceToId(b, ty, `${what} right operand`, loc)],
-      loc,
+      [this.coerceToId(b, ty, `${what} right operand`)],
       `${what} right operand hash`,
     );
-    const out = this.newValue('bool', loc);
-    this.appendStmt({ k: 'bin', op, a: ha, b: hb, out }, loc);
+    const out = this.newValue('bool');
+    this.appendStmt({ k: 'bin', op, a: ha, b: hb, out });
     return makeExpr(this, out);
   }
 
-  private materializeWord(
-    ty: EvsType,
-    r: { hex: Hex | null; logical: bigint | null },
-    loc: SourceLoc | null,
-  ): ValueId {
+  private materializeWord(ty: EvsType, r: { hex: Hex | null; logical: bigint | null }): ValueId {
     if (r.logical === null || !isWordType(ty)) {
       throw new EvsInternalError(
         'INTERNAL',
         `cannot materialize operand of type '${stringifyType(ty)}'`,
       );
     }
-    return this.wordConst(ty, r.logical, loc, r.hex ?? undefined);
+    return this.wordConst(ty, r.logical, r.hex ?? undefined);
   }
 
   private resolveOperand(
     c: Operand,
     ty: EvsType,
     what: string,
-    loc: SourceLoc | null,
   ): { id: ValueId | null; logical: bigint | null; hex: Hex | null } {
     if (c.kind === 'expr') {
-      if (!typesEqual(c.type, ty)) this.typeMismatch(what, ty, c.type, loc);
+      if (!typesEqual(c.type, ty)) this.typeMismatch(what, ty, c.type);
       return { id: c.id, logical: this.litValues.get(c.id) ?? null, hex: null };
     }
     if (!isWordType(ty)) {
@@ -1703,20 +1570,18 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: '${stringifyType(ty)}' operands must be Exprs`,
-        { loc },
       );
     }
     const { hex, logical } = this.wordLiteral(ty, c.value);
     return { id: null, logical, hex };
   }
 
-  private checkBinDomain(op: BinOp, ty: EvsType, what: string, loc: SourceLoc | null): void {
+  private checkBinDomain(op: BinOp, ty: EvsType, what: string): void {
     if (NUMERIC_OPS.has(op)) {
       if (!isNumeric(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ty)}'`,
-          { loc },
         );
       }
       return;
@@ -1736,7 +1601,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: operands must be Expr<'bool'>, got '${stringifyType(ty)}'`,
-          { loc },
         );
       }
       return;
@@ -1746,7 +1610,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: operands must be uintN/bytesN (bit-width types), got '${stringifyType(ty)}'`,
-          { loc },
         );
       }
       return;
@@ -1755,43 +1618,38 @@ export class Recorder {
   }
 
   notOp(a: unknown, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const c = this.classify(a, what, loc);
+    this.assertOpen(what);
+    const c = this.classify(a, what);
     if (c.kind === 'raw') {
       const { logical } = this.wordLiteral('bool', c.value);
-      return makeExpr(this, this.wordConst('bool', 1n - logical, loc));
+      return makeExpr(this, this.wordConst('bool', 1n - logical));
     }
     if (c.type !== 'bool') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: operand must be Expr<'bool'>, got '${stringifyType(c.type)}'`,
-        { loc },
       );
     }
     const lit = this.litValues.get(c.id);
-    if (lit !== undefined) return makeExpr(this, this.wordConst('bool', 1n - lit, loc));
-    const out = this.newValue('bool', loc);
-    this.appendStmt({ k: 'un', op: 'not', a: c.id, out }, loc);
+    if (lit !== undefined) return makeExpr(this, this.wordConst('bool', 1n - lit));
+    const out = this.newValue('bool');
+    this.appendStmt({ k: 'un', op: 'not', a: c.id, out });
     return makeExpr(this, out);
   }
 
   bitNotOp(a: unknown, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const c = this.classify(a, what, loc);
+    this.assertOpen(what);
+    const c = this.classify(a, what);
     if (c.kind !== 'expr') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: operand must be an Expr — type a literal with s.lit(type, value)`,
-        { loc },
       );
     }
     if (!isBitsOperand(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: operand must be uintN/bytesN (bit-width types), got '${stringifyType(c.type)}'`,
-        { loc },
       );
     }
     const ty = c.type;
@@ -1799,10 +1657,10 @@ export class Recorder {
     if (lit !== undefined) {
       const mask = (1n << BigInt(bitsOf(ty))) - 1n;
       const folded = fromUnsignedN(ty, ~toUnsignedN(ty, lit) & mask);
-      return makeExpr(this, this.wordConst(ty, folded, loc));
+      return makeExpr(this, this.wordConst(ty, folded));
     }
-    const out = this.newValue(ty, loc);
-    this.appendStmt({ k: 'un', op: 'bitnot', a: c.id, out }, loc);
+    const out = this.newValue(ty);
+    this.appendStmt({ k: 'un', op: 'bitnot', a: c.id, out });
     return makeExpr(this, out);
   }
 
@@ -1812,13 +1670,10 @@ export class Recorder {
     target: unknown,
     what: string,
   ): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const c = this.classify(a, what, loc);
+    this.assertOpen(what);
+    const c = this.classify(a, what);
     if (c.kind !== 'expr') {
-      throw new EvsTypeError('TYPE_MISMATCH', `${what}: the converted operand must be an Expr`, {
-        loc,
-      });
+      throw new EvsTypeError('TYPE_MISMATCH', `${what}: the converted operand must be an Expr`);
     }
     const from = c.type;
     let to: WordType;
@@ -1833,14 +1688,12 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: target must be a ${prefix}N type, got ${describeHost(target)}`,
-          { loc },
         );
       }
       if (!isNumeric(from)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: cannot convert from '${stringifyType(from)}' — the source must be numeric (uintN/intN)`,
-          { loc },
         );
       }
       to = target;
@@ -1849,7 +1702,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${stringifyType(from)}'`,
-          { loc },
         );
       }
       to = 'address';
@@ -1858,7 +1710,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${stringifyType(from)}'`,
-          { loc },
         );
       }
       to = 'uint256';
@@ -1867,7 +1718,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${stringifyType(from)}'`,
-          { loc },
         );
       }
       to = 'bytes32';
@@ -1876,50 +1726,46 @@ export class Recorder {
     if (lit !== undefined) {
       const [min, max] = rangeOf(to);
       if (lit < min || lit > max) {
-        this.certainPanic(what, `${lit} does not fit '${to}'`, 0x11, loc);
+        this.certainPanic(what, `${lit} does not fit '${to}'`, 0x11);
       }
-      return makeExpr(this, this.wordConst(to, lit, loc));
+      return makeExpr(this, this.wordConst(to, lit));
     }
-    const out = this.newValue(to, loc);
-    this.appendStmt({ k: 'convert', a: c.id, out }, loc);
+    const out = this.newValue(to);
+    this.appendStmt({ k: 'convert', a: c.id, out });
     return makeExpr(this, out);
   }
 
   lenOp(a: unknown, what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const c = this.classify(a, what, loc);
+    this.assertOpen(what);
+    const c = this.classify(a, what);
     if (c.kind !== 'expr' || !isDynamicType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
-        { loc },
       );
     }
-    return makeExpr(this, this.lenId(c.id, loc));
+    return makeExpr(this, this.lenId(c.id));
   }
 
   /** The shared `len` tail of `.length()` and `s.forEach`'s `until` snapshot — one recording
    *  path, so the documented forEach-vs-manual IR equivalence holds by construction. */
-  private lenId(a: ValueId, loc: SourceLoc | null, debugName?: string): ValueId {
-    const out = this.newValue('uint256', loc, debugName);
-    this.appendStmt({ k: 'len', a, out }, loc);
+  private lenId(a: ValueId, debugName?: string): ValueId {
+    const out = this.newValue('uint256', debugName);
+    this.appendStmt({ k: 'len', a, out });
     return out;
   }
 
   atOp(a: unknown, i: unknown, what: string): Expr | object {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const c = this.classify(a, what, loc);
+    this.assertOpen(what);
+    const c = this.classify(a, what);
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
-        { loc },
       );
     }
-    const iId = this.coerceToId(i, 'uint256', `${what} index`, loc);
-    return this.indexElem(c.id, elemTypeOf(c.type), iId, loc);
+    const iId = this.coerceToId(i, 'uint256', `${what} index`);
+    return this.indexElem(c.id, elemTypeOf(c.type), iId);
   }
 
   /** The shared bounds-checked `index` tail of `.at(i)` and `s.forEach`'s element load — one
@@ -1927,15 +1773,9 @@ export class Recorder {
    *  a `Tuple` handle bound to the `index` out ValueId (same `TUPLE_INTERNALS` as a decoded
    *  tuple); a `T[][]`/`string[]` element → an Expr (whose `.at`/`.length` keep working
    *  recursively); a word element → an Expr. */
-  private indexElem(
-    arr: ValueId,
-    elem: EvsType,
-    i: ValueId,
-    loc: SourceLoc | null,
-    debugName?: string,
-  ): Expr | object {
-    const out = this.newValue(elem, loc, debugName);
-    this.appendStmt({ k: 'index', arr, i, out }, loc);
+  private indexElem(arr: ValueId, elem: EvsType, i: ValueId, debugName?: string): Expr | object {
+    const out = this.newValue(elem, debugName);
+    this.appendStmt({ k: 'index', arr, i, out });
     return this.valueHandle(out, elem);
   }
 
@@ -1944,11 +1784,10 @@ export class Recorder {
   /** `s.encode(...)` / `s.encodePacked(...)`: materialize the standard/packed ABI encoding of
    *  the staged values into a fresh `bytes` value. Handles only — literals go through `s.lit`. */
   encodeOp(mode: 'abi' | 'packed', values: readonly unknown[], what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const ids = this.encodeArgIds(mode, values, what, loc);
-    const out = this.newValue('bytes', loc, `${what.slice(0, -2)}(…)`);
-    this.appendStmt({ k: 'encode', mode, args: ids, out }, loc);
+    this.assertOpen(what);
+    const ids = this.encodeArgIds(mode, values, what);
+    const out = this.newValue('bytes', `${what.slice(0, -2)}(…)`);
+    this.appendStmt({ k: 'encode', mode, args: ids, out });
     return makeExpr(this, out);
   }
 
@@ -1960,26 +1799,25 @@ export class Recorder {
    * their exact bytes: the non-standard packed hash is always `s.keccak256(s.encodePacked(…))`.
    */
   keccakOp(values: readonly unknown[], what: string): Expr {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const ids = this.encodeArgIds('abi', values, what, loc);
-    return makeExpr(this, this.hashIds(ids, loc, 's.keccak256(…)'));
+    this.assertOpen(what);
+    const ids = this.encodeArgIds('abi', values, what);
+    return makeExpr(this, this.hashIds(ids, 's.keccak256(…)'));
   }
 
   /** The `s.keccak256` lowering over resolved ValueIds: a single `bytes`/`string` value is hashed
    *  directly, anything else through one standard `encode` stmt. Shared with memref equality. */
-  private hashIds(ids: readonly ValueId[], loc: SourceLoc | null, debugName: string): ValueId {
+  private hashIds(ids: readonly ValueId[], debugName: string): ValueId {
     let a: ValueId;
     const single = ids.length === 1 ? ids[0] : undefined;
     const singleType = single === undefined ? null : this.typeOfValue(single);
     if (single !== undefined && (singleType === 'bytes' || singleType === 'string')) {
       a = single;
     } else {
-      a = this.newValue('bytes', loc, `${debugName} encoded bytes`);
-      this.appendStmt({ k: 'encode', mode: 'abi', args: ids, out: a }, loc);
+      a = this.newValue('bytes', `${debugName} encoded bytes`);
+      this.appendStmt({ k: 'encode', mode: 'abi', args: ids, out: a });
     }
-    const out = this.newValue('bytes32', loc, debugName);
-    this.appendStmt({ k: 'keccak256', a, out }, loc);
+    const out = this.newValue('bytes32', debugName);
+    this.appendStmt({ k: 'keccak256', a, out });
     return out;
   }
 
@@ -1990,24 +1828,22 @@ export class Recorder {
     mode: 'abi' | 'packed',
     values: readonly unknown[],
     what: string,
-    loc: SourceLoc | null,
   ): ValueId[] {
     if (values.length === 0) {
-      throw new EvsTypeError('TYPE_MISMATCH', `${what}: at least one value is required`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${what}: at least one value is required`);
     }
     return values.map((v, i) => {
       const valueWhat = `${what} value #${i}`;
       let id: ValueId;
-      const bare = this.bareHandleId(v, valueWhat, loc);
+      const bare = this.bareHandleId(v, valueWhat);
       if (bare !== null) {
         id = bare;
       } else {
-        const c = this.classify(v, valueWhat, loc);
+        const c = this.classify(v, valueWhat);
         if (c.kind !== 'expr') {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${valueWhat}: must be an Expr, Tuple, or MutArray handle — type a literal with s.lit(type, value)`,
-            { loc },
           );
         }
         id = c.id;
@@ -2018,7 +1854,6 @@ export class Recorder {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${valueWhat}: '${stringifyType(ty)}' cannot be packed-encoded — abi.encodePacked supports words, string/bytes, and word-element arrays only (structs, nested arrays, and string[]/bytes[] are rejected, matching solc); use s.encode() for standard ABI encoding`,
-            { loc },
           );
         }
       }
@@ -2037,9 +1872,8 @@ export class Recorder {
    * Tuple / MutArray handle).
    */
   throwStmt(error: unknown, argsIn: readonly unknown[], what: string): void {
-    const loc = captureLoc();
-    this.assertOpen(what, loc);
-    const decl = this.findErrorDecl(error, what, loc);
+    this.assertOpen(what);
+    const decl = this.findErrorDecl(error, what);
     const index = this.errorDecls.indexOf(decl);
     const n = decl.params.length;
     let ids: ValueId[] = [];
@@ -2048,7 +1882,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: error "${decl.ir.name}" declares no parameters — throw it without args`,
-          { loc },
         );
       }
     } else if (decl.params.every((p) => p.name !== '')) {
@@ -2059,7 +1892,6 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: error "${decl.ir.name}" takes a named args record — s.throw(${decl.ir.name}, { ${decl.params.map((p) => p.name).join(', ')} })`,
-          { loc },
         );
       }
       const known = new Set(decl.params.map((p) => p.name));
@@ -2068,7 +1900,6 @@ export class Recorder {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${what}: unknown arg ${JSON.stringify(key)} for error "${decl.ir.name}" (expected: ${[...known].join(', ')})`,
-            { loc },
           );
         }
       }
@@ -2077,10 +1908,9 @@ export class Recorder {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${what}: missing arg "${p.name}" for error "${decl.ir.name}" — every declared param is required`,
-            { loc },
           );
         }
-        return this.coerceToId(a[p.name], p.type, `${what} arg "${p.name}"`, loc);
+        return this.coerceToId(a[p.name], p.type, `${what} arg "${p.name}"`);
       });
     } else {
       // any bare (unnamed) param → ONE positional tuple
@@ -2089,31 +1919,24 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: error "${decl.ir.name}" takes a positional args tuple of ${n} value(s)`,
-          { loc },
         );
       }
       if (a.length !== n) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: error "${decl.ir.name}" expects ${n} arg(s), got ${a.length}`,
-          { loc },
         );
       }
       ids = decl.params.map((p, i) =>
-        this.coerceToId(
-          a[i],
-          p.type,
-          `${what} arg #${i}${p.name === '' ? '' : ` ("${p.name}")`}`,
-          loc,
-        ),
+        this.coerceToId(a[i], p.type, `${what} arg #${i}${p.name === '' ? '' : ` ("${p.name}")`}`),
       );
     }
-    this.appendStmt({ k: 'throw', error: index, args: ids }, loc);
+    this.appendStmt({ k: 'throw', error: index, args: ids });
   }
 
   /** Resolves a thrown value against the declared set: identity first, then a structural
    *  name+shape match (a re-created but equal `t.error` value is accepted). */
-  private findErrorDecl(error: unknown, what: string, loc: SourceLoc | null): RecErrorDecl {
+  private findErrorDecl(error: unknown, what: string): RecErrorDecl {
     for (const d of this.errorDecls) {
       if (d.value === error) return d;
     }
@@ -2126,7 +1949,6 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: expected an error declared with t.error(...), got ${describeHost(error)}`,
-        { loc },
       );
     }
     const name = error['name'];
@@ -2147,23 +1969,20 @@ export class Recorder {
     throw new EvsTypeError(
       'ERROR_UNDECLARED',
       `${what}: error "${name}" is not declared by script "${this.name}" — add it to the def's errors: [...] list${sameName !== undefined ? ` (an error named "${name}" IS declared, but with different params)` : ''}`,
-      { loc, relatedLocs: [{ label: 'script defined at', loc: this.scriptLoc }] },
     );
   }
 
   // -- control flow ---------------------------------------------------------------------
 
   ifStmt(cond: unknown, thenFn: unknown, elseFn: unknown): void {
-    const loc = captureLoc();
-    this.assertOpen('s.if()', loc);
+    this.assertOpen('s.if()');
     if (typeof thenFn !== 'function' || (elseFn !== undefined && typeof elseFn !== 'function')) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.if(): branches must be callbacks — s.if(cond, () => { … }, () => { … }?)`,
-        { loc },
       );
     }
-    const condId = this.coerceToId(cond, 'bool', 's.if() condition', loc);
+    const condId = this.coerceToId(cond, 'bool', 's.if() condition');
     const thenScope = this.pushScope('if-then');
     try {
       unsafeCast<() => void>(thenFn)();
@@ -2176,24 +1995,21 @@ export class Recorder {
     } finally {
       this.popScope();
     }
-    this.appendStmt({ k: 'if', cond: condId, then: thenScope.stmts, else: elseScope.stmts }, loc);
+    this.appendStmt({ k: 'if', cond: condId, then: thenScope.stmts, else: elseScope.stmts });
   }
 
   whileStmt(condThunk: unknown, bodyFn: unknown): void {
-    const loc = captureLoc();
-    this.assertOpen('s.while()', loc);
+    this.assertOpen('s.while()');
     if (typeof condThunk !== 'function' || typeof bodyFn !== 'function') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.while(): expected s.while(() => cond, (loop) => { … }) — the condition is a thunk recorded into the loop header`,
-        { loc },
       );
     }
     this.whileInternal(
-      loc,
       () => {
         const cond = unsafeCast<() => unknown>(condThunk)();
-        return this.coerceToId(cond, 'bool', 's.while() condition', loc);
+        return this.coerceToId(cond, 'bool', 's.while() condition');
       },
       (loop) => {
         unsafeCast<(loop: LoopCtlImpl) => void>(bodyFn)(loop);
@@ -2202,7 +2018,6 @@ export class Recorder {
   }
 
   private whileInternal(
-    loc: SourceLoc | null,
     recordCond: () => ValueId,
     recordBody: (loop: LoopCtlImpl, bodyScope: Scope) => void,
   ): void {
@@ -2210,17 +2025,19 @@ export class Recorder {
     try {
       const condId = recordCond();
       const bodyScope = this.pushScope('while-body'); // child of the header scope
-      const loop = new LoopCtlImpl(this, bodyScope, loc);
+      const loop = new LoopCtlImpl(this, bodyScope);
       try {
         recordBody(loop, bodyScope);
       } finally {
         this.popScope();
       }
       this.popScope(); // header
-      this.appendStmt(
-        { k: 'while', header: headerScope.stmts, cond: condId, body: bodyScope.stmts },
-        loc,
-      );
+      this.appendStmt({
+        k: 'while',
+        header: headerScope.stmts,
+        cond: condId,
+        body: bodyScope.stmts,
+      });
       return;
     } catch (e) {
       // unwind any scopes this loop pushed, then rethrow
@@ -2230,18 +2047,14 @@ export class Recorder {
   }
 
   forStmt(range: unknown, bodyFn: unknown): void {
-    const loc = captureLoc();
-    this.assertOpen('s.for()', loc);
+    this.assertOpen('s.for()');
     if (typeof bodyFn !== 'function') {
-      throw new EvsTypeError('TYPE_MISMATCH', `s.for(): body must be a callback (i, loop) => …`, {
-        loc,
-      });
+      throw new EvsTypeError('TYPE_MISMATCH', `s.for(): body must be a callback (i, loop) => …`);
     }
     if (typeof range !== 'object' || range === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.for(): range must be { type?, from, until, step? }`,
-        { loc },
       );
     }
     const r = range as { type?: unknown; from?: unknown; until?: unknown; step?: unknown };
@@ -2249,26 +2062,23 @@ export class Recorder {
     if (r.type === undefined) {
       ty = 'uint256'; // `type` is optional (issue #12) — the counter defaults to uint256
     } else {
-      assertV0Type(r.type, 's.for() range.type', loc);
+      assertV0Type(r.type, 's.for() range.type');
       ty = r.type;
     }
     if (!isNumeric(ty)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.for(): range.type must be numeric (uintN/intN), got '${stringifyType(ty)}'`,
-        { loc },
       );
     }
     if (r.from === undefined || r.until === undefined) {
-      throw new EvsTypeError('TYPE_MISMATCH', `s.for(): range.from and range.until are required`, {
-        loc,
-      });
+      throw new EvsTypeError('TYPE_MISMATCH', `s.for(): range.from and range.until are required`);
     }
     // the loop cell + the ONE-TIME snapshots of `until` and `step`
-    const cellId = this.makeCell(ty, r.from, loc);
-    const untilId = this.coerceToId(r.until, ty, 's.for() range.until', loc);
-    const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step', loc);
-    this.counterLoop(ty, cellId, untilId, stepId, loc, (iSnap, _iId, loop) => {
+    const cellId = this.makeCell(ty, r.from);
+    const untilId = this.coerceToId(r.until, ty, 's.for() range.until');
+    const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step');
+    this.counterLoop(ty, cellId, untilId, stepId, (iSnap, _iId, loop) => {
       unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, loop);
     });
   }
@@ -2278,32 +2088,29 @@ export class Recorder {
    *  `until`), and each iteration binds `elem` to the bounds-checked `array.at(i)` element
    *  handle (a `Tuple` for a `tuple[]` element, an `Expr` otherwise). */
   forEachStmt(arr: unknown, bodyFn: unknown): void {
-    const loc = captureLoc();
-    this.assertOpen('s.forEach()', loc);
+    this.assertOpen('s.forEach()');
     if (typeof bodyFn !== 'function') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.forEach(): body must be a callback (elem, i, loop) => …`,
-        { loc },
       );
     }
-    const c = this.classify(arr, 's.forEach() array', loc);
+    const c = this.classify(arr, 's.forEach() array');
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
       // no MutArray steering here — classify already threw its own `.expr()` hint for one
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(arr)}`,
-        { loc },
       );
     }
     const elemTy = elemTypeOf(c.type);
-    const lenId = this.lenId(c.id, loc, 's.forEach(…) length');
-    const cellId = this.makeCell('uint256', 0, loc);
-    const stepId = this.wordConst('uint256', 1n, loc);
+    const lenId = this.lenId(c.id, 's.forEach(…) length');
+    const cellId = this.makeCell('uint256', 0);
+    const stepId = this.wordConst('uint256', 1n);
     // the element load is recorded unconditionally; when the body never reads `elem` the
     // compile-time DCE pass (ir/dce.ts) drops it, bounds check included
-    this.counterLoop('uint256', cellId, lenId, stepId, loc, (iSnap, iId, loop) => {
-      const elem = this.indexElem(c.id, elemTy, iId, loc, 's.forEach(…) element');
+    this.counterLoop('uint256', cellId, lenId, stepId, (iSnap, iId, loop) => {
+      const elem = this.indexElem(c.id, elemTy, iId, 's.forEach(…) element');
       unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
     });
   }
@@ -2318,14 +2125,13 @@ export class Recorder {
     cellId: CellId,
     untilId: ValueId,
     stepId: ValueId,
-    loc: SourceLoc | null,
     invokeBody: (iSnap: Expr, iId: ValueId, loop: LoopCtlShape) => void,
   ): void {
-    const emitStep = (stepLoc: SourceLoc | null): void => {
-      const cur = this.cellGetId(cellId, stepLoc);
-      const sum = this.newValue(ty, stepLoc);
-      this.appendStmt({ k: 'bin', op: 'add', a: cur, b: stepId, out: sum }, stepLoc);
-      this.appendStmt({ k: 'cellset', cell: cellId, value: sum }, stepLoc);
+    const emitStep = (): void => {
+      const cur = this.cellGetId(cellId);
+      const sum = this.newValue(ty);
+      this.appendStmt({ k: 'bin', op: 'add', a: cur, b: stepId, out: sum });
+      this.appendStmt({ k: 'cellset', cell: cellId, value: sum });
     };
 
     // the body's `i` snapshot REUSES the header's cellget: the header dominates the body
@@ -2333,11 +2139,10 @@ export class Recorder {
     // header read IS the per-iteration counter — no second cellget per iteration
     let iId!: ValueId;
     this.whileInternal(
-      loc,
       () => {
-        iId = this.cellGetId(cellId, loc);
-        const cond = this.newValue('bool', loc);
-        this.appendStmt({ k: 'bin', op: 'lt', a: iId, b: untilId, out: cond }, loc);
+        iId = this.cellGetId(cellId);
+        const cond = this.newValue('bool');
+        this.appendStmt({ k: 'bin', op: 'lt', a: iId, b: untilId, out: cond });
         return cond;
       },
       (rawLoop) => {
@@ -2347,30 +2152,27 @@ export class Recorder {
             rawLoop.break();
           },
           continue: () => {
-            const cloc = captureLoc();
-            rawLoop.guard('loop.continue()', cloc);
-            emitStep(cloc);
-            rawLoop.emit('continue', cloc);
+            rawLoop.guard('loop.continue()');
+            emitStep();
+            rawLoop.emit('continue');
           },
         };
         invokeBody(iSnap, iId, wrapped);
-        emitStep(loc);
+        emitStep();
       },
     );
   }
 
   select(cond: unknown, a: unknown, b: unknown): Expr {
-    const loc = captureLoc();
-    this.assertOpen('s.select()', loc);
-    const ca = this.classify(a, 's.select() first branch', loc);
-    const cb = this.classify(b, 's.select() second branch', loc);
+    this.assertOpen('s.select()');
+    const ca = this.classify(a, 's.select() first branch');
+    const cb = this.classify(b, 's.select() second branch');
     let ty: EvsType;
     if (ca.kind === 'expr' && cb.kind === 'expr') {
       if (!typesEqual(ca.type, cb.type)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `s.select(): branch types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)`,
-          { loc },
         );
       }
       ty = ca.type;
@@ -2382,17 +2184,16 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.select(): at least one branch must be an Expr — type a literal with s.lit(type, value)`,
-        { loc },
       );
     }
     // literal condition folds: both branches are already-computed values,
     // so picking one is exact — the chosen operand is aliased (or interned, for a literal).
-    const cc = this.classify(cond, 's.select() condition', loc);
+    const cc = this.classify(cond, 's.select() condition');
     let condLit: bigint | null = null;
     if (cc.kind === 'raw') {
       condLit = this.wordLiteral('bool', cc.value).logical;
     } else if (cc.type !== 'bool') {
-      this.typeMismatch('s.select() condition', 'bool', cc.type, loc);
+      this.typeMismatch('s.select() condition', 'bool', cc.type);
     } else {
       condLit = this.litValues.get(cc.id) ?? null;
     }
@@ -2401,13 +2202,13 @@ export class Recorder {
       const dropped = condLit === 1n ? cb : ca;
       if (dropped.kind === 'raw') this.validateLiteral(ty, dropped.value); // eager validation
       if (chosen.kind === 'expr') return makeExpr(this, chosen.id);
-      return makeExpr(this, this.coerceToId(chosen.value, ty, 's.select() branch', loc));
+      return makeExpr(this, this.coerceToId(chosen.value, ty, 's.select() branch'));
     }
-    const condId = cc.kind === 'expr' ? cc.id : this.coerceToId(cond, 'bool', 's.select()', loc);
-    const ia = ca.kind === 'expr' ? ca.id : this.coerceToId(ca.value, ty, 's.select() branch', loc);
-    const ib = cb.kind === 'expr' ? cb.id : this.coerceToId(cb.value, ty, 's.select() branch', loc);
-    const out = this.newValue(ty, loc);
-    this.appendStmt({ k: 'select', cond: condId, a: ia, b: ib, out }, loc);
+    const condId = cc.kind === 'expr' ? cc.id : this.coerceToId(cond, 'bool', 's.select()');
+    const ia = ca.kind === 'expr' ? ca.id : this.coerceToId(ca.value, ty, 's.select() branch');
+    const ib = cb.kind === 'expr' ? cb.id : this.coerceToId(cb.value, ty, 's.select() branch');
+    const out = this.newValue(ty);
+    this.appendStmt({ k: 'select', cond: condId, a: ia, b: ib, out });
     return makeExpr(this, out);
   }
 
@@ -2422,7 +2223,6 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.select(): a tuple branch must be a built tuple (s.tuple / a decoded Tuple), not a literal`,
-        { loc: captureLoc() },
       );
     }
     encodeLiteralData(ty, value);
@@ -2440,13 +2240,11 @@ export class Recorder {
         ? `s.try${verbBase[0]?.toUpperCase() ?? ''}${verbBase.slice(1)}`
         : `s.${verbBase}`;
     const label = `${callerName}()`;
-    const loc = captureLoc();
-    this.assertOpen(label, loc);
+    this.assertOpen(label);
     if (typeof p !== 'object' || p === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: expected { address, abi, functionName, args?, gas?, struct?${kind === 'call' ? ', revertReturns?' : ''} }`,
-        { loc },
       );
     }
     const params = unsafeCast<{
@@ -2462,7 +2260,6 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: \`struct\` must be a boolean (omit it, or pass \`struct: true\` to decode named outputs into one Tuple)`,
-        { loc },
       );
     }
     const wantStruct = params.struct === true;
@@ -2472,17 +2269,16 @@ export class Recorder {
     const revertReturns =
       params.revertReturns === undefined
         ? undefined
-        : this.revertReturnTypes(params.revertReturns, kind, wantStruct, label, loc);
+        : this.revertReturnTypes(params.revertReturns, kind, wantStruct, label);
     const abi = params.abi;
     if (!Array.isArray(abi)) {
-      throw new EvsTypeError('ABI_SHAPE', `${label}: \`abi\` must be an ABI array`, { loc });
+      throw new EvsTypeError('ABI_SHAPE', `${label}: \`abi\` must be an ABI array`);
     }
     const fname = params.functionName;
     if (typeof fname !== 'string' || fname === '') {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `${label}: \`functionName\` is required (got ${describeHost(fname)})`,
-        { loc },
       );
     }
     const named = abi.filter(
@@ -2492,7 +2288,6 @@ export class Recorder {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `${label}: the provided ABI has no function named "${fname}"`,
-        { loc },
       );
     }
     // mutability filter, split by call kind (issue #1): STATICCALL admits view/pure; CALL
@@ -2514,15 +2309,12 @@ export class Recorder {
         kind === 'static'
           ? `${label} runs under STATICCALL and can only call view/pure functions — for a non-view target use s.call (plain CALL) or s.simulate (rolled-back write dry-run)`
           : `${label} runs under CALL and can only call nonpayable/payable functions — for a view/pure read use s.read`;
-      throw new EvsTypeError('ABI_SHAPE', `${label}: function "${fname}" is ${muts}. ${steer}`, {
-        loc,
-      });
+      throw new EvsTypeError('ABI_SHAPE', `${label}: function "${fname}" is ${muts}. ${steer}`);
     }
     if (matching.length > 1) {
       throw new EvsTypeError(
         'UNSUPPORTED_V0',
         `${label}: function "${fname}" is overloaded (${matching.length} ${allowedMuts.join('/')} overloads) — overload disambiguation is not supported yet; prune the ABI to the single intended entry`,
-        { loc },
       );
     }
     const item = matching[0];
@@ -2530,24 +2322,22 @@ export class Recorder {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `${label}: ABI entry for "${fname}" is malformed (missing inputs/outputs arrays)`,
-        { loc },
       );
     }
     // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
     const plain = toPlainAbiFunction(unsafeCast<AbiFunction>(item));
     if (params.address === undefined) {
-      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`);
     }
-    const target = this.coerceToId(params.address, 'address', `${label} address`, loc);
+    const target = this.coerceToId(params.address, 'address', `${label} address`);
     const rawArgs = params.args === undefined ? [] : params.args;
     if (!Array.isArray(rawArgs)) {
-      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`args\` must be an array`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`args\` must be an array`);
     }
     if (rawArgs.length !== plain.inputs.length) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: function "${fname}" expects ${plain.inputs.length} argument(s), got ${rawArgs.length}`,
-        { loc },
       );
     }
     const argIds = plain.inputs.map((inp, i) => {
@@ -2558,12 +2348,10 @@ export class Recorder {
         throw new EvsInternalError('INTERNAL', `${label}: unsupported input survived validation`);
       }
       const argLabel = inp.name === '' ? `args[${i}]` : `args[${i}] ("${inp.name}")`;
-      return this.coerceToId(rawArgs[i], ity, `${label} ${argLabel}`, loc);
+      return this.coerceToId(rawArgs[i], ity, `${label} ${argLabel}`);
     });
     const gasId =
-      params.gas === undefined
-        ? undefined
-        : this.coerceToId(params.gas, 'uint256', `${label} gas`, loc);
+      params.gas === undefined ? undefined : this.coerceToId(params.gas, 'uint256', `${label} gas`);
     // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
     // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
     // Tuple handle on unwrap; scalars/arrays yield an Expr. Under `revertReturns` the declared
@@ -2583,26 +2371,23 @@ export class Recorder {
     const outIds = outTypes.map((oty, i) => {
       const tag =
         outTypes.length === 1 ? `${callerName}(${fname})` : `${callerName}(${fname})[${i}]`;
-      return this.newValue(oty, loc, tag);
+      return this.newValue(oty, tag);
     });
     const successId =
-      mode === 'try' ? this.newValue('bool', loc, `${callerName}(${fname}).success`) : undefined;
-    this.appendStmt(
-      {
-        k: 'call',
-        target,
-        fnAbi: plain,
-        args: argIds,
-        outs: outIds,
-        mode,
-        // omit `kind` when 'static' so STATICCALL IR stays byte-identical to the pre-issue-#1 shape
-        ...(kind !== 'static' ? { kind } : {}),
-        ...(successId !== undefined ? { successOut: successId } : {}),
-        ...(gasId !== undefined ? { gas: gasId } : {}),
-        ...(revertReturns !== undefined ? { revertReturns } : {}),
-      },
-      loc,
-    );
+      mode === 'try' ? this.newValue('bool', `${callerName}(${fname}).success`) : undefined;
+    this.appendStmt({
+      k: 'call',
+      target,
+      fnAbi: plain,
+      args: argIds,
+      outs: outIds,
+      mode,
+      // omit `kind` when 'static' so STATICCALL IR stays byte-identical to the pre-issue-#1 shape
+      ...(kind !== 'static' ? { kind } : {}),
+      ...(successId !== undefined ? { successOut: successId } : {}),
+      ...(gasId !== undefined ? { gas: gasId } : {}),
+      ...(revertReturns !== undefined ? { revertReturns } : {}),
+    });
     // unwrap a tuple (NOT a tuple ARRAY) out ValueId to a Tuple handle; a composite array
     // (`tuple[]`/`T[][]`/`string[]`) or any scalar/word-array → an Expr (its `.at(i)`/`.length()`
     // yield the element/length handles — a `tuple[]` element `.at(i)` is a `Tuple` handle).
@@ -2612,7 +2397,7 @@ export class Recorder {
       // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
       // `tuplenew` over the already-decoded output ValueIds — the default positional `[many]`
       // shape (above) is unchanged.
-      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fname, loc);
+      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fname);
     } else {
       const first = outIds[0];
       const firstType = outTypes[0];
@@ -2638,7 +2423,6 @@ export class Recorder {
     kind: 'static' | 'call' | 'simulate',
     wantStruct: boolean,
     label: string,
-    loc: SourceLoc | null,
   ): readonly EvsType[] {
     if (kind !== 'call') {
       const steer =
@@ -2648,21 +2432,18 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: \`revertReturns\` is only supported on s.call / s.tryCall (decode a QuoterV1-style target's REVERT payload as the result) — ${steer}`,
-        { loc },
       );
     }
     if (wantStruct) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: \`struct: true\` cannot be combined with \`revertReturns\` (revert-decoded outputs are unnamed) — declare a single \`t.struct(...)\` type in \`revertReturns\` instead`,
-        { loc },
       );
     }
     if (!Array.isArray(raw)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${label}: \`revertReturns\` must be an array of types (e.g. \`[t.uint256]\`), got ${describeHost(raw)}`,
-        { loc },
       );
     }
     const types = raw.map((ty, i): EvsType => {
@@ -2671,23 +2452,16 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: expected a type (use the \`t\` namespace — t.uint256, t.string, t.struct(...)), got ${describeHost(ty)}`,
-          { loc },
         );
       }
       if (isTupleType(ty) && ty.components.length === 0) {
-        throw new EvsTypeError('ABI_SHAPE', `${what}: tuple type carries no components`, { loc });
+        throw new EvsTypeError('ABI_SHAPE', `${what}: tuple type carries no components`);
       }
       try {
         layoutOfType(ty);
       } catch (e) {
         if (e instanceof EvsTypeError) {
-          throw new EvsTypeError(
-            e.code,
-            `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`,
-            {
-              loc,
-            },
-          );
+          throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
         }
         throw e;
       }
@@ -2705,13 +2479,11 @@ export class Recorder {
     outIds: readonly ValueId[],
     callerName: string,
     fname: string,
-    loc: SourceLoc | null,
   ): object {
     if (outputs.length === 0) {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `${callerName}({ struct: true }): function "${fname}" has no outputs to build a struct from`,
-        { loc },
       );
     }
     outputs.forEach((o, i) => {
@@ -2719,31 +2491,28 @@ export class Recorder {
         throw new EvsTypeError(
           'ABI_SHAPE',
           `${callerName}({ struct: true }): output #${i} of "${fname}" is unnamed — every output must be named to decode into a named Tuple (an unnamed member degrades viem's object inference to a positional array); use the default positional result instead`,
-          { loc },
         );
       }
     });
     const structType: TupleType = Object.freeze({ type: 'tuple', components: outputs });
     const inits = outIds.map((id, i) => ({ index: i, value: id }));
-    const structId = this.newValue(structType, loc, `${callerName}(${fname}) struct`);
-    this.appendStmt({ k: 'tuplenew', inits, out: structId }, loc);
+    const structId = this.newValue(structType, `${callerName}(${fname}) struct`);
+    this.appendStmt({ k: 'tuplenew', inits, out: structId });
     return makeTuple(this, structId, structType);
   }
 
   // -- user functions ----------------------------------------------------------------------
 
   defineFn(name: unknown, paramsIn: unknown, bodyFn: unknown): (...args: unknown[]) => unknown {
-    const loc = captureLoc();
-    this.assertOpen('s.fn()', loc);
+    this.assertOpen('s.fn()');
     if (typeof name !== 'string' || !IDENT_RE.test(name)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.fn(): name must be a non-empty identifier, got ${describeHost(name)}`,
-        { loc },
       );
     }
     if (typeof bodyFn !== 'function') {
-      throw new EvsTypeError('TYPE_MISMATCH', `s.fn("${name}"): body must be a callback`, { loc });
+      throw new EvsTypeError('TYPE_MISMATCH', `s.fn("${name}"): body must be a callback`);
     }
     // params accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a single
     // `namedArg(...)`, or a `readonly` list mixing named/bare. A lone declarator → a one-element list.
@@ -2772,7 +2541,6 @@ export class Recorder {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `s.fn("${name}") param #${i}: invalid name ${describeHost(pName)} (must be a non-empty identifier)`,
-            { loc },
           );
         }
       } else {
@@ -2784,14 +2552,13 @@ export class Recorder {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `s.fn("${name}") param #${i}: duplicate param name "${pName}"`,
-          { loc },
         );
       }
       seen.add(pName);
       // the same type gate as `evscript` args: a structurally valid composite descriptor passes
       // as-is; anything else must be a supported type string (throws with a precise code).
       if (!isEvsValueType(pType)) {
-        assertV0Type(pType, `s.fn("${name}") param "${pName}"`, loc);
+        assertV0Type(pType, `s.fn("${name}") param "${pName}"`);
       }
       return { name: pName, type: pType };
     });
@@ -2803,12 +2570,12 @@ export class Recorder {
     const fnScope = newScope('fn-body');
     this.savedStacks.push(this.stack);
     this.stack = [fnScope];
-    this.fnCtx.push({ name, loc });
+    this.fnCtx.push({ name });
     let resultIds: ValueId[];
     let shape: 'void' | 'single' | 'tuple';
     try {
       const paramEntries = params.map((p) => {
-        const id = this.newValue(p.type, loc, `${name}(${p.name})`);
+        const id = this.newValue(p.type, `${name}(${p.name})`);
         return { name: p.name, type: p.type, value: id };
       });
       // the same handle dispatch as script args (`valueHandle`): a plain tuple/struct param → a
@@ -2821,10 +2588,10 @@ export class Recorder {
         resultIds = [];
       } else if (Array.isArray(r)) {
         shape = 'tuple';
-        resultIds = r.map((el, i) => this.requireFnResult(el, name, i, loc));
+        resultIds = r.map((el, i) => this.requireFnResult(el, name, i));
       } else {
         shape = 'single';
-        resultIds = [this.requireFnResult(r, name, null, loc)];
+        resultIds = [this.requireFnResult(r, name, null)];
       }
       this.fnIrs[fnId] = {
         name,
@@ -2832,7 +2599,6 @@ export class Recorder {
         results: resultIds.map((id) => ({ type: this.typeOfValue(id) })),
         body: fnScope.stmts,
         resultValues: resultIds,
-        loc,
       };
     } finally {
       const saved = this.savedStacks.pop();
@@ -2843,12 +2609,7 @@ export class Recorder {
     return (...callArgs: unknown[]) => this.fnCall(fnId, name, shape, callArgs);
   }
 
-  private requireFnResult(
-    v: unknown,
-    fnName: string,
-    index: number | null,
-    loc: SourceLoc | null,
-  ): ValueId {
+  private requireFnResult(v: unknown, fnName: string, index: number | null): ValueId {
     const what =
       index === null ? `s.fn("${fnName}") result` : `s.fn("${fnName}") result [${index}]`;
     // a Tuple / MutArray handle is returnable from a fn body DIRECTLY (composite/array result —
@@ -2856,14 +2617,13 @@ export class Recorder {
     // visibility checks. The fncall result is a single pointer word, so the IR/codegen/validate
     // layers carry it unchanged. classify() (below) still rejects these handles on the arithmetic
     // paths with the "use .expr()" message.
-    const bare = this.bareHandleId(v, what, loc);
+    const bare = this.bareHandleId(v, what);
     if (bare !== null) return bare;
-    const c = this.classify(v, what, loc);
+    const c = this.classify(v, what);
     if (c.kind !== 'expr') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: fn bodies must return an Expr, a Tuple, a MutArray, a readonly array of those, or void — got ${describeHost(v)}`,
-        { loc },
       );
     }
     return c.id;
@@ -2875,14 +2635,12 @@ export class Recorder {
     shape: 'void' | 'single' | 'tuple',
     callArgs: readonly unknown[],
   ): unknown {
-    const loc = captureLoc();
-    this.assertOpen(`fn "${name}"()`, loc);
+    this.assertOpen(`fn "${name}"()`);
     if (this.openFns.has(fnId)) {
       // defensive: unconstructible (the handle does not exist inside its own body), but checked
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
         `fn "${name}" cannot call itself — recursion is not supported in evs scripts`,
-        { loc },
       );
     }
     const fn = this.fnIrs[fnId];
@@ -2893,17 +2651,16 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `fn "${name}" expects ${fn.params.length} argument(s), got ${callArgs.length}`,
-        { loc },
       );
     }
     const argIds = fn.params.map((p, i) =>
-      this.coerceToId(callArgs[i], p.type, `fn "${name}" arg ${i} ("${p.name}")`, loc),
+      this.coerceToId(callArgs[i], p.type, `fn "${name}" arg ${i} ("${p.name}")`),
     );
     const outIds = fn.results.map((r, i) => {
       const tag = fn.results.length === 1 ? `${name}(…)` : `${name}(…)[${i}]`;
-      return this.newValue(r.type, loc, tag);
+      return this.newValue(r.type, tag);
     });
-    this.appendStmt({ k: 'fncall', fn: fnId, args: argIds, outs: outIds }, loc);
+    this.appendStmt({ k: 'fncall', fn: fnId, args: argIds, outs: outIds });
     if (shape === 'void') return undefined;
     // wrap each result by its recorded type (issue #5 ask #1): a plain `tuple` result → a Tuple
     // handle (so named field access works at the call site, like `s.call`); a composite array
@@ -2917,28 +2674,24 @@ export class Recorder {
   // -- return + sealing ----------------------------------------------------------------------
 
   ret(values: unknown): object {
-    const loc = captureLoc();
-    this.assertOpen('s.return()', loc);
+    this.assertOpen('s.return()');
     if (this.savedStacks.length > 0) {
       const fn = this.fnCtx[this.fnCtx.length - 1];
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
-        `s.return() cannot be recorded inside an s.fn body — return values from the fn callback instead`,
-        { loc, relatedLocs: [{ label: 'fn defined at', loc: fn?.loc ?? null }] },
+        `s.return() cannot be recorded inside an s.fn body${fn === undefined ? '' : ` (fn "${fn.name}")`} — return values from the fn callback instead`,
       );
     }
     if (this.stack.length !== 1) {
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
         `s.return() must run exactly once, unconditionally, at the top level of the script — it cannot be recorded inside a ${this.top().kind} block`,
-        { loc },
       );
     }
     if (typeof values !== 'object' || values === null || Array.isArray(values)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.return(): expected a record of named Exprs, got ${describeHost(values)}`,
-        { loc },
       );
     }
     const returns: { name: string; type: EvsType; value: ValueId }[] = [];
@@ -2947,31 +2700,28 @@ export class Recorder {
         throw new EvsTypeError(
           'ABI_SHAPE',
           `s.return(): empty-string return keys are rejected — every component must be named or viem degrades the result object to a positional array`,
-          { loc },
         );
       }
       if (!IDENT_RE.test(key)) {
         throw new EvsTypeError(
           'ABI_SHAPE',
           `s.return(): invalid return key ${JSON.stringify(key)} (must be an identifier)`,
-          { loc },
         );
       }
       // a Tuple / MutArray handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS
       // the memref, so we return its ValueId verbatim — byte-identical to `handle.expr()`.
       // classify() (below) still rejects these handles on the arithmetic paths with the targeted
       // "use .expr()" message (issue #5 asks #5 / #2's bare-Tuple precedent).
-      const bare = this.bareHandleId(v, `s.return() value "${key}"`, loc);
+      const bare = this.bareHandleId(v, `s.return() value "${key}"`);
       if (bare !== null) {
         returns.push({ name: key, type: this.typeOfValue(bare), value: bare });
         continue;
       }
-      const c = this.classify(v, `s.return() value "${key}"`, loc);
+      const c = this.classify(v, `s.return() value "${key}"`);
       if (c.kind !== 'expr') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `s.return() value "${key}": must be an Expr — type a literal with s.lit(type, value)`,
-          { loc },
         );
       }
       returns.push({ name: key, type: c.type, value: c.id });
@@ -2991,14 +2741,12 @@ export class Recorder {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `script "${this.name}": the builder callback completed without calling s.return({...})`,
-        { loc: this.scriptLoc },
       );
     }
     if (callbackResult !== this.returnToken) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `script "${this.name}": the builder callback must return the value produced by THIS script's s.return({...})`,
-        { loc: this.scriptLoc },
       );
     }
     const fns: FnIr[] = this.fnIrs.map((f, i) => {
@@ -3018,7 +2766,6 @@ export class Recorder {
       returns: this.returnsList,
       // omitted when no error is declared — pre-#15 scripts serialize byte-identically
       ...(this.errorDecls.length === 0 ? {} : { errors: this.errorDecls.map((d) => d.ir) }),
-      loc: this.scriptLoc,
     };
     deepFreeze(ir);
     return { ir, returns: this.returnsList };

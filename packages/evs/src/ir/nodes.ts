@@ -11,7 +11,7 @@
  * the IR schema names the if-statement branch field `then`. */
 
 import { isHexString } from '../core/bytes.js';
-import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { isEvsType, typeToAbiParam, type ArgType, type EvsType, type Hex } from '../core/types.js';
 
 export type ValueId = number;
@@ -32,18 +32,15 @@ export interface ScriptIr {
   // omitted when empty, so pre-#15 serialized IR round-trips byte-identically (the `call.kind`
   // precedent); absent ⇒ no error may be thrown.
   readonly errors?: readonly PlainAbiError[];
-  readonly loc: SourceLoc | null;
 }
 
 export interface ValueInfo {
   readonly type: EvsType;
-  readonly loc: SourceLoc | null;
   readonly debugName?: string;
 }
 
 export interface CellInfo {
   readonly type: EvsType;
-  readonly loc: SourceLoc | null;
   readonly debugName?: string;
 }
 
@@ -53,7 +50,6 @@ export interface FnIr {
   readonly results: readonly { type: EvsType }[];
   readonly body: readonly Stmt[];
   readonly resultValues: readonly ValueId[];
-  readonly loc: SourceLoc | null;
 }
 
 export type BinOp =
@@ -104,7 +100,7 @@ export interface PlainAbiError {
   readonly inputs: readonly PlainAbiParam[];
 }
 
-export type Stmt = { readonly loc: SourceLoc | null; readonly site: SiteId } & (
+export type Stmt = { readonly site: SiteId } & (
   | { k: 'const'; out: ValueId; data: ConstData; type: EvsType }
   | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'un'; op: UnOp; a: ValueId; out: ValueId }
@@ -280,7 +276,6 @@ export function deserializeIr(json: string): ScriptIr {
     body: decodeStmts(o['body'], 'ir.body'),
     returns: asArray(o['returns'], 'ir.returns').map((r, i) => decodeReturn(r, `ir.returns[${i}]`)),
     ...(errors === undefined ? {} : { errors }),
-    loc: decodeLoc(o['loc'], 'ir.loc'),
   };
   deepFreeze(ir);
   return ir;
@@ -361,21 +356,6 @@ function describe(v: unknown): string {
   }
 }
 
-/** `loc` fields accept `null` and treat an absent key as `null`. */
-function decodeLoc(v: unknown, path: string): SourceLoc | null {
-  if (v === null || v === undefined) return null;
-  const o = asRecord(v, path);
-  const line: unknown = o['line'];
-  const column: unknown = o['column'];
-  if (typeof line !== 'number' || !Number.isSafeInteger(line) || line < 0) {
-    fail(`${path}.line`, `expected a non-negative integer, got ${describe(line)}`);
-  }
-  if (typeof column !== 'number' || !Number.isSafeInteger(column) || column < 0) {
-    fail(`${path}.column`, `expected a non-negative integer, got ${describe(column)}`);
-  }
-  return { file: asString(o['file'], `${path}.file`), line, column };
-}
-
 function decodeArg(v: unknown, path: string): { name: string; type: ArgType } {
   const o = asRecord(v, path);
   return { name: asString(o['name'], `${path}.name`), type: asEvsType(o['type'], `${path}.type`) };
@@ -384,10 +364,9 @@ function decodeArg(v: unknown, path: string): { name: string; type: ArgType } {
 function decodeInfo(v: unknown, path: string): ValueInfo {
   const o = asRecord(v, path);
   const type = asEvsType(o['type'], `${path}.type`);
-  const loc = decodeLoc(o['loc'], `${path}.loc`);
   const debugName: unknown = o['debugName'];
-  if (debugName === undefined) return { type, loc };
-  return { type, loc, debugName: asString(debugName, `${path}.debugName`) };
+  if (debugName === undefined) return { type };
+  return { type, debugName: asString(debugName, `${path}.debugName`) };
 }
 
 function decodeReturn(v: unknown, path: string): { name: string; type: EvsType; value: ValueId } {
@@ -417,7 +396,6 @@ function decodeFn(v: unknown, path: string): FnIr {
     }),
     body: decodeStmts(o['body'], `${path}.body`),
     resultValues: decodeIdArray(o['resultValues'], `${path}.resultValues`),
-    loc: decodeLoc(o['loc'], `${path}.loc`),
   };
 }
 
@@ -520,14 +498,12 @@ function decodeStmts(v: unknown, path: string): readonly Stmt[] {
 
 function decodeStmt(v: unknown, path: string): Stmt {
   const o = asRecord(v, path);
-  const loc = decodeLoc(o['loc'], `${path}.loc`);
   const site = asId(o['site'], `${path}.site`);
   const k: unknown = o['k'];
   if (typeof k !== 'string') fail(`${path}.k`, `expected a statement kind, got ${describe(k)}`);
   switch (k) {
     case 'const':
       return {
-        loc,
         site,
         k,
         out: asId(o['out'], `${path}.out`),
@@ -538,7 +514,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       const op = asString(o['op'], `${path}.op`);
       if (!isBinOp(op)) fail(`${path}.op`, `unknown bin op ${describe(op)}`);
       return {
-        loc,
         site,
         k,
         op,
@@ -550,18 +525,17 @@ function decodeStmt(v: unknown, path: string): Stmt {
     case 'un': {
       const op = asString(o['op'], `${path}.op`);
       if (!isUnOp(op)) fail(`${path}.op`, `unknown un op ${describe(op)}`);
-      return { loc, site, k, op, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+      return { site, k, op, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     }
     case 'env': {
       const op = asString(o['op'], `${path}.op`);
       if (!isEnvOp(op)) fail(`${path}.op`, `unknown env op ${describe(op)}`);
-      return { loc, site, k, op, out: asId(o['out'], `${path}.out`) };
+      return { site, k, op, out: asId(o['out'], `${path}.out`) };
     }
     case 'convert':
-      return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+      return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     case 'select':
       return {
-        loc,
         site,
         k,
         cond: asId(o['cond'], `${path}.cond`),
@@ -571,7 +545,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'index':
       return {
-        loc,
         site,
         k,
         arr: asId(o['arr'], `${path}.arr`),
@@ -579,10 +552,9 @@ function decodeStmt(v: unknown, path: string): Stmt {
         out: asId(o['out'], `${path}.out`),
       };
     case 'len':
-      return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+      return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     case 'arrnew':
       return {
-        loc,
         site,
         k,
         elem: asEvsType(o['elem'], `${path}.elem`),
@@ -591,7 +563,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'arrset':
       return {
-        loc,
         site,
         k,
         arr: asId(o['arr'], `${path}.arr`),
@@ -600,7 +571,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'tuplenew':
       return {
-        loc,
         site,
         k,
         inits: asArray(o['inits'], `${path}.inits`).map((it, j) => {
@@ -614,7 +584,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'field':
       return {
-        loc,
         site,
         k,
         tuple: asId(o['tuple'], `${path}.tuple`),
@@ -623,7 +592,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'tupleset':
       return {
-        loc,
         site,
         k,
         tuple: asId(o['tuple'], `${path}.tuple`),
@@ -636,7 +604,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
         fail(`${path}.mode`, `expected 'abi' | 'packed', got ${describe(mode)}`);
       }
       return {
-        loc,
         site,
         k,
         mode,
@@ -645,10 +612,9 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     }
     case 'keccak256':
-      return { loc, site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+      return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     case 'throw':
       return {
-        loc,
         site,
         k,
         error: asId(o['error'], `${path}.error`),
@@ -656,7 +622,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'cellnew':
       return {
-        loc,
         site,
         k,
         cell: asId(o['cell'], `${path}.cell`),
@@ -664,7 +629,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'cellget':
       return {
-        loc,
         site,
         k,
         cell: asId(o['cell'], `${path}.cell`),
@@ -672,7 +636,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'cellset':
       return {
-        loc,
         site,
         k,
         cell: asId(o['cell'], `${path}.cell`),
@@ -693,7 +656,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       // `revertReturns` is OPTIONAL (issue #35): absent → the ABI outputs are the decode schema.
       const revertReturns: unknown = o['revertReturns'];
       return {
-        loc,
         site,
         k,
         target: asId(o['target'], `${path}.target`),
@@ -715,7 +677,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
     }
     case 'fncall':
       return {
-        loc,
         site,
         k,
         fn: asId(o['fn'], `${path}.fn`),
@@ -724,7 +685,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'if':
       return {
-        loc,
         site,
         k,
         cond: asId(o['cond'], `${path}.cond`),
@@ -733,7 +693,6 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'while':
       return {
-        loc,
         site,
         k,
         header: decodeStmts(o['header'], `${path}.header`),
@@ -742,23 +701,17 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'break':
     case 'continue':
-      return { loc, site, k };
+      return { site, k };
     default:
       return fail(`${path}.k`, `unknown statement kind ${describe(k)}`);
   }
 }
 
-/** Deep-freezes plain data (the recorded and the deserialized IR); accessor properties (lazy
- *  SourceLocs) are frozen but not resolved. */
+/** Deep-freezes plain data (the recorded and the deserialized IR). */
 export function deepFreeze(value: unknown): void {
   if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return;
   Object.freeze(value);
-  const descs = Object.getOwnPropertyDescriptors(value);
-  for (const key of Object.keys(descs)) {
-    const d = descs[key];
-    if (d === undefined || d.get !== undefined) continue; // keep lazy locs lazy
-    deepFreeze(d.value);
-  }
+  for (const member of Object.values(value)) deepFreeze(member);
 }
 
 // ---------------------------------------------------------------------------

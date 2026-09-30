@@ -7,7 +7,7 @@
  * expect(...).toThrowError(...) pair. */
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsInternalError, EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { typeToAbiParam, type EvsType, type Hex, type WordType } from '../core/types.js';
 import {
   deserializeIr,
@@ -24,14 +24,12 @@ import {
 
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
-
-function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0, loc: SourceLoc | null = null): Stmt {
-  return { loc, site, ...body };
+function mk(body: DistOmit<Stmt, 'site'>, site = 0): Stmt {
+  return { site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
-  return debugName === undefined ? { type, loc: null } : { type, loc: LOC, debugName };
+  return debugName === undefined ? { type } : { type, debugName };
 }
 
 function ir(p: Partial<ScriptIr>): ScriptIr {
@@ -44,7 +42,6 @@ function ir(p: Partial<ScriptIr>): ScriptIr {
     fns: [],
     body: [],
     returns: [],
-    loc: null,
     ...p,
   };
 }
@@ -100,7 +97,7 @@ const KITCHEN_SINK: ScriptIr = ir({
     vi('uint256', 'x'), // v25 fn param
     vi('uint256'), // v26 fn body add
   ],
-  cells: [{ type: 'uint256', loc: LOC, debugName: 'acc' }],
+  cells: [{ type: 'uint256', debugName: 'acc' }],
   fns: [
     {
       name: 'double',
@@ -108,11 +105,10 @@ const KITCHEN_SINK: ScriptIr = ir({
       results: [{ type: 'uint256' }],
       body: [mk({ k: 'bin', op: 'add', a: 25, b: 25, out: 26 }, 20)],
       resultValues: [26],
-      loc: LOC,
     },
   ],
   body: [
-    mk({ k: 'const', out: 3, data: { kind: 'word', hex: wordHex(5n) }, type: 'uint256' }, 1, LOC),
+    mk({ k: 'const', out: 3, data: { kind: 'word', hex: wordHex(5n) }, type: 'uint256' }, 1),
     mk({ k: 'bin', op: 'add', a: 0, b: 3, out: 4 }, 2),
     mk({ k: 'un', op: 'not', a: 1, out: 5 }, 3),
     mk({ k: 'env', op: 'caller', out: 6 }, 4),
@@ -141,7 +137,6 @@ const KITCHEN_SINK: ScriptIr = ir({
         gas: 4,
       },
       14,
-      LOC,
     ),
     mk(
       {
@@ -213,7 +208,6 @@ const KITCHEN_SINK: ScriptIr = ir({
     { name: 'sym', type: 'string', value: 14 },
     { name: 'arr', type: 'uint256[]', value: 11 },
   ],
-  loc: LOC,
 });
 
 /** small IRs that exercise corners the kitchen sink does not. */
@@ -256,7 +250,7 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
-    'array const + locs',
+    'array const',
     ir({
       values: [vi('uint24[]', 'fees')],
       body: [
@@ -268,10 +262,8 @@ const CORPUS: readonly [string, ScriptIr][] = [
             type: 'uint24[]',
           },
           7,
-          LOC,
         ),
       ],
-      loc: { file: 'b.ts', line: 1, column: 1 },
     }),
   ],
 ];
@@ -349,7 +341,6 @@ describe('serializeIr / deserializeIr round trip', () => {
       values: [vi('uint256')],
       body: [
         {
-          loc: null,
           site: 3,
           k: 'const',
           out: 0,
@@ -359,7 +350,6 @@ describe('serializeIr / deserializeIr round trip', () => {
       ],
     });
     const reordered = {
-      loc: null,
       returns: [],
       body: [
         {
@@ -368,7 +358,6 @@ describe('serializeIr / deserializeIr round trip', () => {
           out: 0,
           k: 'const',
           site: 3,
-          loc: null,
         },
       ],
       fns: [],
@@ -383,16 +372,16 @@ describe('serializeIr / deserializeIr round trip', () => {
 
   test('undefined-valued optional properties are omitted', () => {
     const explicit = ir({
-      values: [{ type: 'uint256', loc: null, debugName: undefined } as unknown as ValueInfo],
+      values: [{ type: 'uint256', debugName: undefined } as unknown as ValueInfo],
     });
-    const implicit = ir({ values: [{ type: 'uint256', loc: null }] });
+    const implicit = ir({ values: [{ type: 'uint256' }] });
     expect(serializeIr(explicit)).toBe(serializeIr(implicit));
     expect(serializeIr(explicit)).not.toContain('debugName');
   });
 
   test('serializeIr throws EvsInternalError on non-JSON-safe values', () => {
     const poisoned = ir({
-      values: [{ type: 'uint256', loc: null, debugName: 5n as unknown as string }],
+      values: [{ type: 'uint256', debugName: 5n as unknown as string }],
     });
     expect(() => serializeIr(poisoned)).toThrowError(EvsInternalError);
     expect(() => serializeIr(poisoned)).toThrowError(/bigint/);
@@ -457,10 +446,6 @@ const GEN_TYPES: readonly EvsType[] = [
 ];
 const GEN_WORDS: readonly WordType[] = ['uint256', 'int128', 'address', 'bool', 'bytes32'];
 
-function genLoc(g: Gen): SourceLoc | null {
-  return g.bool() ? null : { file: `f${g.int(5)}.ts`, line: g.int(500), column: g.int(120) };
-}
-
 function genHex(g: Gen, bytes: number): Hex {
   let s = '';
   for (let i = 0; i < bytes; i++) s += g.int(256).toString(16).padStart(2, '0');
@@ -490,7 +475,6 @@ function genStmt(g: Gen, depth: number): Stmt {
     ...(depth > 0 ? (['if', 'while'] as const) : []),
   ] as const;
   const k = g.pick(kinds);
-  const loc = genLoc(g);
   const site = g.int(64);
   switch (k) {
     case 'const':
@@ -499,7 +483,6 @@ function genStmt(g: Gen, depth: number): Stmt {
           ? { k, out: id(), data: { kind: 'word', hex: genHex(g, 32) }, type: g.pick(GEN_TYPES) }
           : { k, out: id(), data: { kind: 'data', hex: genHex(g, 32 + g.int(64)) }, type: 'bytes' },
         site,
-        loc,
       );
     case 'bin':
       return mk(
@@ -511,14 +494,9 @@ function genStmt(g: Gen, depth: number): Stmt {
           out: id(),
         },
         site,
-        loc,
       );
     case 'un':
-      return mk(
-        { k, op: g.pick(['not', 'bitnot', 'iszero'] as const), a: id(), out: id() },
-        site,
-        loc,
-      );
+      return mk({ k, op: g.pick(['not', 'bitnot', 'iszero'] as const), a: id(), out: id() }, site);
     case 'env':
       return mk(
         {
@@ -527,26 +505,25 @@ function genStmt(g: Gen, depth: number): Stmt {
           out: id(),
         },
         site,
-        loc,
       );
     case 'convert':
-      return mk({ k, a: id(), out: id() }, site, loc);
+      return mk({ k, a: id(), out: id() }, site);
     case 'select':
-      return mk({ k, cond: id(), a: id(), b: id(), out: id() }, site, loc);
+      return mk({ k, cond: id(), a: id(), b: id(), out: id() }, site);
     case 'index':
-      return mk({ k, arr: id(), i: id(), out: id() }, site, loc);
+      return mk({ k, arr: id(), i: id(), out: id() }, site);
     case 'len':
-      return mk({ k, a: id(), out: id() }, site, loc);
+      return mk({ k, a: id(), out: id() }, site);
     case 'arrnew':
-      return mk({ k, elem: g.pick(GEN_WORDS), length: id(), out: id() }, site, loc);
+      return mk({ k, elem: g.pick(GEN_WORDS), length: id(), out: id() }, site);
     case 'arrset':
-      return mk({ k, arr: id(), i: id(), value: id() }, site, loc);
+      return mk({ k, arr: id(), i: id(), value: id() }, site);
     case 'cellnew':
-      return mk({ k, cell: g.int(4), init: id() }, site, loc);
+      return mk({ k, cell: g.int(4), init: id() }, site);
     case 'cellget':
-      return mk({ k, cell: g.int(4), out: id() }, site, loc);
+      return mk({ k, cell: g.int(4), out: id() }, site);
     case 'cellset':
-      return mk({ k, cell: g.int(4), value: id() }, site, loc);
+      return mk({ k, cell: g.int(4), value: id() }, site);
     case 'call': {
       const nIn = g.int(3);
       const nOut = g.int(3);
@@ -572,7 +549,6 @@ function genStmt(g: Gen, depth: number): Stmt {
           ...(g.bool() ? { gas: id() } : {}),
         },
         site,
-        loc,
       );
     }
     case 'fncall':
@@ -584,24 +560,21 @@ function genStmt(g: Gen, depth: number): Stmt {
           outs: Array.from({ length: g.int(3) }, id),
         },
         site,
-        loc,
       );
     case 'if':
       return mk(
         { k, cond: id(), then: genBlock(g, depth - 1), else: genBlock(g, depth - 1) },
         site,
-        loc,
       );
     case 'while':
       return mk(
         { k, header: genBlock(g, depth - 1), cond: id(), body: genBlock(g, depth - 1) },
         site,
-        loc,
       );
     case 'break':
     case 'continue':
     default:
-      return mk({ k: k === 'continue' ? ('continue' as const) : ('break' as const) }, site, loc);
+      return mk({ k: k === 'continue' ? ('continue' as const) : ('break' as const) }, site);
   }
 }
 
@@ -617,7 +590,7 @@ function genIr(seed: number): ScriptIr {
     values: Array.from({ length: 12 }, () =>
       g.bool() ? vi(g.pick(GEN_TYPES)) : vi(g.pick(GEN_TYPES), `v${g.int(40)}`),
     ),
-    cells: Array.from({ length: g.int(4) }, () => ({ type: g.pick(GEN_TYPES), loc: genLoc(g) })),
+    cells: Array.from({ length: g.int(4) }, () => ({ type: g.pick(GEN_TYPES) })),
     fns: Array.from({ length: g.int(3) }, (_, f) => ({
       name: `fn${f}`,
       params: Array.from({ length: g.int(3) }, (_p, i) => ({
@@ -628,7 +601,6 @@ function genIr(seed: number): ScriptIr {
       results: Array.from({ length: g.int(3) }, () => ({ type: g.pick(GEN_TYPES) })),
       body: genBlock(g, 1),
       resultValues: Array.from({ length: g.int(3) }, () => g.int(12)),
-      loc: genLoc(g),
     })),
     body: genBlock(g, 2),
     returns: Array.from({ length: g.int(3) }, (_, i) => ({
@@ -636,7 +608,6 @@ function genIr(seed: number): ScriptIr {
       type: g.pick(GEN_TYPES),
       value: g.int(12),
     })),
-    loc: genLoc(g),
   });
 }
 
@@ -691,18 +662,10 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['fns'] = null), /ir\.fns/);
     reject((r) => (r['body'] = 3), /ir\.body/);
     reject((r) => delete r['returns'], /ir\.returns/);
-    reject((r) => (r['loc'] = 5), /ir\.loc/);
-  });
-
-  test('rejects malformed locs', () => {
-    reject((r) => (r['loc'] = { file: 'a.ts', line: -1, column: 0 }), /loc\.line/);
-    reject((r) => (r['loc'] = { file: 'a.ts', line: 1.5, column: 0 }), /loc\.line/);
-    reject((r) => (r['loc'] = { file: 9, line: 1, column: 0 }), /loc\.file/);
-    reject((r) => (r['loc'] = { file: 'a.ts', line: 1 }), /loc\.column/);
   });
 
   test('rejects malformed value/cell infos', () => {
-    reject((r) => (r['values'][0] = { loc: null }), /values\[0\]\.type/);
+    reject((r) => (r['values'][0] = {}), /values\[0\]\.type/);
     reject((r) => (r['values'][0]['type'] = 'uint7'), /values\[0\]\.type/);
     reject((r) => (r['values'][0]['type'] = 'tuple'), /values\[0\]\.type/); // bare 'tuple' string (needs the object form)
     reject((r) => (r['values'][0]['debugName'] = 4), /debugName/);
@@ -786,11 +749,18 @@ describe('deserializeIr rejections', () => {
     );
   });
 
-  test('treats an absent loc as null', () => {
+  test('ignores the legacy `loc` keys of IR serialized before source locations were removed', () => {
     const raw: Record<string, any> = JSON.parse(serializeIr(KITCHEN_SINK));
-    delete raw['body'][1]['loc'];
+    const legacy = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
+    raw['loc'] = legacy;
+    raw['values'][0]['loc'] = null;
+    raw['cells'][0]['loc'] = legacy;
+    raw['fns'][0]['loc'] = null;
+    raw['body'][1]['loc'] = legacy;
     const back = deserializeIr(JSON.stringify(raw));
-    expect(back.body[1]?.loc).toBeNull();
+    expect(serializeIr(back)).toBe(serializeIr(KITCHEN_SINK));
+    expect('loc' in back).toBe(false);
+    expect(back.body[1] !== undefined && 'loc' in back.body[1]).toBe(false);
   });
 });
 

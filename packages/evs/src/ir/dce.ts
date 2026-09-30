@@ -4,7 +4,7 @@
  * `compile()` runs this pass on every compile, between `validateIr` and `lowerProgram`, and it
  * is also exported (`eliminateDeadCode` / `dce`) so tools can apply it to an artifact's IR.
  * It removes statements whose only effect is to produce values nothing observable reads. The
- * value / cell / fn tables and every surviving statement (its `site`, `loc`, ValueIds) are
+ * value / cell / fn tables and every surviving statement (its `site`, ValueIds) are
  * kept verbatim — statements are dropped, table entries are not — so source maps, diagnostics
  * and `explainRevert` keep resolving; `codegen/frame.ts` only allocates slots for values a
  * surviving statement defines, so the frame shrinks along with the program.

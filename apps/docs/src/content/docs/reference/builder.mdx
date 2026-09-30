@@ -446,7 +446,7 @@ the excerpt elides their type arguments). The `address` can itself be an
   [calls — decoding multiple outputs into a struct](/guides/calls/#decoding-multiple-outputs-into-a-struct).
 - Callee reverts bubble **verbatim** (Error/Panic/custom alike).
 - Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the
-  site back to your source line.
+  site id back to the failing read.
 - Dirty high bits in word outputs are normalized, not reverted.
 - A non-`as const` ABI degrades gracefully: `functionName: string`, untyped args, outputs as
   `readonly (Expr | Tuple)[]` — never a hard type error.

@@ -3,20 +3,17 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "node scripts/gen-playground.ts && astro build",
-    "check:examples": "node scripts/check-playground-examples.ts",
+    "build": "astro build",
     "check:snippets": "node scripts/check-snippets.ts",
     "deploy": "pnpm run build && wrangler deploy",
-    "dev": "node scripts/gen-playground.ts && astro dev",
-    "gen:playground": "node scripts/gen-playground.ts",
+    "dev": "astro dev",
     "preview": "astro preview",
-    "typecheck": "node scripts/gen-playground.ts && astro check"
+    "typecheck": "astro check"
   },
   "dependencies": {
     "@astrojs/starlight": "catalog:docs",
     "@expressive-code/plugin-collapsible-sections": "catalog:docs",
     "astro": "catalog:docs",
-    "monaco-editor": "catalog:docs",
     "starlight-links-validator": "catalog:docs",
     "starlight-llms-txt": "catalog:docs",
     "starlight-theme-rapide": "catalog:docs"
@@ -27,7 +24,6 @@
     "@types/node": "catalog:",
     "typescript": "catalog:",
     "viem": "catalog:",
-    "vite": "catalog:",
     "wrangler": "catalog:docs"
   }
 }

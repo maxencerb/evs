@@ -16,7 +16,7 @@
  * failure here means a bug in whichever producer built the IR).
  */
 
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
   arrayTypeOf,
@@ -100,15 +100,8 @@ class IrValidator {
   // failure
   // -------------------------------------------------------------------------
 
-  private fail(
-    msg: string,
-    loc: SourceLoc | null,
-    relatedLocs?: readonly { label: string; loc: SourceLoc | null }[],
-  ): never {
-    throw new EvsInternalError(`INTERNAL`, `invalid ScriptIr "${this.ir.name}": ${msg}`, {
-      loc,
-      relatedLocs: relatedLocs ?? [],
-    });
+  private fail(msg: string): never {
+    throw new EvsInternalError(`INTERNAL`, `invalid ScriptIr "${this.ir.name}": ${msg}`);
   }
 
   // -------------------------------------------------------------------------
@@ -119,38 +112,33 @@ class IrValidator {
     const { ir } = this;
     ir.values.forEach((info, i) => {
       if (!isEvsValueType(info.type)) {
-        this.fail(`values[${i}] has an unsupported type ${JSON.stringify(info.type)}`, info.loc);
+        this.fail(`values[${i}] has an unsupported type ${JSON.stringify(info.type)}`);
       }
     });
     ir.cells.forEach((info, i) => {
       if (!isEvsValueType(info.type)) {
-        this.fail(`cells[${i}] has an unsupported type ${JSON.stringify(info.type)}`, info.loc);
+        this.fail(`cells[${i}] has an unsupported type ${JSON.stringify(info.type)}`);
       }
     });
     const argNames = new Set<string>();
     ir.args.forEach((a, i) => {
       if (!IDENT_RE.test(a.name)) {
-        this.fail(`args[${i}] has an invalid name ${JSON.stringify(a.name)}`, ir.loc);
+        this.fail(`args[${i}] has an invalid name ${JSON.stringify(a.name)}`);
       }
-      if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`, ir.loc);
+      if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`);
       argNames.add(a.name);
       if (!isEvsValueType(a.type)) {
-        this.fail(
-          `args[${i}] ("${a.name}") has an unsupported type ${JSON.stringify(a.type)}`,
-          ir.loc,
-        );
+        this.fail(`args[${i}] ("${a.name}") has an unsupported type ${JSON.stringify(a.type)}`);
       }
       const backing = ir.values[i];
       if (backing === undefined) {
         this.fail(
           `args[${i}] ("${a.name}") has no backing value: script args bind to ValueIds 0…${ir.args.length - 1}`,
-          ir.loc,
         );
       }
       if (!typesEqual(backing.type, a.type)) {
         this.fail(
           `args[${i}] ("${a.name}") is declared '${stringifyType(a.type)}' but its backing values[${i}] is '${stringifyType(backing.type)}'`,
-          backing.loc,
         );
       }
     });
@@ -159,16 +147,12 @@ class IrValidator {
         if (!isEvsValueType(p.type)) {
           this.fail(
             `fns[${f}].params[${i}] ("${p.name}") has an unsupported type ${JSON.stringify(p.type)}`,
-            fn.loc,
           );
         }
       });
       fn.results.forEach((r, i) => {
         if (!isEvsValueType(r.type)) {
-          this.fail(
-            `fns[${f}].results[${i}] has an unsupported type ${JSON.stringify(r.type)}`,
-            fn.loc,
-          );
+          this.fail(`fns[${f}].results[${i}] has an unsupported type ${JSON.stringify(r.type)}`);
         }
       });
     });
@@ -177,14 +161,13 @@ class IrValidator {
     const errorNames = new Set<string>();
     (ir.errors ?? []).forEach((e, i) => {
       if (!IDENT_RE.test(e.name)) {
-        this.fail(`errors[${i}] has an invalid name ${JSON.stringify(e.name)}`, ir.loc);
+        this.fail(`errors[${i}] has an invalid name ${JSON.stringify(e.name)}`);
       }
-      if (errorNames.has(e.name)) this.fail(`duplicate error name "${e.name}"`, ir.loc);
+      if (errorNames.has(e.name)) this.fail(`duplicate error name "${e.name}"`);
       errorNames.add(e.name);
       if (!SELECTOR_RE.test(e.selector)) {
         this.fail(
           `errors[${i}] ("${e.name}") selector must be a 4-byte hex string, got ${JSON.stringify(e.selector)}`,
-          ir.loc,
         );
       }
       const inputNames = new Set<string>();
@@ -192,14 +175,13 @@ class IrValidator {
         if (!IDENT_RE.test(p.name)) {
           this.fail(
             `errors[${i}] ("${e.name}") input #${j} has an invalid name ${JSON.stringify(p.name)}`,
-            ir.loc,
           );
         }
         if (inputNames.has(p.name)) {
-          this.fail(`errors[${i}] ("${e.name}") has a duplicate input name "${p.name}"`, ir.loc);
+          this.fail(`errors[${i}] ("${e.name}") has a duplicate input name "${p.name}"`);
         }
         inputNames.add(p.name);
-        this.checkAbiParam(p, `errors[${i}] ("${e.name}") input #${j}`, ir.loc);
+        this.checkAbiParam(p, `errors[${i}] ("${e.name}") input #${j}`);
       });
     });
   }
@@ -214,7 +196,7 @@ class IrValidator {
     this.loopDepth = 0;
     this.currentFn = null;
     for (let i = 0; i < ir.args.length; i++) {
-      this.define(i, null, `args[${i}]`, ir.loc);
+      this.define(i, null, `args[${i}]`);
     }
     this.walkBlock(ir.body, 'body');
     this.checkReturns();
@@ -225,16 +207,13 @@ class IrValidator {
     const { ir } = this;
     const names = new Set<string>();
     ir.returns.forEach((r, i) => {
-      if (r.name === '') this.fail(`returns[${i}] has an empty name`, ir.loc);
-      if (names.has(r.name)) this.fail(`duplicate return name "${r.name}"`, ir.loc);
+      if (r.name === '') this.fail(`returns[${i}] has an empty name`);
+      if (names.has(r.name)) this.fail(`duplicate return name "${r.name}"`);
       names.add(r.name);
       if (!isEvsValueType(r.type)) {
-        this.fail(
-          `returns[${i}] ("${r.name}") has an unsupported type ${JSON.stringify(r.type)}`,
-          ir.loc,
-        );
+        this.fail(`returns[${i}] ("${r.name}") has an unsupported type ${JSON.stringify(r.type)}`);
       }
-      this.use(r.value, r.type, `returns[${i}] ("${r.name}")`, ir.loc);
+      this.use(r.value, r.type, `returns[${i}] ("${r.name}")`);
     });
   }
 
@@ -248,19 +227,18 @@ class IrValidator {
       this.loopDepth = 0;
       this.scopes = [newScope()];
       fn.params.forEach((p, i) => {
-        this.define(p.value, p.type, `fns[${f}].params[${i}] ("${p.name}")`, fn.loc);
+        this.define(p.value, p.type, `fns[${f}].params[${i}] ("${p.name}")`);
       });
       this.walkBlock(fn.body, `fns[${f}].body`);
       if (fn.resultValues.length !== fn.results.length) {
         this.fail(
           `fns[${f}] ("${fn.name}") has ${fn.resultValues.length} resultValues for ${fn.results.length} results`,
-          fn.loc,
         );
       }
       fn.resultValues.forEach((rv, i) => {
         const result = fn.results[i];
         if (result === undefined) return; // unreachable: lengths checked above
-        this.use(rv, result.type, `fns[${f}].resultValues[${i}]`, fn.loc);
+        this.use(rv, result.type, `fns[${f}].resultValues[${i}]`);
       });
       this.scopes = [];
     });
@@ -276,7 +254,7 @@ class IrValidator {
     const visit = (f: FnId): void => {
       if (state[f] === 1) {
         const cycle = [...stack.slice(stack.indexOf(f)), f].map(fnName).join(' → ');
-        this.fail(`call-graph cycle: ${cycle}`, ir.fns[f]?.loc ?? null);
+        this.fail(`call-graph cycle: ${cycle}`);
       }
       if (state[f] === 2) return;
       state[f] = 1;
@@ -305,23 +283,15 @@ class IrValidator {
    * (when `producedType` is non-null) agreement between the value table's declared type and
    * the type the statement produces.
    */
-  private define(
-    id: ValueId,
-    producedType: EvsType | null,
-    what: string,
-    loc: SourceLoc | null,
-  ): void {
+  private define(id: ValueId, producedType: EvsType | null, what: string): void {
     const info = this.ir.values[id];
-    if (info === undefined) this.fail(`${what}: unknown ValueId ${id}`, loc);
+    if (info === undefined) this.fail(`${what}: unknown ValueId ${id}`);
     if (this.valueDefined[id] === true) {
-      this.fail(`${what}: ValueId ${id} is defined more than once`, loc, [
-        { label: 'value recorded at', loc: info.loc },
-      ]);
+      this.fail(`${what}: ValueId ${id} is defined more than once`);
     }
     if (producedType !== null && !typesEqual(info.type, producedType)) {
       this.fail(
         `${what}: values[${id}] is declared '${stringifyType(info.type)}' but the statement produces '${stringifyType(producedType)}'`,
-        loc,
       );
     }
     this.valueDefined[id] = true;
@@ -332,41 +302,36 @@ class IrValidator {
    * Checks that `id` is usable here (defined earlier, in a scope currently on the stack) and,
    * when `expected` is non-null, that it has the expected type. Returns the operand's type.
    */
-  private use(id: ValueId, expected: EvsType | null, what: string, loc: SourceLoc | null): EvsType {
+  private use(id: ValueId, expected: EvsType | null, what: string): EvsType {
     const info = this.ir.values[id];
-    if (info === undefined) this.fail(`${what}: unknown ValueId ${id}`, loc);
+    if (info === undefined) this.fail(`${what}: unknown ValueId ${id}`);
     if (!this.scopes.some((s) => s.values.has(id))) {
       if (this.valueDefined[id] === true) {
-        this.fail(`${what}: ValueId ${id} is used outside its defining scope`, loc, [
-          { label: 'value recorded at', loc: info.loc },
-        ]);
+        this.fail(`${what}: ValueId ${id} is used outside its defining scope`);
       }
-      this.fail(`${what}: ValueId ${id} is used before it is defined`, loc, [
-        { label: 'value recorded at', loc: info.loc },
-      ]);
+      this.fail(`${what}: ValueId ${id} is used before it is defined`);
     }
     if (expected !== null && !typesEqual(info.type, expected)) {
       this.fail(
         `${what}: operand type mismatch — expected '${stringifyType(expected)}', got values[${id}] of type '${stringifyType(info.type)}'`,
-        loc,
       );
     }
     return info.type;
   }
 
-  private cellInfo(cell: CellId, what: string, loc: SourceLoc | null): { type: EvsType } {
+  private cellInfo(cell: CellId, what: string): { type: EvsType } {
     const info = this.ir.cells[cell];
-    if (info === undefined) this.fail(`${what}: unknown CellId ${cell}`, loc);
+    if (info === undefined) this.fail(`${what}: unknown CellId ${cell}`);
     return info;
   }
 
-  private useCell(cell: CellId, what: string, loc: SourceLoc | null): EvsType {
-    const info = this.cellInfo(cell, what, loc);
+  private useCell(cell: CellId, what: string): EvsType {
+    const info = this.cellInfo(cell, what);
     if (!this.scopes.some((s) => s.cells.has(cell))) {
       if (this.cellCreated[cell] === true) {
-        this.fail(`${what}: CellId ${cell} is used outside its defining scope`, loc);
+        this.fail(`${what}: CellId ${cell} is used outside its defining scope`);
       }
-      this.fail(`${what}: CellId ${cell} is used before its cellnew`, loc);
+      this.fail(`${what}: CellId ${cell} is used before its cellnew`);
     }
     return info.type;
   }
@@ -386,10 +351,10 @@ class IrValidator {
       case 'const': {
         const what = `${path} (const)`;
         if (!isEvsValueType(s.type) || isTupleType(s.type)) {
-          this.fail(`${what}: unsupported / non-const type ${JSON.stringify(s.type)}`, s.loc);
+          this.fail(`${what}: unsupported / non-const type ${JSON.stringify(s.type)}`);
         }
-        this.checkConstData(s.type, s.data, what, s.loc);
-        this.define(s.out, s.type, what, s.loc);
+        this.checkConstData(s.type, s.data, what);
+        this.define(s.out, s.type, what);
         return;
       }
       case 'bin':
@@ -398,210 +363,204 @@ class IrValidator {
       case 'un': {
         const what = `${path} (un ${s.op})`;
         if (s.op === 'not') {
-          this.use(s.a, 'bool', what, s.loc);
-          this.define(s.out, 'bool', what, s.loc);
+          this.use(s.a, 'bool', what);
+          this.define(s.out, 'bool', what);
           return;
         }
         if (s.op === 'iszero') {
-          const ta = this.use(s.a, null, what, s.loc);
+          const ta = this.use(s.a, null, what);
           if (!isWordType(ta)) {
-            this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`, s.loc);
+            this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`);
           }
-          this.define(s.out, 'bool', what, s.loc);
+          this.define(s.out, 'bool', what);
           return;
         }
         // bitnot
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isBitsOperand(ta)) {
-          this.fail(
-            `${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
-            s.loc,
-          );
+          this.fail(`${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`);
         }
-        this.define(s.out, ta, what, s.loc);
+        this.define(s.out, ta, what);
         return;
       }
       case 'env': {
         const what = `${path} (env ${s.op})`;
         const outType: EvsType = s.op === 'address' || s.op === 'caller' ? 'address' : 'uint256';
-        this.define(s.out, outType, what, s.loc);
+        this.define(s.out, outType, what);
         return;
       }
       case 'convert': {
         const what = `${path} (convert)`;
-        const from = this.use(s.a, null, what, s.loc);
+        const from = this.use(s.a, null, what);
         const outInfo = this.ir.values[s.out];
-        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
+        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
         if (!convertOk(from, outInfo.type)) {
           this.fail(
             `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
-            s.loc,
           );
         }
-        this.define(s.out, outInfo.type, what, s.loc);
+        this.define(s.out, outInfo.type, what);
         return;
       }
       case 'select': {
         const what = `${path} (select)`;
-        this.use(s.cond, 'bool', what, s.loc);
-        const ta = this.use(s.a, null, what, s.loc);
-        this.use(s.b, ta, what, s.loc);
-        this.define(s.out, ta, what, s.loc);
+        this.use(s.cond, 'bool', what);
+        const ta = this.use(s.a, null, what);
+        this.use(s.b, ta, what);
+        this.define(s.out, ta, what);
         return;
       }
       case 'index': {
         const what = `${path} (index)`;
-        const ta = this.use(s.arr, null, what, s.loc);
+        const ta = this.use(s.arr, null, what);
         if (!isArrayValueType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
         }
-        this.use(s.i, 'uint256', what, s.loc);
-        this.define(s.out, elemTypeOf(ta), what, s.loc);
+        this.use(s.i, 'uint256', what);
+        this.define(s.out, elemTypeOf(ta), what);
         return;
       }
       case 'len': {
         const what = `${path} (len)`;
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
         const isArrayLike = isArrayValueType(ta) || ta === 'string' || ta === 'bytes';
         if (!isArrayLike) {
-          this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`);
         }
-        this.define(s.out, 'uint256', what, s.loc);
+        this.define(s.out, 'uint256', what);
         return;
       }
       case 'arrnew': {
         const what = `${path} (arrnew)`;
-        const elem = this.checkElemType(s.elem, what, s.loc);
-        this.use(s.length, 'uint256', what, s.loc);
-        this.define(s.out, arrayTypeOf(elem), what, s.loc); // elem validated by checkElemType
+        const elem = this.checkElemType(s.elem, what);
+        this.use(s.length, 'uint256', what);
+        this.define(s.out, arrayTypeOf(elem), what); // elem validated by checkElemType
         return;
       }
       case 'arrset': {
         const what = `${path} (arrset)`;
-        const ta = this.use(s.arr, null, what, s.loc);
+        const ta = this.use(s.arr, null, what);
         if (!isArrayValueType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
         }
-        this.use(s.i, 'uint256', what, s.loc);
-        this.use(s.value, elemTypeOf(ta), what, s.loc);
+        this.use(s.i, 'uint256', what);
+        this.use(s.value, elemTypeOf(ta), what);
         return;
       }
       case 'tuplenew': {
         const what = `${path} (tuplenew)`;
         const outInfo = this.ir.values[s.out];
-        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`, s.loc);
+        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
         const tt = outInfo.type;
         if (!isTupleType(tt)) {
-          this.fail(`${what}: out value must be a tuple type, got '${stringifyType(tt)}'`, s.loc);
+          this.fail(`${what}: out value must be a tuple type, got '${stringifyType(tt)}'`);
         }
         const seen = new Set<number>();
         s.inits.forEach((init, j) => {
           const comp = tt.components[init.index];
           if (comp === undefined) {
-            this.fail(`${what}: init #${j} index ${init.index} out of range`, s.loc);
+            this.fail(`${what}: init #${j} index ${init.index} out of range`);
           }
           if (seen.has(init.index)) {
-            this.fail(`${what}: init #${j} writes member ${init.index} twice`, s.loc);
+            this.fail(`${what}: init #${j} writes member ${init.index} twice`);
           }
           seen.add(init.index);
-          this.use(init.value, abiParamToType(comp), `${what} init #${j}`, s.loc);
+          this.use(init.value, abiParamToType(comp), `${what} init #${j}`);
         });
-        this.define(s.out, tt, what, s.loc);
+        this.define(s.out, tt, what);
         return;
       }
       case 'field': {
         const what = `${path} (field)`;
-        const ta = this.use(s.tuple, null, what, s.loc);
+        const ta = this.use(s.tuple, null, what);
         if (!isTupleType(ta) || ta.type !== 'tuple') {
-          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`);
         }
         const comp = ta.components[s.index];
         if (comp === undefined) {
-          this.fail(`${what}: member index ${s.index} out of range`, s.loc);
+          this.fail(`${what}: member index ${s.index} out of range`);
         }
-        this.define(s.out, abiParamToType(comp), what, s.loc);
+        this.define(s.out, abiParamToType(comp), what);
         return;
       }
       case 'tupleset': {
         const what = `${path} (tupleset)`;
-        const ta = this.use(s.tuple, null, what, s.loc);
+        const ta = this.use(s.tuple, null, what);
         if (!isTupleType(ta) || ta.type !== 'tuple') {
-          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`);
         }
         const comp = ta.components[s.index];
         if (comp === undefined) {
-          this.fail(`${what}: member index ${s.index} out of range`, s.loc);
+          this.fail(`${what}: member index ${s.index} out of range`);
         }
-        this.use(s.value, abiParamToType(comp), `${what} value`, s.loc);
+        this.use(s.value, abiParamToType(comp), `${what} value`);
         return;
       }
       case 'encode': {
         const what = `${path} (encode ${s.mode})`;
         if (s.args.length === 0) {
-          this.fail(`${what}: at least one value is required`, s.loc);
+          this.fail(`${what}: at least one value is required`);
         }
         s.args.forEach((a, i) => {
-          const ta = this.use(a, null, `${what} value #${i}`, s.loc);
+          const ta = this.use(a, null, `${what} value #${i}`);
           if (s.mode === 'packed' && !isPackedEncodable(ta)) {
             this.fail(
               `${what} value #${i}: '${stringifyType(ta)}' cannot be packed-encoded (abi.encodePacked supports words, string/bytes, and word-element arrays only)`,
-              s.loc,
             );
           }
         });
-        this.define(s.out, 'bytes', what, s.loc);
+        this.define(s.out, 'bytes', what);
         return;
       }
       case 'keccak256': {
         const what = `${path} (keccak256)`;
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (ta !== 'bytes' && ta !== 'string') {
-          this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`, s.loc);
+          this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`);
         }
-        this.define(s.out, 'bytes32', what, s.loc);
+        this.define(s.out, 'bytes32', what);
         return;
       }
       case 'throw': {
         const err = (this.ir.errors ?? [])[s.error];
         if (err === undefined) {
-          this.fail(`${path} (throw): unknown error index ${s.error}`, s.loc);
+          this.fail(`${path} (throw): unknown error index ${s.error}`);
         }
         const what = `${path} (throw "${err.name}")`;
         if (s.args.length !== err.inputs.length) {
           this.fail(
             `${what}: arity mismatch — ${s.args.length} args for ${err.inputs.length} declared inputs`,
-            s.loc,
           );
         }
         s.args.forEach((a, i) => {
           const p = err.inputs[i];
           if (p === undefined) return; // unreachable: lengths checked above
-          this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`, s.loc);
+          this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`);
         });
         return;
       }
       case 'cellnew': {
         const what = `${path} (cellnew)`;
-        const cell = this.cellInfo(s.cell, what, s.loc);
+        const cell = this.cellInfo(s.cell, what);
         if (this.cellCreated[s.cell] === true) {
-          this.fail(`${what}: cellnew for CellId ${s.cell} appears more than once`, s.loc);
+          this.fail(`${what}: cellnew for CellId ${s.cell} appears more than once`);
         }
-        this.use(s.init, cell.type, what, s.loc);
+        this.use(s.init, cell.type, what);
         this.cellCreated[s.cell] = true;
         this.top().cells.add(s.cell);
         return;
       }
       case 'cellget': {
         const what = `${path} (cellget)`;
-        const cellType = this.useCell(s.cell, what, s.loc);
-        this.define(s.out, cellType, what, s.loc);
+        const cellType = this.useCell(s.cell, what);
+        this.define(s.out, cellType, what);
         return;
       }
       case 'cellset': {
         const what = `${path} (cellset)`;
-        const cellType = this.useCell(s.cell, what, s.loc);
-        this.use(s.value, cellType, what, s.loc);
+        const cellType = this.useCell(s.cell, what);
+        this.use(s.value, cellType, what);
         return;
       }
       case 'call':
@@ -610,35 +569,33 @@ class IrValidator {
       case 'fncall': {
         const what = `${path} (fncall)`;
         const fn = this.ir.fns[s.fn];
-        if (fn === undefined) this.fail(`${what}: unknown FnId ${s.fn}`, s.loc);
+        if (fn === undefined) this.fail(`${what}: unknown FnId ${s.fn}`);
         if (s.args.length !== fn.params.length) {
           this.fail(
             `${what}: arity mismatch — ${s.args.length} args for fns[${s.fn}] ("${fn.name}") with ${fn.params.length} params`,
-            s.loc,
           );
         }
         s.args.forEach((a, i) => {
           const p = fn.params[i];
           if (p === undefined) return; // unreachable: lengths checked above
-          this.use(a, p.type, `${what} arg ${i} ("${p.name}")`, s.loc);
+          this.use(a, p.type, `${what} arg ${i} ("${p.name}")`);
         });
         if (s.outs.length !== fn.results.length) {
           this.fail(
             `${what}: arity mismatch — ${s.outs.length} outs for fns[${s.fn}] ("${fn.name}") with ${fn.results.length} results`,
-            s.loc,
           );
         }
         s.outs.forEach((out, i) => {
           const r = fn.results[i];
           if (r === undefined) return; // unreachable: lengths checked above
-          this.define(out, r.type, `${what} out ${i}`, s.loc);
+          this.define(out, r.type, `${what} out ${i}`);
         });
         if (this.currentFn !== null) this.fnCalls[this.currentFn]?.add(s.fn);
         return;
       }
       case 'if': {
         const what = `${path} (if)`;
-        this.use(s.cond, 'bool', what, s.loc);
+        this.use(s.cond, 'bool', what);
         this.scopes.push(newScope());
         this.walkBlock(s.then, `${path}.then`);
         this.scopes.pop();
@@ -652,7 +609,7 @@ class IrValidator {
         // the body scope is a child of the header scope: header values dominate the body
         this.scopes.push(newScope());
         this.walkBlock(s.header, `${path}.header`);
-        this.use(s.cond, 'bool', `${what} cond`, s.loc);
+        this.use(s.cond, 'bool', `${what} cond`);
         this.scopes.push(newScope());
         this.loopDepth += 1;
         this.walkBlock(s.body, `${path}.body`);
@@ -664,14 +621,14 @@ class IrValidator {
       case 'break':
       case 'continue': {
         if (this.loopDepth === 0) {
-          this.fail(`${path}: '${s.k}' outside a while body`, s.loc);
+          this.fail(`${path}: '${s.k}' outside a while body`);
         }
         return;
       }
       default: {
         // exhaustive over Stmt; reachable only for hand-built garbage
         const kind = String((s as { k: unknown }).k);
-        this.fail(`${path}: unknown statement kind '${kind}'`, (s as Stmt).loc);
+        this.fail(`${path}: unknown statement kind '${kind}'`);
       }
     }
   }
@@ -684,82 +641,71 @@ class IrValidator {
       case 'mul':
       case 'div':
       case 'mod': {
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isNumeric(ta)) {
-          this.fail(
-            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
-            s.loc,
-          );
+          this.fail(`${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`);
         }
-        this.use(s.b, ta, what, s.loc);
-        this.define(s.out, ta, what, s.loc);
+        this.use(s.b, ta, what);
+        this.define(s.out, ta, what);
         return;
       }
       case 'lt':
       case 'gt':
       case 'lte':
       case 'gte': {
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isNumeric(ta)) {
-          this.fail(
-            `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`,
-            s.loc,
-          );
+          this.fail(`${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`);
         }
-        this.use(s.b, ta, what, s.loc);
-        this.define(s.out, 'bool', what, s.loc);
+        this.use(s.b, ta, what);
+        this.define(s.out, 'bool', what);
         return;
       }
       case 'eq':
       case 'neq': {
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isWordType(ta)) {
           this.fail(
             `${what}: eq/neq are word-type-only (memref equality is undefined), got '${stringifyType(ta)}'`,
-            s.loc,
           );
         }
-        this.use(s.b, ta, what, s.loc);
-        this.define(s.out, 'bool', what, s.loc);
+        this.use(s.b, ta, what);
+        this.define(s.out, 'bool', what);
         return;
       }
       case 'and':
       case 'or': {
-        this.use(s.a, 'bool', what, s.loc);
-        this.use(s.b, 'bool', what, s.loc);
-        this.define(s.out, 'bool', what, s.loc);
+        this.use(s.a, 'bool', what);
+        this.use(s.b, 'bool', what);
+        this.define(s.out, 'bool', what);
         return;
       }
       case 'bitand':
       case 'bitor':
       case 'bitxor': {
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isBitsOperand(ta)) {
-          this.fail(
-            `${what}: operands must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
-            s.loc,
-          );
+          this.fail(`${what}: operands must be uintN/intN/bytesN, got '${stringifyType(ta)}'`);
         }
-        this.use(s.b, ta, what, s.loc);
-        this.define(s.out, ta, what, s.loc);
+        this.use(s.b, ta, what);
+        this.define(s.out, ta, what);
         return;
       }
       case 'shl':
       case 'shr': {
-        const ta = this.use(s.a, null, what, s.loc);
+        const ta = this.use(s.a, null, what);
         if (!isBitsOperand(ta)) {
           this.fail(
             `${what}: shifted operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`,
-            s.loc,
           );
         }
-        this.use(s.b, 'uint256', `${what} shift amount`, s.loc);
-        this.define(s.out, ta, what, s.loc);
+        this.use(s.b, 'uint256', `${what} shift amount`);
+        this.define(s.out, ta, what);
         return;
       }
       default: {
         const op = String((s as { op: unknown }).op);
-        this.fail(`${what}: unknown bin op '${op}'`, s.loc);
+        this.fail(`${what}: unknown bin op '${op}'`);
       }
     }
   }
@@ -767,23 +713,19 @@ class IrValidator {
   private checkCall(s: Extract<Stmt, { k: 'call' }>, path: string): void {
     const what = `${path} (call${s.mode === 'try' ? ' try' : ''} "${s.fnAbi.name}")`;
     if (s.kind !== undefined && s.kind !== 'static' && s.kind !== 'call' && s.kind !== 'simulate') {
-      this.fail(
-        `${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind)}`,
-        s.loc,
-      );
+      this.fail(`${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind)}`);
     }
-    this.use(s.target, 'address', `${what} target`, s.loc);
-    this.checkPlainAbi(s.fnAbi, what, s.loc);
+    this.use(s.target, 'address', `${what} target`);
+    this.checkPlainAbi(s.fnAbi, what);
     if (s.args.length !== s.fnAbi.inputs.length) {
       this.fail(
         `${what}: arity mismatch — ${s.args.length} args for ${s.fnAbi.inputs.length} ABI inputs`,
-        s.loc,
       );
     }
     s.args.forEach((a, i) => {
       const p = s.fnAbi.inputs[i];
       if (p === undefined) return; // unreachable: lengths checked above
-      this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`, s.loc);
+      this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`);
     });
     // revert-data-as-result (issue #35): `revertReturns` replaces the ABI outputs as the decode
     // schema. It is a `kind: 'call'` feature only (STATICCALL reads have no reverting-quoter use;
@@ -792,78 +734,69 @@ class IrValidator {
       if (s.kind !== 'call') {
         this.fail(
           `${what}: revertReturns is only legal when kind === 'call' (s.call / s.tryCall), got kind ${s.kind === undefined ? "'static' (absent)" : `'${s.kind}'`}`,
-          s.loc,
         );
       }
       s.revertReturns.forEach((ty, i) => {
         if (!isEvsValueType(ty)) {
-          this.fail(`${what}: revertReturns[${i}] is not a supported EvsType`, s.loc);
+          this.fail(`${what}: revertReturns[${i}] is not a supported EvsType`);
         }
       });
-      this.checkAbiParams(callOutputs(s), `${what} revertReturns`, s.loc);
+      this.checkAbiParams(callOutputs(s), `${what} revertReturns`);
     }
     const outputs = callOutputs(s);
     const schema = s.revertReturns === undefined ? 'ABI outputs' : 'revertReturns';
     if (s.outs.length !== outputs.length) {
-      this.fail(
-        `${what}: arity mismatch — ${s.outs.length} outs for ${outputs.length} ${schema}`,
-        s.loc,
-      );
+      this.fail(`${what}: arity mismatch — ${s.outs.length} outs for ${outputs.length} ${schema}`);
     }
     s.outs.forEach((out, i) => {
       const p = outputs[i];
       if (p === undefined) return; // unreachable: lengths checked above
-      this.define(out, abiParamToType(p), `${what} out ${i} ("${p.name}")`, s.loc);
+      this.define(out, abiParamToType(p), `${what} out ${i} ("${p.name}")`);
     });
     if (s.mode === 'try') {
       if (s.successOut === undefined) {
-        this.fail(`${what}: a try-mode call must define successOut`, s.loc);
+        this.fail(`${what}: a try-mode call must define successOut`);
       }
-      this.define(s.successOut, 'bool', `${what} successOut`, s.loc);
+      this.define(s.successOut, 'bool', `${what} successOut`);
     } else if (s.successOut !== undefined) {
-      this.fail(`${what}: successOut is only legal when mode === 'try'`, s.loc);
+      this.fail(`${what}: successOut is only legal when mode === 'try'`);
     }
-    if (s.gas !== undefined) this.use(s.gas, 'uint256', `${what} gas`, s.loc);
+    if (s.gas !== undefined) this.use(s.gas, 'uint256', `${what} gas`);
   }
 
-  private checkPlainAbi(fnAbi: PlainAbiFunction, what: string, loc: SourceLoc | null): void {
-    if (fnAbi.name.length === 0) this.fail(`${what}: fnAbi.name must be non-empty`, loc);
+  private checkPlainAbi(fnAbi: PlainAbiFunction, what: string): void {
+    if (fnAbi.name.length === 0) this.fail(`${what}: fnAbi.name must be non-empty`);
     if (!SELECTOR_RE.test(fnAbi.selector)) {
       this.fail(
         `${what}: fnAbi.selector must be a 4-byte hex string, got ${JSON.stringify(fnAbi.selector)}`,
-        loc,
       );
     }
-    this.checkAbiParams(fnAbi.inputs, `${what} fnAbi.inputs`, loc);
-    this.checkAbiParams(fnAbi.outputs, `${what} fnAbi.outputs`, loc);
+    this.checkAbiParams(fnAbi.inputs, `${what} fnAbi.inputs`);
+    this.checkAbiParams(fnAbi.outputs, `${what} fnAbi.outputs`);
   }
 
-  private checkAbiParams(
-    params: readonly PlainAbiParam[],
-    what: string,
-    loc: SourceLoc | null,
-  ): void {
-    params.forEach((p, i) => this.checkAbiParam(p, `${what}[${i}] ("${p.name}")`, loc));
+  private checkAbiParams(params: readonly PlainAbiParam[], what: string): void {
+    params.forEach((p, i) => this.checkAbiParam(p, `${what}[${i}] ("${p.name}")`));
   }
 
-  private checkAbiParam(p: PlainAbiParam, what: string, loc: SourceLoc | null): void {
+  private checkAbiParam(p: PlainAbiParam, what: string): void {
     if (p.type.startsWith('tuple')) {
       if (p.type !== 'tuple' && p.type !== 'tuple[]' && p.type !== 'tuple[][]') {
-        this.fail(`${what}: unsupported tuple array depth ${JSON.stringify(p.type)}`, loc);
+        this.fail(`${what}: unsupported tuple array depth ${JSON.stringify(p.type)}`);
       }
       if (p.components === undefined || p.components.length === 0) {
-        this.fail(`${what}: tuple type carries no components`, loc);
+        this.fail(`${what}: tuple type carries no components`);
       }
       p.components.forEach((c, j) =>
-        this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`, loc),
+        this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`),
       );
       return;
     }
     if (p.components !== undefined) {
-      this.fail(`${what}: non-tuple type '${p.type}' must not carry components`, loc);
+      this.fail(`${what}: non-tuple type '${p.type}' must not carry components`);
     }
     if (!isEvsType(p.type)) {
-      this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`, loc);
+      this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
   }
 
@@ -873,13 +806,12 @@ class IrValidator {
    * or a plain `tuple`. Not supported yet (`UNSUPPORTED_V0`, #4): `tuple[]` element (→ `tuple[][]`), a
    * string array nested two-or-more deep (`uint256[][]` element → `uint256[][][]`), and `T[N]`.
    */
-  private checkElemType(elem: EvsType, what: string, loc: SourceLoc | null): EvsType {
+  private checkElemType(elem: EvsType, what: string): EvsType {
     if (isWordType(elem) || elem === 'string' || elem === 'bytes') return elem;
     if (isTupleType(elem)) {
       if (elem.type !== 'tuple') {
         this.fail(
           `${what}: array element ${stringifyType(elem)} (a composite array element) is not supported (only one array nesting level over a tuple/dynamic element)`,
-          loc,
         );
       }
       return elem;
@@ -889,17 +821,11 @@ class IrValidator {
       // a deeper element (`uint256[][]`) → `uint256[][][]` is still deferred.
       const inner = elem.slice(0, -2);
       if (inner.endsWith('[]')) {
-        this.fail(
-          `${what}: array element '${elem}' nests deeper than one level — not supported`,
-          loc,
-        );
+        this.fail(`${what}: array element '${elem}' nests deeper than one level — not supported`);
       }
       return elem;
     }
-    return this.fail(
-      `${what}: array element type is not supported, got ${stringifyType(elem)}`,
-      loc,
-    );
+    return this.fail(`${what}: array element type is not supported, got ${stringifyType(elem)}`);
   }
 
   // -------------------------------------------------------------------------
@@ -910,37 +836,30 @@ class IrValidator {
     type: EvsType,
     data: { kind: 'word' | 'data'; hex: string },
     what: string,
-    loc: SourceLoc | null,
   ): void {
     if (isWordType(type)) {
       if (data.kind !== 'word') {
-        this.fail(
-          `${what}: const of word type '${stringifyType(type)}' must carry kind 'word'`,
-          loc,
-        );
+        this.fail(`${what}: const of word type '${stringifyType(type)}' must carry kind 'word'`);
       }
       if (!WORD_HEX_RE.test(data.hex)) {
-        this.fail(`${what}: word const hex must be exactly 32 bytes`, loc);
+        this.fail(`${what}: word const hex must be exactly 32 bytes`);
       }
       const x = BigInt(data.hex);
       if (!isCanonicalWord(type, x)) {
-        this.fail(`${what}: ${data.hex} is not a canonical '${stringifyType(type)}' word`, loc);
+        this.fail(`${what}: ${data.hex} is not a canonical '${stringifyType(type)}' word`);
       }
       return;
     }
     // dynamic type — pre-encoded memref payload [len:32][payload…]
     if (data.kind !== 'data') {
-      this.fail(
-        `${what}: const of dynamic type '${stringifyType(type)}' must carry kind 'data'`,
-        loc,
-      );
+      this.fail(`${what}: const of dynamic type '${stringifyType(type)}' must carry kind 'data'`);
     }
     if (!DATA_HEX_RE.test(data.hex)) {
-      this.fail(`${what}: data const hex is malformed`, loc);
+      this.fail(`${what}: data const hex is malformed`);
     }
     const totalBytes = (data.hex.length - 2) / 2;
     if (totalBytes < 32) {
-      this.fail(`${what}: memref data must start with a 32-byte length word`, loc);
+      this.fail(`${what}: memref data must start with a 32-byte length word`);
     }
     const len = BigInt(`0x${data.hex.slice(2, 66)}`);
     const payload = BigInt(totalBytes - 32);
@@ -948,21 +867,19 @@ class IrValidator {
       if (payload !== 32n * len) {
         this.fail(
           `${what}: array memref payload is ${payload} bytes, expected 32 × len = ${32n * len}`,
-          loc,
         );
       }
       const elem = elemTypeOf(type);
       if (!isWordType(elem)) {
         this.fail(
           `${what}: only word-element array consts are supported, got '${stringifyType(type)}'`,
-          loc,
         );
       }
       const count = Number(len);
       for (let i = 0; i < count; i++) {
         const word = BigInt(`0x${data.hex.slice(66 + i * 64, 66 + (i + 1) * 64)}`);
         if (!isCanonicalWord(elem, word)) {
-          this.fail(`${what}: array element ${i} is not a canonical '${elem}' word`, loc);
+          this.fail(`${what}: array element ${i} is not a canonical '${elem}' word`);
         }
       }
       return;
@@ -972,7 +889,6 @@ class IrValidator {
     if (payload < len || payload > padded) {
       this.fail(
         `${what}: bytes/string memref payload is ${payload} bytes for declared length ${len} (expected between ${len} and ${padded})`,
-        loc,
       );
     }
   }

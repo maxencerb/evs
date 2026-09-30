@@ -29,7 +29,7 @@ import {
 } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import {
   abiParamToType,
   isTupleType,
@@ -795,9 +795,8 @@ export interface EncodeSrcItem {
   pushSrc: () => void;
 }
 
-/** loc/note metadata for the first emitted node of an encode template (sourcemap attribution). */
+/** note metadata for the first emitted node of an encode template (sourcemap attribution). */
 export interface EncodeMeta {
-  loc?: SourceLoc | null;
   note?: string;
 }
 

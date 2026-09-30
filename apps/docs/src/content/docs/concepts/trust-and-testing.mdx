@@ -36,7 +36,7 @@ no-op.
 Every script goes through the EVM side twice: the default output and its `optimize: true` twin,
 so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator and the
 peephole pass) is held to the same oracle — and must additionally never be larger, never use a
-larger frame, never cost more gas, and keep every mapped source location.
+larger frame, and never cost more gas.
 
 A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
 actually CREATEd and called from a wrapper address, and `interpret()` with matching

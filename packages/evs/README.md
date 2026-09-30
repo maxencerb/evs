@@ -16,8 +16,6 @@
   ·
   <a href="https://evs.maxencerb.com/getting-started/quick-start/">Quick start</a>
   ·
-  <a href="https://evs.maxencerb.com/playground/">Playground</a>
-  ·
   <a href="https://github.com/maxencerb/evs/tree/main/examples">Examples</a>
   ·
   <a href="https://github.com/maxencerb/evs/blob/main/packages/evs/CHANGELOG.md">Changelog</a>
@@ -56,8 +54,9 @@ TS callback ──record──▶ IR ──compile──▶ runtime bytecode ─
 - **Verified bytecode.** Every compile passes a `JUMPDEST` scan, a stack-height simulation and
   fork lints; the test suite pins the bytecode against a reference interpreter, viem's codecs
   and real solc output.
-- **Debuggable.** `disassemble()` annotates each opcode with your source line, and
-  `explainRevert()` maps a revert payload back to the builder call that produced it.
+- **Debuggable.** Build-time errors throw from inside your callback, so the stack trace points
+  at your line; `disassemble()` annotates the bytecode with labels and notes, and
+  `explainRevert()` maps a revert payload back to the site that produced it.
 
 ## Install
 
@@ -322,8 +321,8 @@ const compiled = poolMeta.compile({ evmVersion: 'paris' }); // 'cancun' (default
 compiled.runtimeBytecode; // what runs (state-override mode); EIP-170 size enforced
 compiled.initBytecode; // wrapped for deployless mode — what toViem() passes as `code`
 compiled.abi; // literal-typed: the script fn + EvsInvalidCalldata + EvsDecodeError
-console.log(compiled.disassemble().format()); // annotated listing — your source line per pc
-compiled.explainRevert(revertData).message; // Panic codes & decode sites → builder call sites
+console.log(compiled.disassemble().format()); // annotated listing: labels, jump targets, notes
+compiled.explainRevert(revertData).message; // Panic codes & decode sites → the script's sites
 ```
 
 `evmVersion` lowers PUSH0/MCOPY usage for pre-Shanghai/pre-Cancun chains. The compiler verifies
@@ -346,9 +345,7 @@ node examples/token-balances/index.ts   # loop + tryRead over address[] — the 
 
 ## Documentation and contributing
 
-The full guides, reference and concept pages are at <https://evs.maxencerb.com>, with a
-browser [playground](https://evs.maxencerb.com/playground/) that compiles and runs scripts
-against any RPC. Repository layout, toolchain, test tiers, design notes and the release flow
+The full guides, reference and concept pages are at <https://evs.maxencerb.com>. Repository layout, toolchain, test tiers, design notes and the release flow
 are in [CONTRIBUTING.md](https://github.com/maxencerb/evs/blob/main/CONTRIBUTING.md).
 
 ## License

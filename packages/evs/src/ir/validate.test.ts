@@ -7,7 +7,7 @@
  * the IR schema names the if-statement branch field `then`. */
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import type { EvsType, Hex, WordType } from '../core/types.js';
 import { deserializeIr, serializeIr, type ScriptIr, type Stmt, type ValueInfo } from './nodes.js';
 import { validateIr } from './validate.js';
@@ -18,14 +18,12 @@ import { validateIr } from './validate.js';
 
 type DistOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
 
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
-
-function mk(body: DistOmit<Stmt, 'loc' | 'site'>, site = 0): Stmt {
-  return { loc: LOC, site, ...body };
+function mk(body: DistOmit<Stmt, 'site'>, site = 0): Stmt {
+  return { site, ...body };
 }
 
 function vi(type: EvsType, debugName?: string): ValueInfo {
-  return debugName === undefined ? { type, loc: null } : { type, loc: LOC, debugName };
+  return debugName === undefined ? { type } : { type, debugName };
 }
 
 function ir(p: Partial<ScriptIr>): ScriptIr {
@@ -38,7 +36,6 @@ function ir(p: Partial<ScriptIr>): ScriptIr {
     fns: [],
     body: [],
     returns: [],
-    loc: null,
     ...p,
   };
 }
@@ -106,7 +103,7 @@ const KITCHEN_SINK: ScriptIr = ir({
     vi('uint256', 'x'), // v25 fn param
     vi('uint256'), // v26 fn body add
   ],
-  cells: [{ type: 'uint256', loc: LOC, debugName: 'acc' }],
+  cells: [{ type: 'uint256', debugName: 'acc' }],
   fns: [
     {
       name: 'double',
@@ -114,7 +111,6 @@ const KITCHEN_SINK: ScriptIr = ir({
       results: [{ type: 'uint256' }],
       body: [mk({ k: 'bin', op: 'add', a: 25, b: 25, out: 26 }, 20)],
       resultValues: [26],
-      loc: LOC,
     },
   ],
   body: [
@@ -207,7 +203,6 @@ const KITCHEN_SINK: ScriptIr = ir({
     { name: 'sym', type: 'string', value: 14 },
     { name: 'arr', type: 'uint256[]', value: 11 },
   ],
-  loc: LOC,
 });
 
 describe('validateIr — accepts', () => {
@@ -322,14 +317,11 @@ describe('validateIr — table rules', () => {
   });
 
   test('rejects an unsupported cell type', () => {
-    expectInvalid(
-      ir({ cells: [{ type: 'tuple' as EvsType, loc: null }] }),
-      /cells\[0\].*unsupported/,
-    );
+    expectInvalid(ir({ cells: [{ type: 'tuple' as EvsType }] }), /cells\[0\].*unsupported/);
   });
 
   test('rejects an unsupported fn param / result type', () => {
-    const fn = { name: 'f', params: [], results: [], body: [], resultValues: [], loc: null };
+    const fn = { name: 'f', params: [], results: [], body: [], resultValues: [] };
     expectInvalid(
       ir({
         values: [vi('uint256')],
@@ -984,7 +976,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('bool')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [boolConst(0, true), mk({ k: 'cellnew', cell: 0, init: 0 })],
       }),
       /operand type mismatch/,
@@ -995,7 +987,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('uint256')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [
           u256Const(0, 1n),
           mk({ k: 'cellnew', cell: 0, init: 0 }),
@@ -1010,7 +1002,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('uint256')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [mk({ k: 'cellget', cell: 0, out: 0 })],
       }),
       /before its cellnew/,
@@ -1021,7 +1013,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('bool')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [
           u256Const(0, 1n),
           mk({ k: 'cellnew', cell: 0, init: 0 }),
@@ -1033,7 +1025,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('bool')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [
           u256Const(0, 1n),
           boolConst(1, true),
@@ -1049,7 +1041,7 @@ describe('validateIr — cell rules', () => {
     expectInvalid(
       ir({
         values: [vi('bool'), vi('uint256'), vi('uint256')],
-        cells: [{ type: 'uint256', loc: null }],
+        cells: [{ type: 'uint256' }],
         body: [
           boolConst(0, true),
           u256Const(1, 1n),
@@ -1256,7 +1248,6 @@ describe('validateIr — fn rules', () => {
     results: [{ type: 'uint256' }],
     body: [mk({ k: 'bin', op: 'add', a: 1, b: 1, out: 2 })],
     resultValues: [2],
-    loc: null,
   } as const;
 
   test('rejects an unknown FnId', () => {
@@ -1334,7 +1325,6 @@ describe('validateIr — fn rules', () => {
       results: [{ type: 'uint24' as const }],
       body: [mk({ k: 'field', tuple: 1, index: 1, out: 2 })],
       resultValues: [2],
-      loc: null,
     };
     const withArg = (argType: EvsType): ScriptIr =>
       ir({
@@ -1357,7 +1347,6 @@ describe('validateIr — fn rules', () => {
       results: [{ type: 'uint256' as const }],
       body: [mk({ k: 'len', a: 1, out: 2 })],
       resultValues: [2],
-      loc: null,
     };
     const withArr = (argType: EvsType): ScriptIr =>
       ir({
@@ -1411,7 +1400,6 @@ describe('validateIr — fn rules', () => {
             results: [{ type: 'uint256' }],
             body: [mk({ k: 'if', cond: 0, then: [u256Const(1, 1n)], else: [] })],
             resultValues: [1],
-            loc: null,
           },
         ],
       }),
@@ -1431,7 +1419,6 @@ describe('validateIr — fn rules', () => {
             results: [{ type: 'uint256' }],
             body: [mk({ k: 'bin', op: 'add', a: 0, b: 0, out: 1 })],
             resultValues: [1],
-            loc: null,
           },
         ],
         body: [u256Const(0, 1n)],
@@ -1449,7 +1436,6 @@ describe('validateIr — fn rules', () => {
             results: [],
             body: [],
             resultValues: [],
-            loc: null,
           },
         ],
         body: [mk({ k: 'bin', op: 'add', a: 0, b: 0, out: 1 })],
@@ -1465,21 +1451,19 @@ describe('validateIr — fn rules', () => {
       results: [],
       body: [mk({ k: 'fncall', fn: callee, args: [], outs: [] })],
       resultValues: [],
-      loc: null,
     });
     expectInvalid(ir({ fns: [emptyFn('f0', 1), emptyFn('f1', 0)] }), /call-graph cycle/);
     expectInvalid(ir({ fns: [emptyFn('f0', 0)] }), /call-graph cycle/);
   });
 
   test('accepts an acyclic chain (f1 calls f0)', () => {
-    const leaf = { name: 'leaf', params: [], results: [], body: [], resultValues: [], loc: null };
+    const leaf = { name: 'leaf', params: [], results: [], body: [], resultValues: [] };
     const caller = {
       name: 'caller',
       params: [],
       results: [],
       body: [mk({ k: 'fncall', fn: 0, args: [], outs: [] })],
       resultValues: [],
-      loc: null,
     };
     expect(() => validateIr(ir({ fns: [leaf, caller] }))).not.toThrow();
   });
@@ -1494,7 +1478,6 @@ describe('validateIr — fn rules', () => {
             results: [],
             body: [mk({ k: 'break' })],
             resultValues: [],
-            loc: null,
           },
         ],
       }),
@@ -1633,7 +1616,6 @@ describe('validateIr — control flow and scoping', () => {
             results: [],
             body: [],
             resultValues: [],
-            loc: null,
           },
         ],
       }),
@@ -1682,7 +1664,7 @@ describe('validateIr — return rules', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateIr — error shape', () => {
-  test('failures are EvsInternalError with the bug-report marker and the stmt loc', () => {
+  test('failures are EvsInternalError with the bug-report marker', () => {
     const bad = ir({
       values: [vi('uint256')],
       body: [mk({ k: 'bin', op: 'add', a: 0, b: 0, out: 0 }, 4)],
@@ -1697,7 +1679,6 @@ describe('validateIr — error shape', () => {
     const err = caught as EvsInternalError;
     expect(err.message).toContain('bug in evs, please report');
     expect(err.message).toContain('invalid ScriptIr "fixture"');
-    expect(err.loc).toEqual(LOC);
   });
 });
 

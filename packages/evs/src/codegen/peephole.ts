@@ -22,16 +22,15 @@
  * - Rewrite 1 raises the peak stack depth of its window by one; a checked-mode height
  *   simulation (the same one `verifyStack` runs) skips it where that would exceed the 16-item
  *   template budget.
- * - Source-map fidelity: replacement nodes inherit the `loc`/`note` of the group they replace
- *   (the surviving original nodes keep their own), so `asm/sourcemap.ts` segments still map
- *   every emitted byte to the statement that produced it.
+ * - Source-map fidelity: replacement nodes inherit the `note` of the group they replace
+ *   (the surviving original nodes keep their own), so `asm/sourcemap.ts` segments keep their
+ *   codegen annotations.
  * - The pass iterates to a fixpoint with a hard round bound; each round is linear.
  */
 
 import type { AsmNode } from '../asm/assembler.js';
 import { isDupOp, isSwapOp, OPS, type Mnemonic } from '../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../asm/verify.js';
-import type { SourceLoc } from '../core/errors.js';
 
 const TWO_POW_256 = 1n << 256n;
 const TWO_POW_255 = 1n << 255n;
@@ -64,7 +63,7 @@ export function evsPeephole(nodes: readonly AsmNode[]): AsmNode[] {
 // one round
 // ---------------------------------------------------------------------------
 
-type Meta = { loc?: SourceLoc | null; note?: string };
+type Meta = { note?: string };
 
 /**
  * A matched window: `len` input nodes starting at the cursor are replaced by `out`.
@@ -214,7 +213,7 @@ function matchAt(nodes: readonly AsmNode[], i: number): Match | null {
  * so the reloaded word IS `v`); the rewrite performs the same single store. Stack: both end
  * with `v` on top of the untouched remainder; net effect 0 either way. Peak depth is one
  * higher (`+2` vs `+1` above the entry height) — see `withinBudget`. Saves one PUSH + one
- * MLOAD (≥ 3 bytes, 6 gas) per occurrence. The DUP1 inherits the reload's `loc`/`note` (the
+ * MLOAD (≥ 3 bytes, 6 gas) per occurrence. The DUP1 inherits the reload's `note` (the
  * statement whose operand load it now performs); the store keeps its own nodes.
  */
 function matchStoreThenReload(nodes: readonly AsmNode[], i: number): Match | null {
@@ -511,18 +510,15 @@ function isOp(node: AsmNode | undefined, op: Mnemonic): node is OpNode {
 }
 
 /**
- * The `loc`/`note` a replacement node inherits: the first node (in the given priority order)
- * that carries a defined `loc`, and independently the first that carries a `note`. Props are
- * only set when present (`exactOptionalPropertyTypes`).
+ * The `note` a replacement node inherits: the first node (in the given priority order) that
+ * carries one. The prop is only set when present (`exactOptionalPropertyTypes`).
  */
 function inheritMeta(from: readonly (AsmNode | undefined)[]): Meta {
-  const meta: Meta = {};
   for (const node of from) {
     if (node === undefined || node.k === 'label' || node.k === 'dataLabel' || node.k === 'data') {
       continue;
     }
-    if (meta.loc === undefined && node.loc !== undefined) meta.loc = node.loc;
-    if (meta.note === undefined && node.note !== undefined) meta.note = node.note;
+    if (node.note !== undefined) return { note: node.note };
   }
-  return meta;
+  return {};
 }

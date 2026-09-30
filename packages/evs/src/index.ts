@@ -13,7 +13,7 @@ export {
   EvsStagingError,
   EvsTypeError,
 } from './core/errors.js';
-export type { EvsDiagnostic, EvsErrorCode, SourceLoc } from './core/errors.js';
+export type { EvsDiagnostic, EvsErrorCode } from './core/errors.js';
 export { namedArg, t } from './core/types.js';
 export type {
   AbiParamsToComponents, // issue #5: ABI-param → t.* type derivation helpers (t.fromOutputs/…)

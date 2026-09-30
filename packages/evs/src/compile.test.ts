@@ -105,7 +105,6 @@ describe('artifact shape', () => {
     const compiled = compile(sumScript());
     expect(compiled.options.evmVersion).toBe('cancun');
     expect(compiled.options.optimize).toBe(false);
-    expect(compiled.options.locations).toBe(true);
     expect(typeof compiled.options.peephole).toBe('function');
     expect(typeof compiled.options.onDiagnostic).toBe('function');
     expect(Object.isFrozen(compiled.options)).toBe(true);
@@ -117,14 +116,12 @@ describe('artifact shape', () => {
       optimize: true,
       peephole: identityPeephole,
       onDiagnostic: dropDiagnostic,
-      locations: false,
     });
     expect(compiled.options).toEqual({
       evmVersion: 'paris',
       optimize: true,
       peephole: identityPeephole, // the user's own hook, never the built-in composition
       onDiagnostic: dropDiagnostic,
-      locations: false,
     });
   });
 
@@ -247,16 +244,6 @@ describe('pipeline hooks', () => {
 // optimize (issues #39 + #41)
 // ---------------------------------------------------------------------------
 
-/** The distinct source locations a source map carries (order-free). */
-function mappedLocs(
-  segments: readonly { loc: { file: string; line: number; column: number } | null }[],
-): string[] {
-  const keys = segments.map((s) =>
-    s.loc === null ? 'null' : `${s.loc.file}:${s.loc.line}:${s.loc.column}`,
-  );
-  return [...new Set(keys)].toSorted();
-}
-
 /** Four dependent temporaries: one slot under the liveness allocator, four by default. */
 function chainScript() {
   return evscript({ name: 'chain', args: [t.uint256, t.uint256] }, (s, a, b) => {
@@ -279,7 +266,6 @@ describe('optimize: the built-in passes — frame allocator (#41) + peephole (#3
     // the same composition by hand: lower with the liveness frame, then the peephole pass
     const lowered = lowerProgram(sumScript().ir, {
       evmVersion: 'cancun',
-      locations: true,
       optimize: true,
     });
     const byHand = assemble(lowered.nodes, {
@@ -296,7 +282,7 @@ describe('optimize: the built-in passes — frame allocator (#41) + peephole (#3
     expect(optimized.runtimeBytecode).not.toBe(viaHook.runtimeBytecode);
     expect(optimized.runtimeBytecode.length).toBeLessThan(viaHook.runtimeBytecode.length);
     const frameEndOf = (optimize: boolean): number =>
-      lowerProgram(chainScript().ir, { evmVersion: 'cancun', locations: true, optimize }).frameEnd;
+      lowerProgram(chainScript().ir, { evmVersion: 'cancun', optimize }).frameEnd;
     expect(frameEndOf(false)).toBe(0x80 + 32 * 6); // 2 args + 4 temporaries
     expect(frameEndOf(true)).toBe(0x80 + 32 * 3); // 2 args + 1 shared slot
   });
@@ -304,7 +290,6 @@ describe('optimize: the built-in passes — frame allocator (#41) + peephole (#3
   test('the user peephole hook runs AFTER the built-in pass and sees its output', () => {
     const lowered = lowerProgram(sumScript().ir, {
       evmVersion: 'cancun',
-      locations: true,
       optimize: true,
     }).nodes;
     let seen: readonly AsmNode[] = [];
@@ -337,25 +322,21 @@ describe('optimize: the built-in passes — frame allocator (#41) + peephole (#3
     for (let pc = 0; pc < codeLen; pc++) expect(lookupPc(compiled.sourceMap, pc)).toBeDefined();
   });
 
-  test('a mapped diagnostic still resolves after optimization (locs survive the rewrite)', async () => {
+  test('a panic still resolves to its site after optimization', async () => {
     const plain = compile(sumScript());
     const optimized = compile(sumScript(), { optimize: true });
-    // no statement loses its mapping: the optimized map carries exactly the same locations
-    expect(mappedLocs(optimized.sourceMap.segments)).toEqual(mappedLocs(plain.sourceMap.segments));
-    // the `s.add` line is still reachable through the optimized segments
-    const addLoc = plain.sourceMap.sites.find((s) => s.kind === 'panic')?.loc;
-    expect(addLoc).toBeDefined();
-    expect(addLoc).not.toBeNull();
-    const hit = optimized.sourceMap.segments.some(
-      (seg) => seg.loc !== null && seg.loc.line === addLoc?.line && seg.loc.file === addLoc?.file,
-    );
-    expect(hit).toBe(true);
-    // end to end: overflow → Panic(0x11), explained back to a candidate site in this file
+    // the site table is computed from the IR, before the peephole pass — unchanged by it
+    expect(optimized.sourceMap.sites).toEqual(plain.sourceMap.sites);
+    // end to end: overflow → Panic(0x11), explained back to the checked-add candidate site
     const res = await execRuntime(optimized.runtimeBytecode, sumCalldata(maxUint256, 1n));
     expect(res.success).toBe(false);
     const explained = optimized.explainRevert(res.data);
     expect(explained.kind).toBe('panic');
-    expect(explained.candidateSites?.[0]?.loc?.file).toContain('compile.test.ts');
+    const addSite = plain.sourceMap.sites.find(
+      (s) => s.kind === 'panic' && s.detail.includes('add'),
+    );
+    expect(addSite).toBeDefined();
+    expect(explained.candidateSites?.map((s) => s.id)).toContain(addSite?.id);
   });
 
   test('every fork: the optimized output passes the verifiers and is never larger', () => {
@@ -430,13 +411,6 @@ describe('sourceMap + disassemble', () => {
     }
     expect(covered).toBe(codeLen);
     expect(sourceMap.labels.some((l) => l.name === 'main')).toBe(true);
-  });
-
-  test('locations: true records locs on sites; locations: false strips them', () => {
-    const withLocs = compile(sumScript());
-    expect(withLocs.sourceMap.sites.some((s) => s.loc !== null)).toBe(true);
-    const without = compile(sumScript(), { locations: false });
-    expect(without.sourceMap.sites.every((s) => s.loc === null)).toBe(true);
   });
 
   test('disassemble() round-trips the runtime bytes and formats with labels', () => {
@@ -533,7 +507,10 @@ describe('explainRevert', () => {
     expect(explained.candidateSites).toBeDefined();
     expect(explained.candidateSites?.length).toBeGreaterThan(0);
     expect(explained.candidateSites?.some((s) => s.detail.includes('add'))).toBe(true);
-    expect(explained.candidateSites?.every((s) => s.loc !== null)).toBe(true);
+    // each candidate is listed with its site id, so same-kind sites stay distinguishable
+    for (const site of explained.candidateSites ?? []) {
+      expect(explained.message).toContain(`${site.detail} (site ${site.id})`);
+    }
     expect(explained.raw).toBe(res.data);
   });
 

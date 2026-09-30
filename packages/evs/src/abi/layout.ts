@@ -8,7 +8,6 @@
  */
 
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
-import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   bitsOf,
@@ -71,13 +70,11 @@ function badTypeError(abiType: string): EvsTypeError {
     return new EvsTypeError(
       'UNSUPPORTED_V0',
       `layoutOf: type ${JSON.stringify(abiType)} is not supported yet (fixed-size arrays \`T[N]\` and arrays nested deeper than \`[][]\` are not supported; tuples must be \`t.struct\`/\`t.tuple\` descriptors)`,
-      { loc: captureLoc() },
     );
   }
   return new EvsTypeError(
     'TYPE_MISMATCH',
     `layoutOf: unknown ABI type ${JSON.stringify(abiType)} (expected uintN/intN/address/bool/bytesN, string, bytes, or T[] of a word type)`,
-    { loc: captureLoc() },
   );
 }
 
@@ -150,7 +147,6 @@ function computeTupleLayout(t: TupleType): TypeLayout {
   throw new EvsTypeError(
     'UNSUPPORTED_V0',
     `layoutOfType: tuple-array type ${JSON.stringify(t.type)} is not supported yet (only one level of \`tuple[]\` nesting is supported; \`tuple[][]\` is not)`,
-    { loc: captureLoc() },
   );
 }
 
@@ -176,7 +172,6 @@ export function staticSize(l: TypeLayout): number {
   throw new EvsInternalError(
     'INTERNAL',
     `staticSize: ${JSON.stringify(l.abi)} is dynamic — no fixed head size`,
-    { loc: captureLoc() },
   );
 }
 

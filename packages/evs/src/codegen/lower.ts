@@ -29,7 +29,7 @@ import { layoutOfType } from '../abi/layout.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { HEX_BYTES_RE, hexToBytes, padWordAligned, selectorBytes } from '../core/bytes.js';
-import { EvsInternalError, type SourceLoc } from '../core/errors.js';
+import { EvsInternalError } from '../core/errors.js';
 import {
   bitsOf,
   isSigned,
@@ -97,8 +97,6 @@ export interface LowerInternals {
   fnEntries: Map<FnId, LabelId>;
   /** fn emission worklist in discovery order (grows while subroutines are emitted). */
   fnQueue: FnId[];
-  /** `compile({ locations })` — false strips locs from emitted nodes. */
-  locations: boolean;
 }
 
 const INTERNALS = new WeakMap<LowerCtx, LowerInternals>();
@@ -115,7 +113,7 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
     };
     scan(ctx.ir.body);
     for (const fn of ctx.ir.fns) scan(fn.body);
-    state = { consts, dfailStubs: [], fnEntries: new Map(), fnQueue: [], locations: true };
+    state = { consts, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
     INTERNALS.set(ctx, state);
   }
   return state;
@@ -169,14 +167,11 @@ function internal(message: string): EvsInternalError {
 }
 
 interface NodeMeta {
-  loc?: SourceLoc | null;
   note?: string;
 }
 
-function meta(ctx: LowerCtx, s: Stmt, note?: string): NodeMeta {
-  const m: NodeMeta = { loc: lowerInternals(ctx).locations ? s.loc : null };
-  if (note !== undefined) m.note = note;
-  return m;
+function meta(note?: string): NodeMeta {
+  return note === undefined ? {} : { note };
 }
 
 function typeOf(ctx: LowerCtx, v: ValueId): EvsType {
@@ -289,7 +284,7 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       lowerIndex(w, s, ctx);
       return;
     case 'len':
-      loadOperand(w, ctx, s.a, meta(ctx, s, 'len')); // [ptr]
+      loadOperand(w, ctx, s.a, meta('len')); // [ptr]
       w.op('MLOAD'); // [len]
       storeOut(w, ctx, s.out);
       return;
@@ -319,12 +314,12 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       return;
     case 'cellnew':
     case 'cellset':
-      loadOperand(w, ctx, s.k === 'cellnew' ? s.init : s.value, meta(ctx, s, `cell ${s.cell} ←`));
+      loadOperand(w, ctx, s.k === 'cellnew' ? s.init : s.value, meta(`cell ${s.cell} ←`));
       w.push(ctx.frame.slotOfCell(s.cell));
       w.op('MSTORE');
       return;
     case 'cellget':
-      w.push(ctx.frame.slotOfCell(s.cell), meta(ctx, s, `cell ${s.cell} →`));
+      w.push(ctx.frame.slotOfCell(s.cell), meta(`cell ${s.cell} →`));
       w.op('MLOAD');
       storeOut(w, ctx, s.out);
       return;
@@ -343,7 +338,7 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
     case 'break':
     case 'continue': {
       if (ctx.loop === null) throw internal(`'${s.k}' outside a loop survived validateIr`);
-      w.pushLabel(s.k === 'break' ? ctx.loop.breakTo : ctx.loop.continueTo, meta(ctx, s, s.k));
+      w.pushLabel(s.k === 'break' ? ctx.loop.breakTo : ctx.loop.continueTo, meta(s.k));
       w.op('JUMP');
       return;
     }
@@ -363,7 +358,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
     const slot = ctx.frame.slotOfValue(s.out);
     if (slot === null) return; // folded — operands PUSH it directly
     // returned consts keep a slot (the return encoder reads memory): materialize it
-    w.push(wordConstValue(s.data, `const #${s.out}`), meta(ctx, s, `const ${fmtType(s.type)}`));
+    w.push(wordConstValue(s.data, `const #${s.out}`), meta(`const ${fmtType(s.type)}`));
     w.push(slot);
     w.op('MSTORE');
     return;
@@ -374,7 +369,7 @@ function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCt
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
-  w.push(FREE_PTR, meta(ctx, s, `literal ${fmtType(s.type)} (${bytes.length}B)`));
+  w.push(FREE_PTR, meta(`literal ${fmtType(s.type)} (${bytes.length}B)`));
   w.op('MLOAD'); // [ptr]
   w.push(padded.length); // [size, ptr]
   w.pushLabel(label); // [src, size, ptr]
@@ -414,7 +409,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     case 'lte':
     case 'gte': {
       const signed = isSigned(type);
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
+      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a); // [a, b]
       if (s.op === 'lt' || s.op === 'gte') w.op(signed ? 'SLT' : 'LT');
       else w.op(signed ? 'SGT' : 'GT');
@@ -424,7 +419,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     }
     case 'eq':
     case 'neq':
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
+      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a);
       w.op('EQ');
       if (s.op === 'neq') w.op('ISZERO');
@@ -433,7 +428,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     case 'and':
     case 'or':
       // eager bool logic on canonical 0/1 words
-      loadOperand(w, ctx, s.b, meta(ctx, s, `bool ${s.op}`));
+      loadOperand(w, ctx, s.b, meta(`bool ${s.op}`));
       loadOperand(w, ctx, s.a);
       w.op(s.op === 'and' ? 'AND' : 'OR');
       storeOut(w, ctx, s.out);
@@ -442,7 +437,7 @@ function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: LowerCtx): 
     case 'bitor':
     case 'bitxor':
       // canonical-preserving on canonical operands (no post-masking needed)
-      loadOperand(w, ctx, s.b, meta(ctx, s, `${s.op} ${fmtType(type)}`));
+      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
       loadOperand(w, ctx, s.a);
       w.op(s.op === 'bitand' ? 'AND' : s.op === 'bitor' ? 'OR' : 'XOR');
       storeOut(w, ctx, s.out);
@@ -466,7 +461,7 @@ function lowerCheckedArith(
   type: EvsType,
 ): void {
   const { bits, signed } = numClass(type);
-  const m = meta(ctx, s, `checked ${s.op} ${fmtType(type)}`);
+  const m = meta(`checked ${s.op} ${fmtType(type)}`);
   loadOperand(w, ctx, s.b, m); // [b]
   loadOperand(w, ctx, s.a); // [a, b]
 
@@ -640,7 +635,7 @@ function lowerDivMod(
   type: EvsType,
 ): void {
   const { bits, signed } = numClass(type);
-  loadOperand(w, ctx, s.b, meta(ctx, s, `checked ${s.op} ${fmtType(type)}`)); // [b]
+  loadOperand(w, ctx, s.b, meta(`checked ${s.op} ${fmtType(type)}`)); // [b]
   w.op('DUP1');
   w.op('ISZERO'); // [b == 0, b]
   w.pushLabel(ctx.tails.panicDivZero);
@@ -686,7 +681,7 @@ function lowerShift(
 ): void {
   const wt = asWordType(type);
   const signed = isSigned(type);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${fmtType(type)}`)); // [value]
+  loadOperand(w, ctx, s.a, meta(`${s.op} ${fmtType(type)}`)); // [value]
   loadOperand(w, ctx, s.b); // [shift, value]
   if (s.op === 'shl') {
     w.op('SHL'); // [value << shift]
@@ -710,7 +705,7 @@ function lowerShift(
 
 function lowerUn(w: AsmWriter, s: Extract<Stmt, { k: 'un' }>, ctx: LowerCtx): void {
   const type = typeOf(ctx, s.a);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `${s.op} ${fmtType(type)}`));
+  loadOperand(w, ctx, s.a, meta(`${s.op} ${fmtType(type)}`));
   if (s.op === 'not' || s.op === 'iszero') {
     w.op('ISZERO'); // canonical 0/1 bool
   } else {
@@ -728,19 +723,19 @@ function lowerUn(w: AsmWriter, s: Extract<Stmt, { k: 'un' }>, ctx: LowerCtx): vo
 function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: LowerCtx): void {
   switch (s.op) {
     case 'address':
-      w.op('ADDRESS', meta(ctx, s, 'env address'));
+      w.op('ADDRESS', meta('env address'));
       break;
     case 'caller':
-      w.op('CALLER', meta(ctx, s, 'env caller'));
+      w.op('CALLER', meta('env caller'));
       break;
     case 'timestamp':
-      w.op('TIMESTAMP', meta(ctx, s, 'env timestamp'));
+      w.op('TIMESTAMP', meta('env timestamp'));
       break;
     case 'blocknumber':
-      w.op('NUMBER', meta(ctx, s, 'env blocknumber'));
+      w.op('NUMBER', meta('env blocknumber'));
       break;
     case 'chainid':
-      w.op('CHAINID', meta(ctx, s, 'env chainid'));
+      w.op('CHAINID', meta('env chainid'));
       break;
     default: {
       const op = String((s as { op: unknown }).op);
@@ -758,7 +753,7 @@ function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: LowerCtx): 
 function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: LowerCtx): void {
   const from = typeOf(ctx, s.a);
   const to = typeOf(ctx, s.out);
-  loadOperand(w, ctx, s.a, meta(ctx, s, `convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
+  loadOperand(w, ctx, s.a, meta(`convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
 
   const reinterpret =
     from === to ||
@@ -812,7 +807,7 @@ function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx: Lower
   const base = STMT_BASELINE;
   const takeA = w.newLabel(`select_a_${s.site}`);
   const done = w.newLabel(`select_done_${s.site}`);
-  loadOperand(w, ctx, s.cond, meta(ctx, s, 'select')); // [cond]
+  loadOperand(w, ctx, s.cond, meta('select')); // [cond]
   w.pushLabel(takeA);
   w.op('JUMPI'); // []
   loadOperand(w, ctx, s.b);
@@ -826,7 +821,7 @@ function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx: Lower
 }
 
 function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.i, meta(ctx, s, 'index')); // [i]
+  loadOperand(w, ctx, s.i, meta('index')); // [i]
   loadOperand(w, ctx, s.arr); // [ptr, i]
   w.op('DUP1');
   w.op('MLOAD'); // [len, ptr, i]
@@ -846,7 +841,7 @@ function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCt
 }
 
 function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.length, meta(ctx, s, `arrnew ${fmtType(s.elem)}[]`)); // [n]
+  loadOperand(w, ctx, s.length, meta(`arrnew ${fmtType(s.elem)}[]`)); // [n]
   w.op('DUP1');
   w.push(0xffffffffn, { note: 'alloc cap 2^32−1' }); // [cap, n, n]
   w.op('LT'); // [cap < n, n]
@@ -882,7 +877,7 @@ function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: Lower
 }
 
 function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.value, meta(ctx, s, 'arrset')); // [v]
+  loadOperand(w, ctx, s.value, meta('arrset')); // [v]
   loadOperand(w, ctx, s.i); // [i, v]
   loadOperand(w, ctx, s.arr); // [ptr, i, v]
   w.op('DUP1');
@@ -919,7 +914,7 @@ function tupleArity(ctx: LowerCtx, v: ValueId): number {
 function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: LowerCtx): void {
   const n = tupleArity(ctx, s.out);
   const size = 32 * n;
-  w.push(FREE_PTR, meta(ctx, s, `tuplenew ${n} words`));
+  w.push(FREE_PTR, meta(`tuplenew ${n} words`));
   w.op('MLOAD'); // [ptr]
   // freePtr += size
   w.op('DUP1'); // [ptr, ptr]
@@ -935,7 +930,7 @@ function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: L
   w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
   // MSTORE each provided member at ptr + 32·index
   for (const init of s.inits) {
-    loadOperand(w, ctx, init.value, meta(ctx, s, `member [${init.index}] ←`)); // [v, ptr]
+    loadOperand(w, ctx, init.value, meta(`member [${init.index}] ←`)); // [v, ptr]
     w.op('DUP2'); // [ptr, v, ptr]
     if (init.index > 0) {
       w.push(32 * init.index);
@@ -948,7 +943,7 @@ function lowerTupleNew(w: AsmWriter, s: Extract<Stmt, { k: 'tuplenew' }>, ctx: L
 
 /** `field i` read = `MLOAD(tuplePtr + 32·i)` → the canonical word or the member pointer. */
 function lowerField(w: AsmWriter, s: Extract<Stmt, { k: 'field' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.tuple, meta(ctx, s, `field [${s.index}]`)); // [ptr]
+  loadOperand(w, ctx, s.tuple, meta(`field [${s.index}]`)); // [ptr]
   if (s.index > 0) {
     w.push(32 * s.index);
     w.op('ADD'); // [ptr+32·i]
@@ -959,7 +954,7 @@ function lowerField(w: AsmWriter, s: Extract<Stmt, { k: 'field' }>, ctx: LowerCt
 
 /** `field i` write = `MSTORE(tuplePtr + 32·i, value)`. */
 function lowerTupleSet(w: AsmWriter, s: Extract<Stmt, { k: 'tupleset' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.value, meta(ctx, s, `tupleset [${s.index}] ←`)); // [v]
+  loadOperand(w, ctx, s.value, meta(`tupleset [${s.index}] ←`)); // [v]
   loadOperand(w, ctx, s.tuple); // [ptr, v]
   if (s.index > 0) {
     w.push(32 * s.index);
@@ -975,7 +970,7 @@ function lowerTupleSet(w: AsmWriter, s: Extract<Stmt, { k: 'tupleset' }>, ctx: L
 /** `encode` — materialize the standard/packed ABI encoding of the args into a fresh `bytes`
  *  memref (codegen/abi.ts emitters) and store its pointer to the out slot. */
 function lowerEncode(w: AsmWriter, s: Extract<Stmt, { k: 'encode' }>, ctx: LowerCtx): void {
-  const m = meta(ctx, s, `encode ${s.mode}`);
+  const m = meta(`encode ${s.mode}`);
   if (s.mode === 'abi') {
     const items = s.args.map((a) => ({
       param: typeToAbiParam('', typeOf(ctx, a)),
@@ -1011,7 +1006,7 @@ function lowerEncode(w: AsmWriter, s: Extract<Stmt, { k: 'encode' }>, ctx: Lower
 function lowerThrow(w: AsmWriter, s: Extract<Stmt, { k: 'throw' }>, ctx: LowerCtx): void {
   const err = (ctx.ir.errors ?? [])[s.error];
   if (err === undefined) throw internal(`throw with unknown error #${s.error} survived validateIr`);
-  const m = meta(ctx, s, `throw ${err.name}`);
+  const m = meta(`throw ${err.name}`);
   const sel = selectorBytes(err.selector, 'codegen/lower throw');
   if (s.args.length === 0) {
     w.pushBytes(sel, m); // [sel]
@@ -1046,7 +1041,7 @@ function lowerThrow(w: AsmWriter, s: Extract<Stmt, { k: 'throw' }>, ctx: LowerCt
 
 /** `keccak256` — hash a `bytes`/`string` memref's payload: `KECCAK256(ptr + 32, MLOAD(ptr))`. */
 function lowerKeccak256(w: AsmWriter, s: Extract<Stmt, { k: 'keccak256' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.a, meta(ctx, s, 'keccak256')); // [ptr]
+  loadOperand(w, ctx, s.a, meta('keccak256')); // [ptr]
   w.op('DUP1');
   w.op('MLOAD'); // [len, ptr]
   w.op('SWAP1');
@@ -1084,9 +1079,8 @@ function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx)
     successRef = { slot: requireSlot(ctx, s.successOut, 'successOut'), type: 'bool' };
   }
 
-  const stmt = state.locations ? s : { ...s, loc: null };
   const plan: CallSitePlan = {
-    stmt,
+    stmt: s,
     targetRef: refOf(s.target),
     ...(s.gas === undefined ? {} : { gasRef: refOf(s.gas) }),
     argRefs: s.args.map(refOf),
@@ -1123,13 +1117,13 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
   s.args.forEach((a, i) => {
     const slot = region.params[i];
     if (slot === undefined) throw internal(`fns[${s.fn}] param region is missing slot #${i}`);
-    loadOperand(w, ctx, a, i === 0 ? meta(ctx, s, `fncall ${fn.name}`) : undefined);
+    loadOperand(w, ctx, a, i === 0 ? meta(`fncall ${fn.name}`) : undefined);
     w.push(slot);
     w.op('MSTORE');
   });
 
   const ret = w.newLabel(`ret_${s.site}`);
-  w.pushLabel(ret, s.args.length === 0 ? meta(ctx, s, `fncall ${fn.name}`) : undefined); // [ret]
+  w.pushLabel(ret, s.args.length === 0 ? meta(`fncall ${fn.name}`) : undefined); // [ret]
   w.pushLabel(entry);
   w.op('JUMP'); // → callee (entry label carries stack 1)
   w.label(ret, STMT_BASELINE);
@@ -1153,7 +1147,7 @@ function lowerIf(w: AsmWriter, s: Extract<Stmt, { k: 'if' }>, ctx: LowerCtx): vo
   const hasElse = s.else.length > 0;
   const elseL = hasElse ? w.newLabel(`else_${s.site}`) : null;
   const endL = w.newLabel(`endif_${s.site}`);
-  loadOperand(w, ctx, s.cond, meta(ctx, s, 'if')); // [cond]
+  loadOperand(w, ctx, s.cond, meta('if')); // [cond]
   w.op('ISZERO');
   w.pushLabel(elseL ?? endL);
   w.op('JUMPI'); // []
@@ -1173,7 +1167,7 @@ function lowerWhile(w: AsmWriter, s: Extract<Stmt, { k: 'while' }>, ctx: LowerCt
   const end = w.newLabel(`endwhile_${s.site}`);
   w.label(head, base); // re-executed every iteration
   lowerStmts(w, s.header, ctx);
-  loadOperand(w, ctx, s.cond, meta(ctx, s, 'while cond')); // [cond]
+  loadOperand(w, ctx, s.cond, meta('while cond')); // [cond]
   w.op('ISZERO');
   w.pushLabel(end);
   w.op('JUMPI'); // []

@@ -12,8 +12,9 @@ evs fails on three distinct timelines, with a different mechanism on each:
 | Run time | The script reverts on-chain — panics, the evs error ABI, or bubbled callee reverts | [Compiled artifact](/reference/artifact/), [errors and debugging](/guides/errors-and-debugging/) |
 
 The policy is to validate at recording wherever the information already exists there — which is
-almost everywhere — so most mistakes surface as an exception at the exact `file:line:column` of
-the offending call, before any bytecode exists. Compile time is reserved for whole-program facts
+almost everywhere — so most mistakes surface as an exception thrown synchronously from the
+offending builder call inside your `evscript` callback, before any bytecode exists. The error's
+ordinary JavaScript stack trace therefore points at your line. Compile time is reserved for whole-program facts
 (code size, option gating).
 
 ## The `EvsError` hierarchy
@@ -26,15 +27,11 @@ import type { EvsError } from '@maxencerb/evs';
 declare const error: EvsError;
 error.code; // EvsErrorCode — stable, machine-checkable
 error.message; // user-vocabulary text with actionable guidance
-error.loc; // SourceLoc | null — where the offending call was recorded
-error.relatedLocs; // readonly { label: string; loc: SourceLoc | null }[] — secondary sites
 error.name; // the concrete class name, e.g. 'EvsTypeError'
 ```
 
-`relatedLocs` carries secondary locations when two sites are involved — for example
-`RECORDING_CLOSED` includes a `'script defined at'` entry. `loc` is `null` when location capture
-is disabled (`evscript(def, body, { locations: false })`) or the stack trace is unparseable.
-Diagnostics are **not** attached to errors; they travel on a separate warning channel (below).
+To find where a recording-time error came from, read its `stack`: the error is thrown while
+your callback runs, so your call site is on it. Diagnostics are **not** attached to errors; they travel on a separate warning channel (below).
 
 Five subclasses partition the failures:
 
@@ -56,7 +53,7 @@ try {
 } catch (e) {
   if (e instanceof EvsTypeError) {
     e.code; // 'CERTAIN_PANIC' — 1 − 2 underflows uint256, so it would always revert
-    e.loc; // the SourceLoc of the s.sub call
+    e.stack; // includes the line of the s.sub call
   }
 }
 ```
@@ -97,26 +94,20 @@ const warnings: EvsDiagnostic[] = [];
 compile(script, { onDiagnostic: (d) => warnings.push(d) });
 
 for (const w of warnings) {
-  w.code; // 'ENV_FRAME_DEPENDENT' here — recorded at the s.env('caller') call
-  w.loc; // SourceLoc | null of that call
+  w.code; // 'ENV_FRAME_DEPENDENT' here — raised by the s.env('caller') call
+  w.message; // names the construct that triggered it
 }
 ```
 
 The shapes:
 
 ```ts
-import type { EvsDiagnostic, SourceLoc } from '@maxencerb/evs';
+import type { EvsDiagnostic } from '@maxencerb/evs';
 
 declare const diagnostic: EvsDiagnostic;
 diagnostic.severity; // 'warning' — every diagnostic is a warning; hard failures throw instead
 diagnostic.code; // 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT'
 diagnostic.message; // human-readable explanation with concrete guidance
-diagnostic.loc; // SourceLoc | null
-
-declare const loc: SourceLoc;
-loc.file; // string
-loc.line; // number
-loc.column; // number
 ```
 
 | Code | Triggers when | Why it matters |
@@ -156,7 +147,7 @@ appear in a script's revert payload — bubbled verbatim from a contract you cal
 `explainRevert` decodes the full solc table (`0x00` generic compiler panic, `0x01` failed
 `assert`, `0x21` invalid enum conversion, `0x22` corrupted storage byte array, `0x31` pop on an
 empty array, `0x51` call to a zero-initialized internal function) and, for the four codes above,
-lists every candidate site in your script with its recorded source location.
+lists every candidate site in your script (its site id and what it is, e.g. `checked div`).
 
 Beyond panics, a script can revert with the two evs-owned errors — `EvsInvalidCalldata()` and
 `EvsDecodeError(uint256 site)` — or with a callee's payload bubbled verbatim. The exact ABI

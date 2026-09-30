@@ -27,7 +27,6 @@ import {
 import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
-import { captureLoc, setLocCapture } from '../core/loc.js';
 import { IDENT_RE, isArgSpecValue, isEvsValueType, typeToAbiParam } from '../core/types.js';
 import type {
   AbiParamsToComponents,
@@ -186,11 +185,7 @@ const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
 /** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry
  *  must be a `t.error` value with evs param types; names and selectors must be unique (and
  *  selector-disjoint from the built-ins). */
-function normalizeErrorDecls(
-  scriptName: string,
-  errorsIn: unknown,
-  entryLoc: ReturnType<typeof captureLoc>,
-): readonly RecErrorDecl[] {
+function normalizeErrorDecls(scriptName: string, errorsIn: unknown): readonly RecErrorDecl[] {
   let list: readonly unknown[];
   if (errorsIn === undefined) {
     list = [];
@@ -207,21 +202,18 @@ function normalizeErrorDecls(
       throw new EvsTypeError(
         'ERROR_DECL',
         `${ctx}: expected an error declared with t.error(...), got ${typeof e === 'object' && e !== null ? 'a non-error object' : String(e)}`,
-        { loc: entryLoc },
       );
     }
     if (!IDENT_RE.test(e.name)) {
       throw new EvsTypeError(
         'ERROR_DECL',
         `${ctx}: invalid error name ${JSON.stringify(e.name)} (must be a non-empty identifier)`,
-        { loc: entryLoc },
       );
     }
     if (seenNames.has(e.name)) {
       throw new EvsTypeError(
         'ERROR_DECL',
         `${ctx}: duplicate error name "${e.name}" — each declared error needs a distinct name (the client-side switch is keyed by name)`,
-        { loc: entryLoc },
       );
     }
     seenNames.add(e.name);
@@ -236,7 +228,6 @@ function normalizeErrorDecls(
         throw new EvsTypeError(
           'ERROR_DECL',
           `${ctx} ("${e.name}"): param #${j} is not a valid t.error param`,
-          { loc: entryLoc },
         );
       }
       return { name: p.name, type: p.type };
@@ -250,7 +241,6 @@ function normalizeErrorDecls(
       throw new EvsTypeError(
         'ERROR_DECL',
         `${ctx}: error "${e.name}" has the same 4-byte selector (${selector}) as the built-in ${builtin} — rename it or change its params`,
-        { loc: entryLoc },
       );
     }
     const clash = seenSelectors.get(selector);
@@ -258,7 +248,6 @@ function normalizeErrorDecls(
       throw new EvsTypeError(
         'ERROR_DECL',
         `${ctx}: error "${e.name}" has the same 4-byte selector (${selector}) as declared error "${clash}"`,
-        { loc: entryLoc },
       );
     }
     seenSelectors.set(selector, e.name);
@@ -281,19 +270,14 @@ export function evscript<
     s: ScriptBuilder<NormalizeErrors<errs>>,
     ...args: ArgHandles<NormalizeArgs<args>>
   ) => ScriptReturn<ret>,
-  opts?: { locations?: boolean }, // default true: capture source locations
 ): EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
-  const entryLoc = captureLoc();
   if (typeof def !== 'object' || def === null) {
-    throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args? }`, {
-      loc: entryLoc,
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args? }`);
   }
   if (typeof def.name !== 'string' || !IDENT_RE.test(def.name)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `evscript: script name must be a non-empty identifier, got ${JSON.stringify(def.name)}`,
-      { loc: entryLoc },
     );
   }
   // `args` is optional (a zero-arg script omits it); a lone declarator (a bare type or a single
@@ -307,9 +291,7 @@ export function evscript<
     declsIn = [def.args];
   }
   if (typeof body !== 'function') {
-    throw new EvsTypeError('TYPE_MISMATCH', `evscript "${def.name}": body must be a callback`, {
-      loc: entryLoc,
-    });
+    throw new EvsTypeError('TYPE_MISMATCH', `evscript "${def.name}": body must be a callback`);
   }
   // a `namedArg` declarator carries its user name; a bare type is auto-named `arg{i}` (the
   // positional fallback — viem still infers args positionally, but the name surfaces as the label).
@@ -317,35 +299,27 @@ export function evscript<
     if (isArgSpecValue(d)) {
       const ty: unknown = d.type;
       if (!isEvsValueType(ty)) {
-        assertV0Type(ty, `evscript "${def.name}" arg "${d.name}"`, entryLoc);
+        assertV0Type(ty, `evscript "${def.name}" arg "${d.name}"`);
       }
       return { name: d.name, type: ty };
     }
     if (!isEvsValueType(d)) {
-      assertV0Type(d, `evscript "${def.name}" arg #${i}`, entryLoc); // throws with a precise code
+      assertV0Type(d, `evscript "${def.name}" arg #${i}`); // throws with a precise code
     }
     return { name: `arg${i}`, type: d };
   });
 
   // declared custom errors (issue #15): normalized + validated before recording starts, so a
   // bad declaration fails fast (and s.throw checks against the same decls).
-  const errorDecls = normalizeErrorDecls(def.name, def.errors, entryLoc);
+  const errorDecls = normalizeErrorDecls(def.name, def.errors);
 
-  const locations = opts?.locations ?? true;
-  if (!locations) setLocCapture(false); // scoped per recorder; restored below
-  let recorder: Recorder;
-  let callbackResult: unknown;
-  try {
-    recorder = new Recorder(def.name, argSpecs, locations ? entryLoc : null, errorDecls);
-    const s = makeBuilder(recorder);
-    // the engine yields Expr|Tuple handles positionally; the typed surface (ArgHandles) is
-    // enforced at the call site (`as unknown as` — the recorder is intentionally untyped).
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- recorder is dynamically typed; ArgHandles is enforced at the public surface
-    const handles = recorder.argHandles() as unknown as ArgHandles<NormalizeArgs<args>>;
-    callbackResult = body(s, ...handles);
-  } finally {
-    if (!locations) setLocCapture(true);
-  }
+  const recorder = new Recorder(def.name, argSpecs, errorDecls);
+  const s = makeBuilder(recorder);
+  // the engine yields Expr|Tuple handles positionally; the typed surface (ArgHandles) is
+  // enforced at the call site (`as unknown as` — the recorder is intentionally untyped).
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- recorder is dynamically typed; ArgHandles is enforced at the public surface
+  const handles = recorder.argHandles() as unknown as ArgHandles<NormalizeArgs<args>>;
+  const callbackResult: unknown = body(s, ...handles);
   const { ir, returns } = recorder.finish(callbackResult);
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so

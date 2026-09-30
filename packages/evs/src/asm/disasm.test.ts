@@ -1,14 +1,12 @@
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsTypeError, type SourceLoc } from '../core/errors.js';
+import { EvsTypeError } from '../core/errors.js';
 import { AsmWriter, assemble, type AsmNode } from './assembler.js';
 import { disassemble } from './disasm.js';
 import type { EvmVersion, Mnemonic } from './ops.js';
 
 const hex = (bytes: Uint8Array): string =>
   [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
-
-const LOC: SourceLoc = { file: '/home/dev/app/pools.ts', line: 9, column: 18 };
 
 describe('disassemble — basics', () => {
   test('RUNTIME_42 golden listing', () => {
@@ -71,8 +69,8 @@ describe('disassemble — sourceMap annotations', () => {
     const w = new AsmWriter();
     const loop = w.newLabel('loop');
     w.label(loop, 0);
-    w.push(1n, { loc: LOC, note: 'condition' });
-    w.pushLabel(loop, { loc: LOC });
+    w.push(1n, { note: 'condition' });
+    w.pushLabel(loop);
     w.op('JUMPI');
     w.push(0n);
     w.push(0n);
@@ -80,7 +78,7 @@ describe('disassemble — sourceMap annotations', () => {
     return assemble(w.nodes(), { evmVersion: 'cancun' });
   };
 
-  test('labels, jump targets, locs and notes are attached', () => {
+  test('labels, jump targets and notes are attached', () => {
     const { bytecode, sourceMap } = build();
     const d = disassemble(bytecode, sourceMap);
 
@@ -90,7 +88,6 @@ describe('disassemble — sourceMap annotations', () => {
 
     const push1 = d.lines[1];
     expect(push1?.note).toBe('condition');
-    expect(push1?.loc).toEqual(LOC);
 
     const target = d.lines[2];
     expect(target?.mnemonic).toBe('PUSH2');
@@ -98,20 +95,13 @@ describe('disassemble — sourceMap annotations', () => {
     expect(target?.targetLabel).toBe('loop');
   });
 
-  test('format() renders labels, immediates, target arrows and locs', () => {
+  test('format() renders labels, immediates, target arrows and notes', () => {
     const { bytecode, sourceMap } = build();
     const text = disassemble(bytecode, sourceMap).format();
     expect(text).toContain('@loop:');
     expect(text).toContain('PUSH2 0x0000 → @loop');
-    expect(text).toContain('; condition — /home/dev/app/pools.ts:9:18');
-    expect(text.split('\n')[0]).toBe('@loop:');
-  });
-
-  test('format({ locs: false }) drops file locations but keeps notes', () => {
-    const { bytecode, sourceMap } = build();
-    const text = disassemble(bytecode, sourceMap).format({ locs: false });
     expect(text).toContain('; condition');
-    expect(text).not.toContain('pools.ts');
+    expect(text.split('\n')[0]).toBe('@loop:');
   });
 });
 

@@ -27,11 +27,11 @@ const W0 = `0x${'0'.repeat(64)}` as const;
 const W1 = `0x${'0'.repeat(63)}1` as const;
 
 /** A `Stmt` minus the bookkeeping the fixture fills in (distributed over the union). */
-type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'loc' | 'site'> : never) : never;
+type StmtBody = Stmt extends infer s ? (s extends Stmt ? Omit<s, 'site'> : never) : never;
 
 let nextSite = 100;
 function st(body: StmtBody): Stmt {
-  return { loc: null, site: nextSite++, ...body };
+  return { site: nextSite++, ...body };
 }
 
 /** Loop-example IR: arg n; cells total, i; folded consts 0/1; loop values v1…v7; final get. */
@@ -41,21 +41,21 @@ function loopIr(): ScriptIr {
     name: 'sum',
     args: [{ name: 'n', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg n
-      { type: 'uint256', loc: null }, // 1: const 0 (folded)
-      { type: 'uint256', loc: null }, // 2: v1 = i.get
-      { type: 'bool', loc: null }, // 3: v2 = lt
-      { type: 'uint256', loc: null }, // 4: v3 = total.get
-      { type: 'uint256', loc: null }, // 5: v4 = i.get
-      { type: 'uint256', loc: null }, // 6: v5 = add
-      { type: 'uint256', loc: null }, // 7: v6 = i.get
-      { type: 'uint256', loc: null }, // 8: v7 = add
-      { type: 'uint256', loc: null }, // 9: const 1 (folded)
-      { type: 'uint256', loc: null }, // 10: total.get (returned)
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: const 0 (folded)
+      { type: 'uint256' }, // 2: v1 = i.get
+      { type: 'bool' }, // 3: v2 = lt
+      { type: 'uint256' }, // 4: v3 = total.get
+      { type: 'uint256' }, // 5: v4 = i.get
+      { type: 'uint256' }, // 6: v5 = add
+      { type: 'uint256' }, // 7: v6 = i.get
+      { type: 'uint256' }, // 8: v7 = add
+      { type: 'uint256' }, // 9: const 1 (folded)
+      { type: 'uint256' }, // 10: total.get (returned)
     ],
     cells: [
-      { type: 'uint256', loc: null }, // 0: total
-      { type: 'uint256', loc: null }, // 1: i
+      { type: 'uint256' }, // 0: total
+      { type: 'uint256' }, // 1: i
     ],
     fns: [],
     body: [
@@ -83,7 +83,6 @@ function loopIr(): ScriptIr {
       st({ k: 'cellget', cell: 0, out: 10 }),
     ],
     returns: [{ name: 'total', type: 'uint256', value: 10 }],
-    loc: null,
   };
 }
 
@@ -94,12 +93,12 @@ function fnIr(): ScriptIr {
     name: 'twice',
     args: [{ name: 'a', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg a
-      { type: 'uint256', loc: null }, // 1: double param x
-      { type: 'uint256', loc: null }, // 2: x + x
-      { type: 'uint256', loc: null }, // 3: ghost param y
-      { type: 'uint256', loc: null }, // 4: y + y
-      { type: 'uint256', loc: null }, // 5: fncall out
+      { type: 'uint256' }, // 0: arg a
+      { type: 'uint256' }, // 1: double param x
+      { type: 'uint256' }, // 2: x + x
+      { type: 'uint256' }, // 3: ghost param y
+      { type: 'uint256' }, // 4: y + y
+      { type: 'uint256' }, // 5: fncall out
     ],
     cells: [],
     fns: [
@@ -109,7 +108,6 @@ function fnIr(): ScriptIr {
         results: [{ type: 'uint256' }],
         body: [st({ k: 'bin', op: 'add', a: 1, b: 1, out: 2 })],
         resultValues: [2],
-        loc: null,
       },
       {
         name: 'ghost',
@@ -117,12 +115,10 @@ function fnIr(): ScriptIr {
         results: [{ type: 'uint256' }],
         body: [st({ k: 'bin', op: 'add', a: 3, b: 3, out: 4 })],
         resultValues: [4],
-        loc: null,
       },
     ],
     body: [st({ k: 'fncall', fn: 0, args: [0], outs: [5] })],
     returns: [{ name: 'r', type: 'uint256', value: 5 }],
-    loc: null,
   };
 }
 
@@ -217,9 +213,9 @@ describe('layoutFrames — consts and returns', () => {
       name: 'fortyTwo',
       args: [],
       values: [
-        { type: 'uint256', loc: null }, // 0: const 42 (returned → slot)
-        { type: 'uint256', loc: null }, // 1: const 7 (folded operand)
-        { type: 'uint256', loc: null }, // 2: 42 + 7
+        { type: 'uint256' }, // 0: const 42 (returned → slot)
+        { type: 'uint256' }, // 1: const 7 (folded operand)
+        { type: 'uint256' }, // 2: 42 + 7
       ],
       cells: [],
       fns: [],
@@ -242,7 +238,6 @@ describe('layoutFrames — consts and returns', () => {
         { name: 'c', type: 'uint256', value: 0 },
         { name: 's', type: 'uint256', value: 2 },
       ],
-      loc: null,
     };
     validateIr(ir);
     const frame = layoutFrames(ir);
@@ -258,12 +253,11 @@ describe('layoutFrames — consts and returns', () => {
       irVersion: 1,
       name: 'hello',
       args: [],
-      values: [{ type: 'string', loc: null }],
+      values: [{ type: 'string' }],
       cells: [],
       fns: [],
       body: [st({ k: 'const', out: 0, data: { kind: 'data', hex: hello }, type: 'string' })],
       returns: [{ name: 'greeting', type: 'string', value: 0 }],
-      loc: null,
     };
     validateIr(ir);
     const frame = layoutFrames(ir);
@@ -285,11 +279,11 @@ function chainIr(): ScriptIr {
     name: 'chain',
     args: [{ name: 'n', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg n (never read)
-      { type: 'uint256', loc: null }, // 1: env timestamp
-      { type: 'uint256', loc: null }, // 2: v1 + v1
-      { type: 'uint256', loc: null }, // 3: v2 + v2
-      { type: 'uint256', loc: null }, // 4: v3 + v3 (returned)
+      { type: 'uint256' }, // 0: arg n (never read)
+      { type: 'uint256' }, // 1: env timestamp
+      { type: 'uint256' }, // 2: v1 + v1
+      { type: 'uint256' }, // 3: v2 + v2
+      { type: 'uint256' }, // 4: v3 + v3 (returned)
     ],
     cells: [],
     fns: [],
@@ -300,7 +294,6 @@ function chainIr(): ScriptIr {
       st({ k: 'bin', op: 'add', a: 3, b: 3, out: 4 }),
     ],
     returns: [{ name: 'r', type: 'uint256', value: 4 }],
-    loc: null,
   };
 }
 
@@ -311,11 +304,11 @@ function overlapIr(): ScriptIr {
     name: 'overlap',
     args: [],
     values: [
-      { type: 'uint256', loc: null }, // 0: env          [0, 2]
-      { type: 'uint256', loc: null }, // 1: env          [1, 2]
-      { type: 'uint256', loc: null }, // 2: v0 + v1      [2, 4]
-      { type: 'uint256', loc: null }, // 3: env          [3, 4]
-      { type: 'uint256', loc: null }, // 4: v2 + v3      [4, end] (returned)
+      { type: 'uint256' }, // 0: env          [0, 2]
+      { type: 'uint256' }, // 1: env          [1, 2]
+      { type: 'uint256' }, // 2: v0 + v1      [2, 4]
+      { type: 'uint256' }, // 3: env          [3, 4]
+      { type: 'uint256' }, // 4: v2 + v3      [4, end] (returned)
     ],
     cells: [],
     fns: [],
@@ -327,7 +320,6 @@ function overlapIr(): ScriptIr {
       st({ k: 'bin', op: 'add', a: 2, b: 3, out: 4 }),
     ],
     returns: [{ name: 'r', type: 'uint256', value: 4 }],
-    loc: null,
   };
 }
 
@@ -338,10 +330,10 @@ function twoOutsIr(): ScriptIr {
     name: 'pair',
     args: [{ name: 'target', type: 'address' }],
     values: [
-      { type: 'address', loc: null }, // 0: arg target
-      { type: 'uint256', loc: null }, // 1: out a
-      { type: 'uint256', loc: null }, // 2: out b
-      { type: 'uint256', loc: null }, // 3: a + b (returned)
+      { type: 'address' }, // 0: arg target
+      { type: 'uint256' }, // 1: out a
+      { type: 'uint256' }, // 2: out b
+      { type: 'uint256' }, // 3: a + b (returned)
     ],
     cells: [],
     fns: [],
@@ -365,7 +357,6 @@ function twoOutsIr(): ScriptIr {
       st({ k: 'bin', op: 'add', a: 1, b: 2, out: 3 }),
     ],
     returns: [{ name: 'sum', type: 'uint256', value: 3 }],
-    loc: null,
   };
 }
 
@@ -387,18 +378,18 @@ function carriedIr(): ScriptIr {
     name: 'carried',
     args: [{ name: 'n', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg n
-      { type: 'uint256', loc: null }, // 1: const 0 (folded)
-      { type: 'uint256', loc: null }, // 2: outer = env
-      { type: 'uint256', loc: null }, // 3: header cellget i
-      { type: 'bool', loc: null }, // 4: cond
-      { type: 'uint256', loc: null }, // 5: body cellget i
-      { type: 'uint256', loc: null }, // 6: v5 + outer
-      { type: 'uint256', loc: null }, // 7: env
-      { type: 'uint256', loc: null }, // 8: v7 + v7 (defined at the loop's last position)
-      { type: 'uint256', loc: null }, // 9: cellget i after the loop (returned)
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: const 0 (folded)
+      { type: 'uint256' }, // 2: outer = env
+      { type: 'uint256' }, // 3: header cellget i
+      { type: 'bool' }, // 4: cond
+      { type: 'uint256' }, // 5: body cellget i
+      { type: 'uint256' }, // 6: v5 + outer
+      { type: 'uint256' }, // 7: env
+      { type: 'uint256' }, // 8: v7 + v7 (defined at the loop's last position)
+      { type: 'uint256' }, // 9: cellget i after the loop (returned)
     ],
-    cells: [{ type: 'uint256', loc: null }],
+    cells: [{ type: 'uint256' }],
     fns: [],
     body: [
       st({ k: 'const', out: 1, data: { kind: 'word', hex: W0 }, type: 'uint256' }),
@@ -422,7 +413,6 @@ function carriedIr(): ScriptIr {
       st({ k: 'cellget', cell: 0, out: 9 }),
     ],
     returns: [{ name: 'i', type: 'uint256', value: 9 }],
-    loc: null,
   };
 }
 
@@ -433,15 +423,15 @@ function condIr(): ScriptIr {
     name: 'cond',
     args: [{ name: 'n', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg n
-      { type: 'uint256', loc: null }, // 1: const 0 (folded)
-      { type: 'uint256', loc: null }, // 2: header cellget i
-      { type: 'bool', loc: null }, // 3: cond = v2 < n
-      { type: 'uint256', loc: null }, // 4: header env after the cond (unread)
-      { type: 'uint256', loc: null }, // 5: body v2 + v2
-      { type: 'uint256', loc: null }, // 6: cellget after the loop (returned)
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: const 0 (folded)
+      { type: 'uint256' }, // 2: header cellget i
+      { type: 'bool' }, // 3: cond = v2 < n
+      { type: 'uint256' }, // 4: header env after the cond (unread)
+      { type: 'uint256' }, // 5: body v2 + v2
+      { type: 'uint256' }, // 6: cellget after the loop (returned)
     ],
-    cells: [{ type: 'uint256', loc: null }],
+    cells: [{ type: 'uint256' }],
     fns: [],
     body: [
       st({ k: 'const', out: 1, data: { kind: 'word', hex: W0 }, type: 'uint256' }),
@@ -462,7 +452,6 @@ function condIr(): ScriptIr {
       st({ k: 'cellget', cell: 0, out: 6 }),
     ],
     returns: [{ name: 'i', type: 'uint256', value: 6 }],
-    loc: null,
   };
 }
 
@@ -476,11 +465,11 @@ function branchIr(): ScriptIr {
     name: 'branch',
     args: [],
     values: [
-      { type: 'uint256', loc: null }, // 0: env                 (read in then only)
-      { type: 'bool', loc: null }, // 1: v0 < v0 (cond)
-      { type: 'uint256', loc: null }, // 2: then: v0 + v0
-      { type: 'uint256', loc: null }, // 3: else: env
-      { type: 'uint256', loc: null }, // 4: after: env (returned)
+      { type: 'uint256' }, // 0: env                 (read in then only)
+      { type: 'bool' }, // 1: v0 < v0 (cond)
+      { type: 'uint256' }, // 2: then: v0 + v0
+      { type: 'uint256' }, // 3: else: env
+      { type: 'uint256' }, // 4: after: env (returned)
     ],
     cells: [],
     fns: [],
@@ -497,7 +486,6 @@ function branchIr(): ScriptIr {
       st({ k: 'env', op: 'chainid', out: 4 }),
     ],
     returns: [{ name: 'r', type: 'uint256', value: 4 }],
-    loc: null,
   };
 }
 
@@ -508,14 +496,14 @@ function fnChainIr(): ScriptIr {
     name: 'fnchain',
     args: [{ name: 'a', type: 'uint256' }],
     values: [
-      { type: 'uint256', loc: null }, // 0: arg a
-      { type: 'uint256', loc: null }, // 1: param x
-      { type: 'uint256', loc: null }, // 2: x + x
-      { type: 'uint256', loc: null }, // 3: v2 + v2
-      { type: 'uint256', loc: null }, // 4: v3 + v3 (fn result)
-      { type: 'uint256', loc: null }, // 5: fncall out
-      { type: 'uint256', loc: null }, // 6: main env (live across the call)
-      { type: 'uint256', loc: null }, // 7: v5 + v6 (returned)
+      { type: 'uint256' }, // 0: arg a
+      { type: 'uint256' }, // 1: param x
+      { type: 'uint256' }, // 2: x + x
+      { type: 'uint256' }, // 3: v2 + v2
+      { type: 'uint256' }, // 4: v3 + v3 (fn result)
+      { type: 'uint256' }, // 5: fncall out
+      { type: 'uint256' }, // 6: main env (live across the call)
+      { type: 'uint256' }, // 7: v5 + v6 (returned)
     ],
     cells: [],
     fns: [
@@ -529,7 +517,6 @@ function fnChainIr(): ScriptIr {
           st({ k: 'bin', op: 'add', a: 3, b: 3, out: 4 }),
         ],
         resultValues: [4],
-        loc: null,
       },
     ],
     body: [
@@ -538,7 +525,6 @@ function fnChainIr(): ScriptIr {
       st({ k: 'bin', op: 'add', a: 5, b: 6, out: 7 }),
     ],
     returns: [{ name: 'r', type: 'uint256', value: 7 }],
-    loc: null,
   };
 }
 
