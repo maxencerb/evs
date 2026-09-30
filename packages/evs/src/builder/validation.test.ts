@@ -186,6 +186,30 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
       /script name/,
     );
   });
+
+  test('a script name colliding with an error name in its ABI is ERROR_DECL (issue #63)', () => {
+    // the artifact ABI would hold a function AND an error of that name: viem's getAbiItem
+    // resolves the error, so encodeFunctionData/readContract fail with "Function not found"
+    const cases = [
+      ['EvsDecodeError', []],
+      ['EvsInvalidCalldata', []],
+      ['Boom', [t.error('Boom', [namedArg('x', t.uint256)])]],
+    ] as const;
+    for (const [name, errors] of cases) {
+      expectEvs(
+        () =>
+          evscript({ name, args: [t.uint256], errors: errors as never }, (s, a) => s.return({ a })),
+        EvsTypeError,
+        'ERROR_DECL',
+        new RegExp(`script name "${name}" collides with the error "${name}"`),
+      );
+    }
+    // Solidity built-in error names are not ABI entries of the artifact: still callable
+    for (const name of ['Panic', 'Error'] as const) {
+      const script = evscript({ name, args: [t.uint256] }, (s, a) => s.return({ a }));
+      expect(script.abi[0]).toMatchObject({ type: 'function', name });
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1319,7 +1343,16 @@ describe('custom errors (issue #15)', () => {
   test('t.error: invalid / reserved names are ERROR_DECL', () => {
     expectEvs(() => t.error('' as never), EvsTypeError, 'ERROR_DECL', /non-empty identifier/);
     expectEvs(() => t.error('has space' as never), EvsTypeError, 'ERROR_DECL', /identifier/);
-    for (const name of ['Panic', 'Error', 'EvsDecodeError', 'EvsInvalidCalldata', '_'] as const) {
+    for (const name of [
+      'Panic',
+      'Error',
+      'EvsDecodeError',
+      'EvsInvalidCalldata',
+      '_',
+      // built-in decode arms of decodeScriptError / matchScriptError (issue #62)
+      'empty',
+      'unknown',
+    ] as const) {
       expectEvs(() => t.error(name as never), EvsTypeError, 'ERROR_DECL', /reserved/);
     }
   });

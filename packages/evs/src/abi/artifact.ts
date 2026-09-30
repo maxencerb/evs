@@ -178,14 +178,17 @@ function assertStructFieldNames(type: EvsType, where: string): void {
  * encode/decode source of truth). Every arg/return type is validated through
  * the tuple-aware layout, and struct field names are re-checked.
  */
-/** Declared-error names that would shadow the Solidity built-ins / the evs runtime errors
- *  (or the matchScriptError '_' default-arm key) — rejected at declaration (`t.error`) and
- *  re-checked here for hand-built inputs. */
+/** Declared-error names that would shadow the Solidity built-ins / the evs runtime errors,
+ *  the built-in 'empty'/'unknown' decode arms, or the matchScriptError '_' default-arm key —
+ *  rejected at declaration (`t.error`, core/types.ts) and re-checked here for hand-built
+ *  inputs. */
 const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
   'Panic',
   'Error',
   'EvsDecodeError',
   'EvsInvalidCalldata',
+  'empty',
+  'unknown',
   '_',
 ]);
 
@@ -290,6 +293,15 @@ export function buildScriptAbi(
     });
     return Object.freeze({ type: 'error', name: e.name, inputs: Object.freeze(e.inputs) });
   });
+  // the script name must not also name an error of the artifact ABI (issue #63): viem's
+  // getAbiItem would resolve the error entry, so encodeFunctionData/readContract fail with
+  // "Function not found on ABI". Panic/Error are not ABI entries, so they stay usable.
+  if (name === 'EvsDecodeError' || name === 'EvsInvalidCalldata' || seenErrors.has(name)) {
+    throw new EvsTypeError(
+      'ERROR_DECL',
+      `buildScriptAbi: script name "${name}" collides with the error "${name}" in its ABI — viem would resolve the error entry instead of the function; rename the script or the error`,
+    );
+  }
   const abi: Abi = Object.freeze([fn, EVS_ERROR_ABI[0], EVS_ERROR_ABI[1], ...errorEntries]);
   return abi;
 }

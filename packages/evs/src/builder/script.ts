@@ -312,6 +312,19 @@ export function evscript<
   // declared custom errors (issue #15): normalized + validated before recording starts, so a
   // bad declaration fails fast (and s.throw checks against the same decls).
   const errorDecls = normalizeErrorDecls(def.name, def.errors);
+  // the script name must not also name an error of the artifact ABI (issue #63) — the
+  // function entry would be shadowed for viem (buildScriptAbi re-checks; failing here keeps
+  // the error at the def).
+  if (
+    def.name === 'EvsDecodeError' ||
+    def.name === 'EvsInvalidCalldata' ||
+    errorDecls.some((d) => d.ir.name === def.name)
+  ) {
+    throw new EvsTypeError(
+      'ERROR_DECL',
+      `evscript "${def.name}": script name "${def.name}" collides with the error "${def.name}" in its ABI (${def.name.startsWith('Evs') ? 'an evs runtime error every artifact carries' : 'a declared error'}) — viem would resolve the error entry instead of the function; rename the script or the error`,
+    );
+  }
 
   const recorder = new Recorder(def.name, argSpecs, errorDecls);
   const s = makeBuilder(recorder);

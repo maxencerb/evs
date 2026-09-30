@@ -478,6 +478,8 @@ describe('buildScriptAbi', () => {
     const cases = [
       [[decl('not a name')], /invalid error name "not a name"/],
       [[decl('Panic', [{ name: 'code', type: 'uint256' }])], /error name "Panic" is reserved/],
+      [[decl('empty', [{ name: 'code', type: 'uint256' }])], /error name "empty" is reserved/],
+      [[decl('unknown')], /error name "unknown" is reserved/],
       [[decl('Nope'), decl('Nope')], /duplicate error name "Nope"/],
       [
         [decl('Bad', [{ name: '', type: 'uint256' }])],
@@ -503,6 +505,22 @@ describe('buildScriptAbi', () => {
     expect(abi.slice(3)).toEqual([
       { type: 'error', name: 'Fine', inputs: [{ name: 'x', type: 'uint256' }] },
     ]);
+  });
+
+  test('a script name colliding with an ABI error name is ERROR_DECL (issue #63)', () => {
+    const ok = [{ name: 'ok', type: 'bool' as const }];
+    for (const [name, errors] of [
+      ['EvsDecodeError', []],
+      ['EvsInvalidCalldata', []],
+      ['Boom', [{ name: 'Boom', inputs: [{ name: 'x', type: 'uint256' }] }]],
+    ] as const) {
+      const e = catchEvs(() => buildScriptAbi(name, [], ok, errors));
+      expect(e.code).toBe('ERROR_DECL');
+      expect(e.message).toMatch(new RegExp(`script name "${name}" collides with the error`));
+    }
+    // Panic/Error are not entries of the artifact ABI — fine as script names
+    expect(buildScriptAbi('Panic', [], ok)[0]).toMatchObject({ type: 'function', name: 'Panic' });
+    expect(buildScriptAbi('Error', [], ok)[0]).toMatchObject({ type: 'function', name: 'Error' });
   });
 
   test('tuple arg + tuple return expand to named-component tuple ABI params', () => {

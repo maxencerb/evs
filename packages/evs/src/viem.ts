@@ -311,7 +311,8 @@ function decodeRevertData(abi: Abi | readonly unknown[], raw: Hex): DecodedScrip
 
 /** The error names `matchScriptError` REQUIRES a handler for: every script-ABI error except
  *  the evs built-ins (those — like Panic/Error/unknown/empty — flow to the `_` default arm,
- *  though an explicit handler for them is honored if provided). */
+ *  though an explicit handler for EvsDecodeError/EvsInvalidCalldata/Panic/Error is honored if
+ *  provided; the args-less 'unknown'/'empty' arms always reach `_`). */
 type DeclaredNames<abi> = Exclude<
   AbiErrorEntries<abi> extends infer e
     ? e extends { readonly name: infer n extends string }
@@ -342,10 +343,17 @@ type ErrorArgsByName<abi, n> =
 export type ScriptErrorHandlers<abi extends Abi | readonly unknown[], r> = {
   readonly [n in DeclaredNames<abi>]: (
     args: ErrorArgsByName<abi, n>,
-    error: Extract<DecodedScriptError<abi>, { readonly name: n }>,
+    error: Extract<DecodedScriptError<abi>, { readonly name: n; readonly args: unknown }>,
   ) => r;
 } & {
-  readonly _: (error: Exclude<DecodedScriptError<abi>, { readonly name: DeclaredNames<abi> }>) => r;
+  // only the declared (args-carrying) arms are excluded: a built-in arm that shares a name
+  // with a hand-built ABI error (e.g. 'empty') still reaches `_` at runtime (issue #62)
+  readonly _: (
+    error: Exclude<
+      DecodedScriptError<abi>,
+      { readonly name: DeclaredNames<abi>; readonly args: unknown }
+    >,
+  ) => r;
 };
 
 /** The union of every handler's return type — {@link matchScriptError}'s result. */
@@ -376,7 +384,11 @@ export function matchScriptError<
   }
   const table = handlers as Readonly<Record<string, unknown>>;
   const decodedName: string = decoded.name;
-  const handler = decodedName === '_' ? undefined : table[decodedName];
+  // a named handler only takes an ABI arm (it carries `args`) or a Panic/Error arm; the
+  // args-less 'unknown'/'empty' built-in arms always go to `_`, even when a hand-built ABI
+  // declares an error of the same name (issue #62 — it would otherwise get `{}` as its args)
+  const namedArm = 'args' in decoded || decodedName === 'Panic' || decodedName === 'Error';
+  const handler = namedArm && decodedName !== '_' ? table[decodedName] : undefined;
   let result: unknown;
   if (typeof handler === 'function') {
     const args = 'args' in decoded ? decoded.args : Object.freeze({});

@@ -329,3 +329,31 @@ test('matchScriptError requires every declared handler plus _, and types the arg
     NotOwner: () => 0,
   });
 });
+
+test('matchScriptError: a hand-built error named like a built-in arm keeps that arm in _ (issue #62)', () => {
+  const handBuilt = {
+    abi: [{ type: 'error', name: 'empty', inputs: [{ name: 'code', type: 'uint256' }] }],
+  } as const;
+  matchScriptError(handBuilt, undefined as unknown, {
+    empty: (args, error) => {
+      expectTypeOf(args.code).toEqualTypeOf<bigint>();
+      // the declared handler only ever sees the declared (args-carrying) arm
+      expectTypeOf(error).toEqualTypeOf<{
+        readonly name: 'empty';
+        readonly args: { readonly code: bigint };
+        readonly raw: Hex;
+      }>();
+      return 0;
+    },
+    _: (other) => {
+      // the built-in args-less 'empty' arm still reaches `_` at runtime, so it is typed there
+      // (this hand-built ABI has no evs runtime errors, so only the built-in arms remain)
+      expectTypeOf(other.name).toEqualTypeOf<'Panic' | 'Error' | 'unknown' | 'empty'>();
+      expectTypeOf<Extract<typeof other, { readonly name: 'empty' }>>().toEqualTypeOf<{
+        readonly name: 'empty';
+        readonly raw: '0x';
+      }>();
+      return 1;
+    },
+  });
+});

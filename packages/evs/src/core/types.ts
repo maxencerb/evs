@@ -960,14 +960,19 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
 // `t.error` runtime (issue #15)
 // ---------------------------------------------------------------------------
 
-/** Names whose selectors/semantics belong to Solidity or the evs runtime — a user error may
- *  not shadow them (they get dedicated decode arms and would break the client-side switch).
- *  '_' is the matchScriptError default-arm key. */
+/** Names a user error may not take, because they already name an arm of the client-side
+ *  switch: Panic/Error (Solidity built-ins) and EvsDecodeError/EvsInvalidCalldata (the evs
+ *  runtime) have their own selectors and decode arms; 'empty'/'unknown' are the built-in
+ *  decode arms for an empty revert and an unrecognized selector; '_' is the matchScriptError
+ *  default-arm key. Sharing a `name` discriminant with any of them would route those reverts
+ *  to the declared handler. Mirrored in `buildScriptAbi` (abi/artifact.ts). */
 const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
   'Panic',
   'Error',
   'EvsDecodeError',
   'EvsInvalidCalldata',
+  'empty',
+  'unknown',
   '_',
 ]);
 
@@ -991,7 +996,7 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
   if (RESERVED_ERROR_NAMES.has(name)) {
     throw new EvsTypeError(
       'ERROR_DECL',
-      `t.error("${name}"): the name is reserved (Panic/Error are Solidity built-ins; EvsDecodeError/EvsInvalidCalldata belong to the evs runtime) — pick another name`,
+      `t.error("${name}"): the name is reserved (Panic/Error are Solidity built-ins; EvsDecodeError/EvsInvalidCalldata belong to the evs runtime; empty/unknown are built-in decode arms; _ is the matchScriptError default arm) — pick another name`,
     );
   }
   let decls: readonly unknown[];
