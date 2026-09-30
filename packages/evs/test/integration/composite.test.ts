@@ -648,6 +648,115 @@ describe('composite arrays CALL-ARG encode + construct against real solc', () =>
   });
 });
 
+// --- try verbs over dynamic leaves inside composites (issue #67) ----------------------------
+//
+// tryRead / tryCall / trySimulate of string[] / tuple[]-with-bytes / uint256[][] / a struct with a
+// bytes member against the real solc getters (success → the viem-decoded value), and against a
+// code-less EOA (empty returndata → success=false + zero values). The getters are `pure`; tryCall
+// and trySimulate go through a copy of the ABI relabeled `nonpayable` (the write-verb filter).
+
+describe('try verbs over dynamic composites against real solc getters (issue #67)', () => {
+  const writeAbi = Composite.abi.map((item) =>
+    item.type === 'function' ? { ...item, stateMutability: 'nonpayable' as const } : item,
+  );
+  type Loose = Record<
+    'tryRead' | 'tryCall' | 'trySimulate',
+    (opts: { address: unknown; abi: unknown; functionName: string; args?: unknown }) => {
+      success: unknown;
+      value: unknown;
+    }
+  >;
+
+  for (const verb of ['tryRead', 'tryCall', 'trySimulate'] as const) {
+    test(`${verb}: names / withBytesBatch / matrix / getWithBytes — success, then EOA → zero`, async () => {
+      const abi = verb === 'tryRead' ? Composite.abi : writeAbi;
+      const script = evscript({ name: 'tryDyn', args: t.address }, (s, target) => {
+        const loose = s as unknown as Loose;
+        const call = (functionName: string, args?: unknown) =>
+          loose[verb]({
+            address: target,
+            abi,
+            functionName,
+            ...(args === undefined ? {} : { args }),
+          });
+        const ns = call('names', [4n]);
+        const wb = call('withBytesBatch', [3n]);
+        const m = call('matrix', [5n]);
+        const w = call('getWithBytes');
+        return s.return({
+          nsOk: whole(ns.success),
+          ns: whole(ns.value),
+          wbOk: whole(wb.success),
+          wb: whole(wb.value),
+          mOk: whole(m.success),
+          m: whole(m.value),
+          wOk: whole(w.success),
+          w: whole(w.value),
+        });
+      });
+      const compiled = script.compile();
+      const [names, withBytes, matrix, withBytesOne] = await Promise.all([
+        publicClient.readContract({
+          address: composite,
+          abi: Composite.abi,
+          functionName: 'names',
+          args: [4n],
+        }),
+        publicClient.readContract({
+          address: composite,
+          abi: Composite.abi,
+          functionName: 'withBytesBatch',
+          args: [3n],
+        }),
+        publicClient.readContract({
+          address: composite,
+          abi: Composite.abi,
+          functionName: 'matrix',
+          args: [5n],
+        }),
+        publicClient.readContract({
+          address: composite,
+          abi: Composite.abi,
+          functionName: 'getWithBytes',
+        }),
+      ]);
+      const viemParams = compiled.toViem();
+      const ok: unknown = await publicClient.readContract({
+        ...viemParams,
+        functionName: 'tryDyn',
+        args: [composite],
+      });
+      expect(ok).toStrictEqual({
+        nsOk: true,
+        ns: names,
+        wbOk: true,
+        wb: withBytes,
+        mOk: true,
+        m: matrix,
+        wOk: true,
+        w: withBytesOne,
+      });
+      // deployer is a funded EOA (no code): every call "succeeds" with empty returndata, which
+      // fails the head-size guard → success=false + the zero value, and the script still returns.
+      const zero: unknown = await publicClient.readContract({
+        ...viemParams,
+        functionName: 'tryDyn',
+        args: [deployer.address],
+      });
+      expect(zero).toStrictEqual({
+        nsOk: false,
+        ns: [],
+        wbOk: false,
+        wb: [],
+        mOk: false,
+        m: [],
+        wOk: false,
+        w: { id: 0n, data: '0x' },
+      });
+    });
+  }
+});
+
 // --- failure path: positions at an EOA → bubbled EvsDecodeError ----------------------------
 
 describe('failure path: positions at an EOA → EvsDecodeError', () => {
