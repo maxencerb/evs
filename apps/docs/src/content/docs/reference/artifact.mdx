@@ -130,7 +130,7 @@ Four overloads, two modes. Every result spreads directly into viem's `readContra
 | `toViem()` | `{ abi, code: initBytecode }` — deployless (default) |
 | `toViem({ mode: 'deployless' })` | same as the no-argument form |
 | `toViem({ mode: 'stateOverride', address? })` | `{ abi, address, stateOverride: [{ address, code: runtimeBytecode }] }` |
-| `toViem({ mode: 'stateOverride', sender })` | `{ abi, address: sender, stateOverride: [{ address: sender, code: runtimeBytecode }], account: sender }` — [sender mode](/guides/execution/#sender-mode): sub-call targets see `msg.sender = sender` |
+| `toViem({ mode: 'stateOverride', sender, address? })` | `{ abi, address: sender, stateOverride: [{ address: sender, code: runtimeBytecode }], account: sender }` — [sender mode](/guides/execution/#sender-mode): sub-call targets see `msg.sender = sender`; `address`, if given, must equal `sender` |
 
 ```ts
 import { compile, DEFAULT_SCRIPT_ADDRESS, evscript } from '@maxencerb/evs';

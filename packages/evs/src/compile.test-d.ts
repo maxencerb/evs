@@ -136,6 +136,10 @@ test('sender-mode toViem() (issue #36) carries `account` and still spreads into 
   expectTypeOf(shape.address).toEqualTypeOf<Address>();
   expectTypeOf(shape.account).toEqualTypeOf<Address>();
   expectTypeOf(shape.stateOverride).toMatchTypeOf<StateOverride>();
+  // `address` may restate the sender in the same object literal (issue #65)
+  const both = compiled.toViem({ mode: 'stateOverride', sender: user, address: user });
+  expectTypeOf(both.account).toEqualTypeOf<Address>();
+  expectTypeOf(both.address).toEqualTypeOf<Address>();
   // the plain stateOverride overload has NO `account` key
   expectTypeOf(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('account');
 

@@ -89,7 +89,8 @@ export interface CompiledEvsScript<
   };
   // sender mode (issue #36): the runtime is installed AT `sender` and `account` is set to it, so
   // every sub-call target sees `msg.sender = sender` (the script self-calls through that address).
-  toViem(o: { mode: 'stateOverride'; sender: Address }): {
+  // `address` may restate `sender` (same knob); a different value throws.
+  toViem(o: { mode: 'stateOverride'; sender: Address; address?: Address }): {
     abi: ScriptAbi<name, args, ret, errs>;
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
@@ -228,7 +229,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
   };
-  function toViem(o: { mode: 'stateOverride'; sender: Address }): {
+  function toViem(o: { mode: 'stateOverride'; sender: Address; address?: Address }): {
     abi: typeof abi;
     address: Address;
     stateOverride: [{ address: Address; code: Hex }];
@@ -248,8 +249,8 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
         account: Address;
       } {
     if (o?.mode === 'stateOverride') {
-      // toViemStateOverride owns the address default and the sender checks (shape, agreement
-      // with `address`); the tuple is rebuilt here because its shape types `stateOverride` as
+      // toViemStateOverride owns the address default and the shape checks (`address` and
+      // `sender` must be 20-byte 0x addresses, and agree when both are given); the tuple is rebuilt here because its shape types `stateOverride` as
       // viem's wide StateOverride.
       const at = o.address === undefined ? {} : { address: o.address };
       if (o.sender === undefined) {

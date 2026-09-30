@@ -428,7 +428,8 @@ interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
  * for it. Caveats: the override REPLACES the code at `sender` for the duration of the call (a
  * contract sender — a Safe, say — cannot answer callbacks), while its balance, nonce and storage
  * stay in place. `sender` and `address` are the same knob; passing both with different values
- * throws.
+ * throws. A `sender` or `address` that is not a 20-byte 0x address throws `EvsTypeError`
+ * (`TYPE_MISMATCH`).
  */
 export function toViemStateOverride<const abi extends Abi>(
   s: { abi: abi; runtimeBytecode: Hex },
@@ -443,6 +444,12 @@ export function toViemStateOverride<const abi extends Abi>(
   opts?: { address?: Address; sender?: Address | undefined },
 ): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
   const sender = opts?.sender;
+  if (opts?.address !== undefined && !isAddressLike(opts.address)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `toViem: \`address\` must be a 20-byte 0x address, got ${JSON.stringify(opts.address)}`,
+    );
+  }
   if (sender !== undefined) {
     if (!isAddressLike(sender)) {
       throw new EvsTypeError(
