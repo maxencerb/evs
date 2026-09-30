@@ -222,13 +222,7 @@ export type PushBase = () => void;
 
 /** @internal Shared by `codegen/call.ts`. Cumulative ABI head offset (bytes) of component `i`
  *  within `components` (static inner tuples inline their whole head; everything else is one word). */
-export function headOffsetsOf(components: readonly NamedType[]): number[] {
-  return headOffsets(components);
-}
-
-/** Cumulative ABI head offset (bytes) of component `i` within `components` (static inner tuples
- *  inline their whole head; everything else is one word). */
-function headOffsets(components: readonly NamedType[]): number[] {
+export function headOffsets(components: readonly NamedType[]): number[] {
   const offs: number[] = [];
   let cursor = 0;
   for (const c of components) {
@@ -533,7 +527,7 @@ function emitFrameStore(w: AsmWriter, frameDepth: number, k: number): void {
  * `[dst, src, len]` (the pre-cancun `@memcpy` height contract), even when this array nests inside a
  * tuple member at arbitrary tuple-encode depth.
  */
-export function emitEncodeArrayTail(
+function emitEncodeArrayTail(
   w: AsmWriter,
   elemLayout: TypeLayout,
   pushArrPtr: PushBase,

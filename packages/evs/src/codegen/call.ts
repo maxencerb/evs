@@ -58,7 +58,7 @@ import {
   emitNormalizeElemsLoop,
   emitNormalizeWord,
   encodeFramesOf,
-  headOffsetsOf,
+  headOffsets,
   reserveEncodeFrames,
   needsMemorySnapshot,
   wordNeedsNormalize,
@@ -876,7 +876,7 @@ export function emitStaticCall(
   // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate). Under revertReturns
   //       the returndata IS the revert payload — the sequence is byte-identical. ----------------
   if (outputs.length > 0) {
-    const headOffsets = headOffsetsOf(outputs); // cumulative (static tuple outputs inline)
+    const outOffsets = headOffsets(outputs); // cumulative (static tuple outputs inline)
     const minSize = headBytes(outputs);
     // tuple outputs AND composite-element array outputs (`tuple[]`/`T[][]`/`string[]`) decode from
     // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
@@ -899,7 +899,7 @@ export function emitStaticCall(
       if (ref === undefined) throw internal(`missing out ref #${j}`);
       const type = abiParamToType(out);
       const layout = layoutOfType(type);
-      const headOffset = headOffsets[j] ?? 32 * j;
+      const headOffset = outOffsets[j] ?? 32 * j;
 
       if (layout.kind === 'word') {
         w.op('DUP1');
