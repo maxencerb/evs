@@ -469,6 +469,42 @@ describe('buildScriptAbi', () => {
     ).toBe('ABI_SHAPE');
   });
 
+  test('declared errors: names and input names are re-validated (ERROR_DECL)', () => {
+    const ok = [{ name: 'ok', type: 'bool' as const }];
+    const decl = (name: string, inputs: readonly { name: string; type: string }[] = []) => ({
+      name,
+      inputs,
+    });
+    const cases = [
+      [[decl('not a name')], /invalid error name "not a name"/],
+      [[decl('Panic', [{ name: 'code', type: 'uint256' }])], /error name "Panic" is reserved/],
+      [[decl('Nope'), decl('Nope')], /duplicate error name "Nope"/],
+      [
+        [decl('Bad', [{ name: '', type: 'uint256' }])],
+        /error "Bad" input #0 \(""\): invalid input name/,
+      ],
+      [
+        [
+          decl('Dup', [
+            { name: 'a', type: 'uint256' },
+            { name: 'a', type: 'address' },
+          ]),
+        ],
+        /error "Dup" has a duplicate input name "a"/,
+      ],
+    ] as const;
+    for (const [errors, msg] of cases) {
+      const e = catchEvs(() => buildScriptAbi('s', [], ok, errors));
+      expect(e.code).toBe('ERROR_DECL');
+      expect(e.message).toMatch(msg);
+    }
+    // the happy path appends the declared errors after the two built-ins
+    const abi = buildScriptAbi('s', [], ok, [decl('Fine', [{ name: 'x', type: 'uint256' }])]);
+    expect(abi.slice(3)).toEqual([
+      { type: 'error', name: 'Fine', inputs: [{ name: 'x', type: 'uint256' }] },
+    ]);
+  });
+
   test('tuple arg + tuple return expand to named-component tuple ABI params', () => {
     const params = t.struct({ tokenIn: t.address, fee: t.uint24 });
     const pos = t.struct({ liquidity: t.uint128, owner: t.address });

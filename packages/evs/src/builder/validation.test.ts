@@ -1380,6 +1380,58 @@ describe('custom errors (issue #15)', () => {
     );
   });
 
+  test('def errors: a 4-byte selector clash with another declared error is ERROR_DECL', () => {
+    // a real collision: burn(uint256) and collate_propagate_storage(bytes16) share 0x42966c68
+    expectEvs(
+      () =>
+        evscript(
+          {
+            name: 'bad',
+            errors: [
+              t.error('burn', [t.uint256]),
+              t.error('collate_propagate_storage', [t.bytes16]),
+            ],
+          },
+          (s: AnyBuilder) => s.return({ ok: s.lit(t.bool, true) }),
+        ),
+      EvsTypeError,
+      'ERROR_DECL',
+      /errors\[1\]: error "collate_propagate_storage" has the same 4-byte selector \(0x42966c68\) as declared error "burn"/,
+    );
+  });
+
+  test('def errors: a 4-byte selector clash with a built-in error is ERROR_DECL', () => {
+    // the reserved-name check lives in t.error; a hand-built value (a t.error spread with the
+    // name swapped) gets past it, so the selector check is what keeps decodeScriptError /
+    // explainRevert from confusing it with the built-in
+    const cases = [
+      [
+        { ...t.error('Foo', [t.uint256]), name: 'Panic' },
+        /\(0x4e487b71\) as the built-in Panic\(uint256\)/,
+      ],
+      [
+        { ...t.error('Foo', [t.string]), name: 'Error' },
+        /\(0x08c379a0\) as the built-in Error\(string\)/,
+      ],
+      [
+        { ...t.error('Foo', [t.uint256]), name: 'EvsDecodeError' },
+        /as the built-in EvsDecodeError\(uint256\)/,
+      ],
+      [{ ...t.error('Foo'), name: 'EvsInvalidCalldata' }, /as the built-in EvsInvalidCalldata\(\)/],
+    ] as const;
+    for (const [decl, msg] of cases) {
+      expectEvs(
+        () =>
+          evscript({ name: 'bad', errors: [decl] as never }, (s: AnyBuilder) =>
+            s.return({ ok: s.lit(t.bool, true) }),
+          ),
+        EvsTypeError,
+        'ERROR_DECL',
+        msg,
+      );
+    }
+  });
+
   test('s.throw of an UNDECLARED error is ERROR_UNDECLARED (record-time backstop)', () => {
     const Other = t.error('Other', [t.uint256]);
     expectEvs(
