@@ -733,7 +733,10 @@ const guard = evscript({ name: 'guard', args: [t.uint256], errors: [TooSmall] },
 
 ```ts nocheck
 // each value is an Expr, a Tuple handle, OR a MutArray handle — directly:
-return<const ret extends Record<string, Expr | Tuple<TupleType> | MutArray<EvsType>>>(values: ret): ScriptReturn<ret>;
+// `NonEmptyReturn<ret>` makes `s.return({})` a type error (see below)
+return<const ret extends Record<string, Expr | Tuple<TupleType> | MutArray<EvsType>>>(
+  values: ret & NonEmptyReturn<ret>,
+): ScriptReturn<ret>;
 ```
 
 Declares the script's outputs and seals the recorder. Must be called exactly once,
@@ -743,6 +746,10 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 - Record keys become the named components of the single tuple output; viem consumers receive an
   **object**. Keys must be identifiers; empty keys are rejected (`ABI_SHAPE`) because an
   unnamed component silently degrades viem's result to a positional array.
+- The record must name **at least one** value: `s.return({})` is a type error and throws
+  `ABI_SHAPE` at recording. An empty output tuple ABI-encodes to `0x`, which viem rejects as
+  "returned no data" (easily mistaken for a missing contract). A guard-only script, one that only
+  reverts or succeeds, returns a flag instead: `s.return({ ok: s.lit(t.bool, true) })`.
 - Each value is an `Expr`, or a `Tuple` handle **directly** — a struct/tuple flows out as a
   `'tuple'` component, abitype-typed. (`tupleHandle.expr()` is equivalent and still valid, for
   the bare memref `Expr`.) Type bare literals with `s.lit` first.
