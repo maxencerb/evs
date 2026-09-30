@@ -206,6 +206,16 @@ function loadOperand(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): voi
   w.op('MLOAD');
 }
 
+/**
+ * The compile-time value of `v` when it is a folded word const (operand becomes a PUSH), else
+ * `undefined`. Values that own a slot are never reported, even when a const defines them.
+ */
+function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
+  if (ctx.frame.slotOfValue(v) !== null) return undefined;
+  const data = lowerInternals(ctx).consts.get(v);
+  return data !== undefined && data.kind === 'word' ? BigInt(data.hex) : undefined;
+}
+
 /** `[v, …] → […]`: stores the stack top into the out value's slot. */
 function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   w.push(requireSlot(ctx, v, 'storeOut'), m);
@@ -228,6 +238,8 @@ function numClass(type: EvsType): NumClass {
 }
 
 const MIN_I256 = 1n << 255n;
+/** −1 as a sign-extended word (every signed const is stored sign-extended to 256 bits). */
+const MINUS_ONE_WORD = (1n << 256n) - 1n;
 
 function maxUint(bits: number): bigint {
   return (1n << BigInt(bits)) - 1n;
@@ -629,7 +641,12 @@ function emitSignedMulCheck(w: AsmWriter, ctx: LowerCtx): void {
   w.op('JUMPI'); // [r, a, b]
 }
 
-/** div / mod — zero check first (Panic 0x12), then the width templates. */
+/**
+ * div / mod — zero check first (Panic 0x12), then the width templates. A folded nonzero
+ * divisor drops the zero check, and a folded divisor other than −1 (all-ones word; signed
+ * consts are sign-extended) drops signed div's minN / −1 overflow check: with |b| ≥ 2 or
+ * b == 1 the quotient's magnitude never exceeds the dividend's, so neither panic can fire.
+ */
 function lowerDivMod(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'bin' }>,
@@ -637,11 +654,14 @@ function lowerDivMod(
   type: EvsType,
 ): void {
   const { bits, signed } = numClass(type);
+  const divisor = foldedConst(ctx, s.b);
   loadOperand(w, ctx, s.b, meta(`checked ${s.op} ${fmtType(type)}`)); // [b]
-  w.op('DUP1');
-  w.op('ISZERO'); // [b == 0, b]
-  w.pushLabel(ctx.tails.panicDivZero);
-  w.op('JUMPI'); // [b]
+  if (divisor === undefined || divisor === 0n) {
+    w.op('DUP1');
+    w.op('ISZERO'); // [b == 0, b]
+    w.pushLabel(ctx.tails.panicDivZero);
+    w.op('JUMPI'); // [b]
+  }
   loadOperand(w, ctx, s.a); // [a, b]
   if (!signed) {
     w.op(s.op === 'div' ? 'DIV' : 'MOD'); // [r] — result ≤ a ⇒ canonical
@@ -650,6 +670,11 @@ function lowerDivMod(
   }
   if (s.op === 'mod') {
     w.op('SMOD'); // [r] — |r| < |b| ⇒ always canonical
+    storeOut(w, ctx, s.out);
+    return;
+  }
+  if (divisor !== undefined && divisor !== MINUS_ONE_WORD) {
+    w.op('SDIV'); // [r] — b ∉ {0, −1} ⇒ |r| ≤ |a| ⇒ in range, canonical
     storeOut(w, ctx, s.out);
     return;
   }
