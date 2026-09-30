@@ -32,11 +32,11 @@
     "provenance": true
   },
   "scripts": {
-    "build": "rm -rf dist && tsc -p tsconfig.build.json",
+    "build": "vp pack",
     "typecheck": "tsc --noEmit",
     "test": "vp test run --project unit --project types",
     "test:integration": "vp test run --project integration",
-    "prepublishOnly": "pnpm run build"
+    "prepublishOnly": "vp pack"
   },
   "dependencies": {
     "abitype": "catalog:"
