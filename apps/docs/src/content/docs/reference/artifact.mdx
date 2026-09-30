@@ -375,7 +375,7 @@ declare function matchScriptError<
   const abi extends Abi | readonly unknown[],
   const handlers extends ScriptErrorHandlers<abi, unknown>,
 >(script: { readonly abi: abi }, error: unknown, handlers: handlers): HandlerResult<handlers>;
-// HandlerResult (package-internal): the union of the handlers' return types
+// HandlerResult (exported): the union of the handlers' return types
 ```
 
 | Type | Meaning |
@@ -383,6 +383,7 @@ declare function matchScriptError<
 | `DecodedScriptError<abi>` | A `name`-discriminated union: one arm per ABI error entry (`{ name, args, raw }` — the declared errors and the two evs built-ins), plus `DecodedBuiltinError` |
 | `DecodedBuiltinError` | The built-in arms: `Panic` (`code`, `meaning`), `Error` (`reason`), `unknown` (`selector` — e.g. a callee error bubbled verbatim) and `empty` |
 | `ErrorArgsOf<e>` | One error entry's decoded args, as a name-keyed record |
+| `HandlerResult<handlers>` | The union of the handlers' return types — what `matchScriptError` returns |
 | `ScriptErrorHandlers<abi, r>` | The `matchScriptError` handler record: one handler per declared error (receives the typed args and the decoded arm) plus a required `_` default for everything else |
 
 `matchScriptError` is exhaustive over the declared set — adding an error to the script without a
