@@ -21,7 +21,7 @@ import {
 } from '../core/types.js';
 import type { PlainAbiParam } from '../ir/nodes.js';
 
-export type WordLayout = {
+type WordLayout = {
   kind: 'word';
   abi: WordType;
   bits: number;

@@ -14,9 +14,9 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
 import { returner, reverter, RUNTIME_SPIN, word } from '../../test/harness/fixtures.js';
-import { t } from '../builder/args.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
+import { t } from '../core/types.js';
 import type { Hex } from '../core/types.js';
 import { interpret, type MockChain } from '../ir/interp.js';
 

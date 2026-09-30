@@ -61,6 +61,7 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  stringifyType,
   type ArrayType,
   type EvsType,
   type Hex,
@@ -1607,11 +1608,6 @@ function asWordElem(t: EvsType): WordType {
     );
   }
   return t;
-}
-
-/** Human-readable rendering of a value type (tuples → their JSON descriptor). */
-function stringifyType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
 }
 
 /** short trace note per statement (prefixed with the fn-name stack inside fn bodies). */

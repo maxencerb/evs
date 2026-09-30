@@ -25,7 +25,7 @@ import * as compileModule from '../compile.js';
 import type { CompiledEvsScript, CompileOptions } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { captureLoc, setLocCapture } from '../core/loc.js';
-import { isEvsValueType, typeToAbiParam } from '../core/types.js';
+import { IDENT_RE, isArgSpecValue, isEvsValueType, typeToAbiParam } from '../core/types.js';
 import type {
   AbiParamsToComponents,
   ArgsInput,
@@ -159,23 +159,6 @@ export type ArgHandles<
     ? ArgHandle<Extract<specs[i]['type'], EvsType>>
     : never;
 };
-
-const IDENT_RE = /^[A-Za-z_]\w*$/;
-
-/**
- * A {@link namedArg}-produced {@link ArgSpec} value: a plain object carrying a string `name` (a bare
- * type is a string; a bare composite type is a {@link TupleType} object, which has no `name`). Used
- * to distinguish a named declarator from a bare one when normalizing `evscript` args / `s.fn` params.
- */
-function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
-  return (
-    typeof v === 'object' &&
-    v !== null &&
-    !Array.isArray(v) &&
-    typeof (v as { name?: unknown }).name === 'string' &&
-    'type' in v
-  );
-}
 
 /** A `t.error`-produced value (issue #15): the `kind: 'error'` discriminant plus the frozen
  *  shape `t.error` builds. Param/type validity is re-checked below — a hand-built value

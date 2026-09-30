@@ -21,6 +21,7 @@ import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
   bitsOf,
+  IDENT_RE,
   isSigned,
   isWordType,
   typeToAbiParam,
@@ -128,8 +129,6 @@ export type ScriptAbi<
 // ---------------------------------------------------------------------------
 // runtime mirror
 // ---------------------------------------------------------------------------
-
-const IDENT_RE = /^[A-Za-z_]\w*$/;
 
 /** Re-throws a `layout*` failure with `where` prepended, preserving the code. Tuple-aware: a
  *  {@link TupleType} descriptor validates through its component layouts (`layoutOfType`); a raw

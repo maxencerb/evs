@@ -388,14 +388,14 @@ export function matchScriptError<
 }
 
 /** The state-override execution shape: `{ abi, address, stateOverride }`. */
-export interface ViemStateOverrideShape<abi extends Abi> {
+interface ViemStateOverrideShape<abi extends Abi> {
   abi: abi;
   address: Address;
   stateOverride: StateOverride;
 }
 
 /** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
-export interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
+interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
   account: Address;
 }
 

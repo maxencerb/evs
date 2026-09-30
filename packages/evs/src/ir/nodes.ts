@@ -509,7 +509,8 @@ function isBinOp(s: string): s is BinOp {
 function isUnOp(s: string): s is UnOp {
   return UN_OPS.has(s);
 }
-function isEnvOp(s: string): s is EnvOp {
+/** An {@link EnvOp} name (shared with the builder's `s.env` check). */
+export function isEnvOp(s: string): s is EnvOp {
   return ENV_OPS.has(s);
 }
 
@@ -747,15 +748,16 @@ function decodeStmt(v: unknown, path: string): Stmt {
   }
 }
 
-function deepFreeze(value: unknown): void {
+/** Deep-freezes plain data (the recorded and the deserialized IR); accessor properties (lazy
+ *  SourceLocs) are frozen but not resolved. */
+export function deepFreeze(value: unknown): void {
   if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return;
   Object.freeze(value);
-  if (Array.isArray(value)) {
-    for (const item of value as readonly unknown[]) deepFreeze(item);
-    return;
-  }
-  if (isRecord(value)) {
-    for (const key of Object.keys(value)) deepFreeze(value[key]);
+  const descs = Object.getOwnPropertyDescriptors(value);
+  for (const key of Object.keys(descs)) {
+    const d = descs[key];
+    if (d === undefined || d.get !== undefined) continue; // keep lazy locs lazy
+    deepFreeze(d.value);
   }
 }
 

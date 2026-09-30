@@ -29,10 +29,14 @@ import { EvsInternalError, EvsScopeError, EvsTypeError, type SourceLoc } from '.
 import { captureLoc } from '../core/loc.js';
 import {
   abiParamToType,
+  arrayTypeOf,
   bitsOf,
   elemTypeOf,
+  IDENT_RE,
   installStagingTraps,
+  isArgSpecValue,
   isArrayValueType,
+  isBitsOperand,
   isDynamicType,
   isEvsValueType,
   isNumeric,
@@ -40,6 +44,7 @@ import {
   isSigned,
   isTupleType,
   isWordType,
+  stringifyType,
   typesEqual,
   type ArrayType,
   type DynType,
@@ -51,19 +56,20 @@ import {
   type TupleType,
   type WordType,
 } from '../core/types.js';
-import type {
-  BinOp,
-  CellId,
-  CellInfo,
-  EnvOp,
-  FnId,
-  FnIr,
-  PlainAbiError,
-  PlainAbiParam,
-  ScriptIr,
-  Stmt,
-  ValueId,
-  ValueInfo,
+import {
+  deepFreeze,
+  isEnvOp,
+  type BinOp,
+  type CellId,
+  type CellInfo,
+  type FnId,
+  type FnIr,
+  type PlainAbiError,
+  type PlainAbiParam,
+  type ScriptIr,
+  type Stmt,
+  type ValueId,
+  type ValueInfo,
 } from '../ir/nodes.js';
 
 /**
@@ -114,7 +120,7 @@ const TUPLE_INTERNALS = new WeakMap<object, TupleInternals>();
 const FIELD_INTERNALS = new WeakMap<object, FieldInternals>();
 
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
-export const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
+const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
 
 // ---------------------------------------------------------------------------
 // scopes
@@ -137,14 +143,6 @@ function newScope(kind: ScopeKind): Scope {
 // small helpers
 // ---------------------------------------------------------------------------
 
-const IDENT_RE = /^[A-Za-z_]\w*$/;
-const ENV_OPS: ReadonlySet<string> = new Set([
-  'address',
-  'caller',
-  'timestamp',
-  'blocknumber',
-  'chainid',
-] satisfies EnvOp[]);
 const CMP_OPS: ReadonlySet<BinOp> = new Set(['lt', 'gt', 'lte', 'gte', 'eq', 'neq']);
 const NUMERIC_OPS: ReadonlySet<BinOp> = new Set([
   'add',
@@ -181,15 +179,6 @@ function unsafeCast<T>(v: unknown): T {
 
 function isRecordObj(it: unknown): it is Record<string, unknown> {
   return typeof it === 'object' && it !== null;
-}
-
-function isEnvOp(s: string): s is EnvOp {
-  return ENV_OPS.has(s);
-}
-
-/** bitwise/shift operand domain (matches ir/validate's `isBitsOperand`): uintN, intN, bytesN. */
-function isBitsOperand(s: EvsType): s is WordType {
-  return isWordType(s) && s !== 'address' && s !== 'bool';
 }
 
 /** logical-value range of a word type (intN signed; bytesN as its 8N-bit content). */
@@ -282,21 +271,6 @@ function isCompositeElemArray(type: ArrayType | TupleType): boolean {
   return isDynamicType(elemTypeOf(type));
 }
 
-/** The array type whose element is `elem`: a string element → `${elem}[]`; a plain `tuple` → a
- *  `tuple[]` {@link TupleType}. (Mirrors `ir/validate.ts arrayOf`.) */
-function arrayTypeOfElem(elem: EvsType): ArrayType | TupleType {
-  if (typeof elem === 'string') {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType; `${elem}[]` is a valid ArrayType (further classified by layoutOfType).
-    return `${elem}[]` as ArrayType;
-  }
-  return Object.freeze({ type: 'tuple[]', components: elem.components });
-}
-
-/** Human-readable rendering of a value type for error messages (a tuple → its JSON descriptor). */
-function stringifyEvsType(t: EvsType): string {
-  return typeof t === 'string' ? t : JSON.stringify(t);
-}
-
 /** A short debug tag for a tuple value's `debugName` (field names, or the positional arity). */
 function tupleDebugTag(t: TupleType): string {
   const named = t.components.filter((c) => c.name !== '');
@@ -328,18 +302,6 @@ function asLiteralIndex(i: unknown, n: number, what: string, loc: SourceLoc | nu
     );
   }
   return idx;
-}
-
-/** Deep-freezes plain data; accessor properties (lazy SourceLocs) are frozen but not resolved. */
-export function deepFreeze(value: unknown): void {
-  if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return;
-  Object.freeze(value);
-  const descs = Object.getOwnPropertyDescriptors(value);
-  for (const key of Object.keys(descs)) {
-    const d = descs[key];
-    if (d === undefined || d.get !== undefined) continue; // keep lazy locs lazy
-    deepFreeze(d.value);
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -540,7 +502,7 @@ function makeExpr(owner: Recorder, id: ValueId): Expr {
 // Cell / MutArray / LoopCtl handles
 // ---------------------------------------------------------------------------
 
-export class CellImpl {
+class CellImpl {
   constructor(owner: Recorder, id: CellId) {
     CELL_INTERNALS.set(this, { owner, id });
   }
@@ -569,7 +531,7 @@ function cellInternalsOf(h: object): CellInternals {
   return i;
 }
 
-export class MutArrayImpl {
+class MutArrayImpl {
   readonly elemType: EvsType;
   readonly length: Expr;
 
@@ -687,7 +649,7 @@ function fieldInternalsOf(h: object): FieldInternals {
   return i;
 }
 
-export class LoopCtlImpl {
+class LoopCtlImpl {
   private readonly owner: Recorder;
   private readonly bodyScope: Scope;
   private readonly loopLoc: SourceLoc | null;
@@ -828,7 +790,7 @@ export class Recorder {
     const info = this.values[id];
     if (info === undefined) return `Expr<?> #${id}`;
     const name = info.debugName !== undefined ? ` ← ${info.debugName}` : '';
-    return `Expr<${stringifyEvsType(info.type)}> #${id}${name} at ${shortLoc(info.loc)}`;
+    return `Expr<${stringifyType(info.type)}> #${id}${name} at ${shortLoc(info.loc)}`;
   }
 
   assertOpen(what: string, loc: SourceLoc | null): void {
@@ -1018,7 +980,7 @@ export class Recorder {
     }
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `${what}: expected '${stringifyEvsType(expected)}', got Expr<'${stringifyEvsType(got)}'>${suggest}`,
+      `${what}: expected '${stringifyType(expected)}', got Expr<'${stringifyType(got)}'>${suggest}`,
       { loc },
     );
   }
@@ -1124,7 +1086,7 @@ export class Recorder {
     if (!Array.isArray(value)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: a ${stringifyEvsType(type)} literal must be a JS array, got ${describeHost(value)}`,
+        `${what}: a ${stringifyType(type)} literal must be a JS array, got ${describeHost(value)}`,
         { loc },
       );
     }
@@ -1144,7 +1106,7 @@ export class Recorder {
       this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41, loc);
     }
     const lenId = this.coerceToId(value.length, 'uint256', `${what} length`, loc);
-    const arrId = this.newValue(type, loc, `${stringifyEvsType(type)} literal`);
+    const arrId = this.newValue(type, loc, `${stringifyType(type)} literal`);
     this.appendStmt({ k: 'arrnew', elem, length: lenId, out: arrId }, loc);
     value.forEach((el, i) => {
       const valId = this.coerceToId(el, elem, `${what}[${i}]`, loc);
@@ -1482,13 +1444,13 @@ export class Recorder {
     const loc = captureLoc();
     this.assertOpen('s.newArray()', loc);
     const elemType = this.newArrayElemType(elem, loc);
-    const arrType = arrayTypeOfElem(elemType);
+    const arrType = arrayTypeOf(elemType);
     const lenId = this.coerceToId(length, 'uint256', 's.newArray() length', loc);
     const lenLit = this.litValues.get(lenId);
     if (lenLit !== undefined && lenLit >= 1n << 32n) {
       this.certainPanic('s.newArray()', `literal length ${lenLit} is ≥ 2^32`, 0x41, loc);
     }
-    const tag = stringifyEvsType(elemType);
+    const tag = stringifyType(elemType);
     const arrId = this.newValue(arrType, loc, `s.newArray(${tag})`);
     this.appendStmt({ k: 'arrnew', elem: elemType, length: lenId, out: arrId }, loc);
     const lenOut = this.newValue('uint256', loc, `s.newArray(${tag}).length`);
@@ -1524,7 +1486,7 @@ export class Recorder {
     }
     // validate the resulting array type (rejects `tuple[]` element → `tuple[][]`, deeper string
     // arrays, `T[N]`) through the layout classifier so codes match `abi/layout.ts`.
-    const arrType = arrayTypeOfElem(elemType);
+    const arrType = arrayTypeOf(elemType);
     try {
       layoutOfType(arrType);
     } catch (e) {
@@ -1620,7 +1582,7 @@ export class Recorder {
         }
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operand types differ (Expr<'${stringifyEvsType(ca.type)}'> vs Expr<'${stringifyEvsType(cb.type)}'>)${suggest}`,
+          `${what}: operand types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)${suggest}`,
           { loc },
         );
       }
@@ -1720,7 +1682,7 @@ export class Recorder {
     if (r.logical === null || !isWordType(ty)) {
       throw new EvsInternalError(
         'INTERNAL',
-        `cannot materialize operand of type '${stringifyEvsType(ty)}'`,
+        `cannot materialize operand of type '${stringifyType(ty)}'`,
       );
     }
     return this.wordConst(ty, r.logical, loc, r.hex ?? undefined);
@@ -1740,7 +1702,7 @@ export class Recorder {
       // unreachable through bin (domains are word types); defensive
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: '${stringifyEvsType(ty)}' operands must be Exprs`,
+        `${what}: '${stringifyType(ty)}' operands must be Exprs`,
         { loc },
       );
     }
@@ -1753,7 +1715,7 @@ export class Recorder {
       if (!isNumeric(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be numeric (uintN/intN), got '${stringifyEvsType(ty)}'`,
+          `${what}: operands must be numeric (uintN/intN), got '${stringifyType(ty)}'`,
           { loc },
         );
       }
@@ -1764,7 +1726,7 @@ export class Recorder {
       if (!isWordType(ty)) {
         throw new EvsInternalError(
           'INTERNAL',
-          `${what}: memref ('${stringifyEvsType(ty)}') equality must be lowered to hash equality`,
+          `${what}: memref ('${stringifyType(ty)}') equality must be lowered to hash equality`,
         );
       }
       return;
@@ -1773,7 +1735,7 @@ export class Recorder {
       if (ty !== 'bool') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be Expr<'bool'>, got '${stringifyEvsType(ty)}'`,
+          `${what}: operands must be Expr<'bool'>, got '${stringifyType(ty)}'`,
           { loc },
         );
       }
@@ -1783,7 +1745,7 @@ export class Recorder {
       if (!isBitsOperand(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be uintN/bytesN (bit-width types), got '${stringifyEvsType(ty)}'`,
+          `${what}: operands must be uintN/bytesN (bit-width types), got '${stringifyType(ty)}'`,
           { loc },
         );
       }
@@ -1803,7 +1765,7 @@ export class Recorder {
     if (c.type !== 'bool') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: operand must be Expr<'bool'>, got '${stringifyEvsType(c.type)}'`,
+        `${what}: operand must be Expr<'bool'>, got '${stringifyType(c.type)}'`,
         { loc },
       );
     }
@@ -1828,7 +1790,7 @@ export class Recorder {
     if (!isBitsOperand(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: operand must be uintN/bytesN (bit-width types), got '${stringifyEvsType(c.type)}'`,
+        `${what}: operand must be uintN/bytesN (bit-width types), got '${stringifyType(c.type)}'`,
         { loc },
       );
     }
@@ -1877,7 +1839,7 @@ export class Recorder {
       if (!isNumeric(from)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: cannot convert from '${stringifyEvsType(from)}' — the source must be numeric (uintN/intN)`,
+          `${what}: cannot convert from '${stringifyType(from)}' — the source must be numeric (uintN/intN)`,
           { loc },
         );
       }
@@ -1886,7 +1848,7 @@ export class Recorder {
       if (from !== 'uint256' && from !== 'bytes32') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${stringifyEvsType(from)}'`,
+          `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${stringifyType(from)}'`,
           { loc },
         );
       }
@@ -1895,7 +1857,7 @@ export class Recorder {
       if (from !== 'bytes32') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${stringifyEvsType(from)}'`,
+          `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${stringifyType(from)}'`,
           { loc },
         );
       }
@@ -1904,7 +1866,7 @@ export class Recorder {
       if (from !== 'uint256') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${stringifyEvsType(from)}'`,
+          `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${stringifyType(from)}'`,
           { loc },
         );
       }
@@ -1930,7 +1892,7 @@ export class Recorder {
     if (c.kind !== 'expr' || !isDynamicType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(a)}`,
+        `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
         { loc },
       );
     }
@@ -1952,7 +1914,7 @@ export class Recorder {
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(a)}`,
+        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
         { loc },
       );
     }
@@ -2055,7 +2017,7 @@ export class Recorder {
         if (!isPackedEncodable(ty)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
-            `${valueWhat}: '${stringifyEvsType(ty)}' cannot be packed-encoded — abi.encodePacked supports words, string/bytes, and word-element arrays only (structs, nested arrays, and string[]/bytes[] are rejected, matching solc); use s.encode() for standard ABI encoding`,
+            `${valueWhat}: '${stringifyType(ty)}' cannot be packed-encoded — abi.encodePacked supports words, string/bytes, and word-element arrays only (structs, nested arrays, and string[]/bytes[] are rejected, matching solc); use s.encode() for standard ABI encoding`,
             { loc },
           );
         }
@@ -2293,7 +2255,7 @@ export class Recorder {
     if (!isNumeric(ty)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.for(): range.type must be numeric (uintN/intN), got '${stringifyEvsType(ty)}'`,
+        `s.for(): range.type must be numeric (uintN/intN), got '${stringifyType(ty)}'`,
         { loc },
       );
     }
@@ -2330,7 +2292,7 @@ export class Recorder {
       // no MutArray steering here — classify already threw its own `.expr()` hint for one
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyEvsType(c.type)}'` : describeHost(arr)}`,
+        `s.forEach(): expected an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(arr)}`,
         { loc },
       );
     }
@@ -2407,7 +2369,7 @@ export class Recorder {
       if (!typesEqual(ca.type, cb.type)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `s.select(): branch types differ (Expr<'${stringifyEvsType(ca.type)}'> vs Expr<'${stringifyEvsType(cb.type)}'>)`,
+          `s.select(): branch types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)`,
           { loc },
         );
       }
@@ -2796,21 +2758,16 @@ export class Recorder {
     const seen = new Set<string>();
     const params = declsIn.map((decl: unknown, i) => {
       // a `namedArg` result is a `{ name, type }` object; a bare type is a string (a bare composite
-      // type is a TupleType object with no `name`). Detection mirrors `evscript`'s `isArgSpecValue`
-      // (name + type present, not an array) so the two arg/param surfaces classify declarators
-      // identically. Composite (tuple) params — bare or via `namedArg` — are accepted exactly like
+      // type is a TupleType object with no `name`). Detection is the shared `isArgSpecValue` (name +
+      // type present, not an array) so the arg and param surfaces classify declarators identically.
+      // Composite (tuple) params — bare or via `namedArg` — are accepted exactly like
       // script args: a composite value is a memref pointer word at runtime, the same as a
       // `string` / `T[]` param, so the caller MSTOREs the pointer into the callee's param slot.
       let pName: string;
       let pType: unknown;
-      if (
-        isRecordObj(decl) &&
-        !Array.isArray(decl) &&
-        typeof decl['name'] === 'string' &&
-        'type' in decl
-      ) {
-        pName = decl['name'];
-        pType = decl['type'];
+      if (isArgSpecValue(decl)) {
+        pName = decl.name;
+        pType = decl.type;
         if (!IDENT_RE.test(pName)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
@@ -3069,7 +3026,7 @@ export class Recorder {
 }
 
 /** Structural shape handed to loop bodies (cast to the public `LoopCtl` by script.ts). */
-export interface LoopCtlShape {
+interface LoopCtlShape {
   break(): void;
   continue(): void;
 }
