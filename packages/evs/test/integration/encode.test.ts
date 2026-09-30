@@ -180,18 +180,27 @@ describe('encode/encodePacked/keccak256: evs vs solc 0.8.30 (EvsReference)', () 
     const compiled = compile(buildScript(c));
     const deployless = compiled.toViem();
 
-    for (const values of c.corpus) {
-      const solc = await publicClient.readContract({
-        address: reference,
-        abi: EvsReference.abi as Abi,
-        functionName: c.fn,
-        args: values as never,
-      });
-      const evs = (await publicClient.readContract({
-        ...deployless,
-        functionName: c.fn,
-        args: values as never,
-      })) as { r: unknown };
+    // the corpus in flight at once (stateless eth_calls); asserted below in corpus order
+    const rows = await Promise.all(
+      c.corpus.map(async (values) => {
+        const [solc, evs] = await Promise.all([
+          publicClient.readContract({
+            address: reference,
+            abi: EvsReference.abi as Abi,
+            functionName: c.fn,
+            args: values as never,
+          }),
+          publicClient.readContract({
+            ...deployless,
+            functionName: c.fn,
+            args: values as never,
+          }) as Promise<{ r: unknown }>,
+        ]);
+        return { values, solc, evs };
+      }),
+    );
+
+    for (const { values, solc, evs } of rows) {
       expect(
         evs.r,
         `${c.fn}(${JSON.stringify(values, (_k, v: unknown) => (typeof v === 'bigint' ? String(v) : v))})`,

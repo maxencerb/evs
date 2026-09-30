@@ -99,26 +99,35 @@ describe('checked math: evs vs solc 0.8.30 (EvsReference)', () => {
     const compiled = script.compile();
     const overrideParams = compiled.toViem({ mode: 'stateOverride' });
 
-    for (const [a, b] of operandCorpus(c)) {
-      // abi widened to `Abi`: the matrix is driven by runtime strings, not literals.
-      const solc = await rawCall({
-        to: reference,
-        data: encodeFunctionData({
-          abi: EvsReference.abi as Abi,
-          functionName: c.fn,
-          args: [a, b], // viem widens intN≤48 to number at the type level; runtime takes bigint
-        }),
-      });
-      const evs = await rawCall({
-        to: overrideParams.address,
-        stateOverride: overrideParams.stateOverride,
-        data: encodeFunctionData({
-          abi: compiled.abi as Abi,
-          functionName: c.fn,
-          args: [a, b],
-        }),
-      });
+    // every eth_call of the corpus in flight at once (they are stateless), then the rows are
+    // asserted in corpus order so the failure messages stay deterministic
+    const rows = await Promise.all(
+      operandCorpus(c).map(async ([a, b]) => {
+        const [solc, evs] = await Promise.all([
+          // abi widened to `Abi`: the matrix is driven by runtime strings, not literals.
+          rawCall({
+            to: reference,
+            data: encodeFunctionData({
+              abi: EvsReference.abi as Abi,
+              functionName: c.fn,
+              args: [a, b], // viem widens intN≤48 to number at the type level; runtime takes bigint
+            }),
+          }),
+          rawCall({
+            to: overrideParams.address,
+            stateOverride: overrideParams.stateOverride,
+            data: encodeFunctionData({
+              abi: compiled.abi as Abi,
+              functionName: c.fn,
+              args: [a, b],
+            }),
+          }),
+        ]);
+        return { a, b, solc, evs };
+      }),
+    );
 
+    for (const { a, b, solc, evs } of rows) {
       const ctx = `${c.fn}(${a}, ${b})`;
       expect(evs.ok, `${ctx}: success/revert disagreement (solc ok=${solc.ok})`).toBe(solc.ok);
       if (solc.ok) {
