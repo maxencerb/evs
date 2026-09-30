@@ -16,7 +16,9 @@
  *   true result. For canonical operands this is *provably identical* to the table's EVM-level
  *   checks: the width cases (div-back for `uintN, N>128` MUL; the lone `int256 −1 × −2^255`
  *   case; SIGNEXTEND fixpoints; the explicit `int256 −2^255 / −1` SDIV check) are exactly the
- *   conditions under which the true result leaves the operand type's range. Panic codes:
+ *   conditions under which the true result leaves the operand type's range. `pow` is the exact
+ *   power under the same range check (every solc `**` template computes exactly that), and
+ *   `addmod`/`mulmod` the exact `(a op b) % n` (ADDMOD/MULMOD never wrap). Panic codes:
  *   0x11 overflow, 0x12 div/mod by zero, 0x32 bounds, 0x41 over-allocation.
  * - ABI bytes (sub-call calldata, return tuple, revert payloads) are constructed manually over
  *   raw bytes — never through a UTF-8 round trip — so callee-provided non-UTF-8 `string`
@@ -72,6 +74,7 @@ import {
 import {
   callOutputs,
   type CellId,
+  type ModArithOp,
   type PlainAbiFunction,
   type ScriptIr,
   type Stmt,
@@ -443,6 +446,10 @@ class Interp {
       }
       case 'un': {
         this.execUn(s);
+        return;
+      }
+      case 'modarith': {
+        this.values.set(s.out, modArith(s.op, this.word(s.a), this.word(s.b), this.word(s.n)));
         return;
       }
       case 'env': {
@@ -819,6 +826,8 @@ function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {
     case 'div':
     case 'mod':
       return arith(op, type, a, b);
+    case 'pow':
+      return checkedPow(type, a, b);
     case 'lt':
       return logical(type, a) < logical(type, b) ? 1n : 0n;
     case 'gt':
@@ -901,6 +910,31 @@ function arith(
   }
   if (r < min || r > max) throw panicSignal(0x11); // Panic 0x11 (overflow/underflow)
   return fromLogical(r);
+}
+
+/**
+ * `a ** e` with solc ≥0.8 checked semantics (issue #10): the exact integer power, Panic 0x11
+ * when it falls outside the base type's range; `0 ** 0 == 1`. The exponent is an unsigned word.
+ * Every solc exponentiation template (the literal-base EXP paths, the square-and-multiply
+ * loops, the signed first-iteration split) computes exactly this.
+ */
+function checkedPow(type: WordType, aw: bigint, e: bigint): bigint {
+  const a = logical(type, aw);
+  const [min, max] = numericRange(type);
+  if (e === 0n) return 1n;
+  if (a === 0n || a === 1n) return fromLogical(a);
+  if (a === -1n) return fromLogical(e % 2n === 0n ? 1n : -1n);
+  // |a| ≥ 2 ⇒ |a|^256 ≥ 2^256 is out of range for every width: no huge bigint powers
+  if (e > 256n) throw panicSignal(0x11);
+  const r = a ** e;
+  if (r < min || r > max) throw panicSignal(0x11);
+  return fromLogical(r);
+}
+
+/** `addmod` / `mulmod` (issue #10): full-precision `(a op b) % n` over uint256, Panic 0x12 on n == 0. */
+function modArith(op: ModArithOp, a: bigint, b: bigint, n: bigint): bigint {
+  if (n === 0n) throw panicSignal(0x12);
+  return (op === 'addmod' ? a + b : a * b) % n;
 }
 
 function numericRange(type: WordType): readonly [bigint, bigint] {
@@ -1595,6 +1629,8 @@ function noteOf(s: Stmt): string {
       return `bin ${s.op}`;
     case 'un':
       return `un ${s.op}`;
+    case 'modarith':
+      return s.op;
     case 'env':
       return `env ${s.op}`;
     case 'convert':

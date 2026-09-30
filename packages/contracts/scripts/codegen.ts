@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const CONTRACTS = [
   'Composite',
+  'EvsMathReference',
   'EvsReference',
   'Malformed',
   'MockERC20',

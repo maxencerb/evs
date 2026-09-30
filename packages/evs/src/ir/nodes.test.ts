@@ -228,6 +228,22 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
+    'pow + addmod / mulmod (issue #10)',
+    ir({
+      args: [
+        { name: 'a', type: 'uint256' },
+        { name: 'e', type: 'uint8' },
+      ],
+      values: [vi('uint256', 'a'), vi('uint8', 'e'), vi('uint256'), vi('uint256'), vi('uint256')],
+      body: [
+        mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 }),
+        mk({ k: 'modarith', op: 'addmod', a: 0, b: 2, n: 0, out: 3 }),
+        mk({ k: 'modarith', op: 'mulmod', a: 2, b: 3, n: 0, out: 4 }),
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 4 }],
+    }),
+  ],
+  [
     'encode + keccak256 (issue #17)',
     ir({
       args: [{ name: 'x', type: 'uint256' }],
@@ -690,9 +706,17 @@ describe('deserializeIr rejections', () => {
   test('rejects unknown statement kinds and ops', () => {
     reject((r) => (r['body'][0]['k'] = 'frobnicate'), /unknown statement kind/);
     reject((r) => delete r['body'][0]['k'], /\.k/);
-    reject((r) => (r['body'][1]['op'] = 'pow'), /unknown bin op/);
+    reject((r) => (r['body'][1]['op'] = 'exp'), /unknown bin op/);
     reject((r) => (r['body'][2]['op'] = 'neg'), /unknown un op/);
     reject((r) => (r['body'][3]['op'] = 'basefee'), /unknown env op/);
+    reject(
+      (r) => (r['body'][1] = { site: 2, k: 'modarith', op: 'expmod', a: 0, b: 3, n: 3, out: 4 }),
+      /unknown modarith op/,
+    );
+    reject(
+      (r) => (r['body'][1] = { site: 2, k: 'modarith', op: 'mulmod', a: 0, b: 3, out: 4 }),
+      /body\[1\]\.n/,
+    );
   });
 
   test('rejects malformed revertReturns entries (issue #35)', () => {

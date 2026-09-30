@@ -228,6 +228,22 @@ const remaining = evscript({ name: 'remaining', args: [t.uint256] }, (s, used) =
 );
 ```
 
+## s.pow / s.addmod / s.mulmod
+
+```ts nocheck
+pow<t extends NumericType>(base: Expr<t>, exponent: IntoExpr<'uint256'> | Expr<UintType>): Expr<t>;
+addmod(a: IntoExpr<'uint256'>, b: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>; // likewise mulmod
+```
+
+Mirrors of the `Expr` methods. `pow` is checked like solc's `**`: Panic `0x11` when the power
+leaves the base type's range (`intN` included — `(-2) ** 7` fits `int8`, `2 ** 7` does not),
+`0 ** 0 == 1`. The base must be an `Expr` (its type is the result type — type a literal base
+with `s.lit`); the exponent is unsigned, a literal or any `Expr<'uintN'>`. `addmod` / `mulmod`
+are uint256-only and compute `(a + b) % n` / `(a * b) % n` without wrapping the intermediate;
+a zero modulus reverts Panic `0x12`. Any operand may be a literal; all-literal calls fold at
+recording (a literal zero modulus there is `CERTAIN_PANIC`). See
+[arithmetic](/guides/arithmetic/#exponentiation).
+
 ## s.lt / s.gt / s.lte / s.gte / s.eq / s.neq
 
 ```ts nocheck
@@ -260,11 +276,12 @@ already-computed values by the time `and`/`or` records. For conditional executio
 ```ts nocheck
 bitAnd<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // likewise bitOr/bitXor
 bitNot<t extends BitsType>(a: Expr<t>): Expr<t>;
-shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // likewise shr
+shl<t extends BitsType | IntType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // likewise shr
 ```
 
-Bitwise mirrors over `BitsType` (`uintN` or `bytesN`). Results are re-canonicalized to the
-operand's width; shifts never panic — bits shifted out are dropped. Details and the
+Bitwise mirrors over `BitsType` (`uintN` or `bytesN`); the shifts also take `intN`, where `shr`
+is the arithmetic `SAR` (rounds toward −∞, like Solidity's `>>`). Results are re-canonicalized
+to the operand's width; shifts never panic — bits shifted out are dropped. Details and the
 per-type lane semantics: [arithmetic](/guides/arithmetic/).
 
 ## s.encode / s.encodePacked / s.keccak256

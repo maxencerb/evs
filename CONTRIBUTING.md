@@ -11,7 +11,7 @@ presentation page (npm, GitHub) and stays user-facing.
 | Path                                                                                  | What                                                                                                |
 | ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
 | [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)             | the published library: builder, IR + interpreter, codegen, assembler, viem glue                     |
-| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contract for differential tests                        |
+| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contracts for differential tests                       |
 | [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                    | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) |
 
 ## Development
@@ -120,7 +120,13 @@ Releases: see [Releasing](#releasing) below.
   dead values' slots without changing the templates.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
   narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
-  differentially against a solc-compiled reference contract.
+  differentially against solc-compiled reference contracts. `pow` has three templates, all
+  exact (the interpreter's exact power + range check is the oracle): a folded base is one
+  `e > maxE` check + `EXP` (solc's literal-base path, generalized), a folded exponent is a
+  precomputed integer-root bound on the base + `EXP`, and the general case is solc's
+  square-and-multiply loop on the magnitude (≤ 7 iterations; a signed base is split into sign
+  and magnitude, the bound is `2^(N−1)` for a negative result). `addmod` / `mulmod` share
+  `div` / `mod`'s zero guard and its elision for a folded nonzero constant.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
@@ -142,8 +148,9 @@ Three tiers, all run by CI (`ci.yml`):
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
-  arithmetic vs the solc 0.8.30 `EvsReference` contract (codegen'd from `packages/contracts`,
-  whose own forge tests run in CI's contracts step); an env-gated
+  arithmetic vs the solc 0.8.30 `EvsReference` contract and `pow` / `addmod` / `mulmod` /
+  signed shifts vs `EvsMathReference` (both codegen'd from `packages/contracts`, whose own
+  forge tests run in CI's contracts step); an env-gated
   mainnet-fork suite (`ANVIL_FORK_URL`) covers the flagship scenario.
 
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need

@@ -296,6 +296,44 @@ test('this-parameter constraints: arithmetic on address is a type error; eq on m
   });
 });
 
+test('pow / addmod / mulmod / signed shifts (issue #10)', () => {
+  evscript(
+    { name: 'mathOps', args: [t.uint256, t.int8, t.uint8, t.bytes4, t.int256] },
+    (s, x, s8, u8, b4, i256) => {
+      // pow: result type is the base's; the exponent is any unsigned Expr or a literal
+      expectTypeOf(x.pow(3n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s8.pow(u8)).toEqualTypeOf<Expr<'int8'>>();
+      expectTypeOf(s8.pow(x)).toEqualTypeOf<Expr<'int8'>>();
+      expectTypeOf(s.pow(u8, 2)).toEqualTypeOf<Expr<'uint8'>>();
+      expectTypeOf(s.pow(s.lit(t.uint256, 10n), u8)).toEqualTypeOf<Expr<'uint256'>>();
+      // @ts-expect-error — a signed exponent (solc rejects it too)
+      x.pow(s8);
+      // @ts-expect-error — pow needs a numeric base
+      b4.pow(2n);
+      // @ts-expect-error — the free-function base must be an Expr (its type is the result type)
+      s.pow(2n, x);
+
+      // addmod / mulmod: uint256 only, literals anywhere in the free-function form
+      expectTypeOf(x.mulmod(x, 7n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(x.addmod(1n, x)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s.mulmod(2n, x, 3n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s.addmod(x, x, x)).toEqualTypeOf<Expr<'uint256'>>();
+      // @ts-expect-error — mulmod is uint256-only (this: Expr<'uint256'>)
+      u8.mulmod(1n, 3n);
+      // @ts-expect-error — a narrower modulus Expr is not a uint256
+      x.addmod(1n, u8);
+      // @ts-expect-error — nor a signed operand
+      s.mulmod(x, s8, 3n);
+
+      // shifts now take intN (SAR for shr), not only uintN/bytesN
+      expectTypeOf(s8.shr(1n)).toEqualTypeOf<Expr<'int8'>>();
+      expectTypeOf(s.shl(i256, x)).toEqualTypeOf<Expr<'int256'>>();
+      expectTypeOf(b4.shl(8n)).toEqualTypeOf<Expr<'bytes4'>>();
+      return s.return({ ok: s.lit(t.bool, true) });
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // s.call inference (viem patterns)
 // ---------------------------------------------------------------------------

@@ -181,6 +181,18 @@ const BYTE_STABLE: readonly Case[] = [
         return s.return({ symbol });
       }),
   },
+  {
+    name: 'checked pow (loop / folded base / folded exponent) + addmod / mulmod (issue #10)',
+    script: () =>
+      evscript({ name: 'powmod', args: [t.int64, t.uint8, t.uint256] }, (s, x, e, n) => {
+        const p = x.pow(e); // runtime base + exponent: the signed checked loop
+        const two = s.lit(t.uint256, 2n).pow(e); // folded base: e ≤ 255 + EXP
+        const cube = n.pow(3n); // folded exponent: root bound + EXP
+        const am = n.addmod(two, n); // zero-modulus guard
+        const mm = s.mulmod(cube, am, 1_000_000_007n); // literal modulus: guard elided
+        return s.return({ p, mm });
+      }),
+  },
 ];
 
 const CUSTOM_ERRORS: readonly Case[] = [

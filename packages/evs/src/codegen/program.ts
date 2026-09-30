@@ -266,9 +266,13 @@ function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
         case 'div':
         case 'mod':
           return ['panic', `checked ${s.op} — Panic 0x12/0x11`];
+        case 'pow':
+          return ['panic', 'checked pow — Panic 0x11'];
         default:
           return ['stmt', `bin ${s.op}`];
       }
+    case 'modarith':
+      return ['panic', `${s.op} — Panic 0x12`];
     case 'index':
     case 'arrset':
       return ['panic', `array ${s.k === 'index' ? 'index' : 'write'} — Panic 0x32`];

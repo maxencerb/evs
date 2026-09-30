@@ -594,6 +594,78 @@ describe('validateIr — bin/un/env op table', () => {
     );
   });
 
+  test('pow: numeric base, any unsigned exponent width (issue #10)', () => {
+    const u8Const = (out: number, n: bigint): Stmt =>
+      mk({ k: 'const', out, data: { kind: 'word', hex: wordHex(n) }, type: 'uint8' });
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('int256'), vi('uint8'), vi('int256')],
+          body: [
+            mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(3n) }, type: 'int256' }),
+            u8Const(1, 2n),
+            mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 }),
+          ],
+        }),
+      ),
+    ).not.toThrow();
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('int8'), vi('uint256')],
+        body: [
+          u256Const(0, 2n),
+          mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'int8' }),
+          mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 }),
+        ],
+      }),
+      /exponent must be an unsigned uintN/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('bytes32'), vi('uint256'), vi('bytes32')],
+        body: [
+          mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(1n) }, type: 'bytes32' }),
+          u256Const(1, 2n),
+          mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 }),
+        ],
+      }),
+      /base must be numeric/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint8'), vi('uint256'), vi('uint256')],
+        body: [u8Const(0, 2n), u256Const(1, 2n), mk({ k: 'bin', op: 'pow', a: 0, b: 1, out: 2 })],
+      }),
+      /declared 'uint256' but the statement produces 'uint8'/,
+    );
+  });
+
+  test('addmod / mulmod are uint256-only (issue #10)', () => {
+    const ok = ir({
+      values: [vi('uint256'), vi('uint256')],
+      body: [u256Const(0, 7n), mk({ k: 'modarith', op: 'mulmod', a: 0, b: 0, n: 0, out: 1 })],
+    });
+    expect(() => validateIr(ok)).not.toThrow();
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint128'), vi('uint256')],
+        body: [
+          u256Const(0, 7n),
+          mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint128' }),
+          mk({ k: 'modarith', op: 'addmod', a: 0, b: 0, n: 1, out: 2 }),
+        ],
+      }),
+      /modarith addmod\) modulus.*expected 'uint256'/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint128')],
+        body: [u256Const(0, 7n), mk({ k: 'modarith', op: 'addmod', a: 0, b: 0, n: 0, out: 1 })],
+      }),
+      /modarith addmod/,
+    );
+  });
+
   test('rejects unknown ValueIds and forward references', () => {
     expectInvalid(
       ir({
