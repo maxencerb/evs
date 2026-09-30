@@ -16,7 +16,7 @@
     "check": "vp check && vp run typecheck",
     "changeset": "changeset",
     "changeset:version": "changeset version",
-    "changeset:publish": "bun scripts/publish.ts"
+    "changeset:publish": "changeset publish"
   },
   "devDependencies": {
     "@arethetypeswrong/cli": "^0.18.5",

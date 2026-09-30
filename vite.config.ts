@@ -87,7 +87,7 @@ export default defineConfig({
         },
       },
       {
-        files: ['examples/**', 'scripts/**'],
+        files: ['examples/**'],
         rules: {
           'no-console': 'off',
           'no-await-in-loop': 'off',

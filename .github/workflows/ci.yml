@@ -59,13 +59,13 @@ jobs:
         # esm-only profile: CJSResolvesToESM is the accepted cost of shipping ESM-only;
         # attw exits 1 on ANY problem without the profile.
         run: |
-          bunx publint
-          bunx @arethetypeswrong/cli --pack . --profile esm-only
+          vp exec publint
+          vp exec attw --pack . --profile esm-only
 
       # Informational (continue-on-error): tooling-only PRs legitimately have no changeset.
       - name: Changeset present?
         if: github.event_name == 'pull_request' && !startsWith(github.head_ref, 'changeset-release/')
-        run: bunx changeset status --since origin/main
+        run: vp exec changeset status --since origin/main
         continue-on-error: true
 
   # Manual (workflow_dispatch) mainnet-fork suite. The job condition already accepts `schedule`,

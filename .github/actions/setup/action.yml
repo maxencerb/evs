@@ -1,14 +1,14 @@
-name: Setup Vite+ (node + bun) and install
+name: Setup Vite+ (node + pnpm) and install
 description: >
-  Install the Vite+ CLI (version resolved from the root package.json catalog), the Node.js
-  from .node-version and the bun pinned in `packageManager`, restore the bun install cache,
-  then `vp install --frozen-lockfile`.
+  Install the Vite+ CLI (version resolved from the `vite-plus` entry of the pnpm-workspace.yaml
+  catalog), the Node.js from .node-version and the pnpm pinned in `packageManager`, restore the
+  pnpm store cache, then `vp install --frozen-lockfile`.
 
 runs:
   using: composite
   steps:
-    # setup-vp replaces setup-bun + setup-node + actions/cache: vp provisions Node.js and the
-    # package manager, and `cache: true` caches bun's install cache keyed on bun.lock.
+    # setup-vp replaces pnpm/action-setup + setup-node + actions/cache: vp provisions Node.js and
+    # the package manager, and `cache: true` caches the pnpm store keyed on pnpm-lock.yaml.
     - uses: voidzero-dev/setup-vp@3754dd7dbdb32bd8f6d28b6043de13ad3a75f21f # v1.21.1
       with:
         node-version-file: .node-version

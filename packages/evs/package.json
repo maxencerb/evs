@@ -60,5 +60,5 @@
   "engines": {
     "node": ">=20.19"
   },
-  "//publishConfig": "provenance is ON because the repo is public (npm cannot generate provenance for private repos). If the repo ever goes private again, set provenance to false here AND drop --provenance in scripts/publish.ts, or publishes fail."
+  "//publishConfig": "provenance: the release publishes with `changeset publish` → `pnpm publish` under npm OIDC trusted publishing, where pnpm attaches provenance automatically for a public repo + public package (pnpm does not read this field; npm does, so it stays true for any manual `npm publish`). If the repo ever goes private, set this to false."
 }
