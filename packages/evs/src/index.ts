@@ -100,6 +100,7 @@ export type {
   MutArray,
   MutArrayElem, // MutArray.get / .expr element helpers
   MutArrayValueOf,
+  NonEmptyReturn, // issue #66: s.return rejects an empty record at the type level
   NormalizeArgs,
   NormalizeErrors, // issue #15
   PackedValue, // issue #17: what s.encodePacked accepts per value

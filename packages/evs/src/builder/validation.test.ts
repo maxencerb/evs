@@ -1006,6 +1006,16 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
     );
   });
 
+  test('empty return record → ABI_SHAPE (it would ABI-encode to 0x, issue #66)', () => {
+    expectEvs(
+      // the type-level guard rejects `{}` too; cast past it to reach the runtime check
+      () => rec((s) => s.return({} as never)),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /at least one value[\s\S]*returned no data/,
+    );
+  });
+
   test('non-identifier return key → ABI_SHAPE', () => {
     expectEvs(
       () => rec((s, a) => s.return({ 'a b': a.x })),

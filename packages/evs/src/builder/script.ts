@@ -619,6 +619,18 @@ type PositionalInit<comps extends readonly NamedType[]> = {
   readonly [i in keyof comps]?: IntoMember<ComponentToType<comps[i]>>;
 };
 
+/**
+ * Type-level guard for `s.return`: `unknown` (a no-op in the `ret & …` parameter) for any record
+ * with at least one key; for `{}` a required, self-describing property, so `s.return({})` fails to
+ * typecheck with a message naming the fix. An empty record ABI-encodes to 0x, which viem rejects as
+ * "returned no data" (issue #66); the recorder rejects it at runtime too.
+ */
+export type NonEmptyReturn<ret> = [keyof ret] extends [never]
+  ? {
+      readonly 's.return() needs at least one value: an empty record ABI-encodes to 0x (return a flag, e.g. { ok: s.lit(t.bool, true) })': never;
+    }
+  : unknown;
+
 export declare const returnBrand: unique symbol;
 export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
   readonly [returnBrand]: ret;
@@ -1052,8 +1064,11 @@ export interface ScriptBuilder<
   throw<const e extends errs[number]>(error: e, ...args: ThrowArgs<e>): void;
 
   // return — accepts an `Expr` OR a `Tuple` handle directly per component (the
-  // `.expr()` on a tuple is optional; the bare handle returns the same memref).
-  return<const ret extends Record<string, ReturnValue>>(values: ret): ScriptReturn<ret>;
+  // `.expr()` on a tuple is optional; the bare handle returns the same memref). The record must
+  // name at least one value (`NonEmptyReturn`, issue #66): an empty one ABI-encodes to 0x.
+  return<const ret extends Record<string, ReturnValue>>(
+    values: ret & NonEmptyReturn<ret>,
+  ): ScriptReturn<ret>;
 }
 
 // ---------------------------------------------------------------------------

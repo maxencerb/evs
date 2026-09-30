@@ -223,6 +223,14 @@ export function buildScriptAbi(
     assertStructFieldNames(a.type, `argument #${i} ("${a.name}")`);
     return Object.freeze(typeToAbiParam(a.name, a.type));
   });
+  // a zero-component result tuple ABI-encodes to 0 bytes → the runtime returns 0x, which viem
+  // rejects as "returned no data" — hard error instead (s.return({}) is rejected upstream too).
+  if (returns.length === 0) {
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `buildScriptAbi: script ${JSON.stringify(name)} needs at least one return component — an empty result tuple ABI-encodes to 0x, which viem rejects as "returned no data"`,
+    );
+  }
   const seenReturns = new Set<string>();
   const components = returns.map((r, i) => {
     // empty/invalid component names would silently degrade viem's object inference to a

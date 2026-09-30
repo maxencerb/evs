@@ -418,6 +418,11 @@ describe('buildScriptAbi', () => {
     expect(catchEvs(() => buildScriptAbi('s', args, [{ name: '', type: 'address' }])).code).toBe(
       'ABI_SHAPE',
     );
+    // an empty return list would emit a zero-component result tuple → runtime returns 0x, which
+    // viem rejects as "returned no data" (issue #66)
+    const empty = catchEvs(() => buildScriptAbi('s', args, []));
+    expect(empty.code).toBe('ABI_SHAPE');
+    expect(empty.message).toMatch(/at least one return component/);
     expect(
       catchEvs(() =>
         buildScriptAbi('s', args, [

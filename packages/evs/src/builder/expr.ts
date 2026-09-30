@@ -2697,6 +2697,14 @@ export class Recorder {
         `s.return(): expected a record of named Exprs, got ${describeHost(values)}`,
       );
     }
+    // an empty record would emit a zero-component result tuple: it ABI-encodes to 0 bytes, so every
+    // read returns 0x and viem throws "returned no data" (easily misread as "no contract here").
+    if (Object.keys(values).length === 0) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `s.return(): the return record must name at least one value — an empty record ABI-encodes to 0x, which viem rejects as "returned no data". For a guard-only script (one that just reverts or succeeds) return a flag instead, e.g. s.return({ ok: s.lit(t.bool, true) })`,
+      );
+    }
     const returns: { name: string; type: EvsType; value: ValueId }[] = [];
     for (const [key, v] of Object.entries(values)) {
       if (key === '') {

@@ -764,6 +764,19 @@ test('the body callback must return a ScriptReturn (not a bare record)', () => {
   });
 });
 
+test('s.return rejects an empty record at the type level (issue #66)', () => {
+  evscript({ name: 'guard', args: [t.uint256] }, (s) =>
+    // @ts-expect-error — an empty return record ABI-encodes to 0x ("returned no data" in viem)
+    s.return({}),
+  );
+  // a guard-only script returns a flag instead; inference is unaffected by the guard
+  evscript({ name: 'guard', args: [t.uint256] }, (s) => {
+    const token = s.return({ ok: s.lit(t.bool, true) });
+    expectTypeOf(token).toEqualTypeOf<ScriptReturn<{ readonly ok: Expr<'bool'> }>>();
+    return token;
+  });
+});
+
 // ---------------------------------------------------------------------------
 // composite-type ergonomics — issue #5 (s.fn struct returns, struct: true,
 // call/constructed tuple unification, t.fromOutputs, bare MutArray return)
