@@ -1766,7 +1766,9 @@ function emitDynCalldataArg(
  *
  * The running tail cursor lives in scratch `0x00` so every `emitMemCopy` call happens with
  * the stack being exactly `[dst, src, len]` (the pre-cancun `@memcpy` convention). The free
- * pointer is never bumped here — RETURN terminates the program.
+ * pointer is bumped at most once — by `reserveEncodeFrames`, before `out` is read, and only when
+ * the return type has a composite-element array — never during the encode; RETURN terminates the
+ * program.
  */
 export function emitReturnEncode(
   w: AsmWriter,

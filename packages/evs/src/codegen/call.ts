@@ -1,9 +1,10 @@
 /**
- * `codegen/call.ts` — the STATICCALL site emitter.
+ * `codegen/call.ts` — the external-call site emitters: `emitStaticCall` (STATICCALL for `s.read`,
+ * CALL with value 0 for `s.call`) and `emitSimulateCall` (the `s.simulate` self-call).
  *
  * `CallSitePlan` carries the call *target* location (and optional gas cap) alongside the args
  * — `targetRef` (required) and `gasRef` (optional) mirror `argRefs`'
- * `SlotRef | { literal: ConstData }` shape — since `emitStaticCall` cannot emit `STATICCALL`
+ * `SlotRef | { literal: ConstData }` shape — since the emitters cannot emit the call opcode
  * without them.
  *
  * Shapes:
@@ -13,8 +14,9 @@
  *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
  *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
  *   scratch `MLOAD(0x40)` and is NOT bumped.
- * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` — retSize 0 always; returndata is fetched
- *   via the two sanctioned RETURNDATACOPY shapes only (`w.returndatacopyAll`).
+ * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds a `value = 0` word) — retSize 0
+ *   always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
+ *   (`w.returndatacopyAll`).
  * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
  *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).
  * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata to a
@@ -80,7 +82,7 @@ import {
 
 export interface CallSitePlan {
   stmt: Extract<Stmt, { k: 'call' }>;
-  /** Where the callee address lives (slot or folded literal). DEVIATION: see module header. */
+  /** Where the callee address lives (slot or folded literal); see the module header. */
   targetRef: SlotRef | { literal: ConstData };
   /** Optional gas cap operand (slot or folded literal); absent → forward all via GAS. */
   gasRef?: SlotRef | { literal: ConstData };
