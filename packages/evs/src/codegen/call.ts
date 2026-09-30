@@ -938,7 +938,7 @@ export function emitStaticCall(
           w.op('ADD'); // [base+32, base, buf]
           pushSnapEnd(w);
           w.op('LT'); // [end < base+32, base, buf]
-          emitDecodeFail(3); // [base, buf]
+          emitDecodeFail(2); // [base, buf]
           w.op('POP'); // [buf]   (base is re-derived inside the thunk)
           pushBase = () => pushSnapOffsetBase(w, headOffset);
         } else {

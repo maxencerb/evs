@@ -1303,7 +1303,7 @@ export function emitDecodeArrayToMem(
     w.op('ADD'); // [elemPtr+32, elemPtr, i, D, arr, len, saved, …]
     pushEnd();
     w.op('LT'); // [end < elemPtr+32, elemPtr, i, D, arr, len, saved, …]
-    fail(belowFlat + 7); // [elemPtr, i, D, arr, len, saved, …]
+    fail(belowFlat + 6); // [elemPtr, i, D, arr, len, saved, …]
   } else {
     // static element source base = D + i·staticSize
     const ss = staticSize(elemLayout);
