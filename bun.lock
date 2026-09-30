@@ -44,7 +44,6 @@
       "dependencies": {
         "@maxencerb/evs": "workspace:*",
         "@maxencerb/evs-examples-shared": "workspace:*",
-        "prool": "catalog:testing",
         "viem": "catalog:",
       },
     },
@@ -60,7 +59,6 @@
       "dependencies": {
         "@maxencerb/evs": "workspace:*",
         "@maxencerb/evs-examples-shared": "workspace:*",
-        "prool": "catalog:testing",
         "viem": "catalog:",
       },
     },
