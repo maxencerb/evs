@@ -94,7 +94,7 @@ an `eth_call`. A verifier failure throws `EvsInternalError` instead of shipping 
 Decode soundness is tested against attacker-shaped callees, not just well-behaved ones:
 hand-assembled fixtures (and a `Malformed.sol` mirror on anvil) return huge head offsets, huge
 lengths, off-by-one truncations, and empty returndata. The suite asserts the script reverts
-with `EvsDecodeError(site)` — attributable to the exact `s.read` line — and **never** hits an
+with `EvsDecodeError(site)` — attributable to the exact `s.read` call by its site id — and **never** hits an
 exceptional halt that would consume all gas (gas usage is sanity-checked). Dirty high bits in
 word-typed outputs are the deliberate exception: they are normalized (masked, sign-extended or
 booleanized, like viem's decoder), not reverted — see [Calls](/guides/calls/).
@@ -116,7 +116,7 @@ move in patches). Its steps, in order:
 | Step                                                     | What it proves                                                                                          |
 | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
 | `forge build && forge test && vp run codegen`            | the solc 0.8.30 reference and mock contracts compile, pass their own tests, and emit codegen artifacts   |
-| `vp run build`                                           | the library builds with `tsc` (declarations included)                                                   |
+| `vp run build`                                           | the library builds with `vp pack` (tsdown: unbundled ESM + `.d.ts`, JS maps with embedded sources)      |
 | `vp run fmt:check` + `vp run lint:ci`                    | formatting and type-aware lint                                                                          |
 | `vp run typecheck`                                       | strict typecheck of every workspace, including the docs site (`astro check`)                            |
 | `vp run test`                                            | unit tests (differential oracle, codecs, verifiers) + type-level tests                                  |

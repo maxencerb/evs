@@ -97,7 +97,7 @@ export interface CompiledEvsScript<
     stateOverride: [{ address: Address; code: Hex }];
     account: Address;
   };
-  disassemble(): Disassembly; // .format() → annotated listing with source lines
+  disassemble(): Disassembly; // .format() → listing with labels, jump targets and notes
   explainRevert(data: Hex): RevertExplanation;
 }
 
