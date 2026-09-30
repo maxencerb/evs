@@ -15,22 +15,6 @@
 import { readdir, rm } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
-// Minimal typed surface of the Bun globals used here. `bun-types` is deliberately not a
-// workspace dependency; this script only ever runs under the bun runtime (`bun run codegen`).
-interface BunShellPromise extends Promise<unknown> {
-  cwd(dir: string): BunShellPromise;
-}
-interface BunFileLike {
-  exists(): Promise<boolean>;
-  text(): Promise<string>;
-  json(): Promise<unknown>;
-}
-declare const Bun: {
-  $(strings: TemplateStringsArray, ...expressions: readonly unknown[]): BunShellPromise;
-  file(path: string): BunFileLike;
-  write(path: string, content: string): Promise<number>;
-};
-
 const CONTRACTS = [
   'Composite',
   'EvsReference',
@@ -225,9 +209,8 @@ async function main(): Promise<void> {
       changed: await writeIfChanged(`${generatedDir}${fileName}`, content),
     })),
   );
-  for (const { fileName, changed } of written.filter((w) => w.changed)) {
+  for (const { fileName } of written.filter((w) => w.changed)) {
     process.stdout.write(`codegen: wrote test/generated/${fileName}\n`);
-    void changed;
   }
 
   // Prune stale files (this script is the directory's only writer).
