@@ -4,7 +4,7 @@
  * mainnet WETH metadata through a compiled script in both execution modes.
  *
  * Locally: ANVIL_FORK_URL=https://… bun run test:integration
- * CI runs this on a scheduled job, never per-PR.
+ * CI runs this only on a manual workflow_dispatch of ci.yml (fork-tests job), never per-PR.
  */
 
 import { Instance } from 'prool';
