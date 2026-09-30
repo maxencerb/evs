@@ -151,7 +151,9 @@ const result = await client.readContract({
 called *by* the sender, so every sub-call target sees `msg.sender = sender`, and
 `s.env('caller')` / `s.env('address')` both read `sender`. Passing your own `account` after the
 spread re-targets only the script's outer caller; the targets keep seeing `sender`. `sender` and
-`address` are the same knob — passing both with different values throws.
+`address` are the same knob: `address` may restate the sender (any casing), and passing both with
+different values throws. A `sender` or `address` that is not a 20-byte `0x` address throws
+`EvsTypeError` (`TYPE_MISMATCH`) up front, before viem sees it.
 
 :::caution
 Sender mode **replaces the code at `sender`** for the duration of the `eth_call`. An EOA sender is

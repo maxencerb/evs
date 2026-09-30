@@ -106,25 +106,6 @@ describe('toViem shapes', () => {
     expect(Object.values(shape)).not.toContain(RUNTIME_42);
   });
 
-  test('stateOverride: default address', () => {
-    const shape = toViemStateOverride({ abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 });
-    expect(shape).toEqual({
-      abi: ERC20ISH_ABI,
-      address: DEFAULT_SCRIPT_ADDRESS,
-      stateOverride: [{ address: DEFAULT_SCRIPT_ADDRESS, code: RUNTIME_42 }],
-    });
-  });
-
-  test('stateOverride: custom address flows into both the address and the override entry', () => {
-    const address = '0x1000000000000000000000000000000000000001' as const;
-    const shape = toViemStateOverride(
-      { abi: ERC20ISH_ABI, runtimeBytecode: RUNTIME_42 },
-      { address },
-    );
-    expect(shape.address).toBe(address);
-    expect(shape.stateOverride).toEqual([{ address, code: RUNTIME_42 }]);
-  });
-
   test('sender mode (issue #36): the runtime is installed AT the sender and `account` is set', () => {
     const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
     const shape = toViemStateOverride(

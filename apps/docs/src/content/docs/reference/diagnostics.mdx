@@ -38,7 +38,7 @@ Five subclasses partition the failures:
 | Class | Codes it uses | Thrown when |
 | --- | --- | --- |
 | `EvsStagingError` | `STAGING_MISUSE` | A staged `Expr` handle is used as a host value — the `valueOf`, `Symbol.toPrimitive`, `toString`, and `toJSON` traps all throw. See [values and types](/guides/values-and-types/) |
-| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` | Type and literal validation at recording; also malformed host inputs to `compile`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
+| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` | Type and literal validation at recording; also malformed host inputs to `compile`, `toViem`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
 | `EvsScopeError` | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` | A handle or cell is used outside the scope it belongs to |
 | `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION` | Whole-program limits and option gating at compile time |
 | `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report` |
