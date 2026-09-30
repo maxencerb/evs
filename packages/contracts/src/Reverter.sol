@@ -3,7 +3,7 @@ pragma solidity 0.8.30;
 
 /// @title Reverter — the revert-bubbling suite's callee
 /// @notice Every revert flavor an evs script can encounter from a callee, each behind its
-///         own selector (testing.md §4.3): Error(string) via revert/require, Panic via
+///         own selector: Error(string) via revert/require, Panic via
 ///         assert / overflow / div-by-zero / array OOB, custom errors (with and without
 ///         arguments), and the empty revert. evs strict `s.call` must bubble each payload
 ///         verbatim; viem must surface the callee's error through the script unchanged.

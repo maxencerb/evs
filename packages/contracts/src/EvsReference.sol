@@ -3,8 +3,8 @@ pragma solidity 0.8.30;
 
 /// @title EvsReference — solc checked-arithmetic differential oracle
 /// @notice One external pure function per (op x width class) used by the evs differential
-///         suite (testing.md §4.3). solc 0.8.30 checked semantics (optimizer off, via_ir off)
-///         IS the ground truth that pins the architecture.md §6 table: identical
+///         suite (test/integration/checked-math.test.ts). solc 0.8.30 checked semantics
+///         (optimizer off, via_ir off) IS the ground truth for evs checked arithmetic: identical
 ///         success/revert outcomes and identical Panic(code) payloads are asserted against
 ///         the equivalent evs scripts for boundary operands
 ///         (0, 1, max-1, max, min, -1, the uint192 wrap-back case 2**191 * (2**65 + 1),
@@ -98,8 +98,8 @@ contract EvsReference {
     }
 
     /// @dev The 128 < N < 256 width class where the 256-bit product can wrap back into
-    ///      range (a = 2**191, b = 2**65 + 1 => a*b == 2**191 (mod 2**256)); architecture §6
-    ///      mandates div-back AND range check — this function is the solc oracle for it.
+    ///      range (a = 2**191, b = 2**65 + 1 => a*b == 2**191 (mod 2**256)), so evs checks
+    ///      div-back AND range — this function is the solc oracle for it.
     function mulU192(uint192 a, uint192 b) external pure returns (uint192) {
         return a * b;
     }
@@ -203,7 +203,7 @@ contract EvsReference {
 
     // ---------------------------------------------------------------- conversions
     /// @dev NOT used for narrowing parity: evs narrows CHECKED (Panic 0x11 out of range),
-    ///      solc explicit casts TRUNCATE. Kept to DOCUMENT the divergence (testing.md §4.3).
+    ///      solc explicit casts TRUNCATE. Kept to DOCUMENT the divergence.
     function toU8(uint256 x) external pure returns (uint8) {
         // The truncation IS the point of this function (documented divergence fixture).
         // forge-lint: disable-next-line(unsafe-typecast)
@@ -212,8 +212,8 @@ contract EvsReference {
 
     // ---------------------------------------------------------------- abi.encode /
     // abi.encodePacked / keccak256 (issue #17): solc 0.8.30 is the ground truth the
-    // s.encode / s.encodePacked / s.keccak256 differential suite (testing.md §4.4)
-    // asserts byte-identical results against.
+    // s.encode / s.encodePacked / s.keccak256 differential suite
+    // (test/integration/encode.test.ts) asserts byte-identical results against.
     struct EncPair {
         address token;
         uint24 fee;
