@@ -399,7 +399,7 @@ function fragmentListing(spec: FragmentSpec): string {
   for (const stub of lowerInternals(ctx).dfailStubs) {
     emitDecodeFailStub(w, stub.label, stub.site, tails);
   }
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   for (const seg of segments) {
     w.dataLabel(seg.label);
     w.data(seg.bytes);

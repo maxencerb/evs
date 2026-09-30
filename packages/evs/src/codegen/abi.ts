@@ -1415,14 +1415,13 @@ function emitDecodeElement(
 
 /** A tuple layout's components as `NamedType[]` (reconstructed for the recursive decoders). */
 function tupleComponents(l: Extract<TypeLayout, { kind: 'tuple' }>): readonly NamedType[] {
-  return l.components.map((c, i) => layoutToNamed(c, i));
+  return l.components.map((c) => layoutToNamed(c));
 }
 
-function layoutToNamed(l: TypeLayout, i: number): NamedType {
+function layoutToNamed(l: TypeLayout): NamedType {
   if (l.kind === 'tuple') {
-    return { name: '', type: l.abi, components: l.components.map((c, k) => layoutToNamed(c, k)) };
+    return { name: '', type: l.abi, components: l.components.map((c) => layoutToNamed(c)) };
   }
-  void i;
   return { name: '', type: l.abi };
 }
 
@@ -1453,7 +1452,6 @@ export function emitCalldataDecode(
   w: AsmWriter,
   args: readonly SlotRef[],
   tails: SharedTails,
-  _opts: { evmVersion: EvmVersion },
 ): void {
   const params = args.map((ref) => typeToAbiParam('', ref.type));
   const headOffs = headOffsets(params); // cumulative head byte offsets within the args region

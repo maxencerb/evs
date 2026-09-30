@@ -223,7 +223,7 @@ function buildCallRuntime(cfg: CallCfg): BuiltCall {
   emitReturnEncode(w, comps, tails, { evmVersion });
 
   if (cfg.mode === 'strict') emitDecodeFailStub(w, dfail, SITE, tails);
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   for (const s of segs) {
     w.dataLabel(s.label);
     w.data(s.bytes);

@@ -96,11 +96,7 @@ export function emitDecodeFailStub(
  * fallthrough: panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a
  * checked subroutine entered only by `emitMemCopy` calls).
  */
-export function emitSharedTails(
-  w: AsmWriter,
-  tails: SharedTails,
-  _opts: { evmVersion: EvmVersion },
-): void {
+export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
   // -- panic stubs + core ------------------------------------------------------
   const panic = w.newLabel('panic');
   const stubs: readonly [LabelId, number][] = [

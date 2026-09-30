@@ -36,7 +36,6 @@
  */
 
 import { AsmWriter, type LabelId } from '../asm/assembler.js';
-import type { EvmVersion } from '../asm/ops.js';
 import type { Hex } from '../core/types.js';
 
 /**
@@ -70,11 +69,7 @@ const ADDRESS_MASK = (1n << 160n) - 1n;
  * from the dispatcher; terminates in REVERT). Self-contained — uses fixed scratch offsets
  * (0x80/0xa0/0xc0) in its own frame, so it needs neither the free pointer nor the shared tails.
  */
-export function emitSimulateTrampoline(
-  w: AsmWriter,
-  entry: LabelId,
-  _opts: { evmVersion: EvmVersion },
-): void {
+export function emitSimulateTrampoline(w: AsmWriter, entry: LabelId): void {
   // The dispatcher reaches this entry via `DUP1 … EQ JUMPI`, which leaves the matched selector on
   // the stack (it is reused for the main-selector compare on the fall-through path) — so the edge
   // carries one item. Annotate height 1 and drop it.

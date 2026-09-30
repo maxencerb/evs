@@ -163,7 +163,7 @@ export function lowerProgram(
     if (slot === null) throw internal(`arg #${i} ("${a.name}") has no frame slot`);
     return { slot, type: a.type };
   });
-  emitCalldataDecode(w, argRefs, tails, evm);
+  emitCalldataDecode(w, argRefs, tails);
 
   // -- body --------------------------------------------------------------------------------
   lowerStmts(w, ir.body, ctx);
@@ -182,11 +182,11 @@ export function lowerProgram(
   emitFnSubroutines(w, ctx);
 
   // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
-  if (trampoline !== null) emitSimulateTrampoline(w, trampoline, evm);
+  if (trampoline !== null) emitSimulateTrampoline(w, trampoline);
 
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
-  emitSharedTails(w, tails, evm);
+  emitSharedTails(w, tails);
 
   // -- data segments LAST (the assembler plants the INVALID guard) -------------------------
   for (const seg of segments) {

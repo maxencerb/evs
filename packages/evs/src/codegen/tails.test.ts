@@ -28,7 +28,7 @@ function tailRuntime(pick: Exclude<keyof SharedTails, 'memcpy'>, evmVersion: Evm
   const tails = createSharedTails(w, { evmVersion });
   w.pushLabel(tails[pick]);
   w.op('JUMP');
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   return bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 }
 
@@ -72,7 +72,7 @@ describe('decode-fail stubs → EvsDecodeError(site) tail', () => {
       w.pushLabel(dfail);
       w.op('JUMP');
       emitDecodeFailStub(w, dfail, 1234, tails);
-      emitSharedTails(w, tails, { evmVersion });
+      emitSharedTails(w, tails);
       const runtime = bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 
       const res = await execRuntime(runtime, '0x');
@@ -93,7 +93,7 @@ describe('decode-fail stubs → EvsDecodeError(site) tail', () => {
     w.pushLabel(dfail);
     w.op('JUMP');
     emitDecodeFailStub(w, dfail, 7, tails);
-    emitSharedTails(w, tails, { evmVersion });
+    emitSharedTails(w, tails);
     const runtime = bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 
     const res = await execRuntime(runtime, '0x');
@@ -125,7 +125,7 @@ function copyRuntime(len: number, evmVersion: EvmVersion): Hex {
   w.push(0x60); // size 96
   w.push(0x100); // offset
   w.op('RETURN');
-  emitSharedTails(w, tails, { evmVersion });
+  emitSharedTails(w, tails);
   return bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode);
 }
 
@@ -188,7 +188,7 @@ describe('memcpy lowering', () => {
     w.push(0x20);
     w.push(0x140);
     w.op('RETURN');
-    emitSharedTails(w, tails, { evmVersion });
+    emitSharedTails(w, tails);
     const res = await execRuntime(bytesToHex(assemble(w.nodes(), { evmVersion }).bytecode), '0x');
     expect(res.success).toBe(true);
     expect(res.data).toBe(`0x${'ab'.repeat(32)}`);
