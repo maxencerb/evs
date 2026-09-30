@@ -241,13 +241,13 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets); 
    PR: bumps `packages/evs/package.json` and writes the changelog (`CHANGELOG.md` is excluded
    from the formatter, since changesets writes it in its own style). No lockfile resync: pnpm
    links workspace packages without recording their version.
-3. Merging that PR publishes: full gate (+ publint / attw) → `changeset publish` → a check that
-   npm shows a provenance attestation for the new version. `changeset publish` (changesets
-   CLI 3) detects pnpm and runs `pnpm publish --access public --tag <tag> --no-git-checks` for
-   each package whose version is not on npm yet (`prepublishOnly` rebuilds `dist/`), then
-   creates the `@maxencerb/evs@X.Y.Z` tag and reports it through `CHANGESETS_OUTPUT`; the action
-   pushes the tag and creates the GitHub release. The committed version is always the last
-   released one. The tarball is `dist/` + README + LICENSE + package.json only (see
+3. Merging that PR publishes: full gate (+ publint / attw) → `changeset publish`, which
+   (changesets CLI 3) detects pnpm and runs
+   `pnpm publish --access public --tag <tag> --no-git-checks` for each package whose version is
+   not on npm yet (`prepublishOnly` rebuilds `dist/`), then creates the `@maxencerb/evs@X.Y.Z`
+   tag and reports it through `CHANGESETS_OUTPUT`; the action pushes the tag and creates the
+   GitHub release. The committed version is always the last released one. The tarball is
+   `dist/` + README + LICENSE + package.json only (see
    [Library build](#library-build-vp-pack): sources live inside the `.js.map` files).
 
 Why this works without a token or the npm CLI: since pnpm 11, `pnpm publish` is native (it no
@@ -256,9 +256,11 @@ longer shells out to `npm publish`) and implements npm trusted publishing itself
 OIDC token for a short-lived npm token, and signs sigstore provenance automatically when the
 repository and the package are both public. It rewrites `catalog:` / `workspace:` specs in the
 packed manifest (the reason the bun era needed `bun pm pack` + `npm publish`). pnpm does not
-read `publishConfig.provenance` (npm does; it stays `true` for any manual `npm publish`), and a
-provenance it cannot attach is only a warning — hence the attestation check after publishing.
-Only the first real release can prove the OIDC exchange + provenance end to end.
+read `publishConfig.provenance` (npm does; it stays `true` for any manual `npm publish`). A
+provenance pnpm cannot attach is only a warning, so check the npm page after a release
+(0.2.0 shipped with a SLSA provenance attestation). There is deliberately no automated
+post-publish attestation check: registry metadata lags the publish and the check failed a good
+release.
 
 Prereleases: `vp exec changeset pre enter beta` / `pre exit` (pre-mode releases publish under
 the pre tag). One-time setup already done: the npm trusted publisher is bound to workflow file
