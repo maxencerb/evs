@@ -70,7 +70,7 @@ import type { Recorder } from './recorder.js';
  * A normalized declared-error entry the recorder checks `s.throw` against (issue #15): the
  * original `t.error` VALUE (identity match), the '' -sentinel param specs (named-record vs
  * positional dispatch), and the IR {@link PlainAbiError} (resolved input names + selector,
- * computed by script.ts — the recorder never touches viem).
+ * computed by `builder/script/evscript.ts` — the recorder never touches viem).
  */
 export interface RecErrorDecl {
   readonly value: object;

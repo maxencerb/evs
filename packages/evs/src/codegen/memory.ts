@@ -12,12 +12,12 @@
  * The two scratch words are never live across a statement boundary. Each emitter aliases them
  * under a role name, and the phases that share a word never overlap:
  * - `0x00`: the running tail cursor of the return encoder / calldata templates (`TAIL_CURSOR` in
- *   `abi.ts` and `call.ts`), and the returndata snapshot base during output decode (`SNAP_SLOT`
- *   in `call.ts` — live only after the call, once the calldata cursor is dead);
+ *   `abi/shared.ts` and `call/shared.ts`), and the returndata snapshot base during output decode
+ *   (`SNAP_SLOT` in `call/shared.ts` — live only after the call, once the calldata cursor is dead);
  * - `0x20`: the array-decode element base / heap-frame pointer during *decode* (`ELEM_BASE` /
- *   `DECODE_FRAME` in `abi.ts`), the data-literal staging base during tuple-arg *encode*
- *   (`STAGING_SLOT` in `call.ts`), and the wrapper argsSize across the simulate payload copy
- *   (`SIM_ARGSIZE_SLOT` in `call.ts`).
+ *   `DECODE_FRAME` in `abi/shared.ts`), the data-literal staging base during tuple-arg *encode*
+ *   (`STAGING_SLOT` in `call/calldata.ts`), and the wrapper argsSize across the simulate payload
+ *   copy (`SIM_ARGSIZE_SLOT` in `call/simulate-call.ts`).
  *
  * It also owns the typed zero-value emitters ({@link emitZeroValue}, {@link emitZeroMemrefMembers})
  * shared by `s.newArray`, `s.tuple` and the try-mode zero block: a zero-filled block is only a

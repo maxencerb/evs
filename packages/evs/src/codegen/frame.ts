@@ -82,7 +82,7 @@ function internal(message: string): EvsInternalError {
 }
 
 // ---------------------------------------------------------------------------
-// internal: per-fn return-address spill slots (module-private channel to lower.ts)
+// internal: per-fn return-address spill slots (module-private channel to lower/statements.ts)
 // ---------------------------------------------------------------------------
 
 const RET_SLOTS = new WeakMap<FrameLayout, ReadonlyMap<FnId, number>>();

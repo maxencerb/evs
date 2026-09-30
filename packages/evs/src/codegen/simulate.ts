@@ -13,7 +13,7 @@
  * contract holds the runtime at `ADDRESS()`) and stateOverride (the code is set at the override
  * address). The trampoline runs in its own frame and never touches the main frame's memory.
  *
- * Wire format (set by `emitSimulateCall` in `codegen/call.ts`):
+ * Wire format (set by `emitSimulateCall` in `codegen/call/simulate-call.ts`):
  *   self-call calldata : [trampSel(4)][target(32)][gas(32)][ targetCalldata… ]   (payload at 0x44)
  *   trampoline revert  : [MAGIC(32)][innerSuccess(32)][ target returndata… ]
  *
@@ -56,7 +56,7 @@ export const SIMULATE_MAGIC = 0xe7dc6cc8acb6dfffe16c5466c82c888cde4d25c3f822bd27
 
 /**
  * Byte length of the self-call wire header `[trampSel(4)][target(32)][gas(32)]` — the calldata
- * offset at which the target payload starts. Shared with `emitSimulateCall` (codegen/call.ts),
+ * offset at which the target payload starts. Shared with `emitSimulateCall` (codegen/call/simulate-call.ts),
  * which lays the header out on the outer side.
  */
 export const SIMULATE_PAYLOAD_OFFSET = 68;

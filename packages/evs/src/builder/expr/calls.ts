@@ -299,7 +299,7 @@ export abstract class RecorderCalls extends RecorderControl {
    * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
    * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit; a tuple
    * ← a record keyed by member name (a positional array/record for an unnamed tuple) whose
-   * members all fit. Mirrored at the type level by `LooseInput` (builder/script.ts).
+   * members all fit. Mirrored at the type level by `LooseInput` (builder/script/calls.ts).
    */
   private argFits(v: unknown, type: EvsType): boolean {
     if (typeof v === 'object' && v !== null) {

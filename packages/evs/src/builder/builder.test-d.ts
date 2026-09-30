@@ -1327,7 +1327,7 @@ test('#4 t.array(elem, N) builds fixed-size types; ArrayElemOf/LitOf peel and pi
         });
       });
       // a fixed-size literal is typed as a readonly array of the element literal (the exact
-      // length is enforced at recording, not statically — see the LitOf note in core/types.ts)
+      // length is enforced at recording, not statically — see the LitOf note in core/types/expr.ts)
       const lit = s.lit(t.array(t.uint256, 2), [1n, 2n]);
       expectTypeOf(lit).toEqualTypeOf<Expr<'uint256[2]'>>();
       // s.newArray({ fixed: true }) types the array by its literal length

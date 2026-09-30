@@ -14,6 +14,33 @@ presentation page (npm, GitHub) and stays user-facing.
 | [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contracts for differential tests                       |
 | [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                    | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) |
 
+### Library sources (`packages/evs/src`)
+
+The pipeline order: `builder/` records the callback into the IR (`ir/`), `codegen/` lowers it to
+an assembly stream, `asm/` lays it out and verifies it, `compile.ts` ties them together and
+`viem.ts` is the client-side glue. `core/` (types, errors, bytes, signatures) and `abi/` (layout,
+the script artifact's ABI) are shared by every stage; `differential/` holds the
+interpreter-vs-bytecode test slices.
+
+A module too large for one file is a **barrel plus a same-named folder**: `builder/expr.ts`
+re-exports `builder/expr/*.ts`, and so on. Importers (and tests) keep using the barrel path; each
+file in the folder opens with a header saying what it holds, and the barrel's header lists them.
+
+| Barrel              | Folder contents                                                                                                                        |
+| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder/expr.ts`   | `handles`, `helpers`, and `Recorder` as a chain of layers: `core` → `composites` → `encode` → `ops` → `control` → `calls` → `recorder` |
+| `builder/script.ts` | `evscript`, `handles` (handle types), `calls` (call-verb and overload types), `builder` (`ScriptBuilder` + facade)                     |
+| `core/types.ts`     | `vocabulary`, `expr` (the `Expr` type), `args`, `derive` (type-level ABI derivations), `namespace` (`t`), `predicates`                 |
+| `ir/nodes.ts`       | `schema` (node inventory + op vocabularies), `json` ((de)serialization), `walk` (def/use tables, traversal)                            |
+| `ir/interp.ts`      | `interpreter` (public API + executor), `values`, `arith`, `encode`, `decode`, `coerce` (the JS boundary)                               |
+| `codegen/lower.ts`  | `context`, `statements` (dispatch, fns, calls, control flow), `values`, `arith`, `pow`, `composites`                                   |
+| `codegen/abi.ts`    | `shared`, `encode`, `encode-bytes`, `decode` (tuples + both array-codec paths), `dispatch` (calldata / return)                         |
+| `codegen/call.ts`   | `shared`, `calldata`, `static-call`, `simulate-call`                                                                                   |
+
+Cross-module cycles are a lint error (`import/no-cycle`; type-only imports are exempt), so code
+that recurses into itself stays in one file (the decoder's two array paths, the statement
+dispatch and the control-flow templates).
+
 ## Development
 
 pnpm workspaces monorepo driven by [Vite+](https://viteplus.dev) (`vp`): one toolchain for
@@ -78,9 +105,11 @@ attw runs in CI with the `esm-only` profile, not inside the build. Differences f
 the public entry (internal-only modules have no `.d.ts`, and per-module declarations drop
 exports that are not part of the public graph — `exports` never allowed deep imports anyway),
 `dist/index.js` (a pure re-export) has no source map, and rolldown-plugin-dts keeps the
-`declare module '../core/types.js'` augmentation in `builder/script.d.ts` as written (valid
-because the layout is unbundled; tsdown logs a note about it). The public surface —
-137 exports of `dist/index.d.ts` — is identical by name, kind and type. Consumers are checked by
+`declare module '../../core/types/expr.js'` augmentation in `builder/script/handles.d.ts` as
+written (valid because the layout is unbundled; tsdown logs a note about it). The augmentation
+targets the module that declares `Expr`, not the `core/types.ts` barrel: augmenting through a
+re-export does not merge into the emitted declarations. The public surface — the 143 exports of
+`dist/index.d.ts` — is identical by name, kind and type. Consumers are checked by
 publint, attw, the docs snippet gate and the examples; the type tests
 (`*.test-d.ts`) run against `src/`.
 
@@ -121,7 +150,7 @@ Releases: see [Releasing](#releasing) below.
   word on the wire. No slot reuse or fusion by default, on purpose — the
   disassembly stays legible and the stack invariant machine-checkable; `optimize: true` packs
   dead values' slots without changing the templates.
-- **Array codec** (`codegen/abi.ts`). The encoder keeps its loop state in frames reserved below
+- **Array codec** (`codegen/abi/encode.ts`, `codegen/abi/decode.ts`). The encoder keeps its loop state in frames reserved below
   the output buffer, so nesting never touches the operand stack. The decoder has two lowerings,
   chosen per array level at codegen time: the **stack fast path** for the one- and two-level
   shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`/`bytes[]`) keeps five loop words per level on the
@@ -151,9 +180,9 @@ Releases: see [Releasing](#releasing) below.
 - **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
   `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
   exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`
-  (`builder/expr.ts`) at run time and `ResolveOverload` / `LooseInput` (`builder/script.ts`) at
-  the type level — arity, then exact handle types, then the literal's JS kind (never its value),
-  with several fits an ambiguity. A `functionName` containing `(` is a canonical signature
+  (`builder/expr/calls.ts`) at run time and `ResolveOverload` / `LooseInput`
+  (`builder/script/calls.ts`) at the type level — arity, then exact handle types, then the
+  literal's JS kind (never its value), with several fits an ambiguity. A `functionName` containing `(` is a canonical signature
   (`core/signature.ts`) and skips resolution.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
