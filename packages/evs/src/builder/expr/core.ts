@@ -1,0 +1,701 @@
+/**
+ * `builder/expr/core.ts` — the recorder's base layer: value / cell / scope bookkeeping, the
+ * visibility (scope) rule, literal and handle coercion (including array and tuple literals),
+ * `lit`, and cells.
+ */
+
+import { encodeLiteralWord, encodeLiteralData } from '../../abi/artifact.js';
+import { layoutOfType } from '../../abi/layout.js';
+import { EvsInternalError, EvsScopeError, EvsTypeError } from '../../core/errors.js';
+import {
+  type EvsType,
+  type Expr,
+  isTupleType,
+  isArrayValueType,
+  stringifyType,
+  isWordType,
+  isNumeric,
+  type WordType,
+  type Hex,
+  type DynType,
+  type ArrayType,
+  typesEqual,
+  type TupleType,
+  elemTypeOf,
+  fixedLengthOf,
+  type NamedType,
+  abiParamToType,
+  isDynamicType,
+} from '../../core/types.js';
+import type {
+  PlainAbiError,
+  ValueInfo,
+  ValueId,
+  CellInfo,
+  FnIr,
+  FnId,
+  CellId,
+  Stmt,
+} from '../../ir/nodes.js';
+import {
+  makeTuple,
+  makeExpr,
+  EXPR_INTERNALS,
+  CELL_INTERNALS,
+  ARR_INTERNALS,
+  TUPLE_INTERNALS,
+  FIELD_INTERNALS,
+  isStagedHandle,
+  type TupleInternals,
+  type ArrInternals,
+  CellImpl,
+} from './handles.js';
+import {
+  type Scope,
+  newScope,
+  unsafeCast,
+  type ScopeKind,
+  type Operand,
+  logicalFromCanonical,
+  canonicalHex,
+  isCompositeElemArray,
+  describeHost,
+  memberName,
+  tupleDebugTag,
+  assertV0Type,
+} from './helpers.js';
+import type { Recorder } from './recorder.js';
+
+/**
+ * A normalized declared-error entry the recorder checks `s.throw` against (issue #15): the
+ * original `t.error` VALUE (identity match), the '' -sentinel param specs (named-record vs
+ * positional dispatch), and the IR {@link PlainAbiError} (resolved input names + selector,
+ * computed by script.ts — the recorder never touches viem).
+ */
+export interface RecErrorDecl {
+  readonly value: object;
+  readonly params: readonly { readonly name: string; readonly type: EvsType }[];
+  readonly ir: PlainAbiError;
+}
+
+/** The `Recorder` base layer (see `builder/expr.ts` for the layer chain). */
+export abstract class RecorderCore {
+  /** `this` as the full engine: the layers are only ever instantiated as a `Recorder`, and the
+   *  handles and internals they hand out are typed against it. */
+  protected get self(): Recorder {
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+    return this as unknown as Recorder;
+  }
+
+  readonly name: string;
+
+  protected readonly argsList: readonly { name: string; type: EvsType }[];
+
+  protected readonly values: ValueInfo[] = [];
+
+  private readonly valueScopes: Scope[] = [];
+
+  /** logical values of word-const ValueIds (the folding domain) */
+  protected readonly litValues = new Map<ValueId, bigint>();
+
+  protected readonly cellInfos: CellInfo[] = [];
+
+  private readonly cellScopes: Scope[] = [];
+
+  protected readonly fnIrs: (FnIr | null)[] = [];
+
+  protected readonly openFns = new Set<FnId>();
+
+  protected readonly fnCtx: { name: string }[] = [];
+
+  protected readonly mainScope: Scope;
+
+  protected stack: Scope[];
+
+  protected readonly savedStacks: Scope[][] = [];
+
+  private nextSite = 0;
+
+  protected sealed = false;
+
+  protected returnsList: { name: string; type: EvsType; value: ValueId }[] | null = null;
+
+  protected returnToken: object | null = null;
+
+  /** positional arg handles, spread into the body callback after `s` (a tuple arg → a Tuple). */
+  private readonly argHandleList: readonly (Expr | object)[];
+
+  /** declared custom errors (issue #15) — the `s.throw` allow-list, in declaration order. */
+  protected readonly errorDecls: readonly RecErrorDecl[];
+
+  constructor(
+    name: string,
+    args: readonly { name: string; type: EvsType }[],
+    errors: readonly RecErrorDecl[] = [],
+  ) {
+    this.name = name;
+    this.argsList = args;
+    this.errorDecls = errors;
+    this.mainScope = newScope('main');
+    this.stack = [this.mainScope];
+    // args bind positionally to ValueIds 0…n-1 (the only binding validate.ts admits); a tuple (NOT
+    // a tuple ARRAY) arg yields a Tuple handle, a composite array / scalar an Expr.
+    const handles: (Expr | object)[] = args.map((a) => {
+      const id = this.newValue(a.type, `args.${a.name}`);
+      return this.valueHandle(id, a.type);
+    });
+    this.argHandleList = Object.freeze(handles);
+  }
+
+  // -- handle support ---------------------------------------------------------------------
+
+  argHandles(): readonly (Expr | object)[] {
+    return this.argHandleList;
+  }
+
+  /** Wraps a ValueId in its handle: a tuple (NOT a tuple ARRAY) → a Tuple handle; else an Expr. */
+  protected valueHandle(id: ValueId, type: EvsType): Expr | object {
+    return isTupleType(type) && !isArrayValueType(type)
+      ? makeTuple(this.self, id, type)
+      : makeExpr(this.self, id);
+  }
+
+  typeOfValue(id: ValueId): EvsType {
+    const info = this.values[id];
+    if (info === undefined) {
+      throw new EvsInternalError('INTERNAL', `unknown ValueId ${id} in script "${this.name}"`);
+    }
+    return info.type;
+  }
+
+  typeOfCell(id: CellId): EvsType {
+    const info = this.cellInfos[id];
+    if (info === undefined) {
+      throw new EvsInternalError('INTERNAL', `unknown CellId ${id} in script "${this.name}"`);
+    }
+    return info.type;
+  }
+
+  /** `Expr<type> #id ← debugName` — the non-throwing inspect string. */
+  describeValue(id: ValueId): string {
+    const info = this.values[id];
+    if (info === undefined) return `Expr<?> #${id}`;
+    const name = info.debugName !== undefined ? ` ← ${info.debugName}` : '';
+    return `Expr<${stringifyType(info.type)}> #${id}${name}`;
+  }
+
+  /** `#id ← debugName` — names a Tuple / MutArray handle in error messages (no type: a tuple
+   *  type would print as its full JSON descriptor). */
+  valueRef(id: ValueId): string {
+    const name = this.values[id]?.debugName;
+    return name === undefined ? `#${id}` : `#${id} ← ${name}`;
+  }
+
+  /** `Cell<type> #id` — names a cell in error messages. */
+  private describeCell(id: CellId): string {
+    const info = this.cellInfos[id];
+    return info === undefined ? `Cell<?> #${id}` : `Cell<${stringifyType(info.type)}> #${id}`;
+  }
+
+  assertOpen(what: string): void {
+    if (!this.sealed) return;
+    throw new EvsScopeError(
+      'RECORDING_CLOSED',
+      `${what}: script "${this.name}" is sealed — s.return(...) already ran; the builder and its handles cannot record anything afterwards`,
+    );
+  }
+
+  innermostLoopBody(): Scope | null {
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const s = this.stack[i];
+      if (s !== undefined && s.kind === 'while-body') return s;
+    }
+    return null;
+  }
+
+  isScopeOnStack(scope: Scope): boolean {
+    return this.stack.includes(scope);
+  }
+
+  appendStmt(body: Record<string, unknown>): void {
+    // statement bodies are built per the declared Stmt union (re-checked by ir/validate)
+    this.top().stmts.push(unsafeCast<Stmt>({ ...body, site: this.nextSite++ }));
+  }
+
+  // -- internals --------------------------------------------------------------------------
+
+  protected top(): Scope {
+    const s = this.stack[this.stack.length - 1];
+    if (s === undefined) {
+      throw new EvsInternalError('INTERNAL', `scope stack underflow in script "${this.name}"`);
+    }
+    return s;
+  }
+
+  protected newValue(type: EvsType, debugName?: string): ValueId {
+    const id = this.values.length;
+    this.values.push(debugName === undefined ? { type } : { type, debugName });
+    this.valueScopes.push(this.top());
+    return id;
+  }
+
+  protected pushScope(kind: ScopeKind): Scope {
+    const s = newScope(kind);
+    this.stack.push(s);
+    return s;
+  }
+
+  protected popScope(): void {
+    this.stack.pop();
+  }
+
+  /** Classifies an operand: a usable Expr of this recorder, or a raw host literal. */
+  protected classify(v: unknown, what: string): Operand {
+    if (typeof v === 'object' && v !== null) {
+      const ei = EXPR_INTERNALS.get(v);
+      if (ei !== undefined) {
+        if (ei.owner !== this.self) {
+          throw new EvsScopeError(
+            'FOREIGN_HANDLE',
+            `${what}: this Expr (${ei.owner.describeValue(ei.id)}) belongs to script "${ei.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
+          );
+        }
+        this.checkVisible(ei.id, what);
+        return { kind: 'expr', id: ei.id, type: this.typeOfValue(ei.id) };
+      }
+      if (CELL_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Cell is not an Expr — read a snapshot with .get()`,
+        );
+      }
+      if (ARR_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a MutArray is not an Expr — use .get(i) for an element or .expr() for the array memref`,
+        );
+      }
+      if (TUPLE_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Tuple is not an Expr — use .expr() for its memref, or pass it where a tuple is expected`,
+        );
+      }
+      if (FIELD_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Field is not an Expr — read a snapshot with .get()`,
+        );
+      }
+      if (!Array.isArray(v)) {
+        const tag = (v as { type?: unknown }).type;
+        if (typeof tag === 'string' && isWordType(tag)) {
+          throw new EvsScopeError(
+            'FOREIGN_HANDLE',
+            `${what}: value looks like an Expr handle but was not created by this copy of evs (forged object, or a duplicate @maxencerb/evs install)`,
+          );
+        }
+      }
+    }
+    return { kind: 'raw', value: v };
+  }
+
+  /** Scope rule: a value is usable iff its defining scope is on the stack. */
+  protected checkVisible(id: ValueId, what: string): void {
+    const scope = this.valueScopes[id];
+    if (scope === undefined) {
+      throw new EvsInternalError('INTERNAL', `ValueId ${id} has no scope in "${this.name}"`);
+    }
+    if (this.stack.includes(scope)) return;
+    const fn = this.fnCtx[this.fnCtx.length - 1];
+    if (fn !== undefined && this.savedStacks.some((st) => st.includes(scope))) {
+      throw new EvsScopeError(
+        'SCOPE_VIOLATION',
+        `${what}: s.fn("${fn.name}") bodies cannot capture values from the enclosing script (captured ${this.describeValue(id)}) — pass them in as fn params instead`,
+      );
+    }
+    throw new EvsScopeError(
+      'SCOPE_VIOLATION',
+      `${what}: this value (${this.describeValue(id)}) was recorded in a ${scope.kind} block that has finished recording — values escape blocks only through cells (s.let)`,
+    );
+  }
+
+  private checkCellVisible(id: CellId, what: string): void {
+    const scope = this.cellScopes[id];
+    if (scope === undefined) {
+      throw new EvsInternalError('INTERNAL', `CellId ${id} has no scope in "${this.name}"`);
+    }
+    if (this.stack.includes(scope)) return;
+    const fn = this.fnCtx[this.fnCtx.length - 1];
+    if (fn !== undefined && this.savedStacks.some((st) => st.includes(scope))) {
+      throw new EvsScopeError(
+        'SCOPE_VIOLATION',
+        `${what}: s.fn("${fn.name}") bodies cannot capture cells from the enclosing script (captured ${this.describeCell(id)}) — pass values in as fn params instead`,
+      );
+    }
+    throw new EvsScopeError(
+      'SCOPE_VIOLATION',
+      `${what}: this cell (${this.describeCell(id)}) was declared in a ${scope.kind} block that has finished recording — declare the cell outside the block instead`,
+    );
+  }
+
+  protected typeMismatch(what: string, expected: EvsType, got: EvsType): never {
+    let suggest = '';
+    if (isNumeric(expected) && isNumeric(got)) {
+      suggest = expected.startsWith('uint')
+        ? ` — convert explicitly with .toUint('${expected}')`
+        : ` — convert explicitly with .toInt('${expected}')`;
+    }
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: expected '${stringifyType(expected)}', got Expr<'${stringifyType(got)}'>${suggest}`,
+    );
+  }
+
+  /** Validates a word literal and returns its canonical hex + logical value (no stmt yet). */
+  protected wordLiteral(type: WordType, value: unknown): { hex: Hex; logical: bigint } {
+    const hex = encodeLiteralWord(type, value);
+    return { hex, logical: logicalFromCanonical(type, hex) };
+  }
+
+  /** Finds an interned const by key across the open scope stack (top-down). */
+  private lookupConst(key: string): ValueId | undefined {
+    for (let i = this.stack.length - 1; i >= 0; i--) {
+      const found = this.stack[i]?.consts.get(key);
+      if (found !== undefined) return found;
+    }
+    return undefined;
+  }
+
+  /** Interns a canonical word const (dedup per (type, hex) across the open scope stack). */
+  protected wordConst(type: WordType, logical: bigint, hex?: Hex): ValueId {
+    const h = hex ?? canonicalHex(type, logical);
+    const key = `w:${type}:${h}`;
+    const found = this.lookupConst(key);
+    if (found !== undefined) return found;
+    const id = this.newValue(type);
+    this.appendStmt({ k: 'const', out: id, data: { kind: 'word', hex: h }, type });
+    this.litValues.set(id, logical);
+    this.top().consts.set(key, id);
+    return id;
+  }
+
+  /** Interns a dynamic literal as a pre-encoded memref data const. */
+  private dataConst(type: DynType | ArrayType, value: unknown): ValueId {
+    const hex = encodeLiteralData(type, value);
+    const key = `d:${type}:${hex}`;
+    const found = this.lookupConst(key);
+    if (found !== undefined) return found;
+    const id = this.newValue(type);
+    this.appendStmt({ k: 'const', out: id, data: { kind: 'data', hex }, type });
+    this.top().consts.set(key, id);
+    return id;
+  }
+
+  /** Coerces an `IntoExpr` to a ValueId of exactly `type` (literal coercion rules). */
+  protected coerceToId(v: unknown, type: EvsType, what: string): ValueId {
+    // a tuple (NOT tuple-array) target: a Tuple handle (reuse its ValueId — reference) or a literal
+    // struct object (build a fresh tuplenew). Routed before classify(), which rejects Tuple/Field
+    // handles. A tuple ARRAY (`tuple[]`) is a memref Expr like any other array — it falls through to
+    // the Expr path (where the encode milestone's guard fires for a returned/passed composite array).
+    if (isTupleType(type) && !isArrayValueType(type)) return this.coerceTupleToId(v, type, what);
+    // a bare MutArray handle is accepted where an ARRAY value is expected (issue #5 ask #5): reuse
+    // its ValueId verbatim (reference) when the types match — byte-identical IR to passing
+    // `.expr()`. Routed before classify(), which rejects MutArray handles with the "use .expr()"
+    // message (kept intact for genuinely-wrong positions like arithmetic).
+    if (isArrayValueType(type) && typeof v === 'object' && v !== null) {
+      const ai = ARR_INTERNALS.get(v);
+      if (ai !== undefined) {
+        const id = this.arrHandleId(ai, what);
+        const at = this.typeOfValue(id);
+        if (!typesEqual(at, type)) this.typeMismatch(what, type, at);
+        return id;
+      }
+    }
+    const c = this.classify(v, what);
+    if (c.kind === 'expr') {
+      if (!typesEqual(c.type, type)) this.typeMismatch(what, type, c.type);
+      return c.id;
+    }
+    if (isWordType(type)) {
+      const { hex, logical } = this.wordLiteral(type, c.value);
+      return this.wordConst(type, logical, hex);
+    }
+    if (isArrayValueType(type)) {
+      // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`, any
+      // `T[N]` with a composite element) is built at record time as `arrnew` + per-element
+      // construction — reusing the same lowerings as a constructed array — rather than a flat
+      // data-segment const. A word-element array literal whose elements are ALL host literals uses
+      // the const path (`dataConst`, a CODECOPY-materialized data segment); one that mixes in a
+      // staged handle (`[x, 1n]` with `x` an Expr) is built element-wise the same way.
+      if (isCompositeElemArray(type) || (Array.isArray(c.value) && c.value.some(isStagedHandle))) {
+        return this.buildArrayLiteral(type, c.value, what);
+      }
+      if (isTupleType(type)) {
+        // unreachable: every tuple-array type has a composite (tuple) element
+        throw new EvsInternalError('INTERNAL', `${what}: tuple array with a word element`);
+      }
+    }
+    return this.dataConst(type, c.value);
+  }
+
+  /** Builds an array LITERAL element-wise at record time — a composite-element array
+   *  (`tuple[]`/`T[][]`/`string[]`/`bytes[]`), a fixed-size `T[N]` over a composite element (whose
+   *  literal must have exactly N elements), or a word array holding staged handles:
+   *  `arrnew(elem, len)` then `arrset(i, coerceToId(value[i], elem))` per element — reusing the
+   *  same IR lowerings as a runtime-constructed array. The result aliases a fresh `[len][p0…]`
+   *  block. */
+  private buildArrayLiteral(type: ArrayType | TupleType, value: unknown, what: string): ValueId {
+    if (!Array.isArray(value)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: a ${stringifyType(type)} literal must be a JS array, got ${describeHost(value)}`,
+      );
+    }
+    // validate the array type via the layout classifier (malformed → TYPE_MISMATCH, nested deeper
+    // than MAX_ARRAY_DEPTH → UNSUPPORTED_V0).
+    try {
+      layoutOfType(type);
+    } catch (e) {
+      if (e instanceof EvsTypeError) {
+        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
+      }
+      throw e;
+    }
+    const elem = elemTypeOf(type);
+    const fixed = fixedLengthOf(type);
+    if (fixed !== null && value.length !== fixed) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: a ${stringifyType(type)} literal must have exactly ${fixed} element(s), got ${value.length}`,
+      );
+    }
+    if (BigInt(value.length) >= 1n << 32n) {
+      this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
+    }
+    const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
+    const arrId = this.newValue(type, `${stringifyType(type)} literal`);
+    this.appendStmt({
+      k: 'arrnew',
+      elem,
+      length: lenId,
+      ...(fixed === null ? {} : { fixed }),
+      out: arrId,
+    });
+    value.forEach((el, i) => {
+      const valId = this.coerceToId(el, elem, `${what}[${i}]`);
+      const iId = this.coerceToId(i, 'uint256', `${what}[${i}] index`);
+      this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: valId });
+    });
+    return arrId;
+  }
+
+  /** Tuple branch of {@link coerceToId}: reuse a Tuple handle's ValueId, or build a
+   *  `tuplenew` from a literal struct/positional object. */
+  private coerceTupleToId(v: unknown, type: TupleType, what: string): ValueId {
+    if (type.type !== 'tuple') {
+      // unreachable: coerceToId routes every array type (tuple arrays included) to the array arm
+      throw new EvsInternalError('INTERNAL', `${what}: tuple array reached the tuple coercion`);
+    }
+    if (typeof v === 'object' && v !== null) {
+      const ti = TUPLE_INTERNALS.get(v);
+      if (ti !== undefined) {
+        if (ti.owner !== this.self) {
+          throw new EvsScopeError(
+            'FOREIGN_HANDLE',
+            `${what}: this Tuple (${ti.owner.valueRef(ti.id)}) belongs to script "${ti.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
+          );
+        }
+        this.checkVisible(ti.id, what);
+        if (!typesEqual(ti.tt, type)) this.typeMismatch(what, type, ti.tt);
+        return ti.id; // reference: aliases the SAME flat block
+      }
+      // an Expr memref of the SAME tuple type (e.g. another tuple's `.expr()`) is also accepted.
+      const ei = EXPR_INTERNALS.get(v);
+      if (ei !== undefined) {
+        this.classify(v, what); // ownership + visibility check (rethrows FOREIGN_HANDLE)
+        const et = this.typeOfValue(ei.id);
+        if (!typesEqual(et, type)) this.typeMismatch(what, type, et);
+        return ei.id;
+      }
+      if (FIELD_INTERNALS.has(v)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Field is not a tuple — read it with .get()`,
+        );
+      }
+    }
+    // a plain object/array literal → build the tuple from its members.
+    return this.buildTupleNew(type, v, what);
+  }
+
+  /** FOREIGN_HANDLE check for a bare {@link TupleHandle}/{@link MutArrayImpl} reused in a return /
+   *  member / array slot — handles never cross scripts. */
+  private assertHandleOwner(
+    owner: Recorder,
+    id: ValueId,
+    kind: 'Tuple' | 'MutArray',
+    what: string,
+  ): void {
+    if (owner === this.self) return;
+    throw new EvsScopeError(
+      'FOREIGN_HANDLE',
+      `${what}: this ${kind} (${owner.valueRef(id)}) belongs to script "${owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
+    );
+  }
+
+  /** The ValueId behind a bare {@link Tuple} handle, after owner + visibility checks. Reused by the
+   *  direct-return paths (`s.return`, `s.fn` result — issue #5 ask #1). */
+  private tupleHandleId(ti: TupleInternals, what: string): ValueId {
+    this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what);
+    this.checkVisible(ti.id, what);
+    return ti.id;
+  }
+
+  /** The ValueId behind a bare {@link MutArray} handle, after owner + visibility checks (issue #5
+   *  ask #5 — a bare array handle is returnable / passable, byte-identical to `.expr()`). */
+  private arrHandleId(ai: ArrInternals, what: string): ValueId {
+    this.assertHandleOwner(ai.owner, ai.id, 'MutArray', what);
+    this.checkVisible(ai.id, what);
+    return ai.id;
+  }
+
+  /** The ValueId behind a bare {@link Tuple} / {@link MutArray} handle (owner + visibility
+   *  checked), or null when `v` is neither. */
+  protected bareHandleId(v: unknown, what: string): ValueId | null {
+    if (typeof v !== 'object' || v === null) return null;
+    const ti = TUPLE_INTERNALS.get(v);
+    if (ti !== undefined) return this.tupleHandleId(ti, what);
+    const ai = ARR_INTERNALS.get(v);
+    if (ai !== undefined) return this.arrHandleId(ai, what);
+    return null;
+  }
+
+  /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),
+   *  returning the new tuple ValueId. Members are name-keyed (struct) or positional (t.tuple);
+   *  an omitted or literal-zero WORD member is left to the zero-fill (no MSTORE); an omitted
+   *  memref member gets its typed zero from codegen (`lowerTupleNew`). */
+  protected buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
+    const isPositional = type.components.every((c) => c.name === '');
+    let lookup: (comp: NamedType, index: number) => unknown;
+    if (init === undefined) {
+      lookup = () => undefined;
+    } else if (Array.isArray(init)) {
+      if (!isPositional) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: this struct expects a name-keyed init record, not a positional array`,
+        );
+      }
+      lookup = (_comp, index) => init[index];
+    } else if (typeof init === 'object' && init !== null) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- guarded: init is a non-null object here
+      const rec = init as Record<string, unknown>;
+      lookup = isPositional ? (_comp, index) => rec[index] : (comp) => rec[comp.name];
+    } else {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: init must be a record of members (or a positional array for a t.tuple), got ${describeHost(init)}`,
+      );
+    }
+
+    const inits: { index: number; value: ValueId }[] = [];
+    type.components.forEach((comp, index) => {
+      const memberVal = lookup(comp, index);
+      // omitted → its typed zero: a word member is covered by the block's zero-fill; a memref
+      // member (string/bytes/T[] → empty, nested tuple → a fresh zeroed block) is set by codegen.
+      if (memberVal === undefined) return;
+      const memberType = abiParamToType(comp);
+      const valId = this.coerceToId(
+        memberVal,
+        memberType,
+        `${what} member "${memberName(comp, index)}"`,
+      );
+      // a literal-zero word member is already covered by the zero-fill — skip its MSTORE.
+      if (!isDynamicType(memberType) && this.litValues.get(valId) === 0n) return;
+      inits.push({ index, value: valId });
+    });
+
+    const out = this.newValue(type, `s.tuple(${tupleDebugTag(type)})`);
+    this.appendStmt({ k: 'tuplenew', inits, out });
+    return out;
+  }
+
+  protected certainPanic(what: string, reason: string, panic: number): never {
+    throw new EvsTypeError(
+      'CERTAIN_PANIC',
+      `${what}: ${reason} — this would always revert with Panic(0x${panic.toString(16)}) at runtime, so recording refuses it. If a guaranteed runtime panic is intended, route one operand through a cell: s.let(t.uint256, x).get()`,
+    );
+  }
+
+  // -- values & state ---------------------------------------------------------------------
+
+  lit(type: unknown, value: unknown): Expr {
+    this.assertOpen('s.lit()');
+    assertV0Type(type, 's.lit()');
+    if (isWordType(type)) {
+      const { hex, logical } = this.wordLiteral(type, value);
+      return makeExpr(this.self, this.wordConst(type, logical, hex));
+    }
+    // an array literal takes the same route as a coerced one: composite elements (or staged
+    // handles among the elements) build element-wise; all-literal word arrays / string / bytes
+    // use the const path. A fixed-size type enforces its exact length either way.
+    if (isArrayValueType(type)) {
+      return makeExpr(this.self, this.coerceToId(value, type, 's.lit()'));
+    }
+    return makeExpr(this.self, this.dataConst(type, value));
+  }
+
+  letCell(a: unknown, b: unknown): CellImpl {
+    this.assertOpen('s.let()');
+    let type: EvsType;
+    let init: unknown;
+    if (typeof a === 'string') {
+      assertV0Type(a, 's.let()');
+      if (b === undefined) {
+        throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
+      }
+      type = a;
+      init = b;
+    } else {
+      const c = this.classify(a, 's.let()');
+      if (c.kind !== 'expr') {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `s.let(init): init must be an Expr when no type is given — use s.let(type, literal) to type a literal`,
+        );
+      }
+      type = c.type;
+      init = a;
+    }
+    return new CellImpl(this.self, this.makeCell(type, init));
+  }
+
+  protected makeCell(type: EvsType, init: unknown): CellId {
+    const initId = this.coerceToId(init, type, 's.let() init');
+    const cellId = this.cellInfos.length;
+    this.cellInfos.push({ type });
+    this.cellScopes.push(this.top());
+    this.appendStmt({ k: 'cellnew', cell: cellId, init: initId });
+    return cellId;
+  }
+
+  cellGet(cellId: CellId, what: string): Expr {
+    this.assertOpen(what);
+    this.checkCellVisible(cellId, what);
+    return makeExpr(this.self, this.cellGetId(cellId));
+  }
+
+  protected cellGetId(cellId: CellId): ValueId {
+    const out = this.newValue(this.typeOfCell(cellId));
+    this.appendStmt({ k: 'cellget', cell: cellId, out });
+    return out;
+  }
+
+  cellSet(cellId: CellId, value: unknown, what: string): void {
+    this.assertOpen(what);
+    this.checkCellVisible(cellId, what);
+    const valId = this.coerceToId(value, this.typeOfCell(cellId), what);
+    this.appendStmt({ k: 'cellset', cell: cellId, value: valId });
+  }
+}

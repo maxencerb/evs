@@ -6,7 +6,8 @@
  * - `vocabulary.ts` — the type-string vocabulary (`EvsType` and its parts, array-suffix parsing);
  * - `expr.ts` — `Expr`, the branded staged-value handle, and its literal types;
  * - `args.ts` — `namedArg()`, args-input normalization and the `t.error` declaration types;
- * - `derive.ts` — type-level derivations (`StructTypeOf`, `AbiParamToEvsType`, `FromAbiOutputs`, …);
+ * - `derive.ts` — type-level derivations (`StructTypeOf`, `AbiParamToEvsType`,
+ *   `FromAbiOutputs`, …);
  * - `namespace.ts` — the `t` namespace and its runtime constructors;
  * - `predicates.ts` — runtime type predicates / metadata and the internal helpers.
  */

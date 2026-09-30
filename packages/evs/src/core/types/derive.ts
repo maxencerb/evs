@@ -1,6 +1,7 @@
 /**
- * `core/types/derive.ts` — type-level derivations: evs types ↔ ABI components (`TypeToComponent`,
- * `StructTypeOf`, `TupleTypeOf`, `TupleArrayOf`, `AbiParamToEvsType`, …) and `FromAbiOutputs`.
+ * `core/types/derive.ts` — type-level derivations: evs types ↔ ABI components
+ * (`TypeToComponent`, `StructTypeOf`, `TupleTypeOf`, `TupleArrayOf`, `AbiParamToEvsType`, …) and
+ * `FromAbiOutputs`.
  */
 
 import type { AbiParameter, Abi } from 'abitype';
