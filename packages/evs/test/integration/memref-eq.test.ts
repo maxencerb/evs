@@ -138,7 +138,8 @@ function asExpr(v: unknown): Expr {
 function buildScript(c: Case) {
   return evscript({ name: c.fn, args: [c.type, c.type] }, (s, ...rawArgs) => {
     const [a, b] = [asExpr(rawArgs[0]), asExpr(rawArgs[1])];
-    // both spellings per case: the method form and the free-function form record the same IR
+    // one spelling per case: eq cases use the method form, neq cases the free-function form
+    // (the other two record the same IR; src/differential/control-flow.test.ts runs them)
     const r = c.op === 'eq' ? a.eq(b) : s.neq(a, b);
     return s.return({ r });
   });

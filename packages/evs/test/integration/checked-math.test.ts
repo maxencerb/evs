@@ -86,7 +86,8 @@ async function rawCall(params: {
 
 describe('checked math: evs vs solc 0.8.30 (EvsReference)', () => {
   test('the generated op × width matrix is present', () => {
-    expect(CASES.length).toBeGreaterThanOrEqual(20);
+    // 5 ops × 9 widths (uint8/64/128/192/256, int8/128/200/256): a dropped case fails here
+    expect(CASES).toHaveLength(45);
   });
 
   test.each(CASES)('$fn', async (c) => {
