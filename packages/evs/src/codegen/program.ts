@@ -90,9 +90,7 @@ export function lowerProgram(
     tails,
     opts: evm,
     loop: null,
-    fnBaseline: 0,
     dataSeg,
-    siteOf: (s: Stmt): SiteId => s.site,
   };
   const state = lowerInternals(ctx);
   state.locations = opts.locations;

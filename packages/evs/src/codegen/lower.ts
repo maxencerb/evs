@@ -69,10 +69,14 @@ export interface LowerCtx {
   tails: SharedTails;
   opts: { evmVersion: EvmVersion };
   loop: { breakTo: LabelId; continueTo: LabelId } | null;
-  fnBaseline: 0 | 1; // stack baseline (1 inside fn bodies)
   dataSeg: (bytes: Uint8Array) => LabelId;
-  siteOf(stmt: Stmt): SiteId;
 }
+
+/**
+ * Operand-stack height at every statement boundary — also inside fn bodies, which spill their
+ * return address on entry (see the fncall convention in the module header).
+ */
+const STMT_BASELINE = 0;
 
 export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx): void {
   for (const s of stmts) lowerStmt(w, s, ctx);
@@ -804,7 +808,7 @@ function lowerConvert(w: AsmWriter, s: Extract<Stmt, { k: 'convert' }>, ctx: Low
 // ---------------------------------------------------------------------------
 
 function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const takeA = w.newLabel(`select_a_${s.site}`);
   const done = w.newLabel(`select_done_${s.site}`);
   loadOperand(w, ctx, s.cond, meta(ctx, s, 'select')); // [cond]
@@ -1058,7 +1062,7 @@ function lowerKeccak256(w: AsmWriter, s: Extract<Stmt, { k: 'keccak256' }>, ctx:
 function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx): void {
   const state = lowerInternals(ctx);
   const tryMode = s.mode === 'try';
-  const site = ctx.siteOf(s);
+  const site = s.site;
   const dfailLabel = w.newLabel(tryMode ? `zero_${site}` : `dfail_${site}`);
   if (!tryMode) state.dfailStubs.push({ label: dfailLabel, site });
 
@@ -1127,7 +1131,7 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
   w.pushLabel(ret, s.args.length === 0 ? meta(ctx, s, `fncall ${fn.name}`) : undefined); // [ret]
   w.pushLabel(entry);
   w.op('JUMP'); // → callee (entry label carries stack 1)
-  w.label(ret, ctx.fnBaseline);
+  w.label(ret, STMT_BASELINE);
 
   // result region → per-callsite out slots (two calls never alias)
   s.outs.forEach((o, j) => {
@@ -1144,7 +1148,7 @@ function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: Lower
 // ---------------------------------------------------------------------------
 
 function lowerIf(w: AsmWriter, s: Extract<Stmt, { k: 'if' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const hasElse = s.else.length > 0;
   const elseL = hasElse ? w.newLabel(`else_${s.site}`) : null;
   const endL = w.newLabel(`endif_${s.site}`);
@@ -1163,7 +1167,7 @@ function lowerIf(w: AsmWriter, s: Extract<Stmt, { k: 'if' }>, ctx: LowerCtx): vo
 }
 
 function lowerWhile(w: AsmWriter, s: Extract<Stmt, { k: 'while' }>, ctx: LowerCtx): void {
-  const base = ctx.fnBaseline;
+  const base = STMT_BASELINE;
   const head = w.newLabel(`while_${s.site}`);
   const end = w.newLabel(`endwhile_${s.site}`);
   w.label(head, base); // re-executed every iteration

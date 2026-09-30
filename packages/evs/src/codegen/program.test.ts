@@ -387,13 +387,11 @@ function fragmentListing(spec: FragmentSpec): string {
     tails,
     opts: { evmVersion },
     loop: null,
-    fnBaseline: 0,
     dataSeg: (bytes) => {
       const label = w.newLabel(`data_${segments.length}`);
       segments.push({ label, bytes });
       return label;
     },
-    siteOf: (s) => s.site,
   };
   spec.pre?.(w);
   lowerStmts(w, spec.body, ctx);
