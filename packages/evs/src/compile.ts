@@ -3,8 +3,9 @@
  *
  *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates)
  *   [optimize: liveness frame allocator] → [optimize: built-in evsPeephole] → peephole (user
- *   hook) → assemble(verify: jumpdests, stack, shapes) → EIP-170 check (per-region breakdown
- *   via labelNames) → merge sites into the sourceMap → build the artifact.
+ *   hook) → assemble(EIP-170 check from its layout hook, before fixups — per-region breakdown
+ *   via labelNames; then verify: jumpdests, stack, shapes) → merge sites into the sourceMap →
+ *   build the artifact.
  *
  * `optimize` (default false) is the single switch for the built-in optimizer passes: the
  * liveness-based frame allocator behind `codegen/frame.ts` (slot reuse across dead values,
@@ -196,18 +197,21 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   const peephole = resolved.optimize
     ? (nodes: readonly AsmNode[]): AsmNode[] => userPeephole(evsPeephole(nodes))
     : userPeephole;
+  // EIP-170 is enforced from the layout hook — before label fixups are patched — so a program
+  // past PUSH2's 16-bit reach (host-unrolled loops get there) still reports COMPILE_LIMIT.
   const assembled = assemble(lowered.nodes, {
     evmVersion: resolved.evmVersion,
     peephole,
     verify: true,
+    onLayout: (totalLen, labelPcs) => {
+      if (totalLen > EIP170_LIMIT) {
+        throw new EvsCompileError(
+          'COMPILE_LIMIT',
+          eip170Message(totalLen, labelPcs, lowered.labelNames),
+        );
+      }
+    },
   });
-
-  if (assembled.bytecode.length > EIP170_LIMIT) {
-    throw new EvsCompileError(
-      'COMPILE_LIMIT',
-      eip170Message(assembled.bytecode.length, assembled.labelPcs, lowered.labelNames),
-    );
-  }
 
   // merge the SiteId table from lowering into the assembler's segments+labels map
   const sourceMap: SourceMap = {

@@ -180,6 +180,14 @@ export interface AssembleOptions {
   evmVersion: EvmVersion;
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity; runs before layout
   verify?: boolean; // default true
+  /**
+   * Called once the layout pass has fixed every pc (`totalLen` = final byte length), before any
+   * label fixup is patched or any verifier runs. Throw from it to reject the program; `compile()`
+   * enforces EIP-170 here, so an oversized program is reported as `COMPILE_LIMIT` rather than
+   * tripping the PUSH2-reach assertion below (every label past 0xffff implies a runtime past
+   * EIP-170's 24,576 bytes).
+   */
+  onLayout?: (totalLen: number, labelPcs: ReadonlyMap<LabelId, number>) => void;
 }
 
 export interface AssembleResult {
@@ -316,6 +324,7 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
 
   const totalLen = pc;
   if (dataStart === -1) dataStart = totalLen;
+  opts.onLayout?.(totalLen, labelPcs);
 
   const bytecode = new Uint8Array(totalLen);
   let off = 0;
@@ -332,6 +341,7 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
       throw assembleError(`pushLabel references undefined label #${label}`);
     }
     if (target > 0xffff) {
+      // assertion: compile() rejects anything over EIP-170 in `onLayout`, long before 0xffff
       throw assembleError(
         `label #${label} lands at pc 0x${target.toString(16)} > 0xffff — PUSH2 fixups cannot reach it`,
       );

@@ -384,6 +384,47 @@ describe('EIP-170 enforcement', () => {
     expect(err.message).toMatch(/data segments 25\d{3}/);
   });
 
+  // Host-side loops unroll, so ordinary code can outgrow PUSH2's 16-bit reach (issue #64): the
+  // size check must fire before the assembler patches label fixups, or a program past 64 KiB
+  // surfaces as an internal "please report" error instead of COMPILE_LIMIT.
+  const balanceOfAbi = parseAbi(['function balanceOf(address) view returns (uint256)']);
+
+  test('unrolled reads past 64 KiB → COMPILE_LIMIT, not an internal PUSH2-reach error', () => {
+    const reads = evscript(
+      { name: 'reads', args: [t.address, t.array(t.address)] },
+      (s, owner, tokens) => {
+        const total = s.let(t.uint256, 0n);
+        for (let i = 0; i < 420; i++) {
+          const bal = s.read({
+            address: tokens.at(BigInt(i % 4)),
+            abi: balanceOfAbi,
+            functionName: 'balanceOf',
+            args: [owner],
+          });
+          s.if(bal.gt(BigInt(i)), () => total.set(total.get().add(bal)));
+        }
+        return s.return({ total: total.get() });
+      },
+    );
+    const err = captureError(() => compile(reads), EvsCompileError);
+    expect(err.code).toBe('COMPILE_LIMIT');
+    expect(err.message).toMatch(/^runtime bytecode is (\d+) bytes — exceeds the EIP-170 limit/);
+    expect(Number(/is (\d+) bytes/.exec(err.message)?.[1])).toBeGreaterThan(0xffff);
+    expect(err.message).toMatch(/dispatcher \d+, body \d+, fns \d+, tails \d+, data segments \d+/);
+  });
+
+  test('straight-line checked arithmetic past 64 KiB → COMPILE_LIMIT', () => {
+    const arith = evscript({ name: 'arith', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      let acc = s.add(a, b);
+      for (let i = 0; i < 1000; i++) acc = acc.mul(b).add(BigInt(i)).sub(a);
+      return s.return({ acc });
+    });
+    const err = captureError(() => compile(arith), EvsCompileError);
+    expect(err.code).toBe('COMPILE_LIMIT');
+    expect(Number(/is (\d+) bytes/.exec(err.message)?.[1])).toBeGreaterThan(0xffff);
+    expect(err.message).toMatch(/EIP-170 limit of 24576 by \d+ bytes \(dispatcher \d+, body \d+/);
+  });
+
   test('a comfortably-sized script compiles', () => {
     expect(() => compile(sumScript())).not.toThrow();
   });
