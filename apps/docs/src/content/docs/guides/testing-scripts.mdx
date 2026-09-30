@@ -6,7 +6,7 @@ description: Unit-test evs scripts without a node — interpret() runs a script'
 You do not need a node, a fork, or even the compiler to test a script's logic. `interpret()`
 executes a script's IR directly in TypeScript against a `MockChain` you define — and it is the
 same reference oracle the evs test suite holds the compiled bytecode against, byte for byte:
-returndata, `Panic` codes, decode errors, bubbled reverts, and `tryCall` zeroing all match the
+returndata, `Panic` codes, decode errors, bubbled reverts, and `try*` zeroing all match the
 real thing exactly (see [Why trust the bytecode?](/concepts/trust-and-testing/)). If your
 script behaves under `interpret()`, the bytecode behaves the same way on-chain.
 

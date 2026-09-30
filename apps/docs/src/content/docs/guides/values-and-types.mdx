@@ -11,14 +11,14 @@ Every runtime value in a script has an evs type — a Solidity-style type string
 | -------------- | -------------------------------------------------------------------------------------- | ------------------------------------------------- |
 | Word types     | `uint8`…`uint256` and `int8`…`int256` (multiples of 8), `address`, `bool`, `bytes1`…`bytes32` | one canonical EVM word                            |
 | Dynamic types  | `string`, `bytes`                                                                       | memref — a pointer to `[length][payload]`         |
-| Array types    | `T[]` where `T` is a word type, a dynamic type, a one-level array (`T[][]`), or a struct/tuple (`tuple[]`) | memref — `[length]` then either one word per element (word element, inline) or one pointer per element (composite element) |
+| Array types    | `T[]` where `T` is a word type, a dynamic type, a one-level array of a word element (`uint256[][]`), or a struct/tuple (`tuple[]`) | memref — `[length]` then either one word per element (word element, inline) or one pointer per element (composite element) |
 | Composite types | structs and tuples (`t.struct`/`t.tuple`)                                              | memref — a pointer to a packed block, one word per member |
 
 The exported type aliases mirror this taxonomy: `EvsType` is the whole set; `WordType`, `DynType`, `ArrayType`, and `TupleType` are the kinds; and two cross-cutting unions matter for operations — `NumericType` (`uintN` and `intN`) and `BitsType` (`uintN` and `bytesN`). The full alias table is in the [types reference](/reference/types/).
 
 A **composite-element array** — `tuple[]`, a string array (`string[]`/`bytes[]`), or a one-level nested array (`uint256[][]`) — is an **array of pointers**: the `[length]` prefix is followed by one pointer word per element, each pointing at that element's own block (a tuple block for `tuple[]`, an inner array for `T[][]`, a bytes block for `string[]`). This is exactly Solidity's `Struct[]`/`T[][]`/`string[]` memory layout. You read and build it through the same array handle as a word array (`.at(i)`, `.length()`, `s.newArray`), and it carries the same reference semantics — see [composite arrays](#composite-arrays-tuple-t-string) below.
 
-Still rejected at recording (`UNSUPPORTED_V0`): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size arrays `T[N]` (not modeled).
+Still rejected at recording (`UNSUPPORTED_V0`): nested dynamic-leaf arrays (`string[][]`/`bytes[][]` — not supported yet, [#4](https://github.com/maxencerb/evs/issues/4)), two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size arrays `T[N]` (not modeled).
 
 ## The `t` namespace
 
@@ -263,7 +263,7 @@ const readPositions = evscript({ name: 'readPositions', args: [t.address] }, (s,
 
 A `tuple[]` output unwraps to `readonly Struct[]` at the viem call site; `uint256[][]` → `readonly (readonly bigint[])[]`; `string[]` → `readonly string[]`.
 
-**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through:
+**Construct a `tuple[]` with `s.newArray`.** `s.newArray` admits composite elements (a struct/tuple, a one-level `T[]` of a word element such as `uint256[]`, `string`/`bytes`). `arr.get(i)` returns the element handle (a `Tuple` for a struct element) — a reference into the array's slot, so filling its fields writes through:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -336,7 +336,7 @@ const sumLiquidity = evscript({ name: 'sumLiquidity', args: [t.address] }, (s, s
 });
 ```
 
-Not supported yet ([#4](https://github.com/maxencerb/evs/issues/4); `UNSUPPORTED_V0` at recording): two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size `T[N]`.
+Not supported yet ([#4](https://github.com/maxencerb/evs/issues/4); `UNSUPPORTED_V0` at recording): nested dynamic-leaf arrays (`string[][]`/`bytes[][]`, so no `string[]`/`bytes[]` element in `s.newArray` either — the error message currently describes them as "nested deeper than `[][]`"), two-level tuple arrays (`tuple[][]`), arrays nested deeper than `[][]`, and fixed-size `T[N]`.
 
 ## Literal coercion: `IntoExpr`
 
