@@ -14,7 +14,7 @@ permissions:
   contents: read
 
 env:
-  FOUNDRY_VERSION: v1.8.1 # pinned: anvil/forge determinism
+  FOUNDRY_VERSION: v1.8.3 # pinned: anvil/forge determinism
 
 jobs:
   # One serial gate on purpose (fewer concurrent runners, no artifact plumbing):

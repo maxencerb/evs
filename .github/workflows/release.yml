@@ -71,7 +71,7 @@ jobs:
       - uses: ./.github/actions/setup
       - uses: foundry-rs/foundry-toolchain@908c540300062bd5a7e473851cdb4282204cee09 # v1.9.1
         with:
-          version: v1.8.1 # keep in sync with ci.yml
+          version: v1.8.3 # keep in sync with ci.yml
 
       # npm >= 11.5.1 is required for OIDC; Node 24 (from .node-version) bundles >= 11.13.
       # Node's own npm is used on purpose — `bun publish` has no OIDC support (oven-sh/bun#22423).
