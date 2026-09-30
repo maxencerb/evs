@@ -62,7 +62,7 @@ export { dce, eliminateDeadCode } from './ir/dce.js'; // issue #40: the pass com
 
 // abi
 export { EVS_ERROR_ABI } from './abi/artifact.js';
-export type { ScriptAbi } from './abi/artifact.js';
+export type { ErrorsToAbi, ReturnSpecToComponents, ScriptAbi } from './abi/artifact.js';
 
 // asm
 export type { AsmNode, LabelId } from './asm/assembler.js';
@@ -85,18 +85,27 @@ export type {
   Cell,
   ComponentToType,
   EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
+  EnvKind, // the s.env kind argument
+  EnvTypeOf,
   ErrorsInput, // issue #15: the def's `errors` input (one t.error value or a readonly list)
+  EvsFn, // the return type of s.fn (+ its FnReturn / FnResult / Rebuild* helpers)
   EvsScript,
   Field,
+  FnResult,
+  FnReturn,
   IntoArray, // issue #5: array-typed slot accepts an Expr/literal or a bare MutArray
   IntoMember,
   IntoTuple,
   LoopCtl,
   MutArray,
+  MutArrayElem, // MutArray.get / .expr element helpers
+  MutArrayValueOf,
   NormalizeArgs,
   NormalizeErrors, // issue #15
   PackedValue, // issue #17: what s.encodePacked accepts per value
   ReturnValue,
+  RebuildExprs,
+  RebuildFnResult,
   ReadVerb, // issue #1: the s.read / s.tryRead verb types (ViewMutability, STATICCALL)
   RevertReturnHandles, // issue #35: the handles of a `revertReturns` list
   RevertReturnsParams, // issue #35: the s.call / s.tryCall `revertReturns` parameter object
@@ -108,13 +117,17 @@ export type {
   SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
   SubcallVerb,
   ThrowArgs, // issue #15: the rest-args shape of s.throw (record / tuple / none)
+  ThrowArgRecord,
+  ThrowArgTuple,
   TryCallVerb, // issue #35: the s.tryCall verb type (TryWriteVerb + the `revertReturns` overload)
   TryReadVerb,
   TrySubcallVerb,
   TryWriteVerb,
   Tuple,
+  TupleArrayElem,
   TupleArrayElemHandle, // issue #12 post-review: the `.at`/`s.forEach` tuple-array element handle
   TupleInit,
+  UnwrapSingle, // the single-output unwrap of every read/call verb result
   ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
   WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket
   WriteVerb, // issue #1: the s.simulate / s.trySimulate verb types (CALL); the base of CallVerb
@@ -125,11 +138,17 @@ export { evsPeephole } from './codegen/peephole.js'; // issue #39: the built-in 
 
 // compile + viem
 export { compile } from './compile.js';
-export type { CompiledEvsScript, CompileOptions, RevertExplanation } from './compile.js';
+export type {
+  CompiledEvsScript,
+  CompiledOf, // the return type of compile()
+  CompileOptions,
+  RevertExplanation,
+} from './compile.js';
 export { decodeScriptError, DEFAULT_SCRIPT_ADDRESS, matchScriptError } from './viem.js';
 export type {
   DecodedBuiltinError, // issue #15: the Panic/Error/unknown/empty decode arms
   DecodedScriptError, // issue #15: the name-discriminated union decodeScriptError yields
   ErrorArgsOf, // issue #15: one error entry's decoded args record
+  HandlerResult, // the return type of matchScriptError
   ScriptErrorHandlers, // issue #15: the matchScriptError handler record (declared + `_`)
 } from './viem.js';
