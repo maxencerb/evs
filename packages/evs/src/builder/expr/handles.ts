@@ -1,0 +1,389 @@
+/**
+ * `builder/expr/handles.ts` — the staged handle classes (`Expr`, `Cell`, `MutArray`, `Tuple`,
+ * `Field`, loop control) and their unforgeable module-private internals, plus the staging traps
+ * installed on the `Expr` / `Tuple` prototypes at module load.
+ */
+
+import { EvsInternalError, EvsScopeError } from '../../core/errors.js';
+import {
+  type EvsType,
+  type TupleType,
+  type Expr,
+  abiParamToType,
+  installStagingTraps,
+} from '../../core/types.js';
+import type { ValueId, CellId } from '../../ir/nodes.js';
+import { unsafeCast, type Scope } from './helpers.js';
+import type { Recorder } from './recorder.js';
+
+// ---------------------------------------------------------------------------
+// module-private handle internals (unforgeable handles)
+// ---------------------------------------------------------------------------
+
+interface ExprInternals {
+  readonly owner: Recorder;
+  readonly id: ValueId;
+}
+interface CellInternals {
+  readonly owner: Recorder;
+  readonly id: CellId;
+}
+export interface ArrInternals {
+  readonly owner: Recorder;
+  readonly id: ValueId;
+  readonly elem: EvsType; // any value type (word, string/bytes, tuple, or an array — dynamic or fixed)
+}
+export interface TupleInternals {
+  readonly owner: Recorder;
+  readonly id: ValueId;
+  readonly tt: TupleType; // the static descriptor (carries the component types)
+}
+interface FieldInternals {
+  readonly owner: Recorder;
+  readonly tuple: ValueId;
+  readonly index: number;
+  readonly type: EvsType; // the member type (abiParamToType of the component)
+}
+
+export const EXPR_INTERNALS = new WeakMap<object, ExprInternals>();
+export const CELL_INTERNALS = new WeakMap<object, CellInternals>();
+export const ARR_INTERNALS = new WeakMap<object, ArrInternals>();
+export const TUPLE_INTERNALS = new WeakMap<object, TupleInternals>();
+export const FIELD_INTERNALS = new WeakMap<object, FieldInternals>();
+
+/** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
+export const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
+
+/** A staged handle of this builder family (an `Expr`, `Tuple`, `MutArray`, or `Field`) — as
+ *  opposed to a plain host literal. */
+export function isStagedHandle(v: unknown): boolean {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    (EXPR_INTERNALS.has(v) ||
+      TUPLE_INTERNALS.has(v) ||
+      ARR_INTERNALS.has(v) ||
+      FIELD_INTERNALS.has(v))
+  );
+}
+
+// ---------------------------------------------------------------------------
+// the Expr handle (staging traps installed per instance)
+// ---------------------------------------------------------------------------
+
+class ExprHandle {
+  constructor(owner: Recorder, id: ValueId) {
+    EXPR_INTERNALS.set(this, { owner, id });
+  }
+
+  get type(): EvsType {
+    const i = internalsOf(this);
+    return i.owner.typeOfValue(i.id);
+  }
+
+  add(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('add', this, rhs, '.add()');
+  }
+  sub(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('sub', this, rhs, '.sub()');
+  }
+  mul(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('mul', this, rhs, '.mul()');
+  }
+  div(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('div', this, rhs, '.div()');
+  }
+  mod(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('mod', this, rhs, '.mod()');
+  }
+  pow(exponent: unknown): Expr {
+    return internalsOf(this).owner.bin('pow', this, exponent, '.pow()');
+  }
+  addmod(rhs: unknown, modulus: unknown): Expr {
+    return internalsOf(this).owner.modArithOp('addmod', this, rhs, modulus, '.addmod()');
+  }
+  mulmod(rhs: unknown, modulus: unknown): Expr {
+    return internalsOf(this).owner.modArithOp('mulmod', this, rhs, modulus, '.mulmod()');
+  }
+  lt(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('lt', this, rhs, '.lt()');
+  }
+  gt(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('gt', this, rhs, '.gt()');
+  }
+  lte(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('lte', this, rhs, '.lte()');
+  }
+  gte(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('gte', this, rhs, '.gte()');
+  }
+  eq(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('eq', this, rhs, '.eq()');
+  }
+  neq(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('neq', this, rhs, '.neq()');
+  }
+  and(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('and', this, rhs, '.and()');
+  }
+  or(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('or', this, rhs, '.or()');
+  }
+  not(): Expr {
+    return internalsOf(this).owner.notOp(this, '.not()');
+  }
+  bitAnd(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('bitand', this, rhs, '.bitAnd()');
+  }
+  bitOr(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('bitor', this, rhs, '.bitOr()');
+  }
+  bitXor(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('bitxor', this, rhs, '.bitXor()');
+  }
+  bitNot(): Expr {
+    return internalsOf(this).owner.bitNotOp(this, '.bitNot()');
+  }
+  shl(bits: unknown): Expr {
+    return internalsOf(this).owner.bin('shl', this, bits, '.shl()');
+  }
+  shr(bits: unknown): Expr {
+    return internalsOf(this).owner.bin('shr', this, bits, '.shr()');
+  }
+  toUint(target: unknown): Expr {
+    return internalsOf(this).owner.convertOp('toUint', this, target, '.toUint()');
+  }
+  toInt(target: unknown): Expr {
+    return internalsOf(this).owner.convertOp('toInt', this, target, '.toInt()');
+  }
+  asAddress(): Expr {
+    return internalsOf(this).owner.convertOp('asAddress', this, undefined, '.asAddress()');
+  }
+  asUint256(): Expr {
+    return internalsOf(this).owner.convertOp('asUint256', this, undefined, '.asUint256()');
+  }
+  asBytes32(): Expr {
+    return internalsOf(this).owner.convertOp('asBytes32', this, undefined, '.asBytes32()');
+  }
+  length(): Expr {
+    return internalsOf(this).owner.lenOp(this, '.length()');
+  }
+  at(i: unknown): Expr {
+    // the runtime handle is element-typed (a composite element yields a `Tuple`/array handle); the
+    // public `Expr.at` overloads narrow it per element type, so the cast is sound.
+    return unsafeCast<Expr>(internalsOf(this).owner.atOp(this, i, '.at()'));
+  }
+}
+
+function internalsOf(h: object): ExprInternals {
+  const i = EXPR_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Expr handle lost its internals');
+  }
+  return i;
+}
+
+export function makeExpr(owner: Recorder, id: ValueId): Expr {
+  return unsafeCast<Expr>(new ExprHandle(owner, id));
+}
+
+// ---------------------------------------------------------------------------
+// Cell / MutArray / LoopCtl handles
+// ---------------------------------------------------------------------------
+
+export class CellImpl {
+  constructor(owner: Recorder, id: CellId) {
+    CELL_INTERNALS.set(this, { owner, id });
+  }
+
+  get type(): EvsType {
+    const i = cellInternalsOf(this);
+    return i.owner.typeOfCell(i.id);
+  }
+
+  get(): Expr {
+    const i = cellInternalsOf(this);
+    return i.owner.cellGet(i.id, 'Cell.get()');
+  }
+
+  set(value: unknown): void {
+    const i = cellInternalsOf(this);
+    i.owner.cellSet(i.id, value, 'Cell.set()');
+  }
+}
+
+function cellInternalsOf(h: object): CellInternals {
+  const i = CELL_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Cell handle lost its internals');
+  }
+  return i;
+}
+
+export class MutArrayImpl {
+  readonly elemType: EvsType;
+  readonly length: Expr;
+
+  constructor(owner: Recorder, arrId: ValueId, elem: EvsType, length: Expr) {
+    ARR_INTERNALS.set(this, { owner, id: arrId, elem });
+    this.elemType = elem;
+    this.length = length;
+  }
+
+  set(i: unknown, v: unknown): void {
+    const a = arrInternalsOf(this);
+    a.owner.arrSet(a.id, a.elem, i, v, 'MutArray.set()');
+  }
+
+  get(i: unknown): Expr | object {
+    const a = arrInternalsOf(this);
+    return a.owner.arrGet(a.id, a.elem, i, 'MutArray.get()');
+  }
+
+  expr(): Expr {
+    const a = arrInternalsOf(this);
+    return a.owner.arrExpr(a.id, 'MutArray.expr()');
+  }
+}
+
+function arrInternalsOf(h: object): ArrInternals {
+  const i = ARR_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'MutArray handle lost its internals');
+  }
+  return i;
+}
+
+// ---------------------------------------------------------------------------
+// Tuple / Field handles (composite memrefs)
+// ---------------------------------------------------------------------------
+
+/**
+ * A tuple/struct memref handle. It is the pointer to the flat `[w0…w_{n-1}]` block (reference
+ * semantics — aliasing the handle shares the block). Named struct fields are installed as own
+ * accessor properties; positional members go through `.at(i)`; `.expr()` yields the raw memref.
+ * Staging traps are installed (like `Expr`) so a stray coercion explodes with a useful message.
+ */
+class TupleHandle {
+  constructor(owner: Recorder, id: ValueId, tt: TupleType) {
+    TUPLE_INTERNALS.set(this, { owner, id, tt });
+    // expose each NAMED component as an own accessor → a fresh Field handle on read.
+    const fieldProps: PropertyDescriptorMap = {};
+    tt.components.forEach((comp, index) => {
+      if (comp.name === '') return; // positional members are reached via .at(i)
+      fieldProps[comp.name] = {
+        enumerable: true,
+        get: () => owner.makeField(id, index, abiParamToType(comp)),
+      };
+    });
+    Object.defineProperties(this, fieldProps);
+  }
+
+  at(i: unknown): FieldHandle {
+    const t = tupleInternalsOf(this);
+    return t.owner.tupleAt(t.id, t.tt, i, 'Tuple.at()');
+  }
+
+  expr(): Expr {
+    const t = tupleInternalsOf(this);
+    return t.owner.tupleExpr(t.id, 'Tuple.expr()');
+  }
+}
+
+// the staging traps live on the prototypes (installed once, not per handle): `this` is the handle
+installStagingTraps(ExprHandle.prototype, (h) => describeHandle(EXPR_INTERNALS, h, 'Expr'));
+installStagingTraps(TupleHandle.prototype, (h) => describeHandle(TUPLE_INTERNALS, h, 'Tuple'));
+
+function describeHandle(
+  internals: WeakMap<object, { owner: Recorder; id: ValueId }>,
+  handle: unknown,
+  kind: string,
+): string {
+  const i = typeof handle === 'object' && handle !== null ? internals.get(handle) : undefined;
+  return i === undefined ? `${kind}<?>` : i.owner.describeValue(i.id);
+}
+
+function tupleInternalsOf(h: object): TupleInternals {
+  const i = TUPLE_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Tuple handle lost its internals');
+  }
+  return i;
+}
+
+export function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {
+  return new TupleHandle(owner, id, tt);
+}
+
+/**
+ * A field handle over one tuple member (Cell-like): `.get()` reads the member (`field` stmt — a
+ * composite member follows the pointer to a fresh `Tuple` handle), `.set(v)` writes it (`tupleset`
+ * stmt). Module-private like `Cell`.
+ */
+export class FieldHandle {
+  readonly type: EvsType;
+
+  constructor(owner: Recorder, tuple: ValueId, index: number, type: EvsType) {
+    FIELD_INTERNALS.set(this, { owner, tuple, index, type });
+    this.type = type;
+  }
+
+  get(): Expr | object {
+    const f = fieldInternalsOf(this);
+    return f.owner.fieldGet(f.tuple, f.index, f.type, 'Field.get()');
+  }
+
+  set(value: unknown): void {
+    const f = fieldInternalsOf(this);
+    f.owner.fieldSet(f.tuple, f.index, f.type, value, 'Field.set()');
+  }
+}
+
+function fieldInternalsOf(h: object): FieldInternals {
+  const i = FIELD_INTERNALS.get(h);
+  if (i === undefined) {
+    throw new EvsInternalError('INTERNAL', 'Field handle lost its internals');
+  }
+  return i;
+}
+
+export class LoopCtlImpl {
+  private readonly owner: Recorder;
+  private readonly bodyScope: Scope;
+
+  constructor(owner: Recorder, bodyScope: Scope) {
+    this.owner = owner;
+    this.bodyScope = bodyScope;
+  }
+
+  /** Recording-time scoping check: valid only while the owning loop's body scope is open. */
+  guard(what: string): void {
+    this.owner.assertOpen(what);
+    const innermost = this.owner.innermostLoopBody();
+    if (innermost === this.bodyScope) return;
+    if (innermost !== null && this.owner.isScopeOnStack(this.bodyScope)) {
+      throw new EvsScopeError(
+        'SCOPE_VIOLATION',
+        `${what}: this LoopCtl belongs to an outer loop — break/continue the innermost loop with its own LoopCtl (an unlabeled break targets the innermost loop)`,
+      );
+    }
+    throw new EvsScopeError(
+      'SCOPE_VIOLATION',
+      `${what}: LoopCtl used outside its owning loop's body — it is only valid while that loop body is recording`,
+    );
+  }
+
+  emit(kind: 'break' | 'continue'): void {
+    this.owner.appendStmt({ k: kind });
+  }
+
+  break(): void {
+    this.guard('loop.break()');
+    this.emit('break');
+  }
+
+  continue(): void {
+    this.guard('loop.continue()');
+    this.emit('continue');
+  }
+}
