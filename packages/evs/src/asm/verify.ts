@@ -12,7 +12,7 @@
 
 import { EvsInternalError } from '../core/errors.js';
 import type { AsmNode, LabelId } from './assembler.js';
-import { FORBIDDEN, OPS, type EvmVersion, type Mnemonic } from './ops.js';
+import { FORBIDDEN, isDupOp, OPS, type EvmVersion, type Mnemonic } from './ops.js';
 
 function fail(message: string): never {
   throw new EvsInternalError('INTERNAL', `asm verifier: ${message}`);
@@ -285,10 +285,8 @@ const FORK_RANK: Readonly<Record<EvmVersion | 'frontier', number>> = Object.free
   cancun: 3,
 });
 
-const DUP_MNEMONIC_RE = /^DUP(?:[1-9]|1[0-6])$/;
-
 function isDup(node: AsmNode): boolean {
-  return node.k === 'op' && DUP_MNEMONIC_RE.test(node.op);
+  return node.k === 'op' && isDupOp(node.op);
 }
 
 /**

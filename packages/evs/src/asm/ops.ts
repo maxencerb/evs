@@ -30,6 +30,16 @@ export type Mnemonic = 'STOP' | 'ADD' | 'MUL' | 'SUB' | 'DIV' | 'SDIV' | 'MOD' |
   | 'PUSH0' | `PUSH${PushWidth}` | `DUP${StackReach}` | `SWAP${StackReach}`
   | 'CALL' | 'STATICCALL' | 'RETURN' | 'REVERT' | 'INVALID';
 
+/** True for `DUP1`…`DUP16`. */
+export function isDupOp(op: Mnemonic): op is `DUP${StackReach}` {
+  return op.startsWith('DUP');
+}
+
+/** True for `SWAP1`…`SWAP16`. */
+export function isSwapOp(op: Mnemonic): op is `SWAP${StackReach}` {
+  return op.startsWith('SWAP');
+}
+
 export interface OpInfo {
   readonly code: number;
   readonly pops: number;
