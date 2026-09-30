@@ -364,13 +364,14 @@ export function evscript<
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so
   // the ABI inputs are labeled accordingly (issue #9).
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime↔type agreement pinned by abi tests
+  /* oxlint-disable typescript/no-unsafe-type-assertion -- runtime↔type agreement pinned by abi tests */
   const abi = buildScriptAbi(
     def.name,
     ir.args,
     returns,
     errorDecls.map((d) => d.ir),
   ) as unknown as ScriptAbi<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
+  /* oxlint-enable typescript/no-unsafe-type-assertion */
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- decls carry the original t.error values verbatim
   const errors = Object.freeze(errorDecls.map((d) => d.value)) as unknown as NormalizeErrors<errs>;
   const script: EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> = {

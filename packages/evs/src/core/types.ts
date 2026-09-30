@@ -472,7 +472,7 @@ const SETS = buildWordTypeSets();
 
 // frozen namespace: the overloaded method types are the authority; the impls are intentionally
 // `unknown`-typed and validate at runtime (double-cast through `unknown`).
-// oxlint-disable-next-line typescript/no-unsafe-type-assertion
+/* oxlint-disable typescript/no-unsafe-type-assertion */
 export const t: TypeNamespace = Object.freeze({
   address: 'address',
   bool: 'bool',
@@ -593,6 +593,7 @@ export const t: TypeNamespace = Object.freeze({
     return fromAbiParameterRT(param);
   },
 } as const) as unknown as TypeNamespace;
+/* oxlint-enable typescript/no-unsafe-type-assertion */
 
 // ---------------------------------------------------------------------------
 // runtime type predicates / metadata

@@ -47,6 +47,7 @@
     "prool": "catalog:testing",
     "typescript": "catalog:",
     "viem": "catalog:",
+    "vite": "catalog:testing",
     "vite-plus": "catalog:testing"
   },
   "peerDependencies": {
