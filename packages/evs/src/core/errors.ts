@@ -13,7 +13,7 @@ export type EvsErrorCode =
   | 'UNSUPPORTED_V0'
   | 'ABI_SHAPE'
   // custom errors (issue #15):
-  | 'ERROR_DECL' // invalid `errors: [...]` declaration (duplicate/reserved name, selector clash)
+  | 'ERROR_DECL' // invalid `errors: [...]` declaration (duplicate/reserved name, selector clash, script name = error name)
   | 'ERROR_UNDECLARED' // s.throw of an error missing from the script's declared set
   | 'COMPILE_LIMIT'
   | 'EVM_VERSION'

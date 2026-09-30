@@ -319,6 +319,32 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
     expect(handle('0x')).toBe('other: empty');
   });
 
+  test('matchScriptError: an empty / unrecognized revert never reaches a declared handler (issue #62)', () => {
+    // t.error rejects 'empty'/'unknown' now; a hand-built ABI still gets through, and the
+    // built-in arms (no args) must fall through to `_`, not call the declared handler with {}
+    const handBuilt = {
+      abi: [
+        { type: 'error', name: 'empty', inputs: [{ name: 'code', type: 'uint256' }] },
+        { type: 'error', name: 'unknown', inputs: [{ name: 'code', type: 'uint256' }] },
+      ],
+    } as const;
+    const handle = (data: unknown): string =>
+      matchScriptError(handBuilt, data, {
+        empty: (args) => `declared empty ${String(args.code)}`,
+        unknown: (args) => `declared unknown ${String(args.code)}`,
+        _: (other) => `default: ${other.name}`,
+      });
+    expect(handle('0x')).toBe('default: empty');
+    expect(handle('0xdeadbeef')).toBe('default: unknown');
+    // the declared arm (it carries args) still dispatches to its handler
+    const declaredEmpty = encodeErrorResult({
+      abi: handBuilt.abi,
+      errorName: 'empty',
+      args: [42n],
+    });
+    expect(handle(declaredEmpty)).toBe('declared empty 42');
+  });
+
   test('matchScriptError rethrows when the input carries no revert data', () => {
     const original = new Error('socket hang up');
     expect(() =>

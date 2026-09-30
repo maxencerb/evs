@@ -119,7 +119,9 @@ interface EvsScript<
 }
 ```
 
-- `name` — the literal script name; becomes the ABI function name.
+- `name` — the literal script name; becomes the ABI function name. It may not equal an error
+  name in the same ABI (a declared error, `EvsDecodeError` or `EvsInvalidCalldata`): viem would
+  resolve the error entry instead of the function, so `evscript` throws `ERROR_DECL`.
 - `args` — the normalized `readonly ArgSpec[]` of argument specs (the type param, not a runtime
   field): each `{ name, type }` carries the surfaced arg name (a `namedArg` name, or the `arg{i}`
   fallback for a bare arg) and its type.
