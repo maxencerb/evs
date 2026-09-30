@@ -165,27 +165,19 @@ export function isDynamic(l: TypeLayout): boolean {
 }
 
 /**
- * Static (head-inlined) byte size of `l`: `32` for a word, `headBytes(components)` for a STATIC
- * tuple. Used by the array encode/decode element loops (a static element `E` inlines
+ * Static (head-inlined) byte size of `l`: `32` for a word, the sum of its (all-static)
+ * components' sizes for a STATIC tuple — what {@link headBytes} gives for the same components. Used by the array encode/decode element loops (a static element `E` inlines
  * `staticSize(E)` bytes per slot). A dynamic layout has no fixed head size — calling this on one
  * is an internal error (the caller must take the dynamic-element path instead).
  */
 export function staticSize(l: TypeLayout): number {
   if (l.kind === 'word') return 32;
-  if (l.kind === 'tuple' && !l.dynamic) return headBytes(l.components.map(layoutToParam));
+  if (l.kind === 'tuple' && !l.dynamic) return l.components.reduce((n, c) => n + staticSize(c), 0);
   throw new EvsInternalError(
     'INTERNAL',
     `staticSize: ${JSON.stringify(l.abi)} is dynamic — no fixed head size`,
     { loc: captureLoc() },
   );
-}
-
-/** Reconstructs the `PlainAbiParam` for a tuple component layout, so `staticSize` can reuse
- *  {@link headBytes} (which walks `PlainAbiParam` trees). Name is irrelevant to head sizing. */
-function layoutToParam(l: TypeLayout): PlainAbiParam {
-  if (l.kind === 'tuple')
-    return { name: '', type: l.abi, components: l.components.map(layoutToParam) };
-  return { name: '', type: l.abi };
 }
 
 /**
