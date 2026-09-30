@@ -175,18 +175,18 @@ requests" is enabled in the repo settings.
 ## Docs site
 
 `apps/docs` is an Astro Starlight site deployed to <https://evs.maxencerb.com> by **Cloudflare
-Workers Builds** (not GitHub Actions). Dashboard settings (Workers → `evs-docs` → Settings →
+Workers Builds** (not GitHub Actions). Worker `evs`, two build triggers ("Deploy default
+branch" for `main`, "Deploy non-production branches" for everything else; inspect or change them
+with `cf builds triggers list|update` or in the dashboard under Workers → `evs` → Settings →
 Build):
 
-- root directory `/`
-- build variables: `PNPM_VERSION=12.8.1` (the image preinstalls pnpm 10; keep it equal to
-  `packageManager`) and `SKIP_DEPENDENCY_INSTALL=1` (the build command installs itself, with
-  `--frozen-lockfile`); Node comes from `.node-version` (24)
-- build command
-  `pnpm install --frozen-lockfile && pnpm --filter @maxencerb/evs run build && pnpm --filter @maxencerb/evs-docs run check:snippets && pnpm --filter @maxencerb/evs-docs run build`
+- root directory `/`, path filter `*` (every push builds)
+- no build variables: the image detects Node from `.node-version` (24) and pnpm from
+  `packageManager`, and runs `pnpm install --frozen-lockfile` itself before the build command
+- build command (both triggers)
+  `pnpm --filter @maxencerb/evs run build && pnpm --filter @maxencerb/evs-docs run check:snippets && pnpm --filter @maxencerb/evs-docs run build`
 - deploy command `npx wrangler deploy -c apps/docs/wrangler.jsonc` (non-production branches:
   `npx wrangler versions upload -c apps/docs/wrangler.jsonc` for a preview URL)
-- watch paths `apps/docs/**`, `packages/evs/src/**`, `pnpm-lock.yaml`, `pnpm-workspace.yaml`
 
 The build does not need the global `vp` CLI: everything resolves from `node_modules` — `vp pack`
 is the project-local binary of `vite-plus`, the playground bundles use Rolldown through
