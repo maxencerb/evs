@@ -135,6 +135,28 @@ export const abis = {
     fn([{ name: 'x', type: 'tuple', components: [A] }], 'bool'),
     fn([{ name: 'x', type: 'tuple', components: [A_ADDR] }], 'uint8'),
   ],
+  // tuples differing only by a trailing member: a literal fits only the overload that has every
+  // key it carries (named) or exactly its length (positional) — the coercion rejects the rest
+  structExtraMember: [
+    fn([{ name: 'x', type: 'tuple', components: [A] }], 'bool'),
+    fn([{ name: 'x', type: 'tuple', components: [A, { name: 'b', type: 'uint256' }] }], 'uint8'),
+  ],
+  positionalExtraElem: [
+    fn([{ name: 'x', type: 'tuple', components: [{ name: '', type: 'uint256' }] }], 'bool'),
+    fn(
+      [
+        {
+          name: 'x',
+          type: 'tuple',
+          components: [
+            { name: '', type: 'uint256' },
+            { name: '', type: 'uint256' },
+          ],
+        },
+      ],
+      'uint8',
+    ),
+  ],
   // a tuple only partly named: positional (abitype's rule — one unnamed member is enough)
   mixedTuple: [
     fn([{ name: 'x', type: 'tuple', components: [A, { name: '', type: 'address' }] }], 'bool'),
@@ -524,6 +546,43 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       abi: abis.structByMemberType,
       args: [{ a: ALICE }],
       expect: 'f((address))',
+    },
+    // -- extra keys / elements (a key naming no member, an element past the last: no fit) -------
+    {
+      name: '{a, b} record vs (uint256 a) + (uint256 a, uint256 b)',
+      abi: abis.structExtraMember,
+      args: [{ a: 1n, b: 2n }],
+      expect: 'f((uint256,uint256))',
+    },
+    {
+      name: '{a} record vs (uint256 a) + (uint256 a, uint256 b)',
+      abi: abis.structExtraMember,
+      args: [{ a: x }],
+      expect: 'f((uint256))',
+    },
+    {
+      name: '{a, b, c} record vs (uint256 a) + (uint256 a, uint256 b)',
+      abi: abis.structExtraMember,
+      args: [{ a: 1n, b: 2n, c: 3n }],
+      expect: 'none',
+    },
+    {
+      name: 'positional pair vs (uint256) + (uint256,uint256)',
+      abi: abis.positionalExtraElem,
+      args: [[1n, x]],
+      expect: 'f((uint256,uint256))',
+    },
+    {
+      name: 'positional single vs (uint256) + (uint256,uint256)',
+      abi: abis.positionalExtraElem,
+      args: [[x]],
+      expect: 'f((uint256))',
+    },
+    {
+      name: 'positional triple vs (uint256) + (uint256,uint256)',
+      abi: abis.positionalExtraElem,
+      args: [[1n, 2n, 3n]],
+      expect: 'none',
     },
     // -- partly named tuples (abitype's positional rule) ----------------------------------------
     {

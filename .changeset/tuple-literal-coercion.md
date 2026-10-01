@@ -12,4 +12,6 @@ Shapes that used to be accepted or ignored now throw `TYPE_MISMATCH` at recordin
 - a `Cell`, `Field` or `MutArray` handle where a tuple is expected (before, it became an all-zero tuple; read it with `.get()`);
 - a `Tuple` or `Expr` handle as an `s.tuple` init (before, an all-zero tuple); pass the handle itself where the tuple is expected.
 
+Overload resolution follows the same strictness: a struct literal fits an overload only if every key names one of its members (a positional literal: exactly its length), so overloads that differ by a trailing member, such as `f((uint256 a))` and `f((uint256 a, uint256 b))`, now resolve by the literal's keys instead of reporting an ambiguous call.
+
 Struct members are read from the literal's own properties, so an omitted member named like an `Object.prototype` method (`toString`, `constructor`, …) zero-fills like any other instead of throwing, and `s.throw` reports such a missing named arg as missing.

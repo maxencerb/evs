@@ -11,6 +11,7 @@ import { abis, ALICE, type OverloadCases } from '../../test/harness/overload-mat
 import type { AbiFunctionSignature } from '../core/signature.js';
 import { t, type Expr, type LitOf } from '../core/types.js';
 import { evscript, type ResolveOverload, type ViewMutability } from './script.js';
+import type { OverloadGuard } from './script/calls.js';
 
 type IsUnion<u, all = u> = u extends unknown ? ([all] extends [u] ? false : true) : never;
 
@@ -90,8 +91,52 @@ test('a resolved call is typed from the overload the recorder records', () => {
       args: [[x, 2n]],
     });
     expectTypeOf(el).toEqualTypeOf<Expr<'bool'>>();
-    return s.return({ m, c, sc, fx, tf, el });
+    // a struct literal fits only the overload that has every key it carries (positional: exactly
+    // its length), so overloads differing by a trailing member are told apart
+    const ab = s.read({
+      address: target,
+      abi: abis.structExtraMember,
+      functionName: 'f',
+      args: [{ a: 1n, b: 2n }],
+    });
+    expectTypeOf(ab).toEqualTypeOf<Expr<'uint8'>>();
+    const a = s.read({
+      address: target,
+      abi: abis.structExtraMember,
+      functionName: 'f',
+      args: [{ a: 1n }],
+    });
+    expectTypeOf(a).toEqualTypeOf<Expr<'bool'>>();
+    const pair = s.read({
+      address: target,
+      abi: abis.positionalExtraElem,
+      functionName: 'f',
+      args: [[1n, 2n]],
+    });
+    expectTypeOf(pair).toEqualTypeOf<Expr<'uint8'>>();
+    const single = s.read({
+      address: target,
+      abi: abis.positionalExtraElem,
+      functionName: 'f',
+      args: [[1n]],
+    });
+    expectTypeOf(single).toEqualTypeOf<Expr<'bool'>>();
+    return s.return({ m, c, sc, fx, tf, el, ab, a, pair, single });
   });
+});
+
+test('an extra key the value may not carry is a maybe-fit, not a misfit', () => {
+  type Picked<args> = AbiFunctionSignature<
+    ResolveOverload<typeof abis.structExtraMember, 'f', ViewMutability, args>
+  >;
+  // an optional `b` may be absent (fits f((uint256))) or present (fits f((uint256,uint256)))
+  expectTypeOf<Picked<readonly [{ a: bigint; b?: bigint }]>>().toEqualTypeOf<
+    'f((uint256))' | 'f((uint256,uint256))'
+  >();
+  // an index signature's keys are unknown statically
+  expectTypeOf<Picked<readonly [Record<string, bigint>]>>().toEqualTypeOf<
+    'f((uint256))' | 'f((uint256,uint256))'
+  >();
 });
 
 test('the compile errors mirror the recorder errors', () => {
@@ -133,8 +178,33 @@ test('the compile errors mirror the recorder errors', () => {
       args: [{ a: ALICE }],
     });
     expectTypeOf(a).toEqualTypeOf<Expr<'uint8'>>();
+    s.read({
+      address: target,
+      abi: abis.structExtraMember,
+      functionName: 'f',
+      // @ts-expect-error — `c` names no member of either struct (TYPE_MISMATCH)
+      args: [{ a: 1n, b: 2n, c: 3n }],
+    });
     return s.return({ r, a });
   });
+});
+
+test('the compile errors name the candidate signatures', () => {
+  type Guard<abi extends readonly unknown[], args> = OverloadGuard<abi, 'f', ViewMutability, args>;
+  type Ambiguous = Guard<typeof abis.dynVsFixed, readonly [readonly [1n, 2n]]>;
+  expectTypeOf<
+    Ambiguous['evs: ambiguous overload']
+  >().toMatchTypeOf<`these args fit ${string}"f(uint256[])"${string}`>();
+  expectTypeOf<
+    Ambiguous['evs: ambiguous overload']
+  >().toMatchTypeOf<`these args fit ${string}"f(uint256[2])"${string}`>();
+  type NoMatch = Guard<typeof abis.structExtraMember, readonly [{ a: 1n; b: 2n; c: 3n }]>;
+  expectTypeOf<
+    NoMatch['evs: no overload matches']
+  >().toMatchTypeOf<`${string}"f((uint256))"${string}`>();
+  expectTypeOf<
+    NoMatch['evs: no overload matches']
+  >().toMatchTypeOf<`${string}"f((uint256,uint256))"${string}`>();
 });
 
 test('LitOf element-checks multi-level chains with a fixed outer suffix (findings 15/21)', () => {
