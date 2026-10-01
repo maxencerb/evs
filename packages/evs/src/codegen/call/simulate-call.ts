@@ -205,7 +205,7 @@ export function emitSimulateCall(
   // snapshot the whole returndata (the trampoline revert payload) at buf; SNAP_SLOT = buf
   w.push(FREE_PTR);
   w.op('MLOAD'); // [buf]
-  emitSnapshotReturndata(w, true, budgeted); // [buf]
+  emitSnapshotReturndata(w, true, { reserveBudgetWord: budgeted }); // [buf]
 
   // magic check: MLOAD(buf) === MAGIC, else decode-fail
   w.op('DUP1');
@@ -267,7 +267,11 @@ export function emitSimulateCall(
       1,
       () => `the outputs of ${fnAbi.name} (site ${siteId})`,
       // the outputs block itself: its narrow word-array members are top-level outputs (uncharged)
-      () => emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, budget, true),
+      () =>
+        emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, {
+          budget,
+          outputsBlock: true,
+        }),
     ); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];

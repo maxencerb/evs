@@ -68,6 +68,15 @@ export type DecodeFail = (liveDepth: number) => void;
  */
 export type DecodeBudget = 'off' | 'once' | 'repeated';
 
+/**
+ * @internal Named settings the memory decoders thread through every nesting level (named, not
+ * positional, so further per-decode settings join without a call binding one to the wrong slot).
+ */
+export interface DecodeOptions {
+  /** How this decode charges the decode-work budget (see {@link DecodeBudget}). */
+  readonly budget: DecodeBudget;
+}
+
 /** The budget mode of an ABI-dynamic array's elements (they sit behind offsets or a length). */
 function elemBudget(budget: DecodeBudget, l: Extract<TypeLayout, { kind: 'array' }>): DecodeBudget {
   return budget === 'off' || !isDynamic(l) ? budget : 'repeated';
@@ -174,11 +183,12 @@ function emitChargeArrayBlock(
  * recurse into its own block. Net stack +1 (the flat pointer); one live word (`flat`) per tuple
  * nesting level. No `emitMemCopy`, so the element-normalize loops are the only checked regions.
  *
- * `budget` charges the decode-work budget for the blocks it materializes (see
+ * `opts.budget` charges the decode-work budget for the blocks it materializes (see
  * {@link DecodeBudget}): under `'repeated'` a dynamic tuple charges its head size before it
  * allocates its flat block, and every narrow member copy / array member is charged by its own
- * rule. `outputsBlock` marks the tuple as a call's whole output list (`s.simulate`), whose own
- * narrow word-array members are top-level outputs and not charged.
+ * rule. `opts.outputsBlock` marks the tuple as a call's whole output list (`s.simulate`), whose
+ * own narrow word-array members are top-level outputs and not charged; it never reaches nested
+ * decodes.
  */
 export function emitDecodeTupleToMem(
   w: AsmWriter,
@@ -187,9 +197,10 @@ export function emitDecodeTupleToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budget: DecodeBudget,
-  outputsBlock = false,
+  opts: DecodeOptions & { readonly outputsBlock?: boolean },
 ): void {
+  const { outputsBlock = false, ...inner } = opts;
+  const { budget } = inner;
   const offs = headOffsets(components);
   const n = components.length;
 
@@ -249,7 +260,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
-        budget,
+        inner,
       ); // [subFlat, flat, …]
       w.op('DUP2'); // [flat, subFlat, flat, …]
       if (j !== 0) {
@@ -270,7 +281,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
-        budget,
+        inner,
       ); // [arr, flat, …]
       w.op('DUP2'); // [flat, arr, flat, …]
       if (j !== 0) {
@@ -311,10 +322,10 @@ export function emitDecodeTupleToMem(
       if (layout.kind === 'tuple') {
         // its offsets are relative to ptr (the sub-tuple base)
         const sub = comp.components ?? [];
-        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, budget);
+        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, inner);
       } else {
         // `tuple[]`, `T[][]`, `string[]`, dynamic `T[N]`: a fresh `[len][p0…]` pointer block
-        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, budget);
+        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, inner);
       } // [sub, flat, …]
       w.op('DUP2'); // [flat, sub, flat, …]
       if (j !== 0) {
@@ -397,7 +408,7 @@ export function emitDecodeTupleToMem(
  * is rolled back and the heap-frame path is emitted instead. Every shape that decoded before #4
  * fit the budget where it was used, so its bytes are unchanged.
  *
- * `budget`: both paths charge the block (`arrayDecodeCharge`, see {@link DecodeBudget}) right
+ * `opts.budget`: both paths charge the block (`arrayDecodeCharge`, see {@link DecodeBudget}) right
  * after its body bound, before allocating it; the elements of an ABI-dynamic array decode
  * `'repeated'`.
  */
@@ -408,10 +419,11 @@ export function emitDecodeArrayToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budget: DecodeBudget,
+  opts: DecodeOptions,
 ): void {
+  const { budget } = opts;
   const charge = budget === 'off' ? null : arrayDecodeCharge(layout, false, budget === 'repeated');
-  const inner = elemBudget(budget, layout);
+  const inner: DecodeOptions = { ...opts, budget: elemBudget(budget, layout) };
   if (isStackDecodedArray(layout)) {
     // speculative: emit the fast path, keep it only if it fits the template budget at this
     // depth (a fast-path shape nested deep inside tuples / heap levels may not)
@@ -452,7 +464,7 @@ function emitDecodeArrayToMemStack(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  elemBudgetMode: DecodeBudget,
+  elemOpts: DecodeOptions,
   charge: DecodeCharge | null,
 ): void {
   const elemDynamic = isDynamic(elemLayout);
@@ -579,7 +591,7 @@ function emitDecodeArrayToMemStack(
     w.push(ELEM_BASE);
     w.op('MLOAD');
   };
-  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, elemBudgetMode); // [elemVal, i, D, arr, len, saved, …]
+  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, elemOpts); // [elemVal, i, D, arr, len, saved, …]
 
   // store elemVal into arr + 32 + 32·i: stack [elemVal, i, D, arr, len, saved, …]
   w.op('DUP2'); // [i, elemVal, i, D, arr, len, saved, …]
@@ -636,7 +648,7 @@ function emitDecodeArrayToMemHeap(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  elemBudgetMode: DecodeBudget,
+  elemOpts: DecodeOptions,
   charge: DecodeCharge | null,
 ): void {
   const elemLayout = layout.elem;
@@ -783,7 +795,7 @@ function emitDecodeArrayToMemHeap(
     pushEnd,
     fail,
     belowFlat + 1,
-    elemBudgetMode,
+    elemOpts,
   ); // [elemVal, arr, …]
 
   // store elemVal into arr + 32 + 32·i
@@ -876,7 +888,7 @@ function emitDecodeElement(
   pushEnd: () => void,
   fail: DecodeFail,
   belowElem: number,
-  budget: DecodeBudget,
+  opts: DecodeOptions,
 ): void {
   if (elemLayout.kind === 'word') {
     // word element: base points at the inline word; normalize and push it.
@@ -889,7 +901,7 @@ function emitDecodeElement(
   if (elemLayout.kind === 'tuple') {
     // tuple element (static or dynamic): decode into a flat block; offsets relative to base.
     const components = tupleComponents(elemLayout);
-    emitDecodeTupleToMem(w, components, pushBase, pushEnd, fail, belowElem, budget); // [flat, …]
+    emitDecodeTupleToMem(w, components, pushBase, pushEnd, fail, belowElem, opts); // [flat, …]
     return;
   }
 
@@ -897,7 +909,7 @@ function emitDecodeElement(
   if (elemLayout.kind === 'array' && !aliasedArray) {
     // nested array element (`T[][]`, `T[N][]`, `uint8[][]`, …): recurse — it saves/restores the
     // scratch slot.
-    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem, budget); // [arr, …]
+    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem, opts); // [arr, …]
     return;
   }
 

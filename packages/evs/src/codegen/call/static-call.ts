@@ -175,7 +175,7 @@ export function emitStaticCall(
 
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
     // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
-    emitSnapshotReturndata(w, hasTupleOut, budgeted); // [buf]
+    emitSnapshotReturndata(w, hasTupleOut, { reserveBudgetWord: budgeted }); // [buf]
     const pushEnd = (): void => pushSnapEnd(w);
     if (budgeted) emitInitDecodeBudget(w, pushEnd, 0); // [buf]
 
@@ -240,7 +240,8 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, budget),
+          () =>
+            emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, { budget }),
         ); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
@@ -288,7 +289,8 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, budget),
+          () =>
+            emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, { budget }),
         ); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
