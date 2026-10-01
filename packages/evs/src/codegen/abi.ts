@@ -37,6 +37,7 @@ export {
   emitNormalizeElemsLoop,
   emitCopyNormalizeWordArray,
   emitWithinStackBudget,
+  emitAboveU64,
   emitCeil32,
   emitMemCopy,
 } from './abi/shared.js';

@@ -265,7 +265,11 @@ evs optimizes for *auditable correctness* over gas:
   ([#4](https://github.com/maxencerb/evs/issues/4)). The decoder keeps a fast stack-based loop
   for the one- and two-level shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`) and switches to
   heap-allocated loop frames for the deeper ones, so the common shapes pay no gas for the
-  others ([#52](https://github.com/maxencerb/evs/issues/52)).
+  others ([#52](https://github.com/maxencerb/evs/issues/52)). A fixed-size word array is
+  copied in bulk rather than decoded element by element: one `MCOPY` on `cancun` for full-word
+  elements (`uint256[3]`, `bytes32[2]`), a short copy-and-clean loop for narrower ones
+  (`address[2]`, `uint8[4]`) and before `cancun`. A chain of nested structs costs the same code
+  per level however deep it goes.
 - **Read-only by construction.** The script's own code never writes storage, emits logs or
   deploys contracts (enforced by the shape lints above), and the effects of `s.call`/`s.simulate`
   `CALL` frames are never committed, because the whole execution is an `eth_call`.

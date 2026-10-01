@@ -78,9 +78,14 @@ export interface EncodeOpts {
  * - the HEAP-FRAME path (every deeper shape) stores the pointer of its heap-allocated loop frame
  *   here (`DECODE_FRAME`); the element base is word 0 of that frame.
  *
- * Both paths save the slot's prior value on entry and restore it on exit (the stack path keeps
- * it on the stack, the heap path in the frame's `parent` word), and both read their parent's base
- * before overwriting the slot — so the two nest inside each other in any order.
+ * The tuple decoder uses the same slot for a dynamic sub-tuple nested two levels below the
+ * nearest O(1) base: it stores a two-word TUPLE FRAME `{base, parent}` here, so the sub-tuple's
+ * members read their base back with the heap path's element-base load instead of re-deriving it
+ * through every enclosing offset word.
+ *
+ * Every user saves the slot's prior value on entry and restores it on exit (the stack path keeps
+ * it on the stack, the frames in their `parent` word), and each reads its parent's base before
+ * overwriting the slot — so they nest inside each other in any order.
  */
 export const ELEM_BASE = SCRATCH_1;
 export const DECODE_FRAME = SCRATCH_1;
@@ -92,6 +97,11 @@ export const DFRAME_I = 1;
 export const DFRAME_D = 2;
 export const DFRAME_LEN = 3;
 export const DFRAME_PARENT = 4;
+/** Words per tuple-decode frame: `{base, parent}`. The base sits at word 0, like a heap frame's
+ *  element base, so both read back the same way. */
+export const TFRAME_SLOTS = 2;
+export const TFRAME_BASE = 0;
+export const TFRAME_PARENT = 1;
 
 export function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/abi: ${message}`);
@@ -123,6 +133,18 @@ export function emitWithinStackBudget(
       `${what()} nests structs and arrays too deeply: handling it needs ${peak} operand-stack slots, over the EVM's ${MAX_TEMPLATE_DEPTH}-slot reach — flatten the type (fewer nested struct / array levels)`,
     );
   }
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. The decoders' overflow-free `x ≤ 2^64−1` bound on an
+ * offset or length word: `[x] → [x >> 64]`, nonzero exactly when `x > 2^64−1`. Three bytes
+ * (`PUSH1 64 SHR`) where `PUSH8 0xff…ff LT` takes ten, for the same gas. The result is not a
+ * boolean, so it may only feed a branch: a `JUMPI`, or a try-mode {@link DecodeFail} router's
+ * `ISZERO`. That is why this is a helper at the bound sites and not a peephole rule.
+ */
+export function emitAboveU64(w: AsmWriter): void {
+  w.push(64);
+  w.op('SHR');
 }
 
 /** Human-readable rendering of a value type for error messages / debug notes (tuples → their
@@ -262,9 +284,8 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
  * exactly the interpreter's fresh-copy decode. Full-word element types need no normalization and
  * keep aliasing.
  *
- * One fused loop (no `emitMemCopy`, so it is fork-independent and works at any stack depth):
- * `k` walks the byte offset `32·len … 32` down to 0 and copies `norm(src[k])` to `dst[k]`. Loop
- * labels are checked at absolute height `depthBelow + 3` (`[k, dst, src]` above `depthBelow`).
+ * One fused loop ({@link emitCopyWordsLoop}; no `emitMemCopy`, so it is fork-independent and
+ * works at any stack depth). Loop labels are checked at absolute height `depthBelow + 3`.
  */
 export function emitCopyNormalizeWordArray(w: AsmWriter, elem: WordType, depthBelow: number): void {
   w.push(FREE_PTR);
@@ -283,6 +304,17 @@ export function emitCopyNormalizeWordArray(w: AsmWriter, elem: WordType, depthBe
   w.op('ADD'); // [dst+32+32·len, k, dst, src, …]
   w.push(FREE_PTR);
   w.op('MSTORE'); // [k, dst, src, …]   freePtr bumped
+  emitCopyWordsLoop(w, elem, depthBelow); // [dst, …]
+}
+
+/**
+ * The word-copy loop of {@link emitCopyNormalizeWordArray}, shared with the fixed-size word-array
+ * decode: `[k, dst, src, …] → [dst, …]`. `k` walks the byte offset `k … 32` down to 0 and copies
+ * `norm(src[k])` to `dst[k]` (so `src` / `dst` point one word before the first element, at the
+ * length word of a `[len][e…]` block). Loop labels are checked at absolute height
+ * `depthBelow + 3` (`[k, dst, src]` above `depthBelow`).
+ */
+export function emitCopyWordsLoop(w: AsmWriter, elem: WordType, depthBelow: number): void {
   const height = depthBelow + 3;
   const head = w.newLabel(`elemcopy_${elem}`);
   const done = w.newLabel(`elemcopy_${elem}_done`);

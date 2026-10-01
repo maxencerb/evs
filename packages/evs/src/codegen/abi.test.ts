@@ -46,7 +46,7 @@ function echoRuntime(types: readonly EvsType[], evmVersion: EvmVersion): Hex {
   w.op('MSTORE');
   const tails = createSharedTails(w, { evmVersion });
   const refs: SlotRef[] = types.map((type, i) => ({ slot: FRAME_BASE + 32 * i, type }));
-  emitCalldataDecode(w, refs, tails);
+  emitCalldataDecode(w, refs, tails, { evmVersion });
   emitReturnEncode(
     w,
     refs.map((ref, i) => ({ name: `v${i}`, ref })),

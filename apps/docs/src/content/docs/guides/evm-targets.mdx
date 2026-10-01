@@ -45,7 +45,9 @@ instruction selection differs:
   `RETURNDATASIZE`, which is guaranteed zero at the start of an init frame.
 - `MCOPY` is EIP-5656, activated in Cancun. On older targets memory copies go through a shared
   `@memcpy` word-loop subroutine (about 35 bytes, 67 gas per copied word), emitted once per
-  pre-Cancun build, and only when the script copies memory.
+  pre-Cancun build, and only when the script copies memory. The one exception is the decode of
+  a fixed-size word array (`uint256[3]`, …), which happens mid-template: before Cancun it copies
+  with a short inline word loop instead.
 
 The assembler's verifier enforces the gate as a backstop: no opcode newer than the chosen
 target can survive into the bytecode (a stray `MCOPY` in a `paris` build is an internal error,

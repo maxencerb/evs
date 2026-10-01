@@ -526,7 +526,7 @@ describe('worked-example goldens', () => {
       0x002f  3d          RETURNDATASIZE
       0x0030  6020        PUSH1 0x20  ; staticMinSize 32
       0x0032  11          GT
-      0x0033  610088      PUSH2 0x0088 → @dfail_7
+      0x0033  61007a      PUSH2 0x007a → @dfail_7
       0x0036  57          JUMPI
       0x0037  3d          RETURNDATASIZE
       0x0038  5f          PUSH0
@@ -544,40 +544,40 @@ describe('worked-example goldens', () => {
       0x0047  52          MSTORE
       0x0048  80          DUP1
       0x0049  51          MLOAD
-      0x004a  67ffffffffffffffff  PUSH8 0xffffffffffffffff
-      0x0053  81          DUP2
-      0x0054  11          GT
-      0x0055  610088      PUSH2 0x0088 → @dfail_7
-      0x0058  57          JUMPI
-      0x0059  80          DUP1
-      0x005a  6020        PUSH1 0x20
-      0x005c  01          ADD
-      0x005d  3d          RETURNDATASIZE
-      0x005e  10          LT
-      0x005f  610088      PUSH2 0x0088 → @dfail_7
-      0x0062  57          JUMPI
-      0x0063  81          DUP2
-      0x0064  01          ADD
-      0x0065  80          DUP1
-      0x0066  51          MLOAD
-      0x0067  67ffffffffffffffff  PUSH8 0xffffffffffffffff
-      0x0070  81          DUP2
-      0x0071  11          GT
-      0x0072  610088      PUSH2 0x0088 → @dfail_7
-      0x0075  57          JUMPI
-      0x0076  81          DUP2
-      0x0077  6020        PUSH1 0x20
-      0x0079  01          ADD
-      0x007a  01          ADD
-      0x007b  3d          RETURNDATASIZE
-      0x007c  83          DUP4
-      0x007d  01          ADD
-      0x007e  10          LT
-      0x007f  610088      PUSH2 0x0088 → @dfail_7
-      0x0082  57          JUMPI
-      0x0083  60a0        PUSH1 0xa0
-      0x0085  52          MSTORE  ; out #0 string (memref aliases snapshot)
-      0x0086  50          POP"
+      0x004a  80          DUP1
+      0x004b  6040        PUSH1 0x40
+      0x004d  1c          SHR
+      0x004e  61007a      PUSH2 0x007a → @dfail_7
+      0x0051  57          JUMPI
+      0x0052  80          DUP1
+      0x0053  6020        PUSH1 0x20
+      0x0055  01          ADD
+      0x0056  3d          RETURNDATASIZE
+      0x0057  10          LT
+      0x0058  61007a      PUSH2 0x007a → @dfail_7
+      0x005b  57          JUMPI
+      0x005c  81          DUP2
+      0x005d  01          ADD
+      0x005e  80          DUP1
+      0x005f  51          MLOAD
+      0x0060  80          DUP1
+      0x0061  6040        PUSH1 0x40
+      0x0063  1c          SHR
+      0x0064  61007a      PUSH2 0x007a → @dfail_7
+      0x0067  57          JUMPI
+      0x0068  81          DUP2
+      0x0069  6020        PUSH1 0x20
+      0x006b  01          ADD
+      0x006c  01          ADD
+      0x006d  3d          RETURNDATASIZE
+      0x006e  83          DUP4
+      0x006f  01          ADD
+      0x0070  10          LT
+      0x0071  61007a      PUSH2 0x007a → @dfail_7
+      0x0074  57          JUMPI
+      0x0075  60a0        PUSH1 0xa0
+      0x0077  52          MSTORE  ; out #0 string (memref aliases snapshot)
+      0x0078  50          POP"
     `);
   });
 
