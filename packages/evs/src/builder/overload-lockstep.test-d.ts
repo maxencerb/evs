@@ -133,10 +133,36 @@ test('an extra key the value may not carry is a maybe-fit, not a misfit', () => 
   expectTypeOf<Picked<readonly [{ a: bigint; b?: bigint }]>>().toEqualTypeOf<
     'f((uint256))' | 'f((uint256,uint256))'
   >();
-  // an index signature's keys are unknown statically
+  // an index signature's keys are unknown statically (a numeric one too)
   expectTypeOf<Picked<readonly [Record<string, bigint>]>>().toEqualTypeOf<
     'f((uint256))' | 'f((uint256,uint256))'
   >();
+  expectTypeOf<
+    Picked<readonly [{ a: bigint; [i: number]: bigint }]>
+  >().toEqualTypeOf<'f((uint256))'>();
+  // an optional numeric key, like an optional named one, may be absent
+  expectTypeOf<Picked<readonly [{ a: bigint; 0?: bigint }]>>().toEqualTypeOf<'f((uint256))'>();
+  // a required numeric key is listed by `Object.keys` (as '0') and names no member
+  expectTypeOf<Picked<readonly [{ a: bigint; 0: bigint }]>>().toBeNever();
+});
+
+test('a positional literal of statically unknown length is a maybe-fit, not a misfit', () => {
+  type Picked<args> = AbiFunctionSignature<
+    ResolveOverload<typeof abis.positionalExtraElem, 'f', ViewMutability, args>
+  >;
+  // an optional element: length 1 | 2, both overloads may fit
+  expectTypeOf<Picked<readonly [readonly [bigint, bigint?]]>>().toEqualTypeOf<
+    'f((uint256))' | 'f((uint256,uint256))'
+  >();
+  // a plain array: any length
+  expectTypeOf<Picked<readonly [readonly bigint[]]>>().toEqualTypeOf<
+    'f((uint256))' | 'f((uint256,uint256))'
+  >();
+  // a union of lengths still rules out an overload whose length it never has
+  expectTypeOf<
+    Picked<readonly [readonly [bigint, bigint, bigint?]]>
+  >().toEqualTypeOf<'f((uint256,uint256))'>();
+  expectTypeOf<Picked<readonly [readonly [bigint, bigint, bigint, bigint?]]>>().toBeNever();
 });
 
 test('the compile errors mirror the recorder errors', () => {

@@ -242,8 +242,8 @@ type AllElemsFit<v extends readonly unknown[], elem extends string, comps> = [
 /** A tuple literal, by abitype's rule ({@link AllMembersNamed}): a (non-array) record keyed by
  *  member name when every member is named, else a positional array (a single unnamed member
  *  makes the whole tuple positional); every member present and fitting, and nothing more — a key
- *  that names no member ({@link NoExtraKeys}) or a length other than the tuple's is a misfit, as
- *  the coercion rejects it. */
+ *  that names no member ({@link NoExtraKeys}) or a length other than the tuple's
+ *  ({@link MayHaveLength}) is a misfit, as the coercion rejects it. */
 type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
   ? v extends object
     ? AllMembersNamed<comps> extends true
@@ -256,7 +256,7 @@ type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
           ? true
           : false
       : v extends readonly unknown[]
-        ? v['length'] extends comps['length']
+        ? MayHaveLength<v['length'], comps['length']> extends true
           ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
             ? true
             : false
@@ -265,27 +265,45 @@ type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
     : false
   : false;
 
-/** `true` when every string key of the record `v` is one of `names`; `false` when another key is
+/** `true` when every key of the record `v` that the recorder's `Object.keys` lists (a string or
+ *  a numeric one, the latter as its string form) is one of `names`; `false` when another key is
  *  required. A maybe-fit (`boolean`) when the other keys are all optional, or under an index
  *  signature (keys unknown statically): the value may carry none of them. */
 type NoExtraKeys<v, names> =
-  Exclude<Extract<keyof v, string>, names> extends infer extra extends keyof v
+  ExtraKeys<v, names> extends infer extra extends keyof v
     ? [extra] extends [never]
       ? true
       : string extends extra
         ? boolean
-        : Partial<Pick<v, extra>> extends Pick<v, extra>
+        : number extends extra
           ? boolean
-          : false
+          : Partial<Pick<v, extra>> extends Pick<v, extra>
+            ? boolean
+            : false
     : false;
+
+/** The keys of `v` (symbols aside) whose string form is none of `names`. */
+type ExtraKeys<v, names> = {
+  [k in keyof v]-?: k extends symbol ? never : `${k & (string | number)}` extends names ? never : k;
+}[keyof v];
+
+/** Whether an array of length `len` may have the tuple's length `n`: a literal length must be
+ *  `n`, a union of lengths (optional elements) or a plain `number` (`T[]`) need only include it —
+ *  a maybe-fit, as the recorder decides by the runtime length. */
+type MayHaveLength<len, n> = [Extract<len, n> | Extract<n, len>] extends [never] ? false : true;
 
 type NameOf<c> = c extends { readonly name: infer n extends string } ? n : '';
 
-/** The member `key` of the literal `v` is present and fits the component `c`. */
-type MemberFits<v, key, c> = key extends keyof v
-  ? c extends AbiParameter
+/** The member `key` of the literal `v` is present and fits the component `c` (a plain array's
+ *  element, its index unknown statically, stands for every position). */
+type MemberFits<v, key, c> = c extends AbiParameter
+  ? key extends keyof v
     ? FitsArg<v[key], c['type'], ComponentsOf<c>>
-    : false
+    : v extends readonly unknown[]
+      ? number extends v['length']
+        ? FitsArg<v[number], c['type'], ComponentsOf<c>>
+        : false
+      : false
   : false;
 
 /**

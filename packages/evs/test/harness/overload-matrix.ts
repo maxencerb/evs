@@ -567,6 +567,13 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       expect: 'none',
     },
     {
+      // `Object.keys` lists a numeric key too (as '0'), and it names no member
+      name: '{a, 0} record vs (uint256 a) + (uint256 a, uint256 b)',
+      abi: abis.structExtraMember,
+      args: [{ a: x, 0: 2n }],
+      expect: 'none',
+    },
+    {
       name: 'positional pair vs (uint256) + (uint256,uint256)',
       abi: abis.positionalExtraElem,
       args: [[1n, x]],
