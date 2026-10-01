@@ -176,6 +176,23 @@ wrapped or rewritten, so you can decode the payload against the callee's ABI as 
 called it directly. If you want a failed sub-call to produce zeros instead of reverting, use
 `s.tryRead` — see [calling contracts](/guides/calls/).
 
+### Failures without a script payload
+
+Some failures never reach the script's revert families, and their payload says nothing about
+the cause:
+
+- **Deployless creation limits.** The default `toViem()` runs as a contract creation, so the
+  node rejects a result over 24,576 bytes, a result starting with byte `0xEF`, or a payload
+  over 49,152 bytes. viem throws with the node's reason in `details` (`max code size exceeded`,
+  `CreateContractStartingWithEF`, `max initcode size exceeded`, …).
+  `explainDeploylessError(error)` turns it into a typed explanation naming the rule. See
+  [deployless limits](/guides/execution/#deployless-limits).
+- **Empty reverts in deployless mode.** When the script itself dies without revert data — it
+  runs out of gas, or the pinned block lacks an opcode the artifact uses (`PUSH0`, `MCOPY`) —
+  viem's wrapper reverts with empty data, and `explainRevert` reports kind `'empty'`. Re-run
+  the call with `toViem({ mode: 'stateOverride' })` to see the node's own error, and check the
+  artifact's `evmVersion` against the [pinned block](/guides/execution/#block-pinning).
+
 ## Decoding script errors on the client
 
 Because the declared errors ride in the artifact ABI, a plain `readContract` already throws a

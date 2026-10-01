@@ -321,5 +321,11 @@ export interface ScriptReturn<ret extends Record<string, ReturnValue>> {
 // env
 // ---------------------------------------------------------------------------
 
+/**
+ * The `s.env(kind)` argument. `address`/`caller` are frame-dependent (they differ between the
+ * two `toViem()` modes); the rest are block context. `blocknumber` is the `NUMBER` opcode, so it
+ * reports what the chain defines: on Arbitrum an approximate L1 block number, not the L2 block
+ * (read `ArbSys(0x64).arbBlockNumber()` for that).
+ */
 export type EnvKind = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
 export type EnvTypeOf<k extends EnvKind> = k extends 'address' | 'caller' ? 'address' : 'uint256';

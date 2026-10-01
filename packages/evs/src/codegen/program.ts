@@ -320,7 +320,8 @@ function describeAllocation(
  * `address` is a per-script counterfactual CREATE2 address (neither controllable), while in
  * stateOverride mode `caller` is the `account` call parameter and `address` is the chosen
  * override address. timestamp/blocknumber/chainid are block context — identical across modes —
- * so the warning is scoped to caller+address.
+ * so the warning is scoped to caller+address (blocknumber is NUMBER, which on Arbitrum is an
+ * approximate L1 block: chain semantics, documented rather than warned about).
  */
 const ENV_FRAME_MESSAGES: Partial<Record<string, string>> = {
   caller:

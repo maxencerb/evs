@@ -186,7 +186,11 @@ State-override mode accepts an optional `address` (viem's `Address` type) to pla
 somewhere else; it requires a provider that supports the third `eth_call` parameter. The two
 modes run the script in different execution frames, which matters for `s.env('caller')` and
 `s.env('address')` — see [execution](/guides/execution/) for the full comparison, block pinning,
-and the `ENV_FRAME_DEPENDENT` warning.
+and the `ENV_FRAME_DEPENDENT` warning. Deployless mode runs as a contract creation, so its result
+is capped at 24,576 bytes (and must not start with `0xEF`), its payload — `initBytecode` plus
+the encoded args — at about 48.6 KB, and it costs extra gas; state-override mode has none of
+these limits. See [deployless limits](#deployless-limits) below for the checks evs provides, and
+the [execution guide](/guides/execution/#deployless-limits) for the gas cost and workarounds.
 
 ### `DEFAULT_SCRIPT_ADDRESS`
 
