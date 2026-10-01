@@ -54,7 +54,8 @@ export const DEFAULT_GAS_LIMIT = 30_000_000n;
 
 export interface EvmFixture {
   contracts?: Record<Address, Hex>;
-  /** wei balances planted before the call (s.balance / s.codeHash of a funded EOA). */
+  /** wei balances planted before the call (s.balance / s.codeHash of a funded EOA, or
+   * `SCRIPT_ADDRESS` to fund a script that sends `value`). */
   balances?: Record<Address, bigint>;
   gasLimit?: bigint;
 }

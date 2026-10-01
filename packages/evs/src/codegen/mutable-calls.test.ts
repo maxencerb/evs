@@ -11,7 +11,7 @@
 import { type Abi, decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
-import { execRuntime } from '../../test/harness/evm.js';
+import { execRuntime, SCRIPT_ADDRESS } from '../../test/harness/evm.js';
 import { returner, reverter, RUNTIME_SPIN, word } from '../../test/harness/fixtures.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
@@ -504,5 +504,173 @@ describe('issue #36 — simulate composes (inside s.fn, chained)', () => {
       data: res.data,
       values: { first: 200n, second: 400n, third: 1200n },
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// call value: `s.call({ value })` / `s.simulate({ value })` on payable targets
+// ---------------------------------------------------------------------------
+
+const PAYABLE_ABI = [
+  {
+    type: 'function',
+    name: 'submit',
+    stateMutability: 'payable',
+    inputs: [{ name: 'referral', type: 'address' }],
+    outputs: [{ name: 'shares', type: 'uint256' }],
+  },
+] as const satisfies Abi;
+
+/** `CALLVALUE PUSH0 MSTORE PUSH1 32 PUSH0 RETURN` — a target that returns the `msg.value` it got. */
+const RUNTIME_CALLVALUE: Hex = '0x345f5260205ff3';
+
+/** Echoes `req.value` back like {@link RUNTIME_CALLVALUE}, recording what each site sent. */
+function valueOracle(seen: (bigint | undefined)[]): MockChain {
+  return {
+    staticcall: () => ({ success: true, data: word(0n) }),
+    call: (req) => {
+      seen.push(req.value);
+      return { success: true, data: word(req.value ?? 0n) };
+    },
+  };
+}
+
+describe('call value (payable targets)', () => {
+  /** All four CALL verbs, with a runtime value (an arg) and a literal one. */
+  const script = evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, wei) => {
+    const p = {
+      address: target,
+      abi: PAYABLE_ABI,
+      functionName: 'submit',
+      args: [target],
+    } as const;
+    const call = s.call({ ...p, value: wei });
+    const sim = s.simulate({ ...p, value: 7n });
+    const tryCall = s.tryCall({ ...p, value: s.add(wei, 1n) });
+    const trySim = s.trySimulate({ ...p, value: wei });
+    const free = s.call(p); // no value: msg.value 0, as before
+    return s.return({
+      call,
+      sim,
+      tryCall: tryCall.value,
+      tryCallOk: tryCall.success,
+      trySim: trySim.value,
+      trySimOk: trySim.success,
+      free,
+    });
+  });
+  const amount = 10n ** 18n;
+  // every script below is `pay(address,uint256)`, so they share one calldata
+  const calldata = encodeFunctionData({
+    abi: compile(script).abi,
+    functionName: 'pay',
+    args: [TARGET, amount],
+  });
+
+  test('the target receives each site’s value as msg.value (both outputs, funded script)', async () => {
+    for (const optimize of [false, true]) {
+      const compiled = compile(script, { optimize });
+      // oxlint-disable-next-line no-await-in-loop -- two sequential runs, one per output
+      const res = await execRuntime(compiled.runtimeBytecode, calldata, {
+        contracts: { [TARGET]: RUNTIME_CALLVALUE },
+        balances: { [SCRIPT_ADDRESS]: 10n ** 19n },
+      });
+      expect(res.success).toBe(true);
+      expect(
+        decodeFunctionResult({ abi: compiled.abi, functionName: 'pay', data: res.data }),
+      ).toEqual({
+        call: amount,
+        sim: 7n,
+        tryCall: amount + 1n,
+        tryCallOk: true,
+        trySim: amount,
+        trySimOk: true,
+        free: 0n,
+      });
+      // the reference interpreter hands each site's value to the oracle and agrees byte-for-byte
+      const seen: (bigint | undefined)[] = [];
+      const interp = interpret(script.ir, [TARGET, amount], valueOracle(seen));
+      expect(seen).toEqual([amount, 7n, amount + 1n, amount, undefined]);
+      expect(interp.outcome).toMatchObject({ kind: 'return', data: res.data });
+    }
+  });
+
+  test('an unfunded script: s.call bubbles an empty revert, s.simulate is a decode failure', async () => {
+    const strict = (verb: 'call' | 'simulate') =>
+      compile(
+        evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, value) =>
+          s.return({
+            shares: s[verb]({
+              address: target,
+              abi: PAYABLE_ABI,
+              functionName: 'submit',
+              args: [target],
+              value,
+            }),
+          }),
+        ),
+      );
+    const fixture = { contracts: { [TARGET]: RUNTIME_CALLVALUE } };
+    const viaCall = strict('call');
+    const callRes = await execRuntime(viaCall.runtimeBytecode, calldata, fixture);
+    expect(callRes).toMatchObject({ success: false, data: '0x' });
+    // the simulate hop itself carries the value, so it fails before the trampoline runs
+    const viaSim = strict('simulate');
+    const simRes = await execRuntime(viaSim.runtimeBytecode, calldata, fixture);
+    expect(simRes.success).toBe(false);
+    expect(viaSim.explainRevert(simRes.data).kind).toBe('evs-decode');
+  });
+
+  test('try verbs contain an unfunded value: success=false, zero value, the script continues', async () => {
+    const tryPay = evscript(
+      { name: 'tryPay', args: [t.address, t.uint256] },
+      (s, target, value) => {
+        const p = {
+          address: target,
+          abi: PAYABLE_ABI,
+          functionName: 'submit',
+          args: [target],
+        } as const;
+        const a = s.tryCall({ ...p, value });
+        const b = s.trySimulate({ ...p, value });
+        return s.return({ okA: a.success, a: a.value, okB: b.success, b: b.value });
+      },
+    );
+    const compiled = compile(tryPay);
+    const res = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({ abi: compiled.abi, functionName: 'tryPay', args: [TARGET, 5n] }),
+      { contracts: { [TARGET]: RUNTIME_CALLVALUE }, balances: { [SCRIPT_ADDRESS]: 4n } },
+    );
+    expect(res.success).toBe(true);
+    expect(
+      decodeFunctionResult({ abi: compiled.abi, functionName: 'tryPay', data: res.data }),
+    ).toEqual({ okA: false, a: 0n, okB: false, b: 0n });
+    // the interpreter agrees when the oracle reports the failed CALL
+    const unfunded: MockChain = {
+      staticcall: () => ({ success: true, data: '0x' }),
+      call: () => ({ success: false, data: '0x' }),
+    };
+    expect(interpret(tryPay.ir, [TARGET, 5n], unfunded).outcome).toMatchObject({
+      kind: 'return',
+      data: res.data,
+    });
+  });
+
+  test('regression (field test): a `value` is no longer dropped — the bytecode sends it', () => {
+    // 0.2.0 accepted an untyped `value` key and compiled byte-identical code with or without it
+    const build = (withValue: boolean) =>
+      compile(
+        evscript({ name: 'stake', args: [t.uint256] }, (s, wei) => {
+          const p = {
+            address: '0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84',
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: ['0x0000000000000000000000000000000000000000'],
+          } as const;
+          return s.return({ shares: s.simulate(withValue ? { ...p, value: wei } : p) });
+        }),
+      ).runtimeBytecode;
+    expect(build(true)).not.toBe(build(false));
   });
 });

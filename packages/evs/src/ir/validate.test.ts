@@ -1858,6 +1858,40 @@ describe('validateIr — call rules', () => {
   test('gas must be uint256', () => {
     expectInvalid(callIr({ gas: 1 }), /gas.*expected 'uint256'/);
   });
+
+  test("value is legal on kind 'call' / 'simulate' only, and must be uint256", () => {
+    /** v3 = a uint256 const sent as the call's value. */
+    const withValue = (kind?: 'static' | 'call' | 'simulate'): ScriptIr =>
+      ir({
+        values: [vi('address'), vi('address'), vi('uint256'), vi('uint256')],
+        body: [
+          mk({ k: 'env', op: 'caller', out: 0 }),
+          mk({ k: 'env', op: 'address', out: 1 }),
+          u256Const(3, 1n),
+          mk({
+            k: 'call',
+            target: 0,
+            fnAbi: ABI,
+            args: [1],
+            outs: [2],
+            mode: 'strict',
+            ...(kind === undefined ? {} : { kind }),
+            value: 3,
+          }),
+        ],
+      });
+    expect(() => validateIr(withValue('call'))).not.toThrow();
+    expect(() => validateIr(withValue('simulate'))).not.toThrow();
+    expectInvalid(
+      withValue(),
+      /value is only legal when kind is 'call' or 'simulate'.*'static' \(absent\)/,
+    );
+    expectInvalid(
+      withValue('static'),
+      /value is only legal when kind is 'call' or 'simulate'.*'static'/,
+    );
+    expectInvalid(callIr({ kind: 'call', value: 1 }), /value.*expected 'uint256'/);
+  });
 });
 
 // ---------------------------------------------------------------------------

@@ -14,7 +14,7 @@
  * asserted at the end of each test.
  */
 
-import { encodeFunctionData } from 'viem';
+import { encodeFunctionData, getAddress, parseEther } from 'viem';
 import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
@@ -296,5 +296,71 @@ describe('s.simulate revert handling', () => {
       args: [vault],
     });
     expect(out).toStrictEqual({ ok: false, shares: 0n });
+  });
+});
+
+describe('call value: s.call / s.simulate send ETH to a payable target', () => {
+  /** A dry-run deposit, a read, a committed deposit, a read — each deposit sending `amount`. */
+  const payThenRead = evscript(
+    { name: 'payThenRead', args: [t.address, t.uint256] },
+    (s, v, amount) => {
+      const p = { address: v, abi: MockVault.abi, functionName: 'depositEth' } as const;
+      const simulated = s.simulate({ ...p, value: amount });
+      const afterSim = s.read({ address: v, abi: MockVault.abi, functionName: 'totalShares' });
+      const paid = s.call({ ...p, value: amount });
+      const afterCall = s.read({ address: v, abi: MockVault.abi, functionName: 'totalShares' });
+      return s.return({ simulated, afterSim, paid, afterCall });
+    },
+  );
+  const compiled = payThenRead.compile();
+  const amount = parseEther('1.5');
+
+  test('a script funded through a stateOverride balance pays; simulate rolls the deposit back', async () => {
+    const override = compiled.toViem({ mode: 'stateOverride' });
+    const out = await publicClient.readContract({
+      ...override,
+      // the script pays from its own balance: fund its override entry
+      stateOverride: [{ ...override.stateOverride[0], balance: parseEther('2') }],
+      functionName: 'payThenRead',
+      args: [vault, amount],
+    });
+    expect(out).toStrictEqual({ simulated: amount, afterSim: 0n, paid: amount, afterCall: amount });
+    const onChain = await publicClient.readContract({
+      address: vault,
+      abi: MockVault.abi,
+      functionName: 'totalShares',
+    });
+    expect(onChain).toBe(0n);
+  });
+
+  test('sender mode: the funded sender account pays, no balance override needed', async () => {
+    // anvil's account #1 holds 10,000 ETH; the script runs at its address
+    const sender = getAddress('0x70997970C51812dc3A010C7d01b50e0d17dc79C8');
+    const out = await publicClient.readContract({
+      ...compiled.toViem({ mode: 'stateOverride', sender }),
+      functionName: 'payThenRead',
+      args: [vault, amount],
+    });
+    expect(out).toStrictEqual({ simulated: amount, afterSim: 0n, paid: amount, afterCall: amount });
+  });
+
+  test('an unfunded script: strict s.call reverts empty, strict s.simulate reverts EvsDecodeError', async () => {
+    for (const verb of ['call', 'simulate'] as const) {
+      const pay = evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, v, value) =>
+        s.return({
+          shares: s[verb]({ address: v, abi: MockVault.abi, functionName: 'depositEth', value }),
+        }),
+      );
+      const c = pay.compile();
+      const override = c.toViem({ mode: 'stateOverride' });
+      const raw = await callExpectRevert({
+        to: override.address,
+        stateOverride: override.stateOverride,
+        data: encodeFunctionData({ abi: c.abi, functionName: 'pay', args: [vault, amount] }),
+      });
+      // the CALL fails before the vault runs: nothing to bubble for s.call; for s.simulate the
+      // value-carrying self-call hop fails, which the site reports as a decode failure
+      expect(c.explainRevert(raw).kind).toBe(verb === 'call' ? 'empty' : 'evs-decode');
+    }
   });
 });

@@ -70,6 +70,7 @@ export type {
   WideSubcallResult,
   SubcallStruct,
   SubcallParams,
+  CallValue,
   ResolvedSubcallParams,
   SubcallVerb,
   TrySubcallVerb,

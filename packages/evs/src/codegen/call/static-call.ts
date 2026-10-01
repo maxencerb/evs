@@ -1,6 +1,7 @@
 /**
- * `codegen/call/static-call.ts` — `emitStaticCall`: the STATICCALL (`s.read`) / CALL with value 0
- * (`s.call`) site, with in-place per-output decode of the returndata snapshot.
+ * `codegen/call/static-call.ts` — `emitStaticCall`: the STATICCALL (`s.read`) / CALL (`s.call`,
+ * value 0 unless the site sends one) site, with in-place per-output decode of the returndata
+ * snapshot.
  */
 
 import { headBytes, layoutOfType, isDynamic } from '../../abi/layout.js';
@@ -34,6 +35,7 @@ import {
   TAIL_CURSOR,
   pushWordRef,
   pushGasRef,
+  pushValueRef,
   emitSnapshotReturndata,
   callSiteAllocates,
   pushSnapEnd,
@@ -107,11 +109,11 @@ export function emitStaticCall(
   // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
 
-  // -- 2. the subcall (issue #1): STATICCALL for `kind: 'static'` (s.read), CALL with value 0 for
+  // -- 2. the subcall (issue #1): STATICCALL for `kind: 'static'` (s.read), CALL for
   // `kind: 'call'` (s.call — a non-static frame for non-view targets). `kind: 'simulate'` never
   // reaches here (lowerCall routes it to emitSimulateCall). Operand order:
   //   STATICCALL(gas, addr, buf, argsSize, 0, 0)
-  //   CALL      (gas, addr, value=0, buf, argsSize, 0, 0)
+  //   CALL      (gas, addr, value, buf, argsSize, 0, 0)   (value: the site's `value`, else 0)
   // — identical save the extra `value` word, so only one push + the opcode differ; the decode,
   // bubble, and try-zeroing below are byte-shared.
   const useCall = stmt.kind === 'call';
@@ -129,7 +131,7 @@ export function emitStaticCall(
     w.op('SUB'); // [argsSize, retOff, retSize, buf]
   }
   w.op('DUP4'); // [argsOff = buf, argsSize, retOff, retSize, buf]
-  if (useCall) w.push(0, { note: 'value 0' }); // [value, argsOff, …] — CALL only
+  if (useCall) pushValueRef(w, plan.valueRef, `value of ${fnAbi.name}`); // [value, argsOff, …]
   pushWordRef(w, plan.targetRef, `target of ${fnAbi.name}`, 'target');
   pushGasRef(w, plan.gasRef, `gas of ${fnAbi.name}`);
   w.op(useCall ? 'CALL' : 'STATICCALL', {

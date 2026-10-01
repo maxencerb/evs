@@ -29,6 +29,10 @@
  * target burns its whole allowance: the target's out-of-gas surfaces as `innerSuccess = 0`, never
  * as a lost MAGIC.
  *
+ * Value: an `s.simulate({ value })` site sends the wei on the self-call hop (a self-transfer, which
+ * leaves the script's balance unchanged) and the trampoline forwards its own `CALLVALUE` to the
+ * target, so the wire header needs no value word. A hop without value forwards 0, as before.
+ *
  * Re-entrancy: the trampoline is a self-contained dispatcher entrypoint that runs in its own
  * frame with its own memory, so it composes freely — a simulate site inside an `s.fn` body, one
  * simulate feeding the next, or a target that itself re-enters the script through the same
@@ -91,13 +95,13 @@ export function emitSimulateTrampoline(w: AsmWriter, entry: LabelId): void {
   w.push(0x80);
   w.op('CALLDATACOPY', { note: 'copy target payload' }); // [L]
 
-  // success = CALL(gas, target, value = 0, argsOffset = 0x80, argsSize = L, retOffset = 0, retSize = 0)
-  // push bottom-up: retSize, retOffset, argsSize, argsOffset, value, addr, gas
+  // success = CALL(gas, target, value = CALLVALUE, argsOffset = 0x80, argsSize = L, retOffset = 0,
+  // retSize = 0) — push bottom-up: retSize, retOffset, argsSize, argsOffset, value, addr, gas
   w.push(0); // [retSize=0, L]
   w.push(0); // [retOff=0, 0, L]
   w.op('DUP3'); // [argsSize=L, 0, 0, L]
   w.push(0x80); // [argsOff=0x80, L, 0, 0, L]
-  w.push(0, { note: 'value 0' }); // [value=0, …]
+  w.op('CALLVALUE', { note: "the site's value (the hop carries it)" }); // [value, …]
   w.push(0x04);
   w.op('CALLDATALOAD'); // [target_raw, …]
   w.push(ADDRESS_MASK, { note: 'mask address' });

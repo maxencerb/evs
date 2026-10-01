@@ -497,6 +497,7 @@ function decodeStmt(v: unknown, path: string): Stmt {
       }
       const successOut: unknown = o['successOut'];
       const gas: unknown = o['gas'];
+      const value: unknown = o['value'];
       // `revertReturns` is OPTIONAL (issue #35): absent → the ABI outputs are the decode schema.
       const revertReturns: unknown = o['revertReturns'];
       return {
@@ -510,6 +511,7 @@ function decodeStmt(v: unknown, path: string): Stmt {
         ...(kind !== undefined && kind !== 'static' ? { kind } : {}),
         ...(successOut !== undefined ? { successOut: asId(successOut, `${path}.successOut`) } : {}),
         ...(gas !== undefined ? { gas: asId(gas, `${path}.gas`) } : {}),
+        ...(value !== undefined ? { value: asId(value, `${path}.value`) } : {}),
         ...(revertReturns !== undefined
           ? {
               revertReturns: asArray(revertReturns, `${path}.revertReturns`).map((ty, i) =>

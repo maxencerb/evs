@@ -23,6 +23,8 @@ export interface CallSitePlan {
   targetRef: SlotRef | { literal: ConstData };
   /** Optional gas cap operand (slot or folded literal); absent → forward all via GAS. */
   gasRef?: SlotRef | { literal: ConstData };
+  /** Optional wei operand of a CALL (`s.call` / `s.simulate`); absent → value 0. */
+  valueRef?: SlotRef | { literal: ConstData };
   argRefs: readonly (SlotRef | { literal: ConstData })[];
   outRefs: readonly SlotRef[];
   successRef: SlotRef | null;
@@ -142,6 +144,15 @@ export function pushWordRef(
   } else {
     w.push(ref.slot);
     w.op('MLOAD', { note });
+  }
+}
+
+/** Pushes the CALL value operand: the site's `value` when one was given, else 0. */
+export function pushValueRef(w: AsmWriter, valueRef: CallSitePlan['valueRef'], what: string): void {
+  if (valueRef === undefined) {
+    w.push(0, { note: 'value 0' });
+  } else {
+    pushWordRef(w, valueRef, what, 'value');
   }
 }
 

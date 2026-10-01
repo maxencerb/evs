@@ -483,6 +483,27 @@ export type SubcallStruct<
   ? Tuple<TupleType>
   : StructOf<ResolveOverload<abi, name, mut, args>>;
 
+/** What `value` accepts where the function cannot receive ETH: nothing. The name is the compile
+ *  error (`Type 'bigint' is not assignable to type 'ValueRequiresPayableFunction'`). */
+interface ValueRequiresPayableFunction {
+  readonly 'evs: value is only accepted for a payable function (s.call / s.simulate)': never;
+}
+
+/**
+ * The type of the `value` param: the wei to send, accepted iff the function the call resolves to
+ * ({@link ResolveOverload}) is `payable` — so never under `s.read` / `s.tryRead`, and never for a
+ * `nonpayable` target (which would revert on any ETH). A widened ABI (no literal entries to look
+ * at) accepts it; the recorder then checks the resolved entry at run time, like everything else.
+ */
+export type CallValue<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+  args = readonly unknown[],
+> = [ResolveOverload<abi, name, mut, args>] extends [{ readonly stateMutability: 'payable' }]
+  ? IntoExpr<'uint256'>
+  : ValueRequiresPayableFunction;
+
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, mut>,
@@ -495,6 +516,9 @@ export interface SubcallParams<
   readonly functionName: name | SubcallFunctionName<abi, mut>; // autocomplete union
   readonly args?: args;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
+  // the wei the CALL sends (payable functions only, see {@link CallValue}); paid from the
+  // script's own balance — fund it with a stateOverride `balance`. Default 0.
+  readonly value?: CallValue<abi, name, mut, args>;
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
   // the default positional `[many]` array. See {@link SubcallStruct}.
   readonly struct?: boolean;
@@ -596,12 +620,15 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  * any, are ignored). The branches swap: a revert is the value path; a normal return is the
  * failure (`s.call` reverts `EvsDecodeError(site)`, `s.tryCall` reports `success = false` with
  * zeroed values). Not combinable with `struct: true` — declare one `t.struct` type instead.
+ * `args` is the inferred argument tuple, as in {@link ResolvedSubcallParams}: the overload it
+ * resolves to still decides the inputs and whether `value` is accepted ({@link CallValue}).
  */
 export interface RevertReturnsParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, WriteMutability>,
   rr extends readonly EvsType[],
-> extends SubcallParams<abi, name, WriteMutability> {
+  args = SubcallInputs<abi, name, WriteMutability>,
+> extends SubcallParams<abi, name, WriteMutability, args> {
   readonly revertReturns: rr;
   readonly struct?: false;
 }
@@ -619,8 +646,13 @@ export interface CallVerb extends WriteVerb {
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
+    const args extends SubcallInputs<abi, name, WriteMutability> = SubcallInputs<
+      abi,
+      name,
+      WriteMutability
+    >,
   >(
-    p: RevertReturnsParams<abi, name, rr>,
+    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
   ): UnwrapSingle<RevertReturnHandles<rr>>;
 }
 
@@ -630,7 +662,12 @@ export interface TryCallVerb extends TryWriteVerb {
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
+    const args extends SubcallInputs<abi, name, WriteMutability> = SubcallInputs<
+      abi,
+      name,
+      WriteMutability
+    >,
   >(
-    p: RevertReturnsParams<abi, name, rr>,
+    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
   ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<RevertReturnHandles<rr>> };
 }

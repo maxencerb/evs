@@ -212,6 +212,7 @@ function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx)
     stmt: s,
     targetRef: refOf(s.target),
     ...(s.gas === undefined ? {} : { gasRef: refOf(s.gas) }),
+    ...(s.value === undefined ? {} : { valueRef: refOf(s.value) }),
     argRefs: s.args.map(refOf),
     outRefs: s.outs.map((o) => ({
       slot: requireSlot(ctx, o, `call out (site ${site})`),

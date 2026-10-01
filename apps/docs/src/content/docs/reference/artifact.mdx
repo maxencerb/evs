@@ -556,7 +556,7 @@ Stability notes:
 
 The IR is directly executable by the exported reference interpreter:
 `interpret(script, args, chain, opts?)` runs a script against a `MockChain` (a
-`staticcall({ to, data })` hook, plus an optional `call({ to, data, kind, gas? })` oracle for the
+`staticcall({ to, data })` hook, plus an optional `call({ to, data, kind, gas?, value? })` oracle for the
 `s.call`/`s.simulate` verbs) and returns an `InterpResult` whose returndata and revert
 payloads are bit-for-bit what the compiled bytecode produces: it runs `eliminateDeadCode(ir)`
 like `compile()` unless `opts.dce` is `false`. Passing the script (or this artifact) types `args`

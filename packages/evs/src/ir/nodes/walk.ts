@@ -58,7 +58,12 @@ export function stmtReads(s: Stmt): readonly ValueId[] {
     case 'cellset':
       return [s.value];
     case 'call':
-      return s.gas === undefined ? [s.target, ...s.args] : [s.target, s.gas, ...s.args];
+      return [
+        s.target,
+        ...(s.gas === undefined ? [] : [s.gas]),
+        ...(s.value === undefined ? [] : [s.value]),
+        ...s.args,
+      ];
     case 'if':
     case 'while':
       return [s.cond];

@@ -1,7 +1,7 @@
 /**
  * Golden-bytecode regression tests: snapshot the compiled runtime bytecode of representative
  * scripts spanning the emitter paths — template + recursive calldata encode, word / string /
- * tuple / composite-array outputs, all six calling verbs (strict + try), gas caps, literal
+ * tuple / composite-array outputs, all six calling verbs (strict + try), gas caps, call value, literal
  * and runtime args, and array construction.
  *
  * A snapshot change here means the emitted BYTES changed. That must always be a deliberate
@@ -54,6 +54,16 @@ const erc20Abi = [
       { name: 'amount', type: 'uint256' },
     ],
     outputs: [{ name: '', type: 'bool' }],
+  },
+] as const satisfies Abi;
+
+const payableAbi = [
+  {
+    type: 'function',
+    name: 'submit',
+    stateMutability: 'payable',
+    inputs: [{ name: 'referral', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
   },
 ] as const satisfies Abi;
 
@@ -161,6 +171,21 @@ const BYTE_STABLE: readonly Case[] = [
           okC: trySim.success,
           sentD: trySim.value,
         });
+      }),
+  },
+  {
+    name: 'call value: s.call / s.trySimulate sending runtime and literal value',
+    script: () =>
+      evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, amount) => {
+        const p = {
+          address: target,
+          abi: payableAbi,
+          functionName: 'submit',
+          args: [target],
+        } as const;
+        const sent = s.call({ ...p, value: amount });
+        const sim = s.trySimulate({ ...p, value: 1n });
+        return s.return({ sent, ok: sim.success, sim: sim.value });
       }),
   },
   {

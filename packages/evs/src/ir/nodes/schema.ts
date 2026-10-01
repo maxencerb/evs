@@ -175,6 +175,10 @@ export type Stmt = { readonly site: SiteId } & (
       kind?: 'static' | 'call' | 'simulate';
       successOut?: ValueId;
       gas?: ValueId;
+      // the wei the CALL sends (`kind: 'call' | 'simulate'` only — STATICCALL carries no value;
+      // the recorder admits it for `payable` targets only). Absent = 0, so IR recorded before it
+      // existed round-trips unchanged. Paid from the script's own balance.
+      value?: ValueId;
       // revert-data-as-result (issue #35, `kind: 'call'` only): the output types carried by the
       // target's REVERT payload (the QuoterV1 pattern). When present it REPLACES `fnAbi.outputs`
       // as the decode schema — `outs` are typed by and decoded from the revert data via the

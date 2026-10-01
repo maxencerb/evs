@@ -85,6 +85,12 @@ export interface MockChain {
    * Optional mutable-subcall oracle for `s.call` / `s.simulate` (issue #1). Defaults to
    * {@link MockChain.staticcall} when omitted. `req.gas` is the site's `gas` cap, as above —
    * for `'simulate'` it bounds the INNER target call (the self-call hop forwards all gas).
+   * `req.value` is the wei the site sends (`s.call({ value })` / `s.simulate({ value })`; absent
+   * = 0): the target sees it as `msg.value`, so a mock may return data that depends on it. The
+   * script's balance is not modeled. When the script cannot pay, the compiled CALL fails before
+   * the target runs: for `'call'` a mock reproduces that with `{ success: false, data: '0x' }`;
+   * for `'simulate'` the bytecode's self-call hop fails (`EvsDecodeError(site)`), which no oracle
+   * answer reproduces.
    *
    * `req.kind` tells the mock which non-static verb is calling (`'call'` = a real CALL frame,
    * `'simulate'` = the self-call/revert dry-run) — but it is **informational only**. The reference
@@ -97,7 +103,7 @@ export interface MockChain {
    * for a user-built *stateful* mock that chooses to apply-then-roll-back itself; the canonical
    * persistence/rollback semantics are pinned in the integration tier (anvil) against real state.
    */
-  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint }): {
+  call?(req: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint; value?: bigint }): {
     success: boolean;
     data: Hex;
   };
@@ -723,6 +729,8 @@ class Interp {
     // the gas cap is evaluated (it is an ordinary uint256 operand) and handed to the oracle as
     // information — the interpreter has no gas model of its own
     const gas = s.gas === undefined ? undefined : this.word(s.gas);
+    // the wei a CALL sends (`value` is legal on kind 'call' / 'simulate' only, see validateIr)
+    const value = s.value === undefined ? undefined : this.word(s.value);
     const calldata = this.encodeCalldata(s.fnAbi, s.args);
     const to: Hex = `0x${target.toString(16).padStart(40, '0')}`;
     // kind 'static' (or absent) → STATICCALL via `staticcall`; 'call'/'simulate' → the mutable
@@ -735,7 +743,8 @@ class Interp {
     let oracle: 'call' | 'staticcall';
     if ((s.kind === 'call' || s.kind === 'simulate') && this.chain.call !== undefined) {
       oracle = 'call';
-      res = this.chain.call({ ...base, kind: s.kind }); // s.kind narrowed to 'call' | 'simulate'
+      // s.kind narrowed to 'call' | 'simulate'
+      res = this.chain.call({ ...base, kind: s.kind, ...(value === undefined ? {} : { value }) });
     } else {
       oracle = 'staticcall';
       res = this.chain.staticcall(base);

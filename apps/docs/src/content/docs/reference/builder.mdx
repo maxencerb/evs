@@ -530,7 +530,7 @@ the opcode they emit and the `functionName` mutability bucket they accept — pl
 | Verb | Opcode | Mutability bucket | State |
 | --- | --- | --- | --- |
 | [`read`](#sread) / [`tryRead`](#stryread) | `STATICCALL` | `view` / `pure` | static — no write possible |
-| [`call`](#scall) / `tryCall` | `CALL` (value 0) | `nonpayable` / `payable` | real frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` |
+| [`call`](#scall) / `tryCall` | `CALL` (value 0, or the [`value`](#scall) you send) | `nonpayable` / `payable` | real frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` |
 | [`simulate`](#ssimulate) / `trySimulate` | `CALL` via self-call trampoline | `nonpayable` / `payable` | the write is **rolled back**, yet its return value is read back |
 
 The mutability bucket is enforced at the `functionName` **type** level: a `nonpayable` function
@@ -651,7 +651,7 @@ call<const abi extends Abi | readonly unknown[], name extends SubcallFunctionNam
 ): SubcallOutputs; // typed from `rr`, NOT the ABI outputs: [] → void; [one] → Expr|Tuple; [many] → readonly tuple
 ```
 
-Identical encode/decode/verbatim-bubble path to [`s.read`](#sread), but emits a **`CALL` (value 0)**
+Identical encode/decode/verbatim-bubble path to [`s.read`](#sread), but emits a **`CALL`**
 instead of `STATICCALL` — "read with the `CALL` opcode". Use it for `nonpayable`/`payable` functions
 that can't run under `STATICCALL` but don't usefully persist state: the canonical case is a Uniswap
 quoter. There is **no rollback** — a write done via `s.call` is visible to a later `s.read` in the
@@ -660,6 +660,11 @@ on-chain. The target sees `msg.sender` = the **script's** address (frame-depende
 [calls](/guides/calls/#mutable-calls-scall--strycall)), or a chosen address in
 [sender mode](/guides/execution/#sender-mode). `s.tryCall` is the `{ success, value }`
 variant (with the same [no-outputs caveat](#stryread) as `s.tryRead`).
+
+**`value`** — the wei the `CALL` sends (`msg.value`; a literal or an `Expr<'uint256'>`, default 0),
+accepted for a `payable` function only, by `s.call` / `s.simulate` and their `try*` forms. It is
+paid from the script's own balance: fund the script address through a state-override `balance`.
+See [calls — sending ETH](/guides/calls/#sending-eth-value).
 
 **`revertReturns`** (the QuoterV1 pattern) — the output types carried by the target's **revert
 data**. When set it replaces the ABI outputs as the decode schema (the ABI's own outputs, if any,
@@ -743,7 +748,8 @@ target and then `REVERT`s, which unwinds the sub-frame and discards every state 
 with `s.call`, the target sees `msg.sender` = the script's address — or a chosen address in
 [sender mode](/guides/execution/#sender-mode). Simulate sites compose freely (inside `s.fn` bodies,
 one dry-run feeding the next), and the optional `gas` bounds the **inner** target call while the
-self-call hop forwards all gas. `s.trySimulate` is the `{ success, value }` variant. Full
+self-call hop forwards all gas. An optional `value` rides on the self-call hop and the trampoline
+forwards it to the target; it is rolled back with the write. `s.trySimulate` is the `{ success, value }` variant. Full
 mechanism: [simulating writes](/guides/calls/#simulating-writes-ssimulate--strysimulate).
 
 ```ts

@@ -8,6 +8,7 @@ pragma solidity 0.8.30;
 ///         (a plain CALL frame), whereas `s.simulate(deposit)` rolls the write back so the later
 ///         read sees the original value while still reading back the returned shares.
 ///         `depositOrRevert` reverts on a zero amount to exercise the strict-bubble / try paths.
+///         `depositEth` is the PAYABLE twin for the call-value surface (`s.call({ value })`).
 contract MockVault {
     uint256 public totalShares;
     mapping(address => uint256) public balanceOf;
@@ -16,6 +17,14 @@ contract MockVault {
     ///         touches storage, so it cannot run under STATICCALL (it is not callable via s.read).
     function deposit(uint256 amount) external returns (uint256 shares) {
         shares = amount * 2;
+        totalShares += shares;
+        balanceOf[msg.sender] += shares;
+    }
+
+    /// @notice Mint `msg.value` shares to msg.sender; returns the shares minted. PAYABLE — the
+    ///         target of `s.call({ value })` / `s.simulate({ value })`; the vault keeps the ETH.
+    function depositEth() external payable returns (uint256 shares) {
+        shares = msg.value;
         totalShares += shares;
         balanceOf[msg.sender] += shares;
     }

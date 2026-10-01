@@ -26,6 +26,13 @@ contract MockVaultTest is Test {
         assertEq(vault.totalShares(), 30);
     }
 
+    function testDepositEthMintsMsgValue() public {
+        uint256 shares = vault.depositEth{value: 1 ether}();
+        assertEq(shares, 1 ether);
+        assertEq(vault.totalShares(), 1 ether);
+        assertEq(address(vault).balance, 1 ether);
+    }
+
     function testDepositOrRevertReverts() public {
         vm.expectRevert(bytes("ZERO_AMOUNT"));
         vault.depositOrRevert(0);

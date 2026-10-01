@@ -399,6 +399,43 @@ describe('serializeIr / deserializeIr round trip', () => {
     expect(KITCHEN_SINK.body.filter((st) => st.k === 'call' && 'revertReturns' in st)).toEqual([]);
   });
 
+  test('a call sending value round-trips; the field is absent when unset', () => {
+    const submitAbi = {
+      name: 'submit',
+      selector: '0xa1903eab',
+      inputs: [{ name: 'referral', type: 'address' }],
+      outputs: [{ name: '', type: 'uint256' }],
+    } as const;
+    const withValue = ir({
+      values: [vi('address'), vi('uint256'), vi('uint256')],
+      body: [
+        mk({ k: 'env', op: 'caller', out: 0 }),
+        mk({
+          k: 'const',
+          out: 1,
+          data: { kind: 'word', hex: wordHex(10n ** 18n) },
+          type: 'uint256',
+        }),
+        mk({
+          k: 'call',
+          target: 0,
+          fnAbi: submitAbi,
+          args: [0],
+          outs: [2],
+          mode: 'strict',
+          kind: 'call',
+          value: 1,
+        }),
+      ],
+    });
+    const json = serializeIr(withValue);
+    expect(json).toContain('"value":1');
+    const back = deserializeIr(json);
+    expect(back).toEqual(withValue);
+    expect(serializeIr(back)).toBe(json);
+    expect(KITCHEN_SINK.body.filter((st) => st.k === 'call' && 'value' in st)).toEqual([]);
+  });
+
   test('deserializeIr deep-freezes the result', () => {
     const back = deserializeIr(serializeIr(KITCHEN_SINK));
     expect(Object.isFrozen(back)).toBe(true);
@@ -628,6 +665,7 @@ function genStmt(g: Gen, depth: number): Stmt {
           mode,
           ...(mode === 'try' ? { successOut: id() } : {}),
           ...(g.bool() ? { gas: id() } : {}),
+          ...(g.bool() ? { value: id() } : {}),
         },
         site,
       );
@@ -790,6 +828,11 @@ describe('deserializeIr rejections', () => {
       (r) => (r['body'][1] = { site: 2, k: 'modarith', op: 'mulmod', a: 0, b: 3, out: 4 }),
       /body\[1\]\.n/,
     );
+  });
+
+  test('rejects a malformed call value', () => {
+    reject((r) => (r['body'][13]['value'] = 'x'), /body\[13\]\.value/);
+    reject((r) => (r['body'][13]['value'] = -1), /body\[13\]\.value/);
   });
 
   test('rejects malformed revertReturns entries (issue #35)', () => {
