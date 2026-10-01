@@ -26,7 +26,7 @@ import {
 import { concatHex, returner, word } from '../../test/harness/fixtures.js';
 import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { assemble } from '../asm/assembler.js';
-import type { EvmVersion } from '../asm/ops.js';
+import type { EvmVersion, Mnemonic } from '../asm/ops.js';
 import {
   isEvsType,
   isWordType,
@@ -576,6 +576,244 @@ describe('checked div / mod by a folded constant divisor', () => {
 });
 
 // ---------------------------------------------------------------------------
+// add / sub / mul with a folded constant operand: unsigned mul compares x against ⌊max / c⌋,
+// int256 add / sub keep only the sign case the constant allows
+// ---------------------------------------------------------------------------
+
+function constArithScript(
+  type: NumericType,
+  op: 'add' | 'sub' | 'mul',
+  k: bigint,
+  side: 'left' | 'right',
+): ScriptIr {
+  const b = new IrB('f', [['a', type]]);
+  const c = b.word(type, k);
+  b.ret('r', side === 'right' ? b.bin(op, 0, c) : b.bin(op, c, 0));
+  return b.build();
+}
+
+/** Runs `ir` and asserts it returns `r = expected`, or reverts with Panic(expected) for a code. */
+async function expectArith(
+  ir: ScriptIr,
+  type: NumericType,
+  args: readonly unknown[],
+  expected: bigint | number,
+  label: string,
+): Promise<void> {
+  const want =
+    typeof expected === 'number'
+      ? { success: false, data: panicHex(expected) }
+      : { success: true, data: tupleHex([{ name: 'r', type }], { r: expected }) };
+  const res = await run(ir, args);
+  expect({ label, success: res.success, data: res.data }).toEqual({ label, ...want });
+}
+
+/** The opcodes of a lowered script, in emission order. */
+function opsOf(ir: ScriptIr): Mnemonic[] {
+  return lowerProgram(ir, { evmVersion: 'cancun' }).nodes.flatMap((n) =>
+    n.k === 'op' ? [n.op] : [],
+  );
+}
+
+function countOp(ir: ScriptIr, op: Mnemonic): number {
+  return opsOf(ir).filter((o) => o === op).length;
+}
+
+const INT256: WidthClass = { type: 'int256', bits: 256, signed: true };
+
+describe('checked add / sub / mul with a folded constant operand', () => {
+  for (const width of WIDTHS.filter((w) => !w.signed)) {
+    test(`mul ${width.type} by constants: exact at ⌊max/c⌋ and ⌊max/c⌋ + 1`, async () => {
+      expect.hasAssertions();
+      const { max } = rangeOf(width);
+      const constants = [0n, 1n, 2n, 3n, 997n, 10n ** 18n, max >> 1n, max].filter((c) => c <= max);
+      const cases = constants.flatMap((c) => {
+        const edges = c === 0n ? [] : [max / c, max / c + 1n];
+        const xs = [0n, 1n, max, ...edges].filter((x) => x <= max);
+        return xs.flatMap((x) => (['left', 'right'] as const).map((side) => ({ c, x, side })));
+      });
+      await Promise.all(
+        cases.map(({ c, x, side }) =>
+          expectArith(
+            constArithScript(width.type, 'mul', c, side),
+            width.type,
+            [x],
+            refArith('mul', width, x, c),
+            `${width.type}: ${x} mul const ${c} (${side})`,
+          ),
+        ),
+      );
+    }, 30_000);
+  }
+
+  test('int256 add / sub by constants of either sign, on either side', async () => {
+    expect.hasAssertions();
+    const { min, max } = rangeOf(INT256);
+    const constants = [0n, 1n, -1n, 5n, -5n, max - 1n, max, min + 1n, min];
+    const xs = [min, min + 4n, -1n, 0n, 1n, max - 4n, max];
+    const cases = constants.flatMap((k) =>
+      xs.flatMap((x) =>
+        (['add', 'sub'] as const).flatMap((op) =>
+          (['left', 'right'] as const).map((side) => ({ k, x, op, side })),
+        ),
+      ),
+    );
+    await Promise.all(
+      cases.map(({ k, x, op, side }) =>
+        expectArith(
+          constArithScript('int256', op, k, side),
+          'int256',
+          [x],
+          side === 'right' ? refArith(op, INT256, x, k) : refArith(op, INT256, k, x),
+          `int256: ${side === 'right' ? `${x} ${op} const ${k}` : `const ${k} ${op} ${x}`}`,
+        ),
+      ),
+    );
+  }, 30_000);
+
+  test('the folded templates replace the general overflow tests', () => {
+    // uint256 mul's div-back and int256 add's two-sided sign formula both OR two predicates
+    const varMul = opsOf(binScript('uint256', 'mul'));
+    expect(varMul).toContain('OR');
+    expect(opsOf(constArithScript('uint256', 'mul', 997n, 'right'))).not.toContain('OR');
+    expect(opsOf(constArithScript('uint256', 'mul', 997n, 'left'))).not.toContain('OR');
+    expect(opsOf(binScript('int256', 'add'))).toContain('OR');
+    for (const k of [7n, -7n]) {
+      for (const op of ['add', 'sub'] as const) {
+        const ops = opsOf(constArithScript('int256', op, k, 'right'));
+        expect(ops, `int256 ${op} ${k}`).not.toContain('OR');
+        // exactly one signed comparison: the sign case the constant allows
+        expect(
+          ops.filter((o) => o === 'SLT' || o === 'SGT'),
+          `int256 ${op} ${k}`,
+        ).toHaveLength(1);
+      }
+    }
+    // a negative constant is applied as its magnitude: no 32-byte immediate
+    const nodes = lowerProgram(constArithScript('int256', 'add', -1n, 'right'), {
+      evmVersion: 'cancun',
+    }).nodes;
+    expect(nodes.some((n) => n.k === 'push' && n.value === MASK256)).toBe(false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// operand load order: an op whose left operand the previous statement just stored loads it
+// first (`[b, a]`), so the store and the reload are adjacent for the optimizer to fuse
+// ---------------------------------------------------------------------------
+
+/** `l = cell(a).get(); r = l op b`: the cellget stores `l` right before the op. */
+function storedLeftScript(type: EvsType, op: BinOp): ScriptIr {
+  const b = new IrB('f', [
+    ['a', type],
+    ['b', type],
+  ]);
+  const l = b.cellGet(b.cell(type, 0));
+  b.ret('r', b.bin(op, l, 1));
+  return b.build();
+}
+
+/** Whether a `PUSH s MSTORE PUSH s MLOAD` window exists whose reload carries `note`. */
+function reloadsRightAfterStore(ir: ScriptIr, note: string): boolean {
+  const nodes = lowerProgram(ir, { evmVersion: 'cancun' }).nodes;
+  return nodes.some((store, i) => {
+    const [mstore, reload, mload] = nodes.slice(i + 1, i + 4);
+    return (
+      store.k === 'push' &&
+      mstore?.k === 'op' &&
+      mstore.op === 'MSTORE' &&
+      reload?.k === 'push' &&
+      reload.value === store.value &&
+      reload.note === note &&
+      mload?.k === 'op' &&
+      mload.op === 'MLOAD'
+    );
+  });
+}
+
+function refCompare(op: BinOp, a: bigint, b: bigint): boolean {
+  switch (op) {
+    case 'lt':
+      return a < b;
+    case 'gt':
+      return a > b;
+    case 'lte':
+      return a <= b;
+    case 'gte':
+      return a >= b;
+    case 'eq':
+      return a === b;
+    case 'neq':
+      return a !== b;
+    default:
+      throw new Error(`not a comparison: ${op}`);
+  }
+}
+
+describe('operand load order: a just-stored left operand loads first', () => {
+  test('commutative ops and comparisons reload it right after its store; sub does not', () => {
+    const cases: readonly [WordType, BinOp, string][] = [
+      ['uint256', 'add', 'checked add uint256'],
+      ['int256', 'mul', 'checked mul int256'],
+      ['uint64', 'lt', 'lt uint64'],
+      ['int8', 'gte', 'gte int8'],
+      ['address', 'eq', 'eq address'],
+      ['bool', 'or', 'bool or'],
+      ['bytes4', 'bitxor', 'bitxor bytes4'],
+    ];
+    for (const [type, op, note] of cases) {
+      expect(reloadsRightAfterStore(storedLeftScript(type, op), note), `${op} ${type}`).toBe(true);
+    }
+    // sub is not commutative: it keeps the right-operand-first order
+    const sub = storedLeftScript('uint256', 'sub');
+    expect(reloadsRightAfterStore(sub, 'checked sub uint256')).toBe(false);
+  });
+
+  for (const width of WIDTHS) {
+    test(`add / sub / mul ${width.type} with the operands loaded swapped`, async () => {
+      expect.hasAssertions();
+      const operands = operandsOf(width);
+      const pairs = operands.flatMap((a) => operands.map((b) => [a, b] as const));
+      await Promise.all(
+        (['add', 'sub', 'mul'] as const).flatMap((op) => {
+          const ir = storedLeftScript(width.type, op);
+          return pairs.map(([a, b]) =>
+            expectArith(ir, width.type, [a, b], refArith(op, width, a, b), `${a} ${op} ${b}`),
+          );
+        }),
+      );
+    }, 30_000);
+  }
+
+  test('comparisons flip LT ↔ GT and keep their predicate (signed and unsigned)', async () => {
+    const ops = ['lt', 'gt', 'lte', 'gte', 'eq', 'neq'] as const;
+    const domains = [
+      ['uint8', [0n, 1n, 255n]],
+      ['int8', [-128n, -1n, 0n, 1n, 127n]],
+      ['uint256', [0n, 1n, MASK256]],
+      ['int256', [-(1n << 255n), -1n, 0n, (1n << 255n) - 1n]],
+    ] as const;
+    await Promise.all(
+      domains.flatMap(([type, values]) =>
+        ops.flatMap((op) => {
+          const ir = storedLeftScript(type, op);
+          return values.flatMap((a) =>
+            values.map(async (b) => {
+              const res = await run(ir, [a, b]);
+              const label = `${type}: ${a} ${op} ${b}`;
+              expect({ label, data: res.data }).toEqual({
+                label,
+                data: tupleHex([{ name: 'r', type: 'bool' }], { r: refCompare(op, a, b) }),
+              });
+            }),
+          );
+        }),
+      ),
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // comparisons, equality, bool logic
 // ---------------------------------------------------------------------------
 
@@ -841,6 +1079,99 @@ describe('select and arrays', () => {
     const oob = await run(ir, [3n, 3n]);
     expect(oob.success).toBe(false);
     expect(oob.data).toBe(panicHex(0x32));
+  });
+
+  test('select is branch-free: b ^ ((a ^ b) · cond), exact for any pair of words', async () => {
+    const b = new IrB('sel', [
+      ['c', 'bool'],
+      ['x', 'uint256'],
+      ['y', 'uint256'],
+    ]);
+    b.ret('r', b.select(0, 1, 2));
+    const ir = b.build();
+    const plain = new IrB('sel', [
+      ['c', 'bool'],
+      ['x', 'uint256'],
+      ['y', 'uint256'],
+    ]);
+    plain.ret('r', 1);
+    // the select adds no jump to the program (the dispatcher's own jumps are the baseline)
+    expect(countOp(ir, 'JUMPI')).toBe(countOp(plain.build(), 'JUMPI'));
+    expect(countOp(ir, 'JUMP')).toBe(countOp(plain.build(), 'JUMP'));
+    const pairs = [
+      [0n, MASK256],
+      [MASK256, 0n],
+      [5n, 5n],
+      [1n << 255n, 1n],
+    ] as const;
+    await Promise.all(
+      pairs.flatMap(([x, y]) =>
+        [true, false].map(async (c) => {
+          const res = await run(ir, [c, x, y]);
+          expect({ c, x, y, data: res.data }).toEqual({
+            c,
+            x,
+            y,
+            data: tupleHex([{ name: 'r', type: 'uint256' }], { r: c ? x : y }),
+          });
+        }),
+      ),
+    );
+  });
+
+  test('index / arrset at a folded constant index: constant bound, huge constants included', async () => {
+    const read = (k: bigint): ScriptIr => {
+      const b = new IrB('rd', [['xs', 'uint256[]']]);
+      b.ret('x', b.index(0, b.word('uint256', k)));
+      return b.build();
+    };
+    const write = (k: bigint): ScriptIr => {
+      const b = new IrB('wr', [['n', 'uint256']]);
+      const arr = b.arrnew('uint256', 0);
+      b.arrset(arr, b.word('uint256', k), b.word('uint256', 42n));
+      b.ret('xs', arr);
+      return b.build();
+    };
+    // in-bounds constants use the constant arm; 2^32 and above keep the runtime sequence (an
+    // `i + 1` / `32·(i + 1)` folded from 2^256 − 1 would wrap and skip the check)
+    const huge = [(1n << 32n) - 1n, 1n << 32n, 1n << 255n, MASK256];
+    expect(countOp(read(2n), 'SHL')).toBe(countOp(read(1n << 32n), 'SHL') - 1);
+    expect(countOp(write(2n), 'SHL')).toBe(countOp(write(1n << 32n), 'SHL') - 1);
+
+    const xs = [7n, 8n, 9n];
+    const reads: readonly [bigint, bigint | null][] = [
+      [0n, 7n],
+      [2n, 9n],
+      [3n, null],
+      ...huge.map((k): [bigint, null] => [k, null]),
+    ];
+    const writes: readonly [bigint, readonly bigint[] | null][] = [
+      [0n, [42n, 0n, 0n]],
+      [2n, [0n, 0n, 42n]],
+      [3n, null],
+      ...huge.map((k): [bigint, null] => [k, null]),
+    ];
+    await Promise.all([
+      ...reads.map(async ([k, x]) => {
+        const res = await run(read(k), [xs]);
+        expect({ k, success: res.success, data: res.data }).toEqual({
+          k,
+          success: x !== null,
+          data: x === null ? panicHex(0x32) : tupleHex([{ name: 'x', type: 'uint256' }], { x }),
+        });
+      }),
+      ...writes.map(async ([k, out]) => {
+        const res = await run(write(k), [3n]);
+        expect({ k, success: res.success, data: res.data }).toEqual({
+          k,
+          success: out !== null,
+          data:
+            out === null
+              ? panicHex(0x32)
+              : tupleHex([{ name: 'xs', type: 'uint256[]' }], { xs: out }),
+        });
+      }),
+    ]);
   });
 
   test('arrnew length ≥ 2^32 → Panic 0x41', async () => {

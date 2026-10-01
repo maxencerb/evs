@@ -141,6 +141,28 @@ describe('dynamic values', () => {
     expect(outcomes[1]?.data).toBe(panicData(0x32n));
   });
 
+  test('literal indices: constant bound + offset, huge literals still panic 0x32', async () => {
+    // a literal index below 2^32 compiles to a constant bound and offset; a larger one keeps
+    // the runtime sequence (2^256 − 1 + 1 would wrap a folded bound to 0)
+    const huge = [(1n << 32n) - 1n, 1n << 32n, (1n << 256n) - 1n];
+    const reads = [0n, 2n, 3n, ...huge].map((k) =>
+      evscript({ name: 'at', args: [t.array(t.uint256), t.uint256] }, (s, xs, n) => {
+        const out = s.newArray(t.uint256, n);
+        out.set(k, 42n);
+        return s.return({ x: xs.at(k), out: out.expr() });
+      }),
+    );
+    await Promise.all(
+      reads.map((script) =>
+        expectAgreement(script, [
+          [[7n, 8n, 9n], 3n],
+          [[7n, 8n, 9n, 10n], 4n],
+          [[], 0n],
+        ]),
+      ),
+    );
+  });
+
   test('dynamic + word literals (data segments, CODECOPY materialization)', async () => {
     const script = evscript({ name: 'lits', args: [] }, (s) => {
       const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]);

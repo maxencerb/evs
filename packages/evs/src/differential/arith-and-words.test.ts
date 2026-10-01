@@ -144,6 +144,88 @@ describe('checked div / mod by literal divisors (const-divisor guard elision)', 
   });
 });
 
+describe('checked add / sub / mul by literals (folded-constant templates)', () => {
+  // unsigned mul by a literal compares x against ⌊max / c⌋; int256 add / sub by a literal
+  // checks only the sign case the literal allows (a negative one is applied as its magnitude)
+  for (const type of ['uint8', 'uint64', 'uint192', 'uint256'] as const) {
+    test(`mul ${type} by literals, on either side`, async () => {
+      const { max } = rangeOf(type);
+      const constants = [0n, 1n, 2n, 3n, 997n, 10n ** 18n, max >> 1n, max].filter((c) => c <= max);
+      await Promise.all(
+        constants.flatMap((c) => {
+          const xs = [0n, 1n, max, ...(c > 1n ? [max / c, max / c + 1n] : [])].map((x) => [x]);
+          return [
+            expectAgreement(
+              evscript({ name: 'mulr', args: [type] }, (s, x) => s.return({ r: s.mul(x, c) })),
+              xs,
+            ),
+            expectAgreement(
+              evscript({ name: 'mull', args: [type] }, (s, x) => s.return({ r: s.mul(c, x) })),
+              xs,
+            ),
+          ];
+        }),
+      );
+    });
+  }
+
+  test('int256 add / sub by literals of either sign, on either side', async () => {
+    const { min, max } = rangeOf('int256');
+    const constants = [0n, 1n, -1n, 5n, -5n, max, min];
+    const xs = [min, min + 4n, -1n, 0n, 1n, max - 4n, max].map((x) => [x]);
+    await Promise.all(
+      constants.flatMap((k) => [
+        expectAgreement(
+          evscript({ name: 'f', args: [t.int256] }, (s, x) =>
+            s.return({ add: x.add(k), sub: x.sub(k) }),
+          ),
+          xs,
+        ),
+        expectAgreement(
+          evscript({ name: 'f', args: [t.int256] }, (s, x) =>
+            s.return({ add: s.add(k, x), sub: s.sub(k, x) }),
+          ),
+          xs,
+        ),
+      ]),
+    );
+  });
+
+  test('method chains: the just-stored left operand loads first (operands swapped)', async () => {
+    const script = evscript(
+      { name: 'chain', args: [t.uint256, t.uint256, t.int64, t.int64, t.bool] },
+      (s, a, b, x, y, p) => {
+        const u = a.add(b).mul(b).bitXor(a).bitOr(b).bitAnd(a);
+        const v = x.add(y).mul(y).sub(y);
+        return s.return({
+          u,
+          v,
+          ult: u.add(1n).lt(b),
+          ugte: u.add(1n).gte(b),
+          slt: v.add(1n).lt(y),
+          sgt: v.add(1n).gt(y),
+          slte: v.add(1n).lte(y),
+          eq: a.add(0n).eq(b),
+          neq: a.add(0n).neq(b),
+          and: x.lt(y).and(p),
+          or: x.gt(y).or(p),
+        });
+      },
+    );
+    const max = (1n << 256n) - 1n;
+    const max64 = (1n << 63n) - 1n;
+    await expectAgreement(script, [
+      [1n, 2n, -3n, 4n, true],
+      [5n, 5n, 4n, -3n, false],
+      [0n, max, -1n, -1n, true],
+      [max, 1n, 1n, 2n, false], // uint256 add overflow
+      [1n << 128n, 1n << 128n, 1n, 2n, false], // uint256 mul overflow
+      [1n, 2n, max64, 1n, false], // int64 add overflow
+      [1n, 2n, -(1n << 62n), 3n, true], // int64 mul overflow
+    ]);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // 2. comparisons, bool logic, bitwise, shifts, conversions
 // ---------------------------------------------------------------------------

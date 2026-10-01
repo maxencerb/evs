@@ -23,8 +23,11 @@
  *
  * Operand convention: binary templates load the RIGHT operand
  * first, then the left — the left operand sits on top, so `SUB`/`DIV`/`LT`/… compute
- * `op(a, b)` directly. Folded word constants (`FrameLayout.slotOfValue === null`) load as
- * PUSH immediates; everything else as `PUSH slot MLOAD`.
+ * `op(a, b)` directly. Templates that accept either order (add, mul, eq/neq, the bool and
+ * bitwise ops, and the comparisons, which flip LT ↔ GT) load the left operand first when the
+ * previous statement just stored it, so the optimizer can fuse that store and reload. Folded
+ * word constants (`FrameLayout.slotOfValue === null`) load as PUSH immediates; everything else
+ * as `PUSH slot MLOAD`.
  *
  * fncall convention: the caller MSTOREs args into
  * the callee's static param slots, pushes `@ret_k`, and jumps to the entry JUMPDEST

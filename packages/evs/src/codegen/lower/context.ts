@@ -56,6 +56,11 @@ export interface LowerInternals {
   fnEntries: Map<FnId, LabelId>;
   /** fn emission worklist in discovery order (grows while subroutines are emitted). */
   fnQueue: FnId[];
+  /**
+   * The last `storeOut`: the value stored and the writer mark right after its MSTORE. A load
+   * order hint only (see {@link justStored}); it never affects what a template computes.
+   */
+  lastStore: { value: ValueId; mark: number } | null;
 }
 
 /**
@@ -88,7 +93,14 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
     walkStmts(ctx.ir.body, scan);
     for (const fn of ctx.ir.fns) walkStmts(fn.body, scan);
     const selfAddresses = selfAddressValues(ctx.ir);
-    state = { consts, selfAddresses, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
+    state = {
+      consts,
+      selfAddresses,
+      dfailStubs: [],
+      fnEntries: new Map(),
+      fnQueue: [],
+      lastStore: null,
+    };
     INTERNALS.set(ctx, state);
   }
   return state;
@@ -154,6 +166,18 @@ export function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
 export function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   w.push(requireSlot(ctx, v, 'storeOut'), m);
   w.op('MSTORE');
+  lowerInternals(ctx).lastStore = { value: v, mark: w.mark() };
+}
+
+/**
+ * Whether the last node emitted is the `storeOut` of `v`. A template that loads `v` first then
+ * emits `PUSH s MSTORE PUSH s MLOAD`, which the peephole's store-then-reload rewrite turns into
+ * `DUP1 PUSH s MSTORE` under `optimize: true`. Commutative templates use it to pick their load
+ * order; it is a hint, so a stale answer only costs that fusion.
+ */
+export function justStored(w: AsmWriter, ctx: LowerCtx, v: ValueId): boolean {
+  const last = lowerInternals(ctx).lastStore;
+  return last !== null && last.value === v && last.mark === w.mark();
 }
 
 /**

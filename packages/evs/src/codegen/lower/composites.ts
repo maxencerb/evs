@@ -26,7 +26,9 @@ import {
 import { FREE_PTR, emitZeroValue, emitZeroMemrefMembers } from '../memory.js';
 import {
   type LowerCtx,
+  type NodeMeta,
   STMT_BASELINE,
+  foldedConst,
   loadOperand,
   meta,
   storeOut,
@@ -39,29 +41,94 @@ import {
 // select / index / arrnew / arrset
 // ---------------------------------------------------------------------------
 
+/**
+ * `cond ? a : b`, branch-free: `b ^ ((a ^ b) · cond)`. `cond` is a canonical bool (0 or 1), so
+ * the product is `a ^ b` or 0 and the outer XOR yields `a` or `b`. Word or memref pointer alike,
+ * both operands are already computed (select is eager), so no jump is needed.
+ */
 export function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx: LowerCtx): void {
-  const base = STMT_BASELINE;
-  const takeA = w.newLabel(`select_a_${s.site}`);
-  const done = w.newLabel(`select_done_${s.site}`);
-  loadOperand(w, ctx, s.cond, meta('select')); // [cond]
-  w.pushLabel(takeA);
-  w.op('JUMPI'); // []
-  loadOperand(w, ctx, s.b);
+  loadOperand(w, ctx, s.b, meta('select')); // [b]
+  w.op('DUP1'); // [b, b]
+  loadOperand(w, ctx, s.a); // [a, b, b]
+  w.op('XOR'); // [a ^ b, b]
+  loadOperand(w, ctx, s.cond); // [cond, a ^ b, b]
+  w.op('MUL'); // [cond ? a ^ b : 0, b]
+  w.op('XOR'); // [cond ? a : b]
   storeOut(w, ctx, s.out);
-  w.pushLabel(done);
-  w.op('JUMP');
-  w.label(takeA, base);
-  loadOperand(w, ctx, s.a);
-  storeOut(w, ctx, s.out);
-  w.label(done, base);
+}
+
+/**
+ * Folded indices below this bound take the constant arm of {@link emitCheckedElemAddr}: it is
+ * the allocation cap (`s.newArray` panics on a length ≥ 2^32), and it keeps `k + 1` and
+ * `32·(k + 1)` far from wrapping.
+ */
+const CONST_INDEX_LIMIT = 1n << 32n;
+
+/**
+ * `[…] → [addr, …]`: the address of element `i` of array `arr`, after the bounds check (Panic
+ * 0x32 unless `i < len`). `m` annotates the first node. A folded index below the 2^32
+ * allocation cap compiles to a constant bound and a constant offset; any other index (a huge
+ * constant included, whose `k + 1` / `32·(k + 1)` could wrap) takes the runtime sequence.
+ */
+function emitCheckedElemAddr(
+  w: AsmWriter,
+  ctx: LowerCtx,
+  arr: ValueId,
+  i: ValueId,
+  m?: NodeMeta,
+): void {
+  const k = foldedConst(ctx, i);
+  if (k !== undefined && k < CONST_INDEX_LIMIT) {
+    loadOperand(w, ctx, arr, m); // [ptr]
+    w.op('DUP1');
+    w.op('MLOAD'); // [len, ptr]
+    w.push(k + 1n); // [k+1, len, ptr]
+    w.op('GT'); // [k+1 > len, ptr]   ⇔ len ≤ k
+    w.pushLabel(ctx.tails.panicBounds);
+    w.op('JUMPI'); // [ptr]                Panic 0x32 on OOB
+    w.push(32n * (k + 1n)); // [32·(k+1), ptr]
+    w.op('ADD'); // [addr]
+    return;
+  }
+  loadOperand(w, ctx, i, m); // [i]
+  loadOperand(w, ctx, arr); // [ptr, i]
+  w.op('DUP1');
+  w.op('MLOAD'); // [len, ptr, i]
+  w.op('DUP3'); // [i, len, ptr, i]
+  w.op('LT'); // [i < len, ptr, i]
+  w.op('ISZERO');
+  w.pushLabel(ctx.tails.panicBounds);
+  w.op('JUMPI'); // [ptr, i]               Panic 0x32 on OOB
+  w.op('SWAP1'); // [i, ptr]
+  w.push(5);
+  w.op('SHL'); // [32·i, ptr]
+  w.op('ADD'); // [ptr + 32·i]
+  w.push(32);
+  w.op('ADD'); // [addr]
 }
 
 /** `index` — a bounds-checked element read (Panic 0x32): an array's element word / pointer, or
- *  (`.byteAt(i)` on a string/bytes) the payload byte at `i` as a left-aligned `bytes1`. */
+ *  (`.byteAt(i)` on a string/bytes, {@link lowerByteAt}) the payload byte at `i`. */
 export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCtx): void {
   const arrType = typeOf(ctx, s.arr);
-  const ofBytes = arrType === 'string' || arrType === 'bytes';
-  loadOperand(w, ctx, s.i, meta(ofBytes ? `byteAt ${arrType}` : 'index')); // [i]
+  if (arrType === 'string' || arrType === 'bytes') {
+    lowerByteAt(w, s, ctx, arrType);
+    return;
+  }
+  emitCheckedElemAddr(w, ctx, s.arr, s.i, meta('index')); // [addr]
+  w.op('MLOAD'); // [elem]               elements are canonical (decode normalizes eagerly)
+  storeOut(w, ctx, s.out);
+}
+
+/** `.byteAt(i)` on a string/bytes: the payload byte at `i` (Panic 0x32 unless `i < len`) as a
+ *  left-aligned `bytes1`. */
+function lowerByteAt(
+  w: AsmWriter,
+  s: Extract<Stmt, { k: 'index' }>,
+  ctx: LowerCtx,
+  arrType: 'string' | 'bytes',
+): void {
+  loadOperand(w, ctx, s.i, meta(`byteAt ${arrType}`)); // [i]
   loadOperand(w, ctx, s.arr); // [ptr, i]
   w.op('DUP1');
   w.op('MLOAD'); // [len, ptr, i]
@@ -70,25 +137,14 @@ export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: 
   w.op('ISZERO');
   w.pushLabel(ctx.tails.panicBounds);
   w.op('JUMPI'); // [ptr, i]               Panic 0x32 on OOB
-  if (ofBytes) {
-    w.op('ADD'); // [ptr + i]
-    w.push(32);
-    w.op('ADD');
-    w.op('MLOAD'); // [word]               byte i is its most significant byte
-    w.push(0);
-    w.op('BYTE'); // [b]
-    w.push(248);
-    w.op('SHL'); // [b << 248]            the canonical (left-aligned) bytes1
-    storeOut(w, ctx, s.out);
-    return;
-  }
-  w.op('SWAP1'); // [i, ptr]
-  w.push(5);
-  w.op('SHL'); // [32·i, ptr]
-  w.op('ADD'); // [ptr + 32·i]
+  w.op('ADD'); // [ptr + i]
   w.push(32);
-  w.op('ADD'); // [addr]
-  w.op('MLOAD'); // [elem]               elements are canonical (decode normalizes eagerly)
+  w.op('ADD');
+  w.op('MLOAD'); // [word]               byte i is its most significant byte
+  w.push(0);
+  w.op('BYTE'); // [b]
+  w.push(248);
+  w.op('SHL'); // [b << 248]            the canonical (left-aligned) bytes1
   storeOut(w, ctx, s.out);
 }
 
@@ -228,21 +284,7 @@ export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx
 
 export function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: LowerCtx): void {
   loadOperand(w, ctx, s.value, meta('arrset')); // [v]
-  loadOperand(w, ctx, s.i); // [i, v]
-  loadOperand(w, ctx, s.arr); // [ptr, i, v]
-  w.op('DUP1');
-  w.op('MLOAD'); // [len, ptr, i, v]
-  w.op('DUP3'); // [i, len, ptr, i, v]
-  w.op('LT'); // [i < len, ptr, i, v]
-  w.op('ISZERO');
-  w.pushLabel(ctx.tails.panicBounds);
-  w.op('JUMPI'); // [ptr, i, v]           Panic 0x32 on OOB
-  w.op('SWAP1'); // [i, ptr, v]
-  w.push(5);
-  w.op('SHL'); // [32·i, ptr, v]
-  w.op('ADD'); // [ptr + 32·i, v]
-  w.push(32);
-  w.op('ADD'); // [addr, v]
+  emitCheckedElemAddr(w, ctx, s.arr, s.i); // [addr, v]
   w.op('MSTORE'); // []                  value is canonical (operand types validated)
 }
 

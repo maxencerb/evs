@@ -198,6 +198,15 @@ export class AsmWriter {
   }
 
   /**
+   * @internal The number of nodes emitted so far, as a cheap position marker. Two equal marks
+   * mean nothing was emitted in between (the lowering uses this to tell whether the last node
+   * was a given store).
+   */
+  mark(): number {
+    return this.#nodes.length;
+  }
+
+  /**
    * @internal Speculative emission (the array decoder's budget-driven path choice): a
    * checkpoint of the writer state — node count, label counter, referenced labels — that
    * {@link rollback} restores exactly, so code emitted and then discarded leaves no trace (no

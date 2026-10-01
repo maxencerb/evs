@@ -82,10 +82,11 @@ return once at the end.
 
 `s.select(cond, a, b)` picks one of two already-computed values and returns an `Expr` directly
 — no cell needed. Both `a` and `b` are evaluated **eagerly**, before the selection; it is a
-value pick, not conditional execution. If one side must not execute (an expensive call, math
-that could panic), use `s.if` with a cell instead. A condition known at recording (`true`, or a
-comparison of constants) picks its side right away; the other side is still checked as if the
-condition were a runtime value, then dropped from the bytecode.
+value pick, not conditional execution (it compiles to a few branch-free opcodes, no jump). If
+one side must not execute (an expensive call, math that could panic), use `s.if` with a cell
+instead. A condition known at recording (`true`, or a comparison of constants) picks its side
+right away; the other side is still checked as if the condition were a runtime value, then
+dropped from the bytecode.
 
 ## Cells: s.let
 

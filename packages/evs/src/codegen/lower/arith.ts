@@ -6,12 +6,14 @@
 
 import type { AsmWriter } from '../../asm/assembler.js';
 import { isSigned, type EvsType } from '../../core/types.js';
-import type { Stmt } from '../../ir/nodes.js';
+import type { Stmt, ValueId } from '../../ir/nodes.js';
 import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
 import {
   type LowerCtx,
+  type NodeMeta,
   typeOf,
   loadOperand,
+  justStored,
   meta,
   storeOut,
   internal,
@@ -64,9 +66,10 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
     case 'lte':
     case 'gte': {
       const signed = isSigned(type);
-      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
-      loadOperand(w, ctx, s.a); // [a, b]
-      if (s.op === 'lt' || s.op === 'gte') w.op(signed ? 'SLT' : 'LT');
+      // [a, b] → LT computes a < b; swapped [b, a] → GT computes b > a, the same predicate
+      const swapped = loadBinOperands(w, ctx, s, meta(`${s.op} ${fmtType(type)}`), true);
+      const less = (s.op === 'lt' || s.op === 'gte') !== swapped;
+      if (less) w.op(signed ? 'SLT' : 'LT');
       else w.op(signed ? 'SGT' : 'GT');
       if (s.op === 'lte' || s.op === 'gte') w.op('ISZERO');
       storeOut(w, ctx, s.out);
@@ -74,8 +77,7 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
     }
     case 'eq':
     case 'neq':
-      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
-      loadOperand(w, ctx, s.a);
+      loadBinOperands(w, ctx, s, meta(`${s.op} ${fmtType(type)}`), true);
       w.op('EQ');
       if (s.op === 'neq') w.op('ISZERO');
       storeOut(w, ctx, s.out);
@@ -83,8 +85,7 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
     case 'and':
     case 'or':
       // eager bool logic on canonical 0/1 words
-      loadOperand(w, ctx, s.b, meta(`bool ${s.op}`));
-      loadOperand(w, ctx, s.a);
+      loadBinOperands(w, ctx, s, meta(`bool ${s.op}`), true);
       w.op(s.op === 'and' ? 'AND' : 'OR');
       storeOut(w, ctx, s.out);
       return;
@@ -92,8 +93,7 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
     case 'bitor':
     case 'bitxor':
       // canonical-preserving on canonical operands (no post-masking needed)
-      loadOperand(w, ctx, s.b, meta(`${s.op} ${fmtType(type)}`));
-      loadOperand(w, ctx, s.a);
+      loadBinOperands(w, ctx, s, meta(`${s.op} ${fmtType(type)}`), true);
       w.op(s.op === 'bitand' ? 'AND' : s.op === 'bitor' ? 'OR' : 'XOR');
       storeOut(w, ctx, s.out);
       return;
@@ -108,7 +108,34 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
   }
 }
 
-/** add / sub / mul — the width-dependent checked templates. */
+/**
+ * Loads a binary statement's operands. Templates load the right operand first, so the left one
+ * ends on top (`[a, b]`) and `SUB` / `DIV` / `LT` compute `op(a, b)` directly. When the
+ * template accepts both orders (`swappable`) and `a` was stored by the statement just before
+ * ({@link justStored}), `a` goes first instead (`[b, a]`): its load then directly follows its
+ * store, which the optimizer's store-then-reload rewrite fuses into a `DUP1`. Method chains
+ * (`x.add(y).mul(z)`) feed the previous result in as the LEFT operand, so without the swap
+ * that pair is never adjacent. Returns whether the operands sit swapped.
+ */
+function loadBinOperands(
+  w: AsmWriter,
+  ctx: LowerCtx,
+  s: { a: ValueId; b: ValueId },
+  m: NodeMeta,
+  swappable: boolean,
+): boolean {
+  const swapped = swappable && justStored(w, ctx, s.a);
+  loadOperand(w, ctx, swapped ? s.a : s.b, m);
+  loadOperand(w, ctx, swapped ? s.b : s.a);
+  return swapped;
+}
+
+/**
+ * add / sub / mul — the width-dependent checked templates. A folded constant operand selects a
+ * cheaper exact template (unsigned mul, int256 add / sub); otherwise the operands are loaded as
+ * `[a, b]`, or `[b, a]` for add / mul (see {@link loadBinOperands}). Every add / mul template
+ * below is symmetric in its two operands, so the swap never changes a result or a panic.
+ */
 function lowerCheckedArith(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'bin' }>,
@@ -117,12 +144,30 @@ function lowerCheckedArith(
 ): void {
   const { bits, signed } = numClass(type);
   const m = meta(`checked ${s.op} ${fmtType(type)}`);
-  loadOperand(w, ctx, s.b, m); // [b]
-  loadOperand(w, ctx, s.a); // [a, b]
+
+  // a folded operand: the right one, or the left one of the commutative add / mul
+  const right = foldedConst(ctx, s.b);
+  const left = s.op === 'sub' || right !== undefined ? undefined : foldedConst(ctx, s.a);
+  const constant =
+    right !== undefined
+      ? { value: right, other: s.a }
+      : left !== undefined
+        ? { value: left, other: s.b }
+        : undefined;
+  if (constant !== undefined && s.op === 'mul' && !signed) {
+    lowerUnsignedMulByConst(w, ctx, s.out, constant.other, constant.value, bits, m);
+    return;
+  }
+  if (constant !== undefined && (s.op === 'add' || s.op === 'sub') && signed && bits === 256) {
+    lowerInt256AddSubConst(w, ctx, s.op, s.out, constant.other, constant.value, m);
+    return;
+  }
+
+  loadBinOperands(w, ctx, s, m, s.op !== 'sub'); // [a, b] (add / mul: maybe [b, a])
 
   if (s.op === 'add' && !signed) {
     if (bits === 256) {
-      // uint256: overflow ⇔ r < b
+      // uint256: overflow ⇔ r < b (⇔ r < a: the swapped order checks that one)
       w.op('DUP2'); // [b, a, b]
       w.op('ADD'); // [r, b]
       w.op('DUP1'); // [r, r, b]
@@ -209,6 +254,91 @@ function lowerCheckedArith(
   storeOut(w, ctx, s.out); // [a, b]
   w.op('POP');
   w.op('POP');
+}
+
+/**
+ * Unsigned `x · c` for a folded constant `c`: the product exceeds `max(bits)` exactly when
+ * `x > ⌊max / c⌋`, so one comparison replaces the div-back (or the post-MUL range check). A `c`
+ * of 0 or 1 cannot overflow and needs no check.
+ */
+function lowerUnsignedMulByConst(
+  w: AsmWriter,
+  ctx: LowerCtx,
+  out: ValueId,
+  x: ValueId,
+  c: bigint,
+  bits: number,
+  m: NodeMeta,
+): void {
+  loadOperand(w, ctx, x, m); // [x]
+  if (c > 1n) {
+    w.op('DUP1'); // [x, x]
+    pushMulBound(w, maxUint(bits), c, bits); // [⌊max/c⌋, x, x]
+    w.op('LT'); // [⌊max/c⌋ < x, x]
+    w.pushLabel(ctx.tails.panicOverflow);
+    w.op('JUMPI'); // [x]
+  }
+  w.push(c); // [c, x]
+  w.op('MUL'); // [r] — ≤ max(bits) ⇒ canonical
+  storeOut(w, ctx, out);
+}
+
+/**
+ * Pushes `⌊max / c⌋`. For 256 bits the bound of a small `c` needs a wide immediate (a 32-byte
+ * PUSH for `c` < 256), so it is computed as `PUSH c PUSH0 NOT DIV` whenever that is shorter. The
+ * peephole leaves it alone: folding `PUSH0 NOT` would grow the code, which its size guard refuses.
+ */
+function pushMulBound(w: AsmWriter, max: bigint, c: bigint, bits: number): void {
+  const bound = max / c;
+  if (bits === 256 && immediateBytes(bound) > immediateBytes(c) + 3) {
+    w.push(c, { note: 'max uint256 / c' }); // [c]
+    w.push(0);
+    w.op('NOT'); // [max, c]
+    w.op('DIV'); // [⌊max/c⌋]
+    return;
+  }
+  w.push(bound, { note: `max uint${bits} / c` });
+}
+
+/** Immediate bytes of a `PUSHn` (`PUSH0` has none). */
+function immediateBytes(v: bigint): number {
+  return v === 0n ? 0 : Math.ceil(v.toString(16).length / 2);
+}
+
+/**
+ * int256 `x + k` / `x − k` for a folded constant `k` (a sign-extended word). Its sign is known,
+ * so only one of the two sign cases of {@link emitSignedAddSubCheck} can occur: moving `x` up by
+ * a positive magnitude overflows exactly when the result lands below `x`, moving it down exactly
+ * when it lands above. A negative `k` is applied as its magnitude with the opposite opcode
+ * (`x + (−1)` is `x − 1`, a 1-byte immediate instead of a 32-byte one): the result word is the
+ * same modulo 2^256. `k` = 0 cannot overflow.
+ */
+function lowerInt256AddSubConst(
+  w: AsmWriter,
+  ctx: LowerCtx,
+  op: 'add' | 'sub',
+  out: ValueId,
+  x: ValueId,
+  k: bigint,
+  m: NodeMeta,
+): void {
+  loadOperand(w, ctx, x, m); // [x]
+  if (k === 0n) {
+    storeOut(w, ctx, out); // x ± 0 = x
+    return;
+  }
+  const negative = k >= MIN_I256;
+  const up = (op === 'add') !== negative; // the result moves x towards +∞
+  const magnitude = negative ? (1n << 256n) - k : k; // |k| (2^255 for min int256: same word)
+  w.push(magnitude); // [|k|, x]
+  w.op('DUP2'); // [x, |k|, x]
+  w.op(up ? 'ADD' : 'SUB'); // [r, x]
+  w.op('DUP1'); // [r, r, x]
+  w.op('SWAP2'); // [x, r, r]
+  w.op(up ? 'SGT' : 'SLT'); // [up ? r < x : r > x, r]
+  w.pushLabel(ctx.tails.panicOverflow);
+  w.op('JUMPI'); // [r]
+  storeOut(w, ctx, out);
 }
 
 /** `[r, a, b] → [r, a, b]` or Panic 0x11: `iszero(or(iszero(a), eq(div(r, a), b)))`. */

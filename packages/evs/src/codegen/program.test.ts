@@ -657,11 +657,11 @@ describe('worked-example goldens', () => {
       0x000b  51          MLOAD
       0x000c  60e0        PUSH1 0xe0
       0x000e  52          MSTORE
-      0x000f  6080        PUSH1 0x80  ; lt uint256
+      0x000f  60e0        PUSH1 0xe0  ; lt uint256
       0x0011  51          MLOAD
-      0x0012  60e0        PUSH1 0xe0
+      0x0012  6080        PUSH1 0x80
       0x0014  51          MLOAD
-      0x0015  10          LT
+      0x0015  11          GT
       0x0016  610100      PUSH2 0x0100
       0x0019  52          MSTORE
       0x001a  610100      PUSH2 0x0100  ; while cond
@@ -698,9 +698,9 @@ describe('worked-example goldens', () => {
       0x004f  51          MLOAD
       0x0050  610180      PUSH2 0x0180
       0x0053  52          MSTORE
-      0x0054  6001        PUSH1 0x01  ; checked add uint256
-      0x0056  610180      PUSH2 0x0180
-      0x0059  51          MLOAD
+      0x0054  610180      PUSH2 0x0180  ; checked add uint256
+      0x0057  51          MLOAD
+      0x0058  6001        PUSH1 0x01
       0x005a  81          DUP2
       0x005b  01          ADD
       0x005c  80          DUP1
