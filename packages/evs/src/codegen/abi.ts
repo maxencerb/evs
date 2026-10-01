@@ -57,5 +57,5 @@ export {
   needsDecodeBudget,
   emitInitDecodeBudget,
 } from './abi/decode.js';
-export type { DecodeFail } from './abi/decode.js';
+export type { DecodeFail, DecodeBudget } from './abi/decode.js';
 export { emitCalldataDecode, emitReturnEncode } from './abi/dispatch.js';

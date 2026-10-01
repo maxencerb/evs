@@ -17,6 +17,7 @@ import {
   emitWithinStackBudget,
   needsDecodeBudget,
   emitInitDecodeBudget,
+  type DecodeBudget,
 } from '../abi.js';
 import { SCRATCH_1, FREE_PTR } from '../memory.js';
 import {
@@ -100,6 +101,7 @@ export function emitSimulateCall(
       : null;
   // outputs whose decode can charge the decode-work budget get a budget word after the snapshot
   const budgeted = needsDecodeBudget(outputs);
+  const budget: DecodeBudget = budgeted ? 'once' : 'off';
   const emitDecodeFailPre = makeDecodeFail(w, plan, tryMode, 'sim');
   const emitDecodeFail =
     restore === null ? emitDecodeFailPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
@@ -265,7 +267,7 @@ export function emitSimulateCall(
       1,
       () => `the outputs of ${fnAbi.name} (site ${siteId})`,
       // the outputs block itself: its narrow word-array members are top-level outputs (uncharged)
-      () => emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, budgeted, true),
+      () => emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, budget, true),
     ); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];

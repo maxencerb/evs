@@ -11,7 +11,8 @@
  * - two outputs sharing bytes (aliased tails): each decodes as if it were alone;
  * - N element offsets at one inner array (overlapping offsets, ~38 KB of returndata that used to
  *   cost ~290M gas to decode): a full-word `uint256[][]` aliases its inner arrays and decodes,
- *   copied shapes exhaust the decode-work budget and fail cleanly, inside the default gas cap;
+ *   copied or re-decoded shapes (narrow copies, wide structs, fixed-size `T[N]` blocks) exhaust
+ *   the decode-work budget and fail cleanly, inside the default gas cap;
  * - script args with a huge length word: `EvsInvalidCalldata`.
  *
  * Both execution modes (state override and deployless).
@@ -245,9 +246,29 @@ describe.each(['stateOverride', 'deployless'] as const)('decode bounds on anvil 
       words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), 0x20n, BigInt(N), ...rep(N, 1n)),
       false,
     ],
+    [
+      '(uint256 ×100, string)[] (wide struct re-decoded: over budget)',
+      {
+        name: 'r',
+        type: 'tuple[]',
+        components: [
+          ...rep(100, 0n).map((_, i) => ({ name: `a${i}`, type: 'uint256' })),
+          { name: 's', type: 'string' },
+        ],
+      },
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), ...rep(100, 1n), 32n * 101n, 0n),
+      false,
+    ],
+    [
+      'uint256[100][][] (fixed-size blocks re-decoded: over budget)',
+      { name: 'r', type: 'uint256[100][][]' },
+      // L=5 inner elements keep the payload (35 KB) under deployless mode's 48 KiB initcode cap
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), 5n, ...rep(500, 1n)),
+      false,
+    ],
   ];
 
-  test.each(OVERLAPS)('overlapping offsets, N=L=600: %s', async (_, out, payload, decodes) => {
+  test.each(OVERLAPS)('overlapping offsets, N=600: %s', async (_, out, payload, decodes) => {
     const { strict, attempt } = lengthScripts(out);
     if (decodes) {
       expect(await run(strict, 'strict', payload)).toEqual({ n: BigInt(N) });

@@ -3,7 +3,12 @@
  * normalization and the decode-work budget, the byte-for-byte mirror of the compiled decoder.
  */
 
-import { chargesDecodeBudget, DECODE_BUDGET_SLACK, layoutOfType } from '../../abi/layout.js';
+import {
+  arrayDecodeCharge,
+  DECODE_BUDGET_SLACK,
+  layoutOfType,
+  tupleDecodeCharge,
+} from '../../abi/layout.js';
 import { EvsInternalError } from '../../core/errors.js';
 import {
   type NamedType,
@@ -25,12 +30,19 @@ import { type Value, readWord, U64_MAX, isPlainTuple, asArrayType } from './valu
 // ---------------------------------------------------------------------------
 
 /**
- * The bytes a decode may still materialize (see `DECODE_BUDGET_SLACK` in `abi/layout.ts`): every
- * array block `chargesDecodeBudget` selects costs `32 + 32·len`, charged after its body bound,
- * exactly where the compiled decoder charges it; running out is a decode failure.
+ * The bytes a decode may still charge (see `DECODE_BUDGET_SLACK` in `abi/layout.ts`): every block
+ * `arrayDecodeCharge` / `tupleDecodeCharge` selects is charged once its bounds hold, at the same
+ * blocks and for the same amounts as the compiled decoder; running out is a decode failure.
  */
 interface DecodeBudget {
   left: number;
+}
+
+/** Charges `bytes` (if any) to `budget`; false once the budget is spent. */
+function charge(budget: DecodeBudget, bytes: number | null): boolean {
+  if (bytes === null) return true;
+  budget.left -= bytes;
+  return budget.left >= 0;
 }
 
 /** `null` = structural decode failure (the per-site `EvsDecodeError` / tryCall-zero trigger). */
@@ -53,7 +65,8 @@ function abiHeadBytes(params: readonly NamedType[]): number {
  * offsets are relative to `base`. Returns the member values (dynamic members own fresh buffers /
  * nested flat blocks, never aliasing). `null` on any structural failure. Mirrors the codegen
  * memory decoder byte-for-byte; static word outputs normalize-don't-revert. `outputs`: this block
- * is the call's output list (its members are top-level outputs).
+ * is the call's output list (its members are top-level outputs); `repeated`: it sits inside an
+ * element of an ABI-dynamic array (see `arrayDecodeCharge`).
  */
 function decodeBlock(
   components: readonly NamedType[],
@@ -62,6 +75,7 @@ function decodeBlock(
   end: number,
   budget: DecodeBudget,
   outputs = false,
+  repeated = false,
 ): readonly Value[] | null {
   // staticMinSize guard BEFORE any head read: the head must fit in [base, end)
   if (BigInt(end - base) < BigInt(abiHeadBytes(components))) return null;
@@ -71,7 +85,7 @@ function decodeBlock(
     const type = abiParamToType(p);
     if (!abiIsDynamic(type)) {
       // static member (word or static tuple) inlines at base+headOff
-      const v = decodeStatic(type, data, base + headOff, end, budget);
+      const v = decodeStatic(type, data, base + headOff, end);
       if (v === null) return null;
       decoded.push(v);
       headOff += 32 * headWords(type);
@@ -83,7 +97,7 @@ function decodeBlock(
     if (off > U64_MAX) return null;
     const ptr = BigInt(base) + off;
     if (ptr + 32n > BigInt(end)) return null;
-    const v = decodeDynamic(type, data, Number(ptr), end, budget, outputs);
+    const v = decodeDynamic(type, data, Number(ptr), end, budget, outputs, repeated);
     if (v === null) return null;
     decoded.push(v);
   }
@@ -92,16 +106,12 @@ function decodeBlock(
 
 /** Decodes a static member: word → normalized canonical; static plain tuple → inlined recurse;
  *  static fixed-size array `T[N]` → N elements inlined at `at + i·staticSize(T)` (the caller's
- *  head guard already proved the whole static region fits). */
-function decodeStatic(
-  type: EvsType,
-  data: Uint8Array,
-  at: number,
-  end: number,
-  budget: DecodeBudget,
-): Value | null {
+ *  head guard already proved the whole static region fits). Never charges the decode-work budget:
+ *  a static value is inlined, charged with the block that holds it. */
+function decodeStatic(type: EvsType, data: Uint8Array, at: number, end: number): Value | null {
   if (isPlainTuple(type)) {
-    const fields = decodeBlock(type.components, data, at, end, budget);
+    // a static tuple has no dynamic member, so its block never reaches the budget
+    const fields = decodeBlock(type.components, data, at, end, { left: 0 });
     return fields === null ? null : { kind: 'tuple', fields: [...fields] };
   }
   if (isArrayValueType(type)) {
@@ -111,7 +121,7 @@ function decodeStatic(
     const staticSize = 32 * headWords(elem);
     const items: Value[] = [];
     for (let i = 0; i < n; i++) {
-      const v = decodeStatic(elem, data, at + i * staticSize, end, budget);
+      const v = decodeStatic(elem, data, at + i * staticSize, end);
       if (v === null) return null;
       items.push(v);
     }
@@ -128,7 +138,7 @@ function decodeStatic(
 
 /** Decodes a dynamic member at `ptr` (dynamic plain tuple → recurse; string/bytes → fresh buffer;
  *  `T[]`/`tuple[]`/`T[][]`/a dynamic-element `T[N]` → element loop). `topLevel`: the value is
- *  itself one of the call's outputs. */
+ *  itself one of the call's outputs; `repeated`: it sits inside an ABI-dynamic array's element. */
 function decodeDynamic(
   type: EvsType,
   data: Uint8Array,
@@ -136,10 +146,16 @@ function decodeDynamic(
   end: number,
   budget: DecodeBudget,
   topLevel = false,
+  repeated = false,
 ): Value | null {
   if (isPlainTuple(type)) {
-    // a dynamic tuple's block starts at ptr; its offsets are relative to ptr
-    const fields = decodeBlock(type.components, data, ptr, end, budget);
+    // a dynamic tuple's block starts at ptr; its offsets are relative to ptr. Its head must fit
+    // (the compiled decoder bounds it before it charges, and charges before it allocates)
+    if (BigInt(end - ptr) < BigInt(abiHeadBytes(type.components))) return null;
+    const layout = layoutOfType(type);
+    if (layout.kind !== 'tuple') throw new EvsInternalError('INTERNAL', 'interpret: tuple layout');
+    if (!charge(budget, tupleDecodeCharge(layout, repeated))) return null;
+    const fields = decodeBlock(type.components, data, ptr, end, budget, false, repeated);
     return fields === null ? null : { kind: 'tuple', fields: [...fields] };
   }
   if (type === 'string' || type === 'bytes') {
@@ -168,21 +184,20 @@ function decodeDynamic(
   }
   const n = Number(len);
   // the decode-work budget, charged once the body bound below holds (the compiled decoder charges
-  // right after it, before allocating the block)
-  const charge = (): boolean => {
-    const layout = layoutOfType(arr);
-    if (layout.kind !== 'array' || !chargesDecodeBudget(layout, topLevel)) return true;
-    budget.left -= 32 + 32 * n;
-    return budget.left >= 0;
-  };
+  // right after it, before allocating the block); the elements of this ABI-dynamic array decode
+  // `repeated`
+  const layout = layoutOfType(arr);
+  if (layout.kind !== 'array') throw new EvsInternalError('INTERNAL', 'interpret: array layout');
+  const c = arrayDecodeCharge(layout, topLevel, repeated);
+  const blockCharge = c === null ? null : c.fixed + c.perElem * n;
   if (!abiIsDynamic(elem)) {
     // static element: the whole body must fit — D + len·staticSize ≤ end.
     const staticSize = 32 * headWords(elem);
     if (BigInt(D) + BigInt(n) * BigInt(staticSize) > BigInt(end)) return null;
-    if (!charge()) return null;
+    if (!charge(budget, blockCharge)) return null;
     const items: Value[] = [];
     for (let i = 0; i < n; i++) {
-      const v = decodeStatic(elem, data, D + i * staticSize, end, budget);
+      const v = decodeStatic(elem, data, D + i * staticSize, end);
       if (v === null) return null;
       items.push(v);
     }
@@ -190,14 +205,14 @@ function decodeDynamic(
   }
   // dynamic element: the offset word region (len words at [D, D+32·len)) must fit first.
   if (BigInt(D) + 32n * len > BigInt(end)) return null;
-  if (!charge()) return null;
+  if (!charge(budget, blockCharge)) return null;
   const items: Value[] = [];
   for (let i = 0; i < n; i++) {
     const off = readWord(data, D + 32 * i);
     if (off > U64_MAX) return null;
     const elemPtr = BigInt(D) + off; // offset relative to D (the array data start)
     if (elemPtr + 32n > BigInt(end)) return null;
-    const v = decodeDynamic(elem, data, Number(elemPtr), end, budget);
+    const v = decodeDynamic(elem, data, Number(elemPtr), end, budget, false, true);
     if (v === null) return null;
     items.push(v);
   }

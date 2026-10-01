@@ -10,8 +10,10 @@ import {
   isDynamic,
   type TypeLayout,
   staticSize,
-  chargesDecodeBudget,
+  arrayDecodeCharge,
+  tupleDecodeCharge,
   DECODE_BUDGET_SLACK,
+  type DecodeCharge,
 } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
@@ -51,28 +53,50 @@ export type DecodeFail = (liveDepth: number) => void;
 // decode-work budget (see DECODE_BUDGET_SLACK in abi/layout.ts)
 // ---------------------------------------------------------------------------
 //
-// A BUDGETED decode (a call's returndata; `budgeted: true` through the decoders) keeps the bytes
-// it may still materialize in the word at the source end, `MLOAD(pushEnd())` — an unaligned
-// word just past the payload, which the caller reserves when it bumps the free pointer past the
-// snapshot and initialises with {@link emitInitDecodeBudget}. Each charged array block
-// (`chargesDecodeBudget`) subtracts its `32 + 32·len` bytes BEFORE it is allocated; running out
-// takes the decode-failure path. Script args (the caller's own calldata) decode unbudgeted.
+// A BUDGETED decode (a call's returndata) keeps the bytes it may still charge in the word at the
+// source end, `MLOAD(pushEnd())` — an unaligned word just past the payload, which the caller
+// reserves when it bumps the free pointer past the snapshot and initialises with
+// {@link emitInitDecodeBudget}. Each charged block (`arrayDecodeCharge` / `tupleDecodeCharge`)
+// subtracts its charge BEFORE it is allocated; running out takes the decode-failure path. Script
+// args (the caller's own calldata) decode unbudgeted.
+
+/**
+ * How a decoder charges the decode-work budget: `'off'` (unbudgeted: script args, or outputs that
+ * can never charge), `'once'` (a call's outputs, outside every ABI-dynamic array) or `'repeated'`
+ * (inside an element of an ABI-dynamic array, where overlapping offsets can re-decode a block:
+ * dynamic tuples and dynamic `T[N]` are charged too).
+ */
+export type DecodeBudget = 'off' | 'once' | 'repeated';
+
+/** The budget mode of an ABI-dynamic array's elements (they sit behind offsets or a length). */
+function elemBudget(budget: DecodeBudget, l: Extract<TypeLayout, { kind: 'array' }>): DecodeBudget {
+  return budget === 'off' || !isDynamic(l) ? budget : 'repeated';
+}
 
 /**
  * @internal Shared by `codegen/call.ts`. True when decoding `outputs` can charge the decode-work
- * budget at all — some output holds an array {@link chargesDecodeBudget} charges. A call site
+ * budget at all — some output holds a block {@link mayChargeDecodeBudget} finds. A call site
  * reserves and initialises the budget word only then, so shapes that never charge (words,
- * strings, static structs, `uint256[]`, …) keep their bytecode.
+ * strings, structs of those, `uint256[]`, …) keep their bytecode.
  */
 export function needsDecodeBudget(outputs: readonly NamedType[]): boolean {
-  return outputs.some((p) => mayChargeDecodeBudget(layoutOfType(abiParamToType(p)), true));
+  return outputs.some((p) => mayChargeDecodeBudget(layoutOfType(abiParamToType(p)), true, false));
 }
 
-/** Whether decoding a value of layout `l` can charge the budget (`topLevel`: `l` is an output). */
-function mayChargeDecodeBudget(l: TypeLayout, topLevel: boolean): boolean {
-  if (l.kind === 'tuple') return l.components.some((c) => mayChargeDecodeBudget(c, false));
+/** Whether decoding a value of layout `l` can charge the budget (`topLevel`: `l` is an output;
+ *  `repeated`: inside an ABI-dynamic array's element) — the decoders' charge sites, walked. */
+function mayChargeDecodeBudget(l: TypeLayout, topLevel: boolean, repeated: boolean): boolean {
+  if (l.kind === 'tuple') {
+    return (
+      tupleDecodeCharge(l, repeated) !== null ||
+      l.components.some((c) => mayChargeDecodeBudget(c, false, repeated))
+    );
+  }
   if (l.kind !== 'array') return false;
-  return chargesDecodeBudget(l, topLevel) || mayChargeDecodeBudget(l.elem, false);
+  return (
+    arrayDecodeCharge(l, topLevel, repeated) !== null ||
+    mayChargeDecodeBudget(l.elem, false, repeated || isDynamic(l))
+  );
 }
 
 /**
@@ -93,32 +117,50 @@ export function emitInitDecodeBudget(
 }
 
 /**
- * Charges the `32 + 32·len` bytes of an array block about to be materialized: `[len, …] →
- * [len, …]`, routing to `fail` once the budget is spent. The remaining budget stays below 2^64
- * (the payload size plus the slack) and a charge below 2^70 (`len` is already bounded by
- * `2^64 − 1`), so a subtraction that wraps, and only one, sets a bit at or above 2^64.
- * `belowLen` is the number of live items beneath `len`; the fragment peaks three items above it.
+ * `[bytes, …] → […]`: subtracts `bytes` from the decode-work budget, routing to `fail` once it is
+ * spent. The remaining budget stays below 2^64 (the payload size plus the slack) and a charge far
+ * below 2^192 (a constant, or `fixed + perElem·len` after the body bound held), so a subtraction
+ * that wraps, and only one, sets a bit at or above 2^64. `below` is the number of live items
+ * beneath `bytes`; the fragment peaks two items above it plus `pushEnd`'s own.
  */
+function emitCharge(w: AsmWriter, pushEnd: () => void, fail: DecodeFail, below: number): void {
+  pushEnd();
+  w.op('MLOAD'); // [left, bytes, …]
+  w.op('SUB'); // [left' = left − bytes, …]
+  w.op('DUP1');
+  w.push(64);
+  w.op('SHR'); // [left' ≥ 2^64 (wrapped: spent), left', …]
+  fail(below + 1); // [left', …]
+  pushEnd();
+  w.op('MSTORE', { note: 'decode budget' }); // […]
+}
+
+/** Charges an array block about to be materialized, `fixed + perElem·len` bytes: `[len, …] →
+ *  [len, …]`. `belowLen` is the number of live items beneath `len`. */
 function emitChargeArrayBlock(
   w: AsmWriter,
   pushEnd: () => void,
   fail: DecodeFail,
   belowLen: number,
+  c: DecodeCharge,
 ): void {
-  w.op('DUP1');
-  w.push(5);
-  w.op('SHL');
-  w.push(32);
-  w.op('ADD'); // [bytes, len, …]
-  pushEnd();
-  w.op('MLOAD'); // [left, bytes, len, …]
-  w.op('SUB'); // [left' = left − bytes, len, …]
-  w.op('DUP1');
-  w.push(64);
-  w.op('SHR'); // [left' ≥ 2^64 (wrapped: spent), left', len, …]
-  fail(belowLen + 2); // [left', len, …]
-  pushEnd();
-  w.op('MSTORE', { note: 'decode budget' }); // [len, …]
+  if (c.perElem === 0) {
+    w.push(c.fixed); // [bytes, len, …]
+  } else {
+    w.op('DUP1');
+    if (c.perElem === 32) {
+      w.push(5);
+      w.op('SHL');
+    } else {
+      w.push(c.perElem);
+      w.op('MUL');
+    } // [perElem·len, len, …]
+    if (c.fixed !== 0) {
+      w.push(c.fixed);
+      w.op('ADD');
+    } // [bytes, len, …]
+  }
+  emitCharge(w, pushEnd, fail, belowLen + 1); // [len, …]
 }
 
 /**
@@ -132,9 +174,11 @@ function emitChargeArrayBlock(
  * recurse into its own block. Net stack +1 (the flat pointer); one live word (`flat`) per tuple
  * nesting level. No `emitMemCopy`, so the element-normalize loops are the only checked regions.
  *
- * `budgeted` charges the decode-work budget for every array block it materializes (see
- * {@link emitInitDecodeBudget}); `outputsBlock` marks the tuple as a call's whole output list
- * (`s.simulate`), whose own narrow word-array members are top-level outputs and not charged.
+ * `budget` charges the decode-work budget for the blocks it materializes (see
+ * {@link DecodeBudget}): under `'repeated'` a dynamic tuple charges its head size before it
+ * allocates its flat block, and every narrow member copy / array member is charged by its own
+ * rule. `outputsBlock` marks the tuple as a call's whole output list (`s.simulate`), whose own
+ * narrow word-array members are top-level outputs and not charged.
  */
 export function emitDecodeTupleToMem(
   w: AsmWriter,
@@ -143,11 +187,27 @@ export function emitDecodeTupleToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budgeted: boolean,
+  budget: DecodeBudget,
   outputsBlock = false,
 ): void {
   const offs = headOffsets(components);
   const n = components.length;
+
+  // a re-decodable dynamic tuple charges its head size before it allocates anything
+  if (budget !== 'off') {
+    const layouts = components.map((c) => layoutOfType(abiParamToType(c)));
+    const self = {
+      kind: 'tuple',
+      abi: 'tuple',
+      components: layouts,
+      dynamic: layouts.some(isDynamic),
+    } as const;
+    const c = tupleDecodeCharge(self, budget === 'repeated');
+    if (c !== null) {
+      w.push(c); // [bytes, …below]
+      emitCharge(w, pushEnd, fail, belowFlat); // […below]
+    }
+  }
 
   // allocate the flat block (32·n words); bump the free pointer
   w.push(FREE_PTR);
@@ -189,7 +249,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
-        budgeted,
+        budget,
       ); // [subFlat, flat, …]
       w.op('DUP2'); // [flat, subFlat, flat, …]
       if (j !== 0) {
@@ -210,7 +270,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
-        budgeted,
+        budget,
       ); // [arr, flat, …]
       w.op('DUP2'); // [flat, arr, flat, …]
       if (j !== 0) {
@@ -251,10 +311,10 @@ export function emitDecodeTupleToMem(
       if (layout.kind === 'tuple') {
         // its offsets are relative to ptr (the sub-tuple base)
         const sub = comp.components ?? [];
-        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, budgeted);
+        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, budget);
       } else {
         // `tuple[]`, `T[][]`, `string[]`, dynamic `T[N]`: a fresh `[len][p0…]` pointer block
-        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, budgeted);
+        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, budget);
       } // [sub, flat, …]
       w.op('DUP2'); // [flat, sub, flat, …]
       if (j !== 0) {
@@ -298,10 +358,14 @@ export function emitDecodeTupleToMem(
     if (elemAbi !== null && wordNeedsNormalize(elemAbi)) {
       // narrow elements: normalize into a fresh copy — never in place, since another decoded
       // value may alias the same source bytes (overlapping offsets in non-canonical data)
-      if (budgeted && layout.kind === 'array' && chargesDecodeBudget(layout, outputsBlock)) {
+      const c =
+        budget !== 'off' && layout.kind === 'array'
+          ? arrayDecodeCharge(layout, outputsBlock, budget === 'repeated')
+          : null;
+      if (c !== null) {
         w.op('DUP1');
         w.op('MLOAD'); // [len, ptr, flat, …]
-        emitChargeArrayBlock(w, pushEnd, fail, belowFlat + 2);
+        emitChargeArrayBlock(w, pushEnd, fail, belowFlat + 2, c);
         w.op('POP'); // [ptr, flat, …]
       }
       emitCopyNormalizeWordArray(w, elemAbi, belowFlat + 1); // [copy, flat, …]
@@ -333,8 +397,9 @@ export function emitDecodeTupleToMem(
  * is rolled back and the heap-frame path is emitted instead. Every shape that decoded before #4
  * fit the budget where it was used, so its bytes are unchanged.
  *
- * `budgeted`: both paths charge a dynamic-length block to the decode-work budget (see
- * {@link emitInitDecodeBudget}) right after its body bound, before allocating it.
+ * `budget`: both paths charge the block (`arrayDecodeCharge`, see {@link DecodeBudget}) right
+ * after its body bound, before allocating it; the elements of an ABI-dynamic array decode
+ * `'repeated'`.
  */
 export function emitDecodeArrayToMem(
   w: AsmWriter,
@@ -343,18 +408,19 @@ export function emitDecodeArrayToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budgeted: boolean,
+  budget: DecodeBudget,
 ): void {
-  const charge = budgeted && chargesDecodeBudget(layout, false);
+  const charge = budget === 'off' ? null : arrayDecodeCharge(layout, false, budget === 'repeated');
+  const inner = elemBudget(budget, layout);
   if (isStackDecodedArray(layout)) {
     // speculative: emit the fast path, keep it only if it fits the template budget at this
     // depth (a fast-path shape nested deep inside tuples / heap levels may not)
     const cp = w.checkpoint();
-    emitDecodeArrayToMemStack(w, layout.elem, pushBase, pushEnd, fail, belowFlat, budgeted, charge);
+    emitDecodeArrayToMemStack(w, layout.elem, pushBase, pushEnd, fail, belowFlat, inner, charge);
     if (w.peakHeightSince(cp, belowFlat) <= MAX_TEMPLATE_DEPTH) return;
     w.rollback(cp);
   }
-  emitDecodeArrayToMemHeap(w, layout, pushBase, pushEnd, fail, belowFlat, budgeted, charge);
+  emitDecodeArrayToMemHeap(w, layout, pushBase, pushEnd, fail, belowFlat, inner, charge);
 }
 
 /**
@@ -386,8 +452,8 @@ function emitDecodeArrayToMemStack(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budgeted: boolean,
-  charge: boolean,
+  elemBudgetMode: DecodeBudget,
+  charge: DecodeCharge | null,
 ): void {
   const elemDynamic = isDynamic(elemLayout);
   // D = base + 32, re-derivable from `pushBase()` so nothing has to ride the stack.
@@ -426,7 +492,7 @@ function emitDecodeArrayToMemStack(
   pushEnd();
   w.op('LT'); // [end < D+body, len, …]
   fail(belowFlat + 1); // [len, …]
-  if (charge) emitChargeArrayBlock(w, pushEnd, fail, belowFlat); // [len, …]
+  if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
   // -- allocate the pointer block [len][p0…]: 32 + 32·len bytes, bump FREE_PTR --------------
   w.push(FREE_PTR);
@@ -513,7 +579,7 @@ function emitDecodeArrayToMemStack(
     w.push(ELEM_BASE);
     w.op('MLOAD');
   };
-  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, budgeted); // [elemVal, i, D, arr, len, saved, …]
+  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, elemBudgetMode); // [elemVal, i, D, arr, len, saved, …]
 
   // store elemVal into arr + 32 + 32·i: stack [elemVal, i, D, arr, len, saved, …]
   w.op('DUP2'); // [i, elemVal, i, D, arr, len, saved, …]
@@ -570,8 +636,8 @@ function emitDecodeArrayToMemHeap(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
-  budgeted: boolean,
-  charge: boolean,
+  elemBudgetMode: DecodeBudget,
+  charge: DecodeCharge | null,
 ): void {
   const elemLayout = layout.elem;
   const elemDynamic = isDynamic(elemLayout);
@@ -614,8 +680,8 @@ function emitDecodeArrayToMemHeap(
   pushEnd();
   w.op('LT'); // [end < D+body, len, …]
   fail(belowFlat + 1); // [len, …]
-  // a dynamic-length block is charged here (a fixed-size one never is); peak `belowFlat + 4`
-  if (charge) emitChargeArrayBlock(w, pushEnd, fail, belowFlat); // [len, …]
+  // the block is charged here (`arrayDecodeCharge`), before anything is allocated
+  if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
   // -- allocate the decode frame (32·DFRAME_SLOTS bytes) at the free pointer and the pointer
   //    block [len][p0…] (32 + 32·len bytes) right after it; bump FREE_PTR once past both. Every
@@ -717,7 +783,7 @@ function emitDecodeArrayToMemHeap(
     pushEnd,
     fail,
     belowFlat + 1,
-    budgeted,
+    elemBudgetMode,
   ); // [elemVal, arr, …]
 
   // store elemVal into arr + 32 + 32·i
@@ -810,7 +876,7 @@ function emitDecodeElement(
   pushEnd: () => void,
   fail: DecodeFail,
   belowElem: number,
-  budgeted: boolean,
+  budget: DecodeBudget,
 ): void {
   if (elemLayout.kind === 'word') {
     // word element: base points at the inline word; normalize and push it.
@@ -823,7 +889,7 @@ function emitDecodeElement(
   if (elemLayout.kind === 'tuple') {
     // tuple element (static or dynamic): decode into a flat block; offsets relative to base.
     const components = tupleComponents(elemLayout);
-    emitDecodeTupleToMem(w, components, pushBase, pushEnd, fail, belowElem, budgeted); // [flat, …]
+    emitDecodeTupleToMem(w, components, pushBase, pushEnd, fail, belowElem, budget); // [flat, …]
     return;
   }
 
@@ -831,7 +897,7 @@ function emitDecodeElement(
   if (elemLayout.kind === 'array' && !aliasedArray) {
     // nested array element (`T[][]`, `T[N][]`, `uint8[][]`, …): recurse — it saves/restores the
     // scratch slot.
-    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem, budgeted); // [arr, …]
+    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem, budget); // [arr, …]
     return;
   }
 

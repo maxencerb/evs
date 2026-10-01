@@ -23,6 +23,7 @@ import {
   emitWithinStackBudget,
   needsDecodeBudget,
   emitInitDecodeBudget,
+  type DecodeBudget,
 } from '../abi.js';
 import { FREE_PTR, MAX_U64 } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
@@ -90,6 +91,7 @@ export function emitStaticCall(
   // outputs whose decode can charge the decode-work budget (arrays nested in structs / arrays —
   // always memory-snapshot shapes) get a budget word right after the snapshot
   const budgeted = needsDecodeBudget(outputs);
+  const budget: DecodeBudget = budgeted ? 'once' : 'off';
   if (budgeted && !hasTupleOut) {
     throw internal(`call to ${fnAbi.name} (site ${siteId}): a budgeted decode without a snapshot`);
   }
@@ -238,7 +240,7 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, budgeted),
+          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, budget),
         ); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
@@ -286,7 +288,7 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, budgeted),
+          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, budget),
         ); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]

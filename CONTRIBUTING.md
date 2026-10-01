@@ -181,12 +181,16 @@ Releases: see [Releasing](#releasing) below.
   legal on any tuple.
   Full-word `T[]` (`uint256[]`, `int256[]`, `bytes32[]`) alias at every level, array
   elements included. Returndata decodes are **budgeted** against overlapping offsets (N offsets
-  at one inner block would otherwise make the decode quadratic in the returndata size): every
-  dynamic-length array block the decoder materializes (`chargesDecodeBudget` in `abi/layout.ts`:
-  pointer blocks and narrow copies, not fixed-size arrays, aliased arrays or a call's own
-  top-level word-array outputs) costs `32 + 32·len` bytes, charged after its body bound and
-  before it is allocated, out of `payload + DECODE_BUDGET_SLACK` (8192 words, viem's default
-  `recursiveReadLimit`). The remaining budget lives in the word at the source end (`buf + rds`,
+  at one element would otherwise make the decode quadratic in the returndata size): every tail
+  block the decoder materializes is charged its source-equivalent size (`arrayDecodeCharge` /
+  `tupleDecodeCharge` in `abi/layout.ts`) after its bounds and before it is allocated, out of
+  `payload + DECODE_BUDGET_SLACK` (8192 words, viem's default `recursiveReadLimit`): a
+  dynamic-length `T[]` its length word plus body (`32 + len·elemBytes`, a static struct /
+  static `T[N]` element at its static size; not aliased full-word arrays nor a call's own narrow
+  word-array outputs) and, under `'repeated'` (inside an ABI-dynamic array's element), a dynamic
+  tuple its head and a dynamic `T[N]` its `32·N` offsets. Static composites are inlined and
+  charged with their holder, so a non-overlapping encoding charges at most its own size, and
+  every block's memory is within a type-fixed factor of its charge (decode memory stays linear). The remaining budget lives in the word at the source end (`buf + rds`,
   unaligned; the snapshot's free-pointer bump reserves it), initialised by
   `emitInitDecodeBudget` only at sites whose output types can charge (`needsDecodeBudget`), so
   other shapes keep their bytes; running out is the ordinary decode failure. A well-formed

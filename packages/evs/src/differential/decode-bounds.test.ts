@@ -17,9 +17,10 @@
  *   word array must not rewrite the bytes another decoded value reads.
  * - **Overlapping element offsets.** N offsets of a nested array pointing at one inner block:
  *   full-word inner arrays alias it (linear work, the payload decodes), anything copied or
- *   re-materialized is charged to the decode-work budget and fails cleanly past it — never a
- *   quadratic out-of-gas halt — at viem's `RecursiveReadLimitExceededError` threshold for
- *   `uint8[][]`; well-formed payloads larger than the budget's slack still decode.
+ *   re-materialized (narrow copies, pointer blocks, wide struct blocks, fixed-size `T[N]`
+ *   blocks) is charged to the decode-work budget and fails cleanly past it — never a quadratic
+ *   out-of-gas halt — at viem's `RecursiveReadLimitExceededError` threshold for `uint8[][]`;
+ *   well-formed payloads larger than the budget's slack still decode.
  *
  * interp == bytecode (plain and optimized) byte-for-byte, and == viem where viem decodes.
  */
@@ -835,6 +836,20 @@ describe('overlapping element offsets: decode work stays linear (decode-work bud
       1n,
     );
 
+  /** `(uint256 a0…a{w−1}, string s)[]` whose N tuple offsets all point at one wide tuple. */
+  const overlapWideTuples = (n: number, w: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), ...rep(w, 1n), BigInt(32 * (w + 1)), 0n);
+  /** `string[K][]` whose N offsets share one `string[K]`, whose K offsets share one empty string
+   *  (the fixed-size block is the only thing copied). */
+  const overlapFixedOfStrings = (n: number, k: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), ...rep(k, BigInt(32 * k)), 0n);
+  /** `T[][]` whose N offsets share one inner `T[]` of L elements, each `w` static words. */
+  const overlapStaticElems = (n: number, l: number, w: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), BigInt(l), ...rep(l * w, 1n));
+  const wideWords = (w: number): AbiParameter[] =>
+    Array.from({ length: w }, (_, i) => ({ name: `a${i}`, type: 'uint256' }));
+  const WIDE_DYN_TUPLE = [...wideWords(100), { name: 's', type: 'string' }];
+
   const U8_NESTED: AbiParameter = { name: 'r', type: 'uint8[][]' };
   const TUPLES: AbiParameter = {
     name: 'r',
@@ -863,6 +878,32 @@ describe('overlapping element offsets: decode work stays linear (decode-work bud
       label: 'uint256[][][] N=M=600',
       output: { name: 'r', type: 'uint256[][][]' },
       data: overlapCube(600, 600),
+      n: null,
+    },
+    // re-materialized tuple flat blocks and fixed-size `T[N]` blocks are charged too (review of
+    // PR #117): ~51–58 KB payloads that used to halt out of gas at 30M, even under try verbs
+    {
+      label: '(uint256 ×100, string)[] N=1500',
+      output: { name: 'r', type: 'tuple[]', components: WIDE_DYN_TUPLE },
+      data: overlapWideTuples(1500, 100),
+      n: null,
+    },
+    {
+      label: 'string[1000][] N=600',
+      output: { name: 'r', type: 'string[1000][]' },
+      data: overlapFixedOfStrings(600, 1000),
+      n: null,
+    },
+    {
+      label: 'uint256[100][][] N=800 L=10',
+      output: { name: 'r', type: 'uint256[100][][]' },
+      data: overlapStaticElems(800, 10, 100),
+      n: null,
+    },
+    {
+      label: '(uint256 ×100)[][] N=800 L=10',
+      output: { name: 'r', type: 'tuple[][]', components: wideWords(100) },
+      data: overlapStaticElems(800, 10, 100),
       n: null,
     },
   ];
@@ -923,12 +964,24 @@ describe('overlapping element offsets: decode work stays linear (decode-work bud
   }, 60_000);
 
   test('well-formed payloads larger than the budget slack still decode', async () => {
-    // 288 KiB of charged blocks (over the 256 KiB slack) — but a canonical encoding never
-    // charges more than its own size, which the budget always covers
+    // 288–384 KiB of charged blocks each (over the 256 KiB slack) — but a canonical encoding
+    // never charges more than its own size, which the budget always covers: array bodies, wide
+    // struct heads and the offset words of a fixed-size `T[N]` alike
     const big = rep(9000, 7n);
+    const wide = Object.fromEntries([
+      ...rep(100, 0n).map((_, i) => [`a${i}`, BigInt(i)]),
+      ['s', 'x'],
+    ]);
     const cases: readonly [AbiParameter, unknown, number][] = [
       [U8_NESTED, [big, [1n, 2n]], 2],
       [TUPLES, [{ a: big }, { a: big.slice(0, 10) }], 2],
+      [
+        { name: 'r', type: 'tuple[]', components: WIDE_DYN_TUPLE },
+        rep(100, 0n).map(() => wide),
+        100,
+      ],
+      [{ name: 'r', type: 'uint256[100][][]' }, [rep(100, 0n).map(() => rep(100, 7n))], 1],
+      [{ name: 'r', type: 'string[3][]' }, rep(3000, 0n).map(() => ['', '', '']), 3000],
     ];
     for (const [output, value, n] of cases) {
       for (const verb of VERBS) {

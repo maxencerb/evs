@@ -189,7 +189,7 @@ export function emitCalldataDecode(
         0,
         () => `script argument #${i} (${stringifyType(ref.type)})`,
         // script args are the caller's own calldata: no decode-work budget
-        () => emitDecodeTupleToMem(w, components, pushTupleBase, pushEnd, failCalldata, 0, false),
+        () => emitDecodeTupleToMem(w, components, pushTupleBase, pushEnd, failCalldata, 0, 'off'),
       ); // [flat]
       w.push(ref.slot);
       w.op('MSTORE'); // []
@@ -245,7 +245,7 @@ export function emitCalldataDecode(
         w,
         0,
         () => `script argument #${i} (${stringifyType(ref.type)})`,
-        () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0, false),
+        () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0, 'off'),
       ); // [arr]
       w.push(ref.slot);
       w.op('MSTORE'); // []
