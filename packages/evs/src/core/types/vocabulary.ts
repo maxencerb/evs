@@ -177,3 +177,27 @@ export type FixedLengthOf<t extends EvsType> = [t] extends [ArrayType]
 export type ArgType = EvsType;
 export type NumericType = UintType | IntType;
 export type BitsType = UintType | BytesNType;
+/** The ordering domain of `lt`/`gt`/`lte`/`gte` (Solidity's): the numeric types, plus `address`
+ *  and `bytesN`, which compare as unsigned words (a `bytesN` byte by byte, lexicographically). */
+export type OrderedType = NumericType | 'address' | BytesNType;
+
+// -- same-width bytesN ↔ uintN (`asUint` / `asBytesN`) -------------------------------------------
+
+// prettier-ignore
+interface BytesSizeToBits {
+  1: 8; 2: 16; 3: 24; 4: 32; 5: 40; 6: 48; 7: 56; 8: 64; 9: 72; 10: 80; 11: 88; 12: 96;
+  13: 104; 14: 112; 15: 120; 16: 128; 17: 136; 18: 144; 19: 152; 20: 160; 21: 168; 22: 176;
+  23: 184; 24: 192; 25: 200; 26: 208; 27: 216; 28: 224; 29: 232; 30: 240; 31: 248; 32: 256;
+}
+// prettier-ignore
+interface BitsToBytesSize {
+  8: 1; 16: 2; 24: 3; 32: 4; 40: 5; 48: 6; 56: 7; 64: 8; 72: 9; 80: 10; 88: 11; 96: 12;
+  104: 13; 112: 14; 120: 15; 128: 16; 136: 17; 144: 18; 152: 19; 160: 20; 168: 21; 176: 22;
+  184: 23; 192: 24; 200: 25; 208: 26; 216: 27; 224: 28; 232: 29; 240: 30; 248: 31; 256: 32;
+}
+/** The `uintN` as wide as a `bytesN` (`'bytes4'` → `'uint32'`) — `Expr.asUint()`'s result. */
+export type UintOfBytesN<t extends EvsType> =
+  t extends `bytes${infer n extends keyof BytesSizeToBits}` ? `uint${BytesSizeToBits[n]}` : never;
+/** The `bytesN` as wide as a `uintN` (`'uint32'` → `'bytes4'`) — `Expr.asBytesN()`'s result. */
+export type BytesNOfUint<t extends EvsType> =
+  t extends `uint${infer n extends keyof BitsToBytesSize}` ? `bytes${BitsToBytesSize[n]}` : never;

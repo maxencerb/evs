@@ -290,12 +290,14 @@ operands wraps too, where the checked op would be `CERTAIN_PANIC`. See
 ## s.lt / s.gt / s.lte / s.gte / s.eq / s.neq
 
 ```ts nocheck
-lt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewise gt/lte/gte
+lt<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewise gt/lte/gte
 eq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // likewise neq
 ```
 
-Comparison mirrors. Ordering comparisons are numeric-only; signed vs unsigned EVM opcodes
-(`LT`/`GT` vs `SLT`/`SGT`) are chosen from the static type. `eq`/`neq` accept any word type
+Comparison mirrors. Ordering comparisons take an `OrderedType` — numeric, `address` or `bytesN`
+(Solidity's domain; `bool` and memrefs have no order); signed vs unsigned EVM opcodes
+(`LT`/`GT` vs `SLT`/`SGT`) are chosen from the static type, and `address` / `bytesN` compare as
+unsigned words. `eq`/`neq` accept any word type
 (`address`, `bool`, `bytesN` included) as a single-word compare, and every memref type
 (`string`, `bytes`, `T[]`, structs) as **hash equality**: the recorded stmts are exactly
 `s.keccak256(a).eq(s.keccak256(b))` — byte equality for `string`/`bytes` (raw bytes hashed),

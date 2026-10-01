@@ -27,6 +27,41 @@ returndata does not decode, and `value` is then zeroed, so it is always safe to 
 values, so this is one expression, no branch needed. Full semantics in
 [calls](/guides/calls/).
 
+## Legacy bytes32 symbol
+
+A few early tokens (MKR, SAI) return `symbol()` / `name()` as a `bytes32` instead of a `string`.
+Read the `string` form first; when it does not decode, read the same function through a
+`bytes32` ABI and convert it in-script with `asString()`, which drops the trailing zero padding:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const bytes32SymbolAbi = [
+  {
+    type: 'function',
+    name: 'symbol',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'bytes32' }],
+  },
+] as const;
+
+export const tokenSymbol = evscript({ name: 'tokenSymbol', args: [t.address] }, (s, token) => {
+  const str = s.tryRead({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const symbol = s.let(t.string, str.value);
+  s.if(str.success.not(), () => {
+    const raw = s.tryRead({ address: token, abi: bytes32SymbolAbi, functionName: 'symbol' });
+    symbol.set(raw.value.asString()); // 'MKR' + 29 zero bytes → 'MKR'; '' if both reads fail
+  });
+  return s.return({ symbol: symbol.get() });
+});
+```
+
+The `bytes32` read only runs for the tokens whose `string` read failed. `asString()` keeps
+interior zero bytes and turns an all-zero word into `''`, matching viem's
+`hexToString(x, { size: 32 })` for everything but that all-zero case.
+
 ## First match: while + cells + break
 
 ```ts

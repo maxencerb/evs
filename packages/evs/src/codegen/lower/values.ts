@@ -5,7 +5,7 @@
 
 import type { AsmWriter } from '../../asm/assembler.js';
 import { padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
-import { isSigned } from '../../core/types.js';
+import { bitsOf, isBytesN, isSigned } from '../../core/types.js';
 import type { Stmt } from '../../ir/nodes.js';
 import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
 import { FREE_PTR } from '../memory.js';
@@ -23,6 +23,8 @@ import {
   emitMaxCheck,
   maxUint,
   maxInt,
+  STMT_BASELINE,
+  emitBumpAlloc,
 } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -111,9 +113,11 @@ export function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: Lowe
 }
 
 /**
- * convert: free widening / free reinterpret where lossless; otherwise the logical value
- * is range-checked against the target (Panic 0x11) — matching the reference interpreter:
- * checked narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check.
+ * convert: free widening / free reinterpret where lossless; a same-width `bytesN` ↔ `uintN` is
+ * one shift between the left-aligned and right-aligned lanes; a `bytesN` → `string` copies the
+ * word into a fresh string (trailing zero bytes trimmed); otherwise the logical value is
+ * range-checked against the target (Panic 0x11) — matching the reference interpreter: checked
+ * narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check.
  */
 export function lowerConvert(
   w: AsmWriter,
@@ -124,10 +128,19 @@ export function lowerConvert(
   const to = typeOf(ctx, s.out);
   loadOperand(w, ctx, s.a, meta(`convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
 
+  if (to === 'string' && isBytesN(from)) {
+    emitWordToString(w, bitsOf(from) / 8, s.site); // [ptr]
+    storeOut(w, ctx, s.out);
+    return;
+  }
   const reinterpret =
     from === to ||
     (from === 'uint256' && to === 'bytes32') ||
-    (from === 'bytes32' && to === 'uint256');
+    (from === 'bytes32' && to === 'uint256') ||
+    (from === 'address' && to === 'uint160') ||
+    (from === 'uint160' && to === 'address') ||
+    (from === 'string' && to === 'bytes') ||
+    (from === 'bytes' && to === 'string');
   if (reinterpret) {
     storeOut(w, ctx, s.out);
     return;
@@ -139,6 +152,20 @@ export function lowerConvert(
     w.op('SHR'); // [v >> 160, v]
     w.pushLabel(ctx.tails.panicOverflow);
     w.op('JUMPI'); // [v]
+    storeOut(w, ctx, s.out);
+    return;
+  }
+  if (isBytesN(from)) {
+    // asUint: the left-aligned lane down to the low bits (canonical ⇒ the rest is zero)
+    w.push(256 - bitsOf(from));
+    w.op('SHR');
+    storeOut(w, ctx, s.out);
+    return;
+  }
+  if (isBytesN(to)) {
+    // asBytesN: the zero-extended value up into the left-aligned lane
+    w.push(256 - bitsOf(to));
+    w.op('SHL');
     storeOut(w, ctx, s.out);
     return;
   }
@@ -166,4 +193,43 @@ export function lowerConvert(
     emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
   }
   storeOut(w, ctx, s.out);
+}
+
+/**
+ * `[v] → [ptr]`: a fresh string holding the first `size` bytes of the left-aligned `bytesN` word
+ * `v` up to its last nonzero byte (`.asString()`). The trimmed length is found by scanning down
+ * from `size` with `BYTE` (at most `size` iterations); every byte of `v` past it is zero, so one
+ * MSTORE writes the payload together with its zero padding.
+ */
+function emitWordToString(w: AsmWriter, size: number, site: number): void {
+  const scan = w.newLabel(`trim_${site}`);
+  const done = w.newLabel(`trim_done_${site}`);
+  w.push(size); // [n, v]
+  w.label(scan, STMT_BASELINE + 2);
+  w.op('DUP1');
+  w.op('ISZERO');
+  w.pushLabel(done);
+  w.op('JUMPI'); // [n, v]               n == 0: an all-zero word
+  w.op('DUP2'); // [v, n, v]
+  w.push(1);
+  w.op('DUP3');
+  w.op('SUB'); // [n − 1, v, n, v]
+  w.op('BYTE'); // [v[n − 1], n, v]
+  w.pushLabel(done);
+  w.op('JUMPI'); // [n, v]               the last kept byte is nonzero
+  w.push(1);
+  w.op('SWAP1');
+  w.op('SUB'); // [n − 1, v]
+  w.pushLabel(scan);
+  w.op('JUMP');
+  w.label(done, STMT_BASELINE + 2); // [n, v]
+  emitBumpAlloc(w, 64); // [ptr, n, v]
+  w.op('SWAP1');
+  w.op('DUP2');
+  w.op('MSTORE'); // [ptr, v]             mem[ptr] = n
+  w.op('SWAP1');
+  w.op('DUP2');
+  w.push(32);
+  w.op('ADD');
+  w.op('MSTORE'); // [ptr]                mem[ptr + 32] = v (payload + zero padding)
 }

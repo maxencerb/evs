@@ -17,6 +17,9 @@ import type {
   BytesNType,
   TupleType,
   StringType,
+  OrderedType,
+  UintOfBytesN,
+  BytesNOfUint,
 } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
@@ -68,11 +71,12 @@ export interface Expr<t extends EvsType = EvsType> {
   wrappingSub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
   wrappingMul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
 
-  // comparisons — LT/GT vs SLT/SGT chosen from the static type
-  lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
-  gt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
-  lte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
-  gte(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  // comparisons — LT/GT vs SLT/SGT chosen from the static type; `address` and `bytesN` order as
+  // unsigned words (Solidity's `<` on them)
+  lt(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gt(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  lte(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
+  gte(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
   // eq/neq: word equality, or HASH equality on memrefs — string/bytes byte-for-byte, arrays and
   // tuples element-wise via their standard ABI encoding (lowered to keccak256(a) == keccak256(b))
   eq(rhs: IntoExpr<t>): Expr<'bool'>;
@@ -94,15 +98,31 @@ export interface Expr<t extends EvsType = EvsType> {
   shr(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
 
   // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range). toUint/toInt
-  // convert between numeric types only: reach a uint from bytes32 through asUint256()
+  // convert between numeric types only: reach a uint from bytes32 through asUint256(), from an
+  // address through asUint160(), from a bytesN through asUint()
   toUint<const u extends UintType>(this: Expr<t & NumericType>, target: u): Expr<u>;
   toInt<const i extends IntType>(this: Expr<t & NumericType>, target: i): Expr<i>;
-  asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>; // checked: high 96 bits zero
+  // checked from uint256/bytes32 (high 96 bits zero); free from uint160 (Solidity's address(u160))
+  asAddress(this: Expr<'uint256' | 'bytes32' | 'uint160'>): Expr<'address'>;
+  asUint160(this: Expr<'address'>): Expr<'uint160'>; // free (Solidity's uint160(addr))
   asUint256(this: Expr<'bytes32'>): Expr<'uint256'>; // free reinterpret
   asBytes32(this: Expr<'uint256'>): Expr<'bytes32'>; // free reinterpret
+  // same-width bytesN ↔ uintN (Solidity's uint32(bytes4) / bytes4(uint32)): free, a shift
+  // between the left-aligned bytesN lane and the right-aligned uintN one
+  asUint(this: Expr<t & BytesNType>): Expr<UintOfBytesN<t>>;
+  asBytesN(this: Expr<t & UintType>): Expr<BytesNOfUint<t>>;
+  // string ↔ bytes: free reinterpret (the same memory). On a bytesN, `asString` copies its bytes
+  // into a fresh string with the trailing zero bytes trimmed (the legacy bytes32 `symbol()`)
+  asBytes(this: Expr<'string'>): Expr<'bytes'>;
+  asString(this: Expr<'bytes' | BytesNType>): Expr<'string'>;
 
   // dynamic / array values (memrefs)
   length(this: Expr<DynType | ArrayType>): Expr<'uint256'>;
+  // the byte at `i` of a string/bytes (Solidity's `b[i]`) — bounds-checked → Panic 0x32
+  byteAt(this: Expr<DynType>, i: IntoExpr<'uint256'>): Expr<'bytes1'>;
+  // a fresh copy of bytes [start, end) (`end` defaults to the length; Solidity's `b[start:end]`)
+  // — Panic 0x32 unless start ≤ end ≤ length
+  slice(this: Expr<t & DynType>, start: IntoExpr<'uint256'>, end?: IntoExpr<'uint256'>): Expr<t>;
   // element via FORWARD parsing of the receiver's own (concrete) `t` (see {@link ArrayElemOf}),
   // NOT a reverse-solved `elem extends StringType` against `${elem}[]` — same result type, but
   // this cut `tsc` check time ~10× by not pattern-matching the ~300-member union.

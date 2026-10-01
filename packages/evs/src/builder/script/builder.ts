@@ -11,6 +11,7 @@ import type {
   IntoExpr,
   TupleType,
   NumericType,
+  OrderedType,
   UintType,
   BitsType,
   IntType,
@@ -192,10 +193,11 @@ export interface ScriptBuilder<
   wrappingAdd<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   wrappingSub<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   wrappingMul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  lt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  gt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  lte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  gte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
+  // ordering — numeric, plus address / bytesN as unsigned words
+  lt<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
+  gt<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
+  lte<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
+  gte<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   eq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // memrefs: hash equality
   neq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   and(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>;

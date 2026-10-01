@@ -14,12 +14,12 @@ Arithmetic in evs is **checked by default**, matching solc 0.8 semantics exactly
 | Exponentiation     | `pow`                                           | numeric base; unsigned exponent (any `uintN` or literal) | base type |
 | Modular arithmetic | `addmod` `mulmod`                               | `uint256` (value, operand, modulus)            | `Expr<'uint256'>` |
 | Multiply-divide    | `mulDiv` `mulDivRoundingUp`                     | `uint256` (value, operand, denominator)        | `Expr<'uint256'>` |
-| Ordering           | `lt` `gt` `lte` `gte`                           | numeric, same type                             | `Expr<'bool'>`  |
+| Ordering           | `lt` `gt` `lte` `gte`                           | numeric, `address` or `bytesN`, same type      | `Expr<'bool'>`  |
 | Equality           | `eq` `neq`                                      | any word type, same type                       | `Expr<'bool'>`  |
 | Boolean            | `and` `or` `not`                                | `bool`                                         | `Expr<'bool'>`  |
 | Bitwise            | `bitAnd` `bitOr` `bitXor` `bitNot`              | `uintN` / `bytesN`, same type                  | same type       |
 | Shifts             | `shl` `shr`                                     | value `uintN` / `intN` / `bytesN`; shift amount `uint256` | same as value |
-| Conversions        | `toUint` `toInt` `asAddress` `asUint256` `asBytes32` | see [Conversions](#conversions)          | target type     |
+| Conversions        | `toUint` `toInt` `asAddress` `asUint160` `asUint256` `asBytes32` `asUint` `asBytesN` `asBytes` `asString` | see [Conversions](#conversions) | target type |
 
 Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, `s.pow(base, e)`, `s.mulmod(a, b, n)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`). The exceptions are `addmod` / `mulmod` / `mulDiv` / `mulDivRoundingUp`, whose operands are always `uint256` (all-literal calls simply fold), and `pow` and the shifts, whose left operand must be an `Expr` (its type is the result type).
 
@@ -149,6 +149,17 @@ const tickSide = evscript({ name: 'tickSide', args: [t.int24] }, (s, tick) => {
 
 The same selection logic keeps signed values canonical everywhere: `intN` words are sign-extended, and every operation preserves that invariant.
 
+`address` and `bytesN` order too, as in Solidity: both compare as unsigned words (`LT`/`GT`), so addresses order by their numeric value and a `bytesN` orders byte by byte from the left (`0xff000000` sorts after `0x00ffffff`). That is what sorting a token pair takes, as Uniswap's `token0 < token1` rule does:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const sortTokens = evscript({ name: 'sortTokens', args: [t.address, t.address] }, (s, a, b) => {
+  const aFirst = a.lt(b); // address < address: an unsigned word comparison
+  return s.return({ token0: s.select(aFirst, a, b), token1: s.select(aFirst, b, a) });
+});
+```
+
 ## One type per operation
 
 Both operands must have the **same** evs type. The TS surface enforces it (the right-hand side of `a.add(b)` must be `IntoExpr` of `a`'s type), and the recorder double-checks at recording time — mixing two `Expr`s of different types throws `EvsTypeError` naming both types. There are no implicit widenings.
@@ -179,8 +190,13 @@ const mix = evscript(
 ## Conversions
 
 - **`toUint(target)` / `toInt(target)`** — numeric to numeric. Widening is free; narrowing is range-checked and reverts with `Panic(0x11)` when the value does not fit. Cross-signedness conversions are range-checked the same way: `uint256` to `int256` panics for values of 2^255 and above.
-- **`asAddress()`** — on `Expr<'uint256'>` or `Expr<'bytes32'>`; checked that the high 96 bits are zero (`Panic(0x11)` otherwise).
+- **`asAddress()`** — on `Expr<'uint256'>` or `Expr<'bytes32'>`; checked that the high 96 bits are zero (`Panic(0x11)` otherwise). On `Expr<'uint160'>` it is free (Solidity's `address(u160)`).
+- **`asUint160()`** — on `Expr<'address'>`, free (Solidity's `uint160(a)`). Like Solidity, an address converts to the one integer type of its width; widen from there with `toUint`: `a.asUint160().toUint(t.uint256)`. Solidity's `address(b20)` / `bytes20(a)` take two steps through `uint160` (one shift each): `b20.asUint().asAddress()` and `a.asUint160().asBytesN()`.
 - **`asUint256()` / `asBytes32()`** — free reinterpretation between `bytes32` and `uint256` (both occupy the full word; no check, no cost).
+- **`asUint()` / `asBytesN()`** — the same-width `bytesN` ↔ `uintN` conversions of every width (`bytes4` ↔ `uint32`, `bytes20` ↔ `uint160`, …; Solidity's `uint32(b)` / `bytes4(u)`). Both are lossless, so they are unchecked; each costs one shift, since a `bytesN` is left-aligned in its word and a `uintN` right-aligned. As in Solidity there is no direct conversion between different widths: go through `toUint` (`u64.toUint(t.uint256).asBytes32()`) or the bit operations.
+- **`asBytes()` / `asString()`** — `string` ↔ `bytes`, free (the same memory, reinterpreted), and `asString()` on a `bytesN`: see [bytes and strings](/guides/values-and-types/#bytes-and-strings).
+
+A word-to-word conversion of a literal folds at recording, like the arithmetic below.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -193,7 +209,9 @@ const casts = evscript(
     const signed = x.toInt(t.int256); // checked: Panic(0x11) if x ≥ 2^255
     const addr = w.asAddress(); // checked: high 96 bits must be zero
     const word = w.asUint256(); // free reinterpret
-    return s.return({ small, wide, signed, addr, word });
+    const id = addr.asUint160().toUint(t.uint256); // uint256(uint160(addr))
+    const selector = w.asUint().toUint(t.uint32).asBytesN(); // Expr<'bytes4'>: Panic(0x11) unless w < 2^32
+    return s.return({ small, wide, signed, addr, word, id, selector });
   },
 );
 ```

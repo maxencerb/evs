@@ -55,11 +55,9 @@ export const NUMERIC_OPS: ReadonlySet<BinOp> = new Set([
   'wrapadd',
   'wrapsub',
   'wrapmul',
-  'lt',
-  'gt',
-  'lte',
-  'gte',
 ]);
+/** The ordering comparisons: numeric operands, plus `address` / `bytesN` (unsigned words). */
+export const ORDER_OPS: ReadonlySet<BinOp> = new Set(['lt', 'gt', 'lte', 'gte']);
 export const BITS_OPS: ReadonlySet<BinOp> = new Set(['bitand', 'bitor', 'bitxor', 'shl', 'shr']);
 
 /**

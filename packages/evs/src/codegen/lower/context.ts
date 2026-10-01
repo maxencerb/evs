@@ -19,6 +19,7 @@ import {
 } from '../../ir/nodes.js';
 import { type SharedTails, fmtType } from '../abi.js';
 import type { FrameLayout } from '../frame.js';
+import { FREE_PTR } from '../memory.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -135,6 +136,30 @@ export function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
 export function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   w.push(requireSlot(ctx, v, 'storeOut'), m);
   w.op('MSTORE');
+}
+
+/**
+ * Bump-allocates a block at the free pointer: `[] → [ptr]` for a constant `size`, or
+ * `[size] → [ptr]` for a runtime size on the stack (`'onStack'`). The free pointer ends at
+ * `ptr + size`; the block is not zeroed, so the caller writes every word of it. The single
+ * allocation point of `slice` and `bytesN → string`.
+ */
+export function emitBumpAlloc(w: AsmWriter, size: number | 'onStack'): void {
+  if (size === 'onStack') {
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [ptr, size]
+    w.op('SWAP1');
+    w.op('DUP2');
+    w.op('ADD'); // [ptr+size, ptr]
+  } else {
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [ptr]
+    w.op('DUP1');
+    w.push(size);
+    w.op('ADD'); // [ptr+size, ptr]
+  }
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [ptr]   freePtr bumped
 }
 
 interface NumClass {

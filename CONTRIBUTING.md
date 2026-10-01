@@ -325,9 +325,10 @@ Three tiers, all run by CI (`ci.yml`):
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
   arithmetic vs the solc 0.8.30 `EvsReference` contract, `pow` / `addmod` / `mulmod` /
-  signed shifts vs `EvsMathReference` and wrapping arithmetic / `mulDiv` vs
-  `EvsFullMathReference` (all codegen'd from `packages/contracts`, whose own forge tests run in
-  CI's contracts step); an env-gated
+  signed shifts vs `EvsMathReference`, wrapping arithmetic / `mulDiv` vs
+  `EvsFullMathReference`, and the address / fixed-bytes conversions and string/bytes byte
+  access (`byteAt`, `slice`, `asString`) vs `EvsCastReference` (all codegen'd from
+  `packages/contracts`, whose own forge tests run in CI's contracts step); an env-gated
   mainnet-fork suite (`ANVIL_FORK_URL`, an empty value counts as unset and skips it) covers
   the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 

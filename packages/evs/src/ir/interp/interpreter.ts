@@ -37,6 +37,7 @@ import {
   modArith,
   envValue,
   convert,
+  convertToBytes,
   zeroValue,
   zeroFillSlots,
   binOp,
@@ -392,7 +393,14 @@ class Interp {
         return;
       }
       case 'convert': {
-        this.values.set(s.out, convert(this.typeOf(s.a), this.typeOf(s.out), this.word(s.a)));
+        const from = this.typeOf(s.a);
+        const to = this.typeOf(s.out);
+        this.values.set(
+          s.out,
+          to === 'string' || to === 'bytes'
+            ? convertToBytes(from, this.getValue(s.a))
+            : convert(from, to, this.word(s.a)),
+        );
         return;
       }
       case 'select': {
@@ -401,6 +409,14 @@ class Interp {
         return;
       }
       case 'index': {
+        const src = this.memref(s.arr);
+        if (src.kind === 'bytes') {
+          // `.byteAt(i)` on a string/bytes: the byte as a left-aligned bytes1 word
+          const i = this.word(s.i);
+          if (i >= BigInt(src.bytes.length)) throw panicSignal(0x32);
+          this.values.set(s.out, BigInt(src.bytes[Number(i)] ?? 0) << 248n);
+          return;
+        }
         const arr = this.asArray(s.arr);
         const i = this.word(s.i);
         if (i >= BigInt(arr.items.length)) throw panicSignal(0x32);
@@ -421,6 +437,17 @@ class Interp {
           s.out,
           m.kind === 'bytes' ? BigInt(m.bytes.length) : BigInt(m.items.length),
         );
+        return;
+      }
+      case 'slice': {
+        const m = this.memref(s.a);
+        if (m.kind !== 'bytes') {
+          throw new EvsInternalError('INTERNAL', `interpret: slice over a non-bytes memref`);
+        }
+        const start = this.word(s.start);
+        const end = this.word(s.end);
+        if (end > BigInt(m.bytes.length) || start > end) throw panicSignal(0x32);
+        this.values.set(s.out, { kind: 'bytes', bytes: m.bytes.slice(Number(start), Number(end)) });
         return;
       }
       case 'arrnew': {

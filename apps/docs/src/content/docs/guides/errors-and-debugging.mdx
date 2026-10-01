@@ -152,7 +152,7 @@ codes; everything else can still reach you because callee reverts bubble verbati
 | `0x21` | invalid enum conversion                      | bubbled from a callee only                                |
 | `0x22` | corrupted storage byte array                 | bubbled from a callee only                                |
 | `0x31` | pop on an empty array                        | bubbled from a callee only                                |
-| `0x32` | array index out of bounds                    | yes — `.at()`, `MutArray` get/set                         |
+| `0x32` | array index out of bounds                    | yes — `.at()`, `MutArray` get/set, `.byteAt()`, `.slice()` |
 | `0x41` | allocation too large (out of memory)         | yes — `s.newArray` with a runtime length ≥ 2^32           |
 | `0x51` | call to a zero-initialized internal function | bubbled from a callee only                                |
 

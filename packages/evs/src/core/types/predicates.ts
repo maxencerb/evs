@@ -13,6 +13,8 @@ import type {
   ArrayType,
   NumericType,
   NamedType,
+  BytesNType,
+  OrderedType,
 } from './vocabulary.js';
 
 const UINT_BITS_LIST: readonly number[] = Array.from({ length: 32 }, (_, i) => 8 * (i + 1));
@@ -244,6 +246,16 @@ export function stringifyType(type: EvsType): string {
 
 export function isNumeric(s: EvsType): s is NumericType {
   return typeof s === 'string' && SETS.numeric.has(s);
+}
+
+/** `bytes1` … `bytes32` (the fixed-size byte words — not the dynamic `bytes`). */
+export function isBytesN(s: EvsType): s is BytesNType {
+  return isWordType(s) && s.startsWith('bytes');
+}
+
+/** The ordering domain of `lt`/`gt`/`lte`/`gte`: numeric types, `address` and `bytesN`. */
+export function isOrdered(s: EvsType): s is OrderedType {
+  return isNumeric(s) || s === 'address' || isBytesN(s);
 }
 
 /** `intN` → true; every other evs type (incl. `intN[]`, tuples) → false. */

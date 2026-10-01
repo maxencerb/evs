@@ -38,6 +38,9 @@ export type {
   ArgType,
   NumericType,
   BitsType,
+  OrderedType,
+  UintOfBytesN,
+  BytesNOfUint,
 } from './types/vocabulary.js';
 export type { exprBrand, Expr, LitOf, TupleLitOf, TupleAsParam, IntoExpr } from './types/expr.js';
 export {
@@ -89,6 +92,8 @@ export {
   arrayTypeOf,
   stringifyType,
   isNumeric,
+  isBytesN,
+  isOrdered,
   isSigned,
   bitsOf,
   isDynamicType,

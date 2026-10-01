@@ -97,6 +97,22 @@ type EvsType = WordType | DynType | ArrayType | TupleType;
 type ArgType = EvsType; // script arg types — word, dynamic, string array, or a TupleType
 type NumericType = UintType | IntType;
 type BitsType = UintType | BytesNType;
+type OrderedType = NumericType | 'address' | BytesNType;
+// the same-width bytesN ↔ uintN twins (`asUint()` / `asBytesN()`), through two lookup tables
+interface BytesSizeToBits {
+  1: 8; 2: 16; 3: 24; 4: 32; 5: 40; 6: 48; 7: 56; 8: 64; 9: 72; 10: 80; 11: 88; 12: 96;
+  13: 104; 14: 112; 15: 120; 16: 128; 17: 136; 18: 144; 19: 152; 20: 160; 21: 168; 22: 176;
+  23: 184; 24: 192; 25: 200; 26: 208; 27: 216; 28: 224; 29: 232; 30: 240; 31: 248; 32: 256;
+}
+interface BitsToBytesSize {
+  8: 1; 16: 2; 24: 3; 32: 4; 40: 5; 48: 6; 56: 7; 64: 8; 72: 9; 80: 10; 88: 11; 96: 12;
+  104: 13; 112: 14; 120: 15; 128: 16; 136: 17; 144: 18; 152: 19; 160: 20; 168: 21; 176: 22;
+  184: 23; 192: 24; 200: 25; 208: 26; 216: 27; 224: 28; 232: 29; 240: 30; 248: 31; 256: 32;
+}
+type UintOfBytesN<t extends EvsType> =
+  t extends `bytes${infer n extends keyof BytesSizeToBits}` ? `uint${BytesSizeToBits[n]}` : never;
+type BytesNOfUint<t extends EvsType> =
+  t extends `uint${infer n extends keyof BitsToBytesSize}` ? `bytes${BitsToBytesSize[n]}` : never;
 ```
 
 | Alias         | Meaning                                                                                     |
@@ -121,6 +137,8 @@ type BitsType = UintType | BytesNType;
 | `EvsErrorAbiEntry` | The literal `{ type: 'error', name, inputs }` ABI entry an `EvsErrorType` carries (its `abi` field), appended to the script ABI. |
 | `NumericType` | The arithmetic domain: `uintN` or `intN`.                                                    |
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
+| `OrderedType` | The ordering domain of `lt`/`gt`/`lte`/`gte`: `uintN`, `intN`, `address` or `bytesN`.        |
+| `UintOfBytesN<t>` / `BytesNOfUint<t>` | The same-width twin of a `bytesN` / `uintN` (`'bytes4'` ↔ `'uint32'`): the result types of `asUint()` / `asBytesN()`. |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
 | `IntoExpr<t>` | `Expr` of `t`, or a `LitOf<t>` literal.                                                      |
 | `Expr<t>`     | The branded staged-value handle (below).                                                     |
@@ -372,7 +390,7 @@ it never wraps.
 
 | Method                     | Signature                            | Notes                                                                  |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
-| `lt`, `gt`, `lte`, `gte`   | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | Numeric types only; LT/GT vs SLT/SGT chosen from the static signedness |
+| `lt`, `gt`, `lte`, `gte`   | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | `OrderedType`s: numeric (LT/GT vs SLT/SGT chosen from the static signedness), plus `address` and `bytesN` as unsigned words (a `bytesN` orders byte by byte, like Solidity) |
 | `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any type. Words compare directly; memrefs (`string`/`bytes`/`T[]`/structs) are **hash equality** — `keccak256(a) == keccak256(b)`, byte-for-byte for `string`/`bytes`, element-wise via `abi.encode` for arrays/structs (two keccaks) |
 
 ### Boolean logic
@@ -412,8 +430,15 @@ and `toInt` need a receiver whose type is numeric: a bare `Expr` (for example a
 | `toUint`    | `toUint(target: u): Expr<u>`       | any numeric `Expr`                      | checked against the target range                        |
 | `toInt`     | `toInt(target: i): Expr<i>`        | any numeric `Expr`                      | checked against the target range                        |
 | `asAddress` | `asAddress(): Expr<'address'>`     | `Expr<'uint256'>` or `Expr<'bytes32'>`  | checked: panics unless the top 96 bits are zero         |
+| `asAddress` | `asAddress(): Expr<'address'>`     | `Expr<'uint160'>`                       | free (Solidity's `address(u160)`)                       |
+| `asUint160` | `asUint160(): Expr<'uint160'>`     | `Expr<'address'>`                       | free (Solidity's `uint160(a)`); widen on with `toUint`  |
 | `asUint256` | `asUint256(): Expr<'uint256'>`     | `Expr<'bytes32'>`                       | free reinterpret                                        |
 | `asBytes32` | `asBytes32(): Expr<'bytes32'>`     | `Expr<'uint256'>`                       | free reinterpret                                        |
+| `asUint`    | `asUint(): Expr<UintOfBytesN<t>>`  | any `bytesN`                            | free: the same-width `uintN` (`bytes4` → `uint32`, Solidity's `uint32(b)`) |
+| `asBytesN`  | `asBytesN(): Expr<BytesNOfUint<t>>`| any `uintN`                             | free: the same-width `bytesN` (`uint32` → `bytes4`)     |
+| `asBytes`   | `asBytes(): Expr<'bytes'>`         | `Expr<'string'>`                        | free reinterpret (the same memory)                      |
+| `asString`  | `asString(): Expr<'string'>`       | `Expr<'bytes'>`                         | free reinterpret (the same memory)                      |
+| `asString`  | `asString(): Expr<'string'>`       | any `bytesN`                            | a fresh string of its bytes, trailing zero bytes trimmed (`'MKR\0…'` → `'MKR'`) |
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -425,6 +450,13 @@ const casts = evscript({ name: 'casts', args: [t.bytes32] }, (s, raw) => {
   const addr = raw.asAddress(); // checked: top 96 bits must be zero
   return s.return({ small, wide, addr });
 });
+
+const ids = evscript({ name: 'ids', args: [t.address, t.bytes4, t.bytes32] }, (s, token, sel, raw) => {
+  const key = token.asUint160().toUint(t.uint256); // uint256(uint160(token))
+  const selector = sel.asUint(); // Expr<'uint32'> — uint32(sel)
+  const symbol = raw.asString(); // a legacy bytes32 symbol: 'MKR' + 29 zero bytes → 'MKR'
+  return s.return({ key, selector, symbol });
+});
 ```
 
 ### Dynamic values and arrays
@@ -433,6 +465,8 @@ const casts = evscript({ name: 'casts', args: [t.bytes32] }, (s, raw) => {
 | -------- | -------------------------------------------- | ----------------------------- | ---------------------------------------------------------------- |
 | `length` | `length(): Expr<'uint256'>`                  | `string`, `bytes`, any `T[]`  | byte length for `string`/`bytes`; element count for arrays      |
 | `at`     | `at(i: IntoExpr<'uint256'>): Expr<elem>`     | any `T[]`                     | bounds-checked — Panic `0x32` on an out-of-range index          |
+| `byteAt` | `byteAt(i: IntoExpr<'uint256'>): Expr<'bytes1'>` | `string`, `bytes`         | the byte at `i` (Solidity's `b[i]`) — Panic `0x32` past the end |
+| `slice`  | `slice(start: IntoExpr<'uint256'>, end?: IntoExpr<'uint256'>): Expr<t>` | `string`, `bytes` | a fresh copy of bytes `[start, end)`, `end` defaulting to the length (Solidity's `b[start:end]`) — Panic `0x32` unless `start ≤ end ≤ length` |
 
 ### Putting it together
 

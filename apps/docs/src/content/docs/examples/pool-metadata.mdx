@@ -253,7 +253,8 @@ symbols as `string`.
 Some legacy tokens are not clean ERC-20s (for example, a `symbol()` that returns `bytes32`
 instead of `string`). A strict `s.read` reverts with `EvsDecodeError` when returndata does not
 decode; swap in `s.tryRead` and a default to tolerate them — see
-[tryRead with a default](/examples/patterns/) and [calls](/guides/calls/).
+[tryRead with a default](/examples/patterns/) and [calls](/guides/calls/) — or read the `bytes32`
+form and convert it in-script: [legacy bytes32 symbol](/examples/patterns/#legacy-bytes32-symbol).
 :::
 
 ## Run it from the repo
