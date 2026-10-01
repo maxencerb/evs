@@ -428,8 +428,9 @@ export function emitReturnEncode(
 
   // Reserve the composite-array encode loop frames BELOW the output buffer: bump the free
   // pointer by 32·FRAME_SLOTS·FRAMES BEFORE reading `out`, so `out = MLOAD(0x40)` sits above frame 0
-  // and `RETURN(out, cursor − out)` never returns scratch. FRAMES = the max concurrent array-nesting
-  // depth of the return type (0 for a record with no composite-element array — no bump at all).
+  // and `RETURN(out, cursor − out)` never returns scratch. FRAMES = the max number of concurrently
+  // live encode levels of the return type (`encodeFramesOf`; 0 when no member needs one — no bump
+  // at all).
   const frames = named.reduce(
     (n, c) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(c)))),
     0,
@@ -466,12 +467,11 @@ export function emitReturnEncode(
   emitEncodeBlock(w, named, pushSrc, pushBase, tails, opts);
 
   // RETURN(out, tail − out)
-  w.push(TAIL_CURSOR);
-  w.op('MLOAD'); // [tail]
   w.push(FREE_PTR);
-  w.op('MLOAD'); // [out, tail]
-  w.op('DUP1'); // [out, out, tail]
-  w.op('SWAP2'); // [tail, out, out]
+  w.op('MLOAD'); // [out]
+  w.op('DUP1'); // [out, out]
+  w.push(TAIL_CURSOR);
+  w.op('MLOAD'); // [tail, out, out]
   w.op('SUB'); // [size, out]
   w.op('SWAP1'); // [out, size]
   w.op('RETURN', { note: 'return tuple' });

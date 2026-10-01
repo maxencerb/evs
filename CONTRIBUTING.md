@@ -178,7 +178,13 @@ Releases: see [Releasing](#releasing) below.
   disassembly stays legible and the stack invariant machine-checkable; `optimize: true` packs
   dead values' slots without changing the templates.
 - **Array codec** (`codegen/abi/encode.ts`, `codegen/abi/decode.ts`). The encoder keeps its loop state in frames reserved below
-  the output buffer, so nesting never touches the operand stack. The decoder has two lowerings,
+  the output buffer, so nesting never touches the operand stack. An array loop's frame also
+  caches, once per iteration, the element's pointer (when the element's encode reads it more
+  than once) and a tuple element's base. Dynamic tuples nested three or more levels below their
+  root (the top-level block or an array element) keep their base and source pointer in a frame
+  of their own, so a member access is one load at any depth; the first two levels re-derive them
+  from the parent, which costs less than reserving a frame (`encodeFramesOf` mirrors that rule
+  to size the reserved region). The decoder has two lowerings,
   chosen per array level at codegen time: the **stack fast path** for the one- and two-level
   shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`/`bytes[]`) keeps five loop words per level on the
   stack, and the **heap-frame path** for everything else (any `T[N]`, `uint256[][][]`,

@@ -58,11 +58,10 @@ function emitBytesFinalize(w: AsmWriter, note: string): void {
   w.push(FREE_PTR);
   w.op('MLOAD'); // [ptr, cursor]
   w.op('DUP1'); // [ptr, ptr, cursor]
-  w.op('DUP3'); // [cursor, ptr, ptr, cursor]
-  w.op('SUB'); // [cursor−ptr, ptr, cursor]
   w.push(32);
-  w.op('SWAP1');
-  w.op('SUB'); // [total, ptr, cursor]
+  w.op('ADD'); // [ptr+32, ptr, cursor]
+  w.op('DUP3'); // [cursor, ptr+32, ptr, cursor]
+  w.op('SUB'); // [total = cursor−ptr−32, ptr, cursor]
   w.op('DUP2'); // [ptr, total, ptr, cursor]
   w.op('MSTORE', { note }); // [ptr, cursor]           mem[ptr] = total
   w.op('SWAP1'); // [cursor, ptr]

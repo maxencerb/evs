@@ -7,7 +7,7 @@
 import { type TypeLayout, layoutOf, layoutOfType, headBytes } from '../../abi/layout.js';
 import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { u256ToBytes, bytesToBigInt } from '../../core/bytes.js';
+import { u256ToBytes } from '../../core/bytes.js';
 import { abiParamToType, type NamedType } from '../../core/types.js';
 import {
   isRecursiveArray,
@@ -28,6 +28,7 @@ import {
   literalDataBytes,
   CONST_SEGMENT_INLINE_MAX,
   emitPushWordChunk,
+  emitSelectorWord,
   TAIL_CURSOR,
   literalWordValue,
 } from './shared.js';
@@ -396,8 +397,7 @@ function emitCalldataBuildTuples(
   reserveEncodeFrames(w, frames, `reserve ${frames} call-arg array-encode frame(s)`);
 
   // -- selector at buf[0..4): MSTORE(buf, selector << 224) (heads at buf+4 overwrite [4,36)) ----
-  const selWord = bytesToBigInt(selector, 0, 4) << 224n;
-  w.push(selWord, { note: `selector ${fnAbi.name}` });
+  emitSelectorWord(w, selector, `selector ${fnAbi.name}`);
   w.push(FREE_PTR);
   w.op('MLOAD');
   w.op('MSTORE'); // []

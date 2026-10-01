@@ -235,6 +235,9 @@ From there:
   value of a struct with a word member or of a fixed-size word array. Blocks whose every word is
   written right away (a `string[]`'s element pointers, a struct of only strings and
   arrays, a literal) skip the fill.
+  (Arguments holding fixed-size arrays, arrays of structs, strings or arrays, or structs nested
+  three or more dynamic levels deep need a few words of encoder state, reserved just below the
+  calldata: such a call advances the free pointer by those words.)
 
 ## What evs deliberately does not do (yet)
 

@@ -40,18 +40,26 @@ export interface SlotRef {
 /** Scratch slot for running tail cursors (intra-template temporary). */
 export const TAIL_CURSOR = SCRATCH_0;
 
-/** Words per reserved encode loop frame: `{arrPtr, D, len, i}`. */
-export const FRAME_SLOTS = 4;
+/**
+ * Words per reserved encode frame: `{arrPtr, D, len, i, elem, base}`. An array loop owns the
+ * whole frame — its loop state plus, per iteration, the cached element word (`elem`, the source
+ * pointer of a composite element) and the DST base of a tuple element (`base`). A nested dynamic
+ * tuple level uses only `elem` (its source pointer) and `base` (where its head starts).
+ */
+export const FRAME_SLOTS = 6;
 export const FRAME_ARRPTR = 0;
 export const FRAME_D = 1;
 export const FRAME_LEN = 2;
 export const FRAME_I = 3;
+export const FRAME_ELEM = 4;
+export const FRAME_BASE = 5;
 
 /**
  * Encode-time options threaded through {@link emitEncodeBlock}/{@link emitEncodeArrayTail}. The
- * `evmVersion` selects the memcpy lowering; `frameDepth` is the next free composite-array loop
- * frame index (each `emitEncodeArrayTail` consumes one frame and threads `frameDepth + 1` into the
- * encode of its elements, so concurrently-live array loops never share a frame). Default 0.
+ * `evmVersion` selects the memcpy lowering; `frameDepth` is the next free encode frame index
+ * (each array loop and each nested dynamic tuple level consumes one frame and threads
+ * `frameDepth + 1` into the encode of what it contains, so concurrently-live levels never share a
+ * frame). Default 0.
  */
 export interface EncodeOpts {
   evmVersion: EvmVersion;

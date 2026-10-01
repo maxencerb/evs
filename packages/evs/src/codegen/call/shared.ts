@@ -95,6 +95,18 @@ export function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string
   w.op('SHL');
 }
 
+/**
+ * Pushes a 4-byte function selector as the left-aligned word `selector << 224` through
+ * {@link emitPushWordChunk}: `PUSH4 <sel> PUSH1 0xE0 SHL` (8 bytes) instead of a 33-byte
+ * `PUSH32`, the same idiom the template calldata path gets for free.
+ */
+export function emitSelectorWord(w: AsmWriter, selector: Uint8Array, note: string): void {
+  if (selector.length !== 4) throw internal(`${note}: a selector must be 4 bytes`);
+  const chunk = new Uint8Array(32);
+  chunk.set(selector);
+  emitPushWordChunk(w, chunk, note);
+}
+
 // ---------------------------------------------------------------------------
 // machinery shared by emitStaticCall and emitSimulateCall. The two emitters
 // legitimately diverge only in the middle — per-output in-place decode vs whole-tuple
