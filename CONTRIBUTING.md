@@ -299,6 +299,14 @@ Releases: see [Releasing](#releasing) below.
   classifier (`abi/revert.ts`; `abi/revert.test.ts` feeds one payload corpus to both). Payloads
   only a callee can produce (empty, `Error(string)`, foreign selectors) are attributed to the
   strict, non-`revertReturns` call sites — the only ones that bubble.
+- **Built-in errors have one home each.** `EVS_ERROR_ABI` (`abi/artifact.ts`) lists the evs
+  runtime errors every artifact ABI carries, and `EVS_ERROR_NAMES` reads their names off it (no
+  script may take one as its name). `RESERVED_ERROR_NAMES` (`core/types/namespace.ts`, because
+  `core/` cannot import `abi/`) lists the names `t.error` and `buildScriptAbi` refuse.
+  `EVS_ERROR_NAMES` is typed through `ReservedErrorName`, so a runtime error that is not also
+  reserved fails to compile. The built-in selectors and `BUILTIN_ERROR_SIGNATURES` (the selectors
+  a declared error may not reuse) live in `abi/artifact.ts`, and codegen's revert tails import
+  them from there.
 - **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
   `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
   exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`
@@ -317,7 +325,10 @@ Releases: see [Releasing](#releasing) below.
   change goes to both sides plus a case in the shared matrix
   (`packages/evs/test/harness/overload-matrix.ts`), which `overload-lockstep.test-d.ts` and
   `overload-lockstep.test.ts` assert on the types and the recorder respectively. A `functionName`
-  containing `(` is a canonical signature (`core/signature.ts`) and skips resolution.
+  containing `(` is a canonical signature (`core/signature.ts`) and skips resolution. The strict
+  and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
+  `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
+  flavour wraps the result as `{ success, value }`).
 - **Tuple handles** (`builder/expr/handles.ts`) carry no own properties: named fields are getters
   on one prototype per component list (a `WeakMap` keyed on `components`, which survives the
   descriptor rebuilds of array elements and members), whose prototype is `TupleHandle`'s.

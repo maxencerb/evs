@@ -34,6 +34,7 @@ import {
   isSigned,
   isTupleTag,
   isWordType,
+  RESERVED_ERROR_NAMES,
   typeToAbiParam,
   type ArgSpec,
   type ArgsToInputs,
@@ -42,6 +43,7 @@ import {
   type EvsErrorType,
   type EvsType,
   type Hex,
+  type ReservedErrorName,
   type TupleType,
   type TypeToComponent,
   type UnionToTuple,
@@ -58,6 +60,16 @@ export const EVS_ERROR_ABI = [
   { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
   { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
 ] as const satisfies Abi;
+
+/** The name of an evs runtime error (an {@link EVS_ERROR_ABI} entry). */
+export type EvsRuntimeErrorName = (typeof EVS_ERROR_ABI)[number]['name'];
+
+/** The evs runtime error names, read off {@link EVS_ERROR_ABI}: every artifact ABI carries them,
+ *  so no script may take one as its name. Typed through `ReservedErrorName`: a runtime error
+ *  that `t.error` does not also reserve fails to compile. */
+export const EVS_ERROR_NAMES: ReadonlySet<string> = new Set<ReservedErrorName>(
+  EVS_ERROR_ABI.map((e) => e.name),
+);
 
 // ---------------------------------------------------------------------------
 // ScriptAbi — the literal type
@@ -174,7 +186,29 @@ function assertStructFieldNames(type: EvsType, where: string): void {
 }
 
 /**
- * Runtime mirror of `ScriptAbi`: `[function, EvsInvalidCalldata, EvsDecodeError]`.
+ * Checks one section's names (script args, return components, or one error's inputs): each must
+ * be a non-empty identifier and unique within the section. The messages and the error code stay
+ * per section — the callers' diagnostics differ in what they explain.
+ */
+function checkNamedParams(
+  names: readonly string[],
+  code: 'ABI_SHAPE' | 'ERROR_DECL',
+  messages: {
+    readonly invalid: (name: string, i: number) => string;
+    readonly duplicate: (name: string) => string;
+  },
+): void {
+  const seen = new Set<string>();
+  names.forEach((name, i) => {
+    if (!IDENT_RE.test(name)) throw new EvsTypeError(code, messages.invalid(name, i));
+    if (seen.has(name)) throw new EvsTypeError(code, messages.duplicate(name));
+    seen.add(name);
+  });
+}
+
+/**
+ * Runtime mirror of `ScriptAbi`: `[function, EvsInvalidCalldata, EvsDecodeError, ...declared
+ * errors]`.
  *
  * `args` is the NORMALIZED arg list (`{ name, type }`): each input is labeled with its `name` —
  * a user-provided {@link namedArg} name, or the positional `arg{i}` fallback the recorder assigns to
@@ -183,21 +217,12 @@ function assertStructFieldNames(type: EvsType, where: string): void {
  * order = `args` order; `components` order = `returns` insertion order (the runtime ABI array is the
  * encode/decode source of truth). Every arg/return type is validated through
  * the tuple-aware layout, and struct field names are re-checked.
+ *
+ * `errors` are the declared custom errors (`t.error`, issue #15), appended after the evs runtime
+ * errors. They are re-validated here (identifier names, none of the `RESERVED_ERROR_NAMES`, unique
+ * names and input names, supported input types) because a deserialized IR is hand-built input. The
+ * script name must not also name any error entry of the ABI (issue #63).
  */
-/** Declared-error names that would shadow the Solidity built-ins / the evs runtime errors,
- *  the built-in 'empty'/'unknown' decode arms, or the matchScriptError '_' default-arm key —
- *  rejected at declaration (`t.error`, core/types.ts) and re-checked here for hand-built
- *  inputs. */
-const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
-  'Panic',
-  'Error',
-  'EvsDecodeError',
-  'EvsInvalidCalldata',
-  'empty',
-  'unknown',
-  '_',
-]);
-
 export function buildScriptAbi(
   name: string,
   args: readonly { name: string; type: EvsType }[],
@@ -210,21 +235,16 @@ export function buildScriptAbi(
       `buildScriptAbi: invalid script name ${JSON.stringify(name)}: ${identProblem(name)}`,
     );
   }
-  const seenArgs = new Set<string>();
+  checkNamedParams(
+    args.map((a) => a.name),
+    'ABI_SHAPE',
+    {
+      invalid: (n, i) =>
+        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(n)}: ${identProblem(n)}`,
+      duplicate: (n) => `buildScriptAbi: duplicate argument name ${JSON.stringify(n)}`,
+    },
+  );
   const inputs = args.map((a, i) => {
-    if (!IDENT_RE.test(a.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)}: ${identProblem(a.name)}`,
-      );
-    }
-    if (seenArgs.has(a.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `buildScriptAbi: duplicate argument name ${JSON.stringify(a.name)}`,
-      );
-    }
-    seenArgs.add(a.name);
     validateAbiType(a.type, `argument #${i} ("${a.name}")`);
     assertStructFieldNames(a.type, `argument #${i} ("${a.name}")`);
     return Object.freeze(typeToAbiParam(a.name, a.type));
@@ -237,25 +257,20 @@ export function buildScriptAbi(
       `buildScriptAbi: script ${JSON.stringify(name)} needs at least one return component — an empty result tuple ABI-encodes to 0x, which viem rejects as "returned no data"`,
     );
   }
-  const seenReturns = new Set<string>();
-  const components = returns.map((r, i) => {
-    // empty/invalid component names would silently degrade viem's object inference to a
-    // positional array — hard error instead.
-    if (!IDENT_RE.test(r.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        r.name === '__proto__'
+  // empty/invalid component names would silently degrade viem's object inference to a
+  // positional array — hard error instead.
+  checkNamedParams(
+    returns.map((r) => r.name),
+    'ABI_SHAPE',
+    {
+      invalid: (n, i) =>
+        n === '__proto__'
           ? `buildScriptAbi: return component #${i} has an invalid name "__proto__": ${PROTO_RESERVED}`
-          : `buildScriptAbi: return component #${i} has an invalid name ${JSON.stringify(r.name)} (every component must be a non-empty identifier or viem degrades the result object to a positional array)`,
-      );
-    }
-    if (seenReturns.has(r.name)) {
-      throw new EvsTypeError(
-        'ABI_SHAPE',
-        `buildScriptAbi: duplicate return component name ${JSON.stringify(r.name)}`,
-      );
-    }
-    seenReturns.add(r.name);
+          : `buildScriptAbi: return component #${i} has an invalid name ${JSON.stringify(n)} (every component must be a non-empty identifier or viem degrades the result object to a positional array)`,
+      duplicate: (n) => `buildScriptAbi: duplicate return component name ${JSON.stringify(n)}`,
+    },
+  );
+  const components = returns.map((r) => {
     validateAbiType(r.type, `return component "${r.name}"`);
     assertStructFieldNames(r.type, `return component "${r.name}"`);
     return Object.freeze(typeToAbiParam(r.name, r.type));
@@ -287,32 +302,27 @@ export function buildScriptAbi(
       throw new EvsTypeError('ERROR_DECL', `buildScriptAbi: duplicate error name "${e.name}"`);
     }
     seenErrors.add(e.name);
-    const seenParams = new Set<string>();
+    const inputWhere = (n: string, i: number) => `error "${e.name}" input #${i} ("${n}")`;
+    checkNamedParams(
+      e.inputs.map((p) => p.name),
+      'ERROR_DECL',
+      {
+        invalid: (n, i) =>
+          `buildScriptAbi: ${inputWhere(n, i)}: invalid input name (must be a non-empty identifier — the decode utilities key args by name)`,
+        duplicate: (n) => `buildScriptAbi: error "${e.name}" has a duplicate input name "${n}"`,
+      },
+    );
     e.inputs.forEach((p, i) => {
-      const where = `error "${e.name}" input #${i} ("${p.name}")`;
-      if (!IDENT_RE.test(p.name)) {
-        throw new EvsTypeError(
-          'ERROR_DECL',
-          `buildScriptAbi: ${where}: invalid input name (must be a non-empty identifier — the decode utilities key args by name)`,
-        );
-      }
-      if (seenParams.has(p.name)) {
-        throw new EvsTypeError(
-          'ERROR_DECL',
-          `buildScriptAbi: error "${e.name}" has a duplicate input name "${p.name}"`,
-        );
-      }
-      seenParams.add(p.name);
       const ty = abiParamToType(p);
-      validateAbiType(ty, where);
-      assertStructFieldNames(ty, where);
+      validateAbiType(ty, inputWhere(p.name, i));
+      assertStructFieldNames(ty, inputWhere(p.name, i));
     });
     return Object.freeze({ type: 'error', name: e.name, inputs: Object.freeze(e.inputs) });
   });
   // the script name must not also name an error of the artifact ABI (issue #63): viem's
   // getAbiItem would resolve the error entry, so encodeFunctionData/readContract fail with
   // "Function not found on ABI". Panic/Error are not ABI entries, so they stay usable.
-  if (name === 'EvsDecodeError' || name === 'EvsInvalidCalldata' || seenErrors.has(name)) {
+  if (EVS_ERROR_NAMES.has(name) || seenErrors.has(name)) {
     throw new EvsTypeError(
       'ERROR_DECL',
       `buildScriptAbi: script name "${name}" collides with the error "${name}" in its ABI — viem would resolve the error entry instead of the function; rename the script or the error`,
@@ -392,6 +402,15 @@ export const PANIC_SELECTOR = selectorOf('Panic', ['uint256']); // 0x4e487b71
 export const ERROR_STRING_SELECTOR = selectorOf('Error', ['string']); // 0x08c379a0
 export const EVS_DECODE_ERROR_SELECTOR = selectorOf('EvsDecodeError', ['uint256']);
 export const EVS_INVALID_CALLDATA_SELECTOR = selectorOf('EvsInvalidCalldata', []);
+
+/** Each built-in selector → its canonical signature. A declared error may not share one even
+ *  under a different name (`evscript` rejects it): every decode path would misroute it. */
+export const BUILTIN_ERROR_SIGNATURES: ReadonlyMap<Hex, string> = new Map([
+  [PANIC_SELECTOR, 'Panic(uint256)'],
+  [ERROR_STRING_SELECTOR, 'Error(string)'],
+  [EVS_DECODE_ERROR_SELECTOR, 'EvsDecodeError(uint256)'],
+  [EVS_INVALID_CALLDATA_SELECTOR, 'EvsInvalidCalldata()'],
+]);
 
 /**
  * Solidity `Panic(uint256)` code meanings (shared by `explainRevert` and the client-side

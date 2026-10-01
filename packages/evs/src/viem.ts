@@ -1,5 +1,15 @@
 /**
- * `viem.ts` — the init-code wrapper and the two `toViem()` shapes.
+ * `viem.ts` — the viem-facing edge of an artifact, in three sections:
+ *
+ * 1. the init-code wrapper (`toCreationBytecode`) that turns the runtime into the creation
+ *    bytecode deployless mode needs;
+ * 2. the two `toViem()` shapes (`ToViemMode`): deployless (`toViemDeployless`) and state
+ *    override (`toViemStateOverride`, which also covers sender mode);
+ * 3. client-side error decoding (`decodeScriptError`, `matchScriptError`): the caught viem error
+ *    or raw revert bytes → a `name`-discriminated value typed from the script ABI. Users call
+ *    viem directly, so there are no call wrappers.
+ *
+ * Init wrapper and execution shapes:
  *
  * - viem's deployless `code` parameter expects CREATION bytecode — passing runtime bytecode
  *   fails SILENTLY (empirically verified). The artifact therefore only
@@ -20,11 +30,24 @@
  * - State-override mode takes runtime bytecode directly at a deterministic address;
  *   `DEFAULT_SCRIPT_ADDRESS` is the last 20 bytes of keccak256("evs.script") — no
  *   code/storage/balance on any major chain.
+ *
+ * Error decoding:
+ *
+ * - The revert payload is found by DUCK TYPING the error tree (`name`, `raw`, `data`, `cause`),
+ *   never `instanceof`: the error may come from another copy of viem than evs resolves (see
+ *   `revertDataOf`). Input with no revert data at all decodes to `undefined` and
+ *   `matchScriptError` rethrows it (a non-`Error` value becomes an `EvsTypeError`): a transport
+ *   failure is not a script error.
+ * - The payload is classified by the classifier `explainRevert` also uses (`abi/revert.ts`), so
+ *   the two never disagree: Solidity's `Panic`/`Error` by their fixed selectors, then the error
+ *   entries of the ABI handed in (declared errors plus the evs runtime errors) by selector.
+ *   Anything else, including a matched selector whose args do not decode, is `unknown`; a
+ *   0-byte revert is `empty`.
  */
 
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'viem';
 
-import { describePanic } from './abi/artifact.js';
+import { describePanic, type EvsRuntimeErrorName } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';
 import { EVM_VERSIONS, forkAtLeast, isEvmVersion, OPS, type EvmVersion } from './asm/ops.js';
 import { HEX_BYTES_RE, isHexString } from './core/bytes.js';
@@ -120,6 +143,109 @@ export function toViemDeployless<const abi extends Abi>(s: {
   initBytecode: Hex;
 }): { abi: abi; code: Hex } {
   return { abi: s.abi, code: s.initBytecode };
+}
+
+/**
+ * The two execution modes `toViem()` takes. Exported so a mode chosen at run time (a config
+ * value, a provider probe) can be typed once and passed straight through: `toViem({ mode })`
+ * with a `ToViemMode`-typed `mode` resolves to the catch-all overload and returns the union of
+ * the shapes.
+ */
+export type ToViemMode = 'deployless' | 'stateOverride';
+
+/** The options object of `toViem()`'s implementation (the union of every overload's input). */
+export interface ToViemOptions {
+  mode?: ToViemMode | undefined;
+  address?: Address | undefined;
+  sender?: Address | undefined;
+}
+
+/**
+ * The state-override execution shape: `{ abi, address, stateOverride }`. The one-entry tuple is
+ * mutable (not `readonly`) because viem's `StateOverride` is a mutable `Array` type — a
+ * readonly tuple would not spread into `readContract`.
+ */
+interface ViemStateOverrideShape<abi extends Abi> {
+  abi: abi;
+  address: Address;
+  stateOverride: [{ address: Address; code: Hex }];
+}
+
+/** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
+interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
+  account: Address;
+}
+
+/**
+ * State-override mode — deterministic `address(this)`, controllable `msg.sender` (via the
+ * `account` call parameter). Spread the result into `readContract`; requires a provider
+ * supporting the third `eth_call` parameter.
+ *
+ * `sender` (issue #36) — run the script AS `sender`: the runtime is installed at the sender's
+ * own address and the eth_call's `account` is set to it, so every sub-call target (`s.read`,
+ * `s.call`, `s.simulate` and their `try*` variants) sees `msg.sender = sender` — the script
+ * self-calls through that address — and `s.env('caller')`/`s.env('address')` both read `sender`.
+ * This is the only way to give a simulated write a chosen `msg.sender` (permit-style checks,
+ * `onlyOwner` views, ERC-4626 `maxWithdraw(owner)` patterns): there is no in-frame EVM primitive
+ * for it. Caveats: the override REPLACES the code at `sender` for the duration of the call (a
+ * contract sender — a Safe, say — cannot answer callbacks), while its balance, nonce and storage
+ * stay in place. `sender` and `address` are the same knob; passing both with different values
+ * throws. A `sender` or `address` that is not a 20-byte 0x address throws `EvsTypeError`
+ * (`TYPE_MISMATCH`).
+ */
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts: { address?: Address; sender: Address },
+): ViemSenderShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address; sender?: undefined },
+): ViemStateOverrideShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address | undefined; sender?: Address | undefined },
+): ViemStateOverrideShape<abi> | ViemSenderShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address | undefined; sender?: Address | undefined },
+): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
+  const sender = opts?.sender;
+  if (opts?.address !== undefined && !isAddressLike(opts.address)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `toViem: \`address\` must be a 20-byte 0x address, got ${JSON.stringify(opts.address)}`,
+    );
+  }
+  if (sender !== undefined) {
+    if (!isAddressLike(sender)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `toViem: \`sender\` must be a 20-byte 0x address, got ${JSON.stringify(sender)}`,
+      );
+    }
+    if (opts?.address !== undefined && opts.address.toLowerCase() !== sender.toLowerCase()) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `toViem: \`sender\` (${sender}) and \`address\` (${opts.address}) disagree — sender mode installs the script AT the sender address; pass one or the other`,
+      );
+    }
+    return {
+      abi: s.abi,
+      address: sender,
+      stateOverride: [{ address: sender, code: s.runtimeBytecode }],
+      account: sender,
+    };
+  }
+  const address = opts?.address ?? DEFAULT_SCRIPT_ADDRESS;
+  return {
+    abi: s.abi,
+    address,
+    stateOverride: [{ address, code: s.runtimeBytecode }],
+  };
+}
+
+function isAddressLike(value: unknown): value is Address {
+  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }
 
 // ---------------------------------------------------------------------------
@@ -277,7 +403,7 @@ type DeclaredNames<abi> = Exclude<
       ? n
       : never
     : never,
-  'EvsInvalidCalldata' | 'EvsDecodeError'
+  EvsRuntimeErrorName
 >;
 
 /** The decoded args record of the error named `n` (never for arms that carry no args —
@@ -363,107 +489,4 @@ export function matchScriptError<
   }
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- dispatch is keyed by the decoded discriminant; the result is one handler's return by construction
   return result as HandlerResult<handlers>;
-}
-
-/**
- * The two execution modes `toViem()` takes. Exported so a mode chosen at run time (a config
- * value, a provider probe) can be typed once and passed straight through: `toViem({ mode })`
- * with a `ToViemMode`-typed `mode` resolves to the catch-all overload and returns the union of
- * the shapes.
- */
-export type ToViemMode = 'deployless' | 'stateOverride';
-
-/** The options object of `toViem()`'s implementation (the union of every overload's input). */
-export interface ToViemOptions {
-  mode?: ToViemMode | undefined;
-  address?: Address | undefined;
-  sender?: Address | undefined;
-}
-
-/**
- * The state-override execution shape: `{ abi, address, stateOverride }`. The one-entry tuple is
- * mutable (not `readonly`) because viem's `StateOverride` is a mutable `Array` type — a
- * readonly tuple would not spread into `readContract`.
- */
-interface ViemStateOverrideShape<abi extends Abi> {
-  abi: abi;
-  address: Address;
-  stateOverride: [{ address: Address; code: Hex }];
-}
-
-/** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
-interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
-  account: Address;
-}
-
-/**
- * State-override mode — deterministic `address(this)`, controllable `msg.sender` (via the
- * `account` call parameter). Spread the result into `readContract`; requires a provider
- * supporting the third `eth_call` parameter.
- *
- * `sender` (issue #36) — run the script AS `sender`: the runtime is installed at the sender's
- * own address and the eth_call's `account` is set to it, so every sub-call target (`s.read`,
- * `s.call`, `s.simulate` and their `try*` variants) sees `msg.sender = sender` — the script
- * self-calls through that address — and `s.env('caller')`/`s.env('address')` both read `sender`.
- * This is the only way to give a simulated write a chosen `msg.sender` (permit-style checks,
- * `onlyOwner` views, ERC-4626 `maxWithdraw(owner)` patterns): there is no in-frame EVM primitive
- * for it. Caveats: the override REPLACES the code at `sender` for the duration of the call (a
- * contract sender — a Safe, say — cannot answer callbacks), while its balance, nonce and storage
- * stay in place. `sender` and `address` are the same knob; passing both with different values
- * throws. A `sender` or `address` that is not a 20-byte 0x address throws `EvsTypeError`
- * (`TYPE_MISMATCH`).
- */
-export function toViemStateOverride<const abi extends Abi>(
-  s: { abi: abi; runtimeBytecode: Hex },
-  opts: { address?: Address; sender: Address },
-): ViemSenderShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
-  s: { abi: abi; runtimeBytecode: Hex },
-  opts?: { address?: Address; sender?: undefined },
-): ViemStateOverrideShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
-  s: { abi: abi; runtimeBytecode: Hex },
-  opts?: { address?: Address | undefined; sender?: Address | undefined },
-): ViemStateOverrideShape<abi> | ViemSenderShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
-  s: { abi: abi; runtimeBytecode: Hex },
-  opts?: { address?: Address | undefined; sender?: Address | undefined },
-): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
-  const sender = opts?.sender;
-  if (opts?.address !== undefined && !isAddressLike(opts.address)) {
-    throw new EvsTypeError(
-      'TYPE_MISMATCH',
-      `toViem: \`address\` must be a 20-byte 0x address, got ${JSON.stringify(opts.address)}`,
-    );
-  }
-  if (sender !== undefined) {
-    if (!isAddressLike(sender)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `toViem: \`sender\` must be a 20-byte 0x address, got ${JSON.stringify(sender)}`,
-      );
-    }
-    if (opts?.address !== undefined && opts.address.toLowerCase() !== sender.toLowerCase()) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `toViem: \`sender\` (${sender}) and \`address\` (${opts.address}) disagree — sender mode installs the script AT the sender address; pass one or the other`,
-      );
-    }
-    return {
-      abi: s.abi,
-      address: sender,
-      stateOverride: [{ address: sender, code: s.runtimeBytecode }],
-      account: sender,
-    };
-  }
-  const address = opts?.address ?? DEFAULT_SCRIPT_ADDRESS;
-  return {
-    abi: s.abi,
-    address,
-    stateOverride: [{ address, code: s.runtimeBytecode }],
-  };
-}
-
-function isAddressLike(value: unknown): value is Address {
-  return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
 }

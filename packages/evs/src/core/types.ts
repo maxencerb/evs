@@ -76,7 +76,8 @@ export type {
   FromAbiOutputs,
   UnionToTuple,
 } from './types/derive.js';
-export { t } from './types/namespace.js';
+export { t, RESERVED_ERROR_NAMES } from './types/namespace.js';
+export type { ReservedErrorName } from './types/namespace.js';
 export {
   MAX_ARRAY_DEPTH,
   MAX_FIXED_LENGTH,

@@ -72,6 +72,8 @@ export type {
   SubcallParams,
   CallValue,
   ResolvedSubcallParams,
+  Tried,
+  SubcallVerbOf,
   SubcallVerb,
   TrySubcallVerb,
   ReadVerb,
@@ -80,6 +82,7 @@ export type {
   TryWriteVerb,
   RevertReturnsParams,
   RevertReturnHandles,
+  CallVerbOf,
   CallVerb,
   TryCallVerb,
 } from './script/calls.js';

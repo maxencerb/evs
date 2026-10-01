@@ -105,6 +105,7 @@ export type {
   ArgsInput,
   CallVerb, // issue #35: the s.call verb type (WriteVerb + the `revertReturns` overload)
   CallValue, // the type of `value`: uint256 for a payable resolved overload, a named compile error otherwise
+  CallVerbOf, // the s.call / s.tryCall shape both alias, over the strict/try flavour
   Cell,
   ComponentToType,
   EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
@@ -144,9 +145,11 @@ export type {
   SubcallParams,
   SubcallStruct, // issue #5: the `s.read({ …, struct: true })` result type
   SubcallVerb,
+  SubcallVerbOf, // the verb shape every strict/try verb type aliases (one per mutability bucket)
   ThrowArgs, // issue #15: the rest-args shape of s.throw (record / tuple / none)
   ThrowArgRecord,
   ThrowArgTuple,
+  Tried, // a verb result in its strict (bare) or try (`{ success, value }`) flavour
   TryCallVerb, // issue #35: the s.tryCall verb type (TryWriteVerb + the `revertReturns` overload)
   TryReadVerb,
   TrySubcallVerb,
