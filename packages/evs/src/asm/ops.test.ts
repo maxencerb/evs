@@ -1,6 +1,20 @@
 import { describe, expect, test } from 'vite-plus/test';
 
-import { FORBIDDEN, OPS, type Mnemonic, type OpInfo } from './ops.js';
+import {
+  encodedPushWidth,
+  EVM_VERSIONS,
+  FORBIDDEN,
+  forkAtLeast,
+  immediateWidth,
+  isEvmVersion,
+  isTerminator,
+  OPS,
+  PUSH1_CODE,
+  PUSH32_CODE,
+  TERMINATORS,
+  type Mnemonic,
+  type OpInfo,
+} from './ops.js';
 
 /**
  * Spot-check table copied independently from the EVM opcode reference (hex, stack in/out,
@@ -171,5 +185,61 @@ describe('FORBIDDEN', () => {
     for (const [mnemonic, info] of Object.entries(OPS)) {
       expect(FORBIDDEN.has(info.code), `${mnemonic} must not be forbidden`).toBe(false);
     }
+  });
+});
+
+describe('forks', () => {
+  test('EVM_VERSIONS lists the supported forks oldest first', () => {
+    expect(EVM_VERSIONS).toEqual(['paris', 'shanghai', 'cancun']);
+    expect(isEvmVersion('shanghai')).toBe(true);
+    expect(isEvmVersion('prague')).toBe(false);
+    expect(isEvmVersion('frontier')).toBe(false); // a gating tag, not a build target
+  });
+
+  test('forkAtLeast ranks by that order; frontier is always available', () => {
+    for (const v of EVM_VERSIONS) {
+      expect(forkAtLeast(v, 'frontier')).toBe(true);
+      expect(forkAtLeast(v, v)).toBe(true);
+    }
+    expect(forkAtLeast('paris', 'shanghai')).toBe(false);
+    expect(forkAtLeast('shanghai', 'cancun')).toBe(false);
+    expect(forkAtLeast('cancun', 'paris')).toBe(true);
+  });
+});
+
+describe('TERMINATORS', () => {
+  test('are the halting ops plus the unconditional JUMP (JUMPI falls through)', () => {
+    expect([...TERMINATORS].toSorted()).toEqual(['INVALID', 'JUMP', 'RETURN', 'REVERT', 'STOP']);
+    expect(isTerminator('JUMPI')).toBe(false);
+    expect(isTerminator('CALL')).toBe(false);
+  });
+
+  test('no terminator pushes a result', () => {
+    for (const op of TERMINATORS) expect(OPS[op].pushes, `terminator ${op}`).toBe(0);
+  });
+});
+
+describe('PUSH encoding', () => {
+  test('PUSH1_CODE / PUSH32_CODE bound the immediate-carrying opcodes of the table', () => {
+    expect(OPS.PUSH1.code).toBe(PUSH1_CODE);
+    expect(OPS.PUSH32.code).toBe(PUSH32_CODE);
+  });
+
+  test('immediateWidth: n for PUSHn, 0 for PUSH0 and every other byte', () => {
+    for (let n = 1; n <= 32; n++) expect(immediateWidth(PUSH1_CODE + n - 1)).toBe(n);
+    expect(immediateWidth(OPS.PUSH0.code)).toBe(0);
+    expect(immediateWidth(OPS.DUP1.code)).toBe(0);
+    expect(immediateWidth(OPS.JUMPDEST.code)).toBe(0);
+    expect(immediateWidth(0xff)).toBe(0);
+  });
+
+  test('encodedPushWidth: minimal PUSHn, zero by fork', () => {
+    expect(encodedPushWidth(0n, 'paris')).toBe(2); // PUSH1 00
+    expect(encodedPushWidth(0n, 'shanghai')).toBe(1); // PUSH0
+    expect(encodedPushWidth(0n, 'cancun')).toBe(1);
+    expect(encodedPushWidth(1n, 'paris')).toBe(2);
+    expect(encodedPushWidth(0xffn, 'cancun')).toBe(2);
+    expect(encodedPushWidth(0x100n, 'cancun')).toBe(3);
+    expect(encodedPushWidth((1n << 256n) - 1n, 'cancun')).toBe(33); // PUSH32
   });
 });

@@ -30,7 +30,7 @@
  */
 
 import type { AsmNode } from '../asm/assembler.js';
-import { isDupOp, isSwapOp, type Mnemonic } from '../asm/ops.js';
+import { encodedPushWidth, isDupOp, isSwapOp, type Mnemonic } from '../asm/ops.js';
 import {
   MAX_TEMPLATE_DEPTH,
   SANCTIONED_RETURNDATACOPY_WINDOW,
@@ -260,13 +260,12 @@ function matchConstantFold(nodes: readonly AsmNode[], i: number): Match | null {
 
 /**
  * Encoded byte width of a `push` node. The pass is fork-agnostic, so zero is counted
- * conservatively: 1 byte (PUSH0) when it is an INPUT being replaced, 2 bytes (paris `PUSH1 00`)
- * when it is the OUTPUT being introduced — a fold that passes the guard under these bounds
- * never grows the bytecode on any target.
+ * conservatively: at its narrowest (shanghai+ `PUSH0`, 1 byte) when it is an INPUT being
+ * replaced, at its widest (paris `PUSH1 00`, 2 bytes) when it is the OUTPUT being introduced — a
+ * fold that passes the guard under these bounds never grows the bytecode on any target.
  */
 function pushWidth(value: bigint, role: 'in' | 'out'): number {
-  if (value === 0n) return role === 'in' ? 1 : 2;
-  return 1 + Math.ceil(value.toString(16).length / 2);
+  return encodedPushWidth(value, role === 'in' ? 'shanghai' : 'paris');
 }
 
 /**

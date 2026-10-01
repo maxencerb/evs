@@ -164,6 +164,8 @@ describe('artifact shape', () => {
       EvsCompileError,
     );
     expect(err.code).toBe('EVM_VERSION');
+    // the list is derived from EVM_VERSIONS (asm/ops.ts)
+    expect(err.message).toMatch(/expected 'paris', 'shanghai' or 'cancun'$/);
   });
 });
 
@@ -684,6 +686,44 @@ describe('EIP-170 enforcement', () => {
     expect(err.code).toBe('COMPILE_LIMIT');
     expect(Number(/is (\d+) bytes/.exec(err.message)?.[1])).toBeGreaterThan(0xffff);
     expect(err.message).toMatch(/EIP-170 limit of 24576 by \d+ bytes \(dispatcher \d+, body \d+/);
+  });
+
+  test('every region gets its bucket and the buckets add up to the runtime size', () => {
+    // dispatcher · body · fns · trampoline · tails (decode-fail stubs + shared tails) · data
+    const big = evscript({ name: 'everyRegion', args: [t.address, t.uint256] }, (s, token, x) => {
+      const inc = s.fn('inc', t.uint256, (v) => s.add(v, 1n));
+      const sim = s.simulate({
+        address: token,
+        abi: parseAbi(['function transfer(address,uint256) returns (bool)']),
+        functionName: 'transfer',
+        args: [token, 1n],
+      });
+      const total = s.let(t.uint256, 0n);
+      for (let i = 0; i < 200; i++) {
+        const bal = s.read({
+          address: token,
+          abi: balanceOfAbi,
+          functionName: 'balanceOf',
+          args: [token],
+        });
+        total.set(total.get().add(inc(bal)).div(x));
+      }
+      const blob = s.lit(t.bytes, `0x${'cd'.repeat(3000)}`);
+      return s.return({ sim, blob, total: total.get() });
+    });
+    for (const evmVersion of ['paris', 'cancun'] as const) {
+      const err = captureError(() => compile(big, { evmVersion }), EvsCompileError);
+      const m =
+        /is (\d+) bytes .*\(dispatcher (\d+), body (\d+), fns (\d+), trampoline (\d+), tails (\d+), data segments (\d+)\)/.exec(
+          err.message,
+        );
+      expect(m, `breakdown: ${err.message}`).not.toBeNull();
+      const [total = 0, ...buckets] = (m ?? []).slice(1).map(Number);
+      expect(buckets.every((n) => n > 0)).toBe(true);
+      expect(buckets.reduce((a, b) => a + b, 0)).toBe(total);
+      // INVALID guard + the blob's ABI image (length word, 3,000 bytes padded to 3,008)
+      expect(buckets.at(-1)).toBe(1 + 32 + 3_008);
+    }
   });
 
   test('a comfortably-sized script compiles', () => {

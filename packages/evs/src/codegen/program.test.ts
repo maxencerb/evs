@@ -11,7 +11,7 @@
  *   zeroing / gas cap;
  * - data segments: placed last behind INVALID, content-deduplicated;
  * - diagnostics: LOOP_ALLOCATION (call-with-outputs / arrnew / dynamic literal in a loop)
- *   and LARGE_FRAME; sites table; labelNames; determinism;
+ *   and LARGE_FRAME; sites table; label names + region labels; determinism;
  *   sourceMap segment coverage; uncalled fns dropped.
  */
 
@@ -27,7 +27,7 @@ import {
   word,
 } from '../../test/harness/fixtures.js';
 import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
-import { AsmWriter, assemble, type LabelId } from '../asm/assembler.js';
+import { AsmWriter, assemble, type AsmNode, type LabelId } from '../asm/assembler.js';
 import { disassemble } from '../asm/disasm.js';
 import type { EvmVersion } from '../asm/ops.js';
 import {
@@ -1030,8 +1030,9 @@ describe('data segments', () => {
     b.ret('fees', fees);
     const ir = b.build();
     const { runtime, lowered } = compileIr(ir);
-    const dataLabels = [...lowered.labelNames.values()].filter((n) => n.startsWith('data_'));
+    const dataLabels = lowered.nodes.flatMap((n) => (n.k === 'dataLabel' ? [n.name] : []));
     expect(dataLabels).toEqual(['data_0', 'data_1']); // deduped: 2 blobs for 3 literals
+    expect(lowered.regions.data).toBe(lowered.nodes.find((n) => n.k === 'dataLabel')?.label);
     const res = await execRuntime(runtime, calldataFor(ir, []));
     expect(res.success).toBe(true);
     expect(res.data).toBe(
@@ -1324,7 +1325,7 @@ describe('diagnostics', () => {
 });
 
 // ---------------------------------------------------------------------------
-// sites, labelNames, determinism, coverage, uncalled fns
+// sites, label names + regions, determinism, coverage, uncalled fns
 // ---------------------------------------------------------------------------
 
 describe('LowerResult metadata', () => {
@@ -1361,10 +1362,10 @@ describe('LowerResult metadata', () => {
     expect(new Set(ids).size).toBe(ids.length);
   });
 
-  test('labelNames: main, tails, fn entries; uncalled fns are dropped', () => {
+  test('label names: main, tails, fn entries; uncalled fns are dropped', () => {
     const { ir } = richIr();
-    const { labelNames } = lowerProgram(ir, { evmVersion: 'cancun' });
-    const names = [...labelNames.values()];
+    const { nodes } = lowerProgram(ir, { evmVersion: 'cancun' });
+    const names = nodes.flatMap((n) => (n.k === 'label' && n.name !== undefined ? [n.name] : []));
     expect(names).toContain('main');
     expect(names).toContain('panic_overflow');
     expect(names).toContain('badcd');
@@ -1372,6 +1373,36 @@ describe('LowerResult metadata', () => {
     expect(names).toContain('fn_inc');
     expect(names).not.toContain('fn_ghost');
     expect(names.some((n) => n.startsWith('dfail_'))).toBe(true);
+  });
+
+  /** The name of the placed label `label` (`undefined` when it is unnamed or not placed). */
+  const placedName = (nodes: readonly AsmNode[], label: LabelId | null): string | undefined => {
+    const node = nodes.find((n) => n.k === 'label' && n.label === label);
+    return node?.k === 'label' ? node.name : undefined;
+  };
+
+  test('regions: each one opens on its first label, in layout order', () => {
+    const { ir, callSite } = richIr();
+    const { nodes, regions } = lowerProgram(ir, { evmVersion: 'cancun' });
+    expect(placedName(nodes, regions.main)).toBe('main');
+    expect(placedName(nodes, regions.fns)).toBe('fn_inc');
+    expect(regions.trampoline).toBeNull(); // no s.simulate site
+    expect(placedName(nodes, regions.tails)).toBe(`dfail_${callSite}`); // stubs come first
+    expect(regions.data).toBeNull(); // no dynamic literal
+
+    const { labelPcs } = assemble(nodes, { evmVersion: 'cancun' });
+    const pcOf = (label: LabelId | null): number => labelPcs.get(label ?? -1) ?? -1;
+    expect(pcOf(regions.main)).toBeGreaterThan(0);
+    expect(pcOf(regions.fns)).toBeGreaterThan(pcOf(regions.main));
+    expect(pcOf(regions.tails)).toBeGreaterThan(pcOf(regions.fns));
+  });
+
+  test('regions: without decode-fail stubs, the tails open on the first shared tail placed', () => {
+    const b = new IrB('tailsOnly', [['x', 'uint256']]);
+    b.ret('y', b.bin('add', 0, b.word('uint256', 1n)));
+    const { nodes, regions } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    expect(placedName(nodes, regions.tails)).toBe('panic_overflow'); // the checked add's stub
+    expect(regions.fns).toBeNull();
   });
 
   test('lowering is deterministic (identical bytecode twice)', () => {

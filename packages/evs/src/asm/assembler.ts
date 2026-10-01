@@ -20,7 +20,15 @@
  */
 
 import { EvsInternalError } from '../core/errors.js';
-import { OPS, type EvmVersion, type Mnemonic } from './ops.js';
+import {
+  forkAtLeast,
+  isTerminator,
+  OPS,
+  PUSH1_CODE,
+  PUSH32_CODE,
+  type EvmVersion,
+  type Mnemonic,
+} from './ops.js';
 import type { SourceMap } from './sourcemap.js';
 import { verifyJumpdests, verifyShapes, verifyStack } from './verify.js';
 
@@ -63,11 +71,8 @@ const SNAPSHOT_DUPS: readonly Mnemonic[] = [
   'DUP16',
 ];
 
-function metaProps(meta?: NodeMeta): NodeMeta {
-  const m: NodeMeta = {};
-  if (meta?.note !== undefined) m.note = meta.note;
-  return m;
-}
+/** Node kinds that carry a source-map `note` (every kind but the two label kinds). */
+type NotedNode = Exclude<AsmNode, { k: 'label' | 'dataLabel' }>;
 
 export class AsmWriter {
   #nodes: AsmNode[] = [];
@@ -88,6 +93,18 @@ export class AsmWriter {
     return id;
   }
 
+  /** Appends `node`, attaching `note` only when present (`exactOptionalPropertyTypes`). */
+  #append(node: NotedNode, note: string | undefined): void {
+    if (note !== undefined) node.note = note;
+    this.#nodes.push(node);
+  }
+
+  /** A label node's name: the one given at placement, else the one given at allocation. */
+  #resolveName(label: LabelId, name: string | undefined): { name?: string } {
+    const resolved = name ?? this.#names.get(label);
+    return resolved === undefined ? {} : { name: resolved };
+  }
+
   op(op: Mnemonic, meta?: NodeMeta): void {
     if (op.startsWith('PUSH')) {
       // PUSH immediates must go through push()/pushBytes()/pushLabel() so the assembler owns
@@ -95,7 +112,7 @@ export class AsmWriter {
       // (and a bare PUSH0 op would dodge the paris lowering).
       throw internal(`op('${op}') is not allowed — use push()/pushBytes()/pushLabel()`);
     }
-    this.#nodes.push({ k: 'op', op, ...metaProps(meta) });
+    this.#append({ k: 'op', op }, meta?.note);
   }
 
   push(value: bigint | number, meta?: NodeMeta): void {
@@ -111,14 +128,14 @@ export class AsmWriter {
     if (v < 0n || v >= TWO_POW_256) {
       throw internal(`push value out of range [0, 2^256): ${v}`);
     }
-    this.#nodes.push({ k: 'push', value: v, ...metaProps(meta) });
+    this.#append({ k: 'push', value: v }, meta?.note);
   }
 
   pushBytes(bytes: Uint8Array, meta?: NodeMeta): void {
     if (bytes.length < 1 || bytes.length > 32) {
       throw internal(`pushBytes length must be 1..32, got ${bytes.length}`);
     }
-    this.#nodes.push({ k: 'pushBytes', bytes: bytes.slice(), ...metaProps(meta) });
+    this.#append({ k: 'pushBytes', bytes: bytes.slice() }, meta?.note);
   }
 
   pushLabel(label: LabelId, meta?: NodeMeta): void {
@@ -126,7 +143,7 @@ export class AsmWriter {
       this.#referenced.add(label);
       this.#referencedLog.push(label);
     }
-    this.#nodes.push({ k: 'pushLabel', label, ...metaProps(meta) });
+    this.#append({ k: 'pushLabel', label }, meta?.note);
   }
 
   /**
@@ -139,29 +156,15 @@ export class AsmWriter {
   }
 
   label(label: LabelId, stack: number | 'any', name?: string): void {
-    const resolved = name ?? this.#names.get(label);
-    const node: AsmNode =
-      resolved === undefined
-        ? { k: 'label', label, stack }
-        : { k: 'label', label, stack, name: resolved };
-    this.#nodes.push(node);
+    this.#nodes.push({ k: 'label', label, stack, ...this.#resolveName(label, name) });
   }
 
   dataLabel(label: LabelId, name?: string): void {
-    const resolved = name ?? this.#names.get(label);
-    const node: AsmNode =
-      resolved === undefined
-        ? { k: 'dataLabel', label }
-        : { k: 'dataLabel', label, name: resolved };
-    this.#nodes.push(node);
+    this.#nodes.push({ k: 'dataLabel', label, ...this.#resolveName(label, name) });
   }
 
   data(bytes: Uint8Array, note?: string): void {
-    const node: AsmNode =
-      note === undefined
-        ? { k: 'data', bytes: bytes.slice() }
-        : { k: 'data', bytes: bytes.slice(), note };
-    this.#nodes.push(node);
+    this.#append({ k: 'data', bytes: bytes.slice() }, note);
   }
 
   /**
@@ -238,7 +241,7 @@ export class AsmWriter {
   /**
    * @internal The highest operand-stack height the nodes emitted since `cp` reach, simulated
    * linearly from `entryHeight` (the absolute height when `cp` was taken). Checked labels reset
-   * the height to their annotation; code after an unconditional JUMP/terminator is skipped until
+   * the height to their annotation; code after a `TERMINATORS` op (JUMP included) is skipped until
    * the next label; `'any'` regions (failure stubs) are ignored — the same model as the
    * verifier's stack pass, restricted to one straight-line fragment.
    */
@@ -258,20 +261,11 @@ export class AsmWriter {
       if (node.k === 'push' || node.k === 'pushBytes' || node.k === 'pushLabel') {
         height += 1;
       } else if (node.k === 'op') {
+        if (isTerminator(node.op)) {
+          live = false;
+          continue;
+        }
         const info = OPS[node.op];
-        if (node.op === 'JUMP') {
-          live = false;
-          continue;
-        }
-        if (
-          node.op === 'RETURN' ||
-          node.op === 'REVERT' ||
-          node.op === 'STOP' ||
-          node.op === 'INVALID'
-        ) {
-          live = false;
-          continue;
-        }
         height += info.pushes - info.pops;
       } else {
         continue;
@@ -320,10 +314,6 @@ function assembleError(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `assemble: ${message}`);
 }
 
-const PUSH1 = 0x60;
-const PUSH2 = 0x61;
-const PUSH32 = 0x7f;
-
 /**
  * The layout pass's output buffer: one byte array that doubles when full, written in place (no
  * per-node arrays to allocate and concatenate). Every node has a fixed width, so the final
@@ -363,7 +353,7 @@ class CodeBuffer {
     let width = 0;
     for (let x = value; x > 0n; x >>= 8n) width += 1;
     this.#reserve(1 + width);
-    this.#bytes[this.pc++] = PUSH1 + width - 1;
+    this.#bytes[this.pc++] = PUSH1_CODE + width - 1;
     let x = value;
     for (let i = this.pc + width - 1; i >= this.pc; i--) {
       this.#bytes[i] = Number(x & 0xffn);
@@ -389,7 +379,7 @@ class CodeBuffer {
 function opNodeCode(op: Mnemonic): number {
   const info = Object.hasOwn(OPS, op) ? OPS[op] : undefined;
   if (info === undefined) throw assembleError(`op node has unknown mnemonic '${op}'`);
-  if (info.code >= PUSH1 && info.code <= PUSH32) {
+  if (info.code >= PUSH1_CODE && info.code <= PUSH32_CODE) {
     throw assembleError(
       `op node '${op}' is not allowed — PUSH immediates must be push/pushBytes/pushLabel nodes`,
     );
@@ -467,11 +457,11 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
         }
         if (node.value === 0n) {
           // PUSH0 (shanghai+) | PUSH1 00 (paris)
-          if (opts.evmVersion === 'paris') {
-            code.byte(PUSH1);
-            code.byte(0x00);
-          } else {
+          if (forkAtLeast(opts.evmVersion, OPS.PUSH0.since)) {
             code.byte(OPS.PUSH0.code);
+          } else {
+            code.byte(PUSH1_CODE);
+            code.byte(0x00);
           }
         } else {
           code.minimalPush(node.value);
@@ -483,14 +473,14 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
         if (node.bytes.length < 1 || node.bytes.length > 32) {
           throw assembleError(`pushBytes length must be 1..32, got ${node.bytes.length}`);
         }
-        code.byte(PUSH1 + node.bytes.length - 1);
+        code.byte(PUSH1_CODE + node.bytes.length - 1);
         code.bytes(node.bytes);
         mark(start, node.note);
         break;
       }
       case 'pushLabel': {
         fixups.push({ patchOffset: start + 1, label: node.label });
-        code.byte(PUSH2);
+        code.byte(OPS.PUSH2.code);
         code.byte(0x00);
         code.byte(0x00);
         mark(start, node.note);

@@ -151,6 +151,21 @@ describe('verifyStack — checked labels', () => {
     expect(() => verifyStack(nodes, NO_PCS)).toThrow(/16-item template budget/);
   });
 
+  test('JUMPI gets the same post-op depth check as every other non-terminator op', () => {
+    // a checked label annotated above the budget, consumed only by a dynamic JUMPI: the
+    // fallthrough height (annotation - 2) is held to the 16-item budget like after any op
+    const jumpiFrom = (annotation: number): readonly AsmNode[] => [
+      { k: 'op', op: 'STOP' },
+      { k: 'label', label: 0, stack: annotation },
+      { k: 'op', op: 'JUMPI' },
+      { k: 'op', op: 'STOP' },
+    ];
+    expect(() => verifyStack(jumpiFrom(18), NO_PCS)).not.toThrow();
+    expect(() => verifyStack(jumpiFrom(19), NO_PCS)).toThrow(
+      /simulated stack depth 17 after JUMPI exceeds the 16-item template budget/,
+    );
+  });
+
   test('catches code falling past the end without a terminator', () => {
     const nodes: readonly AsmNode[] = [
       { k: 'push', value: 1n },

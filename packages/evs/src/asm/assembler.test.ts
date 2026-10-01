@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import { AsmWriter, assemble, type AsmNode } from './assembler.js';
+import { encodedPushWidth, EVM_VERSIONS } from './ops.js';
 import { lookupPc } from './sourcemap.js';
 
 const hex = (bytes: Uint8Array): string =>
@@ -34,6 +35,24 @@ describe('AsmWriter', () => {
       { k: 'pushBytes', bytes: Uint8Array.of(0xde, 0xad) },
       { k: 'pushLabel', label: l },
     ]);
+  });
+
+  test('label names: a placement name wins over the allocation name; notes only when given', () => {
+    const w = new AsmWriter();
+    const a = w.newLabel('allocated');
+    const b = w.newLabel('blob');
+    w.label(a, 'any', 'placed');
+    w.dataLabel(b, 'renamed');
+    w.data(Uint8Array.of(1));
+    w.data(Uint8Array.of(2), 'second');
+    expect(w.nodes()).toEqual([
+      { k: 'label', label: a, stack: 'any', name: 'placed' },
+      { k: 'dataLabel', label: b, name: 'renamed' },
+      { k: 'data', bytes: Uint8Array.of(1) },
+      { k: 'data', bytes: Uint8Array.of(2), note: 'second' },
+    ]);
+    // `exactOptionalPropertyTypes`: an absent note is absent, not `note: undefined`
+    expect(w.nodes().filter((n) => 'note' in n && n.note === undefined)).toEqual([]);
   });
 
   test('push accepts numbers and rejects unsafe / out-of-range values', () => {
@@ -286,6 +305,18 @@ describe('assemble — push lowering', () => {
     for (const [value, expected] of cases) {
       const { bytecode } = assemble(program(value), { evmVersion: 'cancun' });
       expect(hex(bytecode)).toBe(`${expected}505f5ff3`);
+    }
+  });
+
+  test('encodedPushWidth (the peephole size guard) matches the lowered width on every fork', () => {
+    const values = [0n, 1n, 0xffn, 0x100n, 0xffffn, 1n << 128n, (1n << 256n) - 1n];
+    for (const evmVersion of EVM_VERSIONS) {
+      for (const value of values) {
+        const { bytecode } = assemble([{ k: 'push', value }], { evmVersion, verify: false });
+        expect(bytecode.length, `${value} on ${evmVersion}`).toBe(
+          encodedPushWidth(value, evmVersion),
+        );
+      }
     }
   });
 

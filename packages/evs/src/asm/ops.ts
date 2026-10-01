@@ -11,9 +11,37 @@
  * (pops n, pushes n+1 — net +1); `SWAPn` requires `n+1` items (pops n+1, pushes n+1 — net 0).
  * That convention lets the stack verifier check both underflow and the 16-item reach with the
  * same numbers.
+ *
+ * The module also owns the facts every consumer of the table would otherwise restate: the
+ * supported fork list and its order, the PUSH encoding (opcode range, immediate widths) and the
+ * set of opcodes that end straight-line execution. It has no imports, so anything can use it.
  */
 
-export type EvmVersion = 'paris' | 'shanghai' | 'cancun';
+// ---------------------------------------------------------------------------
+// forks
+// ---------------------------------------------------------------------------
+
+/** Every supported `evmVersion`, oldest first (the order `forkAtLeast` ranks by). */
+export const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
+
+export type EvmVersion = (typeof EVM_VERSIONS)[number];
+
+/** Narrows an unchecked string (a JS caller's option) to a supported fork. */
+export function isEvmVersion(value: string): value is EvmVersion {
+  return (EVM_VERSIONS as readonly string[]).includes(value);
+}
+
+/**
+ * Whether `evmVersion` includes everything introduced at `since`. `'frontier'` stands for any
+ * fork older than the `paris` floor, so it is always available.
+ */
+export function forkAtLeast(evmVersion: EvmVersion, since: EvmVersion | 'frontier'): boolean {
+  return since === 'frontier' || EVM_VERSIONS.indexOf(evmVersion) >= EVM_VERSIONS.indexOf(since);
+}
+
+// ---------------------------------------------------------------------------
+// opcode table
+// ---------------------------------------------------------------------------
 
 // prettier-ignore
 type PushWidth = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 15 | 16 | 17 | 18
@@ -179,6 +207,55 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   REVERT: { code: 0xfd, pops: 2, pushes: 0, since: 'frontier' },
   INVALID: { code: 0xfe, pops: 0, pushes: 0, since: 'frontier' },
 } satisfies Record<Mnemonic, OpInfo>);
+
+/**
+ * Opcodes after which execution never reaches the next node: the halting ops and the
+ * unconditional `JUMP`. Every stack-height walker (`stackHeights` in `asm/verify.ts`, which
+ * `verifyStack` and the peephole's depth budget read, and `AsmWriter.peakHeightSince`) treats
+ * the code after one as unreachable until the next label; `JUMPI` is not here, its fallthrough edge stays live. `JUMP` IS a terminator for
+ * straight-line height tracking (its edge into the target label is checked separately), so a
+ * walker tests `isTerminator(op)` alone and never special-cases `JUMP` next to it.
+ */
+export const TERMINATORS: ReadonlySet<Mnemonic> = new Set<Mnemonic>([
+  'STOP',
+  'RETURN',
+  'REVERT',
+  'INVALID',
+  'JUMP',
+]);
+
+/** True for the opcodes in {@link TERMINATORS}. */
+export function isTerminator(op: Mnemonic): boolean {
+  return TERMINATORS.has(op);
+}
+
+// ---------------------------------------------------------------------------
+// PUSH encoding
+// ---------------------------------------------------------------------------
+
+/** `PUSH1` — the first opcode that carries an immediate (`PUSHn` is `PUSH1_CODE + n − 1`). */
+export const PUSH1_CODE = 0x60;
+/** `PUSH32` — the last opcode that carries an immediate. */
+export const PUSH32_CODE = 0x7f;
+
+/**
+ * Number of immediate bytes that follow the opcode byte `code` in the code stream: `n` for
+ * `PUSHn`, 0 for every other byte (`PUSH0` included). This is the consensus rule the JUMPDEST
+ * scan and the disassembler both walk by.
+ */
+export function immediateWidth(code: number): number {
+  return code >= PUSH1_CODE && code <= PUSH32_CODE ? code - PUSH1_CODE + 1 : 0;
+}
+
+/**
+ * Encoded byte length (opcode + immediate) of a minimal-width `push value` node, as the
+ * assembler lowers it on `evmVersion`: zero is `PUSH0` (1 byte) from shanghai on and
+ * `PUSH1 00` (2 bytes) on paris; any other value is `PUSHn` with the fewest bytes that hold it.
+ */
+export function encodedPushWidth(value: bigint, evmVersion: EvmVersion): number {
+  if (value === 0n) return forkAtLeast(evmVersion, OPS.PUSH0.since) ? 1 : 2;
+  return 1 + Math.ceil(value.toString(16).length / 2);
+}
 
 /**
  * Bytes that must never appear as opcodes in evs output:

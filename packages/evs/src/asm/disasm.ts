@@ -12,7 +12,7 @@
 import { bytesToHex, HEX_BYTES_RE, hexToBytes } from '../core/bytes.js';
 import { EvsTypeError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
-import { OPS } from './ops.js';
+import { immediateWidth, OPS } from './ops.js';
 import { lookupPc, type SourceMap } from './sourcemap.js';
 
 export interface DisasmLine {
@@ -29,9 +29,6 @@ export interface Disassembly {
   readonly lines: readonly DisasmLine[];
   format(): string;
 }
-
-const PUSH1_CODE = 0x60;
-const PUSH32_CODE = 0x7f;
 
 const MNEMONIC_BY_CODE: ReadonlyMap<number, string> = (() => {
   const map = new Map<number, string>();
@@ -78,8 +75,8 @@ export function disassemble(bytecode: Hex | Uint8Array, sourceMap?: SourceMap): 
     let size = 1;
     let pushValue: Hex | undefined;
     let targetLabel: string | undefined;
-    if (code >= PUSH1_CODE && code <= PUSH32_CODE) {
-      const width = code - PUSH1_CODE + 1;
+    const width = immediateWidth(code);
+    if (width > 0) {
       const immEnd = Math.min(pc + 1 + width, bytes.length); // tolerate truncated trailing push
       pushValue = bytesToHex(bytes, pc + 1, immEnd);
       size = immEnd - pc;
