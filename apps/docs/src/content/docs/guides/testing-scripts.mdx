@@ -170,8 +170,9 @@ exactly like the bytecode. See [Calling contracts](/guides/calls/) for those sem
 
 ### Unused results do not revert
 
-A checked `add`/`sub`/`mul`/`div`/`mod`/`pow`, an `addmod`/`mulmod`, a narrowing conversion,
-`array.at(i)`, `s.newArray` or a call to a pure `s.fn` reverts only if its result is used.
+A checked `add`/`sub`/`mul`/`div`/`mod`/`pow`, an `addmod`/`mulmod`, a checked conversion
+(`toUint`/`toInt`, `asAddress`), `array.at(i)`, a `set(i, v)` on an array nothing reads,
+`s.newArray` or a call to a pure `s.fn` reverts only if its result is used.
 When nothing reads the value, the compiled script never computes it, so it cannot panic.
 This differs from Solidity, where `a - b;` on its own still reverts on underflow.
 `interpret()` follows the bytecode; pass `{ dce: false }` to see what the recorded IR would do:

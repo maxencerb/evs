@@ -153,19 +153,20 @@ export type Outcome = { kind: 'return' | 'revert'; data: Hex };
 
 export interface AgreementOptions {
   /**
-   * The script holds a dead statement that reverts for some arg set (a checked op, bounds
-   * check or narrowing whose result nothing reads). DCE drops it with its Panic, so the
-   * recorded IR (`interpret(ir, …, { dce: false })`) may revert where the shipped bytecode
-   * returns: the recorded-vs-shipped check is skipped and the caller pins both sides itself.
+   * Indices into `argSets` for which the script's dead statement reverts (a checked op, bounds
+   * check or narrowing whose result nothing reads). DCE drops it with its Panic, so for those
+   * arg sets the recorded IR (`interpret(ir, …, { dce: false })`) reverts where the shipped
+   * bytecode returns: the harness asserts exactly that instead of byte-equality, and the
+   * caller pins the payload. Every other arg set keeps the full recorded-vs-shipped check.
    */
-  readonly deadRevertGuards?: boolean;
+  readonly deadRevertGuards?: readonly number[];
 }
 
 /**
  * Compiles twice — the default output AND its `optimize: true` twin (the built-in passes: the
  * liveness-based frame allocator, issue #41, and the peephole pass, issue #39) — checks the
  * always-on DCE pass (issue #40: the recorded IR and its DCE output agree under the
- * interpreter unless `deadRevertGuards`, output validity, idempotence), then for every arg set
+ * interpreter except on the `deadRevertGuards` arg sets, output validity, idempotence), then for every arg set
  * asserts byte-exact agreement between the reference interpreter (DCE applied, its default)
  * and BOTH compiled runtimes on the harness EVM. The optimized twin must also
  * never be larger, never use a larger frame, never cost more gas, and carry exactly the same
@@ -200,14 +201,19 @@ export async function expectAgreement(
   const fixture = fixtureOf(table);
   const chain = chainOf(table);
   const outcomes: Outcome[] = [];
-  for (const args of argSets) {
+  const divergent = new Set(options.deadRevertGuards ?? []);
+  for (const [index, args] of argSets.entries()) {
     const label = `${script.name}(${args.map(String).join(', ')}) [${evmVersion}]`;
     const calldata = encodeFunctionData({ abi: compiled.abi, functionName: script.name, args });
     const fromInterp = interpret(script.ir, args, chain).outcome;
     const fromDce = interpret(dced, args, chain, { dce: false }).outcome;
     expect(fromDce, `${label}: interpret(ir) runs dce(ir)`).toEqual(fromInterp);
-    if (options.deadRevertGuards !== true) {
-      const fromRecorded = interpret(script.ir, args, chain, { dce: false }).outcome;
+    const fromRecorded = interpret(script.ir, args, chain, { dce: false }).outcome;
+    if (divergent.has(index)) {
+      // the dead guard trips: only the recorded IR still executes it
+      expect(fromRecorded.kind, `${label}: recorded IR runs the dead guard`).toBe('revert');
+      expect(fromInterp.kind, `${label}: dce(ir) dropped it`).toBe('return');
+    } else {
       expect(fromRecorded.kind, `${label}: recorded-IR interp outcome`).toBe(fromInterp.kind);
       expect(fromRecorded.data, `${label}: recorded-IR interp payload`).toBe(fromInterp.data);
     }

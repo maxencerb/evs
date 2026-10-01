@@ -16,6 +16,7 @@ import { namedArg, t, type EvsType, type Hex } from '../core/types.js';
 import { dce, eliminateDeadCode } from './dce.js';
 import { interpret, type MockChain } from './interp.js';
 import {
+  deepFreeze,
   serializeIr,
   walkStmts,
   type PlainAbiFunction,
@@ -684,6 +685,31 @@ describe('revert guards are not side effects', () => {
       interpret(x, [2n], NO_CHAIN, { ...opts, trace: true }).trace?.map((e) => e.stmtPath);
     expect(paths({})).toEqual([[0], [1]]);
     expect(paths({ dce: false })).toEqual([[0], [1], [2]]);
+  });
+
+  test('interpret() reuses the pass per frozen IR and re-runs it on a mutable one', () => {
+    const MAX = (1n << 256n) - 1n;
+    // returns `a`; the checked `a + 1` is dead until `returns` is pointed at it
+    const returns: { name: string; type: EvsType; value: number }[] = [
+      { name: 'r', type: 'uint256', value: 0 },
+    ];
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('uint256'), vi('uint256')],
+      body: [constU(1, 1n), mk({ k: 'bin', op: 'add', a: 0, b: 1, out: 2 })],
+      returns,
+    });
+    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('return');
+    returns[0] = { name: 'r', type: 'uint256', value: 2 }; // the add is live now
+    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('revert'); // no stale dce(ir)
+    // a frozen IR (recorded or deserialized) gets the same answer on every call
+    returns[0] = { name: 'r', type: 'uint256', value: 0 };
+    deepFreeze(x);
+    for (let i = 0; i < 3; i++) {
+      const run = interpret(x, [MAX], NO_CHAIN, { trace: true });
+      expect(run.outcome.kind).toBe('return');
+      expect(run.trace?.map((e) => e.stmtPath)).toEqual([]);
+    }
   });
 });
 

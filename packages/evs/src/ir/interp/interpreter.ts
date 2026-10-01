@@ -127,7 +127,7 @@ export function interpret(
   opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean },
 ): InterpResult {
   validateIr(ir);
-  const program = opts?.dce === false ? ir : eliminateDeadCode(ir);
+  const program = opts?.dce === false ? ir : dceOf(ir);
   const maxSteps = opts?.maxSteps ?? DEFAULT_MAX_STEPS;
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) {
     throw new EvsTypeError(
@@ -137,6 +137,24 @@ export function interpret(
   }
   const env = resolveEnv(opts?.env);
   return new Interp(program, chain, maxSteps, opts?.trace === true, env).run(args);
+}
+
+/**
+ * `eliminateDeadCode(ir)` per IR object. Its `if` fixpoint is superlinear in nesting depth, and
+ * a test that loops `interpret()` over many arg sets would otherwise pay it on every call. Only
+ * frozen IRs are cached: a recorded or deserialized IR is deep-frozen, so the result cannot go
+ * stale; a hand-built, mutable IR is re-analyzed on every call.
+ */
+const dceCache = new WeakMap<ScriptIr, ScriptIr>();
+
+function dceOf(ir: ScriptIr): ScriptIr {
+  if (!Object.isFrozen(ir)) return eliminateDeadCode(ir);
+  let program = dceCache.get(ir);
+  if (program === undefined) {
+    program = eliminateDeadCode(ir);
+    dceCache.set(ir, program);
+  }
+  return program;
 }
 
 // ---------------------------------------------------------------------------

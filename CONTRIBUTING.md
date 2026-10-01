@@ -133,9 +133,10 @@ Releases: see [Releasing](#releasing) below.
   scan, a stack-height simulation (the operand stack must be empty at every statement
   boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
   the differential suite checks the recorded IR (`interpret(ir, …, { dce: false })`),
-  `interpret(ir)` (= `dce(ir)`) and the bytecode agree, except in the
-  `differential/dead-revert-guards` slice, where the dead statement is the one that reverts and
-  only the last two must agree.
+  `interpret(ir)` (= `dce(ir)`, cached per frozen IR) and the bytecode agree, except for the
+  tripping arg sets of the `differential/dead-revert-guards` slice (the harness's
+  `deadRevertGuards` indices), where the dead statement is the one that reverts and only the
+  last two must agree.
   An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
   frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
   params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
