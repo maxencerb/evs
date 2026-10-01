@@ -165,9 +165,12 @@ tuple with any unnamed member: abitype and viem's rule). Every member is optiona
 zero value, and accepts a literal, an `Expr`, or a nested `Tuple`. A key that names no member, an
 element past the last member, or a staged handle in place of the init (a `Cell`, `MutArray`,
 `Field`, `Tuple` or `Expr`) throws `TYPE_MISMATCH`. So does a spread or `Object.assign` copy of
-a `Tuple` handle (`{ ...pos, owner }`, also a type error): the handle's fields live on its
-prototype, so the copy holds no member and would zero-fill them — read each field with `.get()`
-instead. Use the returned handle's [`Field.set`](#field) to fill or overwrite members later.
+a handle that leaves a member out (`{ ...pos, owner }`): a handle keeps its fields on its
+prototype, so the copy holds only the members written next to the spread and would zero-fill the
+rest. For a `Tuple` handle that is also a type error; for an `Expr`, `Cell` or `Field` of the
+struct (`{ ...pos.expr(), owner }`) only the runtime check catches it. Read each field with
+`.get()` instead; a copy that names every member loses nothing and is accepted. Use the
+returned handle's [`Field.set`](#field) to fill or overwrite members later.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

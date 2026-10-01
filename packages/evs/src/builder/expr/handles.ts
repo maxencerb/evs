@@ -53,17 +53,38 @@ export const TUPLE_INTERNALS = new WeakMap<object, TupleInternals>();
 export const FIELD_INTERNALS = new WeakMap<object, FieldInternals>();
 
 /**
- * The one own enumerable key of every Tuple handle (a symbol, so `Object.keys(handle)` stays
- * empty). Its field accessors live on the shared prototype, so a spread / `Object.assign` copy of
- * a handle holds no member — only this mark, which object spread copies — and the recorder rejects
- * such a copy where it reads a record instead of silently zero-filling every member.
+ * The one own enumerable key of every handle a tuple value can sit behind (`Tuple`, `Expr`,
+ * `Cell`, `Field`), valued with the handle itself. It is a symbol, so `Object.keys(handle)` stays
+ * as it was. Those handles keep their members on a prototype (or have none), so a spread /
+ * `Object.assign` copy holds no member — only this mark, which object spread copies — and the
+ * recorder rejects such a copy where it reads a record and the copy leaves a member out, instead
+ * of silently zero-filling that member.
  */
-const TUPLE_COPY_MARK: unique symbol = Symbol('evs.tupleCopy');
+const HANDLE_COPY_MARK: unique symbol = Symbol('evs.handleCopy');
 
-/** Whether `v` is a spread / `Object.assign` copy of a Tuple handle (it carries
- *  {@link TUPLE_COPY_MARK} but is no handle itself). */
-export function isTupleCopy(v: object): boolean {
-  return Object.hasOwn(v, TUPLE_COPY_MARK) && !TUPLE_INTERNALS.has(v);
+/** The handle `v` is a spread / `Object.assign` copy of (it carries {@link HANDLE_COPY_MARK}
+ *  but is not that handle), else undefined. */
+export function copiedHandle(v: object): object | undefined {
+  if (!Object.hasOwn(v, HANDLE_COPY_MARK)) return undefined;
+  const src: unknown = Reflect.get(v, HANDLE_COPY_MARK);
+  return src === v || typeof src !== 'object' || src === null ? undefined : src;
+}
+
+/** The kind and value type of a handle {@link copiedHandle} returned (for its diagnostics). */
+export function describeCopiedHandle(h: object): { kind: string; type: EvsType | undefined } {
+  const ti = TUPLE_INTERNALS.get(h);
+  if (ti !== undefined) return { kind: 'a Tuple', type: ti.tt };
+  const ei = EXPR_INTERNALS.get(h);
+  if (ei !== undefined) return { kind: 'an Expr', type: ei.owner.typeOfValue(ei.id) };
+  const ci = CELL_INTERNALS.get(h);
+  if (ci !== undefined) return { kind: 'a Cell', type: ci.owner.typeOfCell(ci.id) };
+  const fi = FIELD_INTERNALS.get(h);
+  if (fi !== undefined) return { kind: 'a Field', type: fi.type };
+  return { kind: 'an evs', type: undefined };
+}
+
+function markHandle(h: object): void {
+  Object.defineProperty(h, HANDLE_COPY_MARK, { value: h, enumerable: true });
 }
 
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
@@ -89,6 +110,7 @@ export function isStagedHandle(v: unknown): boolean {
 class ExprHandle {
   constructor(owner: Recorder, id: ValueId) {
     EXPR_INTERNALS.set(this, { owner, id });
+    markHandle(this);
   }
 
   get type(): EvsType {
@@ -251,6 +273,7 @@ export function makeExpr(owner: Recorder, id: ValueId): Expr {
 export class CellImpl {
   constructor(owner: Recorder, id: CellId) {
     CELL_INTERNALS.set(this, { owner, id });
+    markHandle(this);
   }
 
   get type(): EvsType {
@@ -420,8 +443,8 @@ function tupleProtoOf(tt: TupleType): object {
 
 export function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {
   const handle: object = Object.create(tupleProtoOf(tt));
-  Object.defineProperty(handle, TUPLE_COPY_MARK, { value: true, enumerable: true });
   TUPLE_INTERNALS.set(handle, { owner, id, tt });
+  markHandle(handle);
   return handle;
 }
 
@@ -436,6 +459,7 @@ export class FieldHandle {
   constructor(owner: Recorder, tuple: ValueId, index: number, type: EvsType) {
     FIELD_INTERNALS.set(this, { owner, tuple, index, type });
     this.type = type;
+    markHandle(this);
   }
 
   get(): Expr | object {

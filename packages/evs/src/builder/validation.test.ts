@@ -3066,10 +3066,11 @@ describe('checklist: `__proto__` is not a name', () => {
   });
 });
 
-describe('checklist: a copy of a Tuple handle is not a tuple literal', () => {
+describe('checklist: a copy of a handle is not a tuple literal', () => {
   // a Tuple handle's field accessors live on its prototype: a spread / Object.assign copy holds
   // no member, so reading it as an init would silently zero-fill every member it omits.
   const P = t.struct({ a: t.uint256, b: t.address });
+  const ONE = '0x0000000000000000000000000000000000000001';
   const COPY = /init is a spread\/Object\.assign copy of a Tuple handle.*\.get\(\)/;
   const rp = (body: (s: AnyBuilder, p: object, x: Expr<'uint256'>) => void) =>
     evscript({ name: 'cp', args: [P, t.uint256] }, (s, p, x) => {
@@ -3121,6 +3122,56 @@ describe('checklist: a copy of a Tuple handle is not a tuple literal', () => {
       EvsTypeError,
       'TYPE_MISMATCH',
       RET,
+    );
+  });
+
+  test('a copy that names every member loses nothing: it is read like any record', () => {
+    // TypeScript accepts it (no excess-property check on spread keys), and 0.2.0 built it
+    evscript({ name: 'full', args: [P, t.uint256] }, (s, p, x) => {
+      const v = s.tuple(P, { ...p, a: x, b: ONE });
+      expect(Object.keys(v)).toEqual([]);
+      // (a type error here: the copy's type also carries the handle's methods)
+      return s.return({ ...p, a: x, b: v.b.get() } as never);
+    });
+  });
+
+  test('a partial copy of an Expr / Cell / Field of tuple type → TYPE_MISMATCH naming the lost member', () => {
+    // all four type-check: the weak-type check passes once `a` is shared
+    const lost = (kind: string) =>
+      new RegExp(
+        `copy of ${kind} handle, which copies none of its members — "b" would be zero-filled`,
+      );
+    const Outer = t.struct({ inner: P, n: t.uint256 });
+    const copyOf = (kind: 'expr' | 'get' | 'cell' | 'field') => () =>
+      evscript({ name: 'cp', args: [Outer, t.uint256] }, (s, o, x) => {
+        const c = s.let(P, o.inner.get().expr());
+        if (kind === 'expr') s.tuple(P, { ...o.inner.get().expr(), a: x });
+        if (kind === 'get') s.tuple(P, { ...c.get(), a: x });
+        if (kind === 'cell') s.tuple(P, { ...c, a: x });
+        if (kind === 'field') s.tuple(P, { ...o.inner, a: x });
+        return s.return({ x });
+      });
+    expectEvs(copyOf('expr'), EvsTypeError, 'TYPE_MISMATCH', lost('an Expr'));
+    expectEvs(copyOf('get'), EvsTypeError, 'TYPE_MISMATCH', lost('an Expr'));
+    expectEvs(copyOf('cell'), EvsTypeError, 'TYPE_MISMATCH', lost('a Cell'));
+    expectEvs(copyOf('field'), EvsTypeError, 'TYPE_MISMATCH', lost('a Field'));
+  });
+
+  test('s.return of an Expr copy → TYPE_MISMATCH (it would drop the value)', () => {
+    expectEvs(
+      () =>
+        evscript({ name: 'r', args: [P, t.uint256] }, (s, p, x) =>
+          s.return({ ...p.expr(), x } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.return\(\): the record is a spread\/Object\.assign copy of an Expr handle, which copies none of its members \("a", "b"\)/,
+    );
+    expectEvs(
+      () => rp((s, _p, x) => s.return({ ...x, y: x } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /copy of an Expr handle, which copies none of its members —/,
     );
   });
 

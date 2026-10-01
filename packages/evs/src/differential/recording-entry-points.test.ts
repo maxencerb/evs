@@ -211,6 +211,17 @@ describe.each(EVM_VERSIONS)(
   },
 );
 
+describe.each(EVM_VERSIONS)('a handle copy that names every member [%s]', (evmVersion) => {
+  test('s.tuple(P, { ...p, a, b }) builds the overriding members (nothing is zero-filled)', async () => {
+    const script = evscript({ name: 'full', args: [Pair, t.uint256] }, (s, p, x) =>
+      s.return({ r: s.tuple(Pair, { ...p, a: x, b: ONE }) }),
+    );
+    expect(await agreedResult(script, [{ a: 1n, b: ZERO }, 9n], evmVersion)).toEqual({
+      r: { a: 9n, b: ONE },
+    });
+  });
+});
+
 describe.each(EVM_VERSIONS)('struct literals with a `type` member [%s]', (evmVersion) => {
   test('memref .eq() / s.select() read them as tuple literals', async () => {
     const S = t.struct({ type: t.string });

@@ -49,7 +49,8 @@ import {
   TUPLE_INTERNALS,
   FIELD_INTERNALS,
   isStagedHandle,
-  isTupleCopy,
+  copiedHandle,
+  describeCopiedHandle,
   CellImpl,
 } from './handles.js';
 import {
@@ -583,8 +584,11 @@ export abstract class RecorderCore {
 
   /** Rejects a staged handle where a tuple LITERAL is read (`s.tuple` init, a tuple slot whose
    *  value is not a same-typed Tuple/Expr): its properties are not members, so reading it as a
-   *  record would silently build an all-zero tuple. */
-  private assertNotHandle(v: unknown, what: string): void {
+   *  record would silently build an all-zero tuple. A spread / `Object.assign` copy of a handle
+   *  ({@link copiedHandle}) holds only the members written next to the spread, so it is rejected
+   *  when it leaves one of `type`'s members out (that member would be zero-filled); a copy that
+   *  names every member loses nothing and is read like any record. */
+  private assertNotHandle(v: unknown, type: TupleType, what: string): void {
     if (typeof v !== 'object' || v === null) return;
     const fail = (hint: string): never => {
       throw new EvsTypeError('TYPE_MISMATCH', `${what}: ${hint}`);
@@ -597,11 +601,17 @@ export abstract class RecorderCore {
         'init must be a literal of members, not a handle — pass the handle itself where the tuple is expected',
       );
     }
-    if (isTupleCopy(v)) {
-      fail(
-        'init is a spread/Object.assign copy of a Tuple handle, which copies no members — read each field with .get() (e.g. { a: x, b: p.b.get() })',
-      );
-    }
+    const src = copiedHandle(v);
+    if (src === undefined) return;
+    const positional = Array.isArray(v);
+    const missing = type.components
+      .map((c, i) => (positional ? String(i) : c.name))
+      .filter((key) => !Object.hasOwn(v, key));
+    if (missing.length === 0) return;
+    const { kind } = describeCopiedHandle(src);
+    fail(
+      `init is a spread/Object.assign copy of ${kind} handle, which copies none of its members — ${missing.map((m) => JSON.stringify(m)).join(', ')} would be zero-filled. Name every member, reading each one with .get() (e.g. { a: x, b: p.b.get() })`,
+    );
   }
 
   /** The ValueId of a position that takes a recorded value but no literal (`s.return`, an `s.fn`
@@ -624,7 +634,7 @@ export abstract class RecorderCore {
    *  is left to the zero-fill (no MSTORE); an omitted memref member gets its typed zero from
    *  codegen (`lowerTupleNew`). */
   protected buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
-    this.assertNotHandle(init, what);
+    this.assertNotHandle(init, type, what);
     const named = allMembersNamed(type);
     const n = type.components.length;
     let lookup: (comp: NamedType, index: number) => unknown;
