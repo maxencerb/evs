@@ -1,6 +1,12 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * rejection matrices deliberately feed wrongly-typed values through the public signatures. */
-import { type AbiFunction, type AbiParameter, encodeAbiParameters } from 'viem';
+import {
+  type AbiFunction,
+  type AbiParameter,
+  encodeAbiParameters,
+  keccak256,
+  stringToHex,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
@@ -11,6 +17,7 @@ import {
   encodeLiteralData,
   encodeLiteralWord,
   EVS_ERROR_ABI,
+  literalHash,
   selectorOf,
   toPlainAbiFunction,
 } from './artifact.js';
@@ -240,6 +247,27 @@ describe('toPlainAbiFunction', () => {
     expect(err.message).toContain('#0');
     expect(err.message).toContain('output');
   });
+
+  test('memoized per entry object: one shared result per entry, equal results across copies', () => {
+    expect(toPlainAbiFunction(balanceOf)).toBe(toPlainAbiFunction(balanceOf));
+    const copy: AbiFunction = { ...balanceOf };
+    expect(toPlainAbiFunction(copy)).not.toBe(toPlainAbiFunction(balanceOf));
+    expect(toPlainAbiFunction(copy)).toEqual(toPlainAbiFunction(balanceOf));
+  });
+
+  test('failures are not memoized: an invalid entry throws the same error at every call', () => {
+    const fn: AbiFunction = {
+      type: 'function',
+      name: 'bad',
+      stateMutability: 'view',
+      inputs: [{ name: 'x', type: 'uint7' }],
+      outputs: [],
+    };
+    const first = catchEvs(() => toPlainAbiFunction(fn));
+    const second = catchEvs(() => toPlainAbiFunction(fn));
+    expect(second).not.toBe(first);
+    expect(second.message).toBe(first.message);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -406,6 +434,55 @@ describe('encodeLiteralData', () => {
     const err2 = catchEvs(() => encodeLiteralData('address[]', [`0x${'12'.repeat(20)}`, '0x99']));
     expect(err2.code).toBe('LITERAL_RANGE');
     expect(err2.message).toContain('address[][1]');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// literalHash — the record-time hash memref equality folds
+// ---------------------------------------------------------------------------
+
+describe('literalHash', () => {
+  test('string / bytes: keccak256 of the raw bytes (UTF-8 for a string)', () => {
+    for (const s of ['', 'WETH', 'évs ✓ — a literal longer than one 32-byte word']) {
+      expect(literalHash('string', s)).toBe(keccak256(stringToHex(s)));
+    }
+    expect(literalHash('bytes', '0x')).toBe(keccak256('0x'));
+    expect(literalHash('bytes', '0xDEADbeef00')).toBe(keccak256('0xdeadbeef00'));
+    expect(literalHash('bytes', `0x${'ab'.repeat(77)}`)).toBe(keccak256(`0x${'ab'.repeat(77)}`));
+  });
+
+  test('word-element arrays: keccak256 of the standard abi.encode (T[] and static T[N])', () => {
+    const cases: readonly (readonly [ArrayType, readonly unknown[], readonly unknown[]])[] = [
+      ['uint256[]', [], []],
+      ['uint256[]', [1n, 2n], [1n, 2n]],
+      ['int8[]', [-1, 127, -128], [-1, 127, -128]],
+      ['bytes4[]', ['0x01020304'], ['0x01020304']],
+      ['bool[]', [true, false], [true, false]],
+      ['uint8[3]', [1, 2, 3], [1, 2, 3]],
+      [
+        'address[2]',
+        ['0x00000000000000000000000000000000DeaDBeef', `0x${'12'.repeat(20)}`],
+        ['0x00000000000000000000000000000000deadbeef', `0x${'12'.repeat(20)}`],
+      ],
+    ];
+    for (const [type, value, canonical] of cases) {
+      expect(literalHash(type, value)).toBe(keccak256(viemEncode(type, canonical)));
+    }
+  });
+
+  test("rejects exactly what encodeLiteralData rejects, with encodeLiteralData's error", () => {
+    const bad: readonly (readonly [DynType | ArrayType, unknown])[] = [
+      ['string', ['a']],
+      ['bytes', '0xabc'],
+      ['uint8[]', [1, 256]],
+      ['uint256[2]', [1n]],
+      ['string[]', ['a']],
+    ];
+    for (const [type, value] of bad) {
+      const want = catchEvs(() => encodeLiteralData(type, value));
+      const got = catchEvs(() => literalHash(type, value));
+      expect([type, got.code, got.message]).toEqual([type, want.code, want.message]);
+    }
   });
 });
 

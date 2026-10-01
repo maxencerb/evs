@@ -391,7 +391,7 @@ it never wraps.
 | Method                     | Signature                            | Notes                                                                  |
 | -------------------------- | ------------------------------------ | ---------------------------------------------------------------------- |
 | `lt`, `gt`, `lte`, `gte`   | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | `OrderedType`s: numeric (LT/GT vs SLT/SGT chosen from the static signedness), plus `address` and `bytesN` as unsigned words (a `bytesN` orders byte by byte, like Solidity) |
-| `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any type. Words compare directly; memrefs (`string`/`bytes`/`T[]`/structs) are **hash equality** — `keccak256(a) == keccak256(b)`, byte-for-byte for `string`/`bytes`, element-wise via `abi.encode` for arrays/structs (two keccaks) |
+| `eq`, `neq`                | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | Any type. Words compare directly; memrefs (`string`/`bytes`/`T[]`/structs) are **hash equality** — `keccak256(a) == keccak256(b)`, byte-for-byte for `string`/`bytes`, element-wise via `abi.encode` for arrays/structs (two keccaks; one when the other side is a constant `string`/`bytes` or word-array literal, hashed at compile time) |
 
 ### Boolean logic
 

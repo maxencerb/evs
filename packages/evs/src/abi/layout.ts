@@ -35,6 +35,7 @@ import {
   quoteTypeString,
   staticSizeMessage,
   type EvsType,
+  type NamedType,
   type TupleType,
   type WordType,
 } from '../core/types.js';
@@ -95,9 +96,12 @@ export function layoutOf(abiType: string): TypeLayout {
 
 // Layouts are pure functions of the type and treated as immutable by every consumer, so they
 // memoize safely: string types through a Map (the vocabulary is small), tuple descriptors
-// through a WeakMap keyed on the descriptor object (stable identity inside one IR).
+// through a WeakMap keyed on their `components` array, then on the tag. Not on the descriptor
+// object: `abiParamToType` wraps a param in a FRESH descriptor at every call (every head walk,
+// every component of an enclosing tuple), while the `components` array it carries is the param's
+// own — stable inside one IR, and shared by a `tuple[]` and the `tuple` it peels down to.
 const layoutByString = new Map<string, TypeLayout>();
-const layoutByTuple = new WeakMap<TupleType, TypeLayout>();
+const layoutByComponents = new WeakMap<readonly NamedType[], Map<string, TypeLayout>>();
 
 function computeLayoutOf(abiType: string): TypeLayout {
   if (isWordType(abiType)) return wordLayoutOf(abiType);
@@ -142,6 +146,9 @@ function assertLayoutSize<L extends TypeLayout>(layout: L, type: string, context
  */
 export function layoutOfType(t: EvsType): TypeLayout {
   if (typeof t === 'string') return layoutOf(t);
+  // the memo before the shape check: only a validated descriptor's layout was ever stored
+  const hit = cachedTupleLayout(t);
+  if (hit !== undefined) return hit;
   if (!isTupleType(t)) {
     // a descriptor object with a malformed tag (`tuple[0]`) or shape
     throw new EvsTypeError(
@@ -149,11 +156,23 @@ export function layoutOfType(t: EvsType): TypeLayout {
       `layoutOfType: malformed tuple descriptor (type ${JSON.stringify((t as { type?: unknown }).type)})`,
     );
   }
-  const hit = layoutByTuple.get(t);
-  if (hit !== undefined) return hit;
   const layout = computeTupleLayout(t);
-  layoutByTuple.set(t, layout);
+  let byTag = layoutByComponents.get(t.components);
+  if (byTag === undefined) {
+    byTag = new Map();
+    layoutByComponents.set(t.components, byTag);
+  }
+  byTag.set(t.type, layout);
   return layout;
+}
+
+/** The memoized layout of a tuple descriptor, if any. Typed `unknown`: it runs before
+ *  `isTupleType`, so it must not trip over a malformed (hand-cast) descriptor. */
+function cachedTupleLayout(t: unknown): TypeLayout | undefined {
+  if (typeof t !== 'object' || t === null) return undefined;
+  const { type, components } = t as { type?: unknown; components?: unknown };
+  if (typeof type !== 'string' || !Array.isArray(components)) return undefined;
+  return layoutByComponents.get(components)?.get(type);
 }
 
 function computeTupleLayout(t: TupleType): TypeLayout {

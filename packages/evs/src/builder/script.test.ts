@@ -3,10 +3,11 @@ import type { Abi } from 'viem';
  * Builder unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
  * constant folding, scope positives, and recorded-IR validity (`validateIr` on every script).
  */
+import { encodeAbiParameters, keccak256, stringToHex } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError } from '../core/errors.js';
-import { namedArg, t, type Expr } from '../core/types.js';
+import { namedArg, t, typesEqual, type EvsType, type Expr } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
 import { deserializeIr, serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
@@ -1225,18 +1226,99 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
   });
 
   test('is exactly the stmts of the explicit s.keccak256(a).eq(s.keccak256(b)) spelling', () => {
+    const args = [t.string, t.string, t.array(t.uint256), t.array(t.uint256)] as const;
+    const sugar = evscript({ name: 'cmp', args }, (s, sa, sb, ua, ub) =>
+      s.return({ a: sa.eq(sb), b: ua.neq(ub) }),
+    );
+    const explicit = evscript({ name: 'cmp', args }, (s, sa, sb, ua, ub) =>
+      s.return({
+        a: s.keccak256(sa).eq(s.keccak256(sb)),
+        b: s.keccak256(ua).neq(s.keccak256(ub)),
+      }),
+    );
+    expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
+  });
+
+  test('a constant literal operand is hashed at record time: a bytes32 const, no data const', () => {
     const sugar = evscript({ name: 'cmp', args: [t.string, t.array(t.uint256)] }, (s, str, arr) =>
       s.return({ a: str.eq('hello'), b: arr.neq([1n, 2n]) }),
     );
+    // the oracle is viem, not literalHash: raw UTF-8 bytes / the standard abi.encode of the array
     const explicit = evscript(
       { name: 'cmp', args: [t.string, t.array(t.uint256)] },
       (s, str, arr) =>
         s.return({
-          a: s.keccak256(str).eq(s.keccak256(s.lit(t.string, 'hello'))),
-          b: s.keccak256(arr).neq(s.keccak256(s.lit(t.array(t.uint256), [1n, 2n]))),
+          a: s.keccak256(str).eq(s.lit(t.bytes32, keccak256(stringToHex('hello')))),
+          b: s
+            .keccak256(arr)
+            .neq(
+              s.lit(t.bytes32, keccak256(encodeAbiParameters([{ type: 'uint256[]' }], [[1n, 2n]]))),
+            ),
         }),
     );
     expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
+    const stmts = allStmts(sugar.ir);
+    expect(stmts.filter((x) => x.k === 'const' && x.data.kind === 'data')).toHaveLength(0);
+    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(2); // the two Expr operands
+  });
+
+  test('the hash fold takes exactly the literals the coercion interns as one data const', () => {
+    // one routing predicate drives both: a literal folds under eq iff coerceToId would
+    // intern it as a flat data const of the target type (no keccak / encode for that operand)
+    const Leg = t.struct({ token: t.address, fee: t.uint24 });
+    const cases: readonly {
+      name: string;
+      type: EvsType;
+      lit: (x: Expr) => unknown;
+      flat: boolean;
+    }[] = [
+      { name: 'string', type: t.string, lit: () => 'hello', flat: true },
+      { name: 'bytes', type: t.bytes, lit: () => '0x1234', flat: true },
+      { name: 'uint256[]', type: t.array(t.uint256), lit: () => [1n, 2n], flat: true },
+      { name: 'uint256[] empty', type: t.array(t.uint256), lit: () => [], flat: true },
+      { name: 'uint256[2]', type: 'uint256[2]', lit: () => [1n, 2n], flat: true },
+      { name: 'uint256[] + handle', type: t.array(t.uint256), lit: (x) => [x, 1n], flat: false },
+      { name: 'uint256[][]', type: 'uint256[][]', lit: () => [[1n], []], flat: false },
+      { name: 'string[]', type: 'string[]', lit: () => ['a', 'b'], flat: false },
+      { name: 'bytes[2]', type: 'bytes[2]', lit: () => ['0x', '0x01'], flat: false },
+      {
+        name: 'tuple[]',
+        type: t.array(Leg),
+        lit: () => [{ token: '0x00000000000000000000000000000000deadbeef', fee: 500 }],
+        flat: false,
+      },
+    ];
+    const isOwnDataConst = (x: Stmt, ty: EvsType): boolean =>
+      x.k === 'const' && x.data.kind === 'data' && typesEqual(x.type, ty);
+    for (const c of cases) {
+      // coerceToId through a cell write (it takes every memref type, tuple arrays included)
+      const coerced = allStmts(
+        evscript({ name: 'set', args: [c.type, t.uint256] as const }, (s, a, x) => {
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the case table erases the literal's type
+          s.let(a as Expr).set(c.lit(x));
+          return s.return({ v: x });
+        }).ir,
+      );
+      const compared = allStmts(
+        evscript({ name: 'cmp', args: [c.type, t.uint256] as const }, (s, a, x) =>
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the case table erases the operand types
+          s.return({ v: s.eq(a as never, c.lit(x) as never) }),
+        ).ir,
+      );
+      // folded: only the Expr operand is hashed, and the literal is never materialized
+      const folded =
+        compared.filter((x) => x.k === 'keccak256').length === 1 &&
+        !compared.some((x) => isOwnDataConst(x, c.type));
+      expect({
+        case: c.name,
+        interned: coerced.some((x) => isOwnDataConst(x, c.type)),
+        folded,
+      }).toEqual({
+        case: c.name,
+        interned: c.flat,
+        folded: c.flat,
+      });
+    }
   });
 
   test('literal rhs is coerced like any IntoExpr (string / array / struct literals)', () => {
@@ -1254,11 +1336,12 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
     });
     expect(() => validateIr(script.ir)).not.toThrow();
     const stmts = allStmts(script.ir);
-    // 'hello', '' and the two elements of the string[] literal
-    expect(stmts.filter((x) => x.k === 'const' && x.type === 'string')).toHaveLength(4);
+    // 'hello' and '' fold to bytes32 hash consts; the string[] literal's two elements are built
+    expect(stmts.filter((x) => x.k === 'const' && x.type === 'string')).toHaveLength(2);
+    expect(stmts.filter((x) => x.k === 'const' && x.type === 'bytes32')).toHaveLength(2);
     expect(stmts.filter((x) => x.k === 'arrnew')).toHaveLength(1); // the string[] literal
     expect(stmts.filter((x) => x.k === 'tuplenew')).toHaveLength(2); // s.tuple + the struct literal
-    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(8);
+    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(6);
     expect(stmts.filter((x) => x.k === 'bin').map((x) => x.k === 'bin' && x.op)).toEqual([
       'eq',
       'eq',

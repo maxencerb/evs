@@ -3,7 +3,14 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
-import { staticSizeOf, t, type EvsType, type TupleType, type WordType } from '../core/types.js';
+import {
+  abiParamToType,
+  staticSizeOf,
+  t,
+  type EvsType,
+  type TupleType,
+  type WordType,
+} from '../core/types.js';
 import {
   arrayDecodeCharge,
   tupleDecodeCharge,
@@ -484,6 +491,32 @@ describe('layout memoization', () => {
     // a `tuple[][]` descriptor is a layout now (issue #4), cached per descriptor
     const arr2: TupleType = { type: 'tuple[][]', components: [{ name: 'x', type: 'uint256' }] };
     expect(layoutOfType(arr2)).toBe(layoutOfType(arr2));
+  });
+
+  test('the tuple memo survives fresh abiParamToType wrappers (keyed on components + tag)', () => {
+    // every head walk / enclosing tuple re-wraps a param in a NEW descriptor object; the param's
+    // own `components` array is what stays stable, so the layout is computed once
+    const inner = { name: 'pos', type: 'tuple', components: [{ name: 'x', type: 'uint256' }] };
+    const param = { name: 'p', type: 'tuple', components: [inner, { name: 's', type: 'string' }] };
+    expect(abiParamToType(param)).not.toBe(abiParamToType(param));
+    const layout = layoutOfType(abiParamToType(param));
+    expect(layoutOfType(abiParamToType(param))).toBe(layout);
+    // the nested member's layout is the one a direct lookup of that member returns
+    expect(layout.kind === 'tuple' && layout.components[0]).toBe(
+      layoutOfType(abiParamToType(inner)),
+    );
+    // same components under another tag: a distinct layout whose element is the tuple's
+    const arr = layoutOfType({ type: 'tuple[]', components: param.components });
+    expect(arr).not.toBe(layout);
+    expect(arr.kind === 'array' && arr.elem).toBe(layout);
+    expect(layoutOfType({ type: 'tuple[]', components: param.components })).toBe(arr);
+  });
+
+  test('a cached layout does not mask a malformed tag sharing its components', () => {
+    const components = [{ name: 'x', type: 'uint256' }] as const;
+    layoutOfType({ type: 'tuple', components });
+    const bad = { type: 'tuple[0]', components } as unknown as TupleType;
+    expect(() => layoutOfType(bad)).toThrowError(EvsTypeError);
   });
 });
 

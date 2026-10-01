@@ -378,3 +378,75 @@ describe('memref equality (#38): eq/neq lower to keccak256(a) == keccak256(b)', 
     });
   }
 });
+
+describe('memref equality: a constant literal operand is hashed at record time', () => {
+  // every flat literal shape, each compared twice: `x.eq(LIT)` (the literal's hash folded into a
+  // bytes32 const) and the runtime spelling `s.keccak256(x).eq(s.keccak256(s.lit(type, LIT)))`
+  // (the literal materialized and hashed by the script). Both must agree on every input.
+  const STR = 'évs — a literal longer than one 32-byte word ✓';
+  const BYTES: Hex = '0xDEADbeef00'; // mixed case: canonicalized like the materialized literal
+  const I8 = [-1, 127, -128] as const; // narrow signed words: sign-extended
+  const ADDR2 = ['0x00000000000000000000000000000000DeaDBeef', TOKA] as const; // static T[N]
+  const B4 = ['0x01020304', '0xffffffff'] as const; // left-aligned words
+  const FLAGS = [true, false] as const;
+  const script = evscript(
+    {
+      name: 'litfold',
+      args: [
+        t.string,
+        t.bytes,
+        t.array(t.int8),
+        t.array(t.address, 2),
+        t.array(t.bytes4),
+        t.array(t.bool),
+      ],
+    },
+    (s, str, b, i8, a2, b4, flags) =>
+      s.return({
+        str: str.eq(STR),
+        strRt: s.keccak256(str).eq(s.keccak256(s.lit(t.string, STR))),
+        empty: s.neq('', str),
+        emptyRt: s.keccak256(s.lit(t.string, '')).neq(s.keccak256(str)),
+        bytes: b.eq(BYTES),
+        bytesRt: s.keccak256(b).eq(s.keccak256(s.lit(t.bytes, BYTES))),
+        i8: i8.eq(I8),
+        i8Rt: s.keccak256(i8).eq(s.keccak256(s.lit(t.array(t.int8), I8))),
+        a2: a2.eq(ADDR2),
+        a2Rt: s.keccak256(a2).eq(s.keccak256(s.lit(t.array(t.address, 2), ADDR2))),
+        b4: b4.neq(B4),
+        b4Rt: s.keccak256(b4).neq(s.keccak256(s.lit(t.array(t.bytes4), B4))),
+        flags: flags.eq(FLAGS),
+        flagsRt: s.keccak256(flags).eq(s.keccak256(s.lit(t.array(t.bool), FLAGS))),
+      }),
+  );
+
+  test('the folded operands record no keccak256 of their own', () => {
+    const hashes = script.ir.body.filter((x) => x.k === 'keccak256');
+    // 7 folded compares hash only their Expr side; 7 runtime compares hash both sides
+    expect(hashes).toHaveLength(7 + 2 * 7);
+  });
+
+  for (const evmVersion of ['paris', 'cancun'] as const) {
+    test(`folded and runtime hashes agree on equal and unequal inputs [${evmVersion}]`, async () => {
+      const zeroAddr = `0x${'00'.repeat(20)}`;
+      const argSets = [
+        [STR, BYTES.toLowerCase(), I8.map(BigInt), ADDR2, B4, FLAGS], // all equal
+        ['', '0x', [], [zeroAddr, zeroAddr], [], []], // all empty / zero
+        [`${STR}!`, '0xdeadbeef', [-1n, 127n], [TOKA, ADDR2[0]], ['0x01020304'], [true, true]],
+      ] as const;
+      const outcomes = await expectAgreement(script, argSets, {}, evmVersion);
+      const results = outcomes.map((o, i) => {
+        expect(o.kind, `args #${i}: outcome`).toBe('return');
+        return decodeFunctionResult({ abi: script.abi, functionName: 'litfold', data: o.data });
+      });
+      results.forEach((r, i) => {
+        for (const key of ['str', 'empty', 'bytes', 'i8', 'a2', 'b4', 'flags'] as const) {
+          expect(r[key], `args #${i}: ${key}`).toBe(r[`${key}Rt`]);
+        }
+      });
+      // the all-equal inputs: every compare holds except the `b4` neq
+      expect(results[0]).toMatchObject({ str: true, empty: true, bytes: true, i8: true });
+      expect(results[0]).toMatchObject({ a2: true, b4: false, flags: true });
+    });
+  }
+});

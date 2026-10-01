@@ -5,6 +5,7 @@
  * string/bytes), `env`, the account reads (`balance` / `codeSize` / `codeHash`) and `select`.
  */
 
+import { literalHash } from '../../abi/artifact.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   type Expr,
@@ -213,8 +214,9 @@ export abstract class RecorderOps extends RecorderEncode {
    * `ty` (an Expr, a bare handle, or a host literal — `IntoExpr` rules), each is hashed the way
    * `s.keccak256(v)` hashes a single value (`string`/`bytes` directly → byte equality; arrays and
    * tuples through their standard ABI encoding → element-wise equality, never the ambiguous packed
-   * form), and the two `bytes32` words are compared. No new IR node: the recorded stmts are exactly
-   * `s.keccak256(a).eq(s.keccak256(b))`.
+   * form), and the two `bytes32` words are compared. No new IR node: the recorded stmts are those
+   * of `s.keccak256(a).eq(s.keccak256(b))`, except that a constant literal operand's hash is
+   * folded at record time (see {@link memrefOperandHash}).
    */
   private memrefEquality(
     op: 'eq' | 'neq',
@@ -224,18 +226,29 @@ export abstract class RecorderOps extends RecorderEncode {
     what: string,
   ): Expr {
     // left-to-right, hash-as-you-go: the stmt order is exactly what the explicit spelling records
-    // (a literal operand's const lands between the two hashes, as `s.lit` in the rhs would).
-    const ha = this.hashIds(
-      [this.coerceToId(a, ty, `${what} left operand`)],
-      `${what} left operand hash`,
-    );
-    const hb = this.hashIds(
-      [this.coerceToId(b, ty, `${what} right operand`)],
-      `${what} right operand hash`,
-    );
+    const ha = this.memrefOperandHash(a, ty, `${what} left operand`);
+    const hb = this.memrefOperandHash(b, ty, `${what} right operand`);
     const out = this.newValue('bool');
     this.appendStmt({ k: 'bin', op, a: ha, b: hb, out });
     return makeExpr(this.self, out);
+  }
+
+  /**
+   * One memref-equality operand → its `bytes32` hash. A host literal that would otherwise become
+   * a flat data const (a `string` / `bytes` literal, a word-element array of host literals) is
+   * hashed at record time (`literalHash`) and recorded as a `bytes32` const, so the script never
+   * materializes or hashes it — `x.eq('WETH')` costs one keccak, not two. Everything else (Exprs,
+   * bare handles, struct literals, composite-element arrays, arrays mixing in handles) is coerced
+   * and hashed at run time like `s.keccak256(v)`.
+   */
+  private memrefOperandHash(v: unknown, ty: EvsType, what: string): ValueId {
+    // the same predicate coerceToId routes on: fold exactly what it would intern as a data const
+    if (this.isFlatLiteralOperand(v, ty)) {
+      this.classify(v, what); // a Cell or a forged handle still gets coerceToId's error
+      const { hex, logical } = this.wordLiteral('bytes32', literalHash(ty, v));
+      return this.wordConst('bytes32', logical, hex);
+    }
+    return this.hashIds([this.coerceToId(v, ty, what)], `${what} hash`);
   }
 
   private materializeWord(ty: EvsType, r: { hex: Hex | null; logical: bigint | null }): ValueId {
