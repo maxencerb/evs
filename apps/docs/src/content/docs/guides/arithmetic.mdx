@@ -198,6 +198,8 @@ const mix = evscript(
 - **`asUint()` / `asBytesN()`** — the same-width `bytesN` ↔ `uintN` conversions of every width (`bytes4` ↔ `uint32`, `bytes20` ↔ `uint160`, …; Solidity's `uint32(b)` / `bytes4(u)`). Both are lossless, so they are unchecked; each costs one shift, since a `bytesN` is left-aligned in its word and a `uintN` right-aligned. As in Solidity there is no direct conversion between different widths: go through `toUint` (`u64.toUint(t.uint256).asBytes32()`) or the bit operations.
 - **`asBytes()` / `asString()`** — `string` ↔ `bytes`, free (the same memory, reinterpreted), and `asString()` on a `bytesN`: see [bytes and strings](/guides/values-and-types/#bytes-and-strings).
 
+A `bytesN` has no `byteAt` / `slice` of its own (Solidity's `b32[i]`): shift and mask after `asUint()`, or index its `N` bytes as a `bytes` through `s.encodePacked(word)`.
+
 A word-to-word conversion of a literal folds at recording, like the arithmetic below.
 
 ```ts
@@ -214,6 +216,40 @@ const casts = evscript(
     const id = addr.asUint160().toUint(t.uint256); // uint256(uint160(addr))
     const selector = w.asUint().toUint(t.uint32).asBytesN(); // Expr<'bytes4'>: Panic(0x11) unless w < 2^32
     return s.return({ small, wide, signed, addr, word, id, selector });
+  },
+);
+```
+
+### Example: a CREATE2 address
+
+Address ordering, hashing and `asAddress()` are what deriving a CREATE2 address takes, here a
+Uniswap V3 pool:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
+const POOL_INIT_CODE_HASH = '0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54';
+const LOW_160 = (1n << 160n) - 1n;
+
+const poolAddress = evscript(
+  { name: 'poolAddress', args: [t.address, t.address, t.uint24] },
+  (s, tokenA, tokenB, fee) => {
+    const aFirst = tokenA.lt(tokenB); // Uniswap's token0 < token1 ordering
+    const token0 = s.select(aFirst, tokenA, tokenB);
+    const token1 = s.select(aFirst, tokenB, tokenA);
+    const salt = s.keccak256(token0, token1, fee); // keccak256(abi.encode(token0, token1, fee))
+    const hash = s.keccak256(
+      s.encodePacked(
+        s.lit(t.bytes1, '0xff'),
+        s.lit(t.address, FACTORY),
+        salt,
+        s.lit(t.bytes32, POOL_INIT_CODE_HASH),
+      ),
+    );
+    // address(uint160(uint256(hash))): keep the low 20 bytes, so asAddress()'s check never fires
+    const pool = hash.asUint256().bitAnd(LOW_160).asAddress();
+    return s.return({ token0, token1, pool });
   },
 );
 ```
@@ -256,86 +292,6 @@ const shareOfSupply = evscript(
     const bps = bal.mul(10_000n).div(supply);
     const isWhale = bps.gte(100n); // ≥ 1% of supply (uint256 → unsigned comparison)
     return s.return({ bps, isWhale });
-  },
-);
-```
-
-## Not supported yet
-
-A few things Solidity can do have no `Expr` operation in this version. Each has a workaround:
-
-| Missing                                                       | Workaround                                                                                                   |
-| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
-| `unchecked { }` / wrapping `*`                                | build it from full-precision `mulmod` / `addmod` ([below](#wrapping-multiplication))                        |
-| 512-bit `mulDiv` (Uniswap's `FullMath`)                       | `a.mul(b).div(d)` reverts once `a * b` passes 2^256, even when the quotient fits; return the operands and finish on the client |
-| `address` ordering, `uint160(addr)`, `address(uint160(x))`    | type the address as `uint160` at the ABI boundary ([below](#ordering-addresses-and-create2))                 |
-| `bytesN` ↔ `uintN` other than `bytes32` ↔ `uint256`, byte access, slicing, `bytes32` → `string` | declare the value as `bytes32` / `uint256` in your ABI fragment and shift, or decode it on the client (see [legacy `bytes32` metadata](/guides/calls/#legacy-bytes32-metadata)) |
-
-### Wrapping multiplication
-
-`a * b mod 2^256`, what solc emits as a bare `MUL` inside `unchecked { }`, splits into 128-bit
-halves whose partial products `mulmod` and `addmod` compute without overflow. It costs about 300
-gas per multiply instead of a few, so keep it to the places that need wrapping semantics (hash
-mixing, Newton iterations ported from Solidity):
-
-```ts
-import { evscript, t, type Expr } from '@maxencerb/evs';
-
-const LOW_128 = (1n << 128n) - 1n;
-const TWO_128 = 1n << 128n;
-const MAX_UINT256 = (1n << 256n) - 1n;
-
-/** a * b mod 2^256: Solidity's unchecked multiply, from full-precision mulmod / addmod. */
-function wrappingMul(a: Expr<'uint256'>, b: Expr<'uint256'>): Expr<'uint256'> {
-  const aLo = a.bitAnd(LOW_128);
-  const aHi = a.shr(128n);
-  const bLo = b.bitAnd(LOW_128);
-  const bHi = b.shr(128n);
-  // aLo * bLo < 2^256 − 1, so reducing it modulo 2^256 − 1 keeps the exact product
-  const low = aLo.mulmod(bLo, MAX_UINT256);
-  // only the low 128 bits of the cross terms survive the shift into the high half
-  const cross = aLo.mulmod(bHi, TWO_128).addmod(aHi.mulmod(bLo, TWO_128), TWO_128);
-  const high = low.shr(128n).addmod(cross, TWO_128);
-  return high.shl(128n).bitOr(low.bitAnd(LOW_128));
-}
-
-const square = evscript({ name: 'square', args: [t.uint256] }, (s, x) =>
-  s.return({ wrapped: wrappingMul(x, x) }),
-);
-```
-
-### Ordering addresses and CREATE2
-
-An `Expr<'address'>` supports `eq` / `neq` only, and no conversion turns it into a number. The
-ABI encodes an `address` and a `uint160` as the same word, so declare the address as `uint160`
-where it enters the script: in the script's `args` (the caller passes `BigInt(address)`), or as
-the output type in your own ABI fragment for a getter such as `token0()`. A `uint160` sorts with
-`lt`, and `.toUint(t.uint256).asAddress()` turns it back into an address. The same pieces derive
-a CREATE2 address, here a Uniswap V3 pool:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
-const POOL_INIT_CODE_HASH = '0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54';
-
-const poolAddress = evscript(
-  { name: 'poolAddress', args: [t.uint160, t.uint160, t.uint24] }, // tokens passed as BigInt(address)
-  (s, tokenA, tokenB, fee) => {
-    const aFirst = tokenA.lt(tokenB); // Uniswap's token0 < token1 ordering
-    const token0 = s.select(aFirst, tokenA, tokenB).toUint(t.uint256).asAddress();
-    const token1 = s.select(aFirst, tokenB, tokenA).toUint(t.uint256).asAddress();
-    const salt = s.keccak256(token0, token1, fee); // keccak256(abi.encode(token0, token1, fee))
-    const hash = s.keccak256(
-      s.encodePacked(
-        s.lit(t.bytes1, '0xff'),
-        s.lit(t.address, FACTORY),
-        salt,
-        s.lit(t.bytes32, POOL_INIT_CODE_HASH),
-      ),
-    );
-    const pool = hash.asUint256().bitAnd((1n << 160n) - 1n).asAddress(); // the low 20 bytes
-    return s.return({ token0, token1, pool });
   },
 );
 ```

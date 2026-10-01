@@ -10,4 +10,4 @@ Address and bytes conversions, ordering and byte access, with Solidity's semanti
 - `string.asBytes()` / `bytes.asString()` reinterpret for free; `bytesN.asString()` builds a string from the word with its trailing zero bytes trimmed (the legacy `bytes32` `symbol()`).
 - `string` / `bytes` gain `byteAt(i)` (a `bytes1`) and `slice(start, end?)` (a fresh copy), both bounds-checked with `Panic(0x32)`.
 
-New exported types: `OrderedType`, `UintOfBytesN`, `BytesNOfUint`.
+New exported types: `OrderedType`, `UintOfBytesN`, `BytesNOfUint`. The serialized IR gains a `slice` statement, `convert` accepts the new pairs (`address` ↔ `uint160`, `bytesN` ↔ `uintN`, `string` ↔ `bytes`, `bytesN` → `string`), and `index` now also applies to `string` / `bytes` (`byteAt`).
