@@ -283,6 +283,16 @@ Releases: see [Releasing](#releasing) below.
   `deploylessDataSize` for the args side and `explainDeploylessError` for the node's error text;
   the wrapper size is a constant pinned against the installed viem by `deployless.test.ts`, and
   `test/integration/deployless-limits.test.ts` pins the three boundaries on anvil.
+- **No dependencies, abitype through viem.** The library's `dependencies` are empty: `viem` is
+  a required peer, and every abitype type (`Address`, `Abi`, `AbiParameter`,
+  `AbiParameterToPrimitiveType`, …) is imported from `'viem'`, which re-exports them from the
+  abitype it pins exactly. A direct `abitype` dependency (0.2.0 had `^1.3.0`) installs a second
+  copy next to viem's under npm and bun, and an app's abitype `Register` augmentation then
+  reaches only one of them. A lint rule (`no-restricted-imports` on `abitype` for
+  `packages/evs/**`, root `vite.config.ts`) keeps it that way; the one abitype type viem does not
+  re-export, `AbiParametersToPrimitiveTypes` (the named-tuple labels behind `LabelCarrier`), goes
+  through viem's `ContractConstructorArgs`. `src/abitype.test.ts` pins the manifest and compiles
+  an app-shaped `Register` augmentation in a program of its own.
 
 ## Testing
 

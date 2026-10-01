@@ -18,8 +18,9 @@
  * Both execution modes (state override and deployless).
  */
 
-import type { Abi, AbiParameter } from 'abitype';
 import {
+  type Abi,
+  type AbiParameter,
   concat,
   decodeFunctionResult,
   encodeFunctionData,

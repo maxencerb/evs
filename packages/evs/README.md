@@ -66,8 +66,8 @@ TS callback ──record──▶ IR ──compile──▶ runtime bytecode ─
 bun add @maxencerb/evs viem
 ```
 
-ESM-only. TypeScript ≥ 5.5 in `strict` mode; peer dependency `viem >= 2.14.1`; Node ≥ 20.19
-(or Bun).
+ESM-only. TypeScript ≥ 5.5 in `strict` mode; peer dependency `viem >= 2.14.1` (no other
+dependencies: the ABI types come from viem's own abitype); Node ≥ 20.19 (or Bun).
 
 ## Quickstart — pool metadata in one round trip
 

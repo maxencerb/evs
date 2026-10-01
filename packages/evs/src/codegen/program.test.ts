@@ -15,8 +15,7 @@
  *   sourceMap segment coverage; uncalled fns dropped.
  */
 
-import type { AbiParameter } from 'abitype';
-import { encodeAbiParameters } from 'viem';
+import { type AbiParameter, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, type EvmFixture } from '../../test/harness/evm.js';

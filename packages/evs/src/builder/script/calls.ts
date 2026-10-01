@@ -4,7 +4,7 @@
  * and the six calling verbs as callable interfaces.
  */
 
-import type { AbiStateMutability, Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
+import type { AbiStateMutability, Abi, AbiParameter, AbiParameterToPrimitiveType } from 'viem';
 
 import type { AbiFunctionSignature, SignatureName } from '../../core/signature.js';
 import type {

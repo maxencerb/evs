@@ -12,8 +12,14 @@
  * bare arg — the labels are positional, so they never touch `UnionToTuple`.
  */
 
-import type { Abi, AbiFunction, AbiParameter } from 'abitype';
-import { decodeAbiParameters, encodeAbiParameters, toFunctionSelector } from 'viem';
+import {
+  type Abi,
+  type AbiFunction,
+  type AbiParameter,
+  decodeAbiParameters,
+  encodeAbiParameters,
+  toFunctionSelector,
+} from 'viem';
 
 import type { ReturnValue, TypeOfReturn } from '../builder/script.js';
 import { EvsTypeError } from '../core/errors.js';

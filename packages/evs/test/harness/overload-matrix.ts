@@ -11,8 +11,7 @@
  * 'f', args })`. The handles come from the script builder (`s.lit`, `s.newArray`, `s.tuple`), so
  * `overloadCases` runs inside a script body.
  */
-import type { Abi } from 'abitype';
-import { parseAbi } from 'viem';
+import { parseAbi, type Abi } from 'viem';
 
 import type { ScriptBuilder } from '../../src/builder/script.js';
 import { t, type Expr } from '../../src/core/types.js';

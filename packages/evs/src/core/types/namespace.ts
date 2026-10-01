@@ -4,7 +4,7 @@
  * `t.fromOutputs`, `t.fromAbiParameter` and `t.error`.
  */
 
-import type { Abi, AbiParameter } from 'abitype';
+import type { Abi, AbiParameter } from 'viem';
 
 import { EvsTypeError } from '../errors.js';
 import { functionsByRef, functionSignature } from '../signature.js';

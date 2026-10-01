@@ -18,8 +18,8 @@
  * cases additionally pin the explicit `s.keccak256(s.encodePacked(...))` composition.
  */
 
-import type { AbiParameter } from 'abitype';
 import {
+  type AbiParameter,
   decodeFunctionResult,
   encodeAbiParameters,
   encodeFunctionData,

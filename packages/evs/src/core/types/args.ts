@@ -265,8 +265,8 @@ export interface EvsErrorAbiEntry<
  * A declared custom error (issue #15): a module-level value created by {@link t.error},
  * declared on a script def (`errors: [...]`) and thrown with `s.throw`. Carries the normalized
  * param specs and the literal ABI entry; the 4-byte selector is derived downstream
- * (`selectorOf` in abi/artifact.ts — core stays viem-free), byte-identical to Solidity's over
- * the canonical signature.
+ * (`selectorOf` in abi/artifact.ts — core takes no runtime code from viem, only types),
+ * byte-identical to Solidity's over the canonical signature.
  */
 export interface EvsErrorType<
   name extends string = string,

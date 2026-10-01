@@ -4,7 +4,7 @@
  * input types.
  */
 
-import type { AbiParametersToPrimitiveTypes } from 'abitype';
+import type { ContractConstructorArgs } from 'viem';
 
 import {
   type ScriptAbi,
@@ -110,26 +110,37 @@ export type ArgHandle<t extends EvsType> = t extends TupleType
   : Expr<t>;
 
 /**
- * A LABEL-carrying tuple built from an {@link ArgSpec} list (issue #9): abitype's named-tuple
- * inference (`AbiParametersToPrimitiveTypes<…, 'inputs', true>` — the exact path viem uses for its
- * `args` labels) applied to synthetic `AbiParameter`s. Used PURELY as a source of tuple-member
- * LABELS — the element primitive types are remapped away by {@link ArgHandles}/{@link FnArgHandles}/
- * {@link EvsFn}, so the carrier's element `type` is a constant placeholder (the label comes from the
- * NAME, never the type). A named arg labels its element; a bare arg (resolved to `arg{i}`) labels
- * positionally. The placeholder keeps the synthetic params PROVABLY `readonly AbiParameter[]` with no
- * intersection — an intersection breaks abitype's `>6`-element rest-pattern match (it falls back to
- * `readonly unknown[]`, dropping args), so it must stay a clean tuple.
+ * A LABEL-carrying tuple built from an {@link ArgSpec} list (issue #9): viem's own args inference
+ * (`ContractConstructorArgs`, abitype's named-tuple path — the one viem uses for its `args` labels)
+ * applied to a synthetic constructor whose inputs are the specs. Used PURELY as a source of
+ * tuple-member LABELS — the element primitive types are remapped away by {@link ArgHandles}/
+ * {@link FnArgHandles}/{@link EvsFn}, so the carrier's element `type` is a constant placeholder (the
+ * label comes from the NAME, never the type). A named arg labels its element; a bare arg (resolved to
+ * `arg{i}`) labels positionally. The placeholder keeps the synthetic params PROVABLY
+ * `readonly AbiParameter[]` with no intersection — an intersection breaks abitype's `>6`-element
+ * rest-pattern match (it falls back to `readonly unknown[]`, dropping args), so it must stay a clean
+ * tuple. Going through viem rather than abitype directly keeps evs on viem's abitype copy (no second
+ * one installed, see `core/types.ts`); a viem whose abitype predates named tuples gives the same
+ * tuple without labels. The trailing `infer … extends` re-states the array bound viem's result type
+ * does not declare, so generic code can still spread the handles.
  */
-export type LabelCarrier<specs extends readonly ArgSpec[]> = AbiParametersToPrimitiveTypes<
-  {
-    readonly [i in keyof specs]: {
-      readonly name: ResolveArgName<specs[i]['name'], i>;
-      readonly type: 'uint256';
-    };
-  },
-  'inputs',
-  true
->;
+export type LabelCarrier<specs extends readonly ArgSpec[]> =
+  ContractConstructorArgs<
+    readonly [
+      {
+        readonly type: 'constructor';
+        readonly stateMutability: 'nonpayable';
+        readonly inputs: {
+          readonly [i in keyof specs]: {
+            readonly name: ResolveArgName<specs[i]['name'], i>;
+            readonly type: 'uint256';
+          };
+        };
+      },
+    ]
+  > extends infer labels extends readonly unknown[]
+    ? labels
+    : readonly unknown[];
 
 /**
  * The positional handle tuple spread into the body after `s`: homomorphic over the {@link

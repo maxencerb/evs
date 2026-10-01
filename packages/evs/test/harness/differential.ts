@@ -14,8 +14,13 @@
  * interpreter side.
  */
 
-import type { Abi, Address } from 'abitype';
-import { encodeErrorResult, encodeFunctionData, toFunctionSelector } from 'viem';
+import {
+  type Abi,
+  type Address,
+  encodeErrorResult,
+  encodeFunctionData,
+  toFunctionSelector,
+} from 'viem';
 import { expect } from 'vite-plus/test';
 
 import { assemble, AsmWriter, type LabelId } from '../../src/asm/assembler.js';

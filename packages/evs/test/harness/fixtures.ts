@@ -10,7 +10,7 @@
  * anvil hardfork of the integration tier.
  */
 
-import type { Address } from 'abitype';
+import type { Address } from 'viem';
 
 import type { Hex } from '../../src/core/types.js';
 import { hexToBytes } from './evm.js';

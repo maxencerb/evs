@@ -8,8 +8,7 @@
  * outside the verb's mutability bucket never compete. Asserted on the recorded `call` stmt (its
  * selector and plain ABI), which is what codegen lowers.
  */
-import type { Abi } from 'abitype';
-import { toFunctionSelector } from 'viem';
+import { type Abi, toFunctionSelector } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError, EvsTypeError } from '../core/errors.js';

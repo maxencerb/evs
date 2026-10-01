@@ -3,7 +3,7 @@
  * convert into it (`LitOf`, `TupleLitOf`, `IntoExpr`).
  */
 
-import type { AbiParameterToPrimitiveType, AbiParameter } from 'abitype';
+import type { AbiParameterToPrimitiveType, AbiParameter } from 'viem';
 
 import type {
   EvsType,

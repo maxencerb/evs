@@ -12,7 +12,7 @@
  */
 import { inspect } from 'node:util';
 
-import type { Abi } from 'abitype';
+import type { Abi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { compile } from '../compile.js';

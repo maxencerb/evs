@@ -17,8 +17,14 @@
  * `test/harness/differential.ts`.
  */
 
-import type { Abi, AbiParameter } from 'abitype';
-import { decodeAbiParameters, decodeFunctionResult, encodeAbiParameters, type Hex } from 'viem';
+import {
+  type Abi,
+  type AbiParameter,
+  decodeAbiParameters,
+  decodeFunctionResult,
+  encodeAbiParameters,
+  type Hex,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { expectAgreement, type CalleeTable } from '../../test/harness/differential.js';

@@ -28,8 +28,9 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion, typescript/no-unnecessary-type-assertion -- a loose
    corpus: ABIs, verb surfaces and values are built at run time from tables */
 
-import type { Abi, AbiParameter } from 'abitype';
 import {
+  type Abi,
+  type AbiParameter,
   decodeFunctionData,
   decodeFunctionResult,
   encodeAbiParameters,

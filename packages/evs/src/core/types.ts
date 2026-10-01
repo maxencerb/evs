@@ -12,8 +12,10 @@
  * - `predicates.ts` — runtime type predicates / metadata and the internal helpers.
  */
 
-// `Address` is re-exported from `abitype`; type-only — abitype is the only import core may take.
-export type { Address } from 'abitype';
+// `Address` is abitype's, taken through viem (a type-only import, the only package core may
+// import): evs ships no abitype of its own, so an abitype `Register` augmentation in the app (a
+// custom `addressType`, …) reaches evs and viem alike through viem's single copy.
+export type { Address } from 'viem';
 export type {
   Hex,
   UintBits,

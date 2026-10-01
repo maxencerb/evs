@@ -34,9 +34,6 @@
     "test:integration": "vp test run --project integration",
     "prepublishOnly": "vp pack"
   },
-  "dependencies": {
-    "abitype": "catalog:"
-  },
   "devDependencies": {
     "@ethereumjs/evm": "catalog:testing",
     "prool": "catalog:testing",

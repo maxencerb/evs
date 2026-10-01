@@ -102,7 +102,7 @@ type BitsType = UintType | BytesNType;
 | Alias         | Meaning                                                                                     |
 | ------------- | ------------------------------------------------------------------------------------------- |
 | `Hex`         | A `0x`-prefixed hex string.                                                                  |
-| `Address`     | The address string type, re-exported from abitype (the same type viem uses).                 |
+| `Address`     | The address string type: abitype's, re-exported through viem, so it is viem's `Address` (an abitype `Register` augmentation of `addressType` applies to both). |
 | `UintBits`    | The 32 legal integer widths: every multiple of 8 from 8 to 256.                              |
 | `BytesSize`   | The legal `bytesN` sizes: 1 through 32.                                                      |
 | `UintType`    | `uint8` … `uint256` as a template-literal union.                                             |

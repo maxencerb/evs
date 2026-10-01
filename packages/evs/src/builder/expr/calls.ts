@@ -4,7 +4,7 @@
  * lockstep with the type-level `ResolveOverload` in `builder/script/calls.ts`).
  */
 
-import type { AbiFunction } from 'abitype';
+import type { AbiFunction } from 'viem';
 
 import { toPlainAbiFunction } from '../../abi/artifact.js';
 import { layoutOfType } from '../../abi/layout.js';

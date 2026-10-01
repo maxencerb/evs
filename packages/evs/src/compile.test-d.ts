@@ -5,8 +5,9 @@
  * is a type error.
  */
 
-import type { Abi, Address } from 'abitype';
 import type {
+  Abi,
+  Address,
   PublicClient,
   ReadContractParameters,
   ReadContractReturnType,
