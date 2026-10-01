@@ -195,7 +195,7 @@ export function buildScriptAbi(
   if (!IDENT_RE.test(name)) {
     throw new EvsTypeError(
       'ABI_SHAPE',
-      `buildScriptAbi: invalid script name ${JSON.stringify(name)} (must match /^[A-Za-z_]\\w*$/)`,
+      `buildScriptAbi: invalid script name ${JSON.stringify(name)} (must match /${IDENT_RE.source}/)`,
     );
   }
   const seenArgs = new Set<string>();
@@ -203,7 +203,7 @@ export function buildScriptAbi(
     if (!IDENT_RE.test(a.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
-        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)} (must match /${IDENT_RE.source}/)`,
       );
     }
     if (seenArgs.has(a.name)) {
@@ -263,7 +263,7 @@ export function buildScriptAbi(
     if (!IDENT_RE.test(e.name)) {
       throw new EvsTypeError(
         'ERROR_DECL',
-        `buildScriptAbi: invalid error name ${JSON.stringify(e.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        `buildScriptAbi: invalid error name ${JSON.stringify(e.name)} (must match /${IDENT_RE.source}/)`,
       );
     }
     if (RESERVED_ERROR_NAMES.has(e.name)) {
@@ -363,11 +363,11 @@ export function decodeErrorArgsRecord(
   } catch {
     return null;
   }
-  const record: Record<string, unknown> = {};
-  inputs.forEach((p, i) => {
-    record[p.name === '' ? `arg${i}` : p.name] = decoded[i];
-  });
-  return Object.freeze(record);
+  // Object.fromEntries defines OWN keys: an input named `__proto__` (a hand-built ABI) stays a
+  // member instead of replacing the record's prototype.
+  return Object.freeze(
+    Object.fromEntries(inputs.map((p, i) => [p.name === '' ? `arg${i}` : p.name, decoded[i]])),
+  );
 }
 
 /**

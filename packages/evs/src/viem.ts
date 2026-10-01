@@ -390,7 +390,12 @@ export function matchScriptError<
   // args-less 'unknown'/'empty' built-in arms always go to `_`, even when a hand-built ABI
   // declares an error of the same name (issue #62 — it would otherwise get `{}` as its args)
   const namedArm = 'args' in decoded || decodedName === 'Panic' || decodedName === 'Error';
-  const handler = namedArm && decodedName !== '_' ? table[decodedName] : undefined;
+  // own handlers only: an error named like an Object.prototype member (`toString`, …) must not
+  // dispatch to the inherited method
+  const handler =
+    namedArm && decodedName !== '_' && Object.hasOwn(table, decodedName)
+      ? table[decodedName]
+      : undefined;
   let result: unknown;
   if (typeof handler === 'function') {
     const args = 'args' in decoded ? decoded.args : Object.freeze({});

@@ -794,7 +794,8 @@ unconditionally, at the top level of the callback (not inside `s.if`/`s.while`/`
 not inside an `s.fn` body), and its result must be what the callback returns.
 
 - Record keys become the named components of the single tuple output; viem consumers receive an
-  **object**. Keys must be identifiers; empty keys are rejected (`ABI_SHAPE`) because an
+  **object**. Keys must be identifiers other than `__proto__` (viem's decoder would drop that
+  key); empty keys are rejected (`ABI_SHAPE`) because an
   unnamed component silently degrades viem's result to a positional array.
 - The record must name **at least one** value: `s.return({})` is a type error and throws
   `ABI_SHAPE` at recording. An empty output tuple ABI-encodes to `0x`, which viem rejects as
@@ -865,6 +866,34 @@ Use an array's `.at(Expr)` for runtime indexing); and `expr()` is the raw `Expr<
 returnable from `s.return` and passable as a `'tuple'` call argument **directly** — `expr()` is
 only needed when you want the bare `Expr<C>`.
 A tuple handle is a pointer with **reference semantics** (passing it shares the block).
+
+**Field names the handle already uses.** A named component whose name is a member of the handle
+itself gets **no** field accessor: the handle member wins, so `at(i)` and `expr()` keep working
+and the field is read through `at(i)` like a positional member. The names are the methods `at`
+and `expr`, `then` (so the handle never looks like a promise), the staging traps `toString`,
+`valueOf` and `toJSON`, and the other `Object.prototype` members (`constructor`, `__proto__`,
+`hasOwnProperty`, `isPrototypeOf`, `propertyIsEnumerable`, `toLocaleString` and the legacy
+`__defineGetter__` family). The `Tuple` type drops the same names, so `pos.at.get()` on a field
+named `at` is a type error, not a runtime one. This keeps third-party ABIs with such members
+usable; the ABI, the encoding and viem's result object are unaffected. `__proto__` is the one
+name evs rejects: in every name you declare (`t.struct` fields, `namedArg`, `t.error`, `s.return`
+keys) and wherever a third-party struct carrying it would enter the script's own ABI, because
+assigning that key on a JavaScript object (viem's decoded result included) replaces the object's
+prototype instead of storing the value.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Order = t.struct({ at: t.uint64, expr: t.uint256, size: t.uint128 });
+
+const readOrder = evscript({ name: 'readOrder', args: [Order] }, (s, order) => {
+  return s.return({
+    at: order.at(0).get(), // Expr<'uint64'>: the `at` FIELD, by position
+    size: order.size.get(), // an ordinary field keeps its accessor
+    order: order.expr(), // `expr()` is still the method
+  });
+});
+```
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

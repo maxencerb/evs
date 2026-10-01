@@ -24,6 +24,7 @@ import {
   type EvsErrorCode,
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
+import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
 const erc20Abi = [
@@ -1776,6 +1777,36 @@ describe('staging traps', () => {
     );
   });
 
+  test('a Tuple whose struct has toJSON / toString / valueOf FIELDS still trips the traps', () => {
+    // the handle member wins over the field (the field is read through .at(i))
+    const Traps = t.struct({ toJSON: t.uint8, toString: t.uint8, valueOf: t.uint8 });
+    const misuse =
+      (body: (h: never) => void): (() => unknown) =>
+      () =>
+        evscript({ name: 'traps', args: [Traps] }, (s, h) => {
+          body(h as never);
+          return s.return({ x: h.at(0).get() });
+        });
+    expectEvs(
+      misuse((h) => JSON.stringify(h)),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /toJSON/,
+    );
+    expectEvs(
+      misuse((h) => void `${h}`),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /staged handle/,
+    );
+    expectEvs(
+      misuse((h) => void (h + 1)),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /staged handle/,
+    );
+  });
+
   test('node inspect (console.log) is NON-throwing and shows type/id/name', () => {
     rec((s, a) => {
       const printed = inspect(a.x);
@@ -2489,5 +2520,92 @@ describe('checklist: pathological type sizes', () => {
       return s.return({ ok: r.success } as never);
     });
     expectEvs(() => compile(script), EvsTypeError, 'UNSUPPORTED_V0', /ABI static size/);
+  });
+});
+
+describe('checklist: `__proto__` is not a name', () => {
+  // `{ __proto__: x }` written with a computed key is an own property; assigning it on a plain
+  // object replaces the prototype instead, so every name that becomes an object key rejects it.
+  const PROTO = '__proto__';
+
+  test('namedArg / t.struct field / s.fn param → TYPE_MISMATCH', () => {
+    expectEvs(() => namedArg(PROTO, t.uint256), EvsTypeError, 'TYPE_MISMATCH', /"__proto__"/);
+    expectEvs(
+      () => t.struct({ [PROTO]: t.uint256, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /field name "__proto__"/,
+    );
+    expectEvs(
+      () =>
+        rec((s, a) => {
+          s.fn('f', [{ name: PROTO, type: t.uint256 }] as never, (p: Expr<'uint256'>) => p);
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.fn\("f"\) param #0: invalid name "__proto__"/,
+    );
+  });
+
+  test('t.error name / param → ERROR_DECL', () => {
+    expectEvs(() => t.error(PROTO), EvsTypeError, 'ERROR_DECL', /error name must be/);
+    expectEvs(
+      () => t.error('E', [{ name: PROTO, type: t.uint256 }] as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /invalid param name "__proto__"/,
+    );
+  });
+
+  test('s.return key → ABI_SHAPE (viem would drop it from the result object)', () => {
+    expectEvs(
+      () => rec((s, a) => s.return({ [PROTO]: a.x, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /invalid return key "__proto__"/,
+    );
+  });
+
+  test('a third-party struct with a `__proto__` member cannot enter the script ABI', () => {
+    const protoAbi = [
+      {
+        type: 'function',
+        name: 'get',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          {
+            name: '',
+            type: 'tuple',
+            components: [
+              { name: '__proto__', type: 'uint256' },
+              { name: 'b', type: 'uint256' },
+            ],
+          },
+        ],
+      },
+    ] as const satisfies Abi;
+    // reading it is fine (`.at(0)`), returning the whole struct is not: viem's decoder would
+    // silently drop the member from the result
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.return({ r: s.read({ address: a.who, abi: protoAbi, functionName: 'get' }) }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /return component "r": tuple field #0 has an invalid name "__proto__"/,
+    );
+  });
+
+  test('validateIr rejects a deserialized arg named `__proto__`', () => {
+    const script = evscript({ name: 'ok', args: [namedArg('x', t.uint256)] }, (s, x) =>
+      s.return({ x }),
+    );
+    const [arg] = script.ir.args;
+    expect(() => validateIr({ ...script.ir, args: [{ ...arg!, name: PROTO }] })).toThrow(
+      /args\[0\] has an invalid name "__proto__"/,
+    );
   });
 });

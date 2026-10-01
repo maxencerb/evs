@@ -206,11 +206,8 @@ function jsTuple(type: TupleType, value: TupleVal): unknown {
   const comps = type.components;
   const projected = comps.map((c, i) => jsValueOf(abiParamToType(c), tupleField(value, i)));
   if (comps.every((c) => c.name !== '')) {
-    const obj: Record<string, unknown> = {};
-    comps.forEach((c, i) => {
-      obj[c.name] = projected[i];
-    });
-    return obj;
+    // own keys (Object.fromEntries): a third-party component named `__proto__` stays a member
+    return Object.fromEntries(comps.map((c, i) => [c.name, projected[i]]));
   }
   return projected;
 }

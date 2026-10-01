@@ -71,7 +71,7 @@ The relevant type helpers (all exported):
 
 Recording-time validation (each violation throws `EvsTypeError` with the call-site location):
 
-- `def.name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`).
+- `def.name` must be a non-empty identifier (`/^[A-Za-z_]\w*$/`) other than `__proto__`.
 - `def.args`, when present, must be a single declarator (a bare `EvsType` or a `namedArg`) or a
   `readonly` list of them. A `namedArg` labels its input in the generated ABI; a bare arg is
   auto-named `arg{i}` (the names are positional labels; viem infers `args` positionally regardless).
@@ -158,7 +158,8 @@ labeled callback parameter (`(token) => …`). A **bare** (unnamed) arg keeps th
 `arg0`/`arg1`/… fallback name. An ABI parameter taken from a function's `inputs`, scalar or struct,
 is named by its own `name` the same way (see [ABI parameters as args](/reference/types/#abi-parameters-as-args)). `namedArg` validates at the call site and returns a frozen object:
 
-- `name` must match `/^[A-Za-z_]\w*$/`; otherwise `EvsTypeError` with the call-site location.
+- `name` must match `/^[A-Za-z_]\w*$/` and not be `__proto__`; otherwise `EvsTypeError` with the
+  call-site location.
 - `type` is any `EvsType` — a word type, `string`, `bytes`, an array, or a composite
   `t.struct`/`t.tuple` (a named struct arg arrives as a `Tuple` handle, exactly like a bare
   one). Only top-level args are named as a whole; nested composite fields are named via

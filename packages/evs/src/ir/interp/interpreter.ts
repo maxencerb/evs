@@ -707,8 +707,10 @@ class Interp {
     // dynamic tuple ⇒ top-level 0x20 offset; all-static ⇒ components inline
     const anyDynamic = this.ir.returns.some((r) => abiIsDynamic(r.type));
     const data = anyDynamic ? concatBytes([wordToBytes(32n), block]) : block;
-    const values: Record<string, unknown> = {};
-    for (const r of this.ir.returns) values[r.name] = jsValueOf(r.type, this.getValue(r.value));
+    // own keys (Object.fromEntries), never a `__proto__` assignment through the prototype chain
+    const values: Record<string, unknown> = Object.fromEntries(
+      this.ir.returns.map((r) => [r.name, jsValueOf(r.type, this.getValue(r.value))]),
+    );
     return { data, values };
   }
 }

@@ -10,12 +10,14 @@ import type { ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
+import type { TUPLE_HANDLE_MEMBERS } from './expr/handles.js';
 import {
   evscript,
   type ArgHandle,
   type Cell,
   type EvsFn,
   type EvsScript,
+  type Field,
   type LoopCtl,
   type MutArray,
   type ScriptReturn,
@@ -23,6 +25,7 @@ import {
   type Tuple,
   type WideSubcallResult,
 } from './script.js';
+import type { TupleHandleMember } from './script/handles.js';
 
 // ---------------------------------------------------------------------------
 // viem-shaped const ABI fixtures
@@ -1529,4 +1532,56 @@ test('#4 fixed-size and deep-array outputs/args flow through viem inference', ()
   expectTypeOf<Out['ticks']>().toEqualTypeOf<readonly [bigint, bigint]>();
   expectTypeOf<Out['g']>().toEqualTypeOf<readonly (readonly { x: number }[])[]>();
   expectTypeOf<Out['cube']>().toEqualTypeOf<readonly (readonly (readonly bigint[])[])[]>();
+});
+
+test('a struct field named like a Tuple handle member gets no field accessor (the member wins)', () => {
+  const Clash = t.struct({
+    expr: t.uint256,
+    at: t.address,
+    toJSON: t.uint8,
+    // oxlint-disable-next-line unicorn/no-thenable -- a struct FIELD named `then` is the case under test
+    then: t.bool,
+    value: t.uint16,
+  });
+  type H = Tuple<typeof Clash>;
+  // only the non-colliding field is a named accessor
+  expectTypeOf<Extract<keyof H, string>>().toEqualTypeOf<'value' | 'at' | 'expr'>();
+  expectTypeOf<H['value']>().toEqualTypeOf<Field<'uint16'>>();
+  // `at` / `expr` stay the methods (no `Field & method` intersection)
+  expectTypeOf<H['expr']>().toEqualTypeOf<() => Expr<typeof Clash>>();
+  expectTypeOf<ReturnType<H['at']>>().toEqualTypeOf<
+    Field<'uint256' | 'address' | 'uint8' | 'bool' | 'uint16'>
+  >();
+  expectTypeOf<H>().not.toHaveProperty('toJSON');
+  expectTypeOf<H>().not.toHaveProperty('then');
+
+  // a third-party ABI component named `__proto__` / `constructor` is reached through .at(i) too
+  const protoAbi = [
+    {
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        {
+          name: '',
+          type: 'tuple',
+          components: [
+            { name: '__proto__', type: 'uint256' },
+            { name: 'constructor', type: 'uint256' },
+            { name: 'b', type: 'uint256' },
+          ],
+        },
+      ],
+    },
+  ] as const satisfies Abi;
+  evscript({ name: 'proto', args: [t.address] }, (s, pool) => {
+    const r = s.read({ address: pool, abi: protoAbi, functionName: 'get' });
+    expectTypeOf<Extract<keyof typeof r, string>>().toEqualTypeOf<'b' | 'at' | 'expr'>();
+    return s.return({ p: r.at(0).get(), b: r.b.get() });
+  });
+});
+
+test('TUPLE_HANDLE_MEMBERS lists exactly the TupleHandleMember names', () => {
+  expectTypeOf<(typeof TUPLE_HANDLE_MEMBERS)[number]>().toEqualTypeOf<TupleHandleMember>();
 });

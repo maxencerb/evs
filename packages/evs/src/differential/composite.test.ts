@@ -492,3 +492,82 @@ describe('composite regression', () => {
     });
   }
 });
+
+// ---------------------------------------------------------------------------
+// 12c. struct members named like Tuple handle members (`at`, `expr`, `toJSON`, `then`,
+//      `__proto__`): the handle keeps its methods, the members are read through `.at(i)`.
+// ---------------------------------------------------------------------------
+
+describe('struct members named like handle members', () => {
+  const clashComponents = [
+    { name: 'at', type: 'uint256' },
+    { name: 'expr', type: 'address' },
+    { name: 'toJSON', type: 'uint8' },
+    { name: '__proto__', type: 'uint64' },
+    { name: 'then', type: 'bool' },
+    { name: 'value', type: 'uint16' },
+  ] as const;
+  const clashAbi = [
+    {
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'tuple', components: clashComponents }],
+    },
+  ] as const satisfies Abi;
+  const OWNER = getAddress('0x00000000000000000000000000000000000000aa');
+  // positional encoding: viem's named-tuple encoder would read `obj.__proto__` (the prototype)
+  const clashReturndata = encodeAbiParameters(
+    [{ type: 'tuple', components: clashComponents.map(({ type }) => ({ type })) }],
+    [[1n << 200n, OWNER, 7, 9n, true, 300]],
+  );
+
+  for (const evmVersion of EVM_VERSIONS) {
+    test(`a third-party struct output: every member by position [${evmVersion}]`, async () => {
+      const script = evscript({ name: 'rdClash', args: [] }, (s) => {
+        const r = s.read({ address: POOL, abi: clashAbi, functionName: 'get' });
+        return s.return({
+          a: r.at(0).get(),
+          e: r.at(1).get(),
+          j: r.at(2).get(),
+          p: r.at(3).get(),
+          th: r.at(4).get(),
+          v: r.value.get(),
+        });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[]],
+        { [POOL]: { kind: 'return', data: clashReturndata } },
+        evmVersion,
+      );
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'rdClash',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ a: 1n << 200n, e: OWNER, j: 7, p: 9n, th: true, v: 300 });
+    });
+
+    test(`a t.struct arg with \`expr\` / \`at\` fields: write by position, return whole [${evmVersion}]`, async () => {
+      const Clash = t.struct({ expr: t.uint256, at: t.address, value: t.uint16 });
+      const script = evscript({ name: 'echoClash', args: [Clash] }, (s, h) => {
+        h.at(0).set(42n);
+        return s.return({ whole: h, at: h.at(1).get() });
+      });
+      const [o] = await expectAgreement(
+        script,
+        [[{ expr: 1n, at: OWNER, value: 5 }]],
+        {},
+        evmVersion,
+      );
+      const decoded = decodeFunctionResult({
+        abi: script.abi,
+        functionName: 'echoClash',
+        data: o?.data ?? '0x',
+      });
+      expect(decoded).toEqual({ whole: { expr: 42n, at: OWNER, value: 5 }, at: OWNER });
+    });
+  }
+});

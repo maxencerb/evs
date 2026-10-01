@@ -17,8 +17,15 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
   readonly type: type;
 }
 
-/** A Solidity-style identifier (arg / param / field / error names). */
-export const IDENT_RE = /^[A-Za-z_]\w*$/;
+/**
+ * A Solidity-style identifier (arg / param / field / error / return names), except `__proto__`:
+ * every such name becomes an object key somewhere (viem's decoded results, the `Tuple` field
+ * accessors, the decoded error args), and assigning `__proto__` on a plain object replaces its
+ * prototype instead of creating the key, so the member would silently vanish. Third-party ABI
+ * component names are only checked where they enter the script's own ABI (`buildScriptAbi`);
+ * elsewhere a handle reads such a member through `.at(i)`.
+ */
+export const IDENT_RE = /^(?!__proto__$)[A-Za-z_]\w*$/;
 
 /**
  * Names a **top-level** arg/param so the name surfaces in the resulting type (issue #9): in a
@@ -37,7 +44,7 @@ export function namedArg<const name extends string, const type extends EvsType>(
   if (!IDENT_RE.test(name)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `invalid argument name ${JSON.stringify(name)}: must be a non-empty identifier matching /^[A-Za-z_]\\w*$/`,
+      `invalid argument name ${JSON.stringify(name)}: must be a non-empty identifier matching /${IDENT_RE.source}/`,
     );
   }
   if (typeof type === 'string') {
