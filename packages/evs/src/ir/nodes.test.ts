@@ -244,6 +244,28 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
+    'wrapping add / sub / mul + muldiv / muldivup',
+    ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [
+        vi('uint256', 'a'),
+        vi('uint256'),
+        vi('uint256'),
+        vi('uint256'),
+        vi('uint256'),
+        vi('uint256'),
+      ],
+      body: [
+        mk({ k: 'bin', op: 'wrapadd', a: 0, b: 0, out: 1 }),
+        mk({ k: 'bin', op: 'wrapsub', a: 1, b: 0, out: 2 }),
+        mk({ k: 'bin', op: 'wrapmul', a: 2, b: 1, out: 3 }),
+        mk({ k: 'modarith', op: 'muldiv', a: 3, b: 2, n: 0, out: 4 }),
+        mk({ k: 'modarith', op: 'muldivup', a: 4, b: 3, n: 0, out: 5 }),
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 5 }],
+    }),
+  ],
+  [
     'encode + keccak256 (issue #17)',
     ir({
       args: [{ name: 'x', type: 'uint256' }],

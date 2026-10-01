@@ -1,7 +1,7 @@
 /**
- * `builder/expr/ops.ts` — the recorder layer for operators: arithmetic / comparison / logic / bit
- * ops with constant folding and domain checks, `addmod` / `mulmod`, `not` / `bitNot`, conversions,
- * `length` / `at`, `env` and `select`.
+ * `builder/expr/ops.ts` — the recorder layer for operators: arithmetic (checked and wrapping) /
+ * comparison / logic / bit ops with constant folding and domain checks, `addmod` / `mulmod` /
+ * `mulDiv`, `not` / `bitNot`, conversions, `length` / `at`, `env` and `select`.
  */
 
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
@@ -28,6 +28,7 @@ import {
   describeHost,
   CMP_OPS,
   foldBin,
+  foldModArith,
   type Operand,
   NUMERIC_OPS,
   BITS_OPS,
@@ -140,14 +141,19 @@ export abstract class RecorderOps extends RecorderEncode {
   }
 
   /**
-   * `addmod` / `mulmod` (issue #10): `(a op b) % n` at full precision over uint256 — every operand
-   * is coerced to `uint256` (an `Expr<'uint256'>` or a literal). All-literal operands fold (a
-   * literal zero modulus is a CERTAIN_PANIC); otherwise the zero-modulus guard is emitted unless
-   * the modulus is a nonzero literal (codegen's constant-divisor elision).
+   * `addmod` / `mulmod` (issue #10) — `(a op b) % n` — and `mulDiv` / `mulDivRoundingUp` —
+   * `a·b / n` rounded down / up — at full precision over uint256: every operand is coerced to
+   * `uint256` (an `Expr<'uint256'>` or a literal). All-literal operands fold (a literal zero
+   * modulus or denominator, or a quotient past uint256, is a CERTAIN_PANIC); otherwise the
+   * zero guard is emitted unless `n` is a nonzero literal (codegen's constant-divisor elision).
    */
   modArithOp(op: ModArithOp, a: unknown, b: unknown, n: unknown, what: string): Expr {
     this.assertOpen(what);
-    const names = ['left operand', 'right operand', 'modulus'] as const;
+    const names = [
+      'left operand',
+      'right operand',
+      op.startsWith('muldiv') ? 'denominator' : 'modulus',
+    ] as const;
     const resolved = [a, b, n].map((v, i) =>
       this.resolveOperand(
         this.classify(v, `${what} ${names[i]}`),
@@ -160,11 +166,9 @@ export abstract class RecorderOps extends RecorderEncode {
       throw new EvsInternalError('INTERNAL', `${what}: operand resolution lost an operand`);
     }
     if (ra.logical !== null && rb.logical !== null && rn.logical !== null) {
-      if (rn.logical === 0n) {
-        this.certainPanic(what, `${op}(${ra.logical}, ${rb.logical}, 0) takes modulo zero`, 0x12);
-      }
-      const r = (op === 'addmod' ? ra.logical + rb.logical : ra.logical * rb.logical) % rn.logical;
-      return makeExpr(this.self, this.wordConst('uint256', r));
+      const f = foldModArith(op, ra.logical, rb.logical, rn.logical);
+      if (!f.ok) this.certainPanic(what, f.reason, f.panic);
+      return makeExpr(this.self, this.wordConst('uint256', f.value));
     }
     const ia = ra.id ?? this.materializeWord('uint256', ra);
     const ib = rb.id ?? this.materializeWord('uint256', rb);

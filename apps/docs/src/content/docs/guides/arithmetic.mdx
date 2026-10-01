@@ -1,17 +1,19 @@
 ---
 title: Arithmetic and comparisons
-description: Checked arithmetic, exponentiation, modular arithmetic, comparison, boolean, bitwise, and conversion operations on Expr values, with solc 0.8 panic semantics.
+description: Checked and wrapping arithmetic, exponentiation, modular arithmetic, mulDiv, comparison, boolean, bitwise, and conversion operations on Expr values, with solc 0.8 panic semantics.
 ---
 
-All arithmetic in evs is **checked**, matching solc 0.8 semantics exactly: overflow reverts with `Panic(0x11)`, division by zero with `Panic(0x12)`. Operations are methods on `Expr`, with the operand domain enforced by the type system.
+Arithmetic in evs is **checked by default**, matching solc 0.8 semantics exactly: overflow reverts with `Panic(0x11)`, division by zero with `Panic(0x12)`. Wrapping arithmetic (what Solidity computes inside an `unchecked` block) is an explicit opt-in, one operation at a time. Operations are methods on `Expr`, with the operand domain enforced by the type system.
 
 ## The operation surface
 
 | Group              | `Expr` methods                                  | Operands                                       | Result          |
 | ------------------ | ----------------------------------------------- | ---------------------------------------------- | --------------- |
 | Checked arithmetic | `add` `sub` `mul` `div` `mod`                   | numeric (`uintN` / `intN`), same type          | same type       |
+| Wrapping arithmetic | `wrappingAdd` `wrappingSub` `wrappingMul`      | numeric (`uintN` / `intN`), same type          | same type       |
 | Exponentiation     | `pow`                                           | numeric base; unsigned exponent (any `uintN` or literal) | base type |
 | Modular arithmetic | `addmod` `mulmod`                               | `uint256` (value, operand, modulus)            | `Expr<'uint256'>` |
+| Multiply-divide    | `mulDiv` `mulDivRoundingUp`                     | `uint256` (value, operand, denominator)        | `Expr<'uint256'>` |
 | Ordering           | `lt` `gt` `lte` `gte`                           | numeric, same type                             | `Expr<'bool'>`  |
 | Equality           | `eq` `neq`                                      | any word type, same type                       | `Expr<'bool'>`  |
 | Boolean            | `and` `or` `not`                                | `bool`                                         | `Expr<'bool'>`  |
@@ -19,7 +21,7 @@ All arithmetic in evs is **checked**, matching solc 0.8 semantics exactly: overf
 | Shifts             | `shl` `shr`                                     | value `uintN` / `intN` / `bytesN`; shift amount `uint256` | same as value |
 | Conversions        | `toUint` `toInt` `asAddress` `asUint256` `asBytes32` | see [Conversions](#conversions)          | target type     |
 
-Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, `s.pow(base, e)`, `s.mulmod(a, b, n)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`). The exceptions are `addmod` / `mulmod`, whose operands are always `uint256` (all-literal calls simply fold), and `pow` and the shifts, whose left operand must be an `Expr` (its type is the result type).
+Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, `s.pow(base, e)`, `s.mulmod(a, b, n)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`). The exceptions are `addmod` / `mulmod` / `mulDiv` / `mulDivRoundingUp`, whose operands are always `uint256` (all-literal calls simply fold), and `pow` and the shifts, whose left operand must be an `Expr` (its type is the result type).
 
 Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and-types/): `x.add(1n)`, `tick.lt(0n)`, `flag.and(true)`.
 
@@ -34,13 +36,46 @@ Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and
 | signed division of the type's minimum value by −1               | `Panic(0x11)` |
 | `pow` result out of range for the base type                     | `Panic(0x11)` |
 | `addmod` / `mulmod` with a zero modulus                         | `Panic(0x12)` |
+| `mulDiv` / `mulDivRoundingUp` with a zero denominator           | `Panic(0x12)` |
+| `mulDiv` / `mulDivRoundingUp` quotient out of range for `uint256` | `Panic(0x11)` |
 | checked narrowing out of range (`toUint` / `toInt` / `asAddress`) | `Panic(0x11)` |
 
 Checks run at the operand type's width, not at 256 bits: a `uint64` addition overflows at 2^64. The signed-division edge case is handled explicitly — the EVM's `SDIV` silently wraps `−2^255 / −1`, but evs (like solc) reverts with `Panic(0x11)`.
 
 Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate sites in your script that can raise that panic. See [errors and debugging](/guides/errors-and-debugging/).
 
+The `wrapping…` methods never revert: see [wrapping arithmetic](#wrapping-arithmetic).
+
 Shifts follow Solidity: they are **unchecked**, with the result re-canonicalized to the operand's width — bits shifted out of a `uint8` lane are simply dropped, never a panic. `shr` is a logical shift for `uintN` and `bytesN` and an arithmetic shift (`SAR`) for `intN`: it rounds toward negative infinity, exactly like Solidity's `>>` on signed integers (`-3 >> 1 == -2`). `shl` on `intN` re-sign-extends from the width, so `int8(127).shl(1)` is `-2`. Note that `shr` on `bytesN` shifts within the full 256-bit word and re-masks to the left-aligned lane.
+
+## Wrapping arithmetic
+
+`a.wrappingAdd(b)`, `a.wrappingSub(b)` and `a.wrappingMul(b)` (and the free functions `s.wrappingAdd(a, b)`, …) are Solidity's `a + b`, `a - b` and `a * b` inside an `unchecked` block: the result is the true result **modulo 2^N** of the operand type — two's complement for `intN` — and they never revert. A `uint256` / `int256` operation is the bare `ADD` / `SUB` / `MUL`; a narrower width adds one mask (`uintN`) or `SIGNEXTEND` (`intN`) to keep its low N bits, so `s.lit(t.uint8, 250).wrappingAdd(10n)` is `4` and `s.lit(t.int8, -128).wrappingSub(1n)` is `127`. Operand rules are those of the checked methods (one type, literals coerced).
+
+Checked arithmetic stays the default and the wrapping methods are spelled out at every use, so an intentional wrap is visible where it happens and nothing else changes meaning. Reach for them when wrapping **is** the semantics — fee-growth accumulators that are designed to overflow, hash mixing, two's-complement negation (`s.wrappingSub(0n, x)`) — or in a hot loop where an overflow is impossible by construction. A wrapping `mul` costs about 23 gas against 75 for the checked one. There is no wrapping `div` / `mod` / `pow`: division only ever overflows on `minN / −1`, and a zero divisor still panics in Solidity's `unchecked` blocks.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Q128 = 1n << 128n;
+
+// Uniswap v3 fees owed to a position (Tick.getFeeGrowthInside + Position.update): the
+// fee-growth accumulators wrap by design, so every difference is taken modulo 2^256
+const owed = evscript(
+  {
+    name: 'feesOwed',
+    args: [t.int24, t.int24, t.int24, t.uint256, t.uint256, t.uint256, t.uint256, t.uint128],
+  },
+  (s, tick, tickLower, tickUpper, global, lowerOutside, upperOutside, insideLast, liquidity) => {
+    const below = s.select(tick.gte(tickLower), lowerOutside, global.wrappingSub(lowerOutside));
+    const above = s.select(tick.lt(tickUpper), upperOutside, global.wrappingSub(upperOutside));
+    const inside = global.wrappingSub(below).wrappingSub(above);
+    // FullMath.mulDiv(inside - insideLast, liquidity, Q128)
+    const fees = inside.wrappingSub(insideLast).mulDiv(liquidity.toUint(t.uint256), Q128);
+    return s.return({ inside, fees });
+  },
+);
+```
 
 ## Exponentiation
 
@@ -73,6 +108,26 @@ const field = evscript({ name: 'field', args: [t.uint256, t.uint256] }, (s, x, y
   const prod = x.mulmod(y, P); // (x * y) mod P, no 512-bit overflow
   const sum = s.addmod(x, y, P);
   return s.return({ prod, sum });
+});
+```
+
+## mulDiv: full-precision multiply-then-divide
+
+`a.mulDiv(b, d)` is FullMath's `mulDiv(a, b, d)`: `⌊a · b / d⌋` with the product kept at **512 bits**, so it is exact whenever the quotient itself fits `uint256`, where `a.mul(b).div(d)` reverts as soon as `a · b` passes 2^256. `a.mulDivRoundingUp(b, d)` is the ceiling `⌈a · b / d⌉`. Both are `uint256`-only (value, operand and denominator) and use OpenZeppelin `Math.mulDiv`'s Panic codes: a zero denominator reverts with `Panic(0x12)`, a quotient that does not fit `uint256` with `Panic(0x11)` (for `mulDivRoundingUp`, that includes rounding `2^256 − 1` up). Uniswap's FullMath reverts with empty data in those two cases instead; the results are the same everywhere else.
+
+The lowering is the FullMath sequence, verified against a solc-compiled reference: when `a · b` fits one word it is a single `DIV` (about 150 gas), otherwise the 512-bit path runs (about 480 gas). A nonzero literal denominator drops the zero check, as for `div`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const Q96 = 1n << 96n;
+
+const spotPrice = evscript({ name: 'spotPrice', args: [t.uint160] }, (s, sqrtPriceX96) => {
+  const p = sqrtPriceX96.toUint(t.uint256);
+  // token1 per token0, 18 decimals: sqrtP² / 2^192 · 1e18 (sqrtP² alone can reach 2^320)
+  const price = p.mulDiv(p, Q96).mulDiv(10n ** 18n, Q96);
+  const priceCeil = p.mulDivRoundingUp(p, Q96).mulDivRoundingUp(10n ** 18n, Q96);
+  return s.return({ price, priceCeil });
 });
 ```
 
@@ -158,7 +213,7 @@ const fees = evscript({ name: 'fees', args: [t.uint256] }, (s, amount) => {
 });
 ```
 
-If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a literal division by zero, an out-of-range `toUint` of a known value — recording throws `EvsTypeError` (code `CERTAIN_PANIC`) at that line rather than compiling a guaranteed revert. If a guaranteed runtime panic is what you actually want, route one operand through a cell so its value is no longer statically known: `s.let(t.uint256, x).get()`, and use the result (return it, or feed it to something that is kept). A result nothing reads is dead code: `compile()` drops it, its panic included (see [Unused results do not revert](/guides/testing-scripts/#unused-results-do-not-revert)).
+A fold of a wrapping operation wraps (`s.lit(t.uint8, 250).wrappingAdd(10n)` folds to `4`). If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a literal division by zero, an out-of-range `toUint` of a known value — recording throws `EvsTypeError` (code `CERTAIN_PANIC`) at that line rather than compiling a guaranteed revert. If a guaranteed runtime panic is what you actually want, route one operand through a cell so its value is no longer statically known: `s.let(t.uint256, x).get()`, and use the result (return it, or feed it to something that is kept). A result nothing reads is dead code: `compile()` drops it, its panic included (see [Unused results do not revert](/guides/testing-scripts/#unused-results-do-not-revert)).
 
 ## Worked example: share of supply in basis points
 

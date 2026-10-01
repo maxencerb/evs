@@ -1,7 +1,7 @@
 /**
  * `builder/expr/helpers.ts` — the recorder's scopes and small pure helpers: op tables, literal
- * range / canonical-word conversions, host-value descriptions, and the constant folder
- * (`foldBin`).
+ * range / canonical-word conversions, host-value descriptions, and the constant folders
+ * (`foldBin`, `foldModArith`).
  */
 
 import { layoutOf, layoutOfType } from '../../abi/layout.js';
@@ -21,7 +21,7 @@ import {
   elemTypeOf,
   type EvsType,
 } from '../../core/types.js';
-import type { Stmt, ValueId, BinOp } from '../../ir/nodes.js';
+import type { Stmt, ValueId, BinOp, ModArithOp } from '../../ir/nodes.js';
 
 // ---------------------------------------------------------------------------
 // scopes
@@ -52,6 +52,9 @@ export const NUMERIC_OPS: ReadonlySet<BinOp> = new Set([
   'div',
   'mod',
   'pow',
+  'wrapadd',
+  'wrapsub',
+  'wrapmul',
   'lt',
   'gt',
   'lte',
@@ -309,6 +312,13 @@ export function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
       }
       return { ok: true, value: r };
     }
+    case 'wrapadd':
+    case 'wrapsub':
+    case 'wrapmul': {
+      // two's complement wrap into the type's range: the low N bits, re-signed for intN
+      const r = op === 'wrapadd' ? a + b : op === 'wrapsub' ? a - b : a * b;
+      return { ok: true, value: fromUnsignedN(type, toUnsignedN(type, r)) };
+    }
     case 'lt':
       return { ok: true, value: a < b ? 1n : 0n };
     case 'gt':
@@ -350,4 +360,31 @@ export function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
       throw new EvsInternalError('INTERNAL', `foldBin: unknown op '${String(op)}'`);
     }
   }
+}
+
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+/** The builder-facing name of each ternary op (fold diagnostics). */
+const MOD_ARITH_NAMES: Readonly<Record<ModArithOp, string>> = {
+  addmod: 'addmod',
+  mulmod: 'mulmod',
+  muldiv: 'mulDiv',
+  muldivup: 'mulDivRoundingUp',
+};
+
+/** Folds a ternary uint256 op (`addmod` / `mulmod` / `muldiv` / `muldivup`) on literal operands. */
+export function foldModArith(op: ModArithOp, a: bigint, b: bigint, n: bigint): Fold {
+  const name = MOD_ARITH_NAMES[op];
+  if (n === 0n) {
+    const verb = op === 'addmod' || op === 'mulmod' ? 'takes modulo zero' : 'divides by zero';
+    return { ok: false, panic: 0x12, reason: `${name}(${a}, ${b}, 0) ${verb}` };
+  }
+  if (op === 'addmod') return { ok: true, value: (a + b) % n };
+  if (op === 'mulmod') return { ok: true, value: (a * b) % n };
+  const p = a * b;
+  const q = op === 'muldiv' || p % n === 0n ? p / n : p / n + 1n;
+  if (q > MAX_UINT256) {
+    return { ok: false, panic: 0x11, reason: `${name}(${a}, ${b}, ${n}) overflows uint256` };
+  }
+  return { ok: true, value: q };
 }

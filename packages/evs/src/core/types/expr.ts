@@ -50,6 +50,23 @@ export interface Expr<t extends EvsType = EvsType> {
     rhs: IntoExpr<'uint256'>,
     modulus: IntoExpr<'uint256'>,
   ): Expr<'uint256'>;
+  // FullMath: ⌊this · rhs / denominator⌋ (⌈…⌉ for mulDivRoundingUp) over a 512-bit intermediate,
+  // uint256 only; Panic 0x12 on a zero denominator, Panic 0x11 when the quotient overflows
+  mulDiv(
+    this: Expr<'uint256'>,
+    rhs: IntoExpr<'uint256'>,
+    denominator: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  mulDivRoundingUp(
+    this: Expr<'uint256'>,
+    rhs: IntoExpr<'uint256'>,
+    denominator: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  // wrapping arithmetic — solc `unchecked { … }`: the result modulo 2^N, two's complement for
+  // intN; never a Panic (an explicit opt-out of the checked add / sub / mul above)
+  wrappingAdd(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  wrappingSub(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
+  wrappingMul(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<t>;
 
   // comparisons — LT/GT vs SLT/SGT chosen from the static type
   lt(this: Expr<t & NumericType>, rhs: IntoExpr<t>): Expr<'bool'>;

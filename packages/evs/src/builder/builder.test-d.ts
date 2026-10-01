@@ -338,6 +338,40 @@ test('pow / addmod / mulmod / signed shifts (issue #10)', () => {
   );
 });
 
+test('wrapping add / sub / mul and mulDiv / mulDivRoundingUp', () => {
+  evscript(
+    { name: 'wrapOps', args: [t.uint256, t.int8, t.uint8, t.bytes4, t.bool] },
+    (s, x, s8, u8, b4, flag) => {
+      // wrapping ops: any numeric type, same typing as the checked add / sub / mul
+      expectTypeOf(x.wrappingAdd(1n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s8.wrappingSub(s8)).toEqualTypeOf<Expr<'int8'>>();
+      expectTypeOf(u8.wrappingMul(3)).toEqualTypeOf<Expr<'uint8'>>();
+      expectTypeOf(s.wrappingSub(0n, x)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s.wrappingAdd(s8, -1n)).toEqualTypeOf<Expr<'int8'>>();
+      expectTypeOf(s.wrappingMul(u8, u8)).toEqualTypeOf<Expr<'uint8'>>();
+      // @ts-expect-error — operand types must match (no implicit widening)
+      x.wrappingAdd(u8);
+      // @ts-expect-error — numeric only
+      b4.wrappingAdd(b4);
+      // @ts-expect-error — numeric only (free-function form)
+      s.wrappingMul(flag, true);
+
+      // mulDiv: uint256 only, literals anywhere in the free-function form
+      expectTypeOf(x.mulDiv(x, 7n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(x.mulDivRoundingUp(1n << 96n, x)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s.mulDiv(2n, x, 3n)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(s.mulDivRoundingUp(x, x, x)).toEqualTypeOf<Expr<'uint256'>>();
+      // @ts-expect-error — mulDiv is uint256-only (this: Expr<'uint256'>)
+      u8.mulDiv(1n, 3n);
+      // @ts-expect-error — a narrower denominator Expr is not a uint256
+      x.mulDivRoundingUp(1n, u8);
+      // @ts-expect-error — nor a signed operand
+      s.mulDiv(x, s8, 3n);
+      return s.return({ ok: s.lit(t.bool, true) });
+    },
+  );
+});
+
 // ---------------------------------------------------------------------------
 // s.call inference (viem patterns)
 // ---------------------------------------------------------------------------

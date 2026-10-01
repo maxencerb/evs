@@ -517,6 +517,33 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
     );
   });
 
+  test('mulDiv takes uint256 operands only; wrapping ops take numeric ones', () => {
+    expectEvs(
+      () => rec((s, a) => (a.s8 as unknown as Expr<'uint256'>).mulDiv(1n, 3n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /\.mulDiv\(\) left operand.*expected 'uint256', got Expr<'int8'>/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.mulDivRoundingUp(a.x, a.x, s.lit(t.uint128, 5n) as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.mulDivRoundingUp\(\) denominator/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.wrappingAdd(a.flag as never, true as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.wrappingAdd\(\): operands must be numeric/,
+    );
+    expectEvs(
+      () => rec((s, a) => a.x.wrappingSub(a.s8 as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /\.wrappingSub\(\): operand types differ/,
+    );
+  });
+
   test('arithmetic on a non-numeric type', () => {
     expectEvs(
       () => rec((s, a) => s.add(a.who as never, a.who as never)),
@@ -1063,6 +1090,21 @@ describe('checklist: all-literal certain-panic folds', () => {
     expect(() =>
       rec((s) => s.return({ a: s.lit(t.int8, -2).pow(7n), z: s.lit(t.uint8, 0).pow(0n) })),
     ).not.toThrow();
+  });
+
+  test('mulDiv by a literal zero denominator / past uint256 → CERTAIN_PANIC', () => {
+    expectEvs(
+      () => rec((s) => s.mulDivRoundingUp(2n, 3n, 0n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /mulDivRoundingUp\(2, 3, 0\) divides by zero.*Panic\(0x12\)/s,
+    );
+    expectEvs(
+      () => rec((s) => s.mulDiv(1n << 255n, 4n, 2n)),
+      EvsTypeError,
+      'CERTAIN_PANIC',
+      /overflows uint256.*Panic\(0x11\)/s,
+    );
   });
 
   test('addmod / mulmod by a literal zero modulus → Panic(0x12) (issue #10)', () => {

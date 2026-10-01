@@ -50,6 +50,11 @@ export type BinOp =
   | 'div'
   | 'mod'
   | 'pow' // checked exponentiation (solc `**`): `a` numeric, `b` (the exponent) any uintN
+  // wrapping (solc `unchecked { … }`) add / sub / mul: two's complement modulo 2^N of the
+  // operand type, never a Panic; numeric operands of one type like the checked ops
+  | 'wrapadd'
+  | 'wrapsub'
+  | 'wrapmul'
   | 'lt'
   | 'gt'
   | 'lte'
@@ -64,8 +69,13 @@ export type BinOp =
   | 'shl'
   | 'shr';
 export type UnOp = 'not' | 'bitnot' | 'iszero';
-/** Full-precision modular ops (issue #10): `(a op b) % n` over uint256, Panic 0x12 on `n == 0`. */
-export type ModArithOp = 'addmod' | 'mulmod';
+/**
+ * The full-precision ternary uint256 ops — the intermediate `a op b` is never truncated to 256
+ * bits. `addmod` / `mulmod` (issue #10) are `(a op b) % n`, Panic 0x12 on `n == 0`; `muldiv` /
+ * `muldivup` are `⌊a·b / n⌋` / `⌈a·b / n⌉` (FullMath), Panic 0x12 on `n == 0` and Panic 0x11
+ * when the quotient does not fit uint256.
+ */
+export type ModArithOp = 'addmod' | 'mulmod' | 'muldiv' | 'muldivup';
 export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
 
 export type ConstData =
@@ -98,7 +108,8 @@ export type Stmt = { readonly site: SiteId } & (
   | { k: 'const'; out: ValueId; data: ConstData; type: EvsType }
   | { k: 'bin'; op: BinOp; a: ValueId; b: ValueId; out: ValueId }
   | { k: 'un'; op: UnOp; a: ValueId; out: ValueId }
-  // ADDMOD / MULMOD (issue #10): uint256 operands, `n` the modulus (Panic 0x12 when zero)
+  // ADDMOD / MULMOD (issue #10) and mulDiv: uint256 operands, `n` the modulus / denominator
+  // (Panic 0x12 when zero; see {@link ModArithOp})
   | { k: 'modarith'; op: ModArithOp; a: ValueId; b: ValueId; n: ValueId; out: ValueId }
   | { k: 'env'; op: EnvOp; out: ValueId }
   | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
@@ -189,6 +200,9 @@ const BIN_OPS: ReadonlySet<string> = new Set([
   'div',
   'mod',
   'pow',
+  'wrapadd',
+  'wrapsub',
+  'wrapmul',
   'lt',
   'gt',
   'lte',
@@ -204,7 +218,12 @@ const BIN_OPS: ReadonlySet<string> = new Set([
   'shr',
 ] satisfies BinOp[]);
 const UN_OPS: ReadonlySet<string> = new Set(['not', 'bitnot', 'iszero'] satisfies UnOp[]);
-const MOD_ARITH_OPS: ReadonlySet<string> = new Set(['addmod', 'mulmod'] satisfies ModArithOp[]);
+const MOD_ARITH_OPS: ReadonlySet<string> = new Set([
+  'addmod',
+  'mulmod',
+  'muldiv',
+  'muldivup',
+] satisfies ModArithOp[]);
 const ENV_OPS: ReadonlySet<string> = new Set([
   'address',
   'caller',

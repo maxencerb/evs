@@ -31,7 +31,15 @@ import {
 } from '../core/types.js';
 import { interpret, type InterpResult, type MockChain } from './interp.js';
 import { zeroFillSlots } from './interp/arith.js';
-import type { BinOp, PlainAbiFunction, ScriptIr, Stmt, UnOp, ValueInfo } from './nodes.js';
+import type {
+  BinOp,
+  ModArithOp,
+  PlainAbiFunction,
+  ScriptIr,
+  Stmt,
+  UnOp,
+  ValueInfo,
+} from './nodes.js';
 
 // ---------------------------------------------------------------------------
 // fixture builders (style shared with validate.test.ts)
@@ -253,8 +261,8 @@ function runPow(type: WordType, a: unknown, e: bigint): InterpResult {
   return interpret(script, [a, e], deadChain);
 }
 
-/** `r = addmod/mulmod(a, b, n)` over three uint256 args (issue #10). */
-function runModArith(op: 'addmod' | 'mulmod', a: bigint, b: bigint, n: bigint): InterpResult {
+/** `r = addmod/mulmod/muldiv/muldivup(a, b, n)` over three uint256 args (issue #10). */
+function runModArith(op: ModArithOp, a: bigint, b: bigint, n: bigint): InterpResult {
   const script = ir({
     name: op,
     args: [
@@ -818,6 +826,36 @@ describe('pow / addmod / mulmod (issue #10)', () => {
     );
     expectPanic(runModArith('addmod', 1n, 2n, 0n), 0x12);
     expectPanic(runModArith('mulmod', 0n, 0n, 0n), 0x12);
+  });
+});
+
+describe('wrapping arithmetic and mulDiv', () => {
+  test('wrapadd / wrapsub / wrapmul keep the low N bits, never panic', () => {
+    expect(asBig(retOf(runBin('uint256', 'wrapadd', U256_MAX, 2n)).r)).toBe(1n);
+    expect(asBig(retOf(runBin('uint256', 'wrapsub', 0n, 1n)).r)).toBe(U256_MAX);
+    expect(asBig(retOf(runBin('uint256', 'wrapmul', U256_MAX, U256_MAX)).r)).toBe(1n);
+    expect(asBig(retOf(runBin('uint8', 'wrapadd', 250n, 10n)).r)).toBe(4n);
+    expect(asBig(retOf(runBin('uint8', 'wrapmul', 16n, 16n)).r)).toBe(0n);
+    expect(asBig(retOf(runBin('int8', 'wrapadd', 127n, 1n)).r)).toBe(-128n);
+    expect(asBig(retOf(runBin('int8', 'wrapsub', -128n, 1n)).r)).toBe(127n);
+    expect(asBig(retOf(runBin('int8', 'wrapmul', -128n, -1n)).r)).toBe(-128n);
+    expect(asBig(retOf(runBin('int256', 'wrapmul', -(2n ** 255n), -1n)).r)).toBe(-(2n ** 255n));
+  });
+  test('muldiv / muldivup: the exact quotient; Panic 0x12 on d == 0, 0x11 past uint256', () => {
+    expect(asBig(retOf(runModArith('muldiv', U256_MAX, U256_MAX, U256_MAX)).r)).toBe(U256_MAX);
+    expect(asBig(retOf(runModArith('muldiv', 5n, 7n, 3n)).r)).toBe(11n);
+    expect(asBig(retOf(runModArith('muldivup', 5n, 7n, 3n)).r)).toBe(12n);
+    expect(asBig(retOf(runModArith('muldivup', 6n, 7n, 3n)).r)).toBe(14n);
+    expectPanic(runModArith('muldiv', 1n, 2n, 0n), 0x12);
+    expectPanic(runModArith('muldivup', 0n, 0n, 0n), 0x12);
+    expectPanic(runModArith('muldiv', U256_MAX, U256_MAX, U256_MAX - 1n), 0x11);
+    // ⌊a·b / 2⌋ == 2^256 − 1 with a remainder: only the rounded-up quotient overflows
+    const [a, b] = [
+      535006138814359n,
+      432862656469423142931042426214547535783388063929571229938474969n,
+    ];
+    expect(asBig(retOf(runModArith('muldiv', a, b, 2n)).r)).toBe(U256_MAX);
+    expectPanic(runModArith('muldivup', a, b, 2n), 0x11);
   });
 });
 

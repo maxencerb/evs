@@ -8,9 +8,10 @@
  * - `statements.ts` — the statement dispatch, the fn subroutines, `call` / `fncall` and the
  *   control flow (`if` / `while` recurse into the dispatch);
  * - `values.ts` — `const`, `un`, `env` and `convert`;
- * - `arith.ts` — `bin` (checked arithmetic, comparisons, logic, bits, shifts) and
+ * - `arith.ts` — `bin` (checked and wrapping arithmetic, comparisons, logic, bits, shifts) and
  *   `addmod` / `mulmod`;
  * - `pow.ts` — checked exponentiation (issue #10);
+ * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence);
  * - `composites.ts` — select / index / arrays, tuples, and `s.encode` / `s.keccak256` /
  *   `s.throw` payloads.
  *

@@ -106,6 +106,27 @@ class ExprHandle {
   mulmod(rhs: unknown, modulus: unknown): Expr {
     return internalsOf(this).owner.modArithOp('mulmod', this, rhs, modulus, '.mulmod()');
   }
+  wrappingAdd(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('wrapadd', this, rhs, '.wrappingAdd()');
+  }
+  wrappingSub(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('wrapsub', this, rhs, '.wrappingSub()');
+  }
+  wrappingMul(rhs: unknown): Expr {
+    return internalsOf(this).owner.bin('wrapmul', this, rhs, '.wrappingMul()');
+  }
+  mulDiv(rhs: unknown, denominator: unknown): Expr {
+    return internalsOf(this).owner.modArithOp('muldiv', this, rhs, denominator, '.mulDiv()');
+  }
+  mulDivRoundingUp(rhs: unknown, denominator: unknown): Expr {
+    return internalsOf(this).owner.modArithOp(
+      'muldivup',
+      this,
+      rhs,
+      denominator,
+      '.mulDivRoundingUp()',
+    );
+  }
   lt(rhs: unknown): Expr {
     return internalsOf(this).owner.bin('lt', this, rhs, '.lt()');
   }

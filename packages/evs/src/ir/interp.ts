@@ -30,8 +30,10 @@
  *   case; SIGNEXTEND fixpoints; the explicit `int256 −2^255 / −1` SDIV check) are exactly the
  *   conditions under which the true result leaves the operand type's range. `pow` is the exact
  *   power under the same range check (every solc `**` template computes exactly that), and
- *   `addmod`/`mulmod` the exact `(a op b) % n` (ADDMOD/MULMOD never wrap). Panic codes:
- *   0x11 overflow, 0x12 div/mod by zero, 0x32 bounds, 0x41 over-allocation.
+ *   `addmod`/`mulmod` the exact `(a op b) % n` (ADDMOD/MULMOD never wrap), `muldiv`/`muldivup`
+ *   the exact floor/ceiling quotient under the uint256 range check. The wrapping ops
+ *   (`wrapadd`/`wrapsub`/`wrapmul`) are the true result's low N bits, re-canonicalized. Panic
+ *   codes: 0x11 overflow, 0x12 div/mod by zero, 0x32 bounds, 0x41 over-allocation.
  * - ABI bytes (sub-call calldata, return tuple, revert payloads) are constructed manually over
  *   raw bytes — never through a UTF-8 round trip — so callee-provided non-UTF-8 `string`
  *   payloads survive byte-exactly. The shapes are standard ABI, byte-equal to viem's

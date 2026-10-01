@@ -331,8 +331,8 @@ and silently records the branch unconditionally. Details:
 
 ### Arithmetic (checked)
 
-Available on numeric `Expr`s (`this: Expr` of `t` where `t` is a `NumericType`). All arithmetic
-is checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/).
+Available on numeric `Expr`s (`this: Expr` of `t` where `t` is a `NumericType`). These methods
+are checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/).
 
 | Method | Signature                       | Checked semantics                                                  |
 | ------ | ------------------------------- | ------------------------------------------------------------------ |
@@ -343,15 +343,30 @@ is checked, matching solc 0.8 semantics — see [arithmetic](/guides/arithmetic/
 | `mod`  | `mod(rhs: IntoExpr<t>): Expr<t>` | Panic `0x12` on zero divisor                                      |
 | `pow`  | `pow(exponent: IntoExpr<'uint256'> \| Expr<UintType>): Expr<t>` | Panic `0x11` when the power leaves `t`'s range; `0 ** 0 == 1`; unsigned exponent |
 
-### Modular arithmetic
+### Arithmetic (wrapping)
 
-Available on `Expr<'uint256'>` only, like Solidity's `addmod` / `mulmod` builtins. The
-intermediate sum or product is computed at full precision (`ADDMOD` / `MULMOD` never wrap).
+The explicit opt-out of the checks above, Solidity's `unchecked` blocks: the result is the true
+result modulo 2^N of `t` (two's complement for `intN`), and it never reverts. Same operand
+rules as the checked methods — see [wrapping arithmetic](/guides/arithmetic/#wrapping-arithmetic).
 
-| Method   | Signature                                                                            | Checked semantics            |
-| -------- | ------------------------------------------------------------------------------------ | ---------------------------- |
-| `addmod` | `addmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>` | `(a + b) % n`; Panic `0x12` on `n == 0` |
-| `mulmod` | `mulmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>` | `(a * b) % n`; Panic `0x12` on `n == 0` |
+| Method        | Signature                                | Semantics                     |
+| ------------- | ---------------------------------------- | ----------------------------- |
+| `wrappingAdd` | `wrappingAdd(rhs: IntoExpr<t>): Expr<t>` | `a + b` modulo 2^N, no Panic  |
+| `wrappingSub` | `wrappingSub(rhs: IntoExpr<t>): Expr<t>` | `a − b` modulo 2^N, no Panic  |
+| `wrappingMul` | `wrappingMul(rhs: IntoExpr<t>): Expr<t>` | `a · b` modulo 2^N, no Panic  |
+
+### Full-precision arithmetic
+
+Available on `Expr<'uint256'>` only, like Solidity's `addmod` / `mulmod` builtins and
+FullMath's `mulDiv`. The intermediate sum or product is computed at full precision (512 bits):
+it never wraps.
+
+| Method             | Signature                                                                                    | Checked semantics            |
+| ------------------ | -------------------------------------------------------------------------------------------- | ---------------------------- |
+| `addmod`           | `addmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>`            | `(a + b) % n`; Panic `0x12` on `n == 0` |
+| `mulmod`           | `mulmod(rhs: IntoExpr<'uint256'>, modulus: IntoExpr<'uint256'>): Expr<'uint256'>`            | `(a * b) % n`; Panic `0x12` on `n == 0` |
+| `mulDiv`           | `mulDiv(rhs: IntoExpr<'uint256'>, denominator: IntoExpr<'uint256'>): Expr<'uint256'>`        | `⌊a · b / d⌋`; Panic `0x12` on `d == 0`, Panic `0x11` when the quotient overflows |
+| `mulDivRoundingUp` | `mulDivRoundingUp(rhs: IntoExpr<'uint256'>, denominator: IntoExpr<'uint256'>): Expr<'uint256'>` | `⌈a · b / d⌉`; same Panics |
 
 ### Comparisons
 
