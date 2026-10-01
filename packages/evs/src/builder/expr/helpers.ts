@@ -4,7 +4,7 @@
  * (`foldBin`).
  */
 
-import { layoutOf } from '../../abi/layout.js';
+import { layoutOf, layoutOfType } from '../../abi/layout.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import { functionSignature } from '../../core/signature.js';
 import {
@@ -17,6 +17,7 @@ import {
   type ArrayType,
   type TupleType,
   isDynamicType,
+  isEvsValueType,
   elemTypeOf,
   type EvsType,
 } from '../../core/types.js';
@@ -132,6 +133,33 @@ export function assertV0Type(type: unknown, what: string): asserts type is Strin
   } catch (e) {
     if (e instanceof EvsTypeError) {
       throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf: /, '')}`);
+    }
+    throw e;
+  }
+}
+
+/**
+ * Validates any value type for the builder surface (`s.lit`, `s.let`): a type string through
+ * {@link assertV0Type} (same codes and messages), or a `t.struct` / `t.tuple` / tuple-array
+ * descriptor — structurally valid, then classified by its layout (an array nested deeper than
+ * `MAX_ARRAY_DEPTH` → `UNSUPPORTED_V0`).
+ */
+export function assertValueType(type: unknown, what: string): asserts type is EvsType {
+  if (typeof type === 'string') {
+    assertV0Type(type, what);
+    return;
+  }
+  if (!isEvsValueType(type)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: type must be a \`t\` type (a type string or a t.struct/t.tuple descriptor), got ${describeHost(type)}`,
+    );
+  }
+  try {
+    layoutOfType(type);
+  } catch (e) {
+    if (e instanceof EvsTypeError) {
+      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
     }
     throw e;
   }

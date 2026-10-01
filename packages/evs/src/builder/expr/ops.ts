@@ -4,7 +4,6 @@
  * `length` / `at`, `env` and `select`.
  */
 
-import { encodeLiteralData } from '../../abi/artifact.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   type Expr,
@@ -18,10 +17,9 @@ import {
   isBitsOperand,
   bitsOf,
   type WordType,
-  isDynamicType,
   isArrayValueType,
+  isLengthType,
   elemTypeOf,
-  isTupleType,
 } from '../../core/types.js';
 import { isEnvOp, type BinOp, type ModArithOp, type ValueId } from '../../ir/nodes.js';
 import { RecorderEncode } from './encode.js';
@@ -409,7 +407,8 @@ export abstract class RecorderOps extends RecorderEncode {
   lenOp(a: unknown, what: string): Expr {
     this.assertOpen(what);
     const c = this.classify(a, what);
-    if (c.kind !== 'expr' || !isDynamicType(c.type)) {
+    // the IR verifier's `len` domain: a plain tuple is a memref but has no length
+    if (c.kind !== 'expr' || !isLengthType(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: .length() requires an Expr of string/bytes/T[], got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
@@ -487,7 +486,7 @@ export abstract class RecorderOps extends RecorderEncode {
     if (condLit !== null) {
       const chosen = condLit === 1n ? ca : cb;
       const dropped = condLit === 1n ? cb : ca;
-      if (dropped.kind === 'raw') this.validateLiteral(ty, dropped.value); // eager validation
+      if (dropped.kind === 'raw') this.checkDroppedBranch(ty, dropped.value); // eager validation
       if (chosen.kind === 'expr') return makeExpr(this.self, chosen.id);
       return makeExpr(this.self, this.coerceToId(chosen.value, ty, 's.select() branch'));
     }
@@ -499,19 +498,17 @@ export abstract class RecorderOps extends RecorderEncode {
     return makeExpr(this.self, out);
   }
 
-  /** Validates a literal against a type without interning it (eager-eval rule for select). */
-  private validateLiteral(ty: EvsType, value: unknown): void {
+  /** Validates the literal branch a folded condition drops, under exactly the rules the runtime
+   *  path applies to it — so `s.select(true, a, b)` accepts the same `b` as `s.select(flag, a, b)`.
+   *  A word literal is range-checked without interning. Any other literal (string/bytes, an array
+   *  — composite elements or staged handles included — or a struct) goes through `coerceToId`
+   *  itself and its value is left unused: the dead const / construction is dropped by
+   *  `eliminateDeadCode` before codegen, so the bytecode is the chosen branch's alone. */
+  private checkDroppedBranch(ty: EvsType, value: unknown): void {
     if (isWordType(ty)) {
       this.wordLiteral(ty, value);
       return;
     }
-    if (isTupleType(ty)) {
-      // a tuple branch in s.select() is not a host literal — it must already be a built handle.
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `s.select(): a tuple branch must be a built tuple (s.tuple / a decoded Tuple), not a literal`,
-      );
-    }
-    encodeLiteralData(ty, value);
+    this.coerceToId(value, ty, 's.select() branch');
   }
 }

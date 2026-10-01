@@ -682,6 +682,192 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 });
 
 // ---------------------------------------------------------------------------
+// entry points the types accept must record (or fail with a user-facing error)
+// ---------------------------------------------------------------------------
+
+describe('checklist: composite s.let / s.lit, folded s.select, .length(), failed s.fn', () => {
+  const Pair = t.struct({ a: t.uint256, b: t.address });
+  const ONE = '0x0000000000000000000000000000000000000001';
+
+  test('s.let(type, init) takes the typed form by arity, composite types included', () => {
+    // each of these used to fall into the one-argument form ("init must be an Expr when no type is given")
+    expect(() =>
+      evscript({ name: 'cells', args: [t.uint256] }, (s, x) => {
+        const lit = s.let(Pair, { a: 5n, b: ONE });
+        const fromExpr = s.let(Pair, s.tuple(Pair, { a: x }).expr());
+        const positional = s.let(t.tuple(t.uint256, t.address), [5n, ONE]);
+        const empty = s.let(t.array(Pair), []);
+        return s.return({
+          lit: lit.get(),
+          fromExpr: fromExpr.get(),
+          positional: positional.get(),
+          n: empty.get().length(),
+        });
+      }),
+    ).not.toThrow();
+  });
+
+  test('s.let(type) without an init → TYPE_MISMATCH, for a string or a descriptor type', () => {
+    for (const type of [t.uint256, Pair, t.array(Pair)]) {
+      expectEvs(
+        () => rec((s) => s.let(type as never)),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /s\.let\(type, init\): init value is required/,
+      );
+    }
+  });
+
+  test('s.let(type, init): the type and the init are validated against each other', () => {
+    expectEvs(
+      () => rec((s) => s.let({ type: 'tuple' } as never, 1n as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.let\(\): type must be a `t` type .*got an object/,
+    );
+    expectEvs(
+      () => rec((s) => s.let('uint7' as never, 1n as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.let\(\)/,
+    );
+    expectEvs(
+      () => rec((s) => s.let(Pair, { a: -1n, b: ONE } as never)),
+      EvsTypeError,
+      'LITERAL_RANGE',
+      /-1n is out of range/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.let(Pair, a.x as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.let\(\) init/,
+    );
+  });
+
+  test('s.lit accepts struct and tuple[] types (same coercion as any value position)', () => {
+    expect(() =>
+      evscript({ name: 'lits', args: [] }, (s) =>
+        s.return({
+          p: s.lit(Pair, { a: 5n, b: ONE }),
+          ps: s.lit(t.array(Pair), [
+            { a: 1n, b: ONE },
+            { a: 2n, b: ONE },
+          ]),
+        }),
+      ),
+    ).not.toThrow();
+    expectEvs(
+      () => rec((s) => s.lit(t.array(Pair, 2), [{ a: 1n }] as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /exactly 2 element/,
+    );
+    expectEvs(
+      () => rec((s) => s.lit(new Map() as never, 1n as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.lit\(\): type must be a `t` type/,
+    );
+  });
+
+  test('a folded s.select condition accepts every dropped literal the runtime path accepts', () => {
+    const script = (cond: 'runtime' | 'host' | 'folded') =>
+      evscript(
+        { name: 'sel', args: [t.bool, t.array(t.string), t.uint256, t.array(Pair)] },
+        (s, flag, names, x, items) => {
+          const c =
+            cond === 'runtime' ? flag : cond === 'host' ? true : s.lit(t.uint256, 3n).gt(2n);
+          return s.return({
+            names: s.select(c, names, ['a', 'b']),
+            words: s.select(c, s.lit(t.array(t.uint256), [7n]), [x, 1n]),
+            grid: s.select(s.not(c), [[1n], [2n, 3n]], s.lit(t.array(t.array(t.uint256)), [])),
+            items: s.select(c, items, [{ a: 1n, b: ONE }]),
+            item: s.select(c, s.tuple(Pair, { a: x }).expr(), { a: 1n, b: ONE }),
+          });
+        },
+      );
+    for (const cond of ['runtime', 'host', 'folded'] as const) {
+      expect(() => script(cond)).not.toThrow();
+    }
+  });
+
+  test('a folded s.select condition still rejects an invalid dropped literal, as the runtime path does', () => {
+    const messages = [true, false].map((folded) => [
+      expectEvs(
+        () => rec((s, a) => s.select(folded ? true : a.flag, a.xs, [1n, -1n])),
+        EvsTypeError,
+        'LITERAL_RANGE',
+        /-1n is out of range/,
+      ).message,
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            s.select(folded ? true : a.flag, s.tuple(Pair, { a: 1n }).expr(), {
+              a: 1n,
+              b: '0x12',
+            } as never),
+          ),
+        EvsTypeError,
+        'LITERAL_RANGE',
+        /address literal must be exactly 20 bytes/,
+      ).message,
+    ]);
+    expect(messages[0]).toEqual(messages[1]);
+  });
+
+  test('.length() on a plain tuple Expr → TYPE_MISMATCH at recording (not INTERNAL at compile)', () => {
+    expectEvs(
+      () => rec((s) => (s.tuple(Pair, { a: 1n }).expr() as never as Expr<'bytes'>).length()),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /\.length\(\) requires an Expr of string\/bytes\/T\[\], got '\{"type":"tuple"/,
+    );
+  });
+
+  test('a failed s.fn is rolled back: catching its error and carrying on records the script', () => {
+    const script = evscript({ name: 'fallback', args: [t.uint256] }, (s, x) => {
+      expectEvs(
+        () => s.fn('bad', [t.uint256], (a) => a.add(-1 as never)),
+        EvsTypeError,
+        'LITERAL_RANGE',
+        /-1/,
+      );
+      expectEvs(
+        () => s.fn('badResult', [t.uint256], () => 'not an expr' as never),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /must return an Expr/,
+      );
+      const inc = s.fn('inc', [t.uint256], (a) => a.add(1n));
+      return s.return({ y: inc(x) });
+    });
+    expect(script.ir.fns.map((f) => f.name)).toEqual(['inc']);
+  });
+
+  test('a failed s.fn whose body defined a nested s.fn → SCOPE_VIOLATION when the script finishes', () => {
+    expectEvs(
+      () =>
+        evscript({ name: 'nested', args: [t.uint256] }, (s, x) => {
+          try {
+            s.fn('outer', [t.uint256], (a) => {
+              const inner = s.fn('inner', [t.uint256], (b) => b.add(1n));
+              return inner(a).add(-1);
+            });
+          } catch {
+            // caught by the script author: the nested definition keeps FnId 1, so the failed
+            // FnId 0 cannot be rolled back
+          }
+          return s.return({ y: x });
+        }),
+      EvsScopeError,
+      'SCOPE_VIOLATION',
+      /s\.fn\("outer"\) failed to record after an s\.fn nested in its body was defined/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // certain-panic folds (with the documented escape hatch in the message)
 // ---------------------------------------------------------------------------
 

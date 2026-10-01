@@ -524,6 +524,29 @@ test('Cell / MutArray / env / for typing', () => {
   });
 });
 
+test('composite s.let / s.lit: typed cells and literals of struct, tuple and tuple[] types', () => {
+  const P = t.struct({ a: t.uint256, b: t.address });
+  const ONE = '0x0000000000000000000000000000000000000001';
+  const script = evscript({ name: 'composites', args: [t.uint256] }, (s, x) => {
+    const cell = s.let(P, { a: 1n, b: ONE });
+    expectTypeOf(cell).toEqualTypeOf<Cell<typeof P>>();
+    expectTypeOf(cell.get()).toEqualTypeOf<Expr<typeof P>>();
+    cell.set(s.tuple(P, { a: x }).expr());
+    const list = s.let(t.array(P), [{ a: 2n, b: ONE }]);
+    expectTypeOf(list.get().at(0n).a.get()).toEqualTypeOf<Expr<'uint256'>>();
+    const pair = s.lit(t.tuple(t.uint256, t.bool), [1n, true]);
+    // @ts-expect-error — a struct literal member of the wrong kind
+    s.let(P, { a: 'one' });
+    // @ts-expect-error — a plain tuple has no length
+    pair.length();
+    return s.return({ p: cell.get(), list: list.get(), pair });
+  });
+  type Out = ReadContractReturnType<typeof script.abi, 'composites'>;
+  expectTypeOf<Out['p']>().toEqualTypeOf<{ a: bigint; b: `0x${string}` }>();
+  expectTypeOf<Out['list']>().toEqualTypeOf<readonly { a: bigint; b: `0x${string}` }[]>();
+  expectTypeOf<Out['pair']>().toEqualTypeOf<readonly [bigint, boolean]>();
+});
+
 test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays (issue #12)', () => {
   const Pair = t.struct({ token: t.address, fee: t.uint24 });
   evscript(

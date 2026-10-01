@@ -29,6 +29,7 @@ import {
   isBitsOperand,
   isEvsType,
   isEvsValueType,
+  isLengthType,
   isNumeric,
   isPackedEncodable,
   isSigned,
@@ -441,8 +442,7 @@ class IrValidator {
         const what = `${path} (len)`;
         const ta = this.use(s.a, null, what);
         // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
-        const isArrayLike = isArrayValueType(ta) || ta === 'string' || ta === 'bytes';
-        if (!isArrayLike) {
+        if (!isLengthType(ta)) {
           this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`);
         }
         this.define(s.out, 'uint256', what);

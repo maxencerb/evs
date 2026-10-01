@@ -193,7 +193,8 @@ export type TupleArrayElemHandle<C extends TupleType> = ArgHandle<PeelTupleArray
 // rejection) and the element comes from {@link TupleArrayElemHandle} (a `tuple[][]` element is
 // an `Expr<tuple[]>`, matching the runtime — it was wrongly a named-field `Tuple` before).
 // `.length()` gets the matching tuple-ARRAY overload (the base bound is `DynType | ArrayType`,
-// which a `tuple[]` Expr is not; the runtime `lenOp` accepts every dynamic memref).
+// which a `tuple[]` Expr is not; the runtime `lenOp` accepts `isLengthType`: string/bytes and
+// every array, never a plain tuple).
 declare module '../../core/types/expr.js' {
   interface Expr<t extends EvsType = EvsType> {
     at<C extends TupleType & { readonly type: TupleArrayTag }>(

@@ -19,6 +19,11 @@ import { describeHost, assertV0Type, newScope, unsafeCast } from './helpers.js';
 /** The recording engine behind one `evscript` body; the layers it extends are listed on the
  *  `builder/expr.ts` barrel. */
 export class Recorder extends RecorderCalls {
+  /** The name of an `s.fn` whose recording failed after an `s.fn` nested in its body was
+   *  recorded: the nested definition holds a later FnId, so the failed slot cannot be rolled back
+   *  and `finish()` refuses the script. `null` while every failed `s.fn` was rolled back. */
+  private unrecoverableFn: string | null = null;
+
   // -- user functions ----------------------------------------------------------------------
 
   defineFn(name: unknown, paramsIn: unknown, bodyFn: unknown): (...args: unknown[]) => unknown {
@@ -81,7 +86,10 @@ export class Recorder extends RecorderCalls {
       return { name: pName, type: pType };
     });
 
-    // reserve the FnId, push the isolated stack (scope rule) and record the body once
+    // reserve the FnId, push the isolated stack (scope rule) and record the body once. A failed
+    // recording (the body or a result check throws) releases the reservation, so a script that
+    // catches the error and carries on still finishes; the failed body's statements were only
+    // ever in its own scope and are dropped with it.
     const fnId = this.fnIrs.length;
     this.fnIrs.push(null);
     this.openFns.add(fnId);
@@ -118,12 +126,19 @@ export class Recorder extends RecorderCalls {
         body: fnScope.stmts,
         resultValues: resultIds,
       };
+    } catch (e) {
+      // nothing can reference the reserved FnId (its handle is returned only on success), so the
+      // slot is truncated away — unless an `s.fn` nested in the failed body took a later FnId,
+      // whose handle may have escaped through a closure.
+      if (this.fnIrs.length === fnId + 1) this.fnIrs.length = fnId;
+      else this.unrecoverableFn ??= name;
+      throw e;
     } finally {
       const saved = this.savedStacks.pop();
       if (saved !== undefined) this.stack = saved;
       this.fnCtx.pop();
+      this.openFns.delete(fnId);
     }
-    this.openFns.delete(fnId);
     return (...callArgs: unknown[]) => this.fnCall(fnId, name, shape, callArgs);
   }
 
@@ -273,6 +288,12 @@ export class Recorder extends RecorderCalls {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `script "${this.name}": the builder callback must return the value produced by THIS script's s.return({...})`,
+      );
+    }
+    if (this.unrecoverableFn !== null) {
+      throw new EvsScopeError(
+        'SCOPE_VIOLATION',
+        `script "${this.name}": s.fn("${this.unrecoverableFn}") failed to record after an s.fn nested in its body was defined — the script cannot be finished; fix the error instead of catching it`,
       );
     }
     const fns: FnIr[] = this.fnIrs.map((f, i) => {
