@@ -559,6 +559,36 @@ describe('validateIr — table rules', () => {
       );
     });
 
+    test('the gate measures a nested tuple bottom-up, in one linear pass', () => {
+      // Every `components` read is counted: a gate that re-measured each tuple's whole subtree
+      // (`staticSizeOf` per level) would read the innermost levels once per enclosing level —
+      // ~depth² reads (~41 000 here) instead of a constant per level (~5).
+      const DEPTH = 200;
+      let reads = 0;
+      const counted = (name: string, components: readonly unknown[]): object => {
+        const o = { name, type: 'tuple' };
+        Object.defineProperty(o, 'components', {
+          enumerable: true,
+          get: () => {
+            reads += 1;
+            return components;
+          },
+        });
+        return o;
+      };
+      let type = counted('', [{ name: 'x', type: 'uint256' }]);
+      for (let d = 1; d < DEPTH; d += 1) {
+        type = counted('', [
+          counted('x', (type as { components: readonly unknown[] }).components),
+          { name: 'y', type: 'uint256' },
+        ]);
+      }
+      reads = 0;
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a hand-built nested tuple
+      expect(() => validateIr(ir({ values: [vi(type as EvsType)] }))).not.toThrow();
+      expect(reads).toBeLessThanOrEqual(16 * DEPTH);
+    });
+
     test('just below the ceiling is accepted', () => {
       // 32 · (2^27 − 1) = 2^32 − 32 bytes, alone and as the element of a dynamic array
       expect(() =>

@@ -62,11 +62,14 @@ map trace a revert or a program counter back to the read, check, or call that pr
 `compile()` always re-validates the IR before lowering it — every declared type (no empty
 tuple, at most four nested array levels, no static type of 2^32 bytes or more), operand types
 per operation, definition-before-use under the scope rules, cell types, call-graph acyclicity,
-return names, and in-place writes only into arrays the program allocated itself. The builder already enforced all of this at
-recording time; validating again means IR loaded with `deserializeIr` (see
-[Testing scripts](/guides/testing-scripts/)) cannot reach code generation in a shape the
-builder would never record. The one builder rule the IR layer relaxes is a non-empty return
-list: an IR program may return nothing (it returns `0x`).
+return names, and in-place writes only into arrays the program allocated itself. The builder
+already enforced all of this at recording time but one size: a struct output of a raw ABI whose
+members each fit but whose total is 2^32 bytes or more is recorded, and this pass is the first
+to reject it (`UNSUPPORTED_V0`, from `compile()` and `interpret()` alike). Validating again
+also means IR loaded with `deserializeIr` (see [Testing scripts](/guides/testing-scripts/))
+cannot reach code generation in a shape the builder would never record. The one builder rule
+the IR layer relaxes is a non-empty return list: an IR program may return nothing (it returns
+`0x`).
 
 ## Stage 3: dead-code elimination
 

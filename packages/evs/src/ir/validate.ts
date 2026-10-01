@@ -4,12 +4,12 @@
  * Re-checks the builder's invariants so deserialized IR cannot reach codegen in a shape the
  * builder never records (`deserializeIr → validateIr` is the trust boundary): every type in the
  * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels, no ABI-static
- * level of `MAX_STATIC_SIZE` bytes or more), operand
- * types per the op table, def-before-use under the scope rule (a `while` header dominates its
- * body; `if`/`else` branches are isolated; `fn` bodies see params only), unknown ids, single
- * static assignment of every ValueId, cell creation/typing/scoping, `break`/`continue` only
- * inside a loop body, call-graph acyclicity, return names, fnAbi type validity, `successOut` ⇔
- * try mode, and in-place writes only where the builder emits them (`arrset` on an `arrnew`).
+ * level of `MAX_STATIC_SIZE` bytes or more), operand types per the op table, def-before-use under
+ * the scope rule (a `while` header dominates its body; `if`/`else` branches are isolated; `fn`
+ * bodies see params only), unknown ids, single static assignment of every ValueId, cell
+ * creation/typing/scoping, `break`/`continue` only inside a loop body, call-graph acyclicity,
+ * return names, fnAbi type validity, `successOut` ⇔ try mode, and in-place writes only where the
+ * builder emits them (`arrset` on an `arrnew`).
  *
  * One builder rule is deliberately NOT an IR rule: `returns` may be empty. The builder refuses
  * `s.return({})` because viem cannot decode empty returndata, but an empty-returns program is
@@ -32,10 +32,10 @@ import {
   abiParamToType,
   arrayDepthOf,
   arrayTypeOf,
-  assertStaticSize,
   bitsOf,
   elemTypeOf,
   fixedLengthOf,
+  gateStaticLevels,
   IDENT_RE,
   identProblem,
   isArrayValueType,
@@ -51,6 +51,7 @@ import {
   isTupleTag,
   isTupleType,
   isWordType,
+  wordStaticSize,
   MAX_ARRAY_DEPTH,
   stringifyType,
   typeToAbiParam,
@@ -1056,7 +1057,13 @@ class IrValidator {
     this.checkAbiParam(typeToAbiParam('', type), what);
   }
 
-  private checkAbiParam(p: PlainAbiParam, what: string): void {
+  /**
+   * Checks `p` and returns its ABI static size (`null` when it is ABI-dynamic), measured bottom-up:
+   * a tuple's size is its members' sum as each member's own check returned it, so gating every
+   * level stays one linear pass over the param (re-measuring each subtree with `staticSizeOf`
+   * would be quadratic in the tuple nesting depth).
+   */
+  private checkAbiParam(p: PlainAbiParam, what: string): bigint | null {
     if (p.type.startsWith('tuple')) {
       if (!isTupleTag(p.type)) {
         this.fail(`${what}: malformed tuple tag ${JSON.stringify(p.type)}`);
@@ -1065,11 +1072,15 @@ class IrValidator {
       if (p.components === undefined || p.components.length === 0) {
         this.fail(`${what}: tuple type carries no components`);
       }
-      p.components.forEach((c, j) =>
-        this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`),
-      );
-      this.checkStaticSize(p, what);
-      return;
+      // every member is checked (and gated on its own) before the tuple is measured: a tuple
+      // with a dynamic member has no static size of its own
+      let members: bigint | null = 0n;
+      for (const [j, c] of p.components.entries()) {
+        const member = this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`);
+        members = members === null || member === null ? null : members + member;
+      }
+      const sum = members;
+      return gateStaticLevels(p.type, () => sum, this.sizeContext(what));
     }
     if (p.components !== undefined) {
       this.fail(`${what}: non-tuple type '${p.type}' must not carry components`);
@@ -1078,16 +1089,13 @@ class IrValidator {
       this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
     this.checkArrayDepth(p.type, what);
-    this.checkStaticSize(p, what);
+    return gateStaticLevels(p.type, wordStaticSize, this.sizeContext(what));
   }
 
-  /**
-   * The `MAX_STATIC_SIZE` gate the `t` constructors and `abi/layout` share, on a param whose
-   * shape (and every member's) is already checked. A tuple is measured after its members, which
-   * are gated on their own: a tuple with a dynamic member has no static size of its own.
-   */
-  private checkStaticSize(p: PlainAbiParam, what: string): void {
-    assertStaticSize(abiParamToType(p), `ScriptIr "${this.ir.name}" ${what}`);
+  /** The context of the `MAX_STATIC_SIZE` gate's `UNSUPPORTED_V0`, the one the `t` constructors
+   *  and `abi/layout` share. */
+  private sizeContext(what: string): string {
+    return `ScriptIr "${this.ir.name}" ${what}`;
   }
 
   /** The array-depth ceiling the builder, `abi/layout` and the decoders share. */
