@@ -16,6 +16,7 @@ import {
   isWordType,
   stringifyType,
 } from '../../core/types.js';
+import { eliminateDeadCode } from '../dce.js';
 import {
   type ScriptIr,
   type ValueId,
@@ -112,13 +113,21 @@ export interface InterpEnvOverrides {
   chainid?: bigint;
 }
 
+/**
+ * Runs `ir` against `chain` with `args`. By default it executes `eliminateDeadCode(ir)` — the
+ * IR `compile()` lowers — so the outcome is the shipped bytecode's: a checked op, bounds check
+ * or narrowing whose result nothing reads is dead code there, and its Panic with it (see
+ * `ir/dce.ts`). `opts.dce: false` executes the IR exactly as recorded instead, every revert
+ * guard included. `trace` paths index the IR that ran.
+ */
 export function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides },
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean },
 ): InterpResult {
   validateIr(ir);
+  const program = opts?.dce === false ? ir : eliminateDeadCode(ir);
   const maxSteps = opts?.maxSteps ?? DEFAULT_MAX_STEPS;
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) {
     throw new EvsTypeError(
@@ -126,7 +135,8 @@ export function interpret(
       `interpret: maxSteps must be a positive safe integer, got ${String(maxSteps)}`,
     );
   }
-  return new Interp(ir, chain, maxSteps, opts?.trace === true, resolveEnv(opts?.env)).run(args);
+  const env = resolveEnv(opts?.env);
+  return new Interp(program, chain, maxSteps, opts?.trace === true, env).run(args);
 }
 
 // ---------------------------------------------------------------------------

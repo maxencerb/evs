@@ -158,7 +158,7 @@ const fees = evscript({ name: 'fees', args: [t.uint256] }, (s, amount) => {
 });
 ```
 
-If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a literal division by zero, an out-of-range `toUint` of a known value — recording throws `EvsTypeError` (code `CERTAIN_PANIC`) at that line rather than compiling a guaranteed revert. If a guaranteed runtime panic is what you actually want, route one operand through a cell so its value is no longer statically known: `s.let(t.uint256, x).get()`.
+If a fold would **certainly panic** — `s.lit(t.uint8, 250).add(10n)`, a literal division by zero, an out-of-range `toUint` of a known value — recording throws `EvsTypeError` (code `CERTAIN_PANIC`) at that line rather than compiling a guaranteed revert. If a guaranteed runtime panic is what you actually want, route one operand through a cell so its value is no longer statically known: `s.let(t.uint256, x).get()`, and use the result (return it, or feed it to something that is kept). A result nothing reads is dead code: `compile()` drops it, its panic included (see [Unused results do not revert](/guides/testing-scripts/#unused-results-do-not-revert)).
 
 ## Worked example: share of supply in basis points
 

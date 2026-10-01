@@ -409,6 +409,8 @@ The bytecode itself is lowered from `eliminateDeadCode(script.ir)` — the pass 
 runs on every compile (see [How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)).
 It is exported (alias `dce`) so you can inspect exactly what was compiled: same tables, same
 site ids, dead statements gone, and a fixpoint — applying it twice changes nothing.
+`interpret(script.ir, …)` applies it too (opt out with `{ dce: false }`), so a dropped revert
+guard does not revert under the interpreter either.
 
 ```ts
 import { compile, eliminateDeadCode, evscript, serializeIr, t } from '@maxencerb/evs';
@@ -441,7 +443,8 @@ The IR is directly executable by the exported reference interpreter:
 `interpret(ir, args, chain, opts?)` runs a script against a `MockChain` (a
 `staticcall({ to, data })` hook, plus an optional `call({ to, data, kind, gas? })` oracle for the
 `s.call`/`s.simulate` verbs) and returns an `InterpResult` whose returndata and revert
-payloads are bit-for-bit what the compiled bytecode produces. `InterpEnvOverrides` (the
+payloads are bit-for-bit what the compiled bytecode produces: it runs `eliminateDeadCode(ir)`
+like `compile()` unless `opts.dce` is `false`. `InterpEnvOverrides` (the
 `opts.env` extension) models frame-dependent `s.env` values per call. See
 [testing scripts](/guides/testing-scripts/) for the full workflow.
 

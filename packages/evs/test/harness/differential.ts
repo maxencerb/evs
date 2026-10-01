@@ -4,7 +4,8 @@
  * vitest spreads the slices over its workers.
  *
  * For a corpus of builder scripts covering every op family, control flow, calls with mocks,
- * tryCall, and dynamic returns, `interpret(script.ir, args, mockChain)` must agree
+ * tryCall, and dynamic returns, `interpret(script.ir, args, mockChain)` (which, like
+ * `compile()`, runs the IR after dead-code elimination) must agree
  * BYTE-FOR-BYTE with `execRuntime(compile(script).runtimeBytecode, calldata, fixture)` on
  * both returndata and revert payloads (Panic codes, EvsDecodeError site ids, bubbled callee
  * reverts, tryCall zeroing). The mock chain and the harness fixtures are generated from the
@@ -150,12 +151,23 @@ export interface AnyScript {
 
 export type Outcome = { kind: 'return' | 'revert'; data: Hex };
 
+export interface AgreementOptions {
+  /**
+   * The script holds a dead statement that reverts for some arg set (a checked op, bounds
+   * check or narrowing whose result nothing reads). DCE drops it with its Panic, so the
+   * recorded IR (`interpret(ir, …, { dce: false })`) may revert where the shipped bytecode
+   * returns: the recorded-vs-shipped check is skipped and the caller pins both sides itself.
+   */
+  readonly deadRevertGuards?: boolean;
+}
+
 /**
  * Compiles twice — the default output AND its `optimize: true` twin (the built-in passes: the
  * liveness-based frame allocator, issue #41, and the peephole pass, issue #39) — checks the
- * always-on DCE pass (issue #40: `interpret(ir) == interpret(dce(ir))`, output validity,
- * idempotence), then for every arg set asserts byte-exact agreement between the reference
- * interpreter and BOTH compiled runtimes on the harness EVM. The optimized twin must also
+ * always-on DCE pass (issue #40: the recorded IR and its DCE output agree under the
+ * interpreter unless `deadRevertGuards`, output validity, idempotence), then for every arg set
+ * asserts byte-exact agreement between the reference interpreter (DCE applied, its default)
+ * and BOTH compiled runtimes on the harness EVM. The optimized twin must also
  * never be larger, never use a larger frame, never cost more gas, and carry exactly the same
  * site table (explainRevert attribution).
  * Returns the (agreed) outcomes so callers can pin expectations for specific cases.
@@ -165,9 +177,11 @@ export async function expectAgreement(
   argSets: readonly (readonly unknown[])[],
   table: CalleeTable = {},
   evmVersion: EvmVersion = 'cancun',
+  options: AgreementOptions = {},
 ): Promise<Outcome[]> {
-  // compile() lowers dce(ir) (issue #40): the corpus therefore also gates the DCE pass —
-  // interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir)) — plus idempotence and validity.
+  // compile() lowers dce(ir) (issue #40) and interpret() runs it too: the corpus therefore also
+  // gates the DCE pass — recorded IR == dce(ir) under the interpreter (no dead statement of the
+  // main corpus reverts) and dce(ir) == bytecode — plus idempotence and validity.
   const compiled: CompiledEvsScript = compile(script, { evmVersion });
   const dced = eliminateDeadCode(script.ir);
   expect(() => validateIr(dced), `${script.name}: dce output validates`).not.toThrow();
@@ -190,9 +204,13 @@ export async function expectAgreement(
     const label = `${script.name}(${args.map(String).join(', ')}) [${evmVersion}]`;
     const calldata = encodeFunctionData({ abi: compiled.abi, functionName: script.name, args });
     const fromInterp = interpret(script.ir, args, chain).outcome;
-    const fromDce = interpret(dced, args, chain).outcome;
-    expect(fromDce.kind, `${label}: dce interp outcome`).toBe(fromInterp.kind);
-    expect(fromDce.data, `${label}: dce interp payload`).toBe(fromInterp.data);
+    const fromDce = interpret(dced, args, chain, { dce: false }).outcome;
+    expect(fromDce, `${label}: interpret(ir) runs dce(ir)`).toEqual(fromInterp);
+    if (options.deadRevertGuards !== true) {
+      const fromRecorded = interpret(script.ir, args, chain, { dce: false }).outcome;
+      expect(fromRecorded.kind, `${label}: recorded-IR interp outcome`).toBe(fromInterp.kind);
+      expect(fromRecorded.data, `${label}: recorded-IR interp payload`).toBe(fromInterp.data);
+    }
     // oxlint-disable-next-line no-await-in-loop -- sequential by design: deterministic per-case labels
     const fromEvm = await execRuntime(compiled.runtimeBytecode, calldata, fixture);
     expect(fromEvm.success, `${label}: interp outcome is '${fromInterp.kind}'`).toBe(

@@ -42,11 +42,14 @@
  * `modarith` addmod/mulmod → `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x11)`),
  * bounds-checked `index`/`arrset` (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
  * only guarded a value nothing reads is itself dead work: a script that overflows while
- * computing an unused sum returns instead of panicking. This is the same rule the Solidity
- * optimizer applies to unused expressions, and it is what makes the pass an optimizer rather
- * than a no-op. Anything that must fail must feed a `throw`, a `call`, a return, or a live
- * cell. The differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`
- * on a corpus where no dead statement is the one that reverts.
+ * computing an unused sum returns instead of panicking. This is a deliberate evs choice, and
+ * it is what makes the pass an optimizer rather than a no-op; Solidity does NOT do this (solc
+ * 0.8.30 keeps the Panic of an unused `a - b;` with the optimizer off, on, and via-IR).
+ * Anything that must fail must feed a `throw`, a `call`, a return, or a live cell.
+ * `interpret()` runs this pass too (unless `opts.dce === false`), so the reference oracle
+ * models what ships. The differential suite checks the recorded IR, `dce(ir)` and
+ * `bytecode(dce(ir))` agree on its main corpus, where no dead statement reverts, and has a
+ * dedicated slice where one does: there the recorded IR panics and the other two return.
  *
  * The pass is idempotent (`dce(dce(ir))` is `dce(ir)`, by identity when nothing changes) and
  * returns a deep-frozen IR that re-validates: `lowerProgram` runs `validateIr` on its output.

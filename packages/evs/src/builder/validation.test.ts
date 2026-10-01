@@ -902,6 +902,7 @@ describe('checklist: all-literal certain-panic folds', () => {
       /Panic\(0x11\)/,
     );
     expect(e.message).toContain('s.let(t.uint256, x).get()');
+    expect(e.message).toContain('use the result');
   });
 
   test('sub underflow on unsigned', () => {

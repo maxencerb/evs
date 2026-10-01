@@ -121,17 +121,21 @@ Releases: see [Releasing](#releasing) below.
   table, one site id per statement). `validateIr` checks it, `eliminateDeadCode` (the one
   IR-level pass, always on and also exported as `dce`) drops statements whose results nothing
   observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
-  calls are the roots; a revert that only guarded an unused value is dead work too, like in
-  the Solidity optimizer — then codegen lowers each surviving statement through fixed
-  memory-slot templates to an assembly stream, the assembler lays it out (immediates only ever
-  come from `push`/`pushBytes`/`pushLabel` nodes: a bare `PUSH1`–`PUSH32` op node is rejected,
-  also when a `peephole` hook returns one), enforces the EIP-170
-  size check (through the `onLayout` hook `compile()` passes, before any fixup is patched, so a
-  program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps (`PUSH2`
-  fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
+  calls are the roots; a revert that only guarded an unused value is dead work too (an evs
+  choice: solc 0.8.30 keeps such a Panic with the optimizer off, on and via-IR), and
+  `interpret()` runs the same pass unless `opts.dce === false` — then codegen lowers each
+  surviving statement through fixed memory-slot templates to an assembly stream, the assembler
+  lays it out (immediates only ever come from `push`/`pushBytes`/`pushLabel` nodes: a bare
+  `PUSH1`–`PUSH32` op node is rejected, also when a `peephole` hook returns one), enforces the
+  EIP-170 size check (through the `onLayout` hook `compile()` passes, before any fixup is
+  patched, so a program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps
+  (`PUSH2` fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
   scan, a stack-height simulation (the operand stack must be empty at every statement
   boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
-  the differential suite checks `interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`.
+  the differential suite checks the recorded IR (`interpret(ir, …, { dce: false })`),
+  `interpret(ir)` (= `dce(ir)`) and the bytecode agree, except in the
+  `differential/dead-revert-guards` slice, where the dead statement is the one that reverts and
+  only the last two must agree.
   An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
   frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
   params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
@@ -235,8 +239,9 @@ Three tiers, all run by CI (`ci.yml`):
 - **unit** (`src/**/*.test.ts`, `test/harness/**/*.test.ts`) — in-process EVM harness
   (`@ethereumjs/evm`), including the anti-miscompilation core: the IR **interpreter vs the
   compiled bytecode** must agree byte-for-byte on returndata and revert payloads for every
-  fixture — for the default output and its `optimize: true` twin alike; ABI codecs vs viem's
-  `encodeAbiParameters` / `encodeFunctionData`.
+  fixture — for the default output and its `optimize: true` twin alike (the interpreter runs
+  `dce(ir)` like `compile()`; the recorded IR is checked too, see the pipeline note); ABI
+  codecs vs viem's `encodeAbiParameters` / `encodeFunctionData`.
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
