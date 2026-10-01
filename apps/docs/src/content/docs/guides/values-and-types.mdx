@@ -311,20 +311,22 @@ const buildPositions = evscript({ name: 'buildPositions', args: [t.address, t.ui
 A composite-array **literal** (a plain JS array of struct objects, of inner arrays, or of
 strings) is accepted wherever a value type is *coerced* — a call argument, an `s.return` value, or
 a tuple/array member slot (`s.tuple` / `Field.set` / `MutArray.set`) — and is built at record time
-into a fresh `[length][p0…]` block with reference semantics (not a flat data segment). The
-string-typed shapes (`uint256[][]`, `string[]`) can also be materialized directly with
-[`s.lit`](/reference/builder/#slit), because their type is a plain string; a `tuple[]` literal
-cannot — `s.lit` only accepts string-encoded types and rejects the `t.array(t.struct(...))` object
-with `EvsTypeError` (`TYPE_MISMATCH`), so build a `tuple[]` with `s.newArray` (above) or pass it
-through a coerced position (a call arg, below):
+into a fresh `[length][p0…]` block with reference semantics (not a flat data segment). Every
+shape can also be materialized directly with [`s.lit`](/reference/builder/#slit) or seeded into a
+cell with [`s.let(type, literal)`](/reference/builder/#slet), which build it the same way:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
 
+const Pos = t.struct({ liquidity: t.uint128, owner: t.address });
+
 const literals = evscript({ name: 'literals', args: [] }, (s) => {
-  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]); // uint256[][] — a string type
-  const tags = s.lit(t.array(t.string), ['alpha', 'beta']); // string[] — a string type
-  return s.return({ grid, tags });
+  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]); // uint256[][]
+  const tags = s.lit(t.array(t.string), ['alpha', 'beta']); // string[]
+  const positions = s.lit(t.array(Pos), [
+    { liquidity: 1n, owner: '0x0000000000000000000000000000000000000001' },
+  ]); // tuple[]
+  return s.return({ grid, tags, positions });
 });
 ```
 
@@ -426,7 +428,7 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
 | `t.struct`/`t.tuple` | object keyed by member name when every member is named, else an array (positional) | member-wise rules; omitted members default to their zero value (`0`, empty string/bytes/array, zeroed nested struct); an unknown key or an extra element throws `TYPE_MISMATCH` |
 
-Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
+Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. `s.lit` and `s.let(type, literal)` build a composite literal the same way, so a struct or `tuple[]` constant needs no coerced position to land in.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

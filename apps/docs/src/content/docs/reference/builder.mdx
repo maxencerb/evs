@@ -38,7 +38,9 @@ lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
 The explicit literal constructor, for when coercion via `IntoExpr` cannot infer the type you
 want. Literals are validated at recording time against [the coercion rules](/reference/types/).
 Word literals canonicalize into the bytecode as constants; dynamic literals (`string`, `bytes`,
-literal arrays) become bytecode data segments materialized by `CODECOPY` on first use.
+literal arrays) become bytecode data segments materialized by `CODECOPY` on first use. A
+`t.struct` / `t.tuple` literal and a composite-array literal (`tuple[]`, `T[][]`, `string[]`) are
+built at record time into a fresh block, exactly as when they are passed to a call or returned.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -60,7 +62,9 @@ let<t extends EvsType>(init: Expr<t>): Cell<t>;
 
 Declares a mutable cell — the only mutable binding in a script, and the way values escape
 `s.if` branches and loop bodies. The one-argument overload requires an `Expr` (the cell type is
-inferred); to seed a cell with a literal, use the two-argument overload. A `Cell` is **not** an
+inferred); to seed a cell with a literal, use the two-argument overload. The type can be any value
+type, a `t.struct` / `t.tuple` / `tuple[]` included (`s.let(Pos, { liquidity: 0n, owner })`); a
+composite cell holds a pointer, so `.set` rebinds it to another value. A `Cell` is **not** an
 `Expr`: reads are always an explicit `.get()`, so "snapshot vs current value" is visible at
 every use.
 
@@ -425,7 +429,10 @@ select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>
 Value-level conditional: returns `a` when `cond` is true, else `b`. **Both sides are eager** —
 they are already-computed values, so this never skips work (use `s.if` plus a cell for
 conditional execution). Branch types must match exactly, and at least one branch must be an
-`Expr`. The classic use is a default for a failed [`s.tryRead`](#stryread).
+`Expr`. The classic use is a default for a failed [`s.tryRead`](#stryread). When `cond` is known
+at recording (`true`, or a folded constant), the result is the chosen branch; a literal on the
+other side is still checked under the same rules as with a runtime condition, then dropped from
+the bytecode.
 
 ## The three calling verbs
 
@@ -703,6 +710,10 @@ package-internal helper: `Expr` results come back as fresh `Expr`s, `Tuple` resu
   never alias.
 - Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled
   fns are dropped. Recursion is unconstructible.
+- When recording the body throws (a bad literal, an invalid result), the definition is discarded,
+  so a script may catch the error and carry on without it. The exception is a body that defined
+  its own nested `s.fn` before it failed: that script cannot be finished, and `evscript` throws
+  `EvsScopeError` (`SCOPE_VIOLATION`).
 
 ```ts
 import { namedArg, evscript, t } from '@maxencerb/evs';

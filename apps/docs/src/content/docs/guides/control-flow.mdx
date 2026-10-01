@@ -83,7 +83,9 @@ return once at the end.
 `s.select(cond, a, b)` picks one of two already-computed values and returns an `Expr` directly
 — no cell needed. Both `a` and `b` are evaluated **eagerly**, before the selection; it is a
 value pick, not conditional execution. If one side must not execute (an expensive call, math
-that could panic), use `s.if` with a cell instead.
+that could panic), use `s.if` with a cell instead. A condition known at recording (`true`, or a
+comparison of constants) picks its side right away; the other side is still checked as if the
+condition were a runtime value, then dropped from the bytecode.
 
 ## Cells: s.let
 
@@ -97,7 +99,8 @@ across statements, branches, and loop iterations, allocate a `Cell`:
 | `cell.set(v)` | Store an `Expr` or literal of the cell's type                 |
 
 `s.let` has two forms: `s.let(t.uint256, 0n)` (explicit type, literal or `Expr` initializer)
-and `s.let(someExpr)` (type inferred from the initializer).
+and `s.let(someExpr)` (type inferred from the initializer). The explicit type can be any value
+type, structs and `tuple[]` included: `s.let(Pos, { liquidity: 0n, owner: ZERO })`.
 
 A `Cell` is deliberately **not** an `Expr` — passing one where an `Expr` is expected is a
 recording-time `EvsTypeError` telling you to call `.get()`. Every read is an explicit

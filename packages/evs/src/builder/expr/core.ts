@@ -63,7 +63,7 @@ import {
   memberName,
   allMembersNamed,
   tupleDebugTag,
-  assertV0Type,
+  assertValueType,
 } from './helpers.js';
 import type { Recorder } from './recorder.js';
 
@@ -675,15 +675,15 @@ export abstract class RecorderCore {
 
   lit(type: unknown, value: unknown): Expr {
     this.assertOpen('s.lit()');
-    assertV0Type(type, 's.lit()');
+    assertValueType(type, 's.lit()');
     if (isWordType(type)) {
       const { hex, logical } = this.wordLiteral(type, value);
       return makeExpr(this.self, this.wordConst(type, logical, hex));
     }
-    // an array literal takes the same route as a coerced one: composite elements (or staged
-    // handles among the elements) build element-wise; all-literal word arrays / string / bytes
-    // use the const path. A fixed-size type enforces its exact length either way.
-    if (isArrayValueType(type)) {
+    // an array or struct literal takes the same route as a coerced one: composite elements (or
+    // staged handles among the elements) and struct members build at record time; all-literal word
+    // arrays use the const path. A fixed-size type enforces its exact length either way.
+    if (isArrayValueType(type) || isTupleType(type)) {
       return makeExpr(this.self, this.coerceToId(value, type, 's.lit()'));
     }
     return makeExpr(this.self, this.dataConst(type, value));
@@ -691,27 +691,26 @@ export abstract class RecorderCore {
 
   letCell(a: unknown, b: unknown): CellImpl {
     this.assertOpen('s.let()');
-    let type: EvsType;
-    let init: unknown;
-    if (typeof a === 'string') {
-      assertV0Type(a, 's.let()');
-      if (b === undefined) {
-        throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
-      }
-      type = a;
-      init = b;
-    } else {
-      const c = this.classify(a, 's.let()');
-      if (c.kind !== 'expr') {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `s.let(init): init must be an Expr when no type is given — use s.let(type, literal) to type a literal`,
-        );
-      }
-      type = c.type;
-      init = a;
+    // the overload is picked by arity: a type is a string OR a tuple descriptor object, so the
+    // first argument's JS kind cannot tell `s.let(type, init)` from `s.let(initExpr)`.
+    if (b !== undefined) {
+      assertValueType(a, 's.let()');
+      return new CellImpl(this.self, this.makeCell(a, b));
     }
-    return new CellImpl(this.self, this.makeCell(type, init));
+    if (typeof a === 'string' || isTupleType(a)) {
+      // a malformed type string keeps its "unknown type" diagnosis; only a valid type is missing
+      // its init.
+      assertValueType(a, 's.let()');
+      throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
+    }
+    const c = this.classify(a, 's.let()');
+    if (c.kind !== 'expr') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.let(init): init must be an Expr when no type is given — use s.let(type, literal) to type a literal`,
+      );
+    }
+    return new CellImpl(this.self, this.makeCell(c.type, a));
   }
 
   protected makeCell(type: EvsType, init: unknown): CellId {

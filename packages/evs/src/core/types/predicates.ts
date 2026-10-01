@@ -253,6 +253,13 @@ export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
   return typeof s === 'string' ? s.endsWith(']') : s.type !== 'tuple';
 }
 
+/** A type with a length — the operand domain of `.length()` and the IR `len` statement:
+ *  `string`, `bytes` or any array (`T[]`/`T[N]`, any element). A plain tuple is a memref too
+ *  ({@link isDynamicType}) but has no length. */
+export function isLengthType(s: EvsType): boolean {
+  return isArrayValueType(s) || s === 'string' || s === 'bytes';
+}
+
 /** The fixed length `N` of an array type `T[N]`, or `null` for a dynamic `T[]`. Throws for a
  *  non-array type. Only the OUTERMOST suffix is consulted (`uint256[2][]` → `null`). */
 export function fixedLengthOf(s: ArrayType | TupleType): number | null {

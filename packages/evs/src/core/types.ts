@@ -82,6 +82,7 @@ export {
   isDynamicType,
   isPackedEncodable,
   isArrayValueType,
+  isLengthType,
   fixedLengthOf,
   elemTypeOf,
   typesEqual,
