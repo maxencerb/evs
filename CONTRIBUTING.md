@@ -164,7 +164,12 @@ Releases: see [Releasing](#releasing) below.
   outputs are all words snapshots its returndata above the free pointer without bumping it (the
   words are copied into their slots at once); `callSiteAllocates` in `codegen/call/shared.ts`
   decides this for both the emitter and the `LOOP_ALLOCATION` diagnostic, so the two cannot
-  drift. Every word in a slot is
+  drift. Memory above the free pointer is dirty (calldata images, rolled-back and transient
+  snapshots): the construction templates (`s.newArray`, `s.tuple`, typed zero values, dynamic
+  literals) allocate through `emitAlloc` (`codegen/memory.ts`), which zero-fills a block only
+  when one of its words would be read before it is written — a word slot left to its zero value;
+  memref slots and literal images are always written, so those blocks skip the fill. Every word
+  in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);
   dynamic values and tuples are pointers. Every array — `T[]` and fixed-size `T[N]` alike — is a
   length-prefixed block (`[len][slot…]`, `len === N` for a `T[N]`) of inline words or element

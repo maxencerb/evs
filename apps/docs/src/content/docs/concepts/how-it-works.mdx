@@ -228,8 +228,13 @@ From there:
   [`LOOP_ALLOCATION`](/reference/diagnostics/)). A read whose outputs are all words copies them
   into their slots straight from a transient returndata snapshot, so it allocates nothing.
 - **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
-  transiently without bumping, so the return encoder zero-pads dynamic tails explicitly and
-  `s.newArray` zero-fills its buffer.
+  transiently without bumping, and a failed `try*` decode rolls the free pointer back over its
+  returndata copy. So the return encoder zero-pads dynamic tails explicitly, and a fresh
+  allocation is zero-filled whenever one of its words would otherwise be read unwritten — for
+  example a word-element `s.newArray`, an `s.tuple` with an omitted word member, or the zero
+  value of a struct with a word member or of a fixed-size word array. Blocks whose every word is
+  written right away (a `string[]`'s element pointers, a struct of only strings and
+  arrays, a literal) skip the fill.
 
 ## What evs deliberately does not do (yet)
 

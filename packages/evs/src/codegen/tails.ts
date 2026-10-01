@@ -22,9 +22,16 @@
  *   @badcd:          4-byte-payload variant — revert(0, 4) of sel(EvsInvalidCalldata())
  *   @memcpy:         checked subroutine (entry height 4: [ret, dst, src, len]); copies
  *                    ceil32(len) bytes word-wise, returns via dynamic JUMP.
+ *
+ * The three selector reverts are one emitter, {@link emitSelectorRevert}, which a zero-arg
+ * `s.throw` (`codegen/lower/composites.ts`) reuses inline.
  */
 
-import { selectorOf } from '../abi/artifact.js';
+import {
+  EVS_DECODE_ERROR_SELECTOR,
+  EVS_INVALID_CALLDATA_SELECTOR,
+  PANIC_SELECTOR,
+} from '../abi/artifact.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { selectorBytes } from '../core/bytes.js';
@@ -33,21 +40,39 @@ import type { SiteId } from '../ir/nodes.js';
 import type { SharedTails } from './abi.js';
 
 // ---------------------------------------------------------------------------
-// selectors (computed once)
+// selector reverts
 // ---------------------------------------------------------------------------
 
-/** `bytes4(keccak256("Panic(uint256)"))` — solc's panic selector. */
-const PANIC_SELECTOR: Hex = '0x4e487b71';
-const DECODE_ERROR_SELECTOR: Hex = selectorOf('EvsDecodeError', ['uint256']);
-const INVALID_CALLDATA_SELECTOR: Hex = selectorOf('EvsInvalidCalldata', []);
-
-/** `PUSH4 <sel> PUSH1 0xE0 SHL PUSH0 MSTORE` — selector word into mem[0..32). Net stack 0. */
-function emitSelectorStore(w: AsmWriter, selector: Hex): void {
-  w.pushBytes(selectorBytes(selector, 'codegen/tails'), { note: `selector ${selector}` });
+/**
+ * `revert(selector ‖ word?)` with the selector word stored at `mem[0..32)`:
+ *
+ *   PUSH4 <sel> PUSH1 0xE0 SHL PUSH0 MSTORE [PUSH1 0x04 MSTORE] PUSH1 <size> PUSH0 REVERT
+ *
+ * With `withTopWord`, the word on top of the stack becomes the single `uint256` argument
+ * (`mem[4..36)`, a 36-byte payload: `Panic(code)`, `EvsDecodeError(site)`); without it the
+ * payload is the bare 4-byte selector (`EvsInvalidCalldata()`, a zero-arg `s.throw`). Memory is
+ * dead before a revert, so the scratch words are free to clobber. `headNote` annotates the
+ * selector push (default `selector <sel>`), `note` the REVERT.
+ */
+export function emitSelectorRevert(
+  w: AsmWriter,
+  selector: Hex,
+  opts: { readonly withTopWord: boolean; readonly note: string; readonly headNote?: string },
+): void {
+  w.pushBytes(selectorBytes(selector, 'codegen/tails'), {
+    note: opts.headNote ?? `selector ${selector}`,
+  });
   w.push(0xe0);
   w.op('SHL'); // [selWord, …]
   w.push(0);
-  w.op('MSTORE'); // […]
+  w.op('MSTORE'); // […]   mem[0..4) = selector
+  if (opts.withTopWord) {
+    w.push(4);
+    w.op('MSTORE'); // mem[4..36) = the top word
+  }
+  w.push(opts.withTopWord ? 0x24 : 4);
+  w.push(0);
+  w.op('REVERT', { note: opts.note }); // revert(0, 36) / revert(0, 4)
 }
 
 // ---------------------------------------------------------------------------
@@ -141,32 +166,25 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
       w.op('JUMP');
     }
     w.label(panic, 'any'); // [code, …dead]
-    emitSelectorStore(w, PANIC_SELECTOR); // [code, …]
-    w.push(4);
-    w.op('MSTORE'); // mem[4..36) = code
-    w.push(0x24);
-    w.push(0);
-    w.op('REVERT', { note: 'Panic(code)' }); // revert(0, 36)
+    emitSelectorRevert(w, PANIC_SELECTOR, { withTopWord: true, note: 'Panic(code)' });
   }
 
   // -- @decode_revert: EvsDecodeError(uint256 site) -------------------------------
   if (w.isReferenced(tails.decodeRevert)) {
     w.label(tails.decodeRevert, 'any'); // [site, …dead]
-    emitSelectorStore(w, DECODE_ERROR_SELECTOR);
-    w.push(4);
-    w.op('MSTORE'); // mem[4..36) = site
-    w.push(0x24);
-    w.push(0);
-    w.op('REVERT', { note: 'EvsDecodeError(site)' }); // revert(0, 36)
+    emitSelectorRevert(w, EVS_DECODE_ERROR_SELECTOR, {
+      withTopWord: true,
+      note: 'EvsDecodeError(site)',
+    });
   }
 
   // -- @badcd: EvsInvalidCalldata() ------------------------------------------------
   if (w.isReferenced(tails.invalidCalldata)) {
     w.label(tails.invalidCalldata, 'any');
-    emitSelectorStore(w, INVALID_CALLDATA_SELECTOR);
-    w.push(4);
-    w.push(0);
-    w.op('REVERT', { note: 'EvsInvalidCalldata()' }); // revert(0, 4)
+    emitSelectorRevert(w, EVS_INVALID_CALLDATA_SELECTOR, {
+      withTopWord: false,
+      note: 'EvsInvalidCalldata()',
+    });
   }
 
   // -- @memcpy word-loop subroutine (pre-cancun only) ------------------------------
@@ -180,40 +198,39 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
  * — `emitMemCopy` pushes the return label over the caller's `[dst, src, len]`, which the
  * convention requires to be the *entire* stack. Copies `ceil32(len)` bytes in 32-byte words
  * (over-copy of the trailing partial word is the caller's contract — they zero-pad after),
- * then returns via dynamic JUMP with everything consumed.
+ * front to back, then returns via dynamic JUMP with everything consumed.
+ *
+ * One byte offset `i` drives both addresses (`src + i`, `dst + i`) and steps by 32 while
+ * `i < len`, so `len` itself is the bound (no rounding): a two-instruction setup, then 67 gas
+ * per word.
  */
 function emitMemcpySubroutine(w: AsmWriter, entry: LabelId): void {
   const loop = w.newLabel(TAIL_LABEL.memcpyLoop);
   const done = w.newLabel(TAIL_LABEL.memcpyDone);
   w.label(entry, 4); // [ret, dst, src, len]
   w.op('SWAP3'); // [len, dst, src, ret]
-  w.push(31);
-  w.op('ADD');
-  w.push(5);
-  w.op('SHR'); // [n = ceil32(len)/32, dst, src, ret]
-  w.label(loop, 4);
-  w.op('DUP1');
+  w.push(0); // [i = 0, len, dst, src, ret]
+  w.label(loop, 5);
+  w.op('DUP2');
+  w.op('DUP2');
+  w.op('LT'); // [i < len, i, len, dst, src, ret]
   w.op('ISZERO');
   w.pushLabel(done);
-  w.op('JUMPI'); // [n, dst, src, ret]
-  w.op('DUP3');
-  w.op('MLOAD'); // [word, n, dst, src, ret]
-  w.op('DUP3');
-  w.op('MSTORE'); // [n, dst, src, ret]      mem[dst] = word
-  w.op('SWAP1');
-  w.push(32);
+  w.op('JUMPI'); // [i, len, dst, src, ret]
+  w.op('DUP4');
+  w.op('DUP2');
   w.op('ADD');
-  w.op('SWAP1'); // dst += 32
-  w.op('SWAP2');
-  w.push(32);
+  w.op('MLOAD'); // [word = mem[src+i], i, len, dst, src, ret]
+  w.op('DUP4');
+  w.op('DUP3');
   w.op('ADD');
-  w.op('SWAP2'); // src += 32
-  w.push(1);
-  w.op('SWAP1');
-  w.op('SUB'); // [n−1, dst, src, ret]
+  w.op('MSTORE'); // [i, len, dst, src, ret]      mem[dst+i] = word
+  w.push(32);
+  w.op('ADD'); // [i+32, len, dst, src, ret]
   w.pushLabel(loop);
   w.op('JUMP');
-  w.label(done, 4); // [0, dst, src, ret]
+  w.label(done, 5); // [i, len, dst, src, ret]
+  w.op('POP');
   w.op('POP');
   w.op('POP');
   w.op('POP'); // [ret]

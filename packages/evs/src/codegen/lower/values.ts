@@ -8,7 +8,7 @@ import { padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
 import { bitsOf, isBytesN, isSigned } from '../../core/types.js';
 import type { Stmt } from '../../ir/nodes.js';
 import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
-import { FREE_PTR } from '../memory.js';
+import { emitAlloc } from '../memory.js';
 import {
   type LowerCtx,
   wordConstValue,
@@ -25,7 +25,6 @@ import {
   maxUint,
   maxInt,
   STMT_BASELINE,
-  emitBumpAlloc,
 } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -44,21 +43,19 @@ export function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: 
   }
   // dynamic literal: data segment + CODECOPY into a fresh allocation.
   // The image is the memref `[len:32][payload…]`, zero-padded to a word boundary so the
-  // trailing partial word lands clean (memory above the free pointer is not zero).
+  // trailing partial word lands clean (memory above the free pointer is not zero) — the CODECOPY
+  // writes every byte of the block, so the allocation needs no zero-fill.
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
   const label = ctx.dataSeg(padded);
-  w.push(FREE_PTR, meta(`literal ${fmtType(s.type)} (${bytes.length}B)`));
-  w.op('MLOAD'); // [ptr]
+  emitAlloc(w, padded.length, {
+    zeroFill: false,
+    note: `literal ${fmtType(s.type)} (${bytes.length}B)`,
+  }); // [ptr]
   w.push(padded.length); // [size, ptr]
   w.pushLabel(label); // [src, size, ptr]
   w.op('DUP3'); // [ptr, src, size, ptr]
   w.op('CODECOPY'); // [ptr]
-  w.op('DUP1');
-  w.push(padded.length);
-  w.op('ADD'); // [ptr+size, ptr]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [ptr]          freePtr bumped
   storeOut(w, ctx, s.out); // []
 }
 
@@ -259,7 +256,7 @@ function emitWordToString(w: AsmWriter, size: number, site: number): void {
   w.pushLabel(scan);
   w.op('JUMP');
   w.label(done, STMT_BASELINE + 2); // [n, v]
-  emitBumpAlloc(w, 64); // [ptr, n, v]
+  emitAlloc(w, 64, { zeroFill: false }); // [ptr, n, v]
   w.op('SWAP1');
   w.op('DUP2');
   w.op('MSTORE'); // [ptr, v]             mem[ptr] = n

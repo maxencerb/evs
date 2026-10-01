@@ -258,4 +258,82 @@ describe.each(EVM_VERSIONS)('composite zero values (issue #71) [%s]', (evmVersio
       l: [rich, rich],
     });
   });
+
+  test('allocations over dirty memory: only blocks with an unwritten word slot are zero-filled', async () => {
+    const garbageAbi = [
+      {
+        type: 'function',
+        name: 'garbage',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          {
+            name: '',
+            type: 'tuple',
+            components: [
+              { name: 's', type: 'string' },
+              { name: 'b', type: 'bytes' },
+            ],
+          },
+        ],
+      },
+    ] as const satisfies Abi;
+    const Memrefs = t.struct({
+      s: t.string,
+      b: t.bytes,
+      xs: t.array(t.uint256),
+      inner: t.struct({ label: t.string }),
+    });
+    const Mixed = t.struct({ n: t.uint256, s: t.string });
+    const script = evscript({ name: 'dirtyAlloc', args: [t.uint256] }, (s, n) => {
+      // the head offset 2^256−1 fails the decode, and the try rolls the free pointer back over
+      // its all-ones returndata snapshot: every allocation below (the try's own zero value
+      // first) starts on dirty memory
+      const r = s.tryRead({ address: DEAD, abi: garbageAbi, functionName: 'garbage' });
+      const all = s.tuple(Memrefs); // no word slot: no fill
+      const part = s.tuple(Memrefs, { s: 'x' });
+      const mixed = s.tuple(Mixed, { s: 'y' }); // omitted word member: fill kept
+      const full = s.tuple(Mixed, { n, s: 'z' }); // every member provided: no fill
+      const strs = s.newArray(t.string, n);
+      const pairs = s.newArray(t.array(t.string, 2), n); // string[2] zeros per element
+      const words = s.newArray(t.uint256, n); // word elements: fill kept
+      const fixed = s.newArray(t.string, 2, { fixed: true });
+      return s.return({
+        ok: r.success,
+        r: r.value,
+        all,
+        part,
+        mixed,
+        full,
+        strs: strs.expr(),
+        pairs: pairs.expr(),
+        words: words.expr(),
+        fixed: fixed.expr(),
+      });
+    });
+    const ones = concatHex(...Array.from({ length: 96 }, () => word(-1n)));
+    const [o] = await expectAgreement(
+      script,
+      [[3n]],
+      { [DEAD]: { kind: 'return', data: ones } },
+      evmVersion,
+    );
+    const zeroMemrefs = { s: '', b: '0x', xs: [], inner: { label: '' } };
+    expect(decode(script, o?.data)).toEqual({
+      ok: false,
+      r: { s: '', b: '0x' },
+      all: zeroMemrefs,
+      part: { ...zeroMemrefs, s: 'x' },
+      mixed: { n: 0n, s: 'y' },
+      full: { n: 3n, s: 'z' },
+      strs: ['', '', ''],
+      pairs: [
+        ['', ''],
+        ['', ''],
+        ['', ''],
+      ],
+      words: [0n, 0n, 0n],
+      fixed: ['', ''],
+    });
+  });
 });
