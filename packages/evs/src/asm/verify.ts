@@ -3,7 +3,8 @@
  *
  * 1. `verifyJumpdests` — consensus-identical JUMPDEST scan (PUSH immediates are not jumpdests);
  *    the same linear opcode scan rejects any FORBIDDEN opcode byte in the code region.
- * 2. `verifyStack` — stack-height simulation with `checked` and `'any'` label classes.
+ * 2. `verifyStack` — stack-height simulation with `checked` and `'any'` label classes, over the
+ *    `stackHeights` walk (exported: the peephole's depth budget reads the same heights).
  * 3. `verifyShapes` — RETURNDATACOPY windows, fork gating.
  *
  * Every failure is an `EvsInternalError` ("bug in evs, please report"): these passes guard
@@ -87,8 +88,68 @@ function labelName(
   return name === undefined ? `label #${label}${at}` : `@${name}${at}`;
 }
 
+/** Ops that end a region: nothing after them is reachable until the next label. */
+function isTerminator(op: Mnemonic): boolean {
+  return op === 'RETURN' || op === 'REVERT' || op === 'STOP' || op === 'INVALID';
+}
+
 /**
- * Simulates stack heights across the node stream (pass 2).
+ * The simulated operand-stack height BEFORE a node: a number inside a checked region, `'any'`
+ * inside an `'any'` region (whose relative counter no rule reads), `null` where the node is
+ * unreachable (after a JUMP or a terminator, until the next label).
+ */
+export type StackHeight = number | 'any' | null;
+
+/**
+ * The stack-height walk shared by `verifyStack` and the peephole's depth budget: entry `i` is
+ * the height before `nodes[i]`, and the extra last entry is the height after the stream (non-
+ * `null` there means the code falls off the end). Pure and total — it never fails: underflow,
+ * mismatches and budget overruns are `verifyStack`'s to report.
+ *
+ * Transitions: the program starts at 0 (checked); every `label` resets to its annotation (on a
+ * verifier-clean stream a reachable fallthrough already carries that height); a push adds 1; an
+ * op adds `pushes − pops`; JUMP and the terminators make what follows unreachable; JUMPI pops
+ * its two operands and falls through. Data nodes change nothing.
+ */
+export function stackHeights(nodes: readonly AsmNode[]): StackHeight[] {
+  // the state is kept as three plain locals (not one `StackHeight`) so the hot loop stays on
+  // small-integer arithmetic; it is encoded once per node.
+  let height = 0;
+  let inAny = false;
+  let reachable = true;
+  const heights: StackHeight[] = [];
+  for (const node of nodes) {
+    heights.push(!reachable ? null : inAny ? 'any' : height);
+    switch (node.k) {
+      case 'label':
+        reachable = true;
+        inAny = node.stack === 'any';
+        height = node.stack === 'any' ? 0 : node.stack;
+        break;
+      case 'dataLabel':
+      case 'data':
+        break;
+      case 'push':
+      case 'pushBytes':
+      case 'pushLabel':
+        height += 1;
+        break;
+      case 'op':
+        if (node.op === 'JUMP' || isTerminator(node.op)) {
+          reachable = false;
+        } else {
+          const info = OPS[node.op];
+          height += info.pushes - info.pops; // JUMPI: −2, falls through
+        }
+        break;
+    }
+  }
+  heights.push(!reachable ? null : inAny ? 'any' : height);
+  return heights;
+}
+
+/**
+ * Checks stack heights across the node stream (pass 2), over the `stackHeights` walk.
  *
  * Two label classes: `stack: n` (checked — every statically-known in-edge and the fallthrough
  * must agree with `n`; underflow and template depth > 16 are errors) and `stack: 'any'`
@@ -124,17 +185,13 @@ export function verifyStack(
 
   const name = (l: LabelId): string => labelName(l, names, labelPcs);
 
-  let mode: 'checked' | 'any' = 'checked';
-  let height = 0;
-  let reachable = true;
-  let prevPushLabel: LabelId | null = null;
-
-  const checkEdge = (target: LabelId, edgeHeight: number): void => {
+  /** A statically-known edge into `target`, carrying `edgeHeight` (`'any'` from an 'any' region). */
+  const checkEdge = (target: LabelId, edgeHeight: number | 'any'): void => {
     if (dataLabels.has(target)) fail(`jump targets data label ${name(target)}`);
     const ann = annotations.get(target);
     if (ann === undefined) fail(`jump targets undefined label ${name(target)}`);
     if (ann === 'any') return; // panic tails & co. accept any incoming height
-    if (mode === 'any') {
+    if (edgeHeight === 'any') {
       fail(
         `'any' region jumps to checked label ${name(target)} — 'any' regions must terminate or jump only to 'any' labels`,
       );
@@ -146,128 +203,78 @@ export function verifyStack(
     }
   };
 
-  for (const node of nodes) {
+  const heights = stackHeights(nodes);
+  for (let i = 0; i < nodes.length; i++) {
+    const node = nodes[i];
+    const h = heights[i];
+    if (node === undefined || h === undefined || h === null) {
+      // unreachable: only a label (which `stackHeights` resets on) can make code live again
+      continue;
+    }
     switch (node.k) {
       case 'label': {
-        if (reachable) {
-          // fallthrough into the label
-          if (node.stack === 'any') {
-            mode = 'any';
-            height = 0;
-          } else {
-            if (mode === 'any') {
-              fail(`'any' region falls through into checked label ${name(node.label)}`);
-            }
-            if (height !== node.stack) {
-              fail(
-                `stack height mismatch on fallthrough into ${name(node.label)}: fallthrough carries ${height}, label is annotated ${node.stack}`,
-              );
-            }
-            height = node.stack;
-          }
-        } else {
-          reachable = true;
-          if (node.stack === 'any') {
-            mode = 'any';
-            height = 0;
-          } else {
-            mode = 'checked';
-            height = node.stack;
-          }
+        // reachable fallthrough into the label
+        if (node.stack === 'any') break;
+        if (h === 'any') fail(`'any' region falls through into checked label ${name(node.label)}`);
+        if (h !== node.stack) {
+          fail(
+            `stack height mismatch on fallthrough into ${name(node.label)}: fallthrough carries ${h}, label is annotated ${node.stack}`,
+          );
         }
-        prevPushLabel = null;
         break;
       }
       case 'dataLabel':
       case 'data': {
-        if (reachable) {
-          fail(
-            mode === 'any'
-              ? `'any' region falls through into the data segment — it must terminate in REVERT/RETURN/INVALID`
-              : `code falls through into the data segment`,
-          );
-        }
-        prevPushLabel = null;
-        break;
+        fail(
+          h === 'any'
+            ? `'any' region falls through into the data segment — it must terminate in REVERT/RETURN/INVALID`
+            : `code falls through into the data segment`,
+        );
       }
       case 'push':
       case 'pushBytes':
       case 'pushLabel': {
-        if (!reachable) {
-          prevPushLabel = null;
-          break;
-        }
-        height += 1;
-        if (mode === 'checked' && height > MAX_TEMPLATE_DEPTH) {
+        if (h !== 'any' && h + 1 > MAX_TEMPLATE_DEPTH) {
           fail(
-            `simulated stack depth ${height} exceeds the ${MAX_TEMPLATE_DEPTH}-item template budget`,
+            `simulated stack depth ${h + 1} exceeds the ${MAX_TEMPLATE_DEPTH}-item template budget`,
           );
         }
-        prevPushLabel = node.k === 'pushLabel' ? node.label : null;
         break;
       }
       case 'op': {
-        if (!reachable) {
-          prevPushLabel = null;
-          break;
-        }
         const info = OPS[node.op];
-        if (mode === 'checked' && height < info.pops) {
+        if (h !== 'any' && h < info.pops) {
           fail(
-            `stack underflow at ${node.op}: needs ${info.pops} item(s), simulated height is ${height}`,
+            `stack underflow at ${node.op}: needs ${info.pops} item(s), simulated height is ${h}`,
           );
         }
-        switch (node.op) {
-          case 'JUMP': {
-            if (prevPushLabel !== null) {
-              checkEdge(prevPushLabel, height - 1);
-            } else if (mode === 'any') {
-              fail(
-                `'any' region performs a dynamic JUMP — its targets cannot be proven to be 'any' labels`,
-              );
-            }
-            height -= 1;
-            reachable = false;
-            break;
+        if (node.op === 'JUMP' || node.op === 'JUMPI') {
+          // the edge carries the height left once the jump consumed its operands
+          const prev = nodes[i - 1];
+          if (prev?.k === 'pushLabel') {
+            checkEdge(prev.label, h === 'any' ? 'any' : h - info.pops);
+          } else if (h === 'any') {
+            fail(
+              `'any' region performs a dynamic ${node.op} — its targets cannot be proven to be 'any' labels`,
+            );
           }
-          case 'JUMPI': {
-            if (prevPushLabel !== null) {
-              checkEdge(prevPushLabel, height - 2);
-            } else if (mode === 'any') {
-              fail(
-                `'any' region performs a dynamic JUMPI — its targets cannot be proven to be 'any' labels`,
-              );
-            }
-            height -= 2;
-            break;
-          }
-          case 'RETURN':
-          case 'REVERT':
-          case 'STOP':
-          case 'INVALID': {
-            height -= info.pops;
-            reachable = false;
-            break;
-          }
-          default: {
-            height += info.pushes - info.pops;
-            if (mode === 'checked' && height > MAX_TEMPLATE_DEPTH) {
-              fail(
-                `simulated stack depth ${height} after ${node.op} exceeds the ${MAX_TEMPLATE_DEPTH}-item template budget`,
-              );
-            }
-            break;
+        } else if (!isTerminator(node.op) && h !== 'any') {
+          const after = h + info.pushes - info.pops;
+          if (after > MAX_TEMPLATE_DEPTH) {
+            fail(
+              `simulated stack depth ${after} after ${node.op} exceeds the ${MAX_TEMPLATE_DEPTH}-item template budget`,
+            );
           }
         }
-        prevPushLabel = null;
         break;
       }
     }
   }
 
-  if (reachable) {
+  const end = heights[nodes.length];
+  if (end !== null && end !== undefined) {
     fail(
-      mode === 'any'
+      end === 'any'
         ? `'any' region falls through past the end of the code — it must terminate in REVERT/RETURN/INVALID`
         : `code falls through past the end of the node stream without a terminator`,
     );
@@ -288,6 +295,12 @@ const FORK_RANK: Readonly<Record<EvmVersion | 'frontier', number>> = Object.free
 function isDup(node: AsmNode): boolean {
   return node.k === 'op' && isDupOp(node.op);
 }
+
+/**
+ * Length of the node window `verifyShapes` (a) requires immediately before every
+ * RETURNDATACOPY. Exported for the peephole pass, which must never rewrite those nodes.
+ */
+export const SANCTIONED_RETURNDATACOPY_WINDOW = 3;
 
 /**
  * Shape lints:
@@ -311,6 +324,8 @@ export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmV
       fail(`${op} requires evmVersion >= ${info.since}, but the build targets ${opts.evmVersion}`);
     }
     if (op === 'RETURNDATACOPY') {
+      // These three fixed-role reads ARE the window SANCTIONED_RETURNDATACOPY_WINDOW (3) names:
+      // change both together (verify.test.ts pins the length against the writer).
       const a = nodes[i - 3];
       const b = nodes[i - 2];
       const c = nodes[i - 1];

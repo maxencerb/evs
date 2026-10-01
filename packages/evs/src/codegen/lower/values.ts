@@ -17,7 +17,6 @@ import {
   internal,
   typeOf,
   loadOperand,
-  lowerInternals,
   asWordType,
   numClass,
   emitFixpointCheck,
@@ -121,7 +120,7 @@ export function lowerAccount(
   s: Extract<Stmt, { k: 'account' }>,
   ctx: LowerCtx,
 ): void {
-  if (s.op === 'balance' && lowerInternals(ctx).selfAddresses.has(s.a)) {
+  if (s.op === 'balance' && ctx.selfAddresses.has(s.a)) {
     w.op('SELFBALANCE', meta('account balance (self)'));
     storeOut(w, ctx, s.out);
     return;

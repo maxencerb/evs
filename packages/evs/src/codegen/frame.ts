@@ -66,8 +66,22 @@ import { FRAME_BASE } from './memory.js';
 export interface FrameLayout {
   slotOfValue(v: ValueId): number | null; // null = folded const (operand becomes push)
   slotOfCell(c: CellId): number;
-  fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] };
+  fnRegion(f: FnId): FnRegion;
   frameEnd: number; // 0x80 + 32 × slotCount, ceil to 32
+}
+
+/** The static frame slots of one reachable fn. */
+export interface FnRegion {
+  /** One slot per param — the caller MSTOREs the args here before the jump. */
+  params: readonly number[];
+  /** One slot per result — the callee's epilogue writes them, the caller copies them out. */
+  results: readonly number[];
+  /**
+   * The return-address spill slot: the callee stores the stack-passed return address here at
+   * entry and reloads it for the return `JUMP`, so its body runs at stack baseline 0 (see the
+   * fncall convention in `lower.ts`).
+   */
+  returnAddress: number;
 }
 
 export interface FrameOptions {
@@ -79,25 +93,6 @@ const SLOT_BYTES = 32;
 
 function internal(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `codegen/frame: ${message}`);
-}
-
-// ---------------------------------------------------------------------------
-// internal: per-fn return-address spill slots (module-private channel to lower/statements.ts)
-// ---------------------------------------------------------------------------
-
-const RET_SLOTS = new WeakMap<FrameLayout, ReadonlyMap<FnId, number>>();
-
-/**
- * @internal Return-address spill slot of fn `f` (allocated by `layoutFrames` for every
- * reachable fn). The callee stores the stack-passed return address here at entry and reloads
- * it for the return `JUMP`, so its body runs at stack baseline 0 (see lower.ts module notes).
- */
-export function fnReturnAddressSlot(frame: FrameLayout, f: FnId): number {
-  const slot = RET_SLOTS.get(frame)?.get(f);
-  if (slot === undefined) {
-    throw internal(`fnReturnAddressSlot: fns[${f}] has no frame region (uncalled or unknown fn)`);
-  }
-  return slot;
 }
 
 // ---------------------------------------------------------------------------
@@ -472,8 +467,7 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
   // 2. cells
   const cellSlots = ir.cells.map(() => take());
 
-  const regions = new Map<FnId, { params: readonly number[]; results: readonly number[] }>();
-  const retSlots = new Map<FnId, number>();
+  const regions = new Map<FnId, FnRegion>();
 
   if (options?.optimize === true) {
     // 3. main pool — packed by live range
@@ -511,8 +505,7 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
       });
       packInto(fn.body, poolOf(fn.body), fn.resultValues);
       const results = fn.results.map(() => take());
-      regions.set(f, { params, results });
-      retSlots.set(f, take());
+      regions.set(f, { params, results, returnAddress: take() });
     });
   } else {
     // 3. remaining values in id order (skip args, skip folded consts)
@@ -531,14 +524,13 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
         return slot;
       });
       const results = fn.results.map(() => take());
-      regions.set(f, { params, results });
-      retSlots.set(f, take());
+      regions.set(f, { params, results, returnAddress: take() });
     });
   }
 
   const frameEnd = cursor; // FRAME_BASE + 32 × slotCount — already 32-aligned
 
-  const layout: FrameLayout = {
+  return {
     slotOfValue(v: ValueId): number | null {
       if (!Number.isInteger(v) || v < 0 || v >= ir.values.length) {
         throw internal(`slotOfValue: unknown ValueId ${v}`);
@@ -555,7 +547,7 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
       if (slot === undefined) throw internal(`slotOfCell: unknown CellId ${c}`);
       return slot;
     },
-    fnRegion(f: FnId): { params: readonly number[]; results: readonly number[] } {
+    fnRegion(f: FnId): FnRegion {
       const region = regions.get(f);
       if (region === undefined) {
         throw internal(`fnRegion: fns[${f}] has no frame region (uncalled or unknown fn)`);
@@ -564,6 +556,4 @@ export function layoutFrames(ir: ScriptIr, options?: FrameOptions): FrameLayout 
     },
     frameEnd,
   };
-  RET_SLOTS.set(layout, retSlots);
-  return layout;
 }

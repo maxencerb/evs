@@ -3,8 +3,8 @@
  * invariant, the control-flow shapes, the fncall convention).
  *
  * A barrel over `codegen/lower/`:
- * - `context.ts` — the `LowerCtx` contract, the internals channel shared with `program.ts`, and
- *   the operand / slot / range-check helpers every template uses;
+ * - `context.ts` — the `LowerCtx` contract (`createLowerCtx`, `withLoop`) and the operand /
+ *   slot / range-check helpers every template uses;
  * - `statements.ts` — the statement dispatch, the fn subroutines, `call` / `fncall` and the
  *   control flow (`if` / `while` recurse into the dispatch);
  * - `values.ts` — `const`, `un`, `env` and `convert`;
@@ -32,9 +32,9 @@
  * fncall convention: the caller MSTOREs args into
  * the callee's static param slots, pushes `@ret_k`, and jumps to the entry JUMPDEST
  * (annotated at stack height 1 — the return address). The callee then immediately SPILLS the
- * return address into its dedicated frame slot (`frame.ts` `fnReturnAddressSlot`) so the body
- * runs at stack baseline 0, and reloads it for the return JUMP. Rationale (rather than keeping
- * the return address on the stack during the body): the emitters (`emitStaticCall`,
+ * return address into its dedicated frame slot (`FrameLayout.fnRegion(f).returnAddress`) so
+ * the body runs at stack baseline 0, and reloads it for the return JUMP. Rationale (rather
+ * than keeping the return address on the stack during the body): the emitters (`emitStaticCall`,
  * `emitMemCopy`) pin checked labels at absolute height 0/1/4, so a baseline-1 body could not
  * contain calls; and nested fncalls would present two different absolute heights to a single
  * callee entry annotation, which the `asm/verify.ts` verifier cannot express. No recursion ⇒
@@ -42,13 +42,13 @@
  */
 
 export {
+  createLowerCtx,
   foldedConst,
-  lowerInternals,
   MIN_I256,
   MINUS_ONE_WORD,
   numClass,
   selfAddressValues,
   typeOf,
 } from './lower/context.js';
-export type { LowerCtx, LowerInternals } from './lower/context.js';
+export type { LowerCtx } from './lower/context.js';
 export { lowerStmts, emitFnSubroutines } from './lower/statements.js';

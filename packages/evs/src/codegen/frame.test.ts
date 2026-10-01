@@ -27,7 +27,7 @@ import {
   type ValueInfo,
 } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
-import { fnReturnAddressSlot, layoutFrames } from './frame.js';
+import { layoutFrames } from './frame.js';
 
 // ---------------------------------------------------------------------------
 // raw IR fixtures
@@ -204,13 +204,12 @@ describe('layoutFrames — fn regions', () => {
     const region = frame.fnRegion(0);
     expect(region.params).toEqual([0xa0]);
     expect(region.results).toEqual([0x100]);
-    expect(fnReturnAddressSlot(frame, 0)).toBe(0x120);
+    expect(region.returnAddress).toBe(0x120);
     expect(frame.frameEnd).toBe(0x140);
   });
 
   test('uncalled fn: no region, no value slots (dropped)', () => {
     expect(() => frame.fnRegion(1)).toThrow(EvsInternalError);
-    expect(() => fnReturnAddressSlot(frame, 1)).toThrow(EvsInternalError);
     expect(() => frame.slotOfValue(3)).toThrow(EvsInternalError);
     expect(() => frame.slotOfValue(4)).toThrow(EvsInternalError);
   });
@@ -681,7 +680,7 @@ describe('layoutFrames — liveness allocator (optimize: true, issue #41)', () =
     expect(frame.slotOfValue(3)).toBe(0x100);
     expect(frame.slotOfValue(4)).toBe(0x100);
     expect(region.results).toEqual([0x120]);
-    expect(fnReturnAddressSlot(frame, 0)).toBe(0x140);
+    expect(region.returnAddress).toBe(0x140);
     expect(frame.frameEnd).toBe(0x160);
     expect(layoutFrames(ir).frameEnd).toBe(0x1c0);
     // the simple fn fixture: same shape, uncalled fn still dropped

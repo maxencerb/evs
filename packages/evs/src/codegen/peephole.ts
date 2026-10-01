@@ -18,10 +18,11 @@
  *   `dataLabel`, `data` and `pushLabel` nodes are barriers: no window spans a label boundary and
  *   no node carrying a label or jump target is ever rewritten.
  * - The three nodes before every `RETURNDATACOPY` (the sanctioned `[RETURNDATASIZE, PUSH0,
- *   (PUSH0|DUPn)]` window of `verifyShapes`) are protected from rewriting.
- * - Rewrite 1 raises the peak stack depth of its window by one; a checked-mode height
- *   simulation (the same one `verifyStack` runs) skips it where that would exceed the 16-item
- *   template budget.
+ *   (PUSH0|DUPn)]` window of `verifyShapes`, `SANCTIONED_RETURNDATACOPY_WINDOW`) are protected
+ *   from rewriting.
+ * - Rewrite 1 raises the peak stack depth of its window by one; it is skipped where that would
+ *   exceed the 16-item template budget, measured on the same `stackHeights` walk `verifyStack`
+ *   checks (`asm/verify.ts`).
  * - Source-map fidelity: replacement nodes inherit the `note` of the group they replace
  *   (the surviving original nodes keep their own), so `asm/sourcemap.ts` segments keep their
  *   codegen annotations.
@@ -29,8 +30,13 @@
  */
 
 import type { AsmNode } from '../asm/assembler.js';
-import { isDupOp, isSwapOp, OPS, type Mnemonic } from '../asm/ops.js';
-import { MAX_TEMPLATE_DEPTH } from '../asm/verify.js';
+import { isDupOp, isSwapOp, type Mnemonic } from '../asm/ops.js';
+import {
+  MAX_TEMPLATE_DEPTH,
+  SANCTIONED_RETURNDATACOPY_WINDOW,
+  stackHeights,
+  type StackHeight,
+} from '../asm/verify.js';
 
 const TWO_POW_256 = 1n << 256n;
 const TWO_POW_255 = 1n << 255n;
@@ -77,8 +83,12 @@ interface Match {
   outPeak: number | null;
 }
 
+/**
+ * One left-to-right pass. Rewrites preserve every window's net stack effect, so the heights
+ * computed on the round's input stay exact for every later window of the same round.
+ */
 function rewriteOnce(nodes: readonly AsmNode[]): { out: AsmNode[]; changed: boolean } {
-  const heights = checkedHeights(nodes);
+  const heights = stackHeights(nodes);
   const shielded = protectedIndices(nodes);
   const out: AsmNode[] = [];
   let changed = false;
@@ -104,12 +114,12 @@ function overlapsProtected(shielded: ReadonlySet<number>, start: number, len: nu
 }
 
 /**
- * `height` is the checked-mode simulated depth before the window (`null` = unreachable code or
- * an `'any'` region, where `verifyStack` does not enforce the template budget). A match that
- * goes deeper than its input did must still fit the 16-item budget from that height.
+ * `height` is the simulated depth before the window. A match that goes deeper than its input
+ * did must still fit the 16-item budget from that height; only checked regions carry one
+ * (`'any'` regions and unreachable code are not budgeted by `verifyStack`).
  */
-function withinBudget(height: number | null | undefined, m: Match): boolean {
-  if (m.outPeak === null || height === null || height === undefined) return true;
+function withinBudget(height: StackHeight | undefined, m: Match): boolean {
+  if (m.outPeak === null || typeof height !== 'number') return true;
   return height + m.outPeak <= MAX_TEMPLATE_DEPTH;
 }
 
@@ -118,75 +128,10 @@ function protectedIndices(nodes: readonly AsmNode[]): ReadonlySet<number> {
   const shielded = new Set<number>();
   for (let i = 0; i < nodes.length; i++) {
     if (isOp(nodes[i], 'RETURNDATACOPY')) {
-      for (let j = Math.max(0, i - 3); j <= i; j++) shielded.add(j);
+      for (let j = Math.max(0, i - SANCTIONED_RETURNDATACOPY_WINDOW); j <= i; j++) shielded.add(j);
     }
   }
   return shielded;
-}
-
-/**
- * Checked-mode stack height before every node, mirroring `verifyStack`'s walk: `0` at the
- * program start, reset to the label annotation at every `label`, `null` while unreachable
- * (after JUMP/RETURN/REVERT/STOP/INVALID until the next label) and inside `'any'` regions.
- * Rewrites preserve every window's net stack effect, so heights computed on the round's input
- * stay exact for every later window of the same round. Should this walk ever drift from
- * `verifyStack`, the cost is a skipped rewrite or a loud verifier failure at assemble time (the
- * verifier runs on the peephole's output) — never an unchecked stream.
- */
-function checkedHeights(nodes: readonly AsmNode[]): (number | null)[] {
-  const heights: (number | null)[] = nodes.map((): number | null => null);
-  let mode: 'checked' | 'any' = 'checked';
-  let height = 0;
-  let reachable = true;
-  for (let i = 0; i < nodes.length; i++) {
-    const node = nodes[i];
-    if (node === undefined) continue;
-    heights[i] = reachable && mode === 'checked' ? height : null;
-    switch (node.k) {
-      case 'label': {
-        reachable = true;
-        if (node.stack === 'any') {
-          mode = 'any';
-          height = 0;
-        } else {
-          mode = 'checked';
-          height = node.stack;
-        }
-        break;
-      }
-      case 'dataLabel':
-      case 'data':
-        break;
-      case 'push':
-      case 'pushBytes':
-      case 'pushLabel': {
-        if (reachable) height += 1;
-        break;
-      }
-      case 'op': {
-        if (!reachable) break;
-        const info = OPS[node.op];
-        switch (node.op) {
-          case 'JUMP':
-            height -= 1;
-            reachable = false;
-            break;
-          case 'RETURN':
-          case 'REVERT':
-          case 'STOP':
-          case 'INVALID':
-            height -= info.pops;
-            reachable = false;
-            break;
-          default:
-            height += info.pushes - info.pops;
-            break;
-        }
-        break;
-      }
-    }
-  }
-  return heights;
 }
 
 // ---------------------------------------------------------------------------

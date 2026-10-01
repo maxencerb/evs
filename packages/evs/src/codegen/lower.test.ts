@@ -46,6 +46,7 @@ import type {
   UnOp,
   ValueId,
 } from '../ir/nodes.js';
+import { withLoop, type LoopTargets, type LowerCtx } from './lower/context.js';
 import { lowerProgram } from './program.js';
 
 // ---------------------------------------------------------------------------
@@ -1304,6 +1305,75 @@ describe('control flow', () => {
     const c = [{ name: 'r', type: 'uint256' }];
     expect((await run(ir, [true])).data).toBe(tupleHex(c, { r: 1n }));
     expect((await run(ir, [false])).data).toBe(tupleHex(c, { r: 9n }));
+  });
+
+  test('loop targets nest: the outer break still targets its loop after an inner while', async () => {
+    const b = new IrB('nested_loops', [['n', 'uint256']]);
+    const one = (): ValueId => b.word('uint256', 1n);
+    // capped(p) = min(p, 2), counted by a loop of its own that breaks at 2. Fn bodies are
+    // emitted after the whole main body (`emitFnSubroutines` runs last), so this fn's loop is
+    // end-to-end coverage of a `break` inside a fn, not of loop-target nesting across the
+    // fncall; the `withLoop` unit test below pins the fn-body guard directly.
+    const capped = b.fn('capped', ['uint256'], (p) => {
+      const k = b.cell('uint256', b.word('uint256', 0n));
+      b.while(
+        () => b.bin('lt', b.cellGet(k), p ?? 0),
+        () => {
+          b.if(b.bin('eq', b.cellGet(k), b.word('uint256', 2n)), () => b.brk());
+          b.cellSet(k, b.bin('add', b.cellGet(k), one()));
+        },
+      );
+      return [b.cellGet(k)];
+    });
+    const total = b.cell('uint256', b.word('uint256', 0n));
+    const i = b.cell('uint256', b.word('uint256', 0n));
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        const iv = b.cellGet(i);
+        b.cellSet(i, b.bin('add', iv, one()));
+        const r = b.fncall(capped, [iv]);
+        b.cellSet(total, b.bin('add', b.cellGet(total), r[0] ?? 0));
+        // an inner loop that adds 10 once, then breaks out of itself only
+        b.while(
+          () => b.word('bool', 1n),
+          () => {
+            b.cellSet(total, b.bin('add', b.cellGet(total), b.word('uint256', 10n)));
+            b.brk();
+          },
+        );
+        // after the inner loop, `break` targets the outer loop again
+        b.if(b.bin('eq', iv, b.word('uint256', 3n)), () => b.brk());
+      },
+    );
+    b.ret('total', b.cellGet(total));
+    const ir = b.build();
+    const c = [{ name: 'total', type: 'uint256' }];
+    // i = 0, 1, 2, 3 (break): capped → 0 + 1 + 2 + 2, plus 10 per iteration
+    expect((await run(ir, [10n])).data).toBe(tupleHex(c, { total: 45n }));
+    expect((await run(ir, [2n])).data).toBe(tupleHex(c, { total: 21n }));
+    expect((await run(ir, [0n])).data).toBe(tupleHex(c, { total: 0n }));
+  });
+
+  test('withLoop: a fn-body null scope inside a loop restores the loop, even on throw', () => {
+    // Not reachable through lowerProgram today (fn bodies are emitted after the main body, when
+    // ctx.loop is already null); pins the guard against a future inline-emission change.
+    const ctx: Pick<LowerCtx, 'loop'> = { loop: null };
+    const outer = { breakTo: 1, continueTo: 2 };
+    const seen: (LoopTargets | null)[] = [];
+    withLoop(ctx, outer, () => {
+      seen.push(ctx.loop);
+      withLoop(ctx, null, () => seen.push(ctx.loop));
+      seen.push(ctx.loop);
+      expect(() =>
+        withLoop(ctx, null, () => {
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+      seen.push(ctx.loop);
+    });
+    seen.push(ctx.loop);
+    expect(seen).toEqual([outer, null, outer, outer, null]);
   });
 });
 

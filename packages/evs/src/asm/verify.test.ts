@@ -2,7 +2,13 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import { AsmWriter, type AsmNode } from './assembler.js';
-import { verifyJumpdests, verifyShapes, verifyStack } from './verify.js';
+import {
+  SANCTIONED_RETURNDATACOPY_WINDOW,
+  stackHeights,
+  verifyJumpdests,
+  verifyShapes,
+  verifyStack,
+} from './verify.js';
 
 const bytes = (hexStr: string): Uint8Array => {
   const out = new Uint8Array(hexStr.length / 2);
@@ -326,7 +332,94 @@ describe("verifyStack — 'any' labels", () => {
   });
 });
 
+describe('stackHeights — the shared walk', () => {
+  test('height before every node, plus the height after the stream', () => {
+    // each comment: the height before that node
+    const nodes: readonly AsmNode[] = [
+      { k: 'push', value: 1n }, // 0
+      { k: 'push', value: 1n }, // 1
+      { k: 'pushLabel', label: 0 }, // 2
+      { k: 'op', op: 'JUMPI' }, // 3 — pops two, falls through
+      { k: 'op', op: 'DUP1' }, // 1
+      { k: 'op', op: 'POP' }, // 2
+      { k: 'op', op: 'STOP' }, // 1 — terminator
+      { k: 'push', value: 9n }, // unreachable
+      { k: 'label', label: 0, stack: 1 }, // unreachable — resets to its annotation
+      { k: 'pushLabel', label: 1 }, // 1
+      { k: 'op', op: 'JUMP' }, // 2
+      { k: 'label', label: 1, stack: 'any' }, // unreachable
+      { k: 'push', value: 0n }, // 'any'
+      { k: 'op', op: 'REVERT' }, // 'any'
+      { k: 'dataLabel', label: 2 }, // unreachable
+      { k: 'data', bytes: Uint8Array.of(0xff) }, // unreachable
+    ];
+    expect(stackHeights(nodes)).toEqual([
+      0,
+      1,
+      2,
+      3,
+      1,
+      2,
+      1,
+      null,
+      null,
+      1,
+      2,
+      null,
+      'any',
+      'any',
+      null,
+      null,
+      null, // after the stream: terminated
+    ]);
+    expect(() => verifyStack(nodes, NO_PCS)).not.toThrow();
+  });
+
+  test('total on a stream the verifier rejects: underflow and a missing terminator', () => {
+    const nodes: readonly AsmNode[] = [
+      { k: 'op', op: 'POP' },
+      { k: 'push', value: 1n },
+    ];
+    expect(stackHeights(nodes)).toEqual([0, -1, 0]);
+    expect(() => verifyStack(nodes, NO_PCS)).toThrow(/underflow/);
+  });
+
+  test("ends 'any' when an 'any' region runs off the end", () => {
+    const nodes: readonly AsmNode[] = [
+      { k: 'op', op: 'STOP' },
+      { k: 'label', label: 0, stack: 'any' },
+      { k: 'push', value: 1n },
+    ];
+    expect(stackHeights(nodes).at(-1)).toBe('any');
+    expect(() => verifyStack(nodes, NO_PCS)).toThrow(/'any' region falls through past the end/);
+  });
+});
+
 describe('verifyShapes — RETURNDATACOPY windows', () => {
+  test('the sanctioned window is the three nodes before the op', () => {
+    const w = new AsmWriter();
+    w.returndatacopyAll('zero');
+    const nodes = w.nodes();
+    const at = nodes.findIndex((n) => n.k === 'op' && n.op === 'RETURNDATACOPY');
+    expect(at).toBe(SANCTIONED_RETURNDATACOPY_WINDOW);
+  });
+
+  test('the verifier reads exactly the sanctioned window (fixed-role reads stay in lockstep)', () => {
+    // verifyShapes reads nodes[i - 3..i - 1] by role; the constant must name that same length
+    expect(SANCTIONED_RETURNDATACOPY_WINDOW).toBe(3);
+    const w = new AsmWriter();
+    w.returndatacopyAll('zero');
+    const nodes = w.nodes();
+    const at = nodes.findIndex((n) => n.k === 'op' && n.op === 'RETURNDATACOPY');
+    expect(() => verifyShapes(nodes, { evmVersion: 'cancun' })).not.toThrow();
+    // the window's first node is checked: swapping it breaks the shape
+    const broken = nodes.with(at - SANCTIONED_RETURNDATACOPY_WINDOW, {
+      k: 'op',
+      op: 'CALLDATASIZE',
+    });
+    expect(() => verifyShapes(broken, { evmVersion: 'cancun' })).toThrow(/sanctioned window/);
+  });
+
   test('accepts both sanctioned shapes from the writer', () => {
     const w = new AsmWriter();
     // bubble path

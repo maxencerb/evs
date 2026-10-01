@@ -7,7 +7,6 @@
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { Stmt, ValueId } from '../../ir/nodes.js';
 import { type CallSitePlan, emitSimulateCall, emitStaticCall } from '../call.js';
-import { fnReturnAddressSlot } from '../frame.js';
 import { lowerBin, lowerModArith } from './arith.js';
 import {
   lowerSelect,
@@ -24,7 +23,6 @@ import {
 } from './composites.js';
 import {
   type LowerCtx,
-  lowerInternals,
   internal,
   loadOperand,
   meta,
@@ -32,6 +30,7 @@ import {
   requireSlot,
   typeOf,
   STMT_BASELINE,
+  withLoop,
 } from './context.js';
 import { lowerConst, lowerUn, lowerEnv, lowerAccount, lowerConvert } from './values.js';
 
@@ -47,24 +46,20 @@ export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx):
  * fns are never emitted.
  */
 export function emitFnSubroutines(w: AsmWriter, ctx: LowerCtx): void {
-  const state = lowerInternals(ctx);
-  for (let i = 0; i < state.fnQueue.length; i++) {
-    const f = state.fnQueue[i];
+  for (let i = 0; i < ctx.fnQueue.length; i++) {
+    const f = ctx.fnQueue[i];
     if (f === undefined) continue;
     const fn = ctx.ir.fns[f];
-    const entry = state.fnEntries.get(f);
+    const entry = ctx.fnEntries.get(f);
     if (fn === undefined || entry === undefined) {
       throw internal(`emitFnSubroutines: fns[${f}] missing from the IR or the entry map`);
     }
     const region = ctx.frame.fnRegion(f);
-    const retSlot = fnReturnAddressSlot(ctx.frame, f);
     w.label(entry, 1, `fn_${fn.name}`); // [ret]
-    w.push(retSlot, { note: `spill return address (${fn.name})` });
+    w.push(region.returnAddress, { note: `spill return address (${fn.name})` });
     w.op('MSTORE'); // []
-    const savedLoop = ctx.loop;
-    ctx.loop = null;
-    lowerStmts(w, fn.body, ctx);
-    ctx.loop = savedLoop;
+    // a fn body is never inside the caller's loop: `break` / `continue` cannot cross a fncall
+    withLoop(ctx, null, () => lowerStmts(w, fn.body, ctx));
     fn.resultValues.forEach((rv, j) => {
       const slot = region.results[j];
       if (slot === undefined) throw internal(`fns[${f}] result region is missing slot #${j}`);
@@ -72,7 +67,7 @@ export function emitFnSubroutines(w: AsmWriter, ctx: LowerCtx): void {
       w.push(slot, { note: `result #${j} (${fn.name})` });
       w.op('MSTORE');
     });
-    w.push(retSlot);
+    w.push(region.returnAddress);
     w.op('MLOAD');
     w.op('JUMP', { note: `return (${fn.name})` }); // dynamic return jump (checked region)
   }
@@ -185,14 +180,13 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
 // ---------------------------------------------------------------------------
 
 function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx): void {
-  const state = lowerInternals(ctx);
   const tryMode = s.mode === 'try';
   const site = s.site;
   const dfailLabel = w.newLabel(tryMode ? `zero_${site}` : `dfail_${site}`);
-  if (!tryMode) state.dfailStubs.push({ label: dfailLabel, site });
+  if (!tryMode) ctx.dfailStubs.push({ label: dfailLabel, site });
 
   const refOf = (v: ValueId): CallSitePlan['argRefs'][number] => {
-    const data = state.consts.get(v);
+    const data = ctx.consts.get(v);
     if (data !== undefined && ctx.frame.slotOfValue(v) === null) return { literal: data };
     // dynamic literals carry a slot (materialized memref) but still fold into the
     // CalldataTemplate's const segments — const-merging
@@ -232,14 +226,13 @@ function lowerCall(w: AsmWriter, s: Extract<Stmt, { k: 'call' }>, ctx: LowerCtx)
 }
 
 function lowerFncall(w: AsmWriter, s: Extract<Stmt, { k: 'fncall' }>, ctx: LowerCtx): void {
-  const state = lowerInternals(ctx);
   const fn = ctx.ir.fns[s.fn];
   if (fn === undefined) throw internal(`fncall to unknown FnId ${s.fn} survived validateIr`);
-  let entry = state.fnEntries.get(s.fn);
+  let entry = ctx.fnEntries.get(s.fn);
   if (entry === undefined) {
     entry = w.newLabel(`fn_${fn.name}`);
-    state.fnEntries.set(s.fn, entry);
-    state.fnQueue.push(s.fn);
+    ctx.fnEntries.set(s.fn, entry);
+    ctx.fnQueue.push(s.fn);
   }
   const region = ctx.frame.fnRegion(s.fn);
 
@@ -301,10 +294,7 @@ function lowerWhile(w: AsmWriter, s: Extract<Stmt, { k: 'while' }>, ctx: LowerCt
   w.op('ISZERO');
   w.pushLabel(end);
   w.op('JUMPI'); // []
-  const saved = ctx.loop;
-  ctx.loop = { breakTo: end, continueTo: head };
-  lowerStmts(w, s.body, ctx);
-  ctx.loop = saved;
+  withLoop(ctx, { breakTo: end, continueTo: head }, () => lowerStmts(w, s.body, ctx));
   w.pushLabel(head);
   w.op('JUMP');
   w.label(end, base);
