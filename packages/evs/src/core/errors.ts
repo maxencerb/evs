@@ -60,4 +60,13 @@ export interface EvsDiagnostic {
     | 'DEPLOYLESS_RESULT_PREFIX'
     | 'DEPLOYLESS_RESULT_SIZE';
   message: string;
+  /**
+   * The id of the statement that raised it (a `SiteId` — plain `number` here, since core/ does
+   * not import the IR): the `site` of that statement in `compiled.ir` and its entry in
+   * `compiled.sourceMap.sites` (one per recorded statement, so two warnings raised by look-alike
+   * statements still differ in `site`). Set by the per-statement codes (`LOOP_ALLOCATION`,
+   * `ENV_FRAME_DEPENDENT`); absent on whole-program ones (`LARGE_FRAME`,
+   * `DEPLOYLESS_RESULT_PREFIX`, `DEPLOYLESS_RESULT_SIZE`).
+   */
+  site?: number;
 }

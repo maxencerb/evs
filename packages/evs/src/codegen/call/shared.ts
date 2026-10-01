@@ -4,11 +4,12 @@
  * refs, the returndata snapshot and the try epilogue.
  */
 
+import { layoutOfType } from '../../abi/layout.js';
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
 import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
-import { stringifyType, type Hex } from '../../core/types.js';
-import type { Stmt, ConstData, SiteId } from '../../ir/nodes.js';
+import { abiParamToType, stringifyType, type Hex } from '../../core/types.js';
+import { callOutputs, type Stmt, type ConstData, type SiteId } from '../../ir/nodes.js';
 import { type SlotRef, emitCeil32, emitWithinStackBudget } from '../abi.js';
 import { SCRATCH_0, FREE_PTR, emitZeroValue } from '../memory.js';
 
@@ -154,29 +155,51 @@ export function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: s
 }
 
 /**
- * `[buf] → [buf]`: snapshot the ENTIRE returndata at buf (RETURNDATACOPY shape 2) and bump
- * the free pointer to `buf + ceil32(rds)`. With `storeSnapSlot`, also store the base in
- * scratch `SNAP_SLOT` — the recursive memory decoders churn the free ptr, so they read
- * base/end from scratch (a stack-resident base would drift). With `opts.reserveBudgetWord`, the
- * free pointer moves one word further, past the decode-work budget word at `buf + rds`
- * (`emitInitDecodeBudget` in `codegen/abi/decode.ts`).
+ * Whether a call site's returndata snapshot outlives the site — i.e. whether the site allocates
+ * memory (the `LOOP_ALLOCATION` diagnostic asks the same question, so both read it here).
+ * `s.read`/`s.call` sites whose every output is a word copy each word into its frame slot
+ * straight off the snapshot, so the snapshot is transient — read above the free pointer without
+ * bumping it, like the calldata template; a memref output (`string`/`bytes`/array/tuple) aliases
+ * or decodes from the snapshot, which must then stay allocated. An `s.simulate` site always
+ * snapshots the trampoline's revert payload into a fresh allocation, outputs or not.
+ */
+export function callSiteAllocates(stmt: Extract<Stmt, { k: 'call' }>): boolean {
+  if (stmt.kind === 'simulate') return true;
+  return callOutputs(stmt).some((p) => layoutOfType(abiParamToType(p)).kind !== 'word');
+}
+
+/**
+ * `[buf] → [buf]`: snapshot the ENTIRE returndata at buf (RETURNDATACOPY shape 2) and, with
+ * `opts.bump` (the default), bump the free pointer to `buf + ceil32(rds)`; without it the
+ * snapshot is transient scratch the caller must consume before anything allocates (see
+ * {@link callSiteAllocates}). With `storeSnapSlot`, also store the base in scratch `SNAP_SLOT` —
+ * the recursive memory decoders churn the free ptr, so they read base/end from scratch (a
+ * stack-resident base would drift). With `opts.reserveBudgetWord`, the free pointer moves one
+ * word further, past the decode-work budget word at `buf + rds` (`emitInitDecodeBudget` in
+ * `codegen/abi/decode.ts`); it implies `bump`.
  */
 export function emitSnapshotReturndata(
   w: AsmWriter,
   storeSnapSlot: boolean,
-  opts: { readonly reserveBudgetWord?: boolean } = {},
+  opts: { readonly bump?: boolean; readonly reserveBudgetWord?: boolean } = {},
 ): void {
-  w.returndatacopyAll({ dupDepth: 1 }); // [buf]
-  w.op('RETURNDATASIZE');
-  emitCeil32(w); // [ceil32(rds), buf]
-  if (opts.reserveBudgetWord === true) {
-    w.push(32);
-    w.op('ADD'); // [ceil32(rds) + 32, buf]
+  const reserveBudgetWord = opts.reserveBudgetWord === true;
+  if (opts.bump === false && reserveBudgetWord) {
+    throw internal('a decode-budget word needs a bumped (persistent) snapshot');
   }
-  w.op('DUP2');
-  w.op('ADD'); // [buf + ceil32(rds) (+32), buf]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [buf]
+  w.returndatacopyAll({ dupDepth: 1 }); // [buf]
+  if (opts.bump !== false) {
+    w.op('RETURNDATASIZE');
+    emitCeil32(w); // [ceil32(rds), buf]
+    if (reserveBudgetWord) {
+      w.push(32);
+      w.op('ADD'); // [ceil32(rds) + 32, buf]
+    }
+    w.op('DUP2');
+    w.op('ADD'); // [buf + ceil32(rds) (+32), buf]
+    w.push(FREE_PTR);
+    w.op('MSTORE'); // [buf]
+  }
   if (storeSnapSlot) {
     w.op('DUP1');
     w.push(SNAP_SLOT);

@@ -198,7 +198,7 @@ Scripts use Solidity's memory layout verbatim:
 | `0x40`–`0x5f`    | free-memory pointer                                                                     |
 | `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`try*` failure values point here) |
 | `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result (packed by liveness with `optimize: true`) |
-| `frameEnd`…      | bump allocations: returndata snapshots, dynamic values, mutable arrays, the return tuple |
+| `frameEnd`…      | bump allocations: returndata snapshots of memref outputs, dynamic values, mutable arrays, the return tuple |
 
 The very first instructions of every script store `frameEnd` into the free pointer at `0x40`.
 From there:
@@ -222,9 +222,11 @@ From there:
 - **Allocation only bumps.** New buffers advance the free pointer and are never freed, so
   allocations inside a loop grow memory monotonically — `compile()` warns with a
   `LOOP_ALLOCATION` diagnostic when an allocating statement sits inside a loop: a sub-call with
-  outputs (any verb), `s.newArray`, `s.tuple(…)`/struct construction, `s.encode`/`s.encodePacked`
-  (and `s.keccak256` over values that need encoding), a dynamic literal, or a call to an `s.fn`
-  whose body allocates (see [`LOOP_ALLOCATION`](/reference/diagnostics/)).
+  a `string`/`bytes`/array/tuple output (or any `s.simulate`), `s.newArray`, `s.tuple(…)`/struct
+  construction, `s.encode`/`s.encodePacked` (and `s.keccak256` over values that need encoding),
+  a dynamic literal, or a call to an `s.fn` whose body allocates (see
+  [`LOOP_ALLOCATION`](/reference/diagnostics/)). A read whose outputs are all words copies them
+  into their slots straight from a transient returndata snapshot, so it allocates nothing.
 - **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
   transiently without bumping, so the return encoder zero-pads dynamic tails explicitly and
   `s.newArray` zero-fills its buffer.

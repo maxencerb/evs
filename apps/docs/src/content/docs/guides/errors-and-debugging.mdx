@@ -82,13 +82,15 @@ try {
 }
 ```
 
-Each `EvsDiagnostic` is `{ severity: 'warning', code, message }` with five possible
+Each `EvsDiagnostic` is `{ severity: 'warning', code, message, site? }` with five possible
 codes: `LOOP_ALLOCATION` (memory allocated on every loop iteration — evs never resets the free
 pointer), `LARGE_FRAME`, `ENV_FRAME_DEPENDENT` (`s.env('caller')`/`s.env('address')` —
 covered in [executing scripts](/guides/execution/)), and `DEPLOYLESS_RESULT_PREFIX` /
 `DEPLOYLESS_RESULT_SIZE` (a result shape that can break deployless mode — see
 [deployless limits](/reference/artifact/#deployless-limits)). The `echo` script above raises
 `DEPLOYLESS_RESULT_PREFIX`: its result starts with a `uint256`, which may begin with `0xEF`.
+`site` identifies the statement that raised a per-statement warning (see
+[diagnostics](/reference/diagnostics/)).
 
 ## Runtime reverts
 

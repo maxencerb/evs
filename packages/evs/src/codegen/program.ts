@@ -25,9 +25,10 @@ import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
-import { walkStmts, type FnId, type ScriptIr, type Stmt } from '../ir/nodes.js';
+import { walkStmts, type FnId, type ScriptIr, type Stmt, type ValueId } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
+import { callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -242,16 +243,71 @@ function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, stri
 // diagnostics — LOOP_ALLOCATION + LARGE_FRAME + ENV_FRAME_DEPENDENT
 // ---------------------------------------------------------------------------
 
-/** Statements that allocate memory at runtime (call-with-outputs snapshots returndata; a
- *  `tuplenew` bump-allocates its flat block; an `encode` materializes a fresh bytes memref). */
-function stmtAllocates(s: Stmt): boolean {
-  return (
-    s.k === 'arrnew' ||
-    s.k === 'tuplenew' ||
-    s.k === 'encode' ||
-    (s.k === 'call' && s.outs.length > 0) ||
-    (s.k === 'const' && s.data.kind === 'data')
-  );
+/** The builder verb that records a `call` statement (`s.read`, `s.tryCall`, `s.simulate`, …). */
+function callVerb(s: Extract<Stmt, { k: 'call' }>): string {
+  const base = s.kind === 'call' ? 'call' : s.kind === 'simulate' ? 'simulate' : 'read';
+  return s.mode === 'try' ? `s.try${base[0]?.toUpperCase() ?? ''}${base.slice(1)}` : `s.${base}`;
+}
+
+/**
+ * What an allocating statement is, in builder vocabulary, for the `LOOP_ALLOCATION` message —
+ * or `null` when the statement allocates nothing. Exhaustive over the statement kinds on
+ * purpose: a new kind must decide here whether it allocates.
+ *
+ * `arrnew` / `tuplenew` / `encode` each have several builder origins (`s.newArray` or an array
+ * literal; `s.tuple` or a `struct: true` read; `s.encode`, the encode behind `s.keccak256` or
+ * memref `.eq()`), and the builder records that origin as the out value's `debugName`; IR built
+ * or deserialized without names falls back to the op's generic builder name. `fnAllocates`
+ * answers for a `fncall`'s callee (transitively).
+ */
+function describeAllocation(
+  s: Stmt,
+  ir: ScriptIr,
+  fnAllocates: (f: FnId) => boolean,
+): string | null {
+  const origin = (out: ValueId, fallback: string): string => ir.values[out]?.debugName ?? fallback;
+  switch (s.k) {
+    case 'arrnew':
+      return `${origin(s.out, `s.newArray(${canonicalTypeSignature(s.elem)})`)} (array allocation)`;
+    case 'tuplenew':
+      return `${origin(s.out, 's.tuple(…)')} (flat-block allocation)`;
+    case 'encode':
+      return `${origin(s.out, s.mode === 'abi' ? 's.encode(…)' : 's.encodePacked(…)')} (fresh bytes memref)`;
+    case 'const':
+      return s.data.kind === 'data'
+        ? `a ${canonicalTypeSignature(s.type)} literal (materialized in memory)`
+        : null;
+    case 'call':
+      // word-only s.read/s.call outputs read a transient snapshot (see callSiteAllocates)
+      return callSiteAllocates(s) ? `${callVerb(s)}(${s.fnAbi.name}) (returndata snapshot)` : null;
+    case 'fncall':
+      return fnAllocates(s.fn)
+        ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
+        : null;
+    case 'bin':
+    case 'un':
+    case 'modarith':
+    case 'env':
+    case 'convert':
+    case 'select':
+    case 'index':
+    case 'len':
+    case 'arrset':
+    case 'field':
+    case 'tupleset':
+    case 'keccak256': // hashes an existing memref in place
+    case 'throw': // terminates — its encoding never accumulates
+    case 'cellnew':
+    case 'cellget':
+    case 'cellset':
+    case 'if': // child blocks are visited on their own
+    case 'while':
+    case 'break':
+    case 'continue':
+      return null;
+    default:
+      throw internal(`unknown statement kind '${String((s as { k?: unknown }).k)}'`);
+  }
 }
 
 /**
@@ -294,7 +350,7 @@ function collectDiagnostics(
     if (fn !== undefined) {
       const nested = new Set(seen).add(f);
       walkStmts(fn.body, (s) => {
-        if (stmtAllocates(s) || (s.k === 'fncall' && fnAllocates(s.fn, nested))) result = true;
+        if (describeAllocation(s, ir, (g) => fnAllocates(g, nested)) !== null) result = true;
       });
     }
     fnAllocMemo.set(f, result);
@@ -303,27 +359,18 @@ function collectDiagnostics(
 
   const visit = (stmts: readonly Stmt[], inLoop: boolean): void => {
     for (const s of stmts) {
-      // a fncall whose callee transitively allocates is itself a per-iteration allocation
-      const callsAllocatingFn = s.k === 'fncall' && fnAllocates(s.fn, new Set());
-      if (inLoop && (stmtAllocates(s) || callsAllocatingFn)) {
-        const what =
-          s.k === 'arrnew'
-            ? `s.newArray(${typeof s.elem === 'string' ? s.elem : JSON.stringify(s.elem)}, …)`
-            : s.k === 'tuplenew'
-              ? 's.tuple(…) (flat-block allocation)'
-              : s.k === 'encode'
-                ? `s.${s.mode === 'abi' ? 'encode' : 'encodePacked'}(…) (fresh bytes memref)`
-                : s.k === 'call'
-                  ? `the call to ${s.fnAbi.name}() (returndata snapshot)`
-                  : s.k === 'fncall'
-                    ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
-                    : 'a dynamic literal materialization';
+      const what = inLoop ? describeAllocation(s, ir, (f) => fnAllocates(f, new Set())) : null;
+      if (what !== null) {
         diagnostics.push({
           severity: 'warning',
           code: 'LOOP_ALLOCATION',
           message:
             `${what} allocates memory on every loop iteration; evs never resets the free ` +
-            `pointer, so memory grows monotonically for the lifetime of the call`,
+            `pointer, so memory grows monotonically for the lifetime of the call and each ` +
+            `iteration pays more memory-expansion gas than the last. Hoist it out of the loop ` +
+            `when it does not depend on the iteration; for a short, bounded loop the cost is ` +
+            `small — filter this warning on its code and site`,
+          site: s.site,
         });
       }
       if (s.k === 'env') {
@@ -333,6 +380,7 @@ function collectDiagnostics(
             severity: 'warning',
             code: 'ENV_FRAME_DEPENDENT',
             message,
+            site: s.site,
           });
         }
       }

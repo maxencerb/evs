@@ -105,6 +105,13 @@ class IrB {
     block.push({ site: this.nextSite++, ...body });
   }
 
+  /** Emits a statement kind that has no dedicated helper; returns its site. */
+  raw(body: StmtBody): number {
+    const site = this.nextSite;
+    this.emit(body);
+    return site;
+  }
+
   word(type: WordType, v: bigint): ValueId {
     const out = this.val(type);
     this.emit({ k: 'const', out, data: { kind: 'word', hex: wordHex(v) }, type });
@@ -175,6 +182,7 @@ class IrB {
     abi: PlainAbiFunction;
     args?: readonly ValueId[];
     mode?: 'strict' | 'try';
+    kind?: 'call' | 'simulate';
     gas?: ValueId;
   }): { outs: readonly ValueId[]; success: ValueId | null; site: number } {
     const mode = o.mode ?? 'strict';
@@ -191,6 +199,7 @@ class IrB {
       args: o.args ?? [],
       outs,
       mode,
+      ...(o.kind === undefined ? {} : { kind: o.kind }),
       ...(success === null ? {} : { successOut: success }),
       ...(o.gas === undefined ? {} : { gas: o.gas }),
     });
@@ -1050,26 +1059,80 @@ describe('data segments', () => {
 // ---------------------------------------------------------------------------
 
 describe('diagnostics', () => {
-  test('LOOP_ALLOCATION: call-with-outputs, arrnew, dynamic literal inside a while', () => {
+  test('LOOP_ALLOCATION: memref-output call, arrnew, dynamic literal inside a while', () => {
     const b = new IrB('loopy', [['n', 'uint256']]);
     const zero = b.word('uint256', 0n);
     const i = b.cell('uint256', zero);
     const target = b.word('address', BigInt(TARGET));
+    let callSite = -1;
+    let arrSite = -1;
     b.while(
       () => b.bin('lt', b.cellGet(i), 0),
       () => {
-        b.call({ target, abi: fnAbi('decimals', [], ['uint8']) }); // outputs → flagged
-        b.arrnew('uint256', b.cellGet(i)); // flagged
+        callSite = b.call({ target, abi: fnAbi('name', [], ['string']) }).site; // flagged
+        arrSite = b.raw({
+          k: 'arrnew',
+          elem: 'uint256',
+          length: b.cellGet(i),
+          out: b.val('uint256[]'),
+        }); // flagged
         b.data('string', concatHex(word(2n), `0x${'6869'.padEnd(64, '0')}`)); // flagged
         b.call({ target, abi: fnAbi('poke', [], []) }); // NO outputs → not flagged
+        // word-only outputs (strict and try) read a transient snapshot → not flagged
+        b.call({ target, abi: fnAbi('decimals', [], ['uint8']) });
+        b.call({ target, abi: fnAbi('slot0', [], ['uint160', 'int24']), mode: 'try' });
         b.cellSet(i, b.bin('add', b.cellGet(i), b.word('uint256', 1n)));
       },
     );
     b.ret('n', 0);
     const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
-    expect(loopAllocs).toHaveLength(3);
-    for (const d of loopAllocs) expect(d.severity).toBe('warning');
+    // without debugNames (hand-built IR) the labels fall back to the op's generic builder name
+    expect(loopAllocs.map((d) => d.message.split(' allocates memory')[0])).toEqual([
+      's.read(name) (returndata snapshot)',
+      's.newArray(uint256) (array allocation)',
+      'a string literal (materialized in memory)',
+    ]);
+    for (const d of loopAllocs) {
+      expect(d.severity).toBe('warning');
+      expect(d.message).toContain('filter this warning on its code and site');
+    }
+    // each warning carries the id of the statement that raised it
+    expect(loopAllocs[0]?.site).toBe(callSite);
+    expect(loopAllocs[1]?.site).toBe(arrSite);
+    expect(new Set(loopAllocs.map((d) => d.site)).size).toBe(3);
+  });
+
+  test('LOOP_ALLOCATION: a simulate site always allocates; fallback labels for tuplenew/encode', () => {
+    const b = new IrB('simloop', [['n', 'uint256']]);
+    const zero = b.word('uint256', 0n);
+    const i = b.cell('uint256', zero);
+    const target = b.word('address', BigInt(TARGET));
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        // the trampoline payload is snapshotted into a fresh allocation, outputs or not
+        b.call({ target, abi: fnAbi('poke', [], []), kind: 'simulate' });
+        const cur = b.cellGet(i);
+        const pair = b.val({ type: 'tuple', components: [{ name: 'a', type: 'uint256' }] });
+        b.raw({ k: 'tuplenew', inits: [{ index: 0, value: cur }], out: pair });
+        b.raw({ k: 'encode', mode: 'abi', args: [cur], out: b.val('bytes') });
+        b.raw({ k: 'encode', mode: 'packed', args: [cur], out: b.val('bytes') });
+        b.cellSet(i, b.bin('add', cur, b.word('uint256', 1n)));
+      },
+    );
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    expect(
+      diagnostics
+        .filter((d) => d.code === 'LOOP_ALLOCATION')
+        .map((d) => d.message.split(' allocates memory')[0]),
+    ).toEqual([
+      's.simulate(poke) (returndata snapshot)',
+      's.tuple(…) (flat-block allocation)',
+      's.encode(…) (fresh bytes memref)',
+      's.encodePacked(…) (fresh bytes memref)',
+    ]);
   });
 
   test('no LOOP_ALLOCATION outside loops', () => {
@@ -1089,7 +1152,9 @@ describe('diagnostics', () => {
       evmVersion: 'cancun',
     });
     expect(frameEnd).toBeGreaterThan(0x8000);
-    expect(diagnostics.some((d) => d.code === 'LARGE_FRAME')).toBe(true);
+    const large = diagnostics.find((d) => d.code === 'LARGE_FRAME');
+    expect(large).toBeDefined();
+    expect(large?.site).toBeUndefined(); // a whole-program fact: no statement to point at
   });
 
   test('LOOP_ALLOCATION: a fncall in a loop whose callee (transitively) allocates is flagged', () => {
@@ -1133,6 +1198,7 @@ describe('diagnostics', () => {
 
   test('ENV_FRAME_DEPENDENT: env caller/address are flagged; block-context env ops are not', () => {
     const b = new IrB('envy', [['n', 'uint256']]);
+    const callerSite = b.raw({ k: 'env', op: 'caller', out: b.val('address') });
     const caller = b.env('caller');
     const self = b.env('address');
     b.env('timestamp');
@@ -1143,10 +1209,13 @@ describe('diagnostics', () => {
     b.ret('n', 0);
     const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
-    expect(envDiags).toHaveLength(2);
+    expect(envDiags).toHaveLength(3);
     expect(envDiags.some((d) => d.message.includes("s.env('caller')"))).toBe(true);
     expect(envDiags.some((d) => d.message.includes("s.env('address')"))).toBe(true);
     expect(envDiags.every((d) => d.severity === 'warning')).toBe(true);
+    // the two caller reads emit the same message — the site tells them apart
+    expect(envDiags[0]?.site).toBe(callerSite);
+    expect(new Set(envDiags.map((d) => d.site)).size).toBe(3);
     expect(envDiags.every((d) => d.message.includes('deployless'))).toBe(true);
 
     const blockCtx = new IrB('blocky', [['n', 'uint256']]);
