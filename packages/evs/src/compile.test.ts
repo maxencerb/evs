@@ -643,21 +643,34 @@ describe('explainRevert', () => {
   test('evs-invalid-calldata: hedged only for scripts with sub-calls', async () => {
     // sumScript performs no sub-calls — the attribution is authoritative, no hedge
     const pure = compile(sumScript());
-    const resPure = await execRuntime(pure.runtimeBytecode, '0x');
+    const resPure = await execRuntime(pure.runtimeBytecode, '0x01');
     const explainedPure = pure.explainRevert(resPure.data);
     expect(explainedPure.kind).toBe('evs-invalid-calldata');
     expect(explainedPure.message).not.toMatch(/callee may have reverted/);
     // symbolScript sub-calls — a callee could bubble EvsInvalidCalldata() verbatim
     const withCalls = compile(symbolScript());
-    const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x');
+    const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x01');
     const explainedCalls = withCalls.explainRevert(resCalls.data);
     expect(explainedCalls.kind).toBe('evs-invalid-calldata');
     expect(explainedCalls.message).toMatch(/callee may have reverted with this evs selector/);
   });
 
+  test('empty calldata is the receive path: success with no output, nothing to explain', async () => {
+    const results = await Promise.all(
+      [sumScript(), symbolScript()].map((script) =>
+        execRuntime(compile(script).runtimeBytecode, '0x'),
+      ),
+    );
+    for (const res of results) {
+      expect(res.success).toBe(true);
+      expect(res.data).toBe('0x');
+    }
+  });
+
   test('evs-invalid-calldata: short calldata end to end', async () => {
     const compiled = compile(sumScript());
-    const res = await execRuntime(compiled.runtimeBytecode, '0x');
+    // 1–3 bytes (no full selector) revert; empty calldata is the receive path, not an error
+    const res = await execRuntime(compiled.runtimeBytecode, '0x01');
     expect(res.success).toBe(false);
     const explained = compiled.explainRevert(res.data);
     expect(explained.kind).toBe('evs-invalid-calldata');

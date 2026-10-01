@@ -4,6 +4,7 @@ pragma solidity 0.8.30;
 import {Test, stdError} from "forge-std/Test.sol";
 import {MockERC20} from "../src/MockERC20.sol";
 import {MockUniV3Pool} from "../src/MockUniV3Pool.sol";
+import {MockWETH} from "../src/MockWETH.sol";
 import {Reverter} from "../src/Reverter.sol";
 
 contract MockERC20Test is Test {
@@ -193,5 +194,30 @@ contract ReverterTest is Test {
         assertFalse(ok);
         assertEq(data.length, 36);
         assertEq(data, abi.encodeWithSignature("Panic(uint256)", 0x11));
+    }
+}
+
+contract MockWETHTest is Test {
+    MockWETH internal weth;
+
+    function setUp() public {
+        weth = new MockWETH();
+    }
+
+    function testDepositWithdrawRoundTrip() public {
+        address eoa = address(0xA11CE);
+        vm.deal(eoa, 1 ether);
+        vm.startPrank(eoa);
+        weth.deposit{value: 1 ether}();
+        assertEq(weth.balanceOf(eoa), 1 ether);
+        weth.withdraw(1 ether);
+        vm.stopPrank();
+        assertEq(weth.balanceOf(eoa), 0);
+        assertEq(eoa.balance, 1 ether);
+    }
+
+    function testWithdrawMoreThanBalanceReverts() public {
+        vm.expectRevert(bytes("MockWETH: insufficient balance"));
+        weth.withdraw(1);
     }
 }
