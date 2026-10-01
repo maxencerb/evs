@@ -1,7 +1,7 @@
 /**
  * Shared helpers for the anvil integration tier.
  *
- * One anvil per vitest worker via the prool proxy (`harness/anvil.ts`). Files in a worker
+ * One anvil per vitest worker, started by prool (`harness/anvil.ts`). Files in a worker
  * run serially, so per-file deployments never race nonces.
  */
 
@@ -103,7 +103,7 @@ async function inChunks<T, R>(
  * never promoted once that block lands. Nothing else is sent, so its receipt never comes and the
  * `beforeAll` hook hangs until the 30 s hook timeout (the flagship CI flake). Mining explicitly
  * after all sends are in keeps the single round trip of sends (bounded to
- * {@link BATCH_CONCURRENCY} in flight, so one worker never floods the shared prool proxy) without
+ * {@link BATCH_CONCURRENCY} in flight, so one worker never floods its anvil) without
  * any mining racing the submissions. The mining loop is bounded, so a transaction that cannot be
  * included fails loudly instead of hanging.
  */

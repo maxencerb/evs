@@ -399,7 +399,13 @@ Three tiers, all run by CI (`ci.yml`):
   the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need
-vitest); test files import from `vite-plus/test`.
+vitest); test files import from `vite-plus/test`. The integration project's global setup
+(`test/global-setup.ts`) keeps a prool `Pool` of anvils keyed on `VITEST_POOL_ID` behind a small
+registry (`GET /<poolId>` → that worker's anvil URL, started on first use); each worker then
+talks to its anvil directly over keep-alive connections. Not through prool's proxy `Server`: it
+closes the connection after every request on both hops, and the resulting TIME_WAIT churn
+(~17,000 loopback sockets per run) reset fresh connections at connect, failing whole files on an
+unretried `eth_sendRawTransaction` (`connect ECONNRESET`).
 
 ## Releasing
 

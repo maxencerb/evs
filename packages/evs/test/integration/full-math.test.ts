@@ -160,7 +160,7 @@ describe('wrapping arithmetic / mulDiv: evs vs solc 0.8.30 (EvsFullMathReference
       ]);
       return { args, solc, evs };
     };
-    // bounded concurrency, like math-ops.test.ts: the shared prool proxy serves every worker
+    // bounded concurrency, like math-ops.test.ts
     const rows: Awaited<ReturnType<typeof call>>[] = [];
     for (let i = 0; i < p.corpus.length; i += 16) {
       rows.push(...(await Promise.all(p.corpus.slice(i, i + 16).map(call))));

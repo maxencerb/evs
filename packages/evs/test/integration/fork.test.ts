@@ -30,7 +30,7 @@ const wethMeta = evscript({ name: 'wethMeta', args: [t.address] }, (s, token) =>
 });
 
 describe.runIf(forkUrl !== undefined)('fork mode: real mainnet WETH', () => {
-  // a free port of its own: clear of the prool proxy and of any concurrent run
+  // a free port of its own: clear of the per-worker anvils and of any concurrent run
   let anvil: ReturnType<typeof Instance.anvil> | undefined;
   let client: PublicClient;
 
