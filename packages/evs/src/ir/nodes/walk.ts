@@ -1,6 +1,6 @@
 /**
  * `ir/nodes/walk.ts` — the statement def/use tables (shared by `ir/dce` and `codegen/frame`) and
- * `walkStmts`, the statement-tree traversal.
+ * the statement-tree traversals (`walkStmts`, `walkStmtsWithPath`).
  */
 
 import { EvsInternalError } from '../../core/errors.js';
@@ -123,18 +123,45 @@ function unknownStmt(s: never): never {
 
 /**
  * Depth-first, pre-order walk over a statement tree (a statement is visited before its child
- * blocks). `path` alternates statement indices and child-block ordinals so nested positions
- * are unambiguous: the statement at `stmts[2].then[1]` is visited with path `[2, 0, 1]`
- * (`if`: block 0 = `then`, block 1 = `else`; `while`: block 0 = `header`, block 1 = `body`).
+ * blocks: `if` → `then` then `else`; `while` → `header` then `body`). Allocation-free: the
+ * compile pipeline (DCE, frame allocation, lowering) walks every statement several times, so
+ * callers that need positions use {@link walkStmtsWithPath}.
  */
-export function walkStmts(
+export function walkStmts(stmts: readonly Stmt[], visit: (s: Stmt) => void): void {
+  for (let i = 0; i < stmts.length; i++) {
+    const s = stmts[i];
+    if (s === undefined) continue; // sparse arrays cannot occur in well-formed IR
+    visit(s);
+    switch (s.k) {
+      case 'if':
+        walkStmts(s.then, visit);
+        walkStmts(s.else, visit);
+        break;
+      case 'while':
+        walkStmts(s.header, visit);
+        walkStmts(s.body, visit);
+        break;
+      default:
+        break;
+    }
+  }
+}
+
+/**
+ * {@link walkStmts} with each statement's position (the convention the interpreter's
+ * `trace[].stmtPath` follows). `path` alternates statement indices and child-block ordinals so
+ * nested positions are unambiguous: the statement at `stmts[2].then[1]` is visited with path
+ * `[2, 0, 1]` (`if`: block 0 = `then`, block 1 = `else`; `while`: block 0 = `header`, block 1 =
+ * `body`). Allocates one array per statement — keep it off the compile path.
+ */
+export function walkStmtsWithPath(
   stmts: readonly Stmt[],
   visit: (s: Stmt, path: readonly number[]) => void,
 ): void {
-  walk(stmts, [], visit);
+  walkWithPath(stmts, [], visit);
 }
 
-function walk(
+function walkWithPath(
   stmts: readonly Stmt[],
   prefix: readonly number[],
   visit: (s: Stmt, path: readonly number[]) => void,
@@ -146,12 +173,12 @@ function walk(
     visit(s, path);
     switch (s.k) {
       case 'if':
-        walk(s.then, [...path, 0], visit);
-        walk(s.else, [...path, 1], visit);
+        walkWithPath(s.then, [...path, 0], visit);
+        walkWithPath(s.else, [...path, 1], visit);
         break;
       case 'while':
-        walk(s.header, [...path, 0], visit);
-        walk(s.body, [...path, 1], visit);
+        walkWithPath(s.header, [...path, 0], visit);
+        walkWithPath(s.body, [...path, 1], visit);
         break;
       default:
         break;

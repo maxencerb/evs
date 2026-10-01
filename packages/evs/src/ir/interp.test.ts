@@ -2350,7 +2350,7 @@ describe('maxSteps + trace', () => {
     expect(() => interpret(infinite, [], deadChain, { maxSteps: 1.5 })).toThrowError(EvsTypeError);
   });
 
-  test('trace is opt-in and follows the walkStmts path convention', () => {
+  test('trace is opt-in and follows the walkStmtsWithPath path convention', () => {
     const valid = ir({
       name: 'traced',
       args: [{ name: 'c', type: 'bool' }],

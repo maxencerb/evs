@@ -390,6 +390,264 @@ describe('liveness seeds', () => {
 });
 
 // ---------------------------------------------------------------------------
+// if liveness: cascades through cells, nesting, linear cost
+// ---------------------------------------------------------------------------
+
+/**
+ * `K` sibling `if`s chained through cells: `if_0` sets `c_0` when `a > 0`; `if_i` reads `c_{i-1}`
+ * in its condition and sets `c_i`. With `returnLast`, the script returns `c_{K-1}` — liveness then
+ * flows back to front, one `if` (and one cell) at a time; otherwise it returns `a` and nothing
+ * survives. values: 0 a  1 zero  then per i: cond_i (and g_i, the `c_{i-1}` read, for i > 0);
+ * last: the final read.
+ */
+function cascadeIr(K: number, returnLast: boolean): ScriptIr {
+  const base = ir({ args: [{ name: 'a', type: 'uint256' }] }); // first: resets the site counter
+  const values: ValueInfo[] = [vi('uint256'), vi('uint256')];
+  const value = (type: EvsType): number => values.push(vi(type)) - 1;
+  const body: Stmt[] = [constU(1, 0n)];
+  for (let c = 0; c < K; c++) body.push(mk({ k: 'cellnew', cell: c, init: 1 }));
+  for (let i = 0; i < K; i++) {
+    let lhs = 0;
+    if (i > 0) {
+      lhs = value('uint256');
+      body.push(mk({ k: 'cellget', cell: i - 1, out: lhs }));
+    }
+    const cond = value('bool');
+    body.push(mk({ k: 'bin', op: 'gt', a: lhs, b: 1, out: cond }));
+    body.push(mk({ k: 'if', cond, then: [mk({ k: 'cellset', cell: i, value: 0 })], else: [] }));
+  }
+  const last = value('uint256');
+  body.push(mk({ k: 'cellget', cell: K - 1, out: last }));
+  return {
+    ...base,
+    values,
+    cells: Array.from({ length: K }, () => vi('uint256')),
+    body,
+    returns: [{ name: 'r', type: 'uint256', value: returnLast ? last : 0 }],
+  };
+}
+
+/**
+ * `D` nested `if`s (`if_d` sits in `if_{d-1}`'s `then`), each condition computed inside the
+ * enclosing branch next to a dead `mul`; only the `innermost` statement can be live.
+ * values: 0 a  then per level: cond_d, dead_d.
+ */
+function nestedIr(D: number, innermost: () => Stmt, extra: Partial<ScriptIr> = {}): ScriptIr {
+  const base = ir({ args: [{ name: 'a', type: 'uint256' }] }); // first: resets the site counter
+  const values: ValueInfo[] = [vi('uint256')];
+  const value = (type: EvsType): number => values.push(vi(type)) - 1;
+  const level = (d: number): Stmt[] => {
+    if (d === D) return [innermost()];
+    const cond = value('bool');
+    const dead = value('uint256');
+    return [
+      mk({ k: 'un', op: 'iszero', a: 0, out: cond }),
+      mk({ k: 'bin', op: 'mul', a: 0, b: 0, out: dead }), // dead at every level
+      mk({ k: 'if', cond, then: level(d + 1), else: [] }),
+    ];
+  };
+  return {
+    ...base,
+    values,
+    body: level(0),
+    returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    ...extra,
+  };
+}
+
+/** Counts every read of an `if`'s `then` / `else` (the pass's only way into a branch). */
+function countBranchReads(x: ScriptIr): { reads: () => number; ifs: number } {
+  let reads = 0;
+  let ifs = 0;
+  const instrument = (stmts: readonly Stmt[]): void => {
+    for (const s of stmts) {
+      if (s.k === 'while') {
+        instrument(s.header);
+        instrument(s.body);
+      }
+      if (s.k !== 'if') continue;
+      ifs++;
+      for (const key of ['then', 'else'] as const) {
+        const block = s[key];
+        instrument(block);
+        Object.defineProperty(s, key, {
+          enumerable: true,
+          get: () => {
+            reads++;
+            return block;
+          },
+        });
+      }
+    }
+  };
+  instrument(x.body);
+  return { reads: () => reads, ifs };
+}
+
+describe('if liveness', () => {
+  test('a cascade of ifs chained through cells stays whole when its last cell is returned', () => {
+    const x = cascadeIr(3, true);
+    const out = check(x);
+    expect(out).toBe(x); // nothing is dead: every if, cellset and condition chain survives
+    expect(kinds(out.body).filter((k) => k === 'if' || k === 'cellset')).toEqual([
+      'if',
+      'cellset',
+      'if',
+      'cellset',
+      'if',
+      'cellset',
+    ]);
+  });
+
+  test('the same cascade is dropped entirely when its last cell is never read', () => {
+    expect(check(cascadeIr(3, false)).body).toEqual([]);
+  });
+
+  test('a throw three ifs deep keeps every enclosing if and its condition', () => {
+    const x = nestedIr(3, () => mk({ k: 'throw', error: 0, args: [] }), {
+      errors: [{ name: 'Deep', selector: '0x11223344', inputs: [] }],
+    });
+    const out = check(x);
+    expect(kinds(out.body)).toEqual(['un', 'if', 'un', 'if', 'un', 'if', 'throw']);
+  });
+
+  test('a returned-cell write three ifs deep keeps every enclosing if; a dead one drops them', () => {
+    const withCell = (returned: boolean): ScriptIr => {
+      const x = nestedIr(3, () => mk({ k: 'cellset', cell: 0, value: 0 }));
+      const read = x.values.length;
+      return {
+        ...x,
+        values: [...x.values, vi('uint256')],
+        cells: [vi('uint256')],
+        body: [
+          mk({ k: 'cellnew', cell: 0, init: 0 }),
+          ...x.body,
+          mk({ k: 'cellget', cell: 0, out: read }),
+        ],
+        returns: [{ name: 'r', type: 'uint256', value: returned ? read : 0 }],
+      };
+    };
+    expect(kinds(check(withCell(true)).body)).toEqual([
+      'cellnew',
+      'un',
+      'if',
+      'un',
+      'if',
+      'un',
+      'if',
+      'cellset',
+      'cellget',
+    ]);
+    expect(check(withCell(false)).body).toEqual([]);
+  });
+
+  test('an if around a while stays (the while is a seed); a dead if inside the loop goes', () => {
+    // values: 0 a  1 cond(outer)  2 cond(inner)  3 dead
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('bool'), vi('bool'), vi('uint256')],
+      body: [
+        mk({ k: 'un', op: 'iszero', a: 0, out: 1 }),
+        mk({
+          k: 'if',
+          cond: 1,
+          then: [
+            mk({
+              k: 'while',
+              header: [],
+              cond: 1,
+              body: [
+                mk({ k: 'un', op: 'iszero', a: 1, out: 2 }),
+                mk({ k: 'if', cond: 2, then: [constU(3, 1n)], else: [] }), // dead
+                mk({ k: 'break' }),
+              ],
+            }),
+          ],
+          else: [],
+        }),
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    expect(kinds(check(x).body)).toEqual(['un', 'if', 'while', 'break']);
+  });
+
+  // The builder and deserializeIr always create fresh statement objects, but validateIr accepts
+  // a hand-built IR that places one object in several branches: every `if` holding it stays.
+  test('a statement object shared by two ifs keeps both ifs', () => {
+    // values: 0 a  1 cond1  2 cond2
+    const th = mk({ k: 'throw', error: 0, args: [] });
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('bool'), vi('bool')],
+      errors: [{ name: 'Shared', selector: '0x11223344', inputs: [] }],
+      body: [
+        mk({ k: 'un', op: 'iszero', a: 0, out: 1 }),
+        mk({ k: 'if', cond: 1, then: [th], else: [] }),
+        mk({ k: 'un', op: 'iszero', a: 1, out: 2 }),
+        mk({ k: 'if', cond: 2, then: [th], else: [] }),
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    const out = check(x);
+    expect(out).toBe(x);
+    expect(kinds(out.body)).toEqual(['un', 'if', 'throw', 'un', 'if', 'throw']);
+    // a = 0 reverts in the first if; a != 0 reverts in the second (cond2 = !cond1)
+    for (const a of [0n, 5n]) {
+      expect(interpret(out, [a], NO_CHAIN).outcome.kind).toBe('revert');
+    }
+  });
+
+  test('a statement object shared by an if and a nested if keeps every enclosing if', () => {
+    // values: 0 a  1 cond1  2 cond2  3 dead
+    const th = mk({ k: 'throw', error: 0, args: [] });
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('bool'), vi('bool'), vi('uint256')],
+      errors: [{ name: 'Shared', selector: '0x11223344', inputs: [] }],
+      body: [
+        mk({ k: 'un', op: 'iszero', a: 0, out: 1 }),
+        mk({
+          k: 'if',
+          cond: 1,
+          then: [constU(3, 1n)], // dead
+          else: [
+            mk({ k: 'un', op: 'iszero', a: 1, out: 2 }),
+            mk({ k: 'if', cond: 2, then: [th], else: [] }),
+          ],
+        }),
+        mk({ k: 'if', cond: 1, then: [th], else: [] }),
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    expect(kinds(check(x).body)).toEqual(['un', 'if', 'un', 'if', 'throw', 'if', 'throw']);
+  });
+
+  // The pass reaches branch contents only through `then`/`else`, so counting those reads bounds
+  // its work: a constant per `if` (index, mutation bucketing, seeding, rebuild), however the
+  // ifs are arranged. A per-round re-scan of every not-yet-live `if` grows with the depth of
+  // the nest (each `if` re-walked from every ancestor) or the length of the cascade (one round
+  // per link).
+  test.each([
+    [
+      '200 nested ifs, only the innermost statement live',
+      () =>
+        nestedIr(200, () => mk({ k: 'throw', error: 0, args: [] }), {
+          errors: [{ name: 'Deep', selector: '0x11223344', inputs: [] }],
+        }),
+    ],
+    ['a 200-if cascade through cells', () => cascadeIr(200, true)],
+  ])('branch reads stay linear in the number of ifs: %s', (_name, make) => {
+    const x = make();
+    const before = eliminateDeadCode(x); // the uninstrumented result, for comparison
+    const counter = countBranchReads(x);
+    const out = eliminateDeadCode(x);
+    expect(counter.ifs).toBe(200);
+    expect(counter.reads()).toBeLessThanOrEqual(16 * counter.ifs); // ~11 per if here
+    expect(serializeIr(out)).toBe(serializeIr(before));
+  });
+});
+
+// ---------------------------------------------------------------------------
 // aliasing through composite values
 // ---------------------------------------------------------------------------
 

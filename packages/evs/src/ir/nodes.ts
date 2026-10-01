@@ -33,4 +33,4 @@ export type {
   Stmt,
 } from './nodes/schema.js';
 export { serializeIr, deserializeIr, deepFreeze } from './nodes/json.js';
-export { stmtReads, stmtDefs, walkStmts } from './nodes/walk.js';
+export { stmtReads, stmtDefs, walkStmts, walkStmtsWithPath } from './nodes/walk.js';
