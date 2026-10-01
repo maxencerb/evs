@@ -7,7 +7,7 @@
  *   share (plan validation, decode-failure routing, gas / value / word refs, the returndata
  *   snapshot, the try epilogue);
  * - `calldata.ts` — the calldata template (compile-time const folding) and its build emission,
- *   including the recursive tuple-bearing encoder;
+ *   including the recursive encoder (tuple and recursive-codec array args);
  * - `static-call.ts` — `emitStaticCall` (the subcall, its failure arm, the per-output decode);
  * - `simulate-call.ts` — `emitSimulateCall` (the self-call trampoline site).
  *
@@ -22,10 +22,11 @@
  *   (runtime memrefs: head offset word + tail copied via `emitMemCopy` with explicit
  *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
  *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
- *   scratch `MLOAD(0x40)` and is NOT bumped. The recursive encoder (a tuple-bearing arg list)
-  cannot fold literals: it stages each data-literal arg in a block it allocates by bumping the
-  free pointer (`callArgStaging`), and reserves its encode frames the same way
-  (`callArgEncodeFrames`), so such a site allocates whatever its outputs.
+ *   scratch `MLOAD(0x40)` and is NOT bumped. The recursive encoder (any arg that is a tuple, a
+ *   `T[N]`, or an array of tuples, strings, bytes or arrays: `usesRecursiveCodec`) cannot fold
+ *   literals: it stages each data-literal arg in a block it allocates by bumping the free pointer
+ *   (`callArgStaging`), and reserves its encode frames the same way (`callArgEncodeFrames`), so
+ *   such a site allocates whatever its outputs.
  * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds the `value` word, 0 by default) —
  *   retSize 0 always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
  *   (`w.returndatacopyAll`).

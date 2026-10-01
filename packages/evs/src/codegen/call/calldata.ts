@@ -1,7 +1,7 @@
 /**
  * `codegen/call/calldata.ts` — call-site calldata: the `CalldataTemplate` (compile-time const
  * folding of the selector and literal args), its build emission, and the recursive encoder for
- * tuple-bearing calldata.
+ * calldata with a tuple or recursive-codec array arg.
  */
 
 import { type TypeLayout, layoutOf, layoutOfType, headBytes } from '../../abi/layout.js';
@@ -305,16 +305,16 @@ function emitCalldataBuild(
 }
 
 // ---------------------------------------------------------------------------
-// tuple-bearing calldata build — the recursive encoder
+// recursive-encoder calldata build (tuple / recursive-codec array args)
 // ---------------------------------------------------------------------------
 
-/** Scratch slot holding the data-literal staging base for the duration of a tuple-bearing build. */
+/** Scratch slot holding the data-literal staging base while a recursive-encoder build runs. */
 const STAGING_SLOT = SCRATCH_1;
 
 /**
  * Whether a call site's calldata goes through the recursive encoder ({@link
- * emitCalldataBuildTuples}): some input is a tuple, `tuple[]`/`T[][]`/`string[]` or any `T[N]`
- * ({@link usesRecursiveCodec}). Otherwise the calldata template builds it.
+ * emitCalldataBuildTuples}): some input is a tuple, `tuple[]`/`T[][]`/`string[]`/`bytes[]` or
+ * any `T[N]` ({@link usesRecursiveCodec}). Otherwise the calldata template builds it.
  */
 function usesRecursiveEncoder(stmt: Extract<Stmt, { k: 'call' }>): boolean {
   return stmt.fnAbi.inputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))));
@@ -354,12 +354,13 @@ export function callArgStaging(
 }
 
 /**
- * Builds the calldata for a subcall that has at least one tuple arg, via the recursive head/tail
- * encoder (`emitEncodeBlock`). No const-folding: the whole args region is encoded as a synthetic
- * tuple whose member sources are the arg refs (word literal → PUSH; data literal → a memref staged
- * in fresh memory; slot → `MLOAD(slot)` canonical word or memref pointer). The selector occupies
- * `[buf, buf+4)`; heads start at `buf+4`. The tail cursor lives in scratch `TAIL_CURSOR` (so
- * `emitStaticCall` reads `argsSize = MLOAD(TAIL_CURSOR) − buf`), the staging base in `STAGING_SLOT`.
+ * Builds the calldata for a subcall with a tuple or recursive-codec array arg, via the recursive
+ * head/tail encoder (`emitEncodeBlock`). No const-folding: the whole args region is encoded as a
+ * synthetic tuple whose member sources are the arg refs (word literal → PUSH; data literal → a
+ * memref staged in fresh memory; slot → `MLOAD(slot)` canonical word or memref pointer). The
+ * selector occupies `[buf, buf+4)`; heads start at `buf+4`. The tail cursor lives in scratch
+ * `TAIL_CURSOR` (so `emitStaticCall` reads `argsSize = MLOAD(TAIL_CURSOR) − buf`), the staging base
+ * in `STAGING_SLOT`.
  * Net stack 0.
  */
 function emitCalldataBuildTuples(

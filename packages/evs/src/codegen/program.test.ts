@@ -1217,6 +1217,42 @@ describe('diagnostics', () => {
     expect(stagedNotes).toEqual(['stage arg #1 literal (64B)']);
   });
 
+  test('LOOP_ALLOCATION: a bytes[] arg alone routes the site to the staging encoder', () => {
+    // no tuple anywhere: a `bytes[]` arg is a recursive-codec array (its element is not a word),
+    // so the literal next to it is staged and the array reserves an encode frame
+    const b = new IrB('stagedBytesArr', [
+      ['n', 'uint256'],
+      ['bs', 'bytes[]'],
+    ]);
+    const zero = b.word('uint256', 0n);
+    const i = b.cell('uint256', zero);
+    const target = b.word('address', BigInt(TARGET));
+    const label = b.data('bytes', concatHex(word(2n), `0x${'6869'.padEnd(64, '0')}`));
+    let stagedSite = -1;
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        stagedSite = b.call({
+          target,
+          abi: fnAbi('f', ['bytes[]', 'bytes'], ['uint256']),
+          args: [1, label],
+        }).site; // flagged
+        b.cellSet(i, b.bin('add', b.cellGet(i), b.word('uint256', 1n)));
+      },
+    );
+    b.ret('n', 0);
+    const { diagnostics, nodes } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
+    expect(loopAllocs.map((d) => d.message.split(' allocates memory')[0])).toEqual([
+      's.read(f) (staged call-arg literals, call-arg encode frames)',
+    ]);
+    expect(loopAllocs[0]?.site).toBe(stagedSite);
+    const stagedNotes = nodes.flatMap((n) =>
+      n.k === 'push' && n.note?.startsWith('stage arg #') === true ? [n.note] : [],
+    );
+    expect(stagedNotes).toEqual(['stage arg #1 literal (64B)']);
+  });
+
   test('no LOOP_ALLOCATION outside loops', () => {
     const b = new IrB('flat', [['n', 'uint256']]);
     b.arrnew('uint256', 0);
