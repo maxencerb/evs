@@ -114,9 +114,9 @@ export interface RevertExplanation {
   errorName?: string; // script-error only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // script-error only: name-keyed decoded args
   site?: { id: SiteId; detail: string };
-  // 'panic': the sites whose template can raise that code. 'error-string' / 'custom' / 'empty':
-  // the strict call sites that bubble a callee revert verbatim (the only places such a payload
-  // can enter the script). Absent for the other kinds.
+  // 'panic': the sites whose template can raise that code. 'error-string' / 'custom' / 'empty'
+  // (and a 'script-error' whose args do not decode): the strict call sites that bubble a callee
+  // revert verbatim (the only places such a payload can enter the script). Absent otherwise.
   candidateSites?: readonly { id: SiteId; detail: string }[];
   raw: Hex;
 }
@@ -369,23 +369,6 @@ interface ExplainContext {
 }
 
 /**
- * Whether the script performs any sub-calls. The evs error selectors (`EvsDecodeError`,
- * `EvsInvalidCalldata`) are public constants — an adversarial callee can revert with them
- * verbatim and the script bubbles the payload byte-exactly, so for scripts WITH sub-calls
- * an attribution to a script site is a strong hint, never proof. Scripts without sub-calls
- * cannot bubble anything, so there the attribution is authoritative.
- */
-function scriptHasSubcalls(ir: ScriptIr): boolean {
-  let found = false;
-  const look = (s: { k: string }): void => {
-    if (s.k === 'call') found = true;
-  };
-  walkStmts(ir.body, look);
-  for (const fn of ir.fns) walkStmts(fn.body, look);
-  return found;
-}
-
-/**
  * The emitted call sites that forward a callee's revert payload verbatim: strict `s.read` /
  * `s.call` / `s.simulate` sites. `try*` sites swallow the revert, and a `revertReturns` site
  * decodes it as its value (a normal return is its failure, reported as `EvsDecodeError`), so
@@ -422,8 +405,20 @@ function bubbledFrom(sites: readonly SiteRef[]): string {
 }
 
 const CALLEE_FORGERY_HEDGE =
-  ' — note: the script performs sub-calls and a callee may have reverted with this evs ' +
-  'selector verbatim (bubbled byte-exactly), in which case the failure originated off-script';
+  ' — note: the script has strict call sites that bubble callee reverts, and a callee may have ' +
+  'reverted with this selector verbatim (bubbled byte-exactly), in which case the failure ' +
+  'originated off-script';
+
+/**
+ * The evs error selectors (`EvsDecodeError`, `EvsInvalidCalldata`) and declared script errors
+ * are public — a callee can revert with them verbatim, and a strict call site bubbles the payload
+ * byte-exactly, so for a script WITH a bubbling site an attribution to the script is a strong
+ * hint, never proof. Without one (no sub-calls, or only `try*` / `revertReturns` sites) nothing
+ * can be bubbled, so there the attribution is authoritative and carries no hedge.
+ */
+function forgeryHedge(ctx: ExplainContext): string {
+  return bubblingSites(ctx).length > 0 ? CALLEE_FORGERY_HEDGE : '';
+}
 
 function explainRevert(data: Hex, ctx: ExplainContext): RevertExplanation {
   const raw = bytesToHex(decodeHex(data, 'explainRevert'));
@@ -516,7 +511,7 @@ function explainPanic(raw: Hex, code: bigint, ctx: ExplainContext): RevertExplan
 
 function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): RevertExplanation {
   const id = typeof siteArg === 'bigint' ? siteArg : -1n;
-  const hedge = scriptHasSubcalls(ctx.ir) ? CALLEE_FORGERY_HEDGE : '';
+  const hedge = forgeryHedge(ctx);
   if (raw.length !== 2 + 36 * 2) {
     return {
       kind: 'evs-decode',
@@ -561,7 +556,7 @@ function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): Re
 function explainInvalidCalldata(raw: Hex, ctx: ExplainContext): RevertExplanation {
   const { ir } = ctx;
   const signature = `${ir.name}(${ir.args.map((a) => canonicalTypeSignature(a.type)).join(',')})`;
-  const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
+  const hedge = forgeryHedge(ctx);
   return {
     kind: 'evs-invalid-calldata',
     message:
@@ -581,17 +576,21 @@ function explainScriptError(
   ctx: ExplainContext,
 ): RevertExplanation {
   if (args === null) {
+    // s.throw always encodes its args well-formed: a malformed payload can only be a callee's
+    const candidateSites = bubblingSites(ctx);
     return {
       kind: 'script-error',
       message:
         `declared error ${name} (selector ${selector}) with a MALFORMED argument ` +
         `payload (${(raw.length - 10) / 2} bytes) — the payload does not decode against its ` +
-        `declared inputs, so it was likely bubbled verbatim from a callee`,
+        `declared inputs, so this script's s.throw cannot have produced it` +
+        bubbledFrom(candidateSites),
       errorName: name,
+      candidateSites,
       raw,
     };
   }
-  const hedge = scriptHasSubcalls(ctx.ir) ? CALLEE_FORGERY_HEDGE : '';
+  const hedge = forgeryHedge(ctx);
   const shown = Object.entries(args)
     .map(([k, v]) => `${k}: ${fmtErrorArg(v)}`)
     .join(', ');

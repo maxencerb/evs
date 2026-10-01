@@ -264,8 +264,8 @@ try {
       const explanation = compiled.explainRevert(reverted.raw);
       // explanation.kind    → 'evs-decode'
       // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 0)
-      //                        — note: the script performs sub-calls and a callee may have
-      //                        reverted with this evs selector verbatim (…)"
+      //                        — note: the script has strict call sites that bubble callee
+      //                        reverts, and a callee may have reverted with this selector (…)"
       // explanation.site    → { id, detail } for the s.read that failed
     }
   }
@@ -286,17 +286,17 @@ kinds:
 | `'custom'`               | any other selector               | `candidateSites` as above — decode the payload against the callee's ABI               |
 | `'empty'`                | zero-length returndata           | `candidateSites` as above, or the frame failed without reason (see below)            |
 
-:::caution[Attribution is a hint when the script makes sub-calls]
+:::caution[Attribution is a hint when the script has strict call sites]
 Panics share one revert tail, so panic attribution is a list of *candidates*, not proof — but
 only sites that can actually raise that code are listed (a `mod` or a widening conversion is
-never an overflow candidate), and each names its operands (`array index args.prices[0]`), so
-same-kind sites stay distinguishable. When no site of the script can raise the code, the panic
+never an overflow candidate), and each names its operands (`array index args.prices[0]`; a
+name several values share gets its `#id`), so same-kind sites stay distinguishable. When no site of the script can raise the code, the panic
 came from a callee, and the message names the strict call sites (`s.read`, `s.call`,
 `s.simulate`; never `try*`) it can have been bubbled through. And
 since callee reverts bubble byte-exactly, an adversarial callee can revert with the evs
-selectors verbatim — for scripts that perform sub-calls, `explainRevert` appends a hedge noting
-that the payload may have originated off-script. Scripts without sub-calls cannot bubble
-anything, so their attributions are authoritative.
+selectors verbatim — for scripts with a strict call site, `explainRevert` appends a hedge noting
+that the payload may have originated off-script. Scripts without one (no sub-calls, or only
+`try*` / `revertReturns` sites) cannot bubble anything, so their attributions are authoritative.
 :::
 
 An empty payload has one more origin: the frame failing without data — out of gas, or an

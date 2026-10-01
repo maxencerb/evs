@@ -398,7 +398,7 @@ interface RevertExplanation {
   errorName?: string; // kind 'script-error' only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // kind 'script-error' only: name-keyed decoded args
   site?: { id: number; detail: string }; // kind 'evs-decode' only
-  candidateSites?: readonly { id: number; detail: string }[]; // 'panic', 'error-string', 'custom', 'empty'
+  candidateSites?: readonly { id: number; detail: string }[]; // 'panic', 'error-string', 'custom', 'empty', malformed 'script-error'
   raw: `0x${string}`;
 }
 ```
@@ -406,9 +406,9 @@ interface RevertExplanation {
 | `kind` | Payload | Extras |
 | --- | --- | --- |
 | `'panic'` | `Panic(uint256)` (selector `0x4e487b71`, 36 bytes) | `panicCode`, plus `candidateSites` — every site in this script whose code can raise that panic code; with none, the message names the strict call sites it was bubbled through |
-| `'evs-decode'` | `EvsDecodeError(uint256)` (36 bytes) | `site` when the id resolves to a returndata-decode site in this artifact's source map |
+| `'evs-decode'` | `EvsDecodeError(uint256)` | `site` only for the exact 36-byte payload this compiler emits whose id resolves to a returndata-decode site in this artifact's source map; a longer payload that still decodes is `'evs-decode'` with no `site` |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()` (exactly 4 bytes) | Message names the expected function signature |
-| `'script-error'` | A custom error declared in the script's `errors` | `errorName` and `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
+| `'script-error'` | A custom error declared in the script's `errors` | `errorName` and `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw`; when the args do not decode, no `errorArgs` and `candidateSites` as for `'error-string'` (`s.throw` cannot produce it) |
 | `'error-string'` | `Error(string)` | Bubbled verbatim from a callee; message quotes the reason; `candidateSites` — the strict call sites it can have come through |
 | `'custom'` | Any other selector (or a payload shorter than 4 bytes) | Decode it against the callee's ABI; `candidateSites` as for `'error-string'` |
 | `'empty'` | Zero-length returndata | A bare `revert()`/`require(false)` bubbled (`candidateSites` as for `'error-string'`), or the frame failed without a reason: out of gas, or an opcode the node does not support at that block — the message names the fork-gated opcodes (`PUSH0`, `MCOPY`) the runtime uses |
@@ -421,10 +421,11 @@ payload only a callee can produce did not come from this artifact, and the messa
 payload with the same rules, so they always agree on what it is.
 
 :::caution
-For scripts that perform sub-calls, attribution to a script site is a strong hint, never proof:
+For scripts with a strict call site, attribution to a script site is a strong hint, never proof:
 the evs selectors are public constants, and a callee revert bubbles byte-exactly, so an
 adversarial callee can forge them. `explainRevert` appends an explicit hedge to its message in
-that case. Scripts without sub-calls cannot bubble anything, so there the attribution is
+that case. Scripts without one (no sub-calls, or only `try*` / `revertReturns` sites) cannot
+bubble anything, so there the attribution is
 authoritative.
 :::
 

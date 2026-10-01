@@ -15,8 +15,9 @@
  *
  * Operands are named by what the user can see: a literal by its value, a recorded value by its
  * debug name (`args.x`, `s.read(token0)`, `s.newArray(uint256)`, …) and anything else by `#id`,
- * the value id an `Expr` handle prints (`Expr<uint256> #12`), so two sites of the same kind stay
- * distinguishable.
+ * the value id an `Expr` handle prints (`Expr<uint256> #12`). A debug name several values share
+ * (two `s.newArray(uint256)`, two reads of one function) gets that `#id` appended, so two sites
+ * of the same kind on different operands get different details (the site id always differs).
  */
 
 import type { SourceMap } from '../asm/sourcemap.js';
@@ -40,10 +41,11 @@ const ALLOC_CAP = 0xffffffffn;
 export function collectSites(ctx: LowerCtx, emittedFns: readonly FnId[]): SourceMap['sites'] {
   const sites: Site[] = [];
   const seen = new Set<number>();
+  const shared = sharedDebugNames(ctx);
   const add = (s: Stmt): void => {
     if (seen.has(s.site)) return;
     seen.add(s.site);
-    sites.push(classifySite(ctx, s));
+    sites.push(classifySite(ctx, shared, s));
   };
   walkStmts(ctx.ir.body, add);
   for (const f of emittedFns) {
@@ -53,7 +55,7 @@ export function collectSites(ctx: LowerCtx, emittedFns: readonly FnId[]): Source
   return sites;
 }
 
-function classifySite(ctx: LowerCtx, s: Stmt): Site {
+function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site {
   const site = (kind: SiteKind, detail: string): Site => ({ id: s.site, kind, detail });
   /** A panic site when `codes` is non-empty, else a plain statement with the same detail. */
   const checked = (what: string, codes: readonly number[]): Site =>
@@ -65,7 +67,7 @@ function classifySite(ctx: LowerCtx, s: Stmt): Site {
           detail: `${what} — Panic ${codes.map(fmtCode).join('/')}`,
           panicCodes: Object.freeze([...codes]),
         };
-  const op = (v: ValueId): string => describeOperand(ctx, v);
+  const op = (v: ValueId): string => describeOperand(ctx, shared, v);
 
   switch (s.k) {
     case 'call': {
@@ -191,10 +193,25 @@ function convertIsChecked(from: EvsType, to: EvsType): boolean {
 // operand rendering
 // ---------------------------------------------------------------------------
 
-function describeOperand(ctx: LowerCtx, v: ValueId): string {
+function describeOperand(ctx: LowerCtx, shared: ReadonlySet<string>, v: ValueId): string {
   const c = foldedConst(ctx, v);
   if (c !== undefined) return describeLiteral(c, typeOf(ctx, v));
-  return ctx.ir.values[v]?.debugName ?? `#${v}`;
+  const name = ctx.ir.values[v]?.debugName;
+  if (name === undefined) return `#${v}`;
+  return shared.has(name) ? `${name}#${v}` : name;
+}
+
+/** The debug names more than one value carries — rendered with their `#id` to stay unique. */
+function sharedDebugNames(ctx: LowerCtx): ReadonlySet<string> {
+  const once = new Set<string>();
+  const shared = new Set<string>();
+  for (const info of ctx.ir.values) {
+    const name = info.debugName;
+    if (name === undefined) continue;
+    if (once.has(name)) shared.add(name);
+    else once.add(name);
+  }
+  return shared;
 }
 
 /** A folded word constant as the user wrote it: signed decimal for intN, decimal for uintN,

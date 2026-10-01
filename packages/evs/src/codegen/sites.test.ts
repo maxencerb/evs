@@ -306,4 +306,31 @@ describe('details name the operands', () => {
     expect(details).toContain('div args.arg0 / -3 (int256)');
     expect(details).toContain('mod args.arg0 % 7 (int256)');
   });
+
+  test('a debug name several values share gets its #id, a unique one stays bare', () => {
+    const twoArrays = evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, n, i) => {
+      const a = s.newArray(t.uint256, n);
+      const b = s.newArray(t.uint256, n);
+      a.set(i, 1n);
+      b.set(i, 2n);
+      return s.return({ a: a.expr(), b: b.expr() });
+    });
+    const writes = compile(twoArrays)
+      .sourceMap.sites.map((s) => s.detail)
+      .filter((d) => d.startsWith('array write'));
+    expect(writes).toHaveLength(2);
+    expect(new Set(writes).size).toBe(2);
+    for (const w of writes) {
+      expect(w).toMatch(/^array write s\.newArray\(uint256\)#\d+\[args\.arg1\] — Panic 0x32$/);
+    }
+
+    const oneArray = evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, n, i) => {
+      const a = s.newArray(t.uint256, n);
+      a.set(i, 1n);
+      return s.return({ a: a.expr() });
+    });
+    expect(compile(oneArray).sourceMap.sites.map((s) => s.detail)).toContain(
+      'array write s.newArray(uint256)[args.arg1] — Panic 0x32',
+    );
+  });
 });

@@ -816,13 +816,13 @@ describe('explainRevert', () => {
 
   test('evs-decode: adversarial callee selector reuse is hedged, forged sites never authoritative', async () => {
     const compiled = compile(symbolScript());
-    // (a) a genuine decode failure on a script WITH sub-calls carries the off-script hedge
+    // (a) a genuine decode failure on a script WITH a strict call site carries the off-script hedge
     const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'sym' });
     const res = await execRuntime(compiled.runtimeBytecode, calldata, {
       contracts: { [TOKEN]: ATTACKER_RETURNERS.empty },
     });
     const genuine = compiled.explainRevert(res.data);
-    expect(genuine.message).toMatch(/callee may have reverted with this evs selector/);
+    expect(genuine.message).toMatch(/callee may have reverted with this selector/);
     // (b) a forged payload pointing at a NON-decode site is not presented as 'recorded at'
     const forgedSite = compiled.sourceMap.sites.find((s) => s.kind !== 'decode');
     expect(forgedSite).toBeDefined();
@@ -849,19 +849,19 @@ describe('explainRevert', () => {
     expect(pure.explainRevert(decodePayload).message).not.toMatch(/callee may have reverted/);
   });
 
-  test('evs-invalid-calldata: hedged only for scripts with sub-calls', async () => {
+  test('evs-invalid-calldata: hedged only for scripts with a strict call site', async () => {
     // sumScript performs no sub-calls — the attribution is authoritative, no hedge
     const pure = compile(sumScript());
     const resPure = await execRuntime(pure.runtimeBytecode, '0x01');
     const explainedPure = pure.explainRevert(resPure.data);
     expect(explainedPure.kind).toBe('evs-invalid-calldata');
     expect(explainedPure.message).not.toMatch(/callee may have reverted/);
-    // symbolScript sub-calls — a callee could bubble EvsInvalidCalldata() verbatim
+    // symbolScript has a strict s.read — a callee could bubble EvsInvalidCalldata() verbatim
     const withCalls = compile(symbolScript());
     const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x01');
     const explainedCalls = withCalls.explainRevert(resCalls.data);
     expect(explainedCalls.kind).toBe('evs-invalid-calldata');
-    expect(explainedCalls.message).toMatch(/callee may have reverted with this evs selector/);
+    expect(explainedCalls.message).toMatch(/callee may have reverted with this selector/);
   });
 
   test('empty calldata is the receive path: success with no output, nothing to explain', async () => {
@@ -1204,6 +1204,73 @@ describe('custom errors (issue #15)', () => {
     expect(explained.errorName).toBe('NoBalance');
     expect(explained.errorArgs).toBeUndefined();
     expect(explained.message).toMatch(/MALFORMED/);
+  });
+
+  test('try-only and revertReturns-only scripts cannot bubble: no callee hedge, no "likely bubbled"', () => {
+    const Bad = t.error('Bad', [namedArg('code', t.uint256)]);
+    const tryOnly = compile(
+      evscript({ name: 'probe', args: [t.address], errors: [Bad] }, (s, a) => {
+        const r = s.tryRead({ address: a, abi: SUPPLY_ABI, functionName: 'totalSupply' });
+        s.if(r.success.not(), () => {
+          s.throw(Bad, { code: 1n });
+        });
+        const q = s.call({
+          address: a,
+          abi: QUOTER_ABI,
+          functionName: 'quote',
+          args: [],
+          revertReturns: [t.uint256],
+        });
+        return s.return({ q });
+      }),
+    );
+    const selector = tryOnly.ir.errors?.[0]?.selector ?? '0x';
+    const malformed = tryOnly.explainRevert(`0x${selector.slice(2)}ff`);
+    expect(malformed.kind).toBe('script-error');
+    expect(malformed.candidateSites).toEqual([]);
+    expect(malformed.message).toMatch(/did not come from this artifact/);
+    expect(malformed.message).not.toMatch(/likely bubbled|callee may have reverted/);
+
+    const decodeError = tryOnly.explainRevert(
+      encodeErrorResult({ abi: tryOnly.abi, errorName: 'EvsDecodeError', args: [5n] }),
+    );
+    expect(decodeError.kind).toBe('evs-decode');
+    expect(decodeError.message).not.toMatch(/callee may have reverted/);
+    const thrown = tryOnly.explainRevert(
+      encodeErrorResult({ abi: tryOnly.abi, errorName: 'Bad', args: [1n] }),
+    );
+    expect(thrown.kind).toBe('script-error');
+    expect(thrown.message).not.toMatch(/callee may have reverted/);
+    const invalid = tryOnly.explainRevert(
+      encodeErrorResult({ abi: tryOnly.abi, errorName: 'EvsInvalidCalldata' }),
+    );
+    expect(invalid.kind).toBe('evs-invalid-calldata');
+    expect(invalid.message).not.toMatch(/callee may have reverted/);
+  });
+
+  test('with a strict call site, a malformed declared error names it and attributions are hedged', () => {
+    const Bad = t.error('Bad', [namedArg('code', t.uint256)]);
+    const strict = compile(
+      evscript({ name: 'probe', args: [t.address], errors: [Bad] }, (s, a) => {
+        const supply = s.read({ address: a, abi: SUPPLY_ABI, functionName: 'totalSupply' });
+        s.if(supply.eq(0n), () => {
+          s.throw(Bad, { code: 1n });
+        });
+        return s.return({ supply });
+      }),
+    );
+    const selector = strict.ir.errors?.[0]?.selector ?? '0x';
+    const malformed = strict.explainRevert(`0x${selector.slice(2)}ff`);
+    expect(malformed.candidateSites?.map((c) => c.detail)).toEqual([
+      'decoding totalSupply() returndata',
+    ]);
+    expect(malformed.message).toMatch(
+      /bubbled verbatim from a callee through the strict call site/,
+    );
+    const thrown = strict.explainRevert(
+      encodeErrorResult({ abi: strict.abi, errorName: 'Bad', args: [1n] }),
+    );
+    expect(thrown.message).toMatch(/callee may have reverted with this selector/);
   });
 
   test('a throw inside an s.fn body reverts the whole script', async () => {
