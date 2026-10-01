@@ -185,6 +185,86 @@ const shareOfSupply = evscript(
 );
 ```
 
+## Not supported yet
+
+A few things Solidity can do have no `Expr` operation in this version. Each has a workaround:
+
+| Missing                                                       | Workaround                                                                                                   |
+| ------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| `unchecked { }` / wrapping `*`                                | build it from full-precision `mulmod` / `addmod` ([below](#wrapping-multiplication))                        |
+| 512-bit `mulDiv` (Uniswap's `FullMath`)                       | `a.mul(b).div(d)` reverts once `a * b` passes 2^256, even when the quotient fits; return the operands and finish on the client |
+| `address` ordering, `uint160(addr)`, `address(uint160(x))`    | type the address as `uint160` at the ABI boundary ([below](#ordering-addresses-and-create2))                 |
+| `bytesN` ↔ `uintN` other than `bytes32` ↔ `uint256`, byte access, slicing, `bytes32` → `string` | declare the value as `bytes32` / `uint256` in your ABI fragment and shift, or decode it on the client (see [legacy `bytes32` metadata](/guides/calls/#legacy-bytes32-metadata)) |
+
+### Wrapping multiplication
+
+`a * b mod 2^256`, what solc emits as a bare `MUL` inside `unchecked { }`, splits into 128-bit
+halves whose partial products `mulmod` and `addmod` compute without overflow. It costs about 300
+gas per multiply instead of a few, so keep it to the places that need wrapping semantics (hash
+mixing, Newton iterations ported from Solidity):
+
+```ts
+import { evscript, t, type Expr } from '@maxencerb/evs';
+
+const LOW_128 = (1n << 128n) - 1n;
+const TWO_128 = 1n << 128n;
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+/** a * b mod 2^256: Solidity's unchecked multiply, from full-precision mulmod / addmod. */
+function wrappingMul(a: Expr<'uint256'>, b: Expr<'uint256'>): Expr<'uint256'> {
+  const aLo = a.bitAnd(LOW_128);
+  const aHi = a.shr(128n);
+  const bLo = b.bitAnd(LOW_128);
+  const bHi = b.shr(128n);
+  // aLo * bLo < 2^256 − 1, so reducing it modulo 2^256 − 1 keeps the exact product
+  const low = aLo.mulmod(bLo, MAX_UINT256);
+  // only the low 128 bits of the cross terms survive the shift into the high half
+  const cross = aLo.mulmod(bHi, TWO_128).addmod(aHi.mulmod(bLo, TWO_128), TWO_128);
+  const high = low.shr(128n).addmod(cross, TWO_128);
+  return high.shl(128n).bitOr(low.bitAnd(LOW_128));
+}
+
+const square = evscript({ name: 'square', args: [t.uint256] }, (s, x) =>
+  s.return({ wrapped: wrappingMul(x, x) }),
+);
+```
+
+### Ordering addresses and CREATE2
+
+An `Expr<'address'>` supports `eq` / `neq` only, and no conversion turns it into a number. The
+ABI encodes an `address` and a `uint160` as the same word, so declare the address as `uint160`
+where it enters the script: in the script's `args` (the caller passes `BigInt(address)`), or as
+the output type in your own ABI fragment for a getter such as `token0()`. A `uint160` sorts with
+`lt`, and `.toUint(t.uint256).asAddress()` turns it back into an address. The same pieces derive
+a CREATE2 address, here a Uniswap V3 pool:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
+const POOL_INIT_CODE_HASH = '0xe34f199b19b2b4f47f68442619d555527d244f78a3297ea89325f843f87b8b54';
+
+const poolAddress = evscript(
+  { name: 'poolAddress', args: [t.uint160, t.uint160, t.uint24] }, // tokens passed as BigInt(address)
+  (s, tokenA, tokenB, fee) => {
+    const aFirst = tokenA.lt(tokenB); // Uniswap's token0 < token1 ordering
+    const token0 = s.select(aFirst, tokenA, tokenB).toUint(t.uint256).asAddress();
+    const token1 = s.select(aFirst, tokenB, tokenA).toUint(t.uint256).asAddress();
+    const salt = s.keccak256(token0, token1, fee); // keccak256(abi.encode(token0, token1, fee))
+    const hash = s.keccak256(
+      s.encodePacked(
+        s.lit(t.bytes1, '0xff'),
+        s.lit(t.address, FACTORY),
+        salt,
+        s.lit(t.bytes32, POOL_INIT_CODE_HASH),
+      ),
+    );
+    const pool = hash.asUint256().bitAnd((1n << 160n) - 1n).asAddress(); // the low 20 bytes
+    return s.return({ token0, token1, pool });
+  },
+);
+```
+
 ## Next
 
 - [Control flow](/guides/control-flow/) — branching and looping on runtime values, `s.select`.

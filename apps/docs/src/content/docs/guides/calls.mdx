@@ -13,7 +13,7 @@ can also be an `Expr` produced earlier in the script — and each has a `try*` c
 | --- | --- | --- | --- | --- |
 | [`s.read`](#sread--stryread) / `s.tryRead` | `STATICCALL` | `view` / `pure` | static — no state change possible | normal view reads |
 | [`s.call`](#mutable-calls-scall--strycall) / `s.tryCall` | `CALL` (value 0) | `nonpayable` / `payable` | a real non-static frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` (the `eth_call` itself never commits) | non-view functions that need a real frame but don't usefully keep state — the canonical case is a Uniswap quoter |
-| [`s.simulate`](#simulating-writes-ssimulate--strysimulate) / `s.trySimulate` | `CALL` via a self-call trampoline | `nonpayable` / `payable` | the write is **rolled back** and isolated from later reads, yet its return value is read back | dry-run a true write and read what it would return |
+| [`s.simulate`](#simulating-writes-ssimulate--strysimulate) / `s.trySimulate` | `CALL` (value 0) via a self-call trampoline | `nonpayable` / `payable` | the write is **rolled back** and isolated from later reads, yet its return value is read back | dry-run a true write and read what it would return |
 
 The verb you pick is enforced at the `functionName` **type** level: a `nonpayable` function under
 `s.read` is a compile error (steered to `s.call`/`s.simulate`), and a `view`/`pure` function under
@@ -174,6 +174,12 @@ order, it unifies with a `t.struct` declared in the same order and with
 struct: true })` mirrors this on its `.value` (and so do `s.call`/`s.simulate` and their `try*`
 variants). The default (`struct` omitted) positional shape is unchanged; a non-literal `boolean`
 widens the result to the union of both shapes, so the caller must narrow.
+
+The struct is not free: it is a fresh block of one word per output, allocated after the outputs
+are decoded. Inside a loop that is one more allocation per iteration, reported as a
+[`LOOP_ALLOCATION`](/reference/diagnostics/#diagnostics--the-compile-time-warning-channel)
+diagnostic of its own on top of whatever the call itself allocates. In a hot loop, read the
+outputs positionally instead.
 
 A few typing behaviors carried over from viem, all enforced at recording time rather than as
 hard type errors where viem is also permissive:
@@ -467,13 +473,18 @@ Two failure modes are distinguished:
   names it, and `explainRevert` maps the site id back to the offending
   call. See [errors and debugging](/guides/errors-and-debugging/).
 
-Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-lenient): a
-`uint8` output with garbage in its upper bytes comes back masked to its declared width. Every
-output is decoded from the original returndata, so even non-canonical data whose offsets make
-two outputs share bytes decodes each of them exactly as if it were alone, within one shared
-[decode-work budget](#overlapping-offsets-and-the-decode-work-budget): the outputs of a call
-draw on the same budget, so several outputs aliasing one large charged tail (a `uint8[][]`, a
-struct array) are charged once each and can exhaust it together.
+Dirty bits in word-typed outputs are **normalized, not reverted**: a `uintN`, `address` or
+`bytesN` output is masked to its declared width, an `intN` output is sign-extended from its
+width, and any nonzero `bool` word reads as `true`. A `uint8` output whose word holds 300 comes
+back as 44, and an `int8` word of `0x1f6` as −10. This is how Solidity's legacy ABI coder v1
+cleans returndata; coder v2, the default since 0.8, reverts instead. viem's decoder does not do
+either: it returns a `uintN`/`intN` word unmasked (300 stays 300) and throws on a `bool` word
+other than 0 or 1, so a misbehaving callee can read differently through evs and through a plain
+`readContract`. Every output is decoded from the original returndata, so even non-canonical data
+whose offsets make two outputs share bytes decodes each of them exactly as if it were alone,
+within one shared [decode-work budget](#overlapping-offsets-and-the-decode-work-budget): the
+outputs of a call draw on the same budget, so several outputs aliasing one large charged tail (a
+`uint8[][]`, a struct array) are charged once each and can exhaust it together.
 
 ### Overlapping offsets and the decode-work budget
 
@@ -539,6 +550,14 @@ const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s,
   for `bool`, the zero address, empty `string`/`bytes`, empty arrays. `value` is always safe
   to use — guard with `success` (or [`s.select`](/guides/control-flow/)) when zero is a valid
   real-world reading.
+
+:::caution[Success is not a range check]
+`success` only says the call returned and its returndata had a decodable shape. An out-of-range
+word is [normalized](#revert-behavior-verbatim-bubbling) like under `s.read` and still reports
+`success = true`: a `decimals()` that returns 300 reads as `{ success: true, value: 44 }`. When a
+callee might return garbage, declare the output wider in your own ABI fragment (`uint256` instead
+of `uint8`, the wire format is the same word) and check the range in the script.
+:::
 
 :::note
 This is deliberately stronger than Solidity's `try`/`catch`: malformed returndata from a
@@ -893,6 +912,79 @@ changes the script's *own* caller (`s.env('caller')`), never what the targets se
 [`s.env('caller')`](/reference/builder/#senv) frame-dependence warning. See
 [execution modes](/guides/execution/).
 :::
+
+## Reading what has no verb
+
+Some reads have no builder verb of their own; these are the patterns that cover them today.
+
+### Native ETH balances
+
+There is no `s.env` kind for an account's ETH balance (the `BALANCE` opcode). Read it through
+[Multicall3](https://www.multicall3.com/)'s `getEthBalance`, a `view` function deployed at the same
+address on most EVM chains, with an ordinary `s.read`:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
+const multicall3Abi = [
+  {
+    type: 'function',
+    name: 'getEthBalance',
+    stateMutability: 'view',
+    inputs: [{ name: 'addr', type: 'address' }],
+    outputs: [{ name: 'balance', type: 'uint256' }],
+  },
+] as const;
+
+const nativeBalances = evscript({ name: 'nativeBalances', args: [t.array(t.address)] }, (s, wallets) => {
+  const balances = s.newArray(t.uint256, wallets.length());
+  s.forEach(wallets, (wallet, i) => {
+    balances.set(
+      i,
+      s.read({ address: MULTICALL3, abi: multicall3Abi, functionName: 'getEthBalance', args: [wallet] }),
+    );
+  });
+  return s.return({ balances });
+});
+```
+
+Check that the chain you target has Multicall3 at that address; the call is a plain `STATICCALL`,
+so a missing contract shows up as `EvsDecodeError` (or `success = false` under `s.tryRead`).
+
+### Legacy `bytes32` metadata
+
+A few early tokens (MKR, SAI) return `bytes32` from `name()` and `symbol()` instead of `string`.
+A script cannot turn a `bytes32` into a `string`, so read both shapes with `s.tryRead` and pick
+on the client. Reading a real `string` through the `string` ABI succeeds; reading a `bytes32`
+through it fails to decode (the word is not a valid offset), so `success` tells the two apart:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, hexToString, type Hex } from 'viem';
+
+const bytes32MetadataAbi = [
+  {
+    type: 'function',
+    name: 'symbol',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: '', type: 'bytes32' }],
+  },
+] as const;
+
+const tokenSymbol = evscript({ name: 'tokenSymbol', args: [t.address] }, (s, token) => {
+  const asString = s.tryRead({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const asBytes32 = s.tryRead({ address: token, abi: bytes32MetadataAbi, functionName: 'symbol' });
+  return s.return({ ok: asString.success, symbol: asString.value, raw: asBytes32.value });
+});
+
+// on the client, after readContract({ ...tokenSymbol.compile().toViem(), … })
+function symbolOf(result: { ok: boolean; symbol: string; raw: Hex }): string {
+  // `size: 32` trims the trailing NUL bytes of the padded word
+  return result.ok ? result.symbol : hexToString(result.raw, { size: 32 });
+}
+```
 
 ## When to use which
 

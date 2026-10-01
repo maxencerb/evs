@@ -18,6 +18,25 @@ import { RecorderCalls } from './calls.js';
 import { RETURN_BRAND } from './handles.js';
 import { describeHost, newScope, unsafeCast } from './helpers.js';
 
+/** A plain (non-array) object: the literal of a struct. */
+function isStructLiteral(x: unknown): boolean {
+  return typeof x === 'object' && x !== null && !Array.isArray(x);
+}
+
+/**
+ * The fix for a literal passed to `s.return`. `s.lit` types any value whose type is a plain
+ * string (words, `string`, `uint256[][]`, `string[]`), but a struct has no string type, so a
+ * struct literal goes through `s.tuple` and an array of struct literals through `s.newArray` or
+ * a typed member slot.
+ */
+function returnLiteralFix(v: unknown): string {
+  if (Array.isArray(v) && v.some(isStructLiteral)) {
+    return 'build a struct array (tuple[]) with s.newArray(type, n), or type the literal through a member of s.tuple(t.struct({ … }), { … })';
+  }
+  if (isStructLiteral(v)) return 'build a struct with s.tuple(type, value)';
+  return 'type a literal with s.lit(type, value)';
+}
+
 /** The recording engine behind one `evscript` body; the layers it extends are listed on the
  *  `builder/expr.ts` barrel. */
 export class Recorder extends RecorderCalls {
@@ -234,7 +253,7 @@ export class Recorder extends RecorderCalls {
       if (c.kind !== 'expr') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `s.return() value "${key}": must be an Expr — type a literal with s.lit(type, value)`,
+          `s.return() value "${key}": must be an Expr, Tuple or MutArray handle — s.return infers the return ABI from handles, so a literal has no type here: ${returnLiteralFix(v)}`,
         );
       }
       returns.push({ name: key, type: c.type, value: c.id });

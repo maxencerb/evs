@@ -967,6 +967,27 @@ test('s.return rejects an empty record at the type level (issue #66)', () => {
   });
 });
 
+test('s.return takes handles only: composite literals go through s.lit or a member slot', () => {
+  const P = t.struct({ a: t.uint256 });
+  evscript({ name: 'bad', args: [] }, (s) =>
+    // @ts-expect-error — a tuple[] literal: s.return has no type to coerce it against
+    s.return({ ps: [{ a: 1n }] }),
+  );
+  evscript({ name: 'bad', args: [] }, (s) =>
+    // @ts-expect-error — a uint256[][] literal: type it with s.lit first
+    s.return({ m: [[1n, 2n], [3n]] }),
+  );
+  const ok = evscript({ name: 'ok', args: [] }, (s) => {
+    const m = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]);
+    const holder = s.tuple(t.struct({ ps: t.array(P) }), { ps: [{ a: 1n }, { a: 2n }] });
+    return s.return({ m, ps: holder.ps.get() });
+  });
+  expectTypeOf<ReadContractReturnType<typeof ok.abi, 'ok'>>().toEqualTypeOf<{
+    m: readonly (readonly bigint[])[];
+    ps: readonly { a: bigint }[];
+  }>();
+});
+
 // ---------------------------------------------------------------------------
 // composite-type ergonomics — issue #5 (s.fn struct returns, struct: true,
 // call/constructed tuple unification, t.fromOutputs, bare MutArray return)

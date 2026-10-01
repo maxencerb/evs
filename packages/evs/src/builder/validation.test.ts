@@ -1527,6 +1527,26 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
       /must be an Expr/,
     );
   });
+
+  test('composite literals in s.return are rejected, each with the constructor that fits', () => {
+    // s.return infers the return ABI from handles and never coerces a literal: a composite-array
+    // literal needs s.lit (string-typed shapes) or s.newArray / a member slot (tuple[])
+    const cases: readonly (readonly [unknown, RegExp])[] = [
+      [[{ a: 1n }, { a: 2n }], /\(tuple\[\]\) with s\.newArray\(type, n\)/],
+      [{ a: 1n }, /build a struct with s\.tuple\(type, value\)/],
+      [[[1n, 2n], [3n]], /type a literal with s\.lit\(type, value\)/],
+      [['a', 'bc'], /type a literal with s\.lit\(type, value\)/],
+    ];
+    for (const [literal, fix] of cases) {
+      const e = expectEvs(
+        () => rec((s) => s.return({ v: literal as never })),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /s\.return\(\) value "v": must be an Expr, Tuple or MutArray handle/,
+      );
+      expect(e.message).toMatch(fix);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------

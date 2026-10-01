@@ -66,6 +66,42 @@ describe('calls', () => {
     expect(decoded).toEqual({ d: 255, f: true, tk: -10 });
   });
 
+  test('tryRead: an out-of-range word still reports success, normalized (unlike viem)', async () => {
+    // the documented contract (guides/calls, "Success is not a range check"): success only means
+    // the returndata had a decodable shape — a uint8 word of 300 reads as 44, success = true
+    const script = evscript({ name: 'tryNorm', args: [] }, (s) => {
+      const d = s.tryRead({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
+      const f = s.tryRead({ address: TOKB, abi: erc20ishAbi, functionName: 'flag' });
+      const tk = s.tryRead({ address: POOL, abi: erc20ishAbi, functionName: 'tick' });
+      return s.return({
+        dOk: d.success,
+        d: d.value,
+        fOk: f.success,
+        f: f.value,
+        tkOk: tk.success,
+        tk: tk.value,
+      });
+    });
+    const dirty = { decimals: word(300n), flag: word(2n), tick: word(0x1fffff6n) };
+    const table: CalleeTable = {
+      [TOKA]: { kind: 'return', data: dirty.decimals }, // uint8 ← 300 → masked to 44
+      [TOKB]: { kind: 'return', data: dirty.flag }, // bool ← 2 → true
+      [POOL]: { kind: 'return', data: dirty.tick }, // int24 ← 0x1fffff6 → sign-extended to −10
+    };
+    const [o] = await expectAgreement(script, [[]], table);
+    expect(
+      decodeFunctionResult({ abi: script.abi, functionName: 'tryNorm', data: o?.data ?? '0x' }),
+    ).toEqual({ dOk: true, d: 44, fOk: true, f: true, tkOk: true, tk: -10 });
+
+    // viem's decoder does not normalize these words: uintN/intN come back unmasked and a bool
+    // word other than 0/1 throws — the docs must not call evs's behaviour "like viem"
+    const viemDecode = (functionName: 'decimals' | 'flag' | 'tick', data: Hex): unknown =>
+      decodeFunctionResult({ abi: erc20ishAbi, functionName, data });
+    expect(viemDecode('decimals', dirty.decimals)).toBe(300);
+    expect(viemDecode('tick', dirty.tick)).toBe(0x1fffff6);
+    expect(() => viemDecode('flag', dirty.flag)).toThrow(/not a valid boolean/);
+  });
+
   test('multi-output static call destructures into a tuple', async () => {
     const script = evscript({ name: 'multi', args: [] }, (s) => {
       const [a, b, c] = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'multi' });
