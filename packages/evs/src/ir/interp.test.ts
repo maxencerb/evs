@@ -1034,7 +1034,7 @@ describe('arrays + cells', () => {
     expectPanic(interpret(build(2n ** 32n, 0n), [], deadChain), 0x41);
   });
 
-  test('memrefs have reference semantics through cells (arrset visible via every alias)', () => {
+  test('memrefs have reference semantics through cells (an arrset is visible via every alias)', () => {
     const script = ir({
       name: 'alias',
       values: [
@@ -1053,8 +1053,10 @@ describe('arrays + cells', () => {
         mk({ k: 'cellget', cell: 0, out: 2 }),
         mk({ k: 'const', out: 3, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint256' }),
         mk({ k: 'const', out: 4, data: { kind: 'word', hex: wordHex(7n) }, type: 'uint256' }),
-        mk({ k: 'arrset', arr: 2, i: 3, value: 4 }), // write through the cell alias
-        mk({ k: 'index', arr: 1, i: 3, out: 5 }), // read through the original handle
+        // write through the arrnew handle (the only writable one — validateIr), then read
+        // through the cell alias taken before the write
+        mk({ k: 'arrset', arr: 1, i: 3, value: 4 }),
+        mk({ k: 'index', arr: 2, i: 3, out: 5 }),
       ],
       returns: [{ name: 'r', type: 'uint256', value: 5 }],
     });

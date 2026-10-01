@@ -178,10 +178,13 @@ export function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx
 // canonical; a dynamic/composite member's word is a memref pointer.
 // ---------------------------------------------------------------------------
 
-/** The tuple type of a tuple-typed value (its flat block has one word per component). */
+/** The tuple type of a plain-tuple value (its flat block has one word per component). A tuple
+ *  ARRAY is a `[len][elements…]` block instead, so it is rejected here, as in `validateIr`. */
 function tupleTypeOf(ctx: LowerCtx, v: ValueId): TupleType {
   const ty = typeOf(ctx, v);
-  if (!isTupleType(ty)) throw internal(`tuple op over a non-tuple value (ValueId ${v})`);
+  if (!isTupleType(ty) || ty.type !== 'tuple') {
+    throw internal(`tuple op over a non-tuple value (ValueId ${v}: ${stringifyType(ty)})`);
+  }
   return ty;
 }
 

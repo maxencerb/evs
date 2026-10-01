@@ -1,12 +1,19 @@
 /**
  * `ir/validate.ts` — whole-program semantic validation of a `ScriptIr`.
  *
- * Re-checks everything the builder enforces so deserialized IR is as trustworthy as recorded
- * IR (`deserializeIr → validateIr` is the trust boundary): operand types per the op table,
- * def-before-use under the scope rule (a `while` header dominates its body; `if`/`else`
- * branches are isolated; `fn` bodies see params only), unknown ids, single static assignment
- * of every ValueId, cell creation/typing/scoping, `break`/`continue` only inside a loop body,
- * call-graph acyclicity, return-name validity, fnAbi type validity, and `successOut` ⇔ try mode.
+ * Re-checks the builder's invariants so deserialized IR cannot reach codegen in a shape the
+ * builder never records (`deserializeIr → validateIr` is the trust boundary): every type in the
+ * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels), operand
+ * types per the op table, def-before-use under the scope rule (a `while` header dominates its
+ * body; `if`/`else` branches are isolated; `fn` bodies see params only), unknown ids, single
+ * static assignment of every ValueId, cell creation/typing/scoping, `break`/`continue` only
+ * inside a loop body, call-graph acyclicity, return names, fnAbi type validity, `successOut` ⇔
+ * try mode, and in-place writes only where the builder emits them (`arrset` on an `arrnew`).
+ *
+ * One builder rule is deliberately NOT an IR rule: `returns` may be empty. The builder refuses
+ * `s.return({})` because viem cannot decode empty returndata, but an empty-returns program is
+ * well-formed (it returns `0x`, identically in the interpreter and the bytecode), and IR-level
+ * fixtures rely on it.
  *
  * Script args bind positionally to the first `args.length` entries of the value table
  * (ValueIds `0 … args.length-1`) — the only binding the `ScriptIr` shape admits, since
@@ -37,6 +44,7 @@ import {
   isWordType,
   MAX_ARRAY_DEPTH,
   stringifyType,
+  typeToAbiParam,
   typesEqual,
   type ArrayType,
   type EvsType,
@@ -85,6 +93,13 @@ class IrValidator {
   /** word-const ValueIds → their canonical value (a fixed-size `arrnew` must take a const length
    *  equal to its declared `fixed` size, so the memory length word always equals `N`) */
   private readonly constWords = new Map<ValueId, bigint>();
+  /** ValueIds defined by an `arrnew`: the only blocks an `arrset` may write. Every other array
+   *  value may alias memory the program does not own — a full-word `T[]` call output, or a
+   *  full-word array inside a composite arg, points into the returndata/calldata snapshot,
+   *  whose bytes two decoded values can share — so writing it would make the bytecode diverge
+   *  from the interpreter's fresh copies. The builder only hands out `MutArray` handles over
+   *  `s.newArray` results, so it never emits anything else. */
+  private readonly arrnewOuts = new Set<ValueId>();
   private scopes: Scope[] = [];
   private loopDepth = 0;
   private currentFn: FnId | null = null;
@@ -117,16 +132,8 @@ class IrValidator {
 
   private checkTables(): void {
     const { ir } = this;
-    ir.values.forEach((info, i) => {
-      if (!isEvsValueType(info.type)) {
-        this.fail(`values[${i}] has an unsupported type ${JSON.stringify(info.type)}`);
-      }
-    });
-    ir.cells.forEach((info, i) => {
-      if (!isEvsValueType(info.type)) {
-        this.fail(`cells[${i}] has an unsupported type ${JSON.stringify(info.type)}`);
-      }
-    });
+    ir.values.forEach((info, i) => this.checkValueType(info.type, `values[${i}]`));
+    ir.cells.forEach((info, i) => this.checkValueType(info.type, `cells[${i}]`));
     const argNames = new Set<string>();
     ir.args.forEach((a, i) => {
       if (!IDENT_RE.test(a.name)) {
@@ -134,9 +141,7 @@ class IrValidator {
       }
       if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`);
       argNames.add(a.name);
-      if (!isEvsValueType(a.type)) {
-        this.fail(`args[${i}] ("${a.name}") has an unsupported type ${JSON.stringify(a.type)}`);
-      }
+      this.checkValueType(a.type, `args[${i}] ("${a.name}")`);
       const backing = ir.values[i];
       if (backing === undefined) {
         this.fail(
@@ -151,17 +156,9 @@ class IrValidator {
     });
     ir.fns.forEach((fn, f) => {
       fn.params.forEach((p, i) => {
-        if (!isEvsValueType(p.type)) {
-          this.fail(
-            `fns[${f}].params[${i}] ("${p.name}") has an unsupported type ${JSON.stringify(p.type)}`,
-          );
-        }
+        this.checkValueType(p.type, `fns[${f}].params[${i}] ("${p.name}")`);
       });
-      fn.results.forEach((r, i) => {
-        if (!isEvsValueType(r.type)) {
-          this.fail(`fns[${f}].results[${i}] has an unsupported type ${JSON.stringify(r.type)}`);
-        }
-      });
+      fn.results.forEach((r, i) => this.checkValueType(r.type, `fns[${f}].results[${i}]`));
     });
     // declared custom errors (issue #15): unique identifier names, 4-byte selectors, and
     // resolved (non-empty, per-error-unique) input names over evs types.
@@ -215,11 +212,13 @@ class IrValidator {
     const names = new Set<string>();
     ir.returns.forEach((r, i) => {
       if (r.name === '') this.fail(`returns[${i}] has an empty name`);
+      // the names become the script ABI's output names and the decoded result's keys
+      if (!IDENT_RE.test(r.name)) {
+        this.fail(`returns[${i}] has an invalid name ${JSON.stringify(r.name)}`);
+      }
       if (names.has(r.name)) this.fail(`duplicate return name "${r.name}"`);
       names.add(r.name);
-      if (!isEvsValueType(r.type)) {
-        this.fail(`returns[${i}] ("${r.name}") has an unsupported type ${JSON.stringify(r.type)}`);
-      }
+      this.checkValueType(r.type, `returns[${i}] ("${r.name}")`);
       this.use(r.value, r.type, `returns[${i}] ("${r.name}")`);
     });
   }
@@ -466,6 +465,7 @@ class IrValidator {
           }
         }
         this.define(s.out, arrayTypeOf(elem, s.fixed ?? null), what); // elem validated by checkElemType
+        this.arrnewOuts.add(s.out);
         return;
       }
       case 'arrset': {
@@ -473,6 +473,11 @@ class IrValidator {
         const ta = this.use(s.arr, null, what);
         if (!isArrayValueType(ta)) {
           this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
+        }
+        if (!this.arrnewOuts.has(s.arr)) {
+          this.fail(
+            `${what}: ValueId ${s.arr} is not an arrnew result — only arrays built by arrnew (s.newArray) can be written in place`,
+          );
         }
         this.use(s.i, 'uint256', what);
         this.use(s.value, elemTypeOf(ta), what);
@@ -483,8 +488,10 @@ class IrValidator {
         const outInfo = this.ir.values[s.out];
         if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
         const tt = outInfo.type;
-        if (!isTupleType(tt)) {
-          this.fail(`${what}: out value must be a tuple type, got '${stringifyType(tt)}'`);
+        // a plain tuple only: a tuple ARRAY tag (`tuple[]`, `tuple[2]`) would make codegen lay
+        // out a flat member block that every later array op reads as `[len][elements…]`
+        if (!isTupleType(tt) || tt.type !== 'tuple') {
+          this.fail(`${what}: out value must be a plain tuple type, got '${stringifyType(tt)}'`);
         }
         const seen = new Set<number>();
         s.inits.forEach((init, j) => {
@@ -822,11 +829,24 @@ class IrValidator {
     params.forEach((p, i) => this.checkAbiParam(p, `${what}[${i}] ("${p.name}")`));
   }
 
+  /**
+   * A type the builder can record: well-formed, no zero-component tuple at any nesting level,
+   * and no type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays. Applied
+   * to every type the IR declares (value/cell tables, args, fn signatures, returns, ABI params).
+   */
+  private checkValueType(type: EvsType, what: string): void {
+    if (!isEvsValueType(type)) {
+      this.fail(`${what} has an unsupported type ${JSON.stringify(type)}`);
+    }
+    this.checkAbiParam(typeToAbiParam('', type), what);
+  }
+
   private checkAbiParam(p: PlainAbiParam, what: string): void {
     if (p.type.startsWith('tuple')) {
       if (!isTupleTag(p.type)) {
         this.fail(`${what}: malformed tuple tag ${JSON.stringify(p.type)}`);
       }
+      this.checkArrayDepth(p.type, what);
       if (p.components === undefined || p.components.length === 0) {
         this.fail(`${what}: tuple type carries no components`);
       }
@@ -841,6 +861,17 @@ class IrValidator {
     if (!isEvsType(p.type)) {
       this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
+    this.checkArrayDepth(p.type, what);
+  }
+
+  /** The array-depth ceiling the builder, `abi/layout` and the decoders share. */
+  private checkArrayDepth(tag: string, what: string): void {
+    const depth = arrayDepthOf(tag);
+    if (depth > MAX_ARRAY_DEPTH) {
+      this.fail(
+        `${what}: ${JSON.stringify(tag)} nests arrays ${depth} levels deep — at most ${MAX_ARRAY_DEPTH} levels are supported`,
+      );
+    }
   }
 
   /**
@@ -854,6 +885,7 @@ class IrValidator {
         `${what}: array element type is not a valid EvsType, got ${stringifyType(elem)}`,
       );
     }
+    this.checkValueType(elem, `${what} element type`);
     // the narrowed #4 gate: the resulting array must stay within MAX_ARRAY_DEPTH (the element
     // already carries up to MAX_ARRAY_DEPTH − 1 suffixes).
     const tag = typeof elem === 'string' ? elem : elem.type;

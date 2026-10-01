@@ -1228,3 +1228,28 @@ describe('LowerResult metadata', () => {
     expect(nodes[0]).toMatchObject({ k: 'push', value: BigInt(frameEnd) });
   });
 });
+
+// ---------------------------------------------------------------------------
+// defence in depth behind validateIr
+// ---------------------------------------------------------------------------
+
+describe('lowering guards', () => {
+  test('tuplenew over a tuple-ARRAY type is an internal error, not a flat block', () => {
+    // validateIr rejects this first; the fragment harness lowers without validating, so this
+    // pins the codegen guard on its own (a flat member block read as `[len][elements…]`)
+    const components = [{ name: 'a', type: 'uint256' }] as const;
+    expect(() =>
+      fragmentListing({
+        values: ['uint256', { type: 'tuple[]', components }],
+        slots: new Map([
+          [0, 0x80],
+          [1, 0xa0],
+        ]),
+        body: [
+          st({ k: 'const', out: 0, type: 'uint256', data: { kind: 'word', hex: word(1000n) } }),
+          st({ k: 'tuplenew', inits: [{ index: 0, value: 0 }], out: 1 }),
+        ],
+      }),
+    ).toThrowError(/tuple op over a non-tuple value \(ValueId 1: .*tuple\[\]/);
+  });
+});
