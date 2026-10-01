@@ -165,7 +165,10 @@ Releases: see [Releasing](#releasing) below.
   words are copied into their slots at once); `callSiteAllocates` in `codegen/call/shared.ts`
   decides this for both the emitter and the `LOOP_ALLOCATION` diagnostic, so the two cannot
   drift. Args that need encode frames (`callArgEncodeFrames`, same file) reserve them by bumping
-  the free pointer, so the diagnostic flags those sites too, whatever their outputs. Memory above the free pointer is dirty (calldata images, rolled-back and transient
+  the free pointer, and the recursive calldata encoder (any tuple, fixed-size or
+  composite-element array input) stages its data-literal args in a block it allocates the same
+  way (`callArgStaging` in `codegen/call/calldata.ts`, nonzero size → a bump), so the diagnostic
+  flags those sites too, whatever their outputs (the emitter reads both helpers too). Memory above the free pointer is dirty (calldata images, rolled-back and transient
   snapshots): the construction templates (`s.newArray`, `s.tuple`, typed zero values, dynamic
   literals) allocate through `emitAlloc` (`codegen/memory.ts`), which zero-fills a block only
   when one of its words would be read before it is written — a word slot left to its zero value;

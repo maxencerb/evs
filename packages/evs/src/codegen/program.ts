@@ -26,10 +26,17 @@ import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
 import { isBytesN } from '../core/types.js';
-import { walkStmts, type FnId, type ScriptIr, type Stmt, type ValueId } from '../ir/nodes.js';
+import {
+  walkStmts,
+  type ConstData,
+  type FnId,
+  type ScriptIr,
+  type Stmt,
+  type ValueId,
+} from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
-import { callArgEncodeFrames, callSiteAllocates } from './call.js';
+import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -240,7 +247,7 @@ export function lowerProgram(
     frameEnd: frame.frameEnd,
     sites: collectSites(ctx, ctx.fnQueue),
     regions,
-    diagnostics: collectDiagnostics(ir, frame, ctx.fnQueue),
+    diagnostics: collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
   };
 }
 
@@ -263,12 +270,14 @@ function callVerb(s: Extract<Stmt, { k: 'call' }>): string {
  * literal; `s.tuple` or a `struct: true` read; `s.encode`, the encode behind `s.keccak256` or
  * memref `.eq()`), and the builder records that origin as the out value's `debugName`; IR built
  * or deserialized without names falls back to the op's generic builder name. `fnAllocates`
- * answers for a `fncall`'s callee (transitively).
+ * answers for a `fncall`'s callee (transitively); `consts` is the lowering's const table, which
+ * decides which call args are data literals.
  */
 function describeAllocation(
   s: Stmt,
   ir: ScriptIr,
   fnAllocates: (f: FnId) => boolean,
+  consts: ReadonlyMap<ValueId, ConstData>,
 ): string | null {
   const origin = (out: ValueId, fallback: string): string => ir.values[out]?.debugName ?? fallback;
   switch (s.k) {
@@ -282,13 +291,22 @@ function describeAllocation(
       return s.data.kind === 'data'
         ? `a ${canonicalTypeSignature(s.type)} literal (materialized in memory)`
         : null;
-    case 'call':
+    case 'call': {
       // word-only s.read/s.call outputs read a transient snapshot (see callSiteAllocates), but
-      // args that need encode frames reserve them by bumping the free pointer (callArgEncodeFrames)
-      if (callSiteAllocates(s)) return `${callVerb(s)}(${s.fnAbi.name}) (returndata snapshot)`;
-      return callArgEncodeFrames(s) > 0
-        ? `${callVerb(s)}(${s.fnAbi.name}) (call-arg encode frames)`
-        : null;
+      // the recursive calldata encoder bumps the free pointer for its data-literal staging block
+      // (callArgStaging) and for the encode frames its args need (callArgEncodeFrames)
+      const site = `${callVerb(s)}(${s.fnAbi.name})`;
+      if (callSiteAllocates(s)) return `${site} (returndata snapshot)`;
+      const staged = callArgStaging(s, (i) => {
+        const arg = s.args[i];
+        return arg === undefined ? undefined : consts.get(arg);
+      });
+      const parts = [
+        ...(staged.size > 0 ? ['staged call-arg literals'] : []),
+        ...(callArgEncodeFrames(s) > 0 ? ['call-arg encode frames'] : []),
+      ];
+      return parts.length > 0 ? `${site} (${parts.join(', ')})` : null;
+    }
     case 'slice':
       return '.slice(…) (fresh copy)';
     case 'convert':
@@ -372,6 +390,7 @@ function collectDiagnostics(
   ir: ScriptIr,
   frame: FrameLayout,
   emittedFns: readonly FnId[],
+  consts: ReadonlyMap<ValueId, ConstData>,
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
 
@@ -390,7 +409,9 @@ function collectDiagnostics(
     if (fn !== undefined) {
       const nested = new Set(seen).add(f);
       walkStmts(fn.body, (s) => {
-        if (describeAllocation(s, ir, (g) => fnAllocates(g, nested)) !== null) result = true;
+        if (describeAllocation(s, ir, (g) => fnAllocates(g, nested), consts) !== null) {
+          result = true;
+        }
       });
     }
     fnAllocMemo.set(f, result);
@@ -399,7 +420,9 @@ function collectDiagnostics(
 
   const visit = (stmts: readonly Stmt[], inLoop: boolean): void => {
     for (const s of stmts) {
-      const what = inLoop ? describeAllocation(s, ir, (f) => fnAllocates(f, new Set())) : null;
+      const what = inLoop
+        ? describeAllocation(s, ir, (f) => fnAllocates(f, new Set()), consts)
+        : null;
       if (what !== null) {
         diagnostics.push({
           severity: 'warning',

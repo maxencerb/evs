@@ -9,6 +9,7 @@ import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { u256ToBytes } from '../../core/bytes.js';
 import { abiParamToType, type NamedType } from '../../core/types.js';
+import type { ConstData, Stmt } from '../../ir/nodes.js';
 import {
   usesRecursiveCodec,
   type SharedTails,
@@ -311,6 +312,48 @@ function emitCalldataBuild(
 const STAGING_SLOT = SCRATCH_1;
 
 /**
+ * Whether a call site's calldata goes through the recursive encoder ({@link
+ * emitCalldataBuildTuples}): some input is a tuple, `tuple[]`/`T[][]`/`string[]` or any `T[N]`
+ * ({@link usesRecursiveCodec}). Otherwise the calldata template builds it.
+ */
+function usesRecursiveEncoder(stmt: Extract<Stmt, { k: 'call' }>): boolean {
+  return stmt.fnAbi.inputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))));
+}
+
+/** The data-literal staging block of a recursive-encoder build: arg index → byte offset. */
+export interface CallArgStaging {
+  readonly offsets: ReadonlyMap<number, number>;
+  /** Total bytes; 0 → no staging block, no free-pointer bump. */
+  readonly size: number;
+}
+
+/**
+ * The data-literal staging block a call site's calldata build allocates. The recursive encoder
+ * cannot fold literals into const segments, so it copies each data-literal arg's padded
+ * `[len][payload…]` image into a block it allocates by bumping the free pointer (on every
+ * execution of the site), and encodes from there. The template path writes literal tails into the
+ * transient buffer instead and stages nothing (`size` 0), as does a site with no data-literal arg.
+ * `dataLiteralOf(i)` is arg #i's data literal, if it is one. The emitter and the
+ * `LOOP_ALLOCATION` diagnostic both read the block's size here, so the two cannot drift.
+ */
+export function callArgStaging(
+  stmt: Extract<Stmt, { k: 'call' }>,
+  dataLiteralOf: (i: number) => ConstData | undefined,
+): CallArgStaging {
+  const offsets = new Map<number, number>();
+  let size = 0;
+  if (!usesRecursiveEncoder(stmt)) return { offsets, size };
+  stmt.fnAbi.inputs.forEach((_p, i) => {
+    const data = dataLiteralOf(i);
+    if (data === undefined || data.kind !== 'data') return;
+    const bytes = literalDataBytes(data, `arg #${i} of ${stmt.fnAbi.name}`);
+    offsets.set(i, size);
+    size += bytes.length; // images are already 32-aligned (validated)
+  });
+  return { offsets, size };
+}
+
+/**
  * Builds the calldata for a subcall that has at least one tuple arg, via the recursive head/tail
  * encoder (`emitEncodeBlock`). No const-folding: the whole args region is encoded as a synthetic
  * tuple whose member sources are the arg refs (word literal → PUSH; data literal → a memref staged
@@ -345,14 +388,9 @@ function emitCalldataBuildTuples(
 
   // -- data-literal staging layout (compile-time): each data-literal arg gets a padded image at a
   //    cumulative offset within the staging block.
-  const stagingOffsets = new Map<number, number>();
-  let stagingSize = 0;
-  inputs.forEach((p, i) => {
+  const { offsets: stagingOffsets, size: stagingSize } = callArgStaging(plan.stmt, (i) => {
     const ref = plan.argRefs[i];
-    if (ref === undefined || !isLiteralRef(ref) || ref.literal.kind !== 'data') return;
-    const bytes = literalDataBytes(ref.literal, `arg #${i} of ${fnAbi.name}`);
-    stagingOffsets.set(i, stagingSize);
-    stagingSize += bytes.length; // images are already 32-aligned (validated)
+    return ref !== undefined && isLiteralRef(ref) ? ref.literal : undefined;
   });
 
   // allocate + fill the staging block (if any); base in scratch STAGING_SLOT, freePtr bumped
@@ -456,11 +494,7 @@ export function emitCalldataFor(
   opts: { evmVersion: EvmVersion },
   dataSeg: (bytes: Uint8Array) => LabelId,
 ): CalldataTemplate | null {
-  const { fnAbi } = plan.stmt;
-  const needsRecursiveEncode = fnAbi.inputs.some((p) =>
-    usesRecursiveCodec(layoutOfType(abiParamToType(p))),
-  );
-  const template = needsRecursiveEncode ? null : buildTemplate(plan);
+  const template = usesRecursiveEncoder(plan.stmt) ? null : buildTemplate(plan);
   if (template === null) {
     emitCalldataBuildTuples(w, plan, tails, opts, dataSeg);
   } else {

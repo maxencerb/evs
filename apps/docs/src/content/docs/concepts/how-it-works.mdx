@@ -239,7 +239,10 @@ From there:
   (Arguments holding fixed-size arrays, arrays of structs, strings or arrays, or structs nested
   three or more dynamic levels deep need a few words of encoder state, reserved just below the
   calldata: such a call advances the free pointer by those words, and warns with
-  `LOOP_ALLOCATION` inside a loop.)
+  `LOOP_ALLOCATION` inside a loop. So does a call with a struct, fixed-size array or
+  array-of-composites argument that also takes a literal `string` or `bytes` or an all-literal
+  word array: its arguments are encoded without folding literals into the calldata, so each
+  such literal is first copied into a block allocated at the free pointer.)
 
 ## What evs deliberately does not do (yet)
 

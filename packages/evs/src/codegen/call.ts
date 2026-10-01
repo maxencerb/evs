@@ -22,7 +22,10 @@
  *   (runtime memrefs: head offset word + tail copied via `emitMemCopy` with explicit
  *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
  *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
- *   scratch `MLOAD(0x40)` and is NOT bumped.
+ *   scratch `MLOAD(0x40)` and is NOT bumped. The recursive encoder (a tuple-bearing arg list)
+  cannot fold literals: it stages each data-literal arg in a block it allocates by bumping the
+  free pointer (`callArgStaging`), and reserves its encode frames the same way
+  (`callArgEncodeFrames`), so such a site allocates whatever its outputs.
  * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds the `value` word, 0 by default) —
  *   retSize 0 always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
  *   (`w.returndatacopyAll`).
@@ -52,5 +55,6 @@
 
 export type { CallSitePlan } from './call/shared.js';
 export { callArgEncodeFrames, callSiteAllocates } from './call/shared.js';
+export { callArgStaging } from './call/calldata.js';
 export { emitStaticCall } from './call/static-call.js';
 export { emitSimulateCall } from './call/simulate-call.js';
