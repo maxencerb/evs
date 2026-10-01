@@ -16,8 +16,13 @@
  * more nesting level as flat (it used to grow with the depth).
  */
 
-import type { Abi, AbiParameter } from 'abitype';
-import { decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
+import {
+  type Abi,
+  type AbiParameter,
+  decodeFunctionResult,
+  encodeAbiParameters,
+  encodeFunctionData,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {
