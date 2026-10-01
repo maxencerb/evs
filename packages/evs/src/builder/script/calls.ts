@@ -5,7 +5,6 @@
  */
 
 import type { AbiStateMutability, Abi, AbiParameter, AbiParameterToPrimitiveType } from 'abitype';
-import type { ContractFunctionName } from 'viem';
 
 import type { AbiFunctionSignature, SignatureName } from '../../core/signature.js';
 import type {
@@ -54,15 +53,42 @@ type FnsOf<abi, mut extends AbiStateMutability> = abi extends Abi
   : never;
 
 /**
- * What `functionName` accepts (issue #4): every function name in the bucket (viem's
- * `ContractFunctionName`, the autocomplete) OR a canonical signature (`'balanceOf(address)'`,
- * {@link AbiFunctionSignature}) naming one overload exactly. A widened (non-`const`) ABI accepts any
- * string.
+ * Whether `abi` is widened — typed `Abi`, imported from JSON or declared without `as const` — so
+ * its function names and mutabilities are not known at the type level: it is not an `Abi` at all,
+ * or one of its function entries has a non-literal `name` or `stateMutability`.
+ */
+type IsWideAbi<abi> = abi extends Abi
+  ? true extends IsWideFunction<abi[number]>
+    ? true
+    : false
+  : true;
+
+type IsWideFunction<entry> = entry extends {
+  readonly type: 'function';
+  readonly name: infer name;
+  readonly stateMutability: infer mut;
+}
+  ? string extends name
+    ? true
+    : AbiStateMutability extends mut
+      ? true
+      : false
+  : false;
+
+/**
+ * What `functionName` accepts (issue #4): every function name in the bucket (the autocomplete) OR
+ * a canonical signature (`'balanceOf(address)'`, {@link AbiFunctionSignature}) naming one overload
+ * exactly. A widened ABI ({@link IsWideAbi}) accepts any string. A literal ABI with no function in
+ * the bucket accepts nothing (`never`), so `s.read` on an all-`nonpayable` ABI is a compile error —
+ * unlike viem's `ContractFunctionName`, which falls back to `string` on an empty name set.
  */
 export type SubcallFunctionName<
   abi extends Abi | readonly unknown[],
   mut extends AbiStateMutability = ViewMutability,
-> = ContractFunctionName<abi, mut> | AbiFunctionSignature<FnsOf<abi, mut>>;
+> =
+  IsWideAbi<abi> extends true
+    ? string
+    : FnsOf<abi, mut>['name'] | AbiFunctionSignature<FnsOf<abi, mut>>;
 
 /** Keeps the overloads of `f` whose canonical signature is `ref` (a signature reference). */
 type MatchSignature<f, ref extends string> = f extends unknown
@@ -406,15 +432,28 @@ export type SubcallInputs<
   mut extends AbiStateMutability = ViewMutability,
 > = [FnOf<abi, name, mut>] extends [never] ? readonly unknown[] : InputsOf<FnOf<abi, name, mut>>;
 
+/**
+ * What a sub-call on a widened ABI ({@link IsWideAbi}) can return: the recorder unwraps by the
+ * real output count of the entry it resolves — none → `undefined`, one → that output's handle
+ * (`Expr` or `Tuple`), several → a frozen array of handles — and the types cannot know that count.
+ * Declare the ABI `as const` for exact types, or cast to the shape the function is known to have.
+ */
+export type WideSubcallResult =
+  | Expr
+  | Tuple<TupleType>
+  | readonly (Expr | Tuple<TupleType>)[]
+  | undefined;
+
 /** The positional output handles of the function `name` selects; for an overloaded name, of the
- *  overload `args` resolves to ({@link ResolveOverload}). */
+ *  overload `args` resolves to ({@link ResolveOverload}). Without a resolved entry (a widened
+ *  ABI), the already-unwrapped {@link WideSubcallResult} ({@link UnwrapSingle} passes it through). */
 export type SubcallOutputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
   args = readonly unknown[],
 > = [ResolveOverload<abi, name, mut, args>] extends [never]
-  ? readonly (Expr | Tuple<TupleType>)[]
+  ? WideSubcallResult
   : OutputsOf<ResolveOverload<abi, name, mut, args>>;
 
 // outputs []  → void;  [one] → Expr<one> | Tuple<one>;  [many] → readonly tuple of handles (viem)

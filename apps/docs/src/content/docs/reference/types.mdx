@@ -337,7 +337,13 @@ leaving the lane are dropped.
 
 ### Conversions and casts
 
-Widening is free; **narrowing is checked** (Panic `0x11` on out-of-range values).
+Widening is free; **narrowing is checked** (Panic `0x11` on out-of-range values). Each method is
+typed for the receivers in its "Available on" column only: `addr.toUint(t.uint160)` or
+`flag.toUint(t.uint8)` is a compile error (and an `EvsTypeError` `TYPE_MISMATCH` at recording).
+A `bytes32` reaches the integers through `asUint256()` first. Like the arithmetic methods, `toUint`
+and `toInt` need a receiver whose type is numeric: a bare `Expr` (for example a
+[widened-ABI result](/guides/calls/#widened-abis)) is cast to its concrete type first
+(`dec as Expr<'uint8'>`).
 
 | Method      | Signature                          | Available on                            | Semantics                                              |
 | ----------- | ---------------------------------- | --------------------------------------- | ------------------------------------------------------- |

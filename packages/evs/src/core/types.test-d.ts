@@ -11,9 +11,11 @@ import type {
   Expr,
   FixedLengthOf,
   IntoExpr,
+  IntType,
   LitOf,
   PeelArraySuffix,
   TupleType,
+  UintType,
 } from './types.js';
 
 const takeU8 = (_x: IntoExpr<'uint8'>): void => undefined;
@@ -146,6 +148,54 @@ test('Expr this-parameter constraints', () => {
   str.eq(arr);
   // @ts-expect-error — arithmetic on a non-numeric type
   arr.add(1);
+});
+
+test('toUint/toInt take a numeric receiver only (the recorder rejects any other source)', () => {
+  const u256 = {} as Expr<'uint256'>;
+  const i16 = {} as Expr<'int16'>;
+  const addr = {} as Expr<'address'>;
+  const flag = {} as Expr<'bool'>;
+  const b32 = {} as Expr<'bytes32'>;
+  const str = {} as Expr<'string'>;
+  const arr = {} as Expr<'uint256[]'>;
+
+  expectTypeOf(u256.toUint(t.uint160)).toEqualTypeOf<Expr<'uint160'>>();
+  expectTypeOf(u256.toInt(t.int128)).toEqualTypeOf<Expr<'int128'>>();
+  expectTypeOf(i16.toUint(t.uint8)).toEqualTypeOf<Expr<'uint8'>>();
+  expectTypeOf(e8.toInt(t.int256)).toEqualTypeOf<Expr<'int256'>>();
+  // bytes32 → uint goes through the free reinterpret first
+  expectTypeOf(b32.asUint256().toUint(t.uint160)).toEqualTypeOf<Expr<'uint160'>>();
+
+  // @ts-expect-error — address is not numeric
+  addr.toUint(t.uint160);
+  // @ts-expect-error — bool is not numeric
+  flag.toUint(t.uint8);
+  // @ts-expect-error — bytes32 is not numeric (use .asUint256())
+  b32.toUint(t.uint256);
+  // @ts-expect-error — string is not numeric
+  str.toUint(t.uint8);
+  // @ts-expect-error — an array is not numeric
+  arr.toUint(t.uint8);
+  // @ts-expect-error — address is not numeric
+  addr.toInt(t.int256);
+  // @ts-expect-error — bool is not numeric
+  flag.toInt(t.int8);
+  // @ts-expect-error — bytes32 is not numeric
+  b32.toInt(t.int256);
+  // @ts-expect-error — string is not numeric
+  str.toInt(t.int8);
+
+  // a bare Expr or a mixed union is not known to be numeric (like add/lt); a numeric union is
+  const bare = {} as Expr;
+  const mixed = {} as Expr<'uint8' | 'address'>;
+  const numeric = {} as Expr<UintType | IntType>;
+  // @ts-expect-error — Expr<EvsType> is not numeric
+  bare.toUint(t.uint256);
+  // @ts-expect-error — the union includes address
+  mixed.toInt(t.int256);
+  expectTypeOf(numeric.toUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+  const generic = <u extends UintType>(x: Expr<u>) => x.toInt(t.int256);
+  expectTypeOf(generic(u256)).toEqualTypeOf<Expr<'int256'>>();
 });
 
 // ---------------------------------------------------------------------------

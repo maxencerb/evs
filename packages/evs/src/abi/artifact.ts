@@ -35,6 +35,7 @@ import {
   type Hex,
   type TupleType,
   type TypeToComponent,
+  type UnionToTuple,
   type WordType,
 } from '../core/types.js';
 import type { PlainAbiFunction, PlainAbiParam } from '../ir/nodes.js';
@@ -53,19 +54,10 @@ export const EVS_ERROR_ABI = [
 // ScriptAbi — the literal type
 // ---------------------------------------------------------------------------
 
-// UnionToTuple machinery for the return-spec components (the resulting
-// tuple ORDER is interning-dependent and unstable, but SAFE here — viem infers an object from
-// a fully-named single tuple output, and objects are order-insensitive).
-type UnionToIntersection<u> = (u extends unknown ? (x: u) => void : never) extends (
-  x: infer i,
-) => void
-  ? i
-  : never;
-type LastOf<u> =
-  UnionToIntersection<u extends unknown ? () => u : never> extends () => infer r ? r : never;
-type UnionToTuple<u> = [u] extends [never]
-  ? []
-  : [...UnionToTuple<Exclude<u, LastOf<u>>>, LastOf<u>];
+// The return record's keys are ordered with `UnionToTuple` (core/types/derive.ts, the
+// tail-recursive form, so a wide return record stays typed): the resulting tuple ORDER is
+// interning-dependent and unstable, but SAFE here — viem infers an object from a fully-named
+// single tuple output, and objects are order-insensitive.
 // Each return key → an abitype component via {@link TypeToComponent}: a scalar/array member to
 // `{ name, type }`, a tuple/struct member to `{ name, type: 'tuple'|…, components }` (so a tuple
 // flows out as a named ABI tuple, not a raw {@link TupleType} object).

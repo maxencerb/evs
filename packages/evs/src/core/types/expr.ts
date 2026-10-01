@@ -76,9 +76,10 @@ export interface Expr<t extends EvsType = EvsType> {
   shl(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
   shr(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
 
-  // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range)
-  toUint<const u extends UintType>(target: u): Expr<u>;
-  toInt<const i extends IntType>(target: i): Expr<i>;
+  // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range). toUint/toInt
+  // convert between numeric types only: reach a uint from bytes32 through asUint256()
+  toUint<const u extends UintType>(this: Expr<t & NumericType>, target: u): Expr<u>;
+  toInt<const i extends IntType>(this: Expr<t & NumericType>, target: i): Expr<i>;
   asAddress(this: Expr<'uint256' | 'bytes32'>): Expr<'address'>; // checked: high 96 bits zero
   asUint256(this: Expr<'bytes32'>): Expr<'uint256'>; // free reinterpret
   asBytes32(this: Expr<'uint256'>): Expr<'bytes32'>; // free reinterpret

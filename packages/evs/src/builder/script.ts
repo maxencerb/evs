@@ -67,6 +67,7 @@ export type {
   SubcallInputs,
   SubcallOutputs,
   UnwrapSingle,
+  WideSubcallResult,
   SubcallStruct,
   SubcallParams,
   ResolvedSubcallParams,

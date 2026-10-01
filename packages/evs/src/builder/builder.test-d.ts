@@ -19,7 +19,9 @@ import {
   type LoopCtl,
   type MutArray,
   type ScriptReturn,
+  type SubcallFunctionName,
   type Tuple,
+  type WideSubcallResult,
 } from './script.js';
 
 // ---------------------------------------------------------------------------
@@ -446,6 +448,66 @@ test('mutability is filtered per verb (issue #1): read=view/pure, call/simulate=
   });
 });
 
+test('a const ABI with no function in the bucket accepts no functionName', () => {
+  const nonpayableOnly = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'nonpayable',
+      inputs: [{ name: 'a', type: 'uint256' }],
+      outputs: [{ name: 'b', type: 'uint256' }],
+    },
+  ] as const;
+  const viewOnly = [
+    {
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'uint256' }],
+    },
+  ] as const;
+  // the empty name set is `never`, not viem's `string` fallback
+  expectTypeOf<
+    SubcallFunctionName<typeof nonpayableOnly, 'view' | 'pure'>
+  >().toEqualTypeOf<never>();
+  expectTypeOf<
+    SubcallFunctionName<typeof viewOnly, 'nonpayable' | 'payable'>
+  >().toEqualTypeOf<never>();
+  expectTypeOf<SubcallFunctionName<typeof viewOnly, 'view' | 'pure'>>().toEqualTypeOf<
+    'get' | 'get()'
+  >();
+  // a widened ABI still accepts any name
+  expectTypeOf<SubcallFunctionName<Abi, 'view' | 'pure'>>().toEqualTypeOf<string>();
+  expectTypeOf<SubcallFunctionName<readonly unknown[], 'view' | 'pure'>>().toEqualTypeOf<string>();
+
+  evscript({ name: 'bucket', args: [t.address] }, (s, target) => {
+    s.read({
+      address: target,
+      abi: nonpayableOnly,
+      // @ts-expect-error — 'quote' is nonpayable and the ABI has no view/pure function
+      functionName: 'quote',
+      args: [1n],
+    });
+    s.call({
+      address: target,
+      abi: viewOnly,
+      // @ts-expect-error — 'get' is view and the ABI has no nonpayable/payable function
+      functionName: 'get',
+    });
+    s.tryCall({
+      address: target,
+      abi: viewOnly,
+      // @ts-expect-error — the same under the try verb
+      functionName: 'get',
+    });
+    // the right verb still resolves the output
+    const b = s.call({ address: target, abi: nonpayableOnly, functionName: 'quote', args: [1n] });
+    expectTypeOf(b).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ b });
+  });
+});
+
 test('tryCall: success Expr<bool> + the same unwrapped value shape', () => {
   evscript({ name: 'tryc', args: [t.address] }, (s, token) => {
     const d = s.tryRead({ address: token, abi: erc20Fixture, functionName: 'decimals' });
@@ -457,6 +519,8 @@ test('tryCall: success Expr<bool> + the same unwrapped value shape', () => {
   });
 });
 
+type WideResult = Expr | Tuple<TupleType> | readonly (Expr | Tuple<TupleType>)[] | undefined;
+
 test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
   const wideAbi: Abi = [];
   evscript({ name: 'wide', args: [t.address] }, (s, target) => {
@@ -466,14 +530,61 @@ test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
       functionName: 'anythingGoes', // functionName: string
       args: [1n, 'two', false], // readonly unknown[]
     });
-    // a non-const ABI widens outputs to a list of (Expr | Tuple) handles
-    expectTypeOf(res).toEqualTypeOf<readonly (Expr | Tuple<TupleType>)[]>();
+    // the output count is unknown, so the result is every shape the recorder can return:
+    // nothing (undefined), one handle, or an array of handles for several outputs
+    expectTypeOf(res).toEqualTypeOf<WideResult>();
     const tre = s.tryRead({ address: target, abi: wideAbi, functionName: 'x' });
     expectTypeOf(tre.success).toEqualTypeOf<Expr<'bool'>>();
-    expectTypeOf(tre.value).toEqualTypeOf<readonly (Expr | Tuple<TupleType>)[]>();
+    expectTypeOf(tre.value).toEqualTypeOf<WideResult>();
+    expectTypeOf(
+      s.call({ address: target, abi: wideAbi, functionName: 'quote' }),
+    ).toEqualTypeOf<WideResult>();
+    // struct: true always builds one Tuple
+    expectTypeOf(
+      s.read({ address: target, abi: wideAbi, functionName: 'slot0', struct: true }),
+    ).toEqualTypeOf<Tuple<TupleType>>();
+    // the same for an ABI declared without `as const` (literal names widen to string)
+    const inlineAbi = [
+      {
+        type: 'function',
+        name: 'decimals',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ name: '', type: 'uint8' }],
+      },
+    ];
+    const dec = s.read({ address: target, abi: inlineAbi, functionName: 'decimals' });
+    expectTypeOf(dec).toEqualTypeOf<WideResult>();
+    // not an array until narrowed: a lone output is a bare handle at run time
+    expectTypeOf(dec).not.toMatchTypeOf<readonly unknown[]>();
     return s.return({ ok: s.lit(t.bool, true) });
   });
 });
+
+/* oxlint-disable typescript/no-unsafe-type-assertion -- the narrowing casts are the documented
+ * migration for a widened-ABI result under test here */
+test('WideSubcallResult is the exported widened result, narrowed by a cast', () => {
+  expectTypeOf<WideSubcallResult>().toEqualTypeOf<WideResult>();
+  const wideAbi: Abi = [];
+  evscript({ name: 'wideCast', args: [t.address] }, (s, target) => {
+    const slot0 = s.read({ address: target, abi: wideAbi, functionName: 'slot0' });
+    // @ts-expect-error — not iterable until narrowed (it may be one handle or undefined)
+    const [bad] = slot0;
+    void bad;
+    // the documented migration: cast to the outputs the function has, then destructure
+    const [price, tick] = slot0 as readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>];
+    expectTypeOf(price).toEqualTypeOf<Expr<'uint160'>>();
+    expectTypeOf(tick).toEqualTypeOf<Expr<'int24'>>();
+
+    const dec = s.read({ address: target, abi: wideAbi, functionName: 'decimals' });
+    // @ts-expect-error — a bare Expr is not numeric: toUint needs a numeric receiver
+    (dec as Expr).toUint(t.uint256);
+    // the documented migration: cast to the concrete output type
+    expectTypeOf((dec as Expr<'uint8'>).toUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ price, tick });
+  });
+});
+/* oxlint-enable typescript/no-unsafe-type-assertion */
 
 // ---------------------------------------------------------------------------
 // cells, arrays, env, control flow
@@ -765,6 +876,22 @@ test('ScriptReturn flows through evscript into EvsScript / ScriptAbi / viem retu
     bal: bigint;
     tick: number; // int24 → number (abitype)
   }>();
+});
+
+type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
+/** 60 return keys: `k00`…`k59`. */
+type WideKey = `k${'0' | '1' | '2' | '3' | '4' | '5'}${Digit}`;
+/** A return record repeating one handle under every {@link WideKey} (typecheck only). */
+declare function wideRecord<h>(handle: h): { [k in WideKey]: h };
+
+test('a script with 60 return keys keeps an exact readContract result', () => {
+  // past ~45 keys the return-record ordering used to exceed the instantiation depth under
+  // evscript → ScriptAbi → viem, typing the readContract result `unknown`
+  const script = evscript({ name: 'wide', args: [t.uint256] }, (s, x) => s.return(wideRecord(x)));
+  expectTypeOf(script.abi[0].outputs[0].components.length).toEqualTypeOf<60>();
+  expectTypeOf<
+    ReadContractReturnType<typeof script.abi, 'wide', readonly [bigint]>
+  >().toEqualTypeOf<{ [k in WideKey]: bigint }>();
 });
 
 test('abitype infers composite-array outputs: tuple[] → readonly Struct[], uint256[][], string[]', () => {
