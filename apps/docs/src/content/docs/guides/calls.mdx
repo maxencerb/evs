@@ -987,7 +987,8 @@ changes the script's *own* caller (`s.env('caller')`), never what the targets se
 
 ## Native balances and legacy metadata
 
-Two reads that look like contract calls are better done without one.
+Two reads need less than they seem to: an ETH balance needs no contract call at all, and legacy
+`bytes32` metadata needs no client-side decoding step.
 
 ### Native ETH balances
 
