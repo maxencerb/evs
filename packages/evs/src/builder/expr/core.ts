@@ -426,22 +426,40 @@ export abstract class RecorderCore {
       const { hex, logical } = this.wordLiteral(type, c.value);
       return this.wordConst(type, logical, hex);
     }
-    if (isArrayValueType(type)) {
-      // a composite-element array LITERAL (`tuple[]`, `uint256[][]`, `string[]`/`bytes[]`, any
-      // `T[N]` with a composite element) is built at record time as `arrnew` + per-element
-      // construction — reusing the same lowerings as a constructed array — rather than a flat
-      // data-segment const. A word-element array literal whose elements are ALL host literals uses
-      // the const path (`dataConst`, a CODECOPY-materialized data segment); one that mixes in a
-      // staged handle (`[x, 1n]` with `x` an Expr) is built element-wise the same way.
-      if (isCompositeElemArray(type) || (Array.isArray(c.value) && c.value.some(isStagedHandle))) {
-        return this.buildArrayLiteral(type, c.value, what);
-      }
-      if (isTupleType(type)) {
-        // unreachable: every tuple-array type has a composite (tuple) element
-        throw new EvsInternalError('INTERNAL', `${what}: tuple array with a word element`);
-      }
+    if (this.isFlatLiteralOperand(c.value, type)) return this.dataConst(type, c.value);
+    // every other memref literal is an array LITERAL built at record time as `arrnew` +
+    // per-element construction — reusing the same lowerings as a constructed array (see
+    // isFlatLiteralOperand for which ones)
+    if (!isArrayValueType(type)) {
+      // unreachable: tuples are routed above, string/bytes literals are always flat
+      throw new EvsInternalError(
+        'INTERNAL',
+        `${what}: no literal route for '${stringifyType(type)}'`,
+      );
     }
-    return this.dataConst(type, c.value);
+    if (isTupleType(type) && !isCompositeElemArray(type)) {
+      // unreachable: every tuple-array type has a composite (tuple) element
+      throw new EvsInternalError('INTERNAL', `${what}: tuple array with a word element`);
+    }
+    return this.buildArrayLiteral(type, c.value, what);
+  }
+
+  /**
+   * Whether the host value `v`, coerced to the memref `type`, becomes ONE flat pre-encoded data
+   * const (`dataConst`, a CODECOPY-materialized data segment). The single authority for that
+   * route, shared by {@link coerceToId} and memref equality's record-time hash fold so the two
+   * cannot diverge. True for a `string` / `bytes` target, and for a word-element array target
+   * whose literal holds no staged handle. False for a staged handle itself (an Expr / Tuple /
+   * MutArray / Field), for word and tuple targets, and for the array literals built element-wise
+   * instead: a composite-element array (`tuple[]`, `uint256[][]`, `string[]` / `bytes[]`, any
+   * `T[N]` over a composite element) or a word-element array mixing in a staged handle
+   * (`[x, 1n]` with `x` an Expr). Only the route is decided here: a malformed value still fails in
+   * `classify` / `dataConst`.
+   */
+  protected isFlatLiteralOperand(v: unknown, type: EvsType): type is DynType | ArrayType {
+    if (typeof type !== 'string' || isWordType(type) || isStagedHandle(v)) return false;
+    if (!isArrayValueType(type)) return true; // string / bytes
+    return !isCompositeElemArray(type) && !(Array.isArray(v) && v.some(isStagedHandle));
   }
 
   /** Builds an array LITERAL element-wise at record time — a composite-element array

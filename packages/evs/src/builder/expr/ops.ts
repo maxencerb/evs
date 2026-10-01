@@ -24,12 +24,10 @@ import {
   elemTypeOf,
   isOrdered,
   isBytesN,
-  type ArrayType,
-  type DynType,
 } from '../../core/types.js';
 import { isEnvOp, type BinOp, type ModArithOp, type ValueId } from '../../ir/nodes.js';
 import { RecorderEncode } from './encode.js';
-import { isStagedHandle, makeExpr } from './handles.js';
+import { makeExpr } from './handles.js';
 import {
   describeHost,
   CMP_OPS,
@@ -42,17 +40,7 @@ import {
   fromUnsignedN,
   toUnsignedN,
   rangeOf,
-  isCompositeElemArray,
 } from './helpers.js';
-
-/** A memref type whose host literal is one flat data const — `string`, `bytes` or a word-element
- *  array — in lockstep with `coerceToId`'s `dataConst` route. Struct literals (`tuplenew`) and
- *  composite-element arrays (`arrnew` + per-element construction) are built, not consts. */
-function isFlatLiteralType(ty: EvsType): ty is DynType | ArrayType {
-  if (typeof ty !== 'string') return false;
-  if (ty === 'string' || ty === 'bytes') return true;
-  return isArrayValueType(ty) && !isCompositeElemArray(ty);
-}
 
 /** Operators, conversions, indexing, env and select (a `Recorder` layer). */
 export abstract class RecorderOps extends RecorderEncode {
@@ -239,11 +227,8 @@ export abstract class RecorderOps extends RecorderEncode {
    * and hashed at run time like `s.keccak256(v)`.
    */
   private memrefOperandHash(v: unknown, ty: EvsType, what: string): ValueId {
-    if (
-      isFlatLiteralType(ty) &&
-      !isStagedHandle(v) &&
-      !(Array.isArray(v) && v.some(isStagedHandle))
-    ) {
+    // the same predicate coerceToId routes on: fold exactly what it would intern as a data const
+    if (this.isFlatLiteralOperand(v, ty)) {
       this.classify(v, what); // a Cell or a forged handle still gets coerceToId's error
       const { hex, logical } = this.wordLiteral('bytes32', literalHash(ty, v));
       return this.wordConst('bytes32', logical, hex);
