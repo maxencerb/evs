@@ -12,8 +12,8 @@
  *   `addmod` / `mulmod`;
  * - `pow.ts` — checked exponentiation (issue #10);
  * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence);
- * - `composites.ts` — select / index / arrays, tuples, and `s.encode` / `s.keccak256` /
- *   `s.throw` payloads.
+ * - `composites.ts` — select / index / arrays, string/bytes `byteAt` / `slice`, tuples, and
+ *   `s.encode` / `s.keccak256` / `s.throw` payloads.
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
  * - every statement template is net-zero on the operand stack; the stack is empty at every

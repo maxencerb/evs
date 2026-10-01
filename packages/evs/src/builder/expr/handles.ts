@@ -181,14 +181,35 @@ class ExprHandle {
   asAddress(): Expr {
     return internalsOf(this).owner.convertOp('asAddress', this, undefined, '.asAddress()');
   }
+  asUint160(): Expr {
+    return internalsOf(this).owner.convertOp('asUint160', this, undefined, '.asUint160()');
+  }
   asUint256(): Expr {
     return internalsOf(this).owner.convertOp('asUint256', this, undefined, '.asUint256()');
   }
   asBytes32(): Expr {
     return internalsOf(this).owner.convertOp('asBytes32', this, undefined, '.asBytes32()');
   }
+  asUint(): Expr {
+    return internalsOf(this).owner.convertOp('asUint', this, undefined, '.asUint()');
+  }
+  asBytesN(): Expr {
+    return internalsOf(this).owner.convertOp('asBytesN', this, undefined, '.asBytesN()');
+  }
+  asBytes(): Expr {
+    return internalsOf(this).owner.convertOp('asBytes', this, undefined, '.asBytes()');
+  }
+  asString(): Expr {
+    return internalsOf(this).owner.convertOp('asString', this, undefined, '.asString()');
+  }
   length(): Expr {
     return internalsOf(this).owner.lenOp(this, '.length()');
+  }
+  byteAt(i: unknown): Expr {
+    return internalsOf(this).owner.byteAtOp(this, i, '.byteAt()');
+  }
+  slice(start: unknown, end?: unknown): Expr {
+    return internalsOf(this).owner.sliceOp(this, start, end, '.slice()');
   }
   at(i: unknown): Expr {
     // the runtime handle is element-typed (a composite element yields a `Tuple`/array handle); the

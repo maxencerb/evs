@@ -33,6 +33,7 @@ export type {
   ArrayElemOf, // the element type of `Expr.at` (one `[]`/`[N]` suffix peeled)
   ArrayType,
   BitsType,
+  BytesNOfUint, // the same-width bytesN of a uintN (`asBytesN()`'s result)
   BytesNType,
   BytesSize,
   DynType,
@@ -49,6 +50,7 @@ export type {
   NamedType,
   NoProtoKey, // t.struct / s.return reject a literal `__proto__` key at the type level
   NumericType,
+  OrderedType, // the ordering domain of lt/gt/lte/gte: numeric, address and bytesN
   PeelArraySuffix, // issue #4: one `[]`/`[N]` suffix peeled off a type string, at any depth
   ResolveArgName,
   ScalarType,
@@ -62,6 +64,7 @@ export type {
   ToArgSpec,
   TypeToComponent,
   UintBits,
+  UintOfBytesN, // the same-width uintN of a bytesN (`asUint()`'s result)
   UintType,
   WordType,
 } from './core/types.js';

@@ -5,7 +5,8 @@
  * `Panic(uint256)` codes the site can raise.
  *
  * `panicCodes` mirrors the templates in `lower/` (`lowerCheckedArith`, `lowerDivMod`, `lowerPow`,
- * `lowerModArith`, `lowerMulDiv`, `lowerConvert`, `lowerIndex` / `lowerArrset`, `lowerArrnew`): a site claims a
+ * `lowerModArith`, `lowerMulDiv`, `lowerConvert`, `lowerIndex` (arrays and `byteAt`) / `lowerArrset`,
+ * `lowerSlice`, `lowerArrnew`): a site claims a
  * code iff its template can reach that panic tail at run time. A check the lowering elides (a
  * folded nonzero divisor, a folded base of 0 / ±1, a free widening, …) is never claimed, and
  * neither is the allocation check of a folded length below the cap, which can never fire. A
@@ -21,7 +22,7 @@
  */
 
 import type { SourceMap } from '../asm/sourcemap.js';
-import { isNumeric, isSigned, type EvsType } from '../core/types.js';
+import { isBytesN, isNumeric, isSigned, type EvsType } from '../core/types.js';
 import { walkStmts, type FnId, type Stmt, type ValueId } from '../ir/nodes.js';
 import { fmtType } from './abi.js';
 import { foldedConst, MINUS_ONE_WORD, MIN_I256, numClass, typeOf, type LowerCtx } from './lower.js';
@@ -98,10 +99,20 @@ function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site
       if (s.op === 'muldiv' || s.op === 'muldivup') codes.push(OVERFLOW);
       return checked(what, codes);
     }
-    case 'index':
-      return checked(`array index ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);
+    case 'index': {
+      // `.byteAt(i)` records an `index` on a string/bytes receiver — name it as a byte read
+      const recv = typeOf(ctx, s.arr);
+      return recv === 'string' || recv === 'bytes'
+        ? checked(`byteAt ${fmtType(recv)} ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS])
+        : checked(`array index ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);
+    }
     case 'arrset':
       return checked(`array write ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);
+    case 'slice':
+      // lowerSlice: Panic 0x32 unless start ≤ end ≤ length
+      return checked(`slice ${fmtType(typeOf(ctx, s.a))} ${op(s.a)}[${op(s.start)}:${op(s.end)}]`, [
+        OUT_OF_BOUNDS,
+      ]);
     case 'arrnew': {
       const length = foldedConst(ctx, s.length);
       const fits = length !== undefined && length <= ALLOC_CAP;
@@ -176,16 +187,26 @@ function zeroDivisorPossible(ctx: LowerCtx, divisor: ValueId): boolean {
 }
 
 /**
- * lowerConvert: identity and `uint256` ↔ `bytes32` reinterprets are free, `asAddress` checks
- * the high 96 bits, a same-sign narrowing and `uintN → intM` with N ≥ M are range-checked,
- * same-sign widenings and `uintN → intM` with N < M are free, and `intN → uint*` always checks.
+ * lowerConvert: identity and the `uint256` ↔ `bytes32`, `address` ↔ `uint160` and `string` ↔
+ * `bytes` reinterprets are free, and so are the same-width `bytesN` ↔ `uintN` shifts and the
+ * `bytesN → string` copy; `asAddress` from `uint256` / `bytes32` checks the high 96 bits, a
+ * same-sign narrowing and `uintN → intM` with N ≥ M are range-checked, same-sign widenings and
+ * `uintN → intM` with N < M are free, and `intN → uint*` always checks.
  */
 function convertIsChecked(from: EvsType, to: EvsType): boolean {
   if (from === to) return false;
-  if ((from === 'uint256' && to === 'bytes32') || (from === 'bytes32' && to === 'uint256')) {
+  if (
+    (from === 'uint256' && to === 'bytes32') ||
+    (from === 'bytes32' && to === 'uint256') ||
+    (from === 'address' && to === 'uint160') ||
+    (from === 'uint160' && to === 'address') ||
+    (from === 'string' && to === 'bytes') ||
+    (from === 'bytes' && to === 'string')
+  ) {
     return false;
   }
   if (to === 'address') return true;
+  if (to === 'string' || isBytesN(from) || isBytesN(to)) return false;
   const f = numClass(from);
   const t = numClass(to);
   if (f.signed === t.signed) return t.bits < f.bits;

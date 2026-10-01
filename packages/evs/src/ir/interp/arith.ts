@@ -4,7 +4,7 @@
  * const / env / zero values.
  */
 
-import { hexToBytes } from '../../core/bytes.js';
+import { hexToBytes, u256ToBytes } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
 import {
   type WordType,
@@ -12,6 +12,7 @@ import {
   bitsOf,
   type EvsType,
   isWordType,
+  isBytesN,
   stringifyType,
   type Hex,
   elemTypeOf,
@@ -223,9 +224,10 @@ export function canonWord(type: WordType, word: bigint): bigint {
 }
 
 /**
- * `convert`: free widening / reinterpret where lossless; otherwise the logical value is
- * range-checked against the target (Panic 0x11) — covers checked narrowing, cross-signedness,
- * and `asAddress`'s high-96-bits-zero check uniformly.
+ * Word `convert`: free widening / reinterpret where lossless; a same-width `bytesN` ↔ `uintN`
+ * moves the value between the left-aligned and right-aligned lanes; otherwise the logical value
+ * is range-checked against the target (Panic 0x11) — covers checked narrowing,
+ * cross-signedness, and `asAddress`'s high-96-bits-zero check uniformly.
  */
 export function convert(from: EvsType, to: EvsType, word: bigint): bigint {
   if (!isWordType(from) || !isWordType(to)) {
@@ -237,15 +239,35 @@ export function convert(from: EvsType, to: EvsType, word: bigint): bigint {
   if ((from === 'uint256' && to === 'bytes32') || (from === 'bytes32' && to === 'uint256')) {
     return word; // free reinterpret — both occupy the full word
   }
+  if ((from === 'address' && to === 'uint160') || (from === 'uint160' && to === 'address')) {
+    return word; // free — both are 160-bit zero-extended words
+  }
   if (to === 'address') {
     // asAddress (from uint256 | bytes32): high 96 bits must be zero
     if (word > MASK160) throw panicSignal(0x11);
     return word;
   }
+  if (isBytesN(from)) return word >> BigInt(256 - bitsOf(from)); // asUint: lane → low bits
+  if (isBytesN(to)) return (word << BigInt(256 - bitsOf(to))) & MASK256; // asBytesN
   const v = logical(from, word);
   const [min, max] = numericRange(to);
   if (v < min || v > max) throw panicSignal(0x11);
   return fromLogical(v);
+}
+
+/**
+ * `convert` to `string` / `bytes`: `string ↔ bytes` shares the memref (a free reinterpret); a
+ * `bytesN` word becomes a fresh payload of its N bytes with the trailing zero bytes trimmed.
+ */
+export function convertToBytes(from: EvsType, value: Value): Value {
+  if (from === 'string' || from === 'bytes') return value;
+  if (!isBytesN(from) || typeof value !== 'bigint') {
+    throw new EvsInternalError('INTERNAL', `interpret: convert '${stringifyType(from)}' → bytes`);
+  }
+  const lane = u256ToBytes(value).subarray(0, bitsOf(from) / 8);
+  let n = lane.length;
+  while (n > 0 && lane[n - 1] === 0) n--;
+  return { kind: 'bytes', bytes: lane.slice(0, n) };
 }
 
 // ---------------------------------------------------------------------------

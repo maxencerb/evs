@@ -36,6 +36,8 @@ export function stmtReads(s: Stmt): readonly ValueId[] {
       return [s.a, s.b, s.n];
     case 'index':
       return [s.arr, s.i];
+    case 'slice':
+      return [s.a, s.start, s.end];
     case 'arrnew':
       return [s.length];
     case 'arrset':
@@ -76,6 +78,7 @@ export function stmtDefs(s: Stmt): readonly ValueId[] {
     case 'select':
     case 'index':
     case 'len':
+    case 'slice': // the fresh string/bytes memref pointer
     case 'arrnew':
     case 'cellget':
     case 'tuplenew': // the tuple pointer

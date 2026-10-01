@@ -12,6 +12,7 @@ import { lowerBin, lowerModArith } from './arith.js';
 import {
   lowerSelect,
   lowerIndex,
+  lowerSlice,
   lowerArrnew,
   lowerArrset,
   lowerTupleNew,
@@ -111,6 +112,9 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       loadOperand(w, ctx, s.a, meta('len')); // [ptr]
       w.op('MLOAD'); // [len]
       storeOut(w, ctx, s.out);
+      return;
+    case 'slice':
+      lowerSlice(w, s, ctx);
       return;
     case 'arrnew':
       lowerArrnew(w, s, ctx);

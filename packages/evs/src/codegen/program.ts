@@ -25,6 +25,7 @@ import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
+import { isBytesN } from '../core/types.js';
 import { walkStmts, type FnId, type ScriptIr, type Stmt, type ValueId } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
@@ -280,6 +281,12 @@ function describeAllocation(
     case 'call':
       // word-only s.read/s.call outputs read a transient snapshot (see callSiteAllocates)
       return callSiteAllocates(s) ? `${callVerb(s)}(${s.fnAbi.name}) (returndata snapshot)` : null;
+    case 'slice':
+      return '.slice(…) (fresh copy)';
+    case 'convert':
+      // `.asString()` on a bytesN copies the word into a fresh string; every other convert is
+      // a word op or a free reinterpret of the same memory
+      return copiesWordToString(s, ir) ? '.asString() on a bytesN (fresh string)' : null;
     case 'fncall':
       return fnAllocates(s.fn)
         ? `the call to fn "${ir.fns[s.fn]?.name ?? s.fn}" (its body allocates)`
@@ -288,7 +295,6 @@ function describeAllocation(
     case 'un':
     case 'modarith':
     case 'env':
-    case 'convert':
     case 'select':
     case 'index':
     case 'len':
@@ -311,6 +317,12 @@ function describeAllocation(
       throw internal(`unknown statement kind '${String((unreachable as { k?: unknown }).k)}'`);
     }
   }
+}
+
+/** A `convert` that copies a bytesN word into a fresh string (`.asString()` on a bytesN). */
+function copiesWordToString(s: Extract<Stmt, { k: 'convert' }>, ir: ScriptIr): boolean {
+  const from = ir.values[s.a]?.type;
+  return ir.values[s.out]?.type === 'string' && from !== undefined && isBytesN(from);
 }
 
 /**

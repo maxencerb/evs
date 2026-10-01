@@ -114,8 +114,12 @@ export type Stmt = { readonly site: SiteId } & (
   | { k: 'env'; op: EnvOp; out: ValueId }
   | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
+  // bounds-checked element read (Panic 0x32): an array's element, or the byte at `i` of a
+  // string/bytes as a `bytes1`
   | { k: 'index'; arr: ValueId; i: ValueId; out: ValueId }
   | { k: 'len'; a: ValueId; out: ValueId }
+  // a fresh string/bytes copy of `a`'s bytes [start, end) — Panic 0x32 unless start ≤ end ≤ len(a)
+  | { k: 'slice'; a: ValueId; start: ValueId; end: ValueId; out: ValueId }
   // `fixed` (OPTIONAL, additive since #4): present for a fixed-size array `elem[N]` — the out
   // value's type is then `elem[N]` and `length` MUST be a word const equal to `N` (validateIr
   // checks it), so the memory block's length word always equals `N`. Absent ⇒ a dynamic `elem[]`

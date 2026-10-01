@@ -368,6 +368,15 @@ function decodeStmt(v: unknown, path: string): Stmt {
       };
     case 'len':
       return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+    case 'slice':
+      return {
+        site,
+        k,
+        a: asId(o['a'], `${path}.a`),
+        start: asId(o['start'], `${path}.start`),
+        end: asId(o['end'], `${path}.end`),
+        out: asId(o['out'], `${path}.out`),
+      };
     case 'arrnew': {
       // `fixed` is OPTIONAL: absent → a dynamic `elem[]` (pre-#4 IR); present → `elem[N]`, N ≥ 1.
       const fixedRaw: unknown = o['fixed'];

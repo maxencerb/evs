@@ -247,6 +247,8 @@ export function noteOf(s: Stmt): string {
       return 'index';
     case 'len':
       return 'len';
+    case 'slice':
+      return 'slice';
     case 'arrnew':
       return `arrnew ${stringifyType(s.elem)}[]`;
     case 'arrset':

@@ -288,6 +288,30 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
+    'byte access, slice + string conversions',
+    ir({
+      args: [{ name: 'b', type: 'bytes' }],
+      values: [
+        vi('bytes', 'b'),
+        vi('uint256'),
+        vi('bytes1'),
+        vi('bytes'),
+        vi('string'),
+        vi('uint8'),
+        vi('string'),
+      ],
+      body: [
+        mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint256' }),
+        mk({ k: 'index', arr: 0, i: 1, out: 2 }, 1),
+        mk({ k: 'slice', a: 0, start: 1, end: 1, out: 3 }, 2),
+        mk({ k: 'convert', a: 3, out: 4 }, 3),
+        mk({ k: 'convert', a: 2, out: 5 }, 4),
+        mk({ k: 'convert', a: 2, out: 6 }, 5),
+      ],
+      returns: [{ name: 's', type: 'string', value: 4 }],
+    }),
+  ],
+  [
     'array const',
     ir({
       values: [vi('uint24[]', 'fees')],

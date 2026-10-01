@@ -1,7 +1,7 @@
 /**
- * `codegen/lower/composites.ts` — the memref templates: `select`, array index / new / set,
- * tuples and struct fields (flat-pointer layout), and ABI encoding + hashing (`s.encode`,
- * `s.encodePacked`, `s.keccak256`, and `s.throw` payloads).
+ * `codegen/lower/composites.ts` — the memref templates: `select`, array index / new / set (and
+ * the string/bytes `byteAt` / `slice`), tuples and struct fields (flat-pointer layout), and ABI
+ * encoding + hashing (`s.encode`, `s.encodePacked`, `s.keccak256`, and `s.throw` payloads).
  */
 
 import { layoutOfType } from '../../abi/layout.js';
@@ -20,6 +20,8 @@ import {
   emitAbiEncodeToBytes,
   emitPackedEncodeToBytes,
   emitWithinStackBudget,
+  emitMemCopy,
+  emitCeil32,
 } from '../abi.js';
 import { FREE_PTR, emitZeroValue, emitZeroMemrefMembers } from '../memory.js';
 import {
@@ -30,6 +32,7 @@ import {
   storeOut,
   typeOf,
   internal,
+  emitBumpAlloc,
 } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -53,8 +56,12 @@ export function lowerSelect(w: AsmWriter, s: Extract<Stmt, { k: 'select' }>, ctx
   w.label(done, base);
 }
 
+/** `index` — a bounds-checked element read (Panic 0x32): an array's element word / pointer, or
+ *  (`.byteAt(i)` on a string/bytes) the payload byte at `i` as a left-aligned `bytes1`. */
 export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCtx): void {
-  loadOperand(w, ctx, s.i, meta('index')); // [i]
+  const arrType = typeOf(ctx, s.arr);
+  const ofBytes = arrType === 'string' || arrType === 'bytes';
+  loadOperand(w, ctx, s.i, meta(ofBytes ? `byteAt ${arrType}` : 'index')); // [i]
   loadOperand(w, ctx, s.arr); // [ptr, i]
   w.op('DUP1');
   w.op('MLOAD'); // [len, ptr, i]
@@ -63,6 +70,18 @@ export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: 
   w.op('ISZERO');
   w.pushLabel(ctx.tails.panicBounds);
   w.op('JUMPI'); // [ptr, i]               Panic 0x32 on OOB
+  if (ofBytes) {
+    w.op('ADD'); // [ptr + i]
+    w.push(32);
+    w.op('ADD');
+    w.op('MLOAD'); // [word]               byte i is its most significant byte
+    w.push(0);
+    w.op('BYTE'); // [b]
+    w.push(248);
+    w.op('SHL'); // [b << 248]            the canonical (left-aligned) bytes1
+    storeOut(w, ctx, s.out);
+    return;
+  }
   w.op('SWAP1'); // [i, ptr]
   w.push(5);
   w.op('SHL'); // [32·i, ptr]
@@ -71,6 +90,61 @@ export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: 
   w.op('ADD'); // [addr]
   w.op('MLOAD'); // [elem]               elements are canonical (decode normalizes eagerly)
   storeOut(w, ctx, s.out);
+}
+
+/**
+ * `slice` — a fresh string/bytes memref holding `a`'s bytes `[start, end)`: Panic 0x32 unless
+ * `start ≤ end ≤ len(a)`, then `[n = end − start][payload…]` in a `32 + ceil32(n)` block from
+ * `emitBumpAlloc`. The copy runs at exactly `[dst, src, n]` (`emitMemCopy`'s pre-cancun
+ * contract), so `out` goes to its slot (after the last operand read) and is read back for the
+ * zero word written at the payload's end, which pads the trailing partial word (and heals the
+ * `@memcpy` whole-word over-copy).
+ */
+export function lowerSlice(w: AsmWriter, s: Extract<Stmt, { k: 'slice' }>, ctx: LowerCtx): void {
+  loadOperand(w, ctx, s.end, meta(`slice ${fmtType(typeOf(ctx, s.a))}`)); // [end]
+  loadOperand(w, ctx, s.a); // [ptr, end]
+  w.op('MLOAD'); // [len, end]
+  w.op('LT'); // [len < end]
+  w.pushLabel(ctx.tails.panicBounds);
+  w.op('JUMPI'); // []                    Panic 0x32 when end > len
+  loadOperand(w, ctx, s.end); // [end]
+  loadOperand(w, ctx, s.start); // [start, end]
+  w.op('GT'); // [start > end]
+  w.pushLabel(ctx.tails.panicBounds);
+  w.op('JUMPI'); // []                    Panic 0x32 when start > end
+  loadOperand(w, ctx, s.start); // [start]
+  loadOperand(w, ctx, s.end); // [end, start]
+  w.op('SUB'); // [n]
+  emitCeil32(w);
+  w.push(32);
+  w.op('ADD'); // [32 + ceil32(n)]
+  emitBumpAlloc(w, 'onStack'); // [out]
+  loadOperand(w, ctx, s.start); // [start, out]
+  loadOperand(w, ctx, s.end); // [end, start, out]
+  w.op('SUB'); // [n, out]
+  w.op('DUP2');
+  w.op('MSTORE'); // [out]                 mem[out] = n
+  loadOperand(w, ctx, s.start); // [start, out]
+  loadOperand(w, ctx, s.a); // [ptr, start, out]
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [src, out]             ptr + 32 + start
+  w.op('DUP2');
+  w.op('MLOAD'); // [n, src, out]
+  w.op('SWAP2'); // [out, src, n]
+  w.op('DUP1');
+  storeOut(w, ctx, s.out); // [out, src, n]   after the last operand read (slots may be reused)
+  w.push(32);
+  w.op('ADD'); // [dst, src, n]          out + 32
+  emitMemCopy(w, ctx.tails, ctx.opts); // []
+  w.push(0); // [0]
+  loadOperand(w, ctx, s.out); // [out, 0]
+  w.op('DUP1');
+  w.op('MLOAD');
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [end, 0]               the payload's end
+  w.op('MSTORE'); // []                    zero pad
 }
 
 export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx: LowerCtx): void {

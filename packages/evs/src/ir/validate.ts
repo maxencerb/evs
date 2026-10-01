@@ -35,10 +35,12 @@ import {
   identProblem,
   isArrayValueType,
   isBitsOperand,
+  isBytesN,
   isEvsType,
   isEvsValueType,
   isLengthType,
   isNumeric,
+  isOrdered,
   isPackedEncodable,
   isSigned,
   isTupleTag,
@@ -423,7 +425,7 @@ class IrValidator {
         if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
         if (!convertOk(from, outInfo.type)) {
           this.fail(
-            `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32 → address, uint256 ↔ bytes32)`,
+            `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32|uint160 → address, address → uint160, bytesN ↔ the same-width uintN, string ↔ bytes, bytesN → string)`,
           );
         }
         this.define(s.out, outInfo.type, what);
@@ -440,11 +442,28 @@ class IrValidator {
       case 'index': {
         const what = `${path} (index)`;
         const ta = this.use(s.arr, null, what);
-        if (!isArrayValueType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
-        }
         this.use(s.i, 'uint256', what);
+        if (ta === 'string' || ta === 'bytes') {
+          this.define(s.out, 'bytes1', what); // `.byteAt(i)`
+          return;
+        }
+        if (!isArrayValueType(ta)) {
+          this.fail(
+            `${what}: operand must be a T[] array or string/bytes, got '${stringifyType(ta)}'`,
+          );
+        }
         this.define(s.out, elemTypeOf(ta), what);
+        return;
+      }
+      case 'slice': {
+        const what = `${path} (slice)`;
+        const ta = this.use(s.a, null, what);
+        if (ta !== 'string' && ta !== 'bytes') {
+          this.fail(`${what}: operand must be string/bytes, got '${stringifyType(ta)}'`);
+        }
+        this.use(s.start, 'uint256', `${what} start`);
+        this.use(s.end, 'uint256', `${what} end`);
+        this.define(s.out, ta, what);
         return;
       }
       case 'len': {
@@ -717,8 +736,10 @@ class IrValidator {
       case 'lte':
       case 'gte': {
         const ta = this.use(s.a, null, what);
-        if (!isNumeric(ta)) {
-          this.fail(`${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`);
+        if (!isOrdered(ta)) {
+          this.fail(
+            `${what}: operands must be ordered (uintN/intN/address/bytesN), got '${stringifyType(ta)}'`,
+          );
         }
         this.use(s.b, ta, what);
         this.define(s.out, 'bool', what);
@@ -986,12 +1007,22 @@ function isArrayType(s: EvsType): s is ArrayType {
   return typeof s === 'string' && s.endsWith(']');
 }
 
-/** legal `convert` pairs. */
+/** legal `convert` pairs (the builder's `toUint`/`toInt` and `as*` conversions). */
 function convertOk(from: EvsType, to: EvsType): boolean {
   if (isNumeric(from) && isNumeric(to)) return true; // free widening / checked narrowing
-  if ((from === 'uint256' || from === 'bytes32') && to === 'address') return true; // asAddress
+  if ((from === 'uint256' || from === 'bytes32') && to === 'address') return true; // checked
+  if ((from === 'uint160' && to === 'address') || (from === 'address' && to === 'uint160')) {
+    return true; // free
+  }
   if (from === 'bytes32' && to === 'uint256') return true; // free reinterpret
   if (from === 'uint256' && to === 'bytes32') return true; // free reinterpret
+  // same-width bytesN ↔ uintN (asUint / asBytesN): a shift between the two lanes
+  if (isBytesN(from) && isNumeric(to) && !isSigned(to)) return bitsOf(from) === bitsOf(to);
+  if (isNumeric(from) && !isSigned(from) && isBytesN(to)) return bitsOf(from) === bitsOf(to);
+  if ((from === 'string' && to === 'bytes') || (from === 'bytes' && to === 'string')) {
+    return true; // free reinterpret (the same memref)
+  }
+  if (isBytesN(from) && to === 'string') return true; // a fresh string, trailing zeros trimmed
   return false;
 }
 

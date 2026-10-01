@@ -885,6 +885,17 @@ describe('convert', () => {
     expect(retOf(runConvert('uint256', 'bytes32', U256_MAX)).r).toBe(`0x${'ff'.repeat(32)}`);
     expect(asBig(retOf(runConvert('bytes32', 'uint256', `0x${'00'.repeat(31)}2a`)).r)).toBe(42n);
   });
+  test('address ↔ uint160 and same-width bytesN ↔ uintN', () => {
+    const max160 = (1n << 160n) - 1n;
+    expect(asBig(retOf(runConvert('address', 'uint160', `0x${'ff'.repeat(20)}`)).r)).toBe(max160);
+    expect(retOf(runConvert('uint160', 'address', 0xabcn)).r).toBe(
+      '0x0000000000000000000000000000000000000aBc',
+    );
+    expect(asBig(retOf(runConvert('bytes4', 'uint32', '0xdeadbeef')).r)).toBe(0xdeadbeefn);
+    expect(asBig(retOf(runConvert('bytes1', 'uint8', '0x80')).r)).toBe(0x80n);
+    expect(retOf(runConvert('uint32', 'bytes4', 0x01020304n)).r).toBe('0x01020304');
+    expect(retOf(runConvert('uint160', 'bytes20', max160)).r).toBe(`0x${'ff'.repeat(20)}`);
+  });
   test('asAddress checks the high 96 bits', () => {
     expect(retOf(runConvert('uint256', 'address', 5n)).r).toBe(
       '0x0000000000000000000000000000000000000005',

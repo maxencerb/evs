@@ -1,7 +1,8 @@
 /**
  * `builder/expr/ops.ts` — the recorder layer for operators: arithmetic (checked and wrapping) /
  * comparison / logic / bit ops with constant folding and domain checks, `addmod` / `mulmod` /
- * `mulDiv`, `not` / `bitNot`, conversions, `length` / `at`, `env` and `select`.
+ * `mulDiv`, `not` / `bitNot`, conversions, `length` / `at` (and `byteAt` / `slice` on
+ * string/bytes), `env` and `select`.
  */
 
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
@@ -20,6 +21,8 @@ import {
   isArrayValueType,
   isLengthType,
   elemTypeOf,
+  isOrdered,
+  isBytesN,
 } from '../../core/types.js';
 import { isEnvOp, type BinOp, type ModArithOp, type ValueId } from '../../ir/nodes.js';
 import { RecorderEncode } from './encode.js';
@@ -31,6 +34,7 @@ import {
   foldModArith,
   type Operand,
   NUMERIC_OPS,
+  ORDER_OPS,
   BITS_OPS,
   fromUnsignedN,
   toUnsignedN,
@@ -259,6 +263,15 @@ export abstract class RecorderOps extends RecorderEncode {
       }
       return;
     }
+    if (ORDER_OPS.has(op)) {
+      if (!isOrdered(ty)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: operands must be ordered (uintN/intN/address/bytesN), got '${stringifyType(ty)}'`,
+        );
+      }
+      return;
+    }
     if (op === 'eq' || op === 'neq') {
       // memref operands never reach here — `bin` rewrites them to hash equality (issue #38)
       if (!isWordType(ty)) {
@@ -337,19 +350,20 @@ export abstract class RecorderOps extends RecorderEncode {
     return makeExpr(this.self, out);
   }
 
-  convertOp(
-    kind: 'toUint' | 'toInt' | 'asAddress' | 'asUint256' | 'asBytes32',
-    a: unknown,
-    target: unknown,
-    what: string,
-  ): Expr {
+  /**
+   * Every conversion records one `convert` statement whose semantics follow from the operand and
+   * out types (see {@link AS_CONVERSIONS} for the `as*` family). A word → word conversion of a
+   * literal folds on its logical value, which each of them preserves (a `bytesN`'s logical value
+   * is its 8N-bit content, i.e. the same-width `uintN`); an out-of-range fold is a CERTAIN_PANIC.
+   */
+  convertOp(kind: ConvertKind, a: unknown, target: unknown, what: string): Expr {
     this.assertOpen(what);
     const c = this.classify(a, what);
     if (c.kind !== 'expr') {
       throw new EvsTypeError('TYPE_MISMATCH', `${what}: the converted operand must be an Expr`);
     }
     const from = c.type;
-    let to: WordType;
+    let to: EvsType;
     if (kind === 'toUint' || kind === 'toInt') {
       const prefix = kind === 'toUint' ? 'uint' : 'int';
       if (
@@ -364,39 +378,32 @@ export abstract class RecorderOps extends RecorderEncode {
         );
       }
       if (!isNumeric(from)) {
+        // point an address / bytesN receiver at its lossless same-width integer first
+        const hint =
+          from === 'address'
+            ? ` — use .asUint160() first (then .${kind}(…))`
+            : isBytesN(from)
+              ? ` — use .asUint() first (same width, then .${kind}(…))`
+              : '';
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: cannot convert from '${stringifyType(from)}' — the source must be numeric (uintN/intN)`,
+          `${what}: cannot convert from '${stringifyType(from)}' — the source must be numeric (uintN/intN)${hint}`,
         );
       }
       to = target;
-    } else if (kind === 'asAddress') {
-      if (from !== 'uint256' && from !== 'bytes32') {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> / Expr<'bytes32'> convert to address, got '${stringifyType(from)}'`,
-        );
-      }
-      to = 'address';
-    } else if (kind === 'asUint256') {
-      if (from !== 'bytes32') {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${what}: only Expr<'bytes32'> reinterprets as uint256, got '${stringifyType(from)}'`,
-        );
-      }
-      to = 'uint256';
     } else {
-      if (from !== 'uint256') {
+      const conv = AS_CONVERSIONS[kind];
+      const resolved = conv.target(from);
+      if (resolved === null) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: only Expr<'uint256'> reinterprets as bytes32, got '${stringifyType(from)}'`,
+          `${what}: .${kind}() takes ${conv.sources}, got '${stringifyType(from)}'`,
         );
       }
-      to = 'bytes32';
+      to = resolved;
     }
     const lit = this.litValues.get(c.id);
-    if (lit !== undefined) {
+    if (lit !== undefined && isWordType(to)) {
       const [min, max] = rangeOf(to);
       if (lit < min || lit > max) {
         this.certainPanic(what, `${lit} does not fit '${to}'`, 0x11);
@@ -433,9 +440,10 @@ export abstract class RecorderOps extends RecorderEncode {
     this.assertOpen(what);
     const c = this.classify(a, what);
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
+      const isBytes = c.kind === 'expr' && (c.type === 'string' || c.type === 'bytes');
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
+        `${what}: .at(i) requires an Expr of a T[] array type, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}${isBytes ? ' — read a byte with .byteAt(i)' : ''}`,
       );
     }
     const iId = this.coerceToId(i, 'uint256', `${what} index`);
@@ -451,6 +459,43 @@ export abstract class RecorderOps extends RecorderEncode {
     const out = this.newValue(elem, debugName);
     this.appendStmt({ k: 'index', arr, i, out });
     return this.valueHandle(out, elem);
+  }
+
+  /** `.byteAt(i)` — the bounds-checked `index` statement on a `string`/`bytes` receiver, whose
+   *  element is its byte as a `bytes1` (Solidity's `b[i]`; Panic 0x32 past the end). */
+  byteAtOp(a: unknown, i: unknown, what: string): Expr {
+    this.assertOpen(what);
+    const c = this.classify(a, what);
+    if (c.kind !== 'expr' || (c.type !== 'string' && c.type !== 'bytes')) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: .byteAt(i) requires an Expr of string/bytes, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)} (use .at(i) on arrays)`,
+      );
+    }
+    const iId = this.coerceToId(i, 'uint256', `${what} index`);
+    const out = this.newValue('bytes1');
+    this.appendStmt({ k: 'index', arr: c.id, i: iId, out });
+    return makeExpr(this.self, out);
+  }
+
+  /** `.slice(start, end?)` — a fresh copy of the receiver's bytes `[start, end)` (Solidity's
+   *  `b[start:end]`); an omitted `end` is the receiver's length. Panic 0x32 unless
+   *  `start ≤ end ≤ length`. */
+  sliceOp(a: unknown, start: unknown, end: unknown, what: string): Expr {
+    this.assertOpen(what);
+    const c = this.classify(a, what);
+    if (c.kind !== 'expr' || (c.type !== 'string' && c.type !== 'bytes')) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: .slice() requires an Expr of string/bytes, got ${c.kind === 'expr' ? `'${stringifyType(c.type)}'` : describeHost(a)}`,
+      );
+    }
+    const startId = this.coerceToId(start, 'uint256', `${what} start`);
+    const endId =
+      end === undefined ? this.lenId(c.id) : this.coerceToId(end, 'uint256', `${what} end`);
+    const out = this.newValue(c.type);
+    this.appendStmt({ k: 'slice', a: c.id, start: startId, end: endId, out });
+    return makeExpr(this.self, out);
   }
 
   select(cond: unknown, a: unknown, b: unknown): Expr {
@@ -515,4 +560,55 @@ export abstract class RecorderOps extends RecorderEncode {
     }
     this.coerceToId(value, ty, 's.select() branch');
   }
+}
+
+// ---------------------------------------------------------------------------
+// the `as*` conversions
+// ---------------------------------------------------------------------------
+
+type AsKind =
+  | 'asAddress'
+  | 'asUint160'
+  | 'asUint256'
+  | 'asBytes32'
+  | 'asUint'
+  | 'asBytesN'
+  | 'asBytes'
+  | 'asString';
+export type ConvertKind = 'toUint' | 'toInt' | AsKind;
+
+/**
+ * The `as*` conversions: the accepted operand types (for the error message) and the out type an
+ * operand converts to (`null` when it is not accepted). `ir/validate.ts` `convertOk` is the IR-level
+ * mirror of the pairs, and the interpreter / codegen give each pair its semantics.
+ */
+const AS_CONVERSIONS: Readonly<
+  Record<AsKind, { sources: string; target: (from: EvsType) => EvsType | null }>
+> = {
+  // checked from uint256 / bytes32 (high 96 bits zero), free from uint160
+  asAddress: {
+    sources: "Expr<'uint256'> / Expr<'bytes32'> / Expr<'uint160'>",
+    target: (f) => (f === 'uint256' || f === 'bytes32' || f === 'uint160' ? 'address' : null),
+  },
+  asUint160: { sources: "Expr<'address'>", target: (f) => (f === 'address' ? 'uint160' : null) },
+  asUint256: { sources: "Expr<'bytes32'>", target: (f) => (f === 'bytes32' ? 'uint256' : null) },
+  asBytes32: { sources: "Expr<'uint256'>", target: (f) => (f === 'uint256' ? 'bytes32' : null) },
+  // same width: bytesN → uint(8N), uintN → bytes(N/8)
+  asUint: {
+    sources: "Expr<'bytesN'>",
+    target: (f) => (isBytesN(f) ? wordTypeOrNull(`uint${bitsOf(f)}`) : null),
+  },
+  asBytesN: {
+    sources: "Expr<'uintN'>",
+    target: (f) => (isNumeric(f) && !isSigned(f) ? wordTypeOrNull(`bytes${bitsOf(f) / 8}`) : null),
+  },
+  asBytes: { sources: "Expr<'string'>", target: (f) => (f === 'string' ? 'bytes' : null) },
+  asString: {
+    sources: "Expr<'bytes'> / Expr<'bytesN'>",
+    target: (f) => (f === 'bytes' || isBytesN(f) ? 'string' : null),
+  },
+};
+
+function wordTypeOrNull(s: string): WordType | null {
+  return isWordType(s) ? s : null;
 }

@@ -19,9 +19,9 @@
  *          statement live, and every `arrset`/`tupleset` that mutates memory the value may
  *          alias (see aliasing); an `if` is live iff any statement in either branch is live
  *          (then its condition is live); everything else — `const`, `bin`, `un`, `modarith`,
- *          `env`, `convert`, `select`, `index`, `len`, `arrnew`, `arrset`, `tuplenew`, `field`,
- *          `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a pure fn — is pure
- *          and dropped when nothing live depends on it.
+ *          `env`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`, `arrset`, `tuplenew`,
+ *          `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a pure fn — is
+ *          pure and dropped when nothing live depends on it.
  *   cells  a cell is live iff a LIVE `cellget` of it exists anywhere (a `cellget` nobody reads
  *          is dead like any other pure statement; no per-position reasoning beyond that — loop
  *          back-edges make it a real dataflow problem for no payoff): its `cellnew` and every
@@ -40,7 +40,7 @@
  *
  * REVERT GUARDS ARE NOT SIDE EFFECTS. Checked arithmetic (`bin` add/sub/mul/div/mod/pow and
  * `modarith` addmod/mulmod/muldiv/muldivup → `Panic(0x11)`/`0x12`), narrowing `convert` (`Panic(0x11)`),
- * bounds-checked `index`/`arrset` (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
+ * bounds-checked `index`/`arrset`/`slice` (`Panic(0x32)`) and `arrnew` length guards (`Panic(0x41)`) can revert — but a revert that
  * only guarded a value nothing reads is itself dead work: a script that overflows while
  * computing an unused sum returns instead of panicking. This is a deliberate evs choice, and
  * it is what makes the pass an optimizer rather than a no-op; Solidity does NOT do this (solc
@@ -200,6 +200,10 @@ class Dce {
       case 'field':
         if (this.isMemref(s.out)) this.union(s.out, s.tuple);
         return;
+      case 'convert':
+        // string ↔ bytes reinterprets the same memref (a bytesN → string copy reads a word)
+        if (this.isMemref(s.out) && this.isMemref(s.a)) this.union(s.out, s.a);
+        return;
       case 'select':
         if (this.isMemref(s.out)) {
           this.union(s.out, s.a);
@@ -232,7 +236,7 @@ class Dce {
         return;
       }
       default:
-        return; // fresh allocations (const/arrnew/encode/call outs) and words
+        return; // fresh allocations (const/arrnew/encode/slice/call outs) and words
     }
   }
 

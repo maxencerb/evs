@@ -63,6 +63,32 @@ const inspect = evscript({ name: 'inspect', args: [t.array(t.uint128)] }, (s, xs
 
 The arithmetic, comparison, bitwise, and conversion methods on `Expr` are covered in [arithmetic](/guides/arithmetic/); the exhaustive method tables are in the [types reference](/reference/types/).
 
+### Bytes and strings
+
+`string` and `bytes` handles also give access to their bytes, with Solidity's semantics:
+
+- **`byteAt(i)`** — the byte at index `i` as an `Expr<'bytes1'>` (Solidity's `b[i]`, or `bytes(s)[i]` on a string), bounds-checked: `Panic(0x32)` past the end. `.asUint()` turns it into the `uint8` byte value.
+- **`slice(start, end?)`** — a fresh copy of the bytes `[start, end)` with the receiver's type (Solidity's `b[start:end]`); `end` defaults to the length. It reverts with `Panic(0x32)` unless `start ≤ end ≤ length`. A slice allocates (one `MCOPY`, or a word-copy loop before cancun), so inside a loop it raises the [`LOOP_ALLOCATION`](/reference/diagnostics/) diagnostic.
+- **`asBytes()` / `asString()`** — `string` ↔ `bytes`. Free: the result is the same memory, reinterpreted.
+- **`asString()` on a `bytesN`** — a fresh string holding the word's bytes **up to its last nonzero byte**: the trailing zero bytes are dropped, interior ones kept, and an all-zero word gives `''`. This decodes the legacy `bytes32` `symbol()` / `name()` (MKR, SAI) the way viem's `hexToString(x, { size: 32 })` does client-side, so a script can fall back to it in-script — see [the legacy-symbol pattern](/examples/patterns/#legacy-bytes32-symbol). For the full `N` bytes without trimming, use `s.encodePacked(word)`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const labels = evscript({ name: 'labels', args: [t.string] }, (s, name) => {
+  // 'vitalik.eth' → the first label and the label hash ENS uses
+  const dot = s.let(t.uint256, name.length());
+  s.for({ type: t.uint256, from: 0n, until: name.length() }, (i, loop) => {
+    s.if(name.byteAt(i).eq('0x2e'), () => {
+      dot.set(i);
+      loop.break();
+    });
+  });
+  const label = name.slice(0n, dot.get()); // Expr<'string'>
+  return s.return({ label, labelhash: s.keccak256(label), firstByte: name.byteAt(0n).asUint() });
+});
+```
+
 ## Composite types: structs and tuples
 
 Solidity structs and tuples are first-class. Build a composite type with `t.struct` (named members — inferred as an object) or `t.tuple` (positional members — inferred as an array); both produce a [`TupleType`](/reference/types/#composite-types-tupletype) descriptor that viem infers directly. A composite value is a memref to a packed block of one word per member (a static member inline, a dynamic/nested member as a pointer), and its handle is a [`Tuple`](/reference/builder/#tuple) — not an `Expr` — exposing a [`Field`](/reference/builder/#field) per member.

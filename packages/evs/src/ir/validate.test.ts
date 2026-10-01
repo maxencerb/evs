@@ -871,6 +871,15 @@ describe('validateIr — convert table', () => {
     ['bytes32', 'address'], // asAddress
     ['bytes32', 'uint256'], // reinterpret
     ['uint256', 'bytes32'], // reinterpret
+    ['uint160', 'address'], // asAddress (free)
+    ['address', 'uint160'], // asUint160
+    ['bytes16', 'uint128'], // asUint (same width)
+    ['bytes1', 'uint8'],
+    ['uint128', 'bytes16'], // asBytesN (same width)
+    ['string', 'bytes'], // reinterpret
+    ['bytes', 'string'],
+    ['bytes4', 'string'], // asString (trimmed copy)
+    ['bytes32', 'string'],
   ];
   test.each(ACCEPTED)('accepts %s → %s', (from, to) => {
     expect(() => validateIr(convertIr(from, to))).not.toThrow();
@@ -879,11 +888,19 @@ describe('validateIr — convert table', () => {
   const REJECTED: readonly [EvsType, EvsType][] = [
     ['string', 'uint256'],
     ['uint256', 'string'],
-    ['address', 'uint256'],
-    ['bytes16', 'uint128'],
+    ['address', 'uint256'], // only through uint160
+    ['uint128', 'address'],
+    ['address', 'uint128'],
+    ['bytes16', 'uint64'], // bytesN ↔ uintN only at the same width
+    ['uint64', 'bytes4'],
+    ['bytes4', 'int32'], // … and unsigned
+    ['int32', 'bytes4'],
     ['bool', 'uint8'],
     ['address[]', 'uint256'],
     ['bytes32', 'bytes4'],
+    ['bytes', 'bytes32'],
+    ['string', 'bytes32'],
+    ['uint256', 'bytes'],
   ];
   test.each(REJECTED)('rejects %s → %s', (from, to) => {
     expectInvalid(convertIr(from, to), /no conversion/);
@@ -933,11 +950,27 @@ describe('validateIr — select/index/len/array rules', () => {
   test('index: operand must be an array, i must be uint256, out must be the element type', () => {
     expectInvalid(
       ir({
+        values: [vi('uint256'), vi('uint256'), vi('uint256')],
+        body: [u256Const(0, 1n), u256Const(1, 0n), mk({ k: 'index', arr: 0, i: 1, out: 2 })],
+      }),
+      /must be a T\[\] array or string\/bytes/,
+    );
+    // a string/bytes operand reads one byte: the out is a bytes1 (`.byteAt(i)`)
+    expectInvalid(
+      ir({
         values: [vi('string'), vi('uint256'), vi('uint256')],
         body: [strConst(0), u256Const(1, 0n), mk({ k: 'index', arr: 0, i: 1, out: 2 })],
       }),
-      /must be a T\[\] array/,
+      /produces 'bytes1'/,
     );
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('string'), vi('uint256'), vi('bytes1')],
+          body: [strConst(0), u256Const(1, 0n), mk({ k: 'index', arr: 0, i: 1, out: 2 })],
+        }),
+      ),
+    ).not.toThrow();
     expectInvalid(
       ir({
         values: [vi('uint256[]'), vi('uint8'), vi('uint256')],
@@ -972,6 +1005,43 @@ describe('validateIr — select/index/len/array rules', () => {
         body: [strConst(0), mk({ k: 'len', a: 0, out: 1 })],
       }),
       /produces 'uint256'/,
+    );
+  });
+
+  test('slice: operand string/bytes, start/end uint256, out the operand type', () => {
+    const slice = mk({ k: 'slice', a: 0, start: 1, end: 1, out: 2 });
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('string'), vi('uint256'), vi('string')],
+          body: [strConst(0), u256Const(1, 0n), slice],
+        }),
+      ),
+    ).not.toThrow();
+    expectInvalid(
+      ir({
+        values: [vi('uint256[]'), vi('uint256'), vi('uint256[]')],
+        body: [arrConst(0), u256Const(1, 0n), slice],
+      }),
+      /\(slice\): operand must be string\/bytes, got 'uint256\[\]'/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('string'), vi('uint8'), vi('string')],
+        body: [
+          strConst(0),
+          mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(0n) }, type: 'uint8' }),
+          slice,
+        ],
+      }),
+      /\(slice\) start/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('string'), vi('uint256'), vi('bytes')],
+        body: [strConst(0), u256Const(1, 0n), slice],
+      }),
+      /produces 'string'/,
     );
   });
 
