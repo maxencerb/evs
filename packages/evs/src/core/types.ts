@@ -64,6 +64,7 @@ export type {
 export { t, isArgSpecValue } from './types/namespace.js';
 export {
   MAX_ARRAY_DEPTH,
+  MAX_STATIC_SIZE,
   peelArraySuffix,
   arrayDepthOf,
   assertArrayDepth,
@@ -88,5 +89,8 @@ export {
   typeToAbiParam,
   tupleArrayTag,
   explainBadTypeString,
+  quoteTypeString,
+  staticSizeOf,
+  staticSizeMessage,
   installStagingTraps,
 } from './types/predicates.js';

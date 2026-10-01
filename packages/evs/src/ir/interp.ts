@@ -49,7 +49,7 @@
  *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
- * statement + one per loop iteration) throws `EvsCompileError(COMPILE_LIMIT)`. Neither is a
+ * statement + one per loop iteration + one per zero-filled array element) throws `EvsCompileError(COMPILE_LIMIT)`. Neither is a
  * chain outcome. `validateIr` runs on entry, so garbage IR fails loudly instead of diverging.
  */
 

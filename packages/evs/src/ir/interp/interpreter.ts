@@ -25,7 +25,16 @@ import {
   type PlainAbiFunction,
 } from '../nodes.js';
 import { validateIr } from '../validate.js';
-import { constValue, modArith, envValue, convert, zeroValue, binOp, canonWord } from './arith.js';
+import {
+  constValue,
+  modArith,
+  envValue,
+  convert,
+  zeroValue,
+  zeroFillSlots,
+  binOp,
+  canonWord,
+} from './arith.js';
 import { coerceArg, jsValueOf } from './coerce.js';
 import { decodeOutputs } from './decode.js';
 import { encodeParamsBlock, encodePackedBlock, abiIsDynamic } from './encode.js';
@@ -186,7 +195,8 @@ class Interp {
   // bookkeeping
   // -------------------------------------------------------------------------
 
-  /** one budget unit; also charged once per loop iteration (guards zero-stmt loops). */
+  /** one budget unit; also charged once per loop iteration (guards zero-stmt loops). Zero-fills
+   *  are charged per element by {@link chargeZeroFill}. */
   private tick(): void {
     this.steps += 1;
     if (this.steps > this.maxSteps) {
@@ -195,6 +205,23 @@ class Interp {
         `interpret: script "${this.ir.name}" exceeded maxSteps = ${this.maxSteps} (likely an unbounded loop; raise opts.maxSteps if intentional)`,
       );
     }
+  }
+
+  /**
+   * Charges `elements` zero-filled array elements to the step budget, one step each (see
+   * {@link zeroFillSlots}), BEFORE they are allocated: the EVM pays gas to zero-fill memory,
+   * and a zero-fill the remaining budget cannot cover throws `COMPILE_LIMIT` instead of
+   * exhausting the host heap (`uint256[1e8][1e8]`, `s.newArray(t.uint256, 2 ** 32 - 1)`).
+   */
+  private chargeZeroFill(elements: bigint): void {
+    if (elements === 0n) return;
+    if (elements > BigInt(this.maxSteps - this.steps)) {
+      throw new EvsCompileError(
+        'COMPILE_LIMIT',
+        `interpret: script "${this.ir.name}" exceeded maxSteps = ${this.maxSteps} zero-filling ${elements} array elements (one step each; raise opts.maxSteps if intentional)`,
+      );
+    }
+    this.steps += Number(elements);
   }
 
   private step(s: Stmt, path: readonly number[]): void {
@@ -325,6 +352,7 @@ class Interp {
         // zero-fill each slot with the typed zero (0n for a word element — preserves the
         // pre-composite behavior; a typed memref zero for a composite/dynamic element).
         const elem = s.elem;
+        this.chargeZeroFill(len * (1n + zeroFillSlots(elem)));
         const items = Array.from({ length: Number(len) }, () => zeroValue(elem));
         this.values.set(s.out, { kind: 'array', elem, items });
         return;
@@ -337,8 +365,18 @@ class Interp {
             `interpret: tuplenew out is not a plain tuple type`,
           );
         }
-        // zero-filled flat block, then overwrite each provided member (reference semantics)
-        const fields: Value[] = tt.components.map((c) => zeroValue(abiParamToType(c)));
+        // the typed zero of each omitted member, then each provided one (reference semantics).
+        // Like the bytecode (`emitZeroMemrefMembers` skips the inits), a provided member is never
+        // zero-filled, so only the omitted ones are charged and materialized.
+        const given = new Set(s.inits.map((init) => init.index));
+        let slots = 0n;
+        tt.components.forEach((c, i) => {
+          if (!given.has(i)) slots += zeroFillSlots(abiParamToType(c));
+        });
+        this.chargeZeroFill(slots);
+        const fields: Value[] = tt.components.map((c, i) =>
+          given.has(i) ? 0n : zeroValue(abiParamToType(c)),
+        );
         for (const init of s.inits) {
           fields[init.index] = this.getValue(init.value);
         }
@@ -583,7 +621,9 @@ class Interp {
       if (p === undefined) {
         throw new EvsInternalError('INTERNAL', `interpret: call out ${i} has no output schema`);
       }
-      this.values.set(out, zeroValue(abiParamToType(p)));
+      const type = abiParamToType(p);
+      this.chargeZeroFill(zeroFillSlots(type));
+      this.values.set(out, zeroValue(type));
     });
     if (s.successOut !== undefined) this.values.set(s.successOut, 0n);
   }

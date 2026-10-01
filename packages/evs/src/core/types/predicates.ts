@@ -52,10 +52,8 @@ const SETS = buildWordTypeSets();
 // runtime type predicates / metadata
 // ---------------------------------------------------------------------------
 
-// The trailing array suffix of a type string: `[]` (dynamic) or `[N]` (fixed, N ≥ 1 with no
-// leading zero). Greedy `(.*)` anchors the match at the LAST suffix, so the inner type keeps its
-// own suffix chain (`uint256[2][]` → inner `uint256[2]`, size `[]`).
-const ARRAY_SUFFIX_RE = /^(.*)\[([1-9]\d*)?\]$/;
+// The length inside a fixed-size suffix `[N]`: N ≥ 1 with no leading zero (empty = dynamic `[]`).
+const FIXED_LENGTH_RE = /^[1-9]\d*$/;
 /** A tuple tag: `tuple` followed by zero or more `[]`/`[N]` suffixes. */
 const TUPLE_TAG_RE = /^tuple(?:\[(?:[1-9]\d*)?\])*$/;
 /** Fixed-size arrays at or above this length cannot be allocated (`arrnew` Panics 0x41 there),
@@ -73,17 +71,33 @@ export const MAX_FIXED_LENGTH = 0xffffffff;
 export const MAX_ARRAY_DEPTH = 4;
 
 /**
+ * The largest ABI static size, in bytes, of a type evs compiles: an ABI-static type (a word, a
+ * fixed-size `T[N]` over a static element, an all-static tuple) inlines that many bytes into
+ * every head it sits in, and codegen pushes those sizes (and their sums) as immediates. Each
+ * level's length is already below 2^32 ({@link MAX_FIXED_LENGTH}), but nesting multiplies them
+ * (`uint256[1e8][1e8]` is 3.2e17 bytes, past 2^53), so the product is capped too: a type at or
+ * above 2^32 bytes is `UNSUPPORTED_V0` in `t.array` / `t.struct` / `t.tuple` / `t.from*`,
+ * type-string validation and `abi/layout`. Nothing that large can be calldata, returndata or
+ * memory anyway (expanding memory to 2^32 bytes costs about 2^45 gas).
+ */
+export const MAX_STATIC_SIZE = 0xffffffff;
+
+/**
  * Splits one trailing array suffix off a type string: `'uint256[]'` → `{ inner: 'uint256',
  * length: null }`, `'uint256[3][]'` → `{ inner: 'uint256[3]', length: null }`, `'address[2]'` →
  * `{ inner: 'address', length: 2 }`. `null` when `s` has no well-formed trailing suffix (a bare
  * type, or a malformed suffix such as `[0]`/`[01]`/`[x]`). Works on tuple tags too.
  */
 export function peelArraySuffix(s: string): { inner: string; length: number | null } | null {
-  const m = ARRAY_SUFFIX_RE.exec(s);
-  if (m === null) return null;
-  const inner = m[1] ?? '';
-  const digits = m[2];
-  if (digits === undefined) return { inner, length: null };
+  // scan back from the end only (the LAST `[`), so peeling a whole chain stays linear in its
+  // length; the inner type keeps its own suffix chain (`uint256[2][]` → inner `uint256[2]`)
+  if (!s.endsWith(']')) return null;
+  const open = s.lastIndexOf('[');
+  if (open === -1) return null;
+  const inner = s.slice(0, open);
+  const digits = s.slice(open + 1, -1);
+  if (digits === '') return { inner, length: null };
+  if (!FIXED_LENGTH_RE.test(digits)) return null;
   const length = Number(digits);
   if (!Number.isSafeInteger(length) || length > MAX_FIXED_LENGTH) return null;
   return { inner, length };
@@ -111,7 +125,7 @@ export function assertArrayDepth(s: string, context: string): void {
   if (depth > MAX_ARRAY_DEPTH) {
     throw new EvsTypeError(
       'UNSUPPORTED_V0',
-      `${context}: type ${JSON.stringify(s)} nests arrays ${depth} levels deep — at most ${MAX_ARRAY_DEPTH} levels are supported`,
+      `${context}: type ${quoteTypeString(s)} nests arrays ${depth} levels deep — at most ${MAX_ARRAY_DEPTH} levels are supported`,
     );
   }
 }
@@ -122,9 +136,13 @@ export function assertArrayDepth(s: string, context: string): void {
  * enforced separately with `UNSUPPORTED_V0`. Tuples are objects — see {@link isEvsValueType}.
  */
 export function isEvsType(s: string): s is StringType {
-  if (isWordType(s) || s === 'string' || s === 'bytes') return true;
-  const peeled = peelArraySuffix(s);
-  return peeled !== null && isEvsType(peeled.inner);
+  // a loop, not a recursion per suffix: a hostile `'uint256' + '[]'.repeat(50_000)` must reach
+  // the depth gate instead of overflowing the host stack
+  let leaf = s;
+  for (let peeled = peelArraySuffix(leaf); peeled !== null; peeled = peelArraySuffix(leaf)) {
+    leaf = peeled.inner;
+  }
+  return isWordType(leaf) || leaf === 'string' || leaf === 'bytes';
 }
 
 /** A well-formed tuple tag (`'tuple'`, `'tuple[]'`, `'tuple[2]'`, `'tuple[][3]'`, …). */
@@ -325,30 +343,84 @@ export function tupleArrayTag(tag: TupleType['type'], fixed: number | null): Tup
  */
 export function explainBadTypeString(s: string): string {
   if (s === 'tuple' || s.startsWith('tuple')) {
-    return `a tuple type must be a \`t.struct\`/\`t.tuple\` descriptor (or a raw AbiParameter[]), not the string ${JSON.stringify(s)}`;
+    return `a tuple type must be a \`t.struct\`/\`t.tuple\` descriptor (or a raw AbiParameter[]), not the string ${quoteTypeString(s)}`;
   }
-  // walk the suffix chain inward: the first suffix that does not parse is the malformed one
+  // walk the suffix chain inward: the first bracketed suffix that does not parse is the
+  // malformed one
   let cur = s;
-  while (/\[[^\]]*\]$/.test(cur)) {
+  while (cur.endsWith(']') && cur.lastIndexOf('[') > cur.lastIndexOf(']', cur.length - 2)) {
     const peeled = peelArraySuffix(cur);
     if (peeled === null) {
-      return `malformed array suffix in ${JSON.stringify(s)} — a fixed-size array length must be a positive integer below 2^32 with no leading zero (\`T[3]\`), or empty for a dynamic array (\`T[]\`)`;
+      return `malformed array suffix in ${quoteTypeString(s)} — a fixed-size array length must be a positive integer below 2^32 with no leading zero (\`T[3]\`), or empty for a dynamic array (\`T[]\`)`;
     }
     cur = peeled.inner;
   }
-  return `unknown type ${JSON.stringify(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, an array \`T[]\`/\`T[N]\` of those, or a \`t.struct\`/\`t.tuple\`)`;
+  return `unknown type ${quoteTypeString(s)} (expected uintN/intN/address/bool/bytesN, string, bytes, an array \`T[]\`/\`T[N]\` of those, or a \`t.struct\`/\`t.tuple\`)`;
+}
+
+/** A type string quoted for an error message, cut to its first 64 characters (with the full
+ *  length noted) so a hostile multi-kilobyte type does not end up verbatim in the message. */
+export function quoteTypeString(s: string): string {
+  const MAX_QUOTED = 64;
+  if (s.length <= MAX_QUOTED) return JSON.stringify(s);
+  return `${JSON.stringify(s.slice(0, MAX_QUOTED))}… (${s.length} characters)`;
 }
 
 /**
  * Eager type-string validation: `TYPE_MISMATCH` for anything outside the vocabulary (see
  * {@link explainBadTypeString}), `UNSUPPORTED_V0` for a well-formed array nested deeper than
- * {@link MAX_ARRAY_DEPTH}.
+ * {@link MAX_ARRAY_DEPTH} or one whose ABI static size exceeds {@link MAX_STATIC_SIZE}.
  */
 export function assertEvsType(s: string, context: string): asserts s is StringType {
   if (!isEvsType(s)) {
     throw new EvsTypeError('TYPE_MISMATCH', `${context}: ${explainBadTypeString(s)}`);
   }
   assertArrayDepth(s, context);
+  assertStaticSize(s, context);
+}
+
+/**
+ * The ABI static (head-inlined) size of a well-formed type in bytes, or `null` when the type is
+ * ABI-dynamic (`string`/`bytes`, any `T[]`, a `T[N]` or tuple with a dynamic member). The same
+ * rule as `staticSize` in `abi/layout.ts`, over the type itself rather than its layout, so the
+ * `t` constructors can gate sizes before any layout exists. A bigint: nested lengths overflow a
+ * JS number long before {@link MAX_STATIC_SIZE} is checked.
+ */
+export function staticSizeOf(type: EvsType): bigint | null {
+  let size = 1n;
+  let leaf: string = typeof type === 'string' ? type : type.type;
+  for (let peeled = peelArraySuffix(leaf); peeled !== null; peeled = peelArraySuffix(leaf)) {
+    if (peeled.length === null) return null;
+    size *= BigInt(peeled.length);
+    leaf = peeled.inner;
+  }
+  if (typeof type === 'string') return isWordType(leaf) ? 32n * size : null;
+  let members = 0n;
+  for (const c of type.components) {
+    const member = staticSizeOf(abiParamToType(c));
+    if (member === null) return null;
+    members += member;
+  }
+  return members * size;
+}
+
+/**
+ * Throws `UNSUPPORTED_V0` when `type` is ABI-static and its static size exceeds
+ * {@link MAX_STATIC_SIZE} (2^32 bytes or more). Callers pass a type already within
+ * {@link MAX_ARRAY_DEPTH}.
+ */
+export function assertStaticSize(type: EvsType, context: string): void {
+  const size = staticSizeOf(type);
+  if (size !== null && size > BigInt(MAX_STATIC_SIZE)) {
+    const tag = typeof type === 'string' ? type : type.type;
+    throw new EvsTypeError('UNSUPPORTED_V0', staticSizeMessage(context, tag, size));
+  }
+}
+
+/** The shared `UNSUPPORTED_V0` message for a type past {@link MAX_STATIC_SIZE} — `type` is the
+ *  type string or tuple tag (also used by `abi/layout`, which measures the size on the layout). */
+export function staticSizeMessage(context: string, type: string, size: bigint | number): string {
+  return `${context}: type ${quoteTypeString(type)} has an ABI static size of ${size} bytes — at most 2^32 − 1 bytes are supported`;
 }
 
 /**

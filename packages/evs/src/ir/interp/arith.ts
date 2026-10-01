@@ -16,6 +16,7 @@ import {
   elemTypeOf,
   abiParamToType,
   fixedLengthOf,
+  peelArraySuffix,
 } from '../../core/types.js';
 import type { ModArithOp } from '../nodes.js';
 import {
@@ -259,6 +260,32 @@ export function envValue(op: string, env: ResolvedEnv): bigint {
     default:
       throw new EvsInternalError('INTERNAL', `interpret: unknown env op '${op}'`);
   }
+}
+
+/**
+ * How many array elements {@link zeroValue} materializes for `type`: `N · (1 + slots(T))` for a
+ * fixed-size `T[N]`, the members' sum for a plain tuple, `0` for everything else (a dynamic
+ * array zeroes to an empty one). The interpreter charges this to its step budget BEFORE it
+ * allocates, so a zero of `uint256[1e8][1e8]` fails as `COMPILE_LIMIT` instead of exhausting the
+ * host heap. A bigint: four nested `[2^32 − 1]` levels overflow a JS number.
+ */
+export function zeroFillSlots(type: EvsType): bigint {
+  // Peel the suffix chain in a loop, outermost first (`T[a][b]` → `b + b·a + b·a·slots(T)`),
+  // recursing only into tuple members, so a long chain costs no host stack (deserialized IR is
+  // not depth-gated). `coeff` counts the values of the current inner type; `total` the array
+  // elements counted so far. A dynamic suffix ends the walk: that array zeroes to an empty one.
+  let total = 0n;
+  let coeff = 1n;
+  let tag: string = typeof type === 'string' ? type : type.type;
+  for (let peeled = peelArraySuffix(tag); peeled !== null; peeled = peelArraySuffix(tag)) {
+    if (peeled.length === null) return total;
+    coeff *= BigInt(peeled.length);
+    total += coeff;
+    tag = peeled.inner;
+  }
+  if (typeof type === 'string') return total; // a word, `string` or `bytes` leaf: no elements
+  const members = type.components.reduce((n, c) => n + zeroFillSlots(abiParamToType(c)), 0n);
+  return total + coeff * members;
 }
 
 export function zeroValue(type: EvsType): Value {
