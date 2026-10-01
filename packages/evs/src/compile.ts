@@ -304,7 +304,8 @@ function eip170Message(
     return min;
   };
 
-  // program order: prologue+dispatcher · @main(arg decode + body + return encode) ·
+  // program order: receive+prologue+dispatcher (pc 0 up to @main, reported as "dispatcher") ·
+  // @main(arg decode + body + return encode) ·
   // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
   // tails · INVALID guard + data segments
   const mainPc = minPcWhere((n) => n === 'main') ?? 0;

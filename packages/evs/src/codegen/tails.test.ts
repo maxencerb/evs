@@ -288,7 +288,7 @@ describe('tail elision (issue #73)', () => {
     );
     expect(decode.kind).toBe('evs-decode');
     // and a bad-calldata call still hits the (referenced) @badcd tail
-    const bad = await execRuntime(art.runtimeBytecode, '0x');
+    const bad = await execRuntime(art.runtimeBytecode, '0x01');
     expect(bad.data).toBe(selectorOf('EvsInvalidCalldata', []));
   });
 

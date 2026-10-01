@@ -721,65 +721,71 @@ describe('dispatcher', () => {
   test('golden: full annotated listing of echo(uint256)', () => {
     const { runtime, sourceMap } = compileIr(echoIr());
     expect(disassemble(runtime, sourceMap).format()).toMatchInlineSnapshot(`
-      "0x0000  60a0        PUSH1 0xa0  ; frameEnd
-      0x0002  6040        PUSH1 0x40
-      0x0004  52          MSTORE  ; free-ptr init
-      0x0005  6004        PUSH1 0x04
-      0x0007  36          CALLDATASIZE
-      0x0008  10          LT
-      0x0009  610048      PUSH2 0x0048 → @badcd
-      0x000c  57          JUMPI
-      0x000d  5f          PUSH0
-      0x000e  35          CALLDATALOAD
-      0x000f  60e0        PUSH1 0xe0
-      0x0011  1c          SHR
-      0x0012  636279e43c  PUSH4 0x6279e43c  ; selector echo(uint256)
-      0x0017  14          EQ
-      0x0018  610020      PUSH2 0x0020 → @main
-      0x001b  57          JUMPI
-      0x001c  610048      PUSH2 0x0048 → @badcd
-      0x001f  56          JUMP
+      "0x0000  36          CALLDATASIZE
+      0x0001  610006      PUSH2 0x0006 → @dispatch
+      0x0004  57          JUMPI
+      0x0005  00          STOP  ; empty calldata: receive
+      @dispatch:
+      0x0006  5b          JUMPDEST  ; @dispatch
+      0x0007  60a0        PUSH1 0xa0  ; frameEnd
+      0x0009  6040        PUSH1 0x40
+      0x000b  52          MSTORE  ; free-ptr init
+      0x000c  6004        PUSH1 0x04
+      0x000e  36          CALLDATASIZE
+      0x000f  10          LT
+      0x0010  61004f      PUSH2 0x004f → @badcd
+      0x0013  57          JUMPI
+      0x0014  5f          PUSH0
+      0x0015  35          CALLDATALOAD
+      0x0016  60e0        PUSH1 0xe0
+      0x0018  1c          SHR
+      0x0019  636279e43c  PUSH4 0x6279e43c  ; selector echo(uint256)
+      0x001e  14          EQ
+      0x001f  610027      PUSH2 0x0027 → @main
+      0x0022  57          JUMPI
+      0x0023  61004f      PUSH2 0x004f → @badcd
+      0x0026  56          JUMP
       @main:
-      0x0020  5b          JUMPDEST  ; @main
-      0x0021  6024        PUSH1 0x24  ; calldata floor 36
-      0x0023  36          CALLDATASIZE
-      0x0024  10          LT
-      0x0025  610048      PUSH2 0x0048 → @badcd
-      0x0028  57          JUMPI
-      0x0029  6004        PUSH1 0x04  ; arg #0 head
-      0x002b  35          CALLDATALOAD
-      0x002c  6080        PUSH1 0x80
-      0x002e  52          MSTORE
-      0x002f  6040        PUSH1 0x40
-      0x0031  51          MLOAD  ; return buffer
-      0x0032  6020        PUSH1 0x20 → @main
-      0x0034  01          ADD
-      0x0035  5f          PUSH0
-      0x0036  52          MSTORE
-      0x0037  6080        PUSH1 0x80
-      0x0039  51          MLOAD
-      0x003a  6040        PUSH1 0x40
-      0x003c  51          MLOAD
-      0x003d  52          MSTORE  ; head x
-      0x003e  5f          PUSH0
-      0x003f  51          MLOAD
-      0x0040  6040        PUSH1 0x40
-      0x0042  51          MLOAD
-      0x0043  80          DUP1
-      0x0044  91          SWAP2
-      0x0045  03          SUB
-      0x0046  90          SWAP1
-      0x0047  f3          RETURN  ; return tuple
+      0x0027  5b          JUMPDEST  ; @main
+      0x0028  6024        PUSH1 0x24  ; calldata floor 36
+      0x002a  36          CALLDATASIZE
+      0x002b  10          LT
+      0x002c  61004f      PUSH2 0x004f → @badcd
+      0x002f  57          JUMPI
+      0x0030  6004        PUSH1 0x04  ; arg #0 head
+      0x0032  35          CALLDATALOAD
+      0x0033  6080        PUSH1 0x80
+      0x0035  52          MSTORE
+      0x0036  6040        PUSH1 0x40
+      0x0038  51          MLOAD  ; return buffer
+      0x0039  6020        PUSH1 0x20
+      0x003b  01          ADD
+      0x003c  5f          PUSH0
+      0x003d  52          MSTORE
+      0x003e  6080        PUSH1 0x80
+      0x0040  51          MLOAD
+      0x0041  6040        PUSH1 0x40
+      0x0043  51          MLOAD
+      0x0044  52          MSTORE  ; head x
+      0x0045  5f          PUSH0
+      0x0046  51          MLOAD
+      0x0047  6040        PUSH1 0x40
+      0x0049  51          MLOAD
+      0x004a  80          DUP1
+      0x004b  91          SWAP2
+      0x004c  03          SUB
+      0x004d  90          SWAP1
+      0x004e  f3          RETURN  ; return tuple
       @badcd:
-      0x0048  5b          JUMPDEST  ; @badcd
-      0x0049  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
-      0x004e  60e0        PUSH1 0xe0
-      0x0050  1b          SHL
-      0x0051  5f          PUSH0
-      0x0052  52          MSTORE
-      0x0053  6004        PUSH1 0x04
-      0x0055  5f          PUSH0
-      0x0056  fd          REVERT  ; EvsInvalidCalldata()"
+      0x004f  5b          JUMPDEST  ; @badcd
+      0x0050  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
+      0x0055  60e0        PUSH1 0xe0
+      0x0057  1b          SHL
+      0x0058  5f          PUSH0
+      0x0059  52          MSTORE
+      0x005a  6004        PUSH1 0x04
+      0x005c  5f          PUSH0
+      0x005d  fd          REVERT  ; EvsInvalidCalldata()"
     `);
   });
 
@@ -789,11 +795,29 @@ describe('dispatcher', () => {
     expect(res.data).toBe(tupleHex([{ name: 'x', type: 'uint256' }], { x: 123n }));
   });
 
-  test('calldata shorter than 4 bytes → EvsInvalidCalldata()', async () => {
+  test('empty calldata → STOP: succeeds with no output, far under the 2,300-gas stipend', async () => {
+    // a target paying ETH back to the script (WETH9's `msg.sender.transfer`) makes exactly this
+    // bare call, with only the transfer stipend to spend: CALLDATASIZE PUSH2 JUMPI STOP = 15 gas
     const { runtime } = compileIr(echoIr());
-    const res = await execRuntime(runtime, '0x95d8');
-    expect(res.success).toBe(false);
-    expect(res.data).toBe(INVALID_CALLDATA);
+    const res = await execRuntime(runtime, '0x');
+    expect(res.success).toBe(true);
+    expect(res.data).toBe('0x');
+    expect(res.gasUsed).toBe(15n);
+  });
+
+  test('calldata of 1–3 bytes → EvsInvalidCalldata()', async () => {
+    const { runtime } = compileIr(echoIr());
+    const results = await Promise.all(
+      (['0x00', '0x95d8', '0x6279e4'] as const).map(async (calldata) => {
+        const { success, data } = await execRuntime(runtime, calldata);
+        return { calldata, success, data };
+      }),
+    );
+    expect(results).toStrictEqual([
+      { calldata: '0x00', success: false, data: INVALID_CALLDATA },
+      { calldata: '0x95d8', success: false, data: INVALID_CALLDATA },
+      { calldata: '0x6279e4', success: false, data: INVALID_CALLDATA },
+    ]);
   });
 
   test('wrong selector → EvsInvalidCalldata()', async () => {
@@ -1225,7 +1249,8 @@ describe('LowerResult metadata', () => {
   test('frameEnd in the result matches the prologue immediate', () => {
     const ir = echoIr();
     const { frameEnd, nodes } = lowerProgram(ir, { evmVersion: 'cancun' });
-    expect(nodes[0]).toMatchObject({ k: 'push', value: BigInt(frameEnd) });
+    // the prologue is the first push, right after the receive region
+    expect(nodes.find((n) => n.k === 'push')).toMatchObject({ k: 'push', value: BigInt(frameEnd) });
   });
 });
 

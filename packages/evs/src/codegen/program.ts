@@ -4,6 +4,7 @@
  *
  * Program layout:
  *
+ *   receive     cds == 0 → STOP (accept ETH and bare calls); else → @dispatch
  *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE
  *   dispatch    cds < 4 → @badcd; selector mismatch → @badcd; else → @main
  *   @main       arg decode · body statement templates · return encode RETURN
@@ -96,6 +97,20 @@ export function lowerProgram(
     dataSeg,
   };
   const state = lowerInternals(ctx);
+
+  // -- receive: empty calldata succeeds with no output, whatever the value ------------------
+  // A script has no function a bare call could mean, but a target paying ETH back to its caller
+  // (WETH.withdraw's `msg.sender.transfer`, a DEX swap to native ETH) makes exactly that call into
+  // the script, and in sender mode the script replaces the sender's empty code — so rejecting it
+  // breaks calls that succeed from the plain account. This region runs before the prologue and
+  // costs 15 gas on the empty path, well under the 2,300 stipend of `transfer`/`send`; 1–3 bytes
+  // of calldata still fall through to the size floor below and revert EvsInvalidCalldata().
+  const dispatch = w.newLabel('dispatch');
+  w.op('CALLDATASIZE');
+  w.pushLabel(dispatch);
+  w.op('JUMPI');
+  w.op('STOP', { note: 'empty calldata: receive' });
+  w.label(dispatch, 0);
 
   // -- prologue: free-pointer init --------------------------------
   w.push(frame.frameEnd, { note: 'frameEnd' });

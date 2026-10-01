@@ -491,6 +491,12 @@ non-static frame**, so it accepts `nonpayable`/`payable` functions that cannot r
 later `s.read` in the same script (it is the same `eth_call` frame). The `eth_call` result itself
 is still never committed on-chain.
 
+A script also **receives ETH**: a bare call into it (empty calldata, any value) succeeds with no
+output for 15 gas, inside the 2,300-gas stipend of Solidity's `transfer`/`send`. So a target that pays
+its caller — `WETH.withdraw`, a swap out to native ETH — works under `s.call` and `s.simulate` in
+every execution mode, [sender mode](/guides/execution/#sender-mode) included. Calldata of 1–3 bytes
+still reverts `EvsInvalidCalldata()`.
+
 The flagship case is a **Uniswap quoter**. Quoter functions are `nonpayable` (not `view`), so they
 cannot run under `STATICCALL` — which is exactly why `s.call` exists. A QuoterV2-style function
 returns its quote normally:

@@ -431,6 +431,16 @@ describe('EIP-170 enforcement', () => {
     // the 25,056-byte data segment (+ INVALID guard) dominates the breakdown
     expect(err.message).toMatch(/data segments 25\d{3}/);
     expect(err.message).not.toMatch(/trampoline/); // no s.simulate → no trampoline bucket
+    // the buckets tile the whole runtime: "dispatcher" starts at pc 0, so it covers the receive
+    // check and the prologue as well as the selector dispatch
+    const size = (label: string): number =>
+      Number(new RegExp(`${label} (\\d+)`).exec(err.message)?.[1] ?? Number.NaN);
+    const total = Number(/is (\d+) bytes/.exec(err.message)?.[1] ?? Number.NaN);
+    const dispatcher = size('dispatcher');
+    const buckets = ['body', 'fns', 'tails', 'data segments'].map(size);
+    expect(dispatcher + buckets.reduce((a, b) => a + b, 0)).toBe(total);
+    // receive (7 bytes: CALLDATASIZE PUSH2 @dispatch JUMPI STOP JUMPDEST) precedes the prologue
+    expect(dispatcher).toBeGreaterThan(7);
   });
 
   test('the simulate trampoline gets its own bucket (not counted as body/fns)', () => {
@@ -709,21 +719,34 @@ describe('explainRevert', () => {
   test('evs-invalid-calldata: hedged only for scripts with sub-calls', async () => {
     // sumScript performs no sub-calls — the attribution is authoritative, no hedge
     const pure = compile(sumScript());
-    const resPure = await execRuntime(pure.runtimeBytecode, '0x');
+    const resPure = await execRuntime(pure.runtimeBytecode, '0x01');
     const explainedPure = pure.explainRevert(resPure.data);
     expect(explainedPure.kind).toBe('evs-invalid-calldata');
     expect(explainedPure.message).not.toMatch(/callee may have reverted/);
     // symbolScript sub-calls — a callee could bubble EvsInvalidCalldata() verbatim
     const withCalls = compile(symbolScript());
-    const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x');
+    const resCalls = await execRuntime(withCalls.runtimeBytecode, '0x01');
     const explainedCalls = withCalls.explainRevert(resCalls.data);
     expect(explainedCalls.kind).toBe('evs-invalid-calldata');
     expect(explainedCalls.message).toMatch(/callee may have reverted with this evs selector/);
   });
 
+  test('empty calldata is the receive path: success with no output, nothing to explain', async () => {
+    const results = await Promise.all(
+      [sumScript(), symbolScript()].map((script) =>
+        execRuntime(compile(script).runtimeBytecode, '0x'),
+      ),
+    );
+    for (const res of results) {
+      expect(res.success).toBe(true);
+      expect(res.data).toBe('0x');
+    }
+  });
+
   test('evs-invalid-calldata: short calldata end to end', async () => {
     const compiled = compile(sumScript());
-    const res = await execRuntime(compiled.runtimeBytecode, '0x');
+    // 1–3 bytes (no full selector) revert; empty calldata is the receive path, not an error
+    const res = await execRuntime(compiled.runtimeBytecode, '0x01');
     expect(res.success).toBe(false);
     const explained = compiled.explainRevert(res.data);
     expect(explained.kind).toBe('evs-invalid-calldata');

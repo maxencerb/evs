@@ -80,8 +80,8 @@ describe('execution-path mechanics', () => {
 
   test('canary: raw RUNTIME bytecode as `code` fails with a USELESS empty revert (the footgun)', async () => {
     // viem's deployless wrapper CREATE2-executes `code` as initcode. evs runtime bytecode
-    // run as initcode hits the dispatcher with EMPTY calldata and reverts, so create2
-    // yields the zero address and the wrapper reverts with NO data — the caller gets a
+    // run as initcode sees EMPTY calldata and takes the receive path (STOP), so create2
+    // deploys EMPTY code and the wrapper's extcodesize check reverts with NO data — the caller gets a
     // generic "execution reverted" with zero diagnostic content. (The historical viem
     // behavior was silent empty data; either way the
     // misuse is undebuggable, which is why toViem() always hands out initBytecode.)

@@ -160,7 +160,8 @@ Sender mode **replaces the code at `sender`** for the duration of the `eth_call`
 the normal case (its balance and nonce stay in place, so the targets' view of it is otherwise
 intact). A *contract* sender — a Safe, a vault — loses its own code for the call: targets that call
 back into `msg.sender` (an `onERC721Received` hook, an EIP-1271 signature check) will hit the script
-instead and revert.
+instead and revert. A plain ETH payment to the sender (`WETH.withdraw`) still succeeds: the script
+accepts empty calldata.
 :::
 
 ## Choosing a mode

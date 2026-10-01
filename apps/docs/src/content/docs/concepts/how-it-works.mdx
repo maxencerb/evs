@@ -105,7 +105,8 @@ iteration, and the pass removes it — no builder special case.
 Lowering assigns the frame layout (one 32-byte memory slot per argument, cell, value, and
 function parameter/result — see the memory model below), then emits, as one node stream:
 
-- the **dispatcher**: free-pointer prologue, a single 4-byte selector compare (a script is a
+- the **dispatcher**: a receive check (empty calldata stops successfully, so a target can pay ETH
+  back to the script), the free-pointer prologue, a single 4-byte selector compare (a script is a
   one-function contract), and the calldata-size guard;
 - the **argument decoder**: each script arg is read from calldata, bounds-checked (dynamic
   args get full offset/length validation), normalized to its canonical word form, and stored
