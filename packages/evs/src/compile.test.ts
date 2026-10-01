@@ -851,7 +851,7 @@ describe('compile — IR validation wiring', () => {
   });
 
   test('a tuplenew typed as a tuple ARRAY is rejected (the bytecode read member 0 as a length)', () => {
-    const word = (n: bigint): Hex => `0x${n.toString(16).padStart(64, '0')}`;
+    const wordHex = (n: bigint): Hex => `0x${n.toString(16).padStart(64, '0')}`;
     const ta = { type: 'tuple[]', components: [{ name: 'a', type: 'uint256' }] };
     const ir = deserializeIr(
       JSON.stringify({
@@ -867,7 +867,7 @@ describe('compile — IR validation wiring', () => {
             k: 'const',
             out: 0,
             type: 'uint256',
-            data: { kind: 'word', hex: word(1000n) },
+            data: { kind: 'word', hex: wordHex(1000n) },
           },
           { site: 1, k: 'tuplenew', inits: [{ index: 0, value: 0 }], out: 1 },
           { site: 2, k: 'len', a: 1, out: 2 },
