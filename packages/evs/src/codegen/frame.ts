@@ -145,15 +145,19 @@ interface Region {
   loop: boolean; // `while` (header + body re-execute) vs `if` (branches are exclusive)
   start: number; // the position of the `while` / `if` statement itself
   end: number; // the last position inside its child blocks
+  parent: number; // index of the enclosing region in `Linearized.regions`, −1 at top level
 }
 
 /** Inclusive live range over linearized positions. */
 interface LiveRange {
   start: number;
   end: number;
-  /** `end` was pushed to a region boundary (not a real last read): the statement at `end`
-   *  may not hand this slot to a value it defines — the occupant is still read afterwards
-   *  (next iteration) or the boundary is merely conservative. */
+  /** `end` may not be a real last read: the statement at `end` may not hand this slot to a
+   *  value it defines — the occupant is still read afterwards (next iteration) or the boundary
+   *  is merely conservative. Set when the range was pushed to a region boundary, and also when
+   *  it merely spans a whole `if` / `while` (one starting strictly inside the range) even though
+   *  its last read is real there: that costs at most the one end-of-range handoff and is kept
+   *  so `optimize: true` layouts (and bytes) stay what they were. */
   widened: boolean;
 }
 
@@ -162,40 +166,62 @@ interface Linearized {
   defs: { pos: number; value: ValueId }[];
   /** Reads: `[position, ValueId]` (a `while` cond is read at its own position after the header). */
   reads: { pos: number; value: ValueId }[];
+  /** Every `if` / `while`, in pre-order — so a parent precedes its children and `start`s ascend. */
   regions: Region[];
+  /** `innermost[p]`: index of the innermost region containing position `p` (−1: none). */
+  innermost: number[];
   /** One past the last position — where the body's epilogue reads land. */
   count: number;
 }
 
 function linearize(stmts: readonly Stmt[]): Linearized {
-  const out: Linearized = { defs: [], reads: [], regions: [], count: 0 };
-  const visit = (block: readonly Stmt[]): void => {
+  const out: Linearized = { defs: [], reads: [], regions: [], innermost: [], count: 0 };
+  const position = (region: number): number => {
+    out.innermost.push(region);
+    return out.count++;
+  };
+  const visit = (block: readonly Stmt[], parent: number): void => {
     for (const s of block) {
-      const pos = out.count++;
+      const pos = position(parent);
       for (const v of insOf(s)) out.reads.push({ pos, value: v });
       for (const v of stmtDefs(s)) out.defs.push({ pos, value: v });
+      if (s.k !== 'if' && s.k !== 'while') continue;
+      // the statement itself is the region's first position
+      const id = out.regions.length;
+      const region: Region = { loop: s.k === 'while', start: pos, end: pos, parent };
+      out.regions.push(region);
+      out.innermost[pos] = id;
       if (s.k === 'if') {
-        visit(s.then);
-        visit(s.else);
-        out.regions.push({ loop: false, start: pos, end: out.count - 1 });
-      } else if (s.k === 'while') {
-        visit(s.header);
+        visit(s.then, id);
+        visit(s.else, id);
+      } else {
+        visit(s.header, id);
         // the cond is read after the header, before the body — on every iteration. It takes a
         // position of its own (no statement lives there) so a header value defined after the
         // cond cannot take the cond's slot before the check reads it.
-        out.reads.push({ pos: out.count++, value: s.cond });
-        visit(s.body);
-        out.regions.push({ loop: true, start: pos, end: out.count - 1 });
+        out.reads.push({ pos: position(id), value: s.cond });
+        visit(s.body, id);
       }
+      region.end = out.count - 1;
     }
   };
-  visit(stmts);
+  visit(stmts, -1);
   return out;
 }
 
 /**
  * Live ranges of the values `pool` contains (others — args, params, cells, folded consts —
  * are ignored). `epilogueReads` are read at position `count` (after the last statement).
+ *
+ * Regions are nested or disjoint, so the only ones a range `[start, end]` can cross are the
+ * enclosing regions of `start` that do not hold `end` and those of `end` that do not hold
+ * `start`: `widen` walks those two ancestor chains (parent links from `innermost`), O(depth)
+ * per value instead of a scan of every region. One walk of each suffices: growing `start` to
+ * a crossed loop's start leaves the rest of that chain as it was (the loop's ancestors), and
+ * growing `end` to a crossed region's end stays inside every region of the `start` chain that
+ * held the old `end`, reaching only that region's ancestors — still ahead on the `end` chain —
+ * and its own descendants, which lie inside the range by then. The result is the one a scan
+ * of every region, innermost first, gives (`frame.test.ts` holds the two side by side).
  */
 function liveRanges(
   lin: Linearized,
@@ -226,15 +252,70 @@ function liveRanges(
   for (const rd of lin.reads) read(rd.value, rd.pos);
   for (const v of epilogueReads) read(v, lin.count);
 
-  // innermost regions first: a region's children start strictly after it does, and widening to
-  // a region's bounds can only newly cross its ancestors — which are processed later.
-  const regions = lin.regions.toSorted((x, y) => y.start - x.start);
+  const { regions } = lin;
+  const regionAt = (i: number): Region => {
+    const g = regions[i];
+    if (g === undefined) throw internal(`region ${i} out of range`);
+    return g;
+  };
+  /** Ancestor chain of position `pos`, innermost first (empty at top level / the epilogue). */
+  function* enclosing(pos: number): Generator<Region> {
+    for (let i = lin.innermost[pos] ?? -1; i >= 0;) {
+      const g = regionAt(i);
+      yield g;
+      i = g.parent;
+    }
+  }
+  /** True when some region starts strictly inside `(lo, hi)` (binary search: starts ascend). */
+  const regionStartsWithin = (lo: number, hi: number): boolean => {
+    let a = 0;
+    let b = regions.length;
+    while (a < b) {
+      const m = (a + b) >> 1;
+      if (regionAt(m).start <= lo) a = m + 1;
+      else b = m;
+    }
+    return a < regions.length && regionAt(a).start < hi;
+  };
+
+  const widen = (r: LiveRange): void => {
+    // regions holding `start` but not `end` — defined inside, read after (`if`s cannot be
+    // crossed that way: validateIr rejects it, and the linear range already spans the other
+    // branch if it ever did)
+    for (const g of enclosing(r.start)) {
+      if (g.end >= r.end) break; // holds the whole range — and so does every ancestor
+      if (!g.loop) continue;
+      // crosses a loop boundary: live for every iteration ⇒ the whole loop
+      r.start = Math.min(r.start, g.start);
+      r.widened = true;
+    }
+    // regions holding `end` but not `start` — defined before, read inside
+    for (const g of enclosing(r.end)) {
+      if (g.start <= r.start) break; // holds the whole range — and so does every ancestor
+      // a loop: the whole loop, as above. An `if`: last read inside one branch (a read AT
+      // `g.start` is only the `if` cond, consumed before either branch) ⇒ live through the
+      // whole `if`. Widening only, never clipping.
+      if (!g.loop && g.start === r.end) continue;
+      r.end = Math.max(r.end, g.end);
+      r.widened = true;
+    }
+    // a region lying strictly inside the range (see `LiveRange.widened`)
+    if (regionStartsWithin(r.start, r.end)) r.widened = true;
+  };
+
   for (const [v, r] of ranges) {
     if (wraps.has(v)) {
       // a read before the definition in linear order can only be a loop back-edge (validateIr
-      // enforces def-before-use under the scope rule): the value must survive the whole loop.
+      // enforces def-before-use under the scope rule): the value must survive the whole loop —
+      // the innermost one holding both the earliest read and the definition.
       const def = defAt.get(v) ?? r.start;
-      const loop = regions.find((g) => g.loop && g.start <= r.start && def <= g.end);
+      let loop: Region | undefined;
+      for (const g of enclosing(r.start)) {
+        if (g.loop && def <= g.end) {
+          loop = g;
+          break;
+        }
+      }
       if (loop === undefined) {
         throw internal(`ValueId ${v} is read before its definition outside any loop`);
       }
@@ -242,27 +323,66 @@ function liveRanges(
       r.end = Math.max(r.end, loop.end);
       r.widened = true;
     }
-    for (const g of regions) {
-      const intersects = r.start <= g.end && r.end >= g.start;
-      const contained = r.start >= g.start && r.end <= g.end;
-      if (!intersects || contained) continue;
-      if (g.loop) {
-        // crosses a loop boundary: live for every iteration ⇒ the whole loop
-        r.start = Math.min(r.start, g.start);
-        r.end = Math.max(r.end, g.end);
-        r.widened = true;
-      } else if (r.start < g.start && r.end > g.start) {
-        // defined before the `if`, last read inside one branch (a read AT `g.start` is only the
-        // `if` cond, consumed before either branch): live through the whole `if`. A range
-        // already reaching past the `if` is untouched — widening only, never clipping.
-        r.end = Math.max(r.end, g.end);
-        r.widened = true;
-      }
-      // (defined inside an `if` and read after it cannot pass validateIr; the linear range
-      // already spans the other branch if it ever did)
-    }
+    widen(r);
   }
   return ranges;
+}
+
+/** Binary min-heap of slot ordinals, ordered by `key(ordinal)`. */
+class OrdinalHeap {
+  private readonly items: number[] = [];
+  private readonly key: (ordinal: number) => number;
+
+  constructor(key: (ordinal: number) => number) {
+    this.key = key;
+  }
+
+  /** The ordinal with the smallest key, if any. */
+  peek(): number | undefined {
+    return this.items[0];
+  }
+
+  push(ordinal: number): void {
+    const a = this.items;
+    let i = a.length;
+    a.push(ordinal);
+    while (i > 0) {
+      const p = (i - 1) >> 1;
+      if (this.keyAt(p) <= this.key(ordinal)) break;
+      a[i] = this.at(p);
+      i = p;
+    }
+    a[i] = ordinal;
+  }
+
+  pop(): number | undefined {
+    const a = this.items;
+    const top = a[0];
+    const last = a.pop();
+    if (last === undefined || a.length === 0) return top;
+    let i = 0;
+    for (;;) {
+      const l = 2 * i + 1;
+      const r = l + 1;
+      let m = l < a.length && this.keyAt(l) < this.key(last) ? l : -1;
+      if (r < a.length && this.keyAt(r) < (m < 0 ? this.key(last) : this.keyAt(m))) m = r;
+      if (m < 0) break;
+      a[i] = this.at(m);
+      i = m;
+    }
+    a[i] = last;
+    return top;
+  }
+
+  private at(i: number): number {
+    const x = this.items[i];
+    if (x === undefined) throw internal(`OrdinalHeap: index ${i} out of range`);
+    return x;
+  }
+
+  private keyAt(i: number): number {
+    return this.key(this.at(i));
+  }
 }
 
 /**
@@ -271,6 +391,9 @@ function liveRanges(
  * position when that end is the occupant's real last read and it was defined earlier (a
  * statement reads all operands before it stores its outputs — two values defined by the same
  * statement never share, and a widened range keeps its slot through its boundary statement).
+ * Occupied slots wait in a heap keyed by their release position — the first start they may be
+ * reused at: `end`, or `end + 1` when there is no same-position handoff — and freed ones in a
+ * heap of ordinals, so the scan is O(V log V).
  * Returns slot ORDINALS (0-based, relative to the pool base) and the pool's size.
  */
 function linearScan(ranges: ReadonlyMap<ValueId, LiveRange>): {
@@ -281,22 +404,30 @@ function linearScan(ranges: ReadonlyMap<ValueId, LiveRange>): {
     ([va, ra], [vb, rb]) => ra.start - rb.start || va - vb,
   );
   const ordinals = new Map<ValueId, number>();
-  const active: { start: number; end: number; widened: boolean; ordinal: number }[] = [];
-  const free: number[] = []; // kept sorted ascending
+  const releaseOf: number[] = []; // per ordinal, set before the ordinal enters `occupied`
+  /** Release position of an occupied ordinal. A missing entry is a broken invariant: a silent
+   *  default would free a slot that is still live, so it throws instead. */
+  const releaseAt = (o: number): number => {
+    const release = releaseOf[o];
+    if (release === undefined) throw internal(`linearScan: slot ordinal ${o} has no release`);
+    return release;
+  };
+  const occupied = new OrdinalHeap(releaseAt);
+  const free = new OrdinalHeap((o) => o);
   let size = 0;
   for (const [v, r] of order) {
-    for (let i = active.length - 1; i >= 0; i--) {
-      const a = active[i];
-      if (a === undefined) continue;
-      if (a.end < r.start || (a.end === r.start && a.start < r.start && !a.widened)) {
-        active.splice(i, 1);
-        free.push(a.ordinal);
-      }
+    for (let o = occupied.peek(); o !== undefined && releaseAt(o) <= r.start;) {
+      occupied.pop();
+      free.push(o);
+      o = occupied.peek();
     }
-    free.sort((x, y) => x - y);
-    const ordinal = free.length > 0 ? (free.shift() ?? size++) : size++;
+    const ordinal = free.pop() ?? size++;
     ordinals.set(v, ordinal);
-    active.push({ start: r.start, end: r.end, widened: r.widened, ordinal });
+    // ranges arrive in start order, so "defined earlier" than a value starting at `end` is
+    // `start < end`
+    const handsOffAtEnd = !r.widened && r.start < r.end;
+    releaseOf[ordinal] = handsOffAtEnd ? r.end : r.end + 1;
+    occupied.push(ordinal);
   }
   return { ordinals, size };
 }

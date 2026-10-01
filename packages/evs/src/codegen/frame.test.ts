@@ -9,13 +9,23 @@
  * Liveness layout (`optimize: true`, issue #41): disjoint ranges share a slot, args / cells /
  * fn params never do, a value crossing a loop boundary keeps its slot for the whole loop, a
  * value read in one `if` branch stays live through the whole `if`, a `while` cond keeps its
- * slot until the check, fn pools never overlap the main pool, and `frameEnd` shrinks.
+ * slot until the check, fn pools never overlap the main pool, and `frameEnd` shrinks. Nested
+ * regions widen in cascade, a range spanning a whole `if` / `while` gives up its end-of-range
+ * handoff, and a seeded differential holds the allocator slot for slot to a naive reference
+ * model of the same rules.
  */
 
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
-import type { ScriptIr, Stmt, ValueId } from '../ir/nodes.js';
+import {
+  stmtDefs,
+  stmtReads,
+  type ScriptIr,
+  type Stmt,
+  type ValueId,
+  type ValueInfo,
+} from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { fnReturnAddressSlot, layoutFrames } from './frame.js';
 
@@ -697,5 +707,541 @@ describe('layoutFrames — liveness allocator (optimize: true, issue #41)', () =
       expect(again.slotOfValue(v)).toBe(frame.slotOfValue(v));
     }
     expect(again.frameEnd).toBe(frame.frameEnd);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// liveness allocator — nested regions, spanned regions (the `widened` flag)
+// ---------------------------------------------------------------------------
+
+/**
+ * `v1` is defined before an `if` (or a `while`, or nothing) placed between it and its real last
+ * read `v4 = v1 + v1`. `between` builds the statement(s) between; values 2… are theirs.
+ */
+function spanIr(between: 'nothing' | 'if' | 'while'): ScriptIr {
+  const values: ValueInfo[] = [
+    { type: 'uint256' }, // 0: arg n
+    { type: 'uint256' }, // 1: v1 = env (spans `between`)
+    { type: 'uint256' }, // 2: v4 = v1 + v1 (returned)
+  ];
+  const fresh = (type: 'uint256' | 'bool'): ValueId => values.push({ type }) - 1;
+  const body: Stmt[] = [
+    st({ k: 'cellnew', cell: 0, init: 0 }),
+    st({ k: 'env', op: 'timestamp', out: 1 }),
+  ];
+  if (between === 'if') {
+    const cond = fresh('bool');
+    body.push(st({ k: 'bin', op: 'lt', a: 0, b: 0, out: cond }));
+    body.push(
+      st({
+        k: 'if',
+        cond,
+        // oxlint-disable-next-line unicorn/no-thenable -- the IR names the if-branch field `then`
+        then: [st({ k: 'env', op: 'chainid', out: fresh('uint256') })],
+        else: [],
+      }),
+    );
+  } else if (between === 'while') {
+    const i = fresh('uint256');
+    const cond = fresh('bool');
+    body.push(
+      st({
+        k: 'while',
+        header: [
+          st({ k: 'cellget', cell: 0, out: i }),
+          st({ k: 'bin', op: 'lt', a: i, b: 0, out: cond }),
+        ],
+        cond,
+        body: [st({ k: 'cellset', cell: 0, value: i })],
+      }),
+    );
+  }
+  body.push(st({ k: 'bin', op: 'add', a: 1, b: 1, out: 2 }));
+  return {
+    irVersion: 1,
+    name: `span-${between}`,
+    args: [{ name: 'n', type: 'uint256' }],
+    values,
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body,
+    returns: [{ name: 'r', type: 'uint256', value: 2 }],
+  };
+}
+
+/**
+ * Cascading widening: `v1` is read in a loop nested in an `if` branch — widened to the loop,
+ * which then crosses into the `if`, so it stays live through the else-branch too.
+ *
+ *   pos 0  cellnew c ← n            pos 6           v4 = v3 < n
+ *   pos 1  env → v1                 pos 7         cond v4
+ *   pos 2  v2 = n < n               pos 8         body: v5 = v3 + v1   (v1's last read)
+ *   pos 3  if v2                    pos 9               cellset c ← v5
+ *   pos 4    then: while            pos 10   else: env → v6
+ *   pos 5            cellget c → v3 pos 11 env → v7 (returned)
+ */
+function cascadeIr(): ScriptIr {
+  return {
+    irVersion: 1,
+    name: 'cascade',
+    args: [{ name: 'n', type: 'uint256' }],
+    values: [
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: v1 = env
+      { type: 'bool' }, // 2: if cond
+      { type: 'uint256' }, // 3: header cellget c
+      { type: 'bool' }, // 4: loop cond
+      { type: 'uint256' }, // 5: v3 + v1
+      { type: 'uint256' }, // 6: else-branch env
+      { type: 'uint256' }, // 7: after the if (returned)
+    ],
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body: [
+      st({ k: 'cellnew', cell: 0, init: 0 }),
+      st({ k: 'env', op: 'timestamp', out: 1 }),
+      st({ k: 'bin', op: 'lt', a: 0, b: 0, out: 2 }),
+      st({
+        k: 'if',
+        cond: 2,
+        // oxlint-disable-next-line unicorn/no-thenable -- the IR names the if-branch field `then`
+        then: [
+          st({
+            k: 'while',
+            header: [
+              st({ k: 'cellget', cell: 0, out: 3 }),
+              st({ k: 'bin', op: 'lt', a: 3, b: 0, out: 4 }),
+            ],
+            cond: 4,
+            body: [
+              st({ k: 'bin', op: 'add', a: 3, b: 1, out: 5 }),
+              st({ k: 'cellset', cell: 0, value: 5 }),
+            ],
+          }),
+        ],
+        else: [st({ k: 'env', op: 'chainid', out: 6 })],
+      }),
+      st({ k: 'env', op: 'blocknumber', out: 7 }),
+    ],
+    returns: [{ name: 'r', type: 'uint256', value: 7 }],
+  };
+}
+
+/**
+ * Nested loops: `v3`, defined in the outer body, is read only inside the inner loop — widened
+ * to the inner loop, NOT to the outer one, so `v7` (after the inner loop) may take its slot.
+ *
+ *   pos 0  cellnew c ← n                 pos 7    header: cellget c → v4
+ *   pos 1  while                         pos 8            v5 = v4 < n
+ *   pos 2    header: cellget c → v1      pos 9    cond v5
+ *   pos 3            v2 = v1 < n         pos 10   body: v6 = v4 + v3
+ *   pos 4    cond v2                     pos 11         cellset c ← v6
+ *   pos 5    body: env → v3              pos 12   env → v7 (unread)
+ *   pos 6          while                 pos 13 cellget c → v8 (returned)
+ */
+function nestedLoopsIr(): ScriptIr {
+  const innerLoop = st({
+    k: 'while',
+    header: [st({ k: 'cellget', cell: 0, out: 4 }), st({ k: 'bin', op: 'lt', a: 4, b: 0, out: 5 })],
+    cond: 5,
+    body: [
+      st({ k: 'bin', op: 'add', a: 4, b: 3, out: 6 }),
+      st({ k: 'cellset', cell: 0, value: 6 }),
+    ],
+  });
+  return {
+    irVersion: 1,
+    name: 'nested',
+    args: [{ name: 'n', type: 'uint256' }],
+    values: [
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: outer header cellget
+      { type: 'bool' }, // 2: outer cond
+      { type: 'uint256' }, // 3: outer body env (read in the inner loop)
+      { type: 'uint256' }, // 4: inner header cellget
+      { type: 'bool' }, // 5: inner cond
+      { type: 'uint256' }, // 6: v4 + v3
+      { type: 'uint256' }, // 7: outer body env after the inner loop
+      { type: 'uint256' }, // 8: cellget after the loops (returned)
+    ],
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body: [
+      st({ k: 'cellnew', cell: 0, init: 0 }),
+      st({
+        k: 'while',
+        header: [
+          st({ k: 'cellget', cell: 0, out: 1 }),
+          st({ k: 'bin', op: 'lt', a: 1, b: 0, out: 2 }),
+        ],
+        cond: 2,
+        body: [
+          st({ k: 'env', op: 'timestamp', out: 3 }),
+          innerLoop,
+          st({ k: 'env', op: 'chainid', out: 7 }),
+        ],
+      }),
+      st({ k: 'cellget', cell: 0, out: 8 }),
+    ],
+    returns: [{ name: 'r', type: 'uint256', value: 8 }],
+  };
+}
+
+describe('layoutFrames — liveness allocator: nested and spanned regions', () => {
+  test('every fixture IR is valid', () => {
+    for (const ir of [
+      spanIr('nothing'),
+      spanIr('if'),
+      spanIr('while'),
+      cascadeIr(),
+      nestedLoopsIr(),
+    ]) {
+      expect(() => validateIr(ir), `fixture ${ir.name}`).not.toThrow();
+    }
+  });
+
+  test('LOCK: a range spanning a whole if / while keeps its slot through its last read', () => {
+    // straight line: v1's last read is the statement defining v4, which takes v1's slot
+    const plain = layoutFrames(spanIr('nothing'), OPT);
+    expect(plain.slotOfValue(2)).toBe(plain.slotOfValue(1));
+    // with a whole `if` / `while` lying strictly inside v1's range, that handoff is given up
+    // although v4's read is real — the conservative `widened` flag, kept so `optimize: true`
+    // layouts do not change (see `LiveRange.widened` in frame.ts)
+    for (const between of ['if', 'while'] as const) {
+      const frame = layoutFrames(spanIr(between), OPT);
+      expect(frame.slotOfValue(2), `between: ${between}`).not.toBe(frame.slotOfValue(1));
+    }
+  });
+
+  test('LOCK: widening cascades — a loop inside an if branch widens to the loop, then the if', () => {
+    const frame = layoutFrames(cascadeIr(), OPT);
+    const v1 = frame.slotOfValue(1);
+    expect(v1).toBe(0xc0); // after arg (0x80) and cell (0xa0)
+    for (const v of [2, 3, 4, 5]) expect(frame.slotOfValue(v), `value ${v}`).not.toBe(v1);
+    expect(frame.slotOfValue(6), 'else-branch value').not.toBe(v1);
+    expect(frame.slotOfValue(7), 'after the if').toBe(v1);
+  });
+
+  test('LOCK: a value read only in an inner loop is widened to that loop, not the outer one', () => {
+    const frame = layoutFrames(nestedLoopsIr(), OPT);
+    const v3 = frame.slotOfValue(3);
+    for (const v of [4, 5, 6]) expect(frame.slotOfValue(v), `inner value ${v}`).not.toBe(v3);
+    expect(frame.slotOfValue(7), 'after the inner loop').toBe(v3);
+  });
+});
+
+/**
+ * A body value read across the back-edge, inside an outer loop — rejected by `validateIr`
+ * (def-before-use), so it reaches `layoutFrames` only as a hand-built IR. `frame.ts` keeps
+ * the branch defensively; this pins which loop it widens to: the innermost one holding both
+ * the earliest read and the definition.
+ *   pos 0  cellnew c ← n               pos 8          v5 = v4 < n
+ *   pos 1  while OUTER                 pos 9      cond v5
+ *   pos 2    header: cellget c → v1    pos 10     body: env → v6  (read at pos 6, next turn)
+ *   pos 3            v2 = v1 < n       pos 11           v7 = v3 + v3
+ *   pos 4    cond v2                   pos 12           cellset c ← v7
+ *   pos 5    body: while INNER         pos 13   env → v8 (unread)
+ *   pos 6      header: v3 = v6 + n     pos 14 cellget c → v9 (returned)
+ *   pos 7              cellget c → v4
+ */
+function backEdgeIr(): ScriptIr {
+  const innerLoop = st({
+    k: 'while',
+    header: [
+      st({ k: 'bin', op: 'add', a: 6, b: 0, out: 3 }),
+      st({ k: 'cellget', cell: 0, out: 4 }),
+      st({ k: 'bin', op: 'lt', a: 4, b: 0, out: 5 }),
+    ],
+    cond: 5,
+    body: [
+      st({ k: 'env', op: 'timestamp', out: 6 }),
+      st({ k: 'bin', op: 'add', a: 3, b: 3, out: 7 }),
+      st({ k: 'cellset', cell: 0, value: 7 }),
+    ],
+  });
+  return {
+    irVersion: 1,
+    name: 'backEdge',
+    args: [{ name: 'n', type: 'uint256' }],
+    values: [
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: outer header cellget
+      { type: 'bool' }, // 2: outer cond
+      { type: 'uint256' }, // 3: inner header v6 + n (reads v6 before its definition)
+      { type: 'uint256' }, // 4: inner header cellget
+      { type: 'bool' }, // 5: inner cond
+      { type: 'uint256' }, // 6: inner body env (read across the back-edge)
+      { type: 'uint256' }, // 7: v3 + v3
+      { type: 'uint256' }, // 8: outer body env after the inner loop
+      { type: 'uint256' }, // 9: cellget after the loops (returned)
+    ],
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body: [
+      st({ k: 'cellnew', cell: 0, init: 0 }),
+      st({
+        k: 'while',
+        header: [
+          st({ k: 'cellget', cell: 0, out: 1 }),
+          st({ k: 'bin', op: 'lt', a: 1, b: 0, out: 2 }),
+        ],
+        cond: 2,
+        body: [innerLoop, st({ k: 'env', op: 'chainid', out: 8 })],
+      }),
+      st({ k: 'cellget', cell: 0, out: 9 }),
+    ],
+    returns: [{ name: 'r', type: 'uint256', value: 9 }],
+  };
+}
+
+describe('layoutFrames — liveness allocator: reads before the definition (defensive)', () => {
+  test('the fixture is one validateIr rejects (def-before-use)', () => {
+    expect(() => validateIr(backEdgeIr())).toThrow(/ValueId 6 is used before it is defined/);
+  });
+
+  test('LOCK: a back-edge read keeps the value live for exactly the innermost loop', () => {
+    const frame = layoutFrames(backEdgeIr(), OPT);
+    const v6 = frame.slotOfValue(6);
+    expect(v6).toBe(0xc0); // after arg (0x80) and cell (0xa0)
+    // never shared inside the inner loop — not even with the header value that reads it
+    for (const v of [3, 4, 5, 7]) expect(frame.slotOfValue(v), `inner value ${v}`).not.toBe(v6);
+    // not widened to the outer loop: the outer header values before the inner loop and the
+    // outer body value after it both take its slot
+    expect(frame.slotOfValue(1), 'outer header, before the inner loop').toBe(v6);
+    expect(frame.slotOfValue(2), 'outer cond, before the inner loop').toBe(v6);
+    expect(frame.slotOfValue(8), 'outer body, after the inner loop').toBe(v6);
+    expect(frame.frameEnd).toBe(0x120); // arg + cell + 3 pool slots
+  });
+
+  test('a read before the definition outside any loop is an internal error', () => {
+    const ir: ScriptIr = {
+      irVersion: 1,
+      name: 'noLoop',
+      args: [{ name: 'n', type: 'uint256' }],
+      values: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }],
+      cells: [],
+      fns: [],
+      body: [
+        st({ k: 'bin', op: 'add', a: 2, b: 0, out: 1 }),
+        st({ k: 'env', op: 'timestamp', out: 2 }),
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 1 }],
+    };
+    expect(() => layoutFrames(ir, OPT)).toThrow(EvsInternalError);
+    expect(() => layoutFrames(ir, OPT)).toThrow(/read before its definition outside any loop/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// liveness allocator — seeded differential against a reference model
+// ---------------------------------------------------------------------------
+
+/*
+ * The reference model is the allocator's first, deliberately naive formulation: every value
+ * checked against every region innermost-first, and a linear scan that rescans its active
+ * list and re-sorts its free list per value (O(V·R) and O(V²)). `frame.ts` walks a region
+ * tree and keeps both lists in heaps; the two must agree slot for slot on random nested IRs.
+ * A deliberate change to the allocation rules changes both.
+ */
+
+interface RefRegion {
+  loop: boolean;
+  start: number;
+  end: number;
+}
+
+interface RefRange {
+  start: number;
+  end: number;
+  widened: boolean;
+}
+
+/** Reference: the pool's slot ordinals (main body only — the fixtures have no fns). */
+function referenceOrdinals(ir: ScriptIr, pool: ReadonlySet<ValueId>): Map<ValueId, number> {
+  const defAt = new Map<ValueId, number>();
+  const reads: { pos: number; value: ValueId }[] = [];
+  const regions: RefRegion[] = [];
+  let count = 0;
+  const visit = (block: readonly Stmt[]): void => {
+    for (const s of block) {
+      const pos = count++;
+      if (s.k !== 'while') for (const v of stmtReads(s)) reads.push({ pos, value: v });
+      for (const v of stmtDefs(s)) if (pool.has(v)) defAt.set(v, pos);
+      if (s.k === 'if') {
+        visit(s.then);
+        visit(s.else);
+        regions.push({ loop: false, start: pos, end: count - 1 });
+      } else if (s.k === 'while') {
+        visit(s.header);
+        reads.push({ pos: count++, value: s.cond });
+        visit(s.body);
+        regions.push({ loop: true, start: pos, end: count - 1 });
+      }
+    }
+  };
+  visit(ir.body);
+  for (const r of ir.returns) reads.push({ pos: count, value: r.value });
+
+  const ranges = new Map<ValueId, RefRange>();
+  for (const [v, pos] of defAt) ranges.set(v, { start: pos, end: pos, widened: false });
+  for (const { pos, value } of reads) {
+    const r = ranges.get(value);
+    if (r === undefined) continue;
+    expect(pos, 'fixtures never read before the definition').toBeGreaterThanOrEqual(r.start);
+    r.end = Math.max(r.end, pos);
+  }
+  regions.sort((x, y) => y.start - x.start);
+  for (const r of ranges.values()) {
+    for (const g of regions) {
+      const intersects = r.start <= g.end && r.end >= g.start;
+      const contained = r.start >= g.start && r.end <= g.end;
+      if (!intersects || contained) continue;
+      if (g.loop) {
+        r.start = Math.min(r.start, g.start);
+        r.end = Math.max(r.end, g.end);
+        r.widened = true;
+      } else if (r.start < g.start && r.end > g.start) {
+        r.end = Math.max(r.end, g.end);
+        r.widened = true;
+      }
+    }
+  }
+
+  const order = [...ranges].toSorted(([va, ra], [vb, rb]) => ra.start - rb.start || va - vb);
+  const ordinals = new Map<ValueId, number>();
+  let active: (RefRange & { ordinal: number })[] = [];
+  const free: number[] = [];
+  let size = 0;
+  for (const [v, r] of order) {
+    const released = (a: RefRange): boolean =>
+      a.end < r.start || (a.end === r.start && a.start < r.start && !a.widened);
+    for (const a of active) if (released(a)) free.push(a.ordinal);
+    active = active.filter((a) => !released(a));
+    free.sort((x, y) => x - y);
+    const ordinal = free.shift() ?? size++;
+    ordinals.set(v, ordinal);
+    active.push({ ...r, ordinal });
+  }
+  return ordinals;
+}
+
+function mulberry32(seed: number): () => number {
+  let a = seed >>> 0;
+  return () => {
+    a = (a + 0x6d2b79f5) | 0;
+    let t = Math.imul(a ^ (a >>> 15), 1 | a);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+function makeGen(seed: number): {
+  int: (max: number) => number;
+  pick: <T>(items: readonly T[]) => T;
+} {
+  const rnd = mulberry32(seed);
+  const int = (max: number): number => Math.floor(rnd() * max);
+  return {
+    int,
+    pick: (items) => {
+      const item = items[int(items.length)];
+      if (item === undefined) throw new Error('pick on empty list');
+      return item;
+    },
+  };
+}
+
+/** A random, valid, nested main body over one arg `n` and one cell (no fns). */
+function randomNestedIr(seed: number): ScriptIr {
+  const g = makeGen(seed);
+  const values: ValueInfo[] = [{ type: 'uint256' }]; // 0: arg n
+  const fresh = (type: 'uint256' | 'bool'): ValueId => values.push({ type }) - 1;
+  interface Scope {
+    words: ValueId[];
+    bools: ValueId[];
+  }
+  const child = (s: Scope): Scope => ({ words: [...s.words], bools: [...s.bools] });
+
+  const block = (scope: Scope, depth: number, len: number): Stmt[] => {
+    const out: Stmt[] = [];
+    for (let i = 0; i < len; i++) {
+      const roll = g.int(depth < 4 ? 10 : 7);
+      if (roll <= 1) {
+        const out1 = fresh('uint256');
+        out.push(st({ k: 'env', op: 'timestamp', out: out1 }));
+        scope.words.push(out1);
+      } else if (roll <= 3) {
+        const out1 = fresh('uint256');
+        out.push(
+          st({ k: 'bin', op: 'add', a: g.pick(scope.words), b: g.pick(scope.words), out: out1 }),
+        );
+        scope.words.push(out1);
+      } else if (roll === 4) {
+        const out1 = fresh('bool');
+        out.push(
+          st({ k: 'bin', op: 'lt', a: g.pick(scope.words), b: g.pick(scope.words), out: out1 }),
+        );
+        scope.bools.push(out1);
+      } else if (roll === 5) {
+        out.push(st({ k: 'cellset', cell: 0, value: g.pick(scope.words) }));
+      } else if (roll === 6) {
+        const out1 = fresh('uint256');
+        out.push(st({ k: 'cellget', cell: 0, out: out1 }));
+        scope.words.push(out1);
+      } else if (roll <= 8 && scope.bools.length > 0) {
+        out.push(
+          st({
+            k: 'if',
+            cond: g.pick(scope.bools),
+            // oxlint-disable-next-line unicorn/no-thenable -- the IR names the if-branch field `then`
+            then: block(child(scope), depth + 1, g.int(4)),
+            else: block(child(scope), depth + 1, g.int(3)),
+          }),
+        );
+      } else {
+        const inner = child(scope);
+        const header = block(inner, depth + 1, g.int(3));
+        const i1 = fresh('uint256');
+        const cond = fresh('bool');
+        header.push(st({ k: 'cellget', cell: 0, out: i1 }));
+        header.push(st({ k: 'bin', op: 'lt', a: i1, b: g.pick(inner.words), out: cond }));
+        inner.words.push(i1);
+        out.push(st({ k: 'while', header, cond, body: block(inner, depth + 1, g.int(5)) }));
+      }
+    }
+    return out;
+  };
+
+  const top: Scope = { words: [0], bools: [] };
+  const body = [st({ k: 'cellnew', cell: 0, init: 0 }), ...block(top, 0, 4 + g.int(8))];
+  const returned = [g.pick(top.words), g.pick(top.words)];
+  return {
+    irVersion: 1,
+    name: `nested-${seed}`,
+    args: [{ name: 'n', type: 'uint256' }],
+    values,
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body,
+    returns: returned.map((value, i) => ({ name: `r${i}`, type: 'uint256', value })),
+  };
+}
+
+describe('layoutFrames — liveness allocator matches the reference model (seeded)', () => {
+  test('slot for slot on 300 random nested IRs', () => {
+    for (let seed = 1; seed <= 300; seed++) {
+      const ir = randomNestedIr(seed);
+      expect(() => validateIr(ir), `seed ${seed}`).not.toThrow();
+      const pool = new Set<ValueId>();
+      for (let v = ir.args.length; v < ir.values.length; v++) pool.add(v);
+      const ordinals = referenceOrdinals(ir, pool);
+      const base = 0x80 + 32 * (ir.args.length + ir.cells.length);
+      const frame = layoutFrames(ir, OPT);
+      for (const [v, ordinal] of ordinals) {
+        expect(frame.slotOfValue(v), `seed ${seed}, ValueId ${v}`).toBe(base + 32 * ordinal);
+      }
+      const size = Math.max(-1, ...ordinals.values()) + 1;
+      expect(frame.frameEnd, `seed ${seed}`).toBe(base + 32 * size);
+    }
   });
 });
