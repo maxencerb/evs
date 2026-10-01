@@ -420,6 +420,51 @@ describe('assemble — hooks and verification wiring', () => {
     expect(hex(peeped.bytecode)).toBe('5f5ff3');
   });
 
+  test('a hook-injected bare PUSH1..PUSH32 op node is rejected at layout, even with verify off', () => {
+    // `[PUSH1] RETURN` would assemble to `60 f3`: the RETURN byte becomes PUSH1's immediate while
+    // the stack verifier still simulates a +1 push followed by a RETURN, so the program it
+    // certifies is not the one the bytes run. The rule is a layout invariant, not a lint.
+    for (const op of ['PUSH1', 'PUSH2', 'PUSH20', 'PUSH32'] as const) {
+      const injectBefore = (nodes: readonly AsmNode[]): AsmNode[] => [
+        ...nodes.slice(0, -1),
+        { k: 'op', op },
+        ...nodes.slice(-1),
+      ];
+      for (const verify of [true, false]) {
+        const run = (): void => {
+          assemble(program(1n), { evmVersion: 'cancun', peephole: injectBefore, verify });
+        };
+        expect(run).toThrow(EvsInternalError);
+        expect(run).toThrow(
+          new RegExp(
+            `op node '${op}' is not allowed — PUSH immediates must be push/pushBytes/pushLabel nodes`,
+          ),
+        );
+      }
+    }
+  });
+
+  test('a bare PUSH0 op node stays legal (no immediate) and is fork-gated by the verifier', () => {
+    const nodes: readonly AsmNode[] = [
+      { k: 'op', op: 'PUSH0' },
+      { k: 'op', op: 'PUSH0' },
+      { k: 'op', op: 'RETURN' },
+    ];
+    expect(hex(assemble(nodes, { evmVersion: 'cancun' }).bytecode)).toBe('5f5ff3');
+    expect(() => assemble(nodes, { evmVersion: 'paris' })).toThrow(EvsInternalError);
+  });
+
+  test('an op node with an unknown mnemonic is rejected as an EvsInternalError', () => {
+    // a JavaScript hook is not held to the `Mnemonic` type
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
+    const nodes = [{ k: 'op', op: 'NOPE' }] as unknown as readonly AsmNode[];
+    const run = (): void => {
+      assemble(nodes, { evmVersion: 'cancun', verify: false });
+    };
+    expect(run).toThrow(EvsInternalError);
+    expect(run).toThrow(/unknown mnemonic 'NOPE'/);
+  });
+
   test('verification is on by default and catches a stack bug', () => {
     const nodes: readonly AsmNode[] = [
       { k: 'op', op: 'POP' }, // underflow at baseline 0

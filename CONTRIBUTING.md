@@ -123,7 +123,9 @@ Releases: see [Releasing](#releasing) below.
   observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
   calls are the roots; a revert that only guarded an unused value is dead work too, like in
   the Solidity optimizer — then codegen lowers each surviving statement through fixed
-  memory-slot templates to an assembly stream, the assembler lays it out, enforces the EIP-170
+  memory-slot templates to an assembly stream, the assembler lays it out (immediates only ever
+  come from `push`/`pushBytes`/`pushLabel` nodes: a bare `PUSH1`–`PUSH32` op node is rejected,
+  also when a `peephole` hook returns one), enforces the EIP-170
   size check (through the `onLayout` hook `compile()` passes, before any fixup is patched, so a
   program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps (`PUSH2`
   fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
