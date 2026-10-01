@@ -344,23 +344,34 @@ describe('call value: s.call / s.simulate send ETH to a payable target', () => {
     expect(out).toStrictEqual({ simulated: amount, afterSim: 0n, paid: amount, afterCall: amount });
   });
 
-  test('an unfunded script: strict s.call reverts empty, strict s.simulate reverts EvsDecodeError', async () => {
-    for (const verb of ['call', 'simulate'] as const) {
-      const pay = evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, v, value) =>
-        s.return({
-          shares: s[verb]({ address: v, abi: MockVault.abi, functionName: 'depositEth', value }),
-        }),
-      );
-      const c = pay.compile();
-      const override = c.toViem({ mode: 'stateOverride' });
-      const raw = await callExpectRevert({
-        to: override.address,
-        stateOverride: override.stateOverride,
-        data: encodeFunctionData({ abi: c.abi, functionName: 'pay', args: [vault, amount] }),
-      });
-      // the CALL fails before the vault runs: nothing to bubble for s.call; for s.simulate the
-      // value-carrying self-call hop fails, which the site reports as a decode failure
-      expect(c.explainRevert(raw).kind).toBe(verb === 'call' ? 'empty' : 'evs-decode');
-    }
-  });
+  test.each(['stateOverride', 'deployless'] as const)(
+    'an unfunded script [%s]: strict s.call reverts empty, strict s.simulate reverts EvsDecodeError',
+    async (mode) => {
+      for (const verb of ['call', 'simulate'] as const) {
+        const pay = evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, v, value) =>
+          s.return({
+            shares: s[verb]({ address: v, abi: MockVault.abi, functionName: 'depositEth', value }),
+          }),
+        );
+        const diagnostics: string[] = [];
+        const c = pay.compile({ onDiagnostic: (d) => diagnostics.push(d.code) });
+        // the value-sending site is flagged at compile time: deployless mode cannot fund it
+        expect(diagnostics).toContain('ENV_FRAME_DEPENDENT');
+        const data = encodeFunctionData({ abi: c.abi, functionName: 'pay', args: [vault, amount] });
+        const override = c.toViem({ mode: 'stateOverride' });
+        const raw = await callExpectRevert(
+          mode === 'deployless'
+            ? { code: c.toViem().code, data }
+            : { to: override.address, stateOverride: override.stateOverride, data },
+        );
+        // the CALL fails before the vault runs: nothing to bubble for s.call; for s.simulate the
+        // value-carrying self-call hop fails, which the site reports as a decode failure. Either
+        // way the explanation names the unpaid value.
+        const explained = c.explainRevert(raw);
+        expect(explained.kind).toBe(verb === 'call' ? 'empty' : 'evs-decode');
+        expect(explained.message).toMatch(/the script's balance was below the `value`/);
+        expect(explained.message).toMatch(/deployless mode cannot fund it/);
+      }
+    },
+  );
 });

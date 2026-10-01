@@ -21,6 +21,9 @@ export interface SourceMap {
     detail: string; // display only — match on `kind` / `panicCodes`, never on this text
     // 'panic' sites only: the Panic(uint256) codes this site can raise (non-empty)
     panicCodes?: readonly number[];
+    // 'decode' / 'call' sites of s.call / s.simulate (and their try* forms) only: present when
+    // the CALL sends a `value` (not a literal 0), paid from the script's own balance
+    sendsValue?: true;
   }[];
   readonly labels: readonly { pc: number; name: string }[];
 }

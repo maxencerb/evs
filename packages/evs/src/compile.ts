@@ -360,14 +360,38 @@ interface ExplainContext {
  * neither can bubble anything.
  */
 function bubblingSites(ctx: ExplainContext): SiteRef[] {
+  return strictCallSites(ctx, (s) => s.revertReturns === undefined).map(toSiteRef);
+}
+
+/**
+ * The strict `s.call` sites that send a `value` (`sendsValue`) and bubble an empty CALL failure:
+ * an unfunded script fails their CALL before the target runs, with no returndata. (`s.simulate`
+ * and `revertReturns` sites report that failure as `EvsDecodeError(site)` instead.)
+ */
+function unfundedValueSites(ctx: ExplainContext): SiteRef[] {
+  return strictCallSites(ctx, (s) => s.kind === 'call' && s.revertReturns === undefined)
+    .filter((site) => site.sendsValue === true)
+    .map(toSiteRef);
+}
+
+/** The emitted sites of the strict `call` statements `keep` selects. */
+function strictCallSites(
+  ctx: ExplainContext,
+  keep: (s: Extract<Stmt, { k: 'call' }>) => boolean,
+): SourceMap['sites'] {
   const ids = new Set<SiteId>();
   const look = (s: Stmt): void => {
-    if (s.k === 'call' && s.mode === 'strict' && s.revertReturns === undefined) ids.add(s.site);
+    if (s.k === 'call' && s.mode === 'strict' && keep(s)) ids.add(s.site);
   };
   walkStmts(ctx.ir.body, look);
   for (const fn of ctx.ir.fns) walkStmts(fn.body, look);
-  return ctx.map.sites.filter((s) => ids.has(s.id)).map(toSiteRef);
+  return ctx.map.sites.filter((s) => ids.has(s.id));
 }
+
+/** How to fund a script that sends `value` (the deployless one cannot be funded). */
+const FUND_THE_SCRIPT =
+  "fund the script with a `balance` in its toViem({ mode: 'stateOverride' }) entry (or run it " +
+  'in sender mode); the default deployless mode cannot fund it';
 
 function listSites(sites: readonly SiteRef[]): string {
   return sites.map((s) => `${s.detail} (site ${s.id})`).join('; ');
@@ -514,9 +538,16 @@ function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): Re
   // (or an unknown one) cannot have been produced by this script's own code.
   if (site !== undefined && site.kind === 'decode') {
     const ref = toSiteRef(site);
+    // a value-sending site also lands here when the script cannot pay: the CALL (for
+    // s.simulate, the self-call hop that carries the value) fails and nothing decodes
+    const unfunded =
+      site.sendsValue === true
+        ? `, or the script's balance was below the \`value\` this site sends, so its CALL ` +
+          `failed before the target ran — ${FUND_THE_SCRIPT}`
+        : '';
     return {
       kind: 'evs-decode',
-      message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${hedge}`,
+      message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${unfunded}${hedge}`,
       site: ref,
       raw,
     };
@@ -589,16 +620,23 @@ function explainScriptError(
 }
 
 /**
- * The empty payload has two origins: a callee's bare `revert()` / `require(false)` bubbled by a
- * strict call site, or a frame that failed without data — out of gas, or an opcode the node does
- * not support at the requested block (a fork-gated opcode run at a historical block or on a
- * chain that has not activated that fork).
+ * The empty payload has three origins: a callee's bare `revert()` / `require(false)` bubbled by a
+ * strict call site, a strict `s.call` that sends a `value` the script's balance cannot cover (the
+ * CALL fails before the target runs), or a frame that failed without data — out of gas, or an
+ * opcode the node does not support at the requested block (a fork-gated opcode run at a
+ * historical block or on a chain that has not activated that fork).
  */
 function explainEmpty(raw: Hex, ctx: ExplainContext): RevertExplanation {
   const candidateSites = bubblingSites(ctx);
   const callee =
     candidateSites.length > 0
       ? `a bare revert() / require(false) ${throughCallSites(candidateSites)}; or `
+      : '';
+  const valueSites = unfundedValueSites(ctx);
+  const unfunded =
+    valueSites.length > 0
+      ? `the script's balance was below the \`value\` sent by ${listSites(valueSites)}, so ` +
+        `that CALL failed before the target ran — ${FUND_THE_SCRIPT}; or `
       : '';
   const opcodes = forkOpcodesOf(ctx);
   const frame =
@@ -610,7 +648,7 @@ function explainEmpty(raw: Hex, ctx: ExplainContext): RevertExplanation {
         `with an older evmVersion ('paris' runs everywhere)`;
   return {
     kind: 'empty',
-    message: `empty revert payload (no returndata) — ${callee}${frame}`,
+    message: `empty revert payload (no returndata) — ${callee}${unfunded}${frame}`,
     candidateSites,
     raw,
   };

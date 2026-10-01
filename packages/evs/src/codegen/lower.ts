@@ -51,4 +51,5 @@ export {
   typeOf,
 } from './lower/context.js';
 export type { LowerCtx } from './lower/context.js';
+export { checkedArithCanOverflow } from './lower/arith.js';
 export { lowerStmts, emitFnSubroutines } from './lower/statements.js';

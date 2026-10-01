@@ -131,10 +131,56 @@ function loadBinOperands(
 }
 
 /**
+ * The constant template {@link lowerCheckedArith} picks for a checked add / sub / mul with a
+ * folded operand (the right one, or the left one of the commutative add / mul), or `undefined`
+ * when it takes the general width-dependent template, which always checks.
+ */
+interface ConstArithTemplate {
+  readonly template: 'unsigned-mul' | 'int256-add-sub';
+  readonly constant: bigint; // the folded operand's word
+  readonly other: ValueId; // the runtime operand
+  readonly overflowCheck: boolean; // false: x · 0, x · 1 and x ± 0 cannot overflow
+}
+
+function constArithTemplate(
+  ctx: LowerCtx,
+  s: Extract<Stmt, { k: 'bin' }>,
+  type: EvsType,
+): ConstArithTemplate | undefined {
+  const { bits, signed } = numClass(type);
+  const right = foldedConst(ctx, s.b);
+  const left = s.op === 'sub' || right !== undefined ? undefined : foldedConst(ctx, s.a);
+  const constant = right ?? left;
+  if (constant === undefined) return undefined;
+  const other = right !== undefined ? s.a : s.b;
+  if (s.op === 'mul' && !signed) {
+    return { template: 'unsigned-mul', constant, other, overflowCheck: constant > 1n };
+  }
+  if ((s.op === 'add' || s.op === 'sub') && signed && bits === 256) {
+    return { template: 'int256-add-sub', constant, other, overflowCheck: constant !== 0n };
+  }
+  return undefined;
+}
+
+/**
+ * Whether a checked add / sub / mul can raise Panic 0x11: the same decision
+ * {@link lowerCheckedArith} makes when it picks its template, so the site table
+ * (`codegen/sites.ts`) claims the code exactly when the emitted code checks.
+ */
+export function checkedArithCanOverflow(
+  ctx: LowerCtx,
+  s: Extract<Stmt, { k: 'bin' }>,
+  type: EvsType,
+): boolean {
+  return constArithTemplate(ctx, s, type)?.overflowCheck ?? true;
+}
+
+/**
  * add / sub / mul — the width-dependent checked templates. A folded constant operand selects a
- * cheaper exact template (unsigned mul, int256 add / sub); otherwise the operands are loaded as
- * `[a, b]`, or `[b, a]` for add / mul (see {@link loadBinOperands}). Every add / mul template
- * below is symmetric in its two operands, so the swap never changes a result or a panic.
+ * cheaper exact template (unsigned mul, int256 add / sub; see {@link constArithTemplate});
+ * otherwise the operands are loaded as `[a, b]`, or `[b, a]` for add / mul (see
+ * {@link loadBinOperands}). Every add / mul template below is symmetric in its two operands, so
+ * the swap never changes a result or a panic.
  */
 function lowerCheckedArith(
   w: AsmWriter,
@@ -145,21 +191,13 @@ function lowerCheckedArith(
   const { bits, signed } = numClass(type);
   const m = meta(`checked ${s.op} ${fmtType(type)}`);
 
-  // a folded operand: the right one, or the left one of the commutative add / mul
-  const right = foldedConst(ctx, s.b);
-  const left = s.op === 'sub' || right !== undefined ? undefined : foldedConst(ctx, s.a);
-  const constant =
-    right !== undefined
-      ? { value: right, other: s.a }
-      : left !== undefined
-        ? { value: left, other: s.b }
-        : undefined;
-  if (constant !== undefined && s.op === 'mul' && !signed) {
-    lowerUnsignedMulByConst(w, ctx, s.out, constant.other, constant.value, bits, m);
+  const constant = constArithTemplate(ctx, s, type);
+  if (constant?.template === 'unsigned-mul') {
+    lowerUnsignedMulByConst(w, ctx, s.out, constant, bits, m);
     return;
   }
-  if (constant !== undefined && (s.op === 'add' || s.op === 'sub') && signed && bits === 256) {
-    lowerInt256AddSubConst(w, ctx, s.op, s.out, constant.other, constant.value, m);
+  if (constant?.template === 'int256-add-sub') {
+    lowerInt256AddSubConst(w, ctx, s.op === 'sub' ? 'sub' : 'add', s.out, constant, m);
     return;
   }
 
@@ -259,19 +297,18 @@ function lowerCheckedArith(
 /**
  * Unsigned `x · c` for a folded constant `c`: the product exceeds `max(bits)` exactly when
  * `x > ⌊max / c⌋`, so one comparison replaces the div-back (or the post-MUL range check). A `c`
- * of 0 or 1 cannot overflow and needs no check.
+ * of 0 or 1 cannot overflow and needs no check (`overflowCheck` is false).
  */
 function lowerUnsignedMulByConst(
   w: AsmWriter,
   ctx: LowerCtx,
   out: ValueId,
-  x: ValueId,
-  c: bigint,
+  { constant: c, other: x, overflowCheck }: ConstArithTemplate,
   bits: number,
   m: NodeMeta,
 ): void {
   loadOperand(w, ctx, x, m); // [x]
-  if (c > 1n) {
+  if (overflowCheck) {
     w.op('DUP1'); // [x, x]
     pushMulBound(w, maxUint(bits), c, bits); // [⌊max/c⌋, x, x]
     w.op('LT'); // [⌊max/c⌋ < x, x]
@@ -311,19 +348,18 @@ function immediateBytes(v: bigint): number {
  * a positive magnitude overflows exactly when the result lands below `x`, moving it down exactly
  * when it lands above. A negative `k` is applied as its magnitude with the opposite opcode
  * (`x + (−1)` is `x − 1`, a 1-byte immediate instead of a 32-byte one): the result word is the
- * same modulo 2^256. `k` = 0 cannot overflow.
+ * same modulo 2^256. `k` = 0 cannot overflow (`overflowCheck` is false).
  */
 function lowerInt256AddSubConst(
   w: AsmWriter,
   ctx: LowerCtx,
   op: 'add' | 'sub',
   out: ValueId,
-  x: ValueId,
-  k: bigint,
+  { constant: k, other: x, overflowCheck }: ConstArithTemplate,
   m: NodeMeta,
 ): void {
   loadOperand(w, ctx, x, m); // [x]
-  if (k === 0n) {
+  if (!overflowCheck) {
     storeOut(w, ctx, out); // x ± 0 = x
     return;
   }

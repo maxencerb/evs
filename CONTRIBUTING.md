@@ -296,11 +296,14 @@ Releases: see [Releasing](#releasing) below.
   maps revert payloads back to the site (kind, detail and site id) that produced them.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
-  `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …);
+  `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
+  add / sub / mul ask the lowering itself (`checkedArithCanOverflow`, the predicate
+  `lowerCheckedArith` picks its constant templates with), so those two cannot drift.
   `explainRevert` lists a panic's candidates from `panicCodes`, never from the `detail` text.
-  `codegen/sites.test.ts` compiles one checked op per script and compares the claimed codes with
-  the panic tails the bytecode references, so a lowering change that adds or drops a check must
-  update `classifySite` too. And `explainRevert` and `decodeScriptError` share one byte-level
+  `codegen/sites.test.ts` compiles one checked op per script (plus a sweep of constant add / sub /
+  mul operands over every width class) and compares the claimed codes with the panic tails the
+  bytecode references, so a lowering change that adds or drops a check must update
+  `classifySite` too. And `explainRevert` and `decodeScriptError` share one byte-level
   classifier (`abi/revert.ts`; `abi/revert.test.ts` feeds one payload corpus to both). Payloads
   only a callee can produce (empty, `Error(string)`, foreign selectors) are attributed to the
   strict, non-`revertReturns` call sites — the only ones that bubble.

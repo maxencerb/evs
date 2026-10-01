@@ -957,7 +957,9 @@ const result = await client.readContract({
   the call, which holds no ETH. Use state-override mode for scripts that send value.
 - **An unfunded script** fails the `CALL` before the target runs: `s.call` reverts with empty data,
   `s.simulate` reverts `EvsDecodeError(site)` (its self-call hop, which carries the value, is what
-  fails), and the `try*` forms report `success = false` with a zeroed `value`.
+  fails), and the `try*` forms report `success = false` with a zeroed `value`. `explainRevert`
+  names the unpaid `value` as a candidate cause for both strict reverts, and `compile` warns
+  [`ENV_FRAME_DEPENDENT`](/reference/diagnostics/) for every site that sends one.
 - Under `s.simulate` the ETH is rolled back with the rest of the write; under `s.call` it stays with
   the target for the rest of the `eth_call` (nothing is ever committed on-chain).
 

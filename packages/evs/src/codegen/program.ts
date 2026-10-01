@@ -242,12 +242,16 @@ export function lowerProgram(
     tails: ctx.dfailStubs[0]?.label ?? firstTail,
     data: segments[0]?.label ?? null,
   };
+  const sites = collectSites(ctx, ctx.fnQueue);
   return {
     nodes: w.nodes(),
     frameEnd: frame.frameEnd,
-    sites: collectSites(ctx, ctx.fnQueue),
+    sites,
     regions,
-    diagnostics: collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
+    diagnostics: [
+      ...collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
+      ...valueCallDiagnostics(ir, sites, ctx.fnQueue),
+    ],
   };
 }
 
@@ -385,6 +389,48 @@ const SELF_BALANCE_MESSAGE =
   `dependent: in the default deployless toViem() mode the script runs at a fresh ` +
   `counterfactual CREATE2 address (normally 0 wei); in toViem({ mode: 'stateOverride' }) it is ` +
   `the override address's balance, which a \`balance\` field in that state override sets`;
+
+/**
+ * A `value` on `s.call` / `s.simulate` (or a `try*` form) is paid from the script's own balance,
+ * so it depends on the frame like {@link SELF_BALANCE_MESSAGE}: the deployless script cannot be
+ * funded, so the CALL always fails there before the target runs.
+ */
+function valueCallMessage(s: Extract<Stmt, { k: 'call' }>): string {
+  const outcome = s.mode === 'try' ? 'reports success = false' : 'reverts';
+  return (
+    `${callVerb(s)}(${s.fnAbi.name}) sends a \`value\`, paid from the script's own balance, ` +
+    `which is execution-frame-dependent: in the default deployless toViem() mode the script ` +
+    `runs at a fresh counterfactual CREATE2 address that holds no ETH, so this CALL fails ` +
+    `before the target runs and the site ${outcome}; use toViem({ mode: 'stateOverride' }) ` +
+    `with a \`balance\` in the script's state-override entry (or sender mode, where the ` +
+    `sender pays)`
+  );
+}
+
+/** `ENV_FRAME_DEPENDENT` for every emitted call site the site table marks `sendsValue`. */
+function valueCallDiagnostics(
+  ir: ScriptIr,
+  sites: SourceMap['sites'],
+  emittedFns: readonly FnId[],
+): EvsDiagnostic[] {
+  const paying = new Set(sites.filter((site) => site.sendsValue === true).map((site) => site.id));
+  const diagnostics: EvsDiagnostic[] = [];
+  const look = (s: Stmt): void => {
+    if (s.k !== 'call' || !paying.has(s.site)) return;
+    diagnostics.push({
+      severity: 'warning',
+      code: 'ENV_FRAME_DEPENDENT',
+      message: valueCallMessage(s),
+      site: s.site,
+    });
+  };
+  walkStmts(ir.body, look);
+  for (const f of emittedFns) {
+    const fn = ir.fns[f];
+    if (fn !== undefined) walkStmts(fn.body, look);
+  }
+  return diagnostics;
+}
 
 function collectDiagnostics(
   ir: ScriptIr,
