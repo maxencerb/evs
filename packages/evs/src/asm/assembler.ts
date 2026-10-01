@@ -352,6 +352,8 @@ class CodeBuffer {
   minimalPush(value: bigint): void {
     let width = 0;
     for (let x = value; x > 0n; x >>= 8n) width += 1;
+    // width 0 would write `PUSH1_CODE - 1` = PUSH0, whatever the fork: zero is the caller's case
+    if (width === 0) throw assembleError(`minimalPush needs a non-zero value, got ${value}`);
     this.#reserve(1 + width);
     this.#bytes[this.pc++] = PUSH1_CODE + width - 1;
     let x = value;
@@ -452,6 +454,11 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
         break;
       }
       case 'push': {
+        // a user `peephole` hook is not held to `value: bigint` (#98's rationale): a number `0`
+        // would miss the `=== 0n` branch below and assemble to PUSH0 on every fork
+        if (typeof node.value !== 'bigint') {
+          throw assembleError(`push value must be a bigint, got ${typeof node.value}`);
+        }
         if (node.value < 0n || node.value >= TWO_POW_256) {
           throw assembleError(`push value out of range [0, 2^256): ${node.value}`);
         }

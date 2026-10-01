@@ -710,6 +710,36 @@ describe('assemble — hooks and verification wiring', () => {
     expect(run).toThrow(/unknown mnemonic 'NOPE'/);
   });
 
+  test('a push node whose value is a JS number is rejected as an EvsInternalError on every fork', () => {
+    // a JavaScript hook is not held to `value: bigint`: a number `0` used to miss the `=== 0n`
+    // branch and assemble to a bare PUSH0 even on paris (which no verifier gates), and any other
+    // number threw a raw `TypeError: Cannot mix BigInt and other types`
+    for (const value of [0, 5, 0x1234]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
+      const injected = { k: 'push', value } as unknown as AsmNode;
+      const prepend = (nodes: readonly AsmNode[]): AsmNode[] => [
+        injected,
+        { k: 'op', op: 'POP' },
+        ...nodes,
+      ];
+      for (const evmVersion of ['paris', 'cancun'] as const) {
+        for (const verify of [true, false]) {
+          const run = (): void => {
+            assemble([{ k: 'op', op: 'STOP' }], { evmVersion, peephole: prepend, verify });
+          };
+          expect(run).toThrow(EvsInternalError);
+          expect(run).toThrow(/push value must be a bigint, got number/);
+        }
+      }
+    }
+    // control: the bigint spelling still lowers to `PUSH1 00` on paris
+    const ok = assemble([{ k: 'op', op: 'STOP' }], {
+      evmVersion: 'paris',
+      peephole: (nodes) => [{ k: 'push', value: 0n }, { k: 'op', op: 'POP' }, ...nodes],
+    });
+    expect(hex(ok.bytecode)).toBe('60005000');
+  });
+
   test('verification is on by default and catches a stack bug', () => {
     const nodes: readonly AsmNode[] = [
       { k: 'op', op: 'POP' }, // underflow at baseline 0
