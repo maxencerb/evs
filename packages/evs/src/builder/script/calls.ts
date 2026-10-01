@@ -620,12 +620,15 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  * any, are ignored). The branches swap: a revert is the value path; a normal return is the
  * failure (`s.call` reverts `EvsDecodeError(site)`, `s.tryCall` reports `success = false` with
  * zeroed values). Not combinable with `struct: true` — declare one `t.struct` type instead.
+ * `args` is the inferred argument tuple, as in {@link ResolvedSubcallParams}: the overload it
+ * resolves to still decides the inputs and whether `value` is accepted ({@link CallValue}).
  */
 export interface RevertReturnsParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, WriteMutability>,
   rr extends readonly EvsType[],
-> extends SubcallParams<abi, name, WriteMutability> {
+  args = SubcallInputs<abi, name, WriteMutability>,
+> extends SubcallParams<abi, name, WriteMutability, args> {
   readonly revertReturns: rr;
   readonly struct?: false;
 }
@@ -643,8 +646,13 @@ export interface CallVerb extends WriteVerb {
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
+    const args extends SubcallInputs<abi, name, WriteMutability> = SubcallInputs<
+      abi,
+      name,
+      WriteMutability
+    >,
   >(
-    p: RevertReturnsParams<abi, name, rr>,
+    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
   ): UnwrapSingle<RevertReturnHandles<rr>>;
 }
 
@@ -654,7 +662,12 @@ export interface TryCallVerb extends TryWriteVerb {
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, WriteMutability>,
     const rr extends readonly EvsType[],
+    const args extends SubcallInputs<abi, name, WriteMutability> = SubcallInputs<
+      abi,
+      name,
+      WriteMutability
+    >,
   >(
-    p: RevertReturnsParams<abi, name, rr>,
+    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
   ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<RevertReturnHandles<rr>> };
 }

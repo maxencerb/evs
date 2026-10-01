@@ -49,6 +49,21 @@ const lidoAbi = [
     inputs: [{ name: 'amount', type: 'uint256' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  // the mirror pair: here the overload WITH an argument is the payable one
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'payable',
+    inputs: [{ name: 'amount', type: 'uint256' }],
+    outputs: [],
+  },
 ] as const satisfies Abi;
 
 const ZERO = '0x0000000000000000000000000000000000000000';
@@ -125,6 +140,59 @@ test('value follows overload resolution: the payable stake() takes it, stake(uin
   expectTypeOf<
     CallValue<typeof lidoAbi, 'stake', 'payable' | 'nonpayable', readonly []>
   >().toEqualTypeOf<CallValue<typeof lidoAbi, 'submit', 'payable' | 'nonpayable'>>();
+});
+
+test('value + revertReturns follows the overload the args resolve to, not the zero-arg one', () => {
+  evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, lido, amount) => {
+    // quote(uint256) is payable (quote() is not): value is accepted with revertReturns too
+    const a = s.call({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'quote',
+      args: [amount],
+      value: amount,
+      revertReturns: [t.uint256],
+    });
+    const b = s.tryCall({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'quote',
+      args: [1n],
+      value: 1n,
+      revertReturns: [t.uint256],
+    });
+    expectTypeOf(a).toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf(b.value).toEqualTypeOf<Expr<'uint256'>>();
+    // stake(uint256) is nonpayable (stake() is payable): value is refused, as the recorder does
+    s.call({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'stake',
+      args: [amount],
+      // @ts-expect-error — the overload these args resolve to is nonpayable
+      value: amount,
+      revertReturns: [t.uint256],
+    });
+    s.tryCall({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'stake',
+      args: [1n],
+      // @ts-expect-error — same under s.tryCall
+      value: 1n,
+      revertReturns: [t.uint256],
+    });
+    // no args: the zero-argument overload, as without revertReturns
+    const c = s.call({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'stake',
+      value: amount,
+      revertReturns: [t.uint256],
+    });
+    expectTypeOf(c).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ a, b: b.value, c });
+  });
 });
 
 test('a widened ABI accepts value (checked at recording time instead)', () => {

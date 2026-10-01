@@ -1359,6 +1359,20 @@ const payableAbi = [
     inputs: [{ name: 'amount', type: 'uint256' }],
     outputs: [{ name: '', type: 'uint256' }],
   },
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'nonpayable',
+    inputs: [],
+    outputs: [],
+  },
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'payable',
+    inputs: [{ name: 'amount', type: 'uint256' }],
+    outputs: [],
+  },
 ] as const satisfies Abi;
 
 describe('checklist: call value + unknown params', () => {
@@ -1395,6 +1409,19 @@ describe('checklist: call value + unknown params', () => {
       EvsTypeError,
       'TYPE_MISMATCH',
       /unknown parameter `blockTag`.*value\?, struct\?, revertReturns\? \}/,
+    );
+  });
+
+  test('a key arriving through a spread contract config is rejected too (no TS excess-property check there)', () => {
+    const usdc = { abi: erc20Abi, chainId: 1 } as const;
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.read({ ...usdc, address: a.who, functionName: 'balanceOf', args: [a.who] }),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.read\(\): unknown parameter `chainId`/,
     );
   });
 
@@ -1457,6 +1484,38 @@ describe('checklist: call value + unknown params', () => {
       'TYPE_MISMATCH',
       /"stake" is nonpayable/,
     );
+  });
+
+  test('value + revertReturns resolves the overload by args too (lockstep with the types)', () => {
+    rec((s, a) => {
+      const q = s.call({
+        address: a.who,
+        abi: payableAbi,
+        functionName: 'quote',
+        args: [a.x],
+        value: a.x,
+        revertReturns: [t.uint256],
+      });
+      return s.return({ q });
+    });
+    for (const verb of ['call', 'tryCall'] as const) {
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            (s[verb] as (p: never) => unknown)({
+              address: a.who,
+              abi: payableAbi,
+              functionName: 'stake',
+              args: [1n],
+              value: a.x,
+              revertReturns: [t.uint256],
+            } as never),
+          ),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /"stake" is nonpayable/,
+      );
+    }
   });
 
   test('value must coerce to uint256', () => {

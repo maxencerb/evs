@@ -72,7 +72,11 @@ freely in one call. See [values and types](/guides/values-and-types/) for the co
 These keys are the **same for all six verbs** (only the `functionName` mutability filter changes),
 except `value`, which only the four `CALL` verbs accept (for a `payable` function), and
 `revertReturns`, which only `s.call` / `s.tryCall` accept. Any other key is an `EvsTypeError` at
-recording (and an excess-property error in TypeScript), so a typo never silently does nothing.
+recording, so a typo never silently does nothing. TypeScript also flags a key written in the
+object literal itself (an excess-property error), but not one that arrives through a spread: a
+viem/wagmi-style contract config carrying extra keys, such as
+`{ address, abi, chainId }`, typechecks when spread into a call and then throws at recording.
+Spread only the keys evs takes (`const { address, abi } = usdc`).
 
 | Key            | Type                                  | Notes                                                              |
 | -------------- | ------------------------------------- | ------------------------------------------------------------------ |

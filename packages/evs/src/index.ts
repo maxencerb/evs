@@ -104,6 +104,7 @@ export type {
   ArgInput, // issue #9: one top-level arg declarator (a bare type or a namedArg)
   ArgsInput,
   CallVerb, // issue #35: the s.call verb type (WriteVerb + the `revertReturns` overload)
+  CallValue, // the type of `value`: uint256 for a payable resolved overload, a named compile error otherwise
   Cell,
   ComponentToType,
   EncodeValue, // issue #17: what s.encode / s.keccak256 accept per value (any staged handle; #24)
