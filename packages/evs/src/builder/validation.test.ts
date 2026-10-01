@@ -2905,13 +2905,20 @@ describe('checklist: tuple descriptor gates at every entry point', () => {
     );
   });
 
-  test('hand-built error params: an empty or oversized tuple → ERROR_DECL naming the param', () => {
+  test('hand-built error params: an empty tuple → ERROR_DECL, a size limit → UNSUPPORTED_V0', () => {
+    const deep = {
+      type: 'tuple[][][][][]',
+      components: [{ name: 'a', type: 'uint256' }],
+    } as const;
+    const P = /errors\[0\] \("E"\): param #1/.source;
     const cases = [
-      [E0, /errors\[0\] \("E"\): param #1: a tuple must have at least one component$/],
-      [Enested, /errors\[0\] \("E"\): param #1 component #0: a tuple must have at least one/],
-      [Ebig, /errors\[0\] \("E"\): param #1 component #1: type "tuple" has an ABI static size/],
+      [E0, 'ERROR_DECL', new RegExp(`${P}: a tuple must have at least one component$`)],
+      [Enested, 'ERROR_DECL', new RegExp(`${P} component #0: a tuple must have at least one`)],
+      // a size limit keeps the code t.error and the layout pass give it for any param shape
+      [Ebig, 'UNSUPPORTED_V0', new RegExp(`${P} component #1: type "tuple" has an ABI static`)],
+      [deep, 'UNSUPPORTED_V0', new RegExp(`${P}: .*nests arrays 5 levels deep`)],
     ] as const;
-    for (const [type, msg] of cases) {
+    for (const [type, code, msg] of cases) {
       const decl = {
         kind: 'error',
         name: 'E',
@@ -2926,8 +2933,17 @@ describe('checklist: tuple descriptor gates at every entry point', () => {
             s.return({ ok: s.lit(t.bool, true) }),
           ),
         EvsTypeError,
-        'ERROR_DECL',
+        code,
         msg,
+      );
+    }
+    // t.error gives the same size limits the same code
+    for (const type of [Ebig, deep]) {
+      expectEvs(
+        () => t.error('E', [t.uint256, type as never]),
+        EvsTypeError,
+        'UNSUPPORTED_V0',
+        /static size|nests arrays 5 levels deep/,
       );
     }
   });

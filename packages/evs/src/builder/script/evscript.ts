@@ -168,14 +168,18 @@ function isEvsErrorValue(v: unknown): v is EvsErrorType {
 }
 
 /** A hand-built error param's tuple type through the canonicalizer's gates (at least one
- *  component at every level, the array depth, the static size) — the ones `t.error` applies —
- *  reported as `ERROR_DECL`, like every other bad param of a hand-built declaration. */
+ *  component at every level, the array depth, the static size) — the ones `t.error` applies.
+ *  A shape violation (`TYPE_MISMATCH`, e.g. an empty tuple) is reported as `ERROR_DECL`, like
+ *  every other bad param of a hand-built declaration; a size limit stays `UNSUPPORTED_V0`, the
+ *  code `t.error` and the layout pass give it for every param shape. */
 function assertErrorParamGates(type: EvsType, ctx: string): void {
   if (!isTupleType(type)) return;
   try {
     canonicalizeTupleType(type, ctx);
   } catch (err) {
-    if (err instanceof EvsTypeError) throw new EvsTypeError('ERROR_DECL', err.message);
+    if (err instanceof EvsTypeError && err.code === 'TYPE_MISMATCH') {
+      throw new EvsTypeError('ERROR_DECL', err.message);
+    }
     throw err;
   }
 }
