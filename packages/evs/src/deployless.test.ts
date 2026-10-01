@@ -12,10 +12,11 @@ import {
   deploylessCallViaBytecodeBytecode,
   encodeDeployData,
   encodeFunctionData,
-  InvalidParamsRpcError,
+  InvalidInputRpcError,
   parseAbi,
   RpcRequestError,
   size,
+  TransactionRejectedRpcError,
 } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
@@ -198,13 +199,30 @@ describe('DEPLOYLESS_RESULT_SIZE', () => {
 });
 
 describe('explainDeploylessError', () => {
-  /** The chain viem builds for a JSON-RPC error: BaseError → InvalidParamsRpcError → RpcRequestError. */
-  const rpcError = (message: string, wrap = 'Missing or invalid parameters.'): BaseError =>
-    new BaseError(wrap, {
-      cause: new InvalidParamsRpcError(
-        new RpcRequestError({ body: {}, error: { code: -32602, message }, url: 'http://node' }),
-      ),
-    });
+  /**
+   * The chain viem builds for a node's JSON-RPC error: a wrapper carrying the RpcError's short
+   * message (CallExecutionError in practice) → the RpcError class for the code → RpcRequestError
+   * holding the node's text. geth answers with -32000, which viem maps to InvalidInputRpcError
+   * ("Missing or invalid parameters."); anvil answers with -32003, mapped to
+   * TransactionRejectedRpcError ("Transaction creation failed.") — both probed, anvil 1.8.3 in
+   * `test/integration/deployless-limits.test.ts`.
+   */
+  const NODES = {
+    geth: { Rpc: InvalidInputRpcError, code: -32_000 },
+    anvil: { Rpc: TransactionRejectedRpcError, code: -32_003 },
+  } as const;
+  const rpcError = (message: string, node: keyof typeof NODES = 'geth'): BaseError => {
+    const { Rpc, code } = NODES[node];
+    const rpc = new Rpc(
+      new RpcRequestError({ body: {}, error: { code, message }, url: 'http://node' }),
+    );
+    return new BaseError(rpc.shortMessage, { cause: rpc });
+  };
+
+  test('the fixture chains match what viem shows for each node', () => {
+    expect(rpcError('x').shortMessage).toMatch(/^Missing or invalid parameters\./);
+    expect(rpcError('x', 'anvil').shortMessage).toMatch(/^Transaction creation failed\./);
+  });
 
   test('geth: max code size exceeded → result-too-large, with the reported size', () => {
     const e = explainDeploylessError(
@@ -237,21 +255,29 @@ describe('explainDeploylessError', () => {
     expect(e?.message).toContain('deploylessDataSize()');
   });
 
-  test('anvil/revm: the EVM error names', () => {
-    const wrap = 'Transaction creation failed.';
+  test("anvil: revm's EVM error names, and geth's text for oversized initcode", () => {
     expect(
-      explainDeploylessError(rpcError('EVM error CreateContractStartingWithEF', wrap))?.kind,
+      explainDeploylessError(rpcError('EVM error CreateContractStartingWithEF', 'anvil'))?.kind,
     ).toBe('result-starts-with-ef');
     expect(
-      explainDeploylessError(rpcError('EVM error CreateContractSizeLimit', wrap)),
+      explainDeploylessError(rpcError('EVM error CreateContractSizeLimit', 'anvil')),
     ).toMatchObject({
       kind: 'result-too-large',
       limit: 24_576,
       nodeMessage: 'EVM error CreateContractSizeLimit',
     });
-    expect(explainDeploylessError(rpcError('max initcode size exceeded', wrap))?.kind).toBe(
-      'data-too-large',
-    );
+    // anvil reports oversized initcode in geth's wording, not revm's name, and without sizes
+    expect(explainDeploylessError(rpcError('max initcode size exceeded', 'anvil'))).toMatchObject({
+      kind: 'data-too-large',
+      limit: 49_152,
+      nodeMessage: 'max initcode size exceeded',
+    });
+  });
+
+  test("revm's own initcode error name (other revm-based nodes)", () => {
+    expect(
+      explainDeploylessError(rpcError('EVM error CreateInitCodeSizeLimit', 'anvil'))?.kind,
+    ).toBe('data-too-large');
   });
 
   test('a message string works too; anything else is not a deployless limit', () => {

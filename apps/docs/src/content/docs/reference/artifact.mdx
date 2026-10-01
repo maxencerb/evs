@@ -221,10 +221,11 @@ try {
 
 The node rejects these calls with an error viem often shows only as "Missing or invalid
 parameters" or "Transaction creation failed". `explainDeploylessError` searches the caught error's
-`cause` chain for the node's text — `max code size exceeded`, `invalid code: must not begin with
-0xef` and `max initcode size exceeded` (geth and its derivatives), `CreateContractSizeLimit`,
-`CreateContractStartingWithEF` and `CreateInitCodeSizeLimit` (revm, anvil) — and returns
-`undefined` for anything else. `size` holds the rejected size when the node reports it (geth does)
+`cause` chain for the node's text — `max code size exceeded` and `invalid code: must not begin
+with 0xef` (geth and the nodes that reuse its wording), `max initcode size exceeded` (geth and
+anvil), `CreateContractSizeLimit` and `CreateContractStartingWithEF` (revm's error names, which
+anvil reports), and `CreateInitCodeSizeLimit` (revm's name for the initcode case, matched in case
+another revm-based node reports it) — and returns `undefined` for anything else. `size` holds the rejected size when the node reports it (geth does)
 and `limit` the exceeded cap.
 
 ## `EVS_ERROR_ABI`

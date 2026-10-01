@@ -6,8 +6,8 @@
  *     compile-time `DEPLOYLESS_RESULT_PREFIX` warning flags that shape;
  *   - EIP-3860 on viem's creation data: the last args size `deploylessDataSize` accepts passes,
  *     one more element fails;
- * and each failure is recognized by `explainDeploylessError`, while state-override mode runs
- * the same call. The PoCs of the 0.2.0 field test, turned into canaries.
+ * and each failure is recognized by `explainDeploylessError` (the node texts are pinned too, as
+ * the docs name them), while state-override mode runs the same call. The PoCs of the 0.2.0 field test, turned into canaries.
  */
 
 import { encodeFunctionData, type Hex } from 'viem';
@@ -64,6 +64,7 @@ describe('EIP-170: the result is deposited as code', () => {
     expect(explainDeploylessError(error)).toMatchObject({
       kind: 'result-too-large',
       limit: DEPLOYLESS_MAX_RESULT_BYTES,
+      nodeMessage: 'EVM error CreateContractSizeLimit',
     });
 
     const viaOverride = await publicClient.readContract({
@@ -99,7 +100,10 @@ describe('EIP-3541: the result must not start with 0xEF', () => {
     const error = await failure(() =>
       publicClient.readContract({ ...echo.toViem(), functionName: 'echo', args: [ef] }),
     );
-    expect(explainDeploylessError(error)?.kind).toBe('result-starts-with-ef');
+    expect(explainDeploylessError(error)).toMatchObject({
+      kind: 'result-starts-with-ef',
+      nodeMessage: 'EVM error CreateContractStartingWithEF',
+    });
 
     const viaOverride = await publicClient.readContract({
       ...echo.toViem({ mode: 'stateOverride' }),
@@ -161,6 +165,8 @@ describe('EIP-3860: viem creation data, args included', () => {
     expect(explainDeploylessError(error)).toMatchObject({
       kind: 'data-too-large',
       limit: DEPLOYLESS_MAX_DATA_BYTES,
+      // anvil uses geth's wording here, not revm's `CreateInitCodeSizeLimit`
+      nodeMessage: 'max initcode size exceeded',
     });
 
     const viaOverride = await publicClient.readContract({

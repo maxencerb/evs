@@ -178,7 +178,12 @@ export interface DeploylessLimitExplanation {
 
 type LimitKind = DeploylessLimitExplanation['kind'];
 
-/** The creation-failure texts of geth-derived nodes (geth, reth, erigon, …) and revm (anvil). */
+/**
+ * The creation-failure texts of geth and the nodes that reuse its wording (reth, erigon, …) and of anvil, which
+ * reports oversized initcode as `max initcode size exceeded` and the two result limits by revm's
+ * error names. `CreateInitCodeSizeLimit` is revm's name for the initcode case, matched in case
+ * another revm-based node surfaces it.
+ */
 const NODE_PATTERNS: readonly { kind: LimitKind; re: RegExp }[] = [
   {
     kind: 'result-starts-with-ef',
