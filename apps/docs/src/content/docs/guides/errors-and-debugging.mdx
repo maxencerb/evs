@@ -195,9 +195,9 @@ the cause:
   artifact's `evmVersion` against the [pinned block](/guides/execution/#block-pinning).
 - **An unfunded `value`.** A `value` on `s.call` / `s.simulate` is paid from the script's own
   balance, and when that balance falls short the `CALL` fails before the target runs: `s.call`
-  reverts with empty data and `s.simulate` with `EvsDecodeError(site)`. `explainRevert` names
-  the value-sending sites (`sourceMap.sites` marks them `sendsValue`) as a candidate cause in
-  both cases. Deployless mode cannot fund the script, so `compile` warns `ENV_FRAME_DEPENDENT`
+  reverts with empty data, while `s.simulate` and an `s.call` with `revertReturns` revert with
+  `EvsDecodeError(site)`. `explainRevert` names the value-sending sites (`sourceMap.sites` marks
+  them `sendsValue`) as a candidate cause in each case. Deployless mode cannot fund the script, so `compile` warns `ENV_FRAME_DEPENDENT`
   for every such site; fund it with a `balance` in the
   [state-override entry](/guides/calls/#sending-eth-value).
 
@@ -306,7 +306,7 @@ kinds:
 | `kind`                   | Payload                          | Source attribution                                                                  |
 | ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
 | `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
-| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode (id + detail); for a site that sends a `value`, also an insufficient script balance for that `value` |
+| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode (id + detail); for an `s.simulate` or `revertReturns` site that sends a `value`, also an insufficient script balance for that `value` |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
 | `'script-error'`         | a DECLARED custom error          | `errorName` + `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
 | `'error-string'`         | `Error(string)`                  | `candidateSites` — the strict call sites a callee revert can bubble through           |

@@ -374,6 +374,18 @@ function unfundedValueSites(ctx: ExplainContext): SiteRef[] {
     .map(toSiteRef);
 }
 
+/**
+ * Whether an unfunded script turns site `id`'s failed CALL into `EvsDecodeError(id)`: a strict
+ * `s.simulate` (the self-call hop carries the value and fails, so nothing decodes) or a
+ * `revertReturns` site (the empty revert data cannot decode) that sends a `value`. A plain strict
+ * `s.call` bubbles that failure as an empty revert instead (`unfundedValueSites`).
+ */
+function unfundedDecodeSite(ctx: ExplainContext, id: SiteId): boolean {
+  return strictCallSites(ctx, (s) => s.kind === 'simulate' || s.revertReturns !== undefined).some(
+    (site) => site.id === id && site.sendsValue === true,
+  );
+}
+
 /** The emitted sites of the strict `call` statements `keep` selects. */
 function strictCallSites(
   ctx: ExplainContext,
@@ -538,13 +550,13 @@ function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): Re
   // (or an unknown one) cannot have been produced by this script's own code.
   if (site !== undefined && site.kind === 'decode') {
     const ref = toSiteRef(site);
-    // a value-sending site also lands here when the script cannot pay: the CALL (for
-    // s.simulate, the self-call hop that carries the value) fails and nothing decodes
-    const unfunded =
-      site.sendsValue === true
-        ? `, or the script's balance was below the \`value\` this site sends, so its CALL ` +
-          `failed before the target ran — ${FUND_THE_SCRIPT}`
-        : '';
+    // a value-sending s.simulate / revertReturns site also lands here when the script cannot
+    // pay: the CALL (for s.simulate, the self-call hop that carries the value) fails and nothing
+    // decodes. A plain strict s.call bubbles an empty revert instead, never this error.
+    const unfunded = unfundedDecodeSite(ctx, site.id)
+      ? `, or the script's balance was below the \`value\` this site sends, so its CALL ` +
+        `failed before the target ran — ${FUND_THE_SCRIPT}`
+      : '';
     return {
       kind: 'evs-decode',
       message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${unfunded}${hedge}`,

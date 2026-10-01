@@ -8,7 +8,13 @@
  * here byte-for-byte.
  */
 
-import { type Abi, decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
+import {
+  type Abi,
+  decodeFunctionResult,
+  encodeAbiParameters,
+  encodeErrorResult,
+  encodeFunctionData,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime, execRuntimeDeployless, SCRIPT_ADDRESS } from '../../test/harness/evm.js';
@@ -635,6 +641,70 @@ describe('call value (payable targets)', () => {
       expect(sim.kind).toBe('evs-decode');
       expect(sim.message).toMatch(
         /^decoding simulate submit\(\) returndata failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
+      );
+    }
+  });
+
+  test('an unfunded value is an EvsDecodeError cause only where it can be one', async () => {
+    // a plain strict s.call bubbles the unfunded CALL as an empty revert (above), so its
+    // EvsDecodeError is a genuine returndata decode failure: no unpaid-value cause there
+    const decodeError = (site: number) =>
+      encodeErrorResult({
+        abi: [
+          { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
+        ],
+        errorName: 'EvsDecodeError',
+        args: [BigInt(site)],
+      });
+    const viaCall = compile(
+      evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, value) =>
+        s.return({
+          shares: s.call({
+            address: target,
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: [target],
+            value,
+          }),
+        }),
+      ),
+    );
+    const callSite = viaCall.sourceMap.sites.find((site) => site.sendsValue === true);
+    expect(callSite?.kind).toBe('decode');
+    const call = viaCall.explainRevert(decodeError(callSite?.id ?? -1));
+    expect(call.kind).toBe('evs-decode');
+    expect(call.site?.id).toBe(callSite?.id);
+    expect(call.message).not.toMatch(/balance|`value`/);
+    // a revertReturns site decodes the (empty) revert data of the failed CALL, so an unfunded
+    // script reaches its decode-fail stub: the explanation names the unpaid value
+    const viaRevert = compile(
+      evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, value) =>
+        s.return({
+          quoted: s.call({
+            address: target,
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: [target],
+            value,
+            revertReturns: [t.uint256],
+          }),
+        }),
+      ),
+    );
+    for (const deployless of [false, true]) {
+      // oxlint-disable-next-line no-await-in-loop -- two sequential runs, one per frame
+      const res = await (deployless
+        ? execRuntimeDeployless(viaRevert.initBytecode, calldata, {
+            contracts: { [TARGET]: RUNTIME_CALLVALUE },
+          })
+        : execRuntime(viaRevert.runtimeBytecode, calldata, {
+            contracts: { [TARGET]: RUNTIME_CALLVALUE },
+          }));
+      expect(res.success).toBe(false);
+      const explained = viaRevert.explainRevert(res.data);
+      expect(explained.kind).toBe('evs-decode');
+      expect(explained.message).toMatch(
+        /^decoding call submit\(\) revert data failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
       );
     }
   });
