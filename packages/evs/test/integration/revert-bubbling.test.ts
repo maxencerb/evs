@@ -5,10 +5,11 @@
  * what the callee reverts with when called directly — the expected bytes come from calling
  * the Reverter straight (no manual encoding, no room for fixture drift).
  *
- * Plus the explainRevert() round-trip on an EvsDecodeError produced by a Malformed callee, and
- * the Malformed fixture table on a real node: every structural case reverts EvsDecodeError at
- * its own call site (strict) or reports success=false with a zero value (try); every dirty-word
- * case decodes to its normalized value — in both execution modes.
+ * explainRevert() attributes each bubbled payload to the strict read it came through (never to
+ * a panic site). Plus the explainRevert() round-trip on an EvsDecodeError produced by a
+ * Malformed callee, and the Malformed fixture table on a real node: every structural case
+ * reverts EvsDecodeError at its own call site (strict) or reports success=false with a zero
+ * value (try); every dirty-word case decodes to its normalized value — in both execution modes.
  */
 
 import { decodeFunctionResult, encodeFunctionData, type Hex } from 'viem';
@@ -71,7 +72,18 @@ describe('revert bubbling through viem (byte-exact vs direct call)', () => {
     // explainRevert classifies the real solc-produced payload exactly (never throws).
     const explained = compiled.explainRevert(bubbled);
     expect(explained.kind).toBe(kind);
-    if (explained.kind === 'panic') expect(explained.panicCode).toBe(panicCode);
+    // the script's only revert source is its strict read: no panic site can claim the payload,
+    // and it is attributed to the read it bubbled through
+    const readSite = compiled.sourceMap.sites.find((s) => s.kind === 'decode');
+    expect(explained.message).toContain(
+      `bubbled verbatim from a callee through the strict call site: decoding ${flavor}() returndata (site ${readSite?.id})`,
+    );
+    if (explained.kind === 'panic') {
+      expect(explained.panicCode).toBe(panicCode);
+      expect(explained.candidateSites).toEqual([]);
+    } else {
+      expect(explained.candidateSites).toEqual([{ id: readSite?.id, detail: readSite?.detail }]);
+    }
   });
 });
 

@@ -140,17 +140,27 @@ emits exactly four panic codes:
 
 | Code | Meaning (solc semantics) | Emitted by |
 | --- | --- | --- |
-| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`div`/`mod` (including `int256` min divided by −1); checked narrowing conversions (`toUint`, `toInt`, `asAddress`) |
-| `0x12` | Division or modulo by zero | `div`/`mod` with a runtime zero divisor |
+| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`pow`; signed `div` (the minimum value divided by −1); range-checked conversions (narrowing `toUint`/`toInt`, `uintN` to an `intM` with M ≤ N, any `intN` to a `uint`, `asAddress`) |
+| `0x12` | Division or modulo by zero | `div`/`mod`/`addmod`/`mulmod` with a runtime zero divisor or modulus |
 | `0x32` | Array index out of bounds | `Expr.at(i)` on arrays; `MutArray` `get`/`set` |
 | `0x41` | Allocation too large | `s.newArray` with a runtime length of 2^32 or more |
+
+`mod` never raises `0x11` (unlike `div`, the remainder of the minimum value by −1 is 0), and
+neither do free conversions: widenings, `uintN` to a wider `intM`, and the `asUint256` /
+`asBytes32` reinterprets. Folded literals remove checks too: a division by a nonzero literal has
+no zero check, a signed division by a literal other than −1 cannot overflow, and `pow` with a
+literal exponent of 0 or 1 (or a literal base of 0, 1 or −1) is unchecked.
 
 Callee reverts bubble through the script byte-exactly, so any other solc panic code can still
 appear in a script's revert payload — bubbled verbatim from a contract you called.
 `explainRevert` decodes the full solc table (`0x00` generic compiler panic, `0x01` failed
 `assert`, `0x21` invalid enum conversion, `0x22` corrupted storage byte array, `0x31` pop on an
 empty array, `0x51` call to a zero-initialized internal function) and, for the four codes above,
-lists every candidate site in your script (its site id and what it is, e.g. `checked div`).
+lists the candidate sites in your script: exactly the sites whose code can raise that panic
+(each site's `panicCodes` in the source map), with their operands, e.g.
+`checked div args.amount / args.shares (int256) — Panic 0x12/0x11`. When no site can raise it,
+the panic was bubbled from a callee, and the message names the strict call sites it could have
+come through.
 
 Beyond panics, a script can revert with the two evs-owned errors — `EvsInvalidCalldata()` and
 `EvsDecodeError(uint256 site)` — or with a callee's payload bubbled verbatim. The exact ABI

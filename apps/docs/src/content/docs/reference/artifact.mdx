@@ -329,7 +329,8 @@ if (hit !== undefined) {
 
 for (const site of compiled.sourceMap.sites) {
   site.kind; // 'panic' | 'decode' | 'call' | 'stmt'
-  site.detail; // human-readable, e.g. 'checked add — Panic 0x11'
+  site.detail; // human-readable, e.g. 'checked add args.x + 1 (uint256) — Panic 0x11'
+  site.panicCodes; // 'panic' sites only, e.g. [0x11]
 }
 ```
 
@@ -339,12 +340,19 @@ for (const site of compiled.sourceMap.sites) {
 | --- | --- | --- |
 | `version` | `1` | Format version |
 | `segments` | `readonly { pc, len, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte |
-| `sites` | `readonly { id, kind, detail }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number |
+| `sites` | `readonly { id, kind, detail, panicCodes? }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number; `panicCodes` (panic sites only) lists the `Panic(uint256)` codes the site can raise; `detail` is display text |
 | `labels` | `readonly { pc, name }[]` | Label name per jump-destination pc |
 
 `lookupPc(map, pc)` binary-searches the segments and returns `{ note?: string }`, or
 `undefined` when no segment covers the pc. The `sites` table powers `explainRevert` and the
 `EvsDecodeError(site)` round trip.
+
+A `detail` names the site's operands so that sites of the same kind can be told apart: an
+argument as `args.<name>` (`args.arg0` for an unnamed one), a literal by its value, a call
+result by its call (`s.read(totalSupply)`), and any other value as `#id`, the id its handle
+prints (`console.log(x)` shows `Expr<uint256> #12`). A checked operation whose check can never
+fire (a division by a nonzero literal, a widening conversion, …) is a `'stmt'` site, never a
+panic candidate.
 
 ## `explainRevert(data)` — `RevertExplanation`
 
@@ -367,10 +375,10 @@ explanation.panicCode; // 17n (0x11 — arithmetic overflow or underflow)
 explanation.message; // quoted below
 ```
 
-Output (the candidate names the `s.add` site by what it is and its site id):
+Output (the candidate names the `s.add` site by what it is, its operands and its site id):
 
 ```txt
-Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script: checked add — Panic 0x11 (site 1)
+Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script: checked add args.arg0 + 1 (uint256) — Panic 0x11 (site 1)
 ```
 
 The result shape (site ids are plain numbers):
@@ -390,26 +398,34 @@ interface RevertExplanation {
   errorName?: string; // kind 'script-error' only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // kind 'script-error' only: name-keyed decoded args
   site?: { id: number; detail: string }; // kind 'evs-decode' only
-  candidateSites?: readonly { id: number; detail: string }[]; // 'panic' only
+  candidateSites?: readonly { id: number; detail: string }[]; // 'panic', 'error-string', 'custom', 'empty', malformed 'script-error'
   raw: `0x${string}`;
 }
 ```
 
 | `kind` | Payload | Extras |
 | --- | --- | --- |
-| `'panic'` | `Panic(uint256)` (selector `0x4e487b71`, 36 bytes) | `panicCode`, plus `candidateSites` — every recorded site of that panic kind in this script |
-| `'evs-decode'` | `EvsDecodeError(uint256)` (36 bytes) | `site` when the id resolves to a returndata-decode site in this artifact's source map |
+| `'panic'` | `Panic(uint256)` (selector `0x4e487b71`, 36 bytes) | `panicCode`, plus `candidateSites` — every site in this script whose code can raise that panic code; with none, the message names the strict call sites it was bubbled through |
+| `'evs-decode'` | `EvsDecodeError(uint256)` | `site` only for the exact 36-byte payload this compiler emits whose id resolves to a returndata-decode site in this artifact's source map; a longer payload that still decodes is `'evs-decode'` with no `site` |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()` (exactly 4 bytes) | Message names the expected function signature |
-| `'script-error'` | A custom error declared in the script's `errors` | `errorName` and `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
-| `'error-string'` | `Error(string)` | Bubbled verbatim from a callee; message quotes the reason |
-| `'custom'` | Any other selector (or a payload shorter than 4 bytes) | Decode it against the callee's ABI |
-| `'empty'` | Zero-length returndata | A bare `revert()`/`require(false)` bubbled, or the frame failed without a reason |
+| `'script-error'` | A custom error declared in the script's `errors` | `errorName` and `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw`; when the args do not decode, no `errorArgs` and `candidateSites` as for `'error-string'` (`s.throw` cannot produce it) |
+| `'error-string'` | `Error(string)` | Bubbled verbatim from a callee; message quotes the reason; `candidateSites` — the strict call sites it can have come through |
+| `'custom'` | Any other selector (or a payload shorter than 4 bytes) | Decode it against the callee's ABI; `candidateSites` as for `'error-string'` |
+| `'empty'` | Zero-length returndata | A bare `revert()`/`require(false)` bubbled (`candidateSites` as for `'error-string'`), or the frame failed without a reason: out of gas, or an opcode the node does not support at that block — the message names the fork-gated opcodes (`PUSH0`, `MCOPY`) the runtime uses |
+
+A callee's revert can only enter the script through a **strict** call site — `s.read`, `s.call`
+or `s.simulate`, which bubble it verbatim. `try*` sites swallow it, and a `revertReturns` site
+decodes it as its value, so neither is ever listed. When a script has no strict call site, a
+payload only a callee can produce did not come from this artifact, and the message says so.
+`explainRevert` and [`decodeScriptError`](#decodescripterror-and-matchscripterror) classify a
+payload with the same rules, so they always agree on what it is.
 
 :::caution
-For scripts that perform sub-calls, attribution to a script site is a strong hint, never proof:
+For scripts with a strict call site, attribution to a script site is a strong hint, never proof:
 the evs selectors are public constants, and a callee revert bubbles byte-exactly, so an
 adversarial callee can forge them. `explainRevert` appends an explicit hedge to its message in
-that case. Scripts without sub-calls cannot bubble anything, so there the attribution is
+that case. Scripts without one (no sub-calls, or only `try*` / `revertReturns` sites) cannot
+bubble anything, so there the attribution is
 authoritative.
 :::
 

@@ -37,6 +37,13 @@
  * one spill slot per fn is sound.
  */
 
-export { lowerInternals } from './lower/context.js';
+export {
+  foldedConst,
+  lowerInternals,
+  MIN_I256,
+  MINUS_ONE_WORD,
+  numClass,
+  typeOf,
+} from './lower/context.js';
 export type { LowerCtx, LowerInternals } from './lower/context.js';
 export { lowerStmts, emitFnSubroutines } from './lower/statements.js';

@@ -16,7 +16,9 @@ export interface SourceMap {
   readonly sites: readonly {
     id: SiteId;
     kind: 'panic' | 'decode' | 'call' | 'stmt';
-    detail: string;
+    detail: string; // display only — match on `kind` / `panicCodes`, never on this text
+    // 'panic' sites only: the Panic(uint256) codes this site can raise (non-empty)
+    panicCodes?: readonly number[];
   }[];
   readonly labels: readonly { pc: number; name: string }[];
 }

@@ -17,23 +17,17 @@
  *
  * Diagnostics from lowering, then the deployless result checks (`deployless.ts`), are forwarded
  * to `options.onDiagnostic`; nothing is ever logged.
- * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
- * (with candidate sites from `sourceMap.sites`), `EvsDecodeError(uint256 site)` (exact site),
- * `EvsInvalidCalldata()`, `Error(string)`, custom selectors, and the empty revert.
+ * `explainRevert` presents the shared revert classifier (`abi/revert.ts`, also behind
+ * `decodeScriptError`) against this artifact: `Panic(uint256)` with the sites whose
+ * `panicCodes` include the code, `EvsDecodeError(uint256 site)` (exact site),
+ * `EvsInvalidCalldata()`, declared errors, and — for payloads only a callee can produce
+ * (`Error(string)`, foreign selectors, the empty revert) — the strict call sites that bubble them.
  */
 
 import type { Address } from 'abitype';
 
-import {
-  canonicalTypeSignature,
-  decodeErrorArgsRecord,
-  describePanic,
-  ERROR_STRING_SELECTOR,
-  EVS_DECODE_ERROR_SELECTOR,
-  EVS_INVALID_CALLDATA_SELECTOR,
-  PANIC_SELECTOR,
-  type ScriptAbi,
-} from './abi/artifact.js';
+import { canonicalTypeSignature, describePanic, type ScriptAbi } from './abi/artifact.js';
+import { classifyRevert, errorTableOf } from './abi/revert.js';
 import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
 import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
@@ -43,12 +37,12 @@ import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
 import { SIMULATE_TRAMPOLINE_LABEL } from './codegen/simulate.js';
 import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
-import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
+import { bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { deploylessResultDiagnostics } from './deployless.js';
 import { eliminateDeadCode } from './ir/dce.js';
-import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
+import { walkStmts, type ScriptIr, type SiteId, type Stmt } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import {
   assertEvmVersion,
@@ -120,7 +114,10 @@ export interface RevertExplanation {
   errorName?: string; // script-error only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // script-error only: name-keyed decoded args
   site?: { id: SiteId; detail: string };
-  candidateSites?: readonly { id: SiteId; detail: string }[]; // Panic only
+  // 'panic': the sites whose template can raise that code. 'error-string' / 'custom' / 'empty'
+  // (and a 'script-error' whose args do not decode): the strict call sites that bubble a callee
+  // revert verbatim (the only places such a payload can enter the script). Absent otherwise.
+  candidateSites?: readonly { id: SiteId; detail: string }[];
   raw: Hex;
 }
 
@@ -289,7 +286,14 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     options: resolved,
     toViem,
     disassemble: (): Disassembly => disassemble(runtimeBytecode, sourceMap),
-    explainRevert: (data: Hex): RevertExplanation => explainRevert(data, ir, sourceMap),
+    explainRevert: (data: Hex): RevertExplanation =>
+      explainRevert(data, {
+        ir,
+        map: sourceMap,
+        abi,
+        runtimeBytecode,
+        evmVersion: resolved.evmVersion,
+      }),
   };
   return Object.freeze(artifact);
 }
@@ -355,188 +359,300 @@ function toSiteRef(site: SourceMap['sites'][number]): SiteRef {
   return { id: site.id, detail: site.detail };
 }
 
+/** Everything `explainRevert` reads from the artifact. */
+interface ExplainContext {
+  readonly ir: ScriptIr; // the recorded IR
+  readonly map: SourceMap; // its sites are the EMITTED ones (after DCE, uncalled fns dropped)
+  readonly abi: readonly unknown[];
+  readonly runtimeBytecode: Hex;
+  readonly evmVersion: EvmVersion;
+}
+
 /**
- * Whether the script performs any sub-calls. The evs error selectors (`EvsDecodeError`,
- * `EvsInvalidCalldata`) are public constants — an adversarial callee can revert with them
- * verbatim and the script bubbles the payload byte-exactly, so for scripts WITH sub-calls
- * an attribution to a script site is a strong hint, never proof. Scripts without sub-calls
- * cannot bubble anything, so there the attribution is authoritative.
+ * The emitted call sites that forward a callee's revert payload verbatim: strict `s.read` /
+ * `s.call` / `s.simulate` sites. `try*` sites swallow the revert, and a `revertReturns` site
+ * decodes it as its value (a normal return is its failure, reported as `EvsDecodeError`), so
+ * neither can bubble anything.
  */
-function scriptHasSubcalls(ir: ScriptIr): boolean {
-  let found = false;
-  const look = (s: { k: string }): void => {
-    if (s.k === 'call') found = true;
+function bubblingSites(ctx: ExplainContext): SiteRef[] {
+  const ids = new Set<SiteId>();
+  const look = (s: Stmt): void => {
+    if (s.k === 'call' && s.mode === 'strict' && s.revertReturns === undefined) ids.add(s.site);
   };
-  walkStmts(ir.body, look);
-  for (const fn of ir.fns) walkStmts(fn.body, look);
-  return found;
+  walkStmts(ctx.ir.body, look);
+  for (const fn of ctx.ir.fns) walkStmts(fn.body, look);
+  return ctx.map.sites.filter((s) => ids.has(s.id)).map(toSiteRef);
+}
+
+function listSites(sites: readonly SiteRef[]): string {
+  return sites.map((s) => `${s.detail} (site ${s.id})`).join('; ');
+}
+
+/** "bubbled verbatim from a callee through …" naming the strict call sites (non-empty). */
+function throughCallSites(sites: readonly SiteRef[]): string {
+  const where =
+    sites.length === 1 ? 'the strict call site' : `one of the ${sites.length} strict call sites`;
+  return `bubbled verbatim from a callee through ${where}: ${listSites(sites)}`;
+}
+
+const NOT_FROM_THIS_ARTIFACT =
+  'this script has no strict call site that bubbles a callee revert, so the payload did not ' +
+  'come from this artifact';
+
+/** The " — <where it came from>" clause for a payload only a callee can have produced. */
+function bubbledFrom(sites: readonly SiteRef[]): string {
+  return ` — ${sites.length > 0 ? throughCallSites(sites) : NOT_FROM_THIS_ARTIFACT}`;
 }
 
 const CALLEE_FORGERY_HEDGE =
-  ' — note: the script performs sub-calls and a callee may have reverted with this evs ' +
-  'selector verbatim (bubbled byte-exactly), in which case the failure originated off-script';
+  ' — note: the script has strict call sites that bubble callee reverts, and a callee may have ' +
+  'reverted with this selector verbatim (bubbled byte-exactly), in which case the failure ' +
+  'originated off-script';
 
-function explainRevert(data: Hex, ir: ScriptIr, map: SourceMap): RevertExplanation {
-  const bytes = decodeHex(data, 'explainRevert');
-  const raw = bytesToHex(bytes);
+/**
+ * The evs error selectors (`EvsDecodeError`, `EvsInvalidCalldata`) and declared script errors
+ * are public — a callee can revert with them verbatim, and a strict call site bubbles the payload
+ * byte-exactly, so for a script WITH a bubbling site an attribution to the script is a strong
+ * hint, never proof. Without one (no sub-calls, or only `try*` / `revertReturns` sites) nothing
+ * can be bubbled, so there the attribution is authoritative and carries no hedge.
+ */
+function forgeryHedge(ctx: ExplainContext): string {
+  return bubblingSites(ctx).length > 0 ? CALLEE_FORGERY_HEDGE : '';
+}
 
-  if (bytes.length === 0) {
+function explainRevert(data: Hex, ctx: ExplainContext): RevertExplanation {
+  const raw = bytesToHex(decodeHex(data, 'explainRevert'));
+  const byteLength = (raw.length - 2) / 2;
+  const c = classifyRevert(raw, errorTableOf(ctx.abi));
+  switch (c.kind) {
+    case 'empty':
+      return explainEmpty(raw, ctx);
+    case 'short': {
+      const candidateSites = bubblingSites(ctx);
+      return {
+        kind: 'custom',
+        message:
+          `malformed revert payload (${byteLength} bytes — shorter than a 4-byte selector)` +
+          bubbledFrom(candidateSites),
+        candidateSites,
+        raw,
+      };
+    }
+    case 'panic':
+      return explainPanic(raw, c.code, ctx);
+    case 'error-string': {
+      const candidateSites = bubblingSites(ctx);
+      return {
+        kind: 'error-string',
+        message: `callee revert Error(${JSON.stringify(c.reason)})${bubbledFrom(candidateSites)}`,
+        candidateSites,
+        raw,
+      };
+    }
+    case 'abi-error':
+      if (c.args !== null && c.entry.name === 'EvsDecodeError') {
+        return explainDecodeError(raw, c.args['site'], ctx);
+      }
+      if (c.args !== null && c.entry.name === 'EvsInvalidCalldata') {
+        return explainInvalidCalldata(raw, ctx);
+      }
+      if (c.entry.name !== 'EvsDecodeError' && c.entry.name !== 'EvsInvalidCalldata') {
+        return explainScriptError(raw, c.entry.name, c.selector, c.args, ctx);
+      }
+      // an evs built-in selector whose payload does not decode: not something evs emits
+      return explainCustom(raw, c.selector, byteLength, ctx);
+    default: // 'unknown'
+      return explainCustom(raw, c.selector, byteLength, ctx);
+  }
+}
+
+function explainCustom(
+  raw: Hex,
+  selector: Hex,
+  byteLength: number,
+  ctx: ExplainContext,
+): RevertExplanation {
+  const candidateSites = bubblingSites(ctx);
+  return {
+    kind: 'custom',
+    message:
+      `custom error ${selector} (${byteLength} byte payload) — decode it against the callee's ABI` +
+      bubbledFrom(candidateSites),
+    candidateSites,
+    raw,
+  };
+}
+
+function explainPanic(raw: Hex, code: bigint, ctx: ExplainContext): RevertExplanation {
+  const { codeHex, meaning } = describePanic(code);
+  // `panicCodes` is exact per site (codegen/sites.ts): only sites whose template can raise
+  // THIS code are candidates; `detail` is display text and never matched on
+  const candidateSites = ctx.map.sites
+    .filter((s) => s.panicCodes?.some((p) => BigInt(p) === code) === true)
+    .map(toSiteRef);
+  const bubbling = bubblingSites(ctx);
+  let where: string;
+  if (candidateSites.length > 0) {
+    where = ` — ${candidateSites.length} candidate site(s) in this script: ${listSites(candidateSites)}`;
+    if (bubbling.length > 0) where += `; or ${throughCallSites(bubbling)}`;
+  } else {
+    where =
+      ` — no site in this script can raise Panic(${codeHex}), so ` +
+      (bubbling.length > 0 ? `it was ${throughCallSites(bubbling)}` : NOT_FROM_THIS_ARTIFACT);
+  }
+  return {
+    kind: 'panic',
+    message: `Panic(${codeHex}): ${meaning}${where}`,
+    panicCode: code,
+    candidateSites,
+    raw,
+  };
+}
+
+function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): RevertExplanation {
+  const id = typeof siteArg === 'bigint' ? siteArg : -1n;
+  const hedge = forgeryHedge(ctx);
+  if (raw.length !== 2 + 36 * 2) {
     return {
-      kind: 'empty',
+      kind: 'evs-decode',
       message:
-        'empty revert payload (no returndata) — a callee `revert()`/`require(false)` bubbled ' +
-        'verbatim, or the call frame failed without a reason',
+        `returndata decode failed (EvsDecodeError site ${id}) — but the payload is ` +
+        `${(raw.length - 2) / 2} bytes, not the 36 this compiler emits, so this script's own ` +
+        `code cannot have produced it${hedge}`,
       raw,
     };
   }
-  if (bytes.length < 4) {
+  const idNum = id >= 0n && id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : -1;
+  const site = idNum >= 0 ? siteById(ctx.map, idNum) : undefined;
+  // only a 'decode'-kind site is a plausible script origin: the compiler emits
+  // EvsDecodeError(site) exclusively from strict-call decode-fail stubs. Any other site id
+  // (or an unknown one) cannot have been produced by this script's own code.
+  if (site !== undefined && site.kind === 'decode') {
+    const ref = toSiteRef(site);
     return {
-      kind: 'custom',
-      message: `malformed revert payload (${bytes.length} bytes — shorter than a 4-byte selector)`,
+      kind: 'evs-decode',
+      message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${hedge}`,
+      site: ref,
       raw,
     };
   }
-
-  const selector = bytesToHex(bytes.subarray(0, 4));
-
-  if (selector === PANIC_SELECTOR && bytes.length === 36) {
-    const code = bytesToBigInt(bytes, 4);
-    const { codeHex, meaning } = describePanic(code);
-    const candidateSites = map.sites
-      .filter((s) => s.kind === 'panic' && s.detail.includes(codeHex))
-      .map(toSiteRef);
-    const where =
-      candidateSites.length > 0
-        ? ` — ${candidateSites.length} candidate site(s) in this script: ${candidateSites
-            .map((s) => `${s.detail} (site ${s.id})`)
-            .join('; ')}`
-        : ' — no candidate site of this panic kind exists in this script, so the payload was bubbled verbatim from a callee';
+  if (site !== undefined) {
     return {
-      kind: 'panic',
-      message: `Panic(${codeHex}): ${meaning}${where}`,
-      panicCode: code,
+      kind: 'evs-decode',
+      message:
+        `returndata decode failed (EvsDecodeError site ${id}) — but site ${id} is not a ` +
+        `returndata-decode site in this script, so this script's own code cannot have ` +
+        `produced the payload${hedge}`,
+      raw,
+    };
+  }
+  return {
+    kind: 'evs-decode',
+    message: `returndata decode failed (EvsDecodeError site ${id}) — the site id is unknown to this artifact's source map${hedge}`,
+    raw,
+  };
+}
+
+function explainInvalidCalldata(raw: Hex, ctx: ExplainContext): RevertExplanation {
+  const { ir } = ctx;
+  const signature = `${ir.name}(${ir.args.map((a) => canonicalTypeSignature(a.type)).join(',')})`;
+  const hedge = forgeryHedge(ctx);
+  return {
+    kind: 'evs-invalid-calldata',
+    message:
+      `calldata does not match ${signature} — the script reverted EvsInvalidCalldata() ` +
+      `(wrong selector, truncated calldata, or malformed dynamic arguments)${hedge}`,
+    raw,
+  };
+}
+
+/** A DECLARED custom error (issue #15). The callee-forgery hedge applies exactly as for the evs
+ *  selectors: the selector is public. */
+function explainScriptError(
+  raw: Hex,
+  name: string,
+  selector: Hex,
+  args: Readonly<Record<string, unknown>> | null,
+  ctx: ExplainContext,
+): RevertExplanation {
+  if (args === null) {
+    // s.throw always encodes its args well-formed: a malformed payload can only be a callee's
+    const candidateSites = bubblingSites(ctx);
+    return {
+      kind: 'script-error',
+      message:
+        `declared error ${name} (selector ${selector}) with a MALFORMED argument ` +
+        `payload (${(raw.length - 10) / 2} bytes) — the payload does not decode against its ` +
+        `declared inputs, so this script's s.throw cannot have produced it` +
+        bubbledFrom(candidateSites),
+      errorName: name,
       candidateSites,
       raw,
     };
   }
-
-  if (selector === EVS_DECODE_ERROR_SELECTOR && bytes.length === 36) {
-    const id = bytesToBigInt(bytes, 4);
-    const idNum = id <= BigInt(Number.MAX_SAFE_INTEGER) ? Number(id) : -1;
-    const site = idNum >= 0 ? siteById(map, idNum) : undefined;
-    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
-    // only a 'decode'-kind site is a plausible script origin: the compiler emits
-    // EvsDecodeError(site) exclusively from strict-call decode-fail stubs. Any other site id
-    // (or an unknown one) cannot have been produced by this script's own code.
-    if (site !== undefined && site.kind === 'decode') {
-      const ref = toSiteRef(site);
-      return {
-        kind: 'evs-decode',
-        message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${hedge}`,
-        site: ref,
-        raw,
-      };
-    }
-    if (site !== undefined) {
-      return {
-        kind: 'evs-decode',
-        message:
-          `returndata decode failed (EvsDecodeError site ${id}) — but site ${id} is not a ` +
-          `returndata-decode site in this script, so this script's own code cannot have ` +
-          `produced the payload${hedge}`,
-        raw,
-      };
-    }
-    return {
-      kind: 'evs-decode',
-      message: `returndata decode failed (EvsDecodeError site ${id}) — the site id is unknown to this artifact's source map${hedge}`,
-      raw,
-    };
-  }
-
-  if (selector === EVS_INVALID_CALLDATA_SELECTOR && bytes.length === 4) {
-    const signature = `${ir.name}(${ir.args.map((a) => canonicalTypeSignature(a.type)).join(',')})`;
-    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
-    return {
-      kind: 'evs-invalid-calldata',
-      message:
-        `calldata does not match ${signature} — the script reverted EvsInvalidCalldata() ` +
-        `(wrong selector, truncated calldata, or malformed dynamic arguments)${hedge}`,
-      raw,
-    };
-  }
-
-  if (selector === ERROR_STRING_SELECTOR) {
-    const reason = tryDecodeErrorString(bytes);
-    if (reason !== null) {
-      return {
-        kind: 'error-string',
-        message: `callee revert bubbled verbatim: Error(${JSON.stringify(reason)})`,
-        raw,
-      };
-    }
-  }
-
-  // a DECLARED custom error (issue #15) — matched against the script's own error table. The
-  // callee-forgery hedge applies exactly as for the evs selectors: the selector is public.
-  const declared = (ir.errors ?? []).find((e) => e.selector === selector);
-  if (declared !== undefined) {
-    const hedge = scriptHasSubcalls(ir) ? CALLEE_FORGERY_HEDGE : '';
-    const payload: Hex = `0x${raw.slice(2 + 8)}`;
-    const args = decodeErrorArgsRecord(declared.inputs, payload);
-    if (args === null) {
-      return {
-        kind: 'script-error',
-        message:
-          `declared error ${declared.name} (selector ${selector}) with a MALFORMED argument ` +
-          `payload (${bytes.length - 4} bytes) — the payload does not decode against its ` +
-          `declared inputs, so it was likely bubbled verbatim from a callee`,
-        errorName: declared.name,
-        raw,
-      };
-    }
-    const shown = Object.entries(args)
-      .map(([k, v]) => `${k}: ${fmtErrorArg(v)}`)
-      .join(', ');
-    return {
-      kind: 'script-error',
-      message: `script error ${declared.name}(${shown}) — thrown by s.throw${hedge}`,
-      errorName: declared.name,
-      errorArgs: args,
-      raw,
-    };
-  }
-
+  const hedge = forgeryHedge(ctx);
+  const shown = Object.entries(args)
+    .map(([k, v]) => `${k}: ${fmtErrorArg(v)}`)
+    .join(', ');
   return {
-    kind: 'custom',
-    message:
-      `custom error ${selector} bubbled verbatim from a callee (${bytes.length} byte payload) ` +
-      `— decode it against the callee's ABI`,
+    kind: 'script-error',
+    message: `script error ${name}(${shown}) — thrown by s.throw${hedge}`,
+    errorName: name,
+    errorArgs: args,
     raw,
   };
 }
+
+/**
+ * The empty payload has two origins: a callee's bare `revert()` / `require(false)` bubbled by a
+ * strict call site, or a frame that failed without data — out of gas, or an opcode the node does
+ * not support at the requested block (a fork-gated opcode run at a historical block or on a
+ * chain that has not activated that fork).
+ */
+function explainEmpty(raw: Hex, ctx: ExplainContext): RevertExplanation {
+  const candidateSites = bubblingSites(ctx);
+  const callee =
+    candidateSites.length > 0
+      ? `a bare revert() / require(false) ${throughCallSites(candidateSites)}; or `
+      : '';
+  const opcodes = forkOpcodesOf(ctx);
+  const frame =
+    opcodes.length === 0
+      ? 'the call frame failed without a reason (out of gas)'
+      : `the call frame failed without a reason: out of gas, or an opcode the node rejects at ` +
+        `this block — the runtime uses ${opcodes.map((o) => `${o.mnemonic} (${o.since})`).join(' and ')}` +
+        ` (evmVersion '${ctx.evmVersion}'); for a block or chain before that fork, recompile ` +
+        `with an older evmVersion ('paris' runs everywhere)`;
+  return {
+    kind: 'empty',
+    message: `empty revert payload (no returndata) — ${callee}${frame}`,
+    candidateSites,
+    raw,
+  };
+}
+
+/** The post-merge, fork-gated opcodes the runtime's CODE region uses (the data segments after
+ *  the INVALID guard are never executed, so bytes there do not count). */
+function forkOpcodesOf(ctx: ExplainContext): { mnemonic: string; since: EvmVersion }[] {
+  const dataLabels = ctx.map.labels.filter((l) => l.name.startsWith('data_')).map((l) => l.pc);
+  const codeEnd = dataLabels.length > 0 ? Math.min(...dataLabels) : Number.POSITIVE_INFINITY;
+  const used = new Set<string>();
+  for (const line of disassemble(ctx.runtimeBytecode).lines) {
+    if (line.pc < codeEnd) used.add(line.mnemonic);
+  }
+  return FORK_GATED_OPCODES.filter((o) => used.has(o.mnemonic));
+}
+
+/** Newest fork first (the one most likely to be missing at a historical block). */
+const FORK_GATED_OPCODES: readonly { mnemonic: string; since: EvmVersion }[] = [
+  { mnemonic: 'MCOPY', since: 'cancun' },
+  { mnemonic: 'PUSH0', since: 'shanghai' },
+];
 
 /** Message rendering of one decoded error arg — bigints (top-level or nested in a decoded
  *  struct/array arg) stringify as `123n`. */
 function fmtErrorArg(v: unknown): string {
   return JSON.stringify(v, (_k, x: unknown) => (typeof x === 'bigint' ? `${x}n` : x));
-}
-
-/** Permissive `Error(string)` payload decode; returns null on any structural mismatch. */
-function tryDecodeErrorString(bytes: Uint8Array): string | null {
-  // [selector:4][offset:32][len:32][utf8 payload, zero-padded]
-  if (bytes.length < 4 + 64) return null;
-  const offset = bytesToBigInt(bytes, 4);
-  if (offset > BigInt(bytes.length)) return null;
-  const lenAt = 4 + Number(offset);
-  if (lenAt + 32 > bytes.length) return null;
-  const len = bytesToBigInt(bytes, lenAt);
-  if (len > BigInt(bytes.length)) return null;
-  const start = lenAt + 32;
-  const end = start + Number(len);
-  if (end > bytes.length) return null;
-  // non-fatal: malformed UTF-8 decodes to U+FFFD, never throws
-  return new TextDecoder('utf-8', { fatal: false }).decode(bytes.subarray(start, end));
 }
 
 // ---------------------------------------------------------------------------
