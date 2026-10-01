@@ -541,8 +541,10 @@ tryRead<const abi extends Abi | readonly unknown[], name extends SubcallFunction
 Like `s.read`, but failure becomes data instead of a revert. `success` is `false` when the call
 fails **or** when the returndata is structurally malformed; `value` is then zeros, empty
 strings, empty arrays, or zero-filled tuples — always safe to use. (This is stricter than
-Solidity's `try/catch`, which would surface malformed returndata differently.) For a function
-with **no outputs**, a call to an address without code succeeds and `success` is `true` (for
+Solidity's `try/catch`, which would surface malformed returndata differently.) `success` is not
+a range check: an out-of-range word (a `uint8` output holding 300) is normalized like under
+`s.read` and reports `success = true` (see [calls — s.tryRead](/guides/calls/#stryread)). For a
+function with **no outputs**, a call to an address without code succeeds and `success` is `true` (for
 every `try*` verb) — there is nothing to decode, and evs adds no `extcodesize` check (see
 [calls](/guides/calls/#when-to-use-which)).
 

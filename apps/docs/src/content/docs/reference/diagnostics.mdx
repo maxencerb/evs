@@ -8,14 +8,15 @@ evs fails on three distinct timelines, with a different mechanism on each:
 | Timeline | Mechanism | Where to look |
 | --- | --- | --- |
 | Recording time | A subclass of `EvsError` is thrown while your builder callback runs | This page |
-| Compile time | `compile()` throws — `EvsCompileError` for whole-program limits, `EvsInternalError` for verifier failures — and reports warnings via `onDiagnostic` | This page |
+| Compile time | `compile()` throws — `EvsCompileError` for whole-program limits and types too deeply nested to decode, `EvsInternalError` for verifier failures — and reports warnings via `onDiagnostic` | This page |
 | Run time | The script reverts on-chain — panics, the evs error ABI, or bubbled callee reverts | [Compiled artifact](/reference/artifact/), [errors and debugging](/guides/errors-and-debugging/) |
 
 The policy is to validate at recording wherever the information already exists there — which is
 almost everywhere — so most mistakes surface as an exception thrown synchronously from the
 offending builder call inside your `evscript` callback, before any bytecode exists. The error's
-ordinary JavaScript stack trace therefore points at your line. Compile time is reserved for whole-program facts
-(code size, option gating).
+ordinary JavaScript stack trace therefore points at your line. Compile time is reserved for facts
+only code generation knows: whole-program ones (code size, option gating) and the stack depth a
+deeply nested type needs (see `UNSUPPORTED_V0` below).
 
 ## The `EvsError` hierarchy
 
@@ -40,8 +41,8 @@ Five subclasses partition the failures:
 | `EvsStagingError` | `STAGING_MISUSE` | A staged `Expr` handle is used as a host value — the `valueOf`, `Symbol.toPrimitive`, `toString`, and `toJSON` traps all throw. See [values and types](/guides/values-and-types/) |
 | `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` | Type and literal validation at recording; also malformed host inputs to `compile`, `toViem`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
 | `EvsScopeError` | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` | A handle or cell is used outside the scope it belongs to |
-| `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION` | Whole-program limits and option gating at compile time |
-| `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report` |
+| `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION`, `UNSUPPORTED_V0` | Whole-program limits and option gating at compile time; a struct/array type nested too deeply for the decoder's 16-slot stack window |
+| `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report`. Also semantically invalid IR handed to `interpret()` / `compile()` (see `INTERNAL` below) |
 
 ```ts
 import { evscript, EvsTypeError, t } from '@maxencerb/evs';
@@ -69,13 +70,13 @@ try {
 | `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself; a caught `s.fn` failure after its body defined a nested `s.fn` | Recording |
 | `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
 | `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
-| `UNSUPPORTED_V0` | `EvsTypeError` | A type or ABI feature outside the v0 surface: arrays nested more than four levels deep (`uint256[][][][][]` — the message says "nests arrays N levels deep — at most 4 levels are supported", [#4](https://github.com/maxencerb/evs/issues/4)), or a static type of 2^32 bytes or more ("has an ABI static size of N bytes — at most 2^32 − 1 bytes are supported"; thrown by `compile()` when only a raw ABI tuple's total is too large). Every other array shape is supported: fixed-size `T[N]`, `tuple[][]`, `string[][]`/`bytes[][]`, `uint256[][][]`, … | Recording |
+| `UNSUPPORTED_V0` | `EvsTypeError` (recording) / `EvsCompileError` (compile) | A type or ABI feature outside the v0 surface. At recording: arrays nested more than four levels deep (`uint256[][][][][]` — the message says "nests arrays N levels deep — at most 4 levels are supported", [#4](https://github.com/maxencerb/evs/issues/4)), or a static type of 2^32 bytes or more ("has an ABI static size of N bytes — at most 2^32 − 1 bytes are supported"; an `EvsTypeError` thrown by `compile()` when only a raw ABI tuple's total is too large). At compile time, as `EvsCompileError`: a script argument, call output or zero value whose structs and arrays nest too deeply for the EVM's 16-slot stack window (about a dozen nested structs, or four to five levels of structs inside arrays of structs — the message says "nests structs and arrays too deeply" and names the value; flatten the type, see [values and types](/guides/values-and-types/#the-type-vocabulary)). Every other array shape is supported: fixed-size `T[N]`, `tuple[][]`, `string[][]`/`bytes[][]`, `uint256[][][]`, … | Recording / Compile |
 | `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid struct field names, duplicate or invalid script arg names, duplicate or invalid return component names, an empty `s.return({})` record, or a malformed ABI fragment passed to `s.read`; a `functionName` that selects no function in the verb's mutability bucket (unknown name or signature, wrong bucket), or an overloaded one the args cannot settle — the args fit several overloads (settle it with a typed literal or a signature `functionName`), or `t.fromOutputs` given an overloaded bare name. (An invalid script *name* given to `evscript()` is caught at the entry point as `TYPE_MISMATCH`.) | Recording |
 | `ERROR_DECL` | `EvsTypeError` | An invalid custom-error declaration: a bad `t.error(...)` name or params, a non-`t.error` entry in the def's `errors: [...]`, a reserved name (`Error`, `Panic`, `EvsDecodeError`, `EvsInvalidCalldata`, `empty`, `unknown`, `_`), a duplicate name, a 4-byte selector clash, or a script `name` equal to an error name in its ABI (a declared error, `EvsDecodeError` or `EvsInvalidCalldata`) | Recording |
 | `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` names an error that is not in the script's declared `errors` (or is declared under the same name with different params) | Recording |
 | `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget (statements, loop iterations and zero-filled array elements) | Compile / interpret |
 | `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |
-| `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script | Any |
+| `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script. The one exception is IR you load yourself: `deserializeIr` only checks its shape, and `interpret()` / `compile()` reject IR that is semantically invalid (a value used before it is defined, an unknown value id, an operand of the wrong type) with this error. Then the bug is in whatever produced that IR, even though the message still says to report it to evs | Any |
 
 ## Diagnostics — the compile-time warning channel
 

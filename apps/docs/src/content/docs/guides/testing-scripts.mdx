@@ -280,10 +280,13 @@ structurally equal IRs serialize identically — ideal for snapshot tests), and 
 parses one back with a full structural shape-and-version check, throwing `EvsTypeError` with
 the offending JSON path on any malformation. Both `interpret()` and `compile()` re-validate
 IR semantically against the same invariants the builder enforces (types, operands, scoping,
-in-place writes), so externally loaded IR fails loudly with an `EvsInternalError` instead of
-miscompiling. One builder rule is not an IR rule: `returns` may be empty at the IR level (such
-a program returns `0x`), while `s.return({})` is refused because viem cannot decode an empty
-result.
+in-place writes), so externally loaded IR fails loudly with an `EvsInternalError` (`INTERNAL`)
+before anything runs instead of miscompiling: well-shaped IR that uses a value before defining
+it, names an unknown value id or feeds an operand of the wrong type. Recorded IR can only be
+that broken through a bug, so the message asks you to report it to evs; for IR you loaded, the
+bug is in whatever produced it. One builder rule is not an IR rule: `returns` may be empty at
+the IR level (such a program returns `0x`), while `s.return({})` is refused because viem cannot
+decode an empty result.
 
 ```ts
 import {
