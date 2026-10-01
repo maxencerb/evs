@@ -8,7 +8,7 @@ import { layoutOfType, headBytes, type TypeLayout } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
-import { FREE_PTR } from '../memory.js';
+import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   encodeFramesOf,
   reserveEncodeFrames,
@@ -16,7 +16,7 @@ import {
   type PushBase,
   emitEncodeBlock,
 } from './encode.js';
-import { TAIL_CURSOR, emitCeil32, type SharedTails, internal, emitMemCopy } from './shared.js';
+import { emitCeil32, type SharedTails, internal, emitMemCopy } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // encode-to-bytes emitters — `s.encode` / `s.encodePacked` (issue #17)

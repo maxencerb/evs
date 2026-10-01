@@ -13,13 +13,13 @@ import {
   emitMemCopy,
   type PushBase,
   emitDecodeTupleToMem,
-  needsMemorySnapshot,
+  usesRecursiveCodec,
   emitWithinStackBudget,
   needsDecodeBudget,
   emitInitDecodeBudget,
   type DecodeBudget,
 } from '../abi.js';
-import { SCRATCH_1, FREE_PTR } from '../memory.js';
+import { SCRATCH_1, FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   SIMULATE_TRAMPOLINE_SELECTOR,
   SIMULATE_PAYLOAD_OFFSET,
@@ -29,8 +29,8 @@ import { emitCalldataFor } from './calldata.js';
 import {
   type CallSitePlan,
   internal,
+  assertSitePlan,
   makeDecodeFail,
-  TAIL_CURSOR,
   pushWordRef,
   pushValueRef,
   emitSnapshotReturndata,
@@ -85,23 +85,13 @@ export function emitSimulateCall(
     // validateIr restricts revertReturns to kind 'call' (the trampoline has its own revert framing)
     throw internal(`simulate ${fnAbi.name} (site ${siteId}): revertReturns survived validateIr`);
   }
-  if (outputs.length !== plan.outRefs.length) {
-    throw internal(
-      `simulate ${fnAbi.name} (site ${siteId}): ${outputs.length} ABI output(s) but ${plan.outRefs.length} out ref(s)`,
-    );
-  }
-  if (tryMode && plan.successRef === null) {
-    throw internal(`try simulate ${fnAbi.name} (site ${siteId}): successRef is required`);
-  }
-  if (!tryMode && plan.successRef !== null) {
-    throw internal(`strict simulate ${fnAbi.name} (site ${siteId}): successRef must be null`);
-  }
+  assertSitePlan(plan, outputs, `simulate ${fnAbi.name}`);
 
   // try mode over composite outputs: a failure after the snapshot rolls the free pointer back to
   // the snapshot base on its way to the zero block (see emitTryEpilogue); the one failure before
   // the snapshot (no trampoline payload) goes straight to the zero block.
   const restore =
-    tryMode && outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))))
+    tryMode && outputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))))
       ? w.newLabel(`sim_restore_${siteId}`)
       : null;
   // outputs whose decode can charge the decode-work budget get a budget word after the snapshot

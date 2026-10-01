@@ -11,9 +11,10 @@
  *
  * The two scratch words are never live across a statement boundary. Each emitter aliases them
  * under a role name, and the phases that share a word never overlap:
- * - `0x00`: the running tail cursor of the return encoder / calldata templates (`TAIL_CURSOR` in
- *   `abi/shared.ts` and `call/shared.ts`), and the returndata snapshot base during output decode
- *   (`SNAP_SLOT` in `call/shared.ts` — live only after the call, once the calldata cursor is dead);
+ * - `0x00`: the running tail cursor of the return encoder / calldata templates
+ *   ({@link TAIL_CURSOR}), and the snapshot base during a decode from a memory snapshot of the
+ *   calldata or the returndata ({@link SNAP_SLOT} — the script-argument decode runs before any
+ *   encode, and a call's output decode only after the call, once its calldata cursor is dead);
  * - `0x20`: the array-decode element base / heap-frame or tuple-frame pointer during *decode*
  *   (`ELEM_BASE` / `DECODE_FRAME` in `abi/shared.ts`), the data-literal staging base during
  *   tuple-arg *encode* (`STAGING_SLOT` in `call/calldata.ts`), and the wrapper argsSize across the
@@ -53,6 +54,15 @@ export const SCRATCH_0 = 0x00;
 
 /** Scratch word 1 (see the module header for its owners). */
 export const SCRATCH_1 = 0x20;
+
+/** Scratch `0x00` as the running tail cursor of an encode (the return tuple, a call's calldata,
+ *  `s.encode`): the next free byte of the output, transient within one template. */
+export const TAIL_CURSOR = SCRATCH_0;
+
+/** Scratch `0x00` as the base of a memory snapshot of the calldata (the script-argument decode)
+ *  or of a call's returndata (its output decode), which the recursive decoders read back so their
+ *  free-pointer churn never moves it. Never live at the same time as {@link TAIL_CURSOR}. */
+export const SNAP_SLOT = SCRATCH_0;
 
 /** Free-memory-pointer slot. */
 export const FREE_PTR = 0x40;

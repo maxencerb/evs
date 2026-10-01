@@ -4,6 +4,8 @@
  * attacker-shaped calldata matrix (→ `EvsInvalidCalldata()`, never an exceptional halt), the
  * dirty-word normalization rules, and the pre-cancun memcpy path.
  *
+ * Plus the codec-routing predicate (`usesRecursiveCodec`) and the head-offset lookup.
+ *
  * Test scripts are "echo" programs: prologue → `emitCalldataDecode` into frame slots →
  * `emitReturnEncode` of the same slots → shared tails. Both ABI directions are exercised in
  * one execution and the RETURN bytes must equal viem's encoding of the same value record.
@@ -14,10 +16,20 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { bytesToHex, execRuntime, DEFAULT_GAS_LIMIT } from '../../test/harness/evm.js';
 import { buildScriptAbi, canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
+import { layoutOfType } from '../abi/layout.js';
 import { AsmWriter, assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
+import { EvsInternalError } from '../core/errors.js';
 import { isMemrefType, typeToAbiParam, type EvsType, type Hex } from '../core/types.js';
-import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
+import {
+  emitCalldataDecode,
+  emitReturnEncode,
+  encodeFramesOf,
+  headOffsetAt,
+  headOffsets,
+  usesRecursiveCodec,
+  type SlotRef,
+} from './abi.js';
 import { createSharedTails, emitSharedTails } from './tails.js';
 
 // ---------------------------------------------------------------------------
@@ -526,5 +538,58 @@ describe('return encode from hand-built state', () => {
     );
     expect(res.success).toBe(true);
     expect(res.data).toBe('0x');
+  });
+});
+
+describe('codec routing and head offsets', () => {
+  const AS = [
+    { name: 'a', type: 'uint256' },
+    { name: 's', type: 'string' },
+  ] as const;
+  const S = { type: 'tuple', components: AS } as const satisfies EvsType;
+  const CORPUS: readonly [EvsType, boolean][] = [
+    ['uint8', false],
+    ['bytes32', false],
+    ['string', false],
+    ['bytes', false],
+    ['uint256[]', false],
+    ['uint8[]', false],
+    ['uint256[2]', true],
+    ['uint256[][]', true],
+    ['string[]', true],
+    ['uint256[2][]', true],
+    [S, true],
+    [{ type: 'tuple', components: [{ name: 'a', type: 'uint256' }] }, true],
+    [{ type: 'tuple[]', components: AS }, true],
+    [{ type: 'tuple[2]', components: AS }, true],
+    [{ type: 'tuple[][]', components: AS }, true],
+  ];
+
+  test.each(CORPUS)(
+    'usesRecursiveCodec(%j) is %s, in step with the encoder frames',
+    (type, want) => {
+      const l = layoutOfType(type);
+      expect(usesRecursiveCodec(l)).toBe(want);
+      // the calldata encoder routes on this predicate: a call arg needs an encode loop frame
+      // exactly when it is a recursive-codec array (a tuple encodes into its parent's frames)
+      expect(usesRecursiveCodec(l)).toBe(l.kind === 'tuple' || encodeFramesOf(l) > 0);
+    },
+  );
+
+  test('headOffsetAt reads a headOffsets entry and rejects a missing one as INTERNAL', () => {
+    const offs = headOffsets([
+      { name: 'a', type: 'uint256' },
+      {
+        name: 'p',
+        type: 'tuple',
+        components: [
+          { name: 'x', type: 'uint256' },
+          { name: 'y', type: 'uint256' },
+        ],
+      },
+      { name: 's', type: 'string' },
+    ]);
+    expect([0, 1, 2].map((i) => headOffsetAt(offs, i))).toEqual([0, 32, 96]);
+    expect(() => headOffsetAt(offs, 3)).toThrow(EvsInternalError);
   });
 });

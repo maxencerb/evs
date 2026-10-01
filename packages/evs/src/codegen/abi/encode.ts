@@ -14,11 +14,10 @@ import {
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
-import { FREE_PTR } from '../memory.js';
+import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   type SharedTails,
   type EncodeOpts,
-  TAIL_CURSOR,
   isRecursiveArray,
   emitMemCopy,
   emitCeil32,
@@ -56,7 +55,7 @@ export type PushWord = (i: number) => void;
  */
 export type PushBase = () => void;
 
-/** @internal Shared by `codegen/call.ts`. Cumulative ABI head offset (bytes) of component `i`
+/** @internal Shared with `codegen/call/`. Cumulative ABI head offset (bytes) of component `i`
  *  within `components` (static members — inner tuples, fixed-size arrays — inline their whole
  *  static size; every dynamic member is one offset word). */
 export function headOffsets(components: readonly NamedType[]): number[] {
@@ -68,6 +67,14 @@ export function headOffsets(components: readonly NamedType[]): number[] {
     cursor += isDynamic(layout) ? 32 : staticSize(layout);
   }
   return offs;
+}
+
+/** @internal Shared with `codegen/call/`. Head offset `i` of a {@link headOffsets} result; a
+ *  missing entry (an index past the component list) is an internal error, never a guess. */
+export function headOffsetAt(offs: readonly number[], i: number): number {
+  const ho = offs[i];
+  if (ho === undefined) throw internal(`no head offset for component #${i} of ${offs.length}`);
+  return ho;
 }
 
 /**
@@ -114,7 +121,7 @@ function encodeBlock(
 ): void {
   const offs = headOffsets(components);
   components.forEach((comp, i) => {
-    const ho = offs[i] ?? 0;
+    const ho = headOffsetAt(offs, i);
     const layout = layoutOfType(abiParamToType(comp));
 
     if (layout.kind === 'word') {
@@ -269,7 +276,7 @@ export function emitSubTupleBase(w: AsmWriter, pushBase: PushBase, ho: number): 
 }
 
 /**
- * @internal Shared by `codegen/call.ts` (calldata templates). Appends a leaf dynamic member's
+ * @internal Shared with `codegen/call/calldata.ts` (calldata templates). Appends a leaf dynamic member's
  * tail (`[len][payload]`) at the scratch cursor and advances it.
  * `pushPtr` pushes the member's memref pointer (`[len][payload…]`). `isArray` distinguishes
  * `32·len` (word-array) from `len` (bytes/string, zero-padded). The cursor stays in scratch so
