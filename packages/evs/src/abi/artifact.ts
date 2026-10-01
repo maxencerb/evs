@@ -18,6 +18,7 @@ import {
   type AbiParameter,
   decodeAbiParameters,
   encodeAbiParameters,
+  keccak256,
   toFunctionSelector,
 } from 'viem';
 
@@ -459,8 +460,24 @@ function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
  * evs type vocabulary (recursing into tuple components), naming the offending parameter. The selector is
  * computed by viem from the whole `item` so tuple inputs expand to their canonical
  * `(t1,t2,…)` signature.
+ *
+ * Memoized per entry OBJECT: every `s.read` / `s.call` site that names the same ABI entry (one
+ * `abi` reused across sites and scripts) shares one deep-frozen result instead of re-validating
+ * and re-hashing the selector. ABI entries are therefore treated as immutable once used — a
+ * mutated entry keeps its first conversion. Only successes are cached: an invalid entry throws
+ * its error again at every site (the message depends on the entry alone, not on the site).
  */
 export function toPlainAbiFunction(item: AbiFunction): PlainAbiFunction {
+  const hit = plainFunctionByEntry.get(item);
+  if (hit !== undefined) return hit;
+  const plain = computePlainAbiFunction(item);
+  plainFunctionByEntry.set(item, plain);
+  return plain;
+}
+
+const plainFunctionByEntry = new WeakMap<AbiFunction, PlainAbiFunction>();
+
+function computePlainAbiFunction(item: AbiFunction): PlainAbiFunction {
   const toPlain = (params: readonly AbiParameter[], kind: 'input' | 'output') =>
     Object.freeze(
       params.map((p, i): PlainAbiParam => {
@@ -653,4 +670,26 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
   const full = encodeAbiParameters(params, [coerced]);
   // single dynamic param ⇒ [head: offset 0x20][tail: len + payload]; the memref is the tail.
   return `0x${full.slice(2 + 64)}`;
+}
+
+/**
+ * Record-time `keccak256` of a flat literal — exactly the word `s.keccak256(v)` returns at run
+ * time for the memref `v` that {@link encodeLiteralData} would materialize: the raw bytes of a
+ * `string` / `bytes` literal, the standard `abi.encode(v)` of a word-element array (an offset
+ * word + `[len][words…]` for a dynamic `T[]`; just the `N` words of a static `T[N]`). Memref
+ * equality folds a literal operand's hash with it. Validation and canonicalization are
+ * `encodeLiteralData`'s (same rules, same errors), so the folded hash cannot drift from the
+ * materialized literal.
+ */
+export function literalHash(type: DynType | ArrayType, value: unknown): Hex {
+  const data = encodeLiteralData(type, value); // `0x` + [len:32][payload…], validated
+  const layout = layoutOf(type);
+  if (layout.kind === 'bytes') {
+    const len = Number.parseInt(data.slice(2, 66), 16);
+    return keccak256(`0x${data.slice(66, 66 + 2 * len)}`);
+  }
+  // encodeLiteralData admits only word-element arrays: a static `T[N]` encodes as its element words
+  // alone (no length word), a dynamic `T[]` as one head offset (0x20) + the memref image.
+  if (layout.kind === 'array' && layout.length !== null) return keccak256(`0x${data.slice(66)}`);
+  return keccak256(`0x${'20'.padStart(64, '0')}${data.slice(2)}`);
 }

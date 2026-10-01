@@ -3,6 +3,7 @@ import type { Abi } from 'viem';
  * Builder unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
  * constant folding, scope positives, and recorded-IR validity (`validateIr` on every script).
  */
+import { encodeAbiParameters, keccak256, stringToHex } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError } from '../core/errors.js';
@@ -1180,18 +1181,40 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
   });
 
   test('is exactly the stmts of the explicit s.keccak256(a).eq(s.keccak256(b)) spelling', () => {
+    const args = [t.string, t.string, t.array(t.uint256), t.array(t.uint256)] as const;
+    const sugar = evscript({ name: 'cmp', args }, (s, sa, sb, ua, ub) =>
+      s.return({ a: sa.eq(sb), b: ua.neq(ub) }),
+    );
+    const explicit = evscript({ name: 'cmp', args }, (s, sa, sb, ua, ub) =>
+      s.return({
+        a: s.keccak256(sa).eq(s.keccak256(sb)),
+        b: s.keccak256(ua).neq(s.keccak256(ub)),
+      }),
+    );
+    expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
+  });
+
+  test('a constant literal operand is hashed at record time: a bytes32 const, no data const', () => {
     const sugar = evscript({ name: 'cmp', args: [t.string, t.array(t.uint256)] }, (s, str, arr) =>
       s.return({ a: str.eq('hello'), b: arr.neq([1n, 2n]) }),
     );
+    // the oracle is viem, not literalHash: raw UTF-8 bytes / the standard abi.encode of the array
     const explicit = evscript(
       { name: 'cmp', args: [t.string, t.array(t.uint256)] },
       (s, str, arr) =>
         s.return({
-          a: s.keccak256(str).eq(s.keccak256(s.lit(t.string, 'hello'))),
-          b: s.keccak256(arr).neq(s.keccak256(s.lit(t.array(t.uint256), [1n, 2n]))),
+          a: s.keccak256(str).eq(s.lit(t.bytes32, keccak256(stringToHex('hello')))),
+          b: s
+            .keccak256(arr)
+            .neq(
+              s.lit(t.bytes32, keccak256(encodeAbiParameters([{ type: 'uint256[]' }], [[1n, 2n]]))),
+            ),
         }),
     );
     expect(stripDebugNames(sugar.ir)).toEqual(stripDebugNames(explicit.ir));
+    const stmts = allStmts(sugar.ir);
+    expect(stmts.filter((x) => x.k === 'const' && x.data.kind === 'data')).toHaveLength(0);
+    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(2); // the two Expr operands
   });
 
   test('literal rhs is coerced like any IntoExpr (string / array / struct literals)', () => {
@@ -1209,11 +1232,12 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
     });
     expect(() => validateIr(script.ir)).not.toThrow();
     const stmts = allStmts(script.ir);
-    // 'hello', '' and the two elements of the string[] literal
-    expect(stmts.filter((x) => x.k === 'const' && x.type === 'string')).toHaveLength(4);
+    // 'hello' and '' fold to bytes32 hash consts; the string[] literal's two elements are built
+    expect(stmts.filter((x) => x.k === 'const' && x.type === 'string')).toHaveLength(2);
+    expect(stmts.filter((x) => x.k === 'const' && x.type === 'bytes32')).toHaveLength(2);
     expect(stmts.filter((x) => x.k === 'arrnew')).toHaveLength(1); // the string[] literal
     expect(stmts.filter((x) => x.k === 'tuplenew')).toHaveLength(2); // s.tuple + the struct literal
-    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(8);
+    expect(stmts.filter((x) => x.k === 'keccak256')).toHaveLength(6);
     expect(stmts.filter((x) => x.k === 'bin').map((x) => x.k === 'bin' && x.op)).toEqual([
       'eq',
       'eq',

@@ -299,10 +299,13 @@ Comparison mirrors. Ordering comparisons take an `OrderedType` — numeric, `add
 (`LT`/`GT` vs `SLT`/`SGT`) are chosen from the static type, and `address` / `bytesN` compare as
 unsigned words. `eq`/`neq` accept any word type
 (`address`, `bool`, `bytesN` included) as a single-word compare, and every memref type
-(`string`, `bytes`, `T[]`, structs) as **hash equality**: the recorded stmts are exactly
+(`string`, `bytes`, `T[]`, structs) as **hash equality**: the recorded stmts are those of
 `s.keccak256(a).eq(s.keccak256(b))` — byte equality for `string`/`bytes` (raw bytes hashed),
 element-wise equality via the standard `abi.encode` for arrays and structs (two keccaks per
-comparison). Operand types must match exactly (structurally for structs); the error message
+comparison). A constant literal operand (a `string`/`bytes` literal, or a word-element array of
+literals) has its hash computed at record time and recorded as a `bytes32` constant, so only the
+other side is hashed at run time; struct literals and arrays holding an `Expr` are built and
+hashed at run time. Operand types must match exactly (structurally for structs); the error message
 suggests `toUint`/`toInt` when two numeric widths differ.
 
 ## s.and / s.or / s.not

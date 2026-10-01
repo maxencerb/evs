@@ -75,7 +75,7 @@ except `revertReturns`, which only `s.call` / `s.tryCall` accept.
 | Key            | Type                                  | Notes                                                              |
 | -------------- | ------------------------------------- | ------------------------------------------------------------------ |
 | `address`      | `IntoExpr<'address'>`                 | A `0x` literal or an `Expr<'address'>` from an earlier statement   |
-| `abi`          | `Abi`                                 | Inline or `as const`, exactly as with viem                         |
+| `abi`          | `Abi`                                 | Inline or `as const`, exactly as with viem. Each function entry is validated and its selector computed once, then reused by every call site that names it: do not mutate an ABI entry after a script used it |
 | `functionName` | name union                            | Restricted per verb — `pure`/`view` for `s.read`, `nonpayable`/`payable` for `s.call`/`s.simulate` |
 | `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
 | `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the target call — see [capping a target's gas](#capping-a-targets-gas); by default all available gas is forwarded |

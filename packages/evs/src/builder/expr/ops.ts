@@ -5,6 +5,7 @@
  * string/bytes), `env` and `select`.
  */
 
+import { literalHash } from '../../abi/artifact.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   type Expr,
@@ -23,10 +24,12 @@ import {
   elemTypeOf,
   isOrdered,
   isBytesN,
+  type ArrayType,
+  type DynType,
 } from '../../core/types.js';
 import { isEnvOp, type BinOp, type ModArithOp, type ValueId } from '../../ir/nodes.js';
 import { RecorderEncode } from './encode.js';
-import { makeExpr } from './handles.js';
+import { isStagedHandle, makeExpr } from './handles.js';
 import {
   describeHost,
   CMP_OPS,
@@ -39,7 +42,17 @@ import {
   fromUnsignedN,
   toUnsignedN,
   rangeOf,
+  isCompositeElemArray,
 } from './helpers.js';
+
+/** A memref type whose host literal is one flat data const — `string`, `bytes` or a word-element
+ *  array — in lockstep with `coerceToId`'s `dataConst` route. Struct literals (`tuplenew`) and
+ *  composite-element arrays (`arrnew` + per-element construction) are built, not consts. */
+function isFlatLiteralType(ty: EvsType): ty is DynType | ArrayType {
+  if (typeof ty !== 'string') return false;
+  if (ty === 'string' || ty === 'bytes') return true;
+  return isArrayValueType(ty) && !isCompositeElemArray(ty);
+}
 
 /** Operators, conversions, indexing, env and select (a `Recorder` layer). */
 export abstract class RecorderOps extends RecorderEncode {
@@ -198,8 +211,9 @@ export abstract class RecorderOps extends RecorderEncode {
    * `ty` (an Expr, a bare handle, or a host literal — `IntoExpr` rules), each is hashed the way
    * `s.keccak256(v)` hashes a single value (`string`/`bytes` directly → byte equality; arrays and
    * tuples through their standard ABI encoding → element-wise equality, never the ambiguous packed
-   * form), and the two `bytes32` words are compared. No new IR node: the recorded stmts are exactly
-   * `s.keccak256(a).eq(s.keccak256(b))`.
+   * form), and the two `bytes32` words are compared. No new IR node: the recorded stmts are those
+   * of `s.keccak256(a).eq(s.keccak256(b))`, except that a constant literal operand's hash is
+   * folded at record time (see {@link memrefOperandHash}).
    */
   private memrefEquality(
     op: 'eq' | 'neq',
@@ -209,18 +223,32 @@ export abstract class RecorderOps extends RecorderEncode {
     what: string,
   ): Expr {
     // left-to-right, hash-as-you-go: the stmt order is exactly what the explicit spelling records
-    // (a literal operand's const lands between the two hashes, as `s.lit` in the rhs would).
-    const ha = this.hashIds(
-      [this.coerceToId(a, ty, `${what} left operand`)],
-      `${what} left operand hash`,
-    );
-    const hb = this.hashIds(
-      [this.coerceToId(b, ty, `${what} right operand`)],
-      `${what} right operand hash`,
-    );
+    const ha = this.memrefOperandHash(a, ty, `${what} left operand`);
+    const hb = this.memrefOperandHash(b, ty, `${what} right operand`);
     const out = this.newValue('bool');
     this.appendStmt({ k: 'bin', op, a: ha, b: hb, out });
     return makeExpr(this.self, out);
+  }
+
+  /**
+   * One memref-equality operand → its `bytes32` hash. A host literal that would otherwise become
+   * a flat data const (a `string` / `bytes` literal, a word-element array of host literals) is
+   * hashed at record time (`literalHash`) and recorded as a `bytes32` const, so the script never
+   * materializes or hashes it — `x.eq('WETH')` costs one keccak, not two. Everything else (Exprs,
+   * bare handles, struct literals, composite-element arrays, arrays mixing in handles) is coerced
+   * and hashed at run time like `s.keccak256(v)`.
+   */
+  private memrefOperandHash(v: unknown, ty: EvsType, what: string): ValueId {
+    if (
+      isFlatLiteralType(ty) &&
+      !isStagedHandle(v) &&
+      !(Array.isArray(v) && v.some(isStagedHandle))
+    ) {
+      this.classify(v, what); // a Cell or a forged handle still gets coerceToId's error
+      const { hex, logical } = this.wordLiteral('bytes32', literalHash(ty, v));
+      return this.wordConst('bytes32', logical, hex);
+    }
+    return this.hashIds([this.coerceToId(v, ty, what)], `${what} hash`);
   }
 
   private materializeWord(ty: EvsType, r: { hex: Hex | null; logical: bigint | null }): ValueId {
