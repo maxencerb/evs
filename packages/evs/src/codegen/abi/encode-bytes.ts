@@ -75,7 +75,7 @@ function emitBytesFinalize(w: AsmWriter, note: string): void {
  * and leaves its pointer on the stack (net stack +1). The items encode as a top-level tuple —
  * heads at the payload start, dynamic offsets relative to it, tails appended at the shared
  * scratch cursor — via {@link emitEncodeBlock}, i.e. exactly the return-encode shape minus the
- * outer RETURN and the single-output wrapper. Composite-array loop frames are reserved BELOW
+ * outer RETURN and the single-output wrapper. Encode frames are reserved BELOW
  * the memref, so the free pointer must not move between entry and the final bump here.
  */
 export function emitAbiEncodeToBytes(

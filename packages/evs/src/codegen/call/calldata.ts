@@ -332,15 +332,17 @@ function emitCalldataBuildTuples(
   const selector = literalBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
 
-  // Composite-element array CALL ARGS (`tuple[]` directly, or a tuple arg whose member is a
-  // `tuple[]`/`T[][]`/`string[]`) encode through the scratch-frame loop, which keeps its loop
-  // state in a reserved in-memory frame region rather than on the stack. The return encoder reserves
-  // those frames below its output buffer; here the call-arg buffer is transient (the free pointer is
-  // NOT bumped for it), so we reserve the frames just below the buffer base by bumping the free
-  // pointer once — AFTER the data-literal staging block, and BEFORE `MLOAD(0x40)` (the buffer base)
-  // is read for the selector/heads/encode. FRAMES = the max concurrent array-nesting depth across all
-  // args (`tuple[]` = 1; a `tuple[]` whose member is `T[][]` = 2; …). `pushFrameSlot` then resolves
-  // each frame relative to `MLOAD(0x40)`, exactly as in the return encoder.
+  // CALL ARGS that need encode frames (composite-element / fixed-size array loops, and dynamic
+  // tuple levels nested deeper than the frameless ones) keep that state in a reserved in-memory
+  // frame region rather than on the stack. The return encoder reserves those frames below its
+  // output buffer; here the call-arg buffer is transient (the free pointer is NOT bumped for it), so
+  // we reserve the frames just below the buffer base by bumping the free pointer once — AFTER the
+  // data-literal staging block, and BEFORE `MLOAD(0x40)` (the buffer base) is read for the
+  // selector/heads/encode. FRAMES = the max number of concurrently live encode levels across the
+  // args (`encodeFramesOf`: one per array loop, plus one per dynamic tuple level from the third
+  // down below a root — the arg itself or an array element; 0 when no arg needs one, and then no
+  // bump at all). `pushFrameSlot` then resolves each frame relative to `MLOAD(0x40)`, exactly as in
+  // the return encoder.
   const frames = inputs.reduce(
     (n, p) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(p)))),
     0,
@@ -390,11 +392,11 @@ function emitCalldataBuildTuples(
     w.op('POP'); // []
   }
 
-  // -- reserve the composite-array encode loop frames just below the (transient) buffer base ----
+  // -- reserve the encode frames just below the (transient) buffer base -------------------------
   // After this bump, `MLOAD(0x40)` is the buffer base and frame f sits at
   // `[base − 32·FRAME_SLOTS·(f+1), base − 32·FRAME_SLOTS·f)`; the encode below never bumps the free
   // pointer again (tails are written at TAIL_CURSOR), so the buffer base stays fixed throughout.
-  reserveEncodeFrames(w, frames, `reserve ${frames} call-arg array-encode frame(s)`);
+  reserveEncodeFrames(w, frames, `reserve ${frames} call-arg encode frame(s)`);
 
   // -- selector at buf[0..4): MSTORE(buf, selector << 224) (heads at buf+4 overwrite [4,36)) ----
   emitSelectorWord(w, selector, `selector ${fnAbi.name}`);

@@ -426,7 +426,7 @@ export function emitReturnEncode(
   const dynOff = anyDyn ? 32 : 0;
   const headSize = headBytes(named);
 
-  // Reserve the composite-array encode loop frames BELOW the output buffer: bump the free
+  // Reserve the encode frames BELOW the output buffer: bump the free
   // pointer by 32·FRAME_SLOTS·FRAMES BEFORE reading `out`, so `out = MLOAD(0x40)` sits above frame 0
   // and `RETURN(out, cursor − out)` never returns scratch. FRAMES = the max number of concurrently
   // live encode levels of the return type (`encodeFramesOf`; 0 when no member needs one — no bump

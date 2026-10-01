@@ -41,7 +41,7 @@ function nested(d: number): TupleType {
   return t.struct({ a: t.uint128, s: t.string, xs: t.array(t.uint8), inner: nested(d - 1) });
 }
 function nestedValue(d: number): unknown {
-  if (d === 0) return { leaf: 7n, name: `leaf-${'n'.repeat(d + 40)}` };
+  if (d === 0) return { leaf: 7n, name: `leaf-${'n'.repeat(40)}` };
   return { a: BigInt(d), s: `level-${d}`, xs: [1, 2, 3], inner: nestedValue(d - 1) };
 }
 
@@ -82,7 +82,7 @@ const deepHolder = {
     s: 'outer',
     d: {
       tag: 'deep',
-      rows: [nestedValue(3), nestedValue(1 + 2)],
+      rows: [nestedValue(3), nestedValue(3)],
       tail: nestedValue(2),
     },
   },
