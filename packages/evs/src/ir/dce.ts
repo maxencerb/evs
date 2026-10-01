@@ -9,7 +9,8 @@
  * and `explainRevert` keep resolving; `codegen/frame.ts` only allocates slots for values a
  * surviving statement defines, so the frame shrinks along with the program.
  *
- * Liveness (a backward sweep to a fixpoint over the whole statement tree, fn bodies included):
+ * Liveness (propagated over the whole statement tree, fn bodies included, in time linear in
+ * its size — every statement and value is marked at most once):
  *
  *   seeds  every `returns[].value`; every fn's params and `resultValues`; every `call` (any
  *          `kind`, `strict` or `try` — a sub-call is observable through gas and state, and its
@@ -18,10 +19,12 @@
  *   flow   a live statement makes every value it reads live; a live value makes its defining
  *          statement live, and every `arrset`/`tupleset` that mutates memory the value may
  *          alias (see aliasing); an `if` is live iff any statement in either branch is live
- *          (then its condition is live); everything else — `const`, `bin`, `un`, `modarith`,
- *          `env`, `account`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`, `arrset`,
- *          `tuplenew`, `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a
- *          pure fn — is pure and dropped when nothing live depends on it.
+ *          (then its condition is live) — each statement records its innermost enclosing `if`
+ *          (looking through `while` blocks, whose `while` is always live), so marking a
+ *          statement climbs to that `if` once; everything else — `const`, `bin`, `un`,
+ *          `modarith`, `env`, `account`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`,
+ *          `arrset`, `tuplenew`, `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and
+ *          `fncall` to a pure fn — is pure and dropped when nothing live depends on it.
  *   cells  a cell is live iff a LIVE `cellget` of it exists anywhere (a `cellget` nobody reads
  *          is dead like any other pure statement; no per-position reasoning beyond that — loop
  *          back-edges make it a real dataflow problem for no payoff): its `cellnew` and every
@@ -88,11 +91,7 @@ export const dce: (ir: ScriptIr) => ScriptIr = eliminateDeadCode;
 // the pass
 // ---------------------------------------------------------------------------
 
-/** Every statement of a region with its parent block (for the `if` fixpoint and rebuild). */
-interface Region {
-  readonly stmts: readonly Stmt[];
-  readonly params: readonly ValueId[]; // fn params (empty for the main body)
-}
+type IfStmt = Extract<Stmt, { k: 'if' }>;
 
 class Dce {
   private readonly ir: ScriptIr;
@@ -108,22 +107,20 @@ class Dce {
   private readonly liveValues = new Set<ValueId>();
   private readonly pureMemo = new Map<FnId, boolean>();
   private readonly visitingFns = new Set<FnId>();
-  private readonly regions: Region[];
-  private readonly allIfs: Stmt[] = [];
+  /** innermost `if` around each statement nested in one (a `while`'s blocks are transparent) */
+  private readonly enclosingIf = new Map<Stmt, IfStmt>();
+  /** the top-level statement lists: the main body, then every fn body */
+  private readonly regions: readonly (readonly Stmt[])[];
 
   constructor(ir: ScriptIr) {
     this.ir = ir;
     this.parent = Array.from({ length: ir.values.length + ir.cells.length }, (_, i) => i);
-    this.regions = [
-      { stmts: ir.body, params: [] },
-      ...ir.fns.map((fn) => ({ stmts: fn.body, params: fn.params.map((p) => p.value) })),
-    ];
+    this.regions = [ir.body, ...ir.fns.map((fn) => fn.body)];
   }
 
   run(): ScriptIr {
     this.index();
     this.seed();
-    this.settleIfs();
     return this.rebuild();
   }
 
@@ -132,27 +129,37 @@ class Dce {
   // -------------------------------------------------------------------------
 
   private index(): void {
-    for (const region of this.regions) {
-      walkStmts(region.stmts, (s) => {
-        for (const out of stmtDefs(s)) this.defOf.set(out, s);
-        if (s.k === 'cellnew' || s.k === 'cellset') {
-          const bucket = this.cellWritesOf.get(s.cell);
-          if (bucket === undefined) this.cellWritesOf.set(s.cell, [s]);
-          else bucket.push(s);
-        }
-        if (s.k === 'if') this.allIfs.push(s);
-        this.unionAliases(s);
-      });
-    }
+    for (const region of this.regions) this.indexBlock(region, undefined);
     // bucket mutations only once every union is known (roots are final)
     for (const region of this.regions) {
-      walkStmts(region.stmts, (s) => {
+      walkStmts(region, (s) => {
         if (s.k !== 'arrset' && s.k !== 'tupleset') return;
         const root = this.find(s.k === 'arrset' ? s.arr : s.tuple);
         const bucket = this.mutationsOf.get(root);
         if (bucket === undefined) this.mutationsOf.set(root, [s]);
         else bucket.push(s);
       });
+    }
+  }
+
+  /** Defs, cell writes, alias unions and enclosing `if`s of a block (recursive). */
+  private indexBlock(stmts: readonly Stmt[], owner: IfStmt | undefined): void {
+    for (const s of stmts) {
+      if (owner !== undefined) this.enclosingIf.set(s, owner);
+      for (const out of stmtDefs(s)) this.defOf.set(out, s);
+      if (s.k === 'cellnew' || s.k === 'cellset') {
+        const bucket = this.cellWritesOf.get(s.cell);
+        if (bucket === undefined) this.cellWritesOf.set(s.cell, [s]);
+        else bucket.push(s);
+      }
+      this.unionAliases(s);
+      if (s.k === 'if') {
+        this.indexBlock(s.then, s);
+        this.indexBlock(s.else, s);
+      } else if (s.k === 'while') {
+        this.indexBlock(s.header, owner);
+        this.indexBlock(s.body, owner);
+      }
     }
   }
 
@@ -282,7 +289,7 @@ class Dce {
   }
 
   // -------------------------------------------------------------------------
-  // pass 2: seeds + propagation (worklist to a fixpoint)
+  // pass 2: seeds + propagation (each statement / value / cell is marked at most once)
   // -------------------------------------------------------------------------
 
   private seed(): void {
@@ -292,7 +299,7 @@ class Dce {
       for (const rv of fn.resultValues) this.markValue(rv);
     }
     for (const region of this.regions) {
-      walkStmts(region.stmts, (s) => {
+      walkStmts(region, (s) => {
         if (this.isSeed(s)) this.markStmt(s);
       });
     }
@@ -330,34 +337,14 @@ class Dce {
     }
   }
 
+  /** A live statement makes its reads live, and its enclosing `if` (which climbs further). */
   private markStmt(s: Stmt): void {
     if (this.liveStmts.has(s)) return;
     this.liveStmts.add(s);
     if (s.k === 'cellget') this.markCell(s.cell);
     for (const v of stmtReads(s)) this.markValue(v);
-  }
-
-  /** An `if` is live iff a statement in either branch is; marking one may enliven more. */
-  private settleIfs(): void {
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const s of this.allIfs) {
-        if (s.k !== 'if' || this.liveStmts.has(s)) continue;
-        if (this.hasLiveStmt(s.then) || this.hasLiveStmt(s.else)) {
-          this.markStmt(s);
-          changed = true;
-        }
-      }
-    }
-  }
-
-  private hasLiveStmt(stmts: readonly Stmt[]): boolean {
-    let found = false;
-    walkStmts(stmts, (s) => {
-      if (this.liveStmts.has(s)) found = true;
-    });
-    return found;
+    const owner = this.enclosingIf.get(s);
+    if (owner !== undefined) this.markStmt(owner);
   }
 
   // -------------------------------------------------------------------------

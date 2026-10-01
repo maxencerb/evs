@@ -13,6 +13,7 @@ import {
   deserializeIr,
   serializeIr,
   walkStmts,
+  walkStmtsWithPath,
   type ScriptIr,
   type Stmt,
   type ValueInfo,
@@ -862,11 +863,11 @@ describe('deserializeIr rejections', () => {
 });
 
 // ---------------------------------------------------------------------------
-// walkStmts
+// walkStmts / walkStmtsWithPath
 // ---------------------------------------------------------------------------
 
 describe('walkStmts', () => {
-  test('visits depth-first pre-order with disambiguated paths', () => {
+  test('visits depth-first pre-order with disambiguated paths (walkStmtsWithPath)', () => {
     const stmts: Stmt[] = [
       mk({ k: 'env', op: 'caller', out: 0 }),
       mk({
@@ -885,7 +886,7 @@ describe('walkStmts', () => {
       mk({ k: 'env', op: 'timestamp', out: 2 }),
     ];
     const visited: [string, readonly number[]][] = [];
-    walkStmts(stmts, (s, path) => visited.push([s.k, path]));
+    walkStmtsWithPath(stmts, (s, path) => visited.push([s.k, path]));
     expect(visited).toEqual([
       ['env', [0]],
       ['if', [1]],
@@ -898,9 +899,24 @@ describe('walkStmts', () => {
     ]);
   });
 
+  test('walkStmts visits the same statements in the same order, without paths', () => {
+    const withPath: Stmt[] = [];
+    walkStmtsWithPath(KITCHEN_SINK.body, (s) => withPath.push(s));
+    const plain: Stmt[] = [];
+    walkStmts(KITCHEN_SINK.body, (s, ...rest: unknown[]) => {
+      expect(rest).toEqual([]); // no path argument on the compile-path walk
+      plain.push(s);
+    });
+    expect(plain.length).toBe(withPath.length);
+    expect(plain.every((s, i) => s === withPath[i])).toBe(true);
+  });
+
   test('walks an empty list without visiting', () => {
     let count = 0;
     walkStmts([], () => {
+      count += 1;
+    });
+    walkStmtsWithPath([], () => {
       count += 1;
     });
     expect(count).toBe(0);
@@ -908,7 +924,7 @@ describe('walkStmts', () => {
 
   test('visits every statement of the kitchen sink exactly once, parents before children', () => {
     const paths: string[] = [];
-    walkStmts(KITCHEN_SINK.body, (_s, path) => paths.push(path.join('.')));
+    walkStmtsWithPath(KITCHEN_SINK.body, (_s, path) => paths.push(path.join('.')));
     expect(new Set(paths).size).toBe(paths.length); // unique paths
     // a child path always appears after its parent
     const violations = paths.filter((p) => {
