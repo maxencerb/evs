@@ -131,7 +131,7 @@ Five overloads, two modes. Every result spreads directly into viem's `readContra
 | `toViem({ mode: 'deployless' })` | same as the no-argument form |
 | `toViem({ mode: 'stateOverride', address? })` | `{ abi, address, stateOverride: [{ address, code: runtimeBytecode }] }` |
 | `toViem({ mode: 'stateOverride', sender, address? })` | `{ abi, address: sender, stateOverride: [{ address: sender, code: runtimeBytecode }], account: sender }` — [sender mode](/guides/execution/#sender-mode): sub-call targets see `msg.sender = sender`; `address`, if given, must equal `sender` |
-| `toViem({ mode, address?, sender? })` with `mode: ToViemMode` | the union of the shapes above — for a mode chosen at run time; `address` / `sender` apply only when `mode` is `'stateOverride'` |
+| `toViem({ mode, address?, sender? })` with `mode: ToViemMode` (optional, or `ToViemMode \| undefined`) | the union of the shapes above — for a mode chosen at run time; an unset mode is deployless; `address` / `sender` apply only when `mode` is `'stateOverride'` |
 
 ```ts
 import { compile, DEFAULT_SCRIPT_ADDRESS, evscript } from '@maxencerb/evs';
@@ -176,8 +176,11 @@ async function run(mode: ToViemMode): Promise<bigint> {
 }
 ```
 
-A literal mode keeps its own overload and precise shape; `{ mode: 'deployless', address }` is
-still a type error.
+The mode may also be optional or `ToViemMode | undefined` — a config field left unset to get the
+default — and an unset mode is deployless, as for `toViem()`. A literal mode keeps its own
+overload and precise shape; `{ mode: 'deployless', address }` is still a type error, and so is an
+object with no `mode` key at all (call `toViem()`). Since the catch-all is the last overload,
+`ReturnType<CompiledEvsScript['toViem']>` names that union.
 
 State-override mode accepts an optional `address` (viem's `Address` type) to place the script
 somewhere else; it requires a provider that supports the third `eth_call` parameter. The two

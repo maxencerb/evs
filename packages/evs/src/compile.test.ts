@@ -623,6 +623,9 @@ describe('toViem()', () => {
     expect(compiled.toViem({ mode: stateOverride, sender })).toEqual(
       compiled.toViem({ mode: 'stateOverride', sender }),
     );
+    // an unset mode (optional config field) is deployless, `address` / `sender` ignored
+    const unset: { mode?: ToViemMode; address?: typeof address } = { address };
+    expect(compiled.toViem(unset)).toEqual(compiled.toViem());
     // `sender: undefined` is plain state-override mode, with no `account`
     expect(compiled.toViem({ mode: stateOverride, sender: undefined })).toEqual(
       compiled.toViem({ mode: 'stateOverride' }),

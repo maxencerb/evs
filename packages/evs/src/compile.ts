@@ -106,14 +106,17 @@ export interface CompiledEvsScript<
   };
   // catch-all for a mode chosen at run time (`mode: ToViemMode`): the union of the shapes above.
   // `address` / `sender` apply only when the mode turns out to be 'stateOverride' (deployless
-  // ignores them). The intersection is `never` unless `m` is the whole union, which keeps a
-  // literal mode on its own overload: e.g. `{ mode: 'deployless', address }` stays a type error.
-  toViem<m extends ToViemMode>(
+  // ignores them). The mode may also be optional or `| undefined` (a config field that defaults
+  // to deployless, as at run time). The intersection is `never` unless `m` minus `undefined` is
+  // the whole union, which keeps a literal mode on its own overload: e.g.
+  // `{ mode: 'deployless', address }` stays a type error. The `never` default covers a missing
+  // `mode` key (no inference candidate), so `{}` / `{ address }` stay type errors too.
+  toViem<m extends ToViemMode | undefined = never>(
     o: {
-      mode: m;
+      mode?: m;
       address?: Address | undefined;
       sender?: Address | undefined;
-    } & ([ToViemMode] extends [m] ? unknown : never),
+    } & ([ToViemMode] extends [Exclude<m, undefined>] ? unknown : never),
   ):
     | { abi: ScriptAbi<name, args, ret, errs>; code: Hex }
     | {

@@ -182,6 +182,14 @@ test('toViem({ mode }) with a run-time mode union returns the union of the shape
   expectTypeOf(
     compiled.toViem(mode === 'stateOverride' ? { mode: 'stateOverride' } : { mode: 'deployless' }),
   ).toEqualTypeOf(shape);
+  // an optional mode (a config field defaulting to deployless) and a `ToViemMode | undefined`
+  // value resolve to the catch-all too: undefined is deployless at run time
+  const cfg: { mode?: ToViemMode; address?: Address; sender?: Address } =
+    Math.random() > 0.5 ? { mode, address: pool } : {};
+  expectTypeOf(compiled.toViem(cfg)).toEqualTypeOf(shape);
+  const maybeMode: ToViemMode | undefined = Math.random() > 0.5 ? mode : undefined;
+  expectTypeOf(compiled.toViem({ mode: maybeMode })).toEqualTypeOf(shape);
+  expectTypeOf(compiled.toViem({ mode: maybeMode, address: pool })).toEqualTypeOf(shape);
 
   // the union still spreads into readContract with full return inference
   const out = await client.readContract({
@@ -205,6 +213,12 @@ test('a literal mode keeps its own overload: the catch-all never widens it', () 
   void compiled.toViem({ mode: 'deployless', sender: user });
   // @ts-expect-error — and an unknown mode is still rejected
   void compiled.toViem({ mode: 'override' });
+  // @ts-expect-error — a literal object with no `mode` key has no overload (call toViem())
+  void compiled.toViem({});
+  // @ts-expect-error — nor does `address` without a mode (it would be silently ignored)
+  void compiled.toViem({ address: pool });
+  // @ts-expect-error — a single literal mode or undefined is not the run-time union
+  void compiled.toViem({ mode: Math.random() > 0.5 ? 'deployless' : undefined, address: pool });
 });
 
 test('omitting both address and code is a type error', () => {
