@@ -49,6 +49,18 @@ custom error, and two derive a type from an ABI. Raw type strings (and raw
 [`TupleType`](#composite-types-tupletype) descriptor — an abitype `AbiParameter`-shaped object
 viem infers directly.
 
+A hand-written tuple descriptor (or a raw `AbiParameter[]`) given to `t.array`, `t.struct`,
+`t.tuple`, `t.fromOutputs` or `t.fromAbiParameter` is checked member by member, at every nesting
+level: a tuple needs at least one member, every member type must be in the vocabulary, and a
+`tuple…` member needs a well-formed tag (`tuple`, `tuple[]`, `tuple[2]`, …) and its own
+`components`. A violation throws `TYPE_MISMATCH`, naming the member by its path
+(`t.struct() field "pos" component #1: …`); arrays nested more than four levels deep, or a static
+size of 2^32 bytes or more, throw `UNSUPPORTED_V0`. The result is a frozen canonical copy: a
+member without a `name` gets `name: ''`, and `components` on a non-tuple member is dropped.
+`namedArg`, `evscript` args, `s.fn` and `t.error` params and `s.tuple` apply the same limits,
+but take a descriptor only in its canonical form (every member carries a string `name`, `''` when
+unnamed), the form every `t.*` constructor returns.
+
 ```ts
 import { t } from '@maxencerb/evs';
 

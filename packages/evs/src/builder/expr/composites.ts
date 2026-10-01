@@ -9,6 +9,7 @@ import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   isTupleType,
   isEvsValueType,
+  canonicalizeTupleType,
   type EvsType,
   type TupleType,
   abiParamToType,
@@ -40,6 +41,9 @@ export abstract class RecorderComposites extends RecorderCore {
         `s.tuple(): ${JSON.stringify(type.type)} is an ARRAY of tuples, not a tuple — build it with s.newArray(elemTuple, n) or pass a literal array where the value is expected`,
       );
     }
+    // the size gates every other tuple entry point applies (at least one component at every
+    // level, the array depth, the static size), so they fail here and not in the IR validator
+    canonicalizeTupleType(type, 's.tuple()');
     const id = this.buildTupleNew(type, init, 's.tuple()');
     return makeTuple(this.self, id, type);
   }

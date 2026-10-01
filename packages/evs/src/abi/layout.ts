@@ -25,7 +25,7 @@ import {
   assertArrayDepth,
   bitsOf,
   explainBadTypeString,
-  isEvsType,
+  isStringType,
   isSigned,
   isTupleTag,
   isTupleType,
@@ -110,7 +110,7 @@ function computeLayoutOf(abiType: string): TypeLayout {
   // once per suffix: a malformed leaf (or a tuple string) is TYPE_MISMATCH for the OUTER string,
   // then the narrowed #4 gate — arrays nest at most MAX_ARRAY_DEPTH levels
   const peeled = peelArraySuffix(abiType);
-  if (peeled === null || !isEvsType(abiType)) throw badTypeError(abiType);
+  if (peeled === null || !isStringType(abiType)) throw badTypeError(abiType);
   assertArrayDepth(abiType, 'layoutOf');
   // recurse on the element — `layoutOf` (not `computeLayoutOf`) so inner types memoize too
   const elem = layoutOf(peeled.inner);

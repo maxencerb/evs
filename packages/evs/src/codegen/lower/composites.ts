@@ -9,7 +9,7 @@ import type { AsmWriter } from '../../asm/assembler.js';
 import { selectorBytes } from '../../core/bytes.js';
 import {
   abiParamToType,
-  isDynamicType,
+  isMemrefType,
   type TupleType,
   isTupleType,
   typeToAbiParam,
@@ -217,7 +217,7 @@ export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx
   w.op('SHL');
   w.push(32);
   w.op('ADD'); // [size = 32 + 32·n, n]
-  if (!isDynamicType(s.elem)) {
+  if (!isMemrefType(s.elem)) {
     // word elements: the zero-filled slots already are their zero value
     emitAlloc(w, 'onStack', { zeroFill: true }); // [ptr, n]
     w.op('SWAP1'); // [n, ptr]
@@ -303,7 +303,7 @@ export function lowerTupleNew(
   const n = ty.components.length;
   const provided = new Set(s.inits.map((init) => init.index));
   const zeroFill = ty.components.some(
-    (c, j) => !provided.has(j) && !isDynamicType(abiParamToType(c)),
+    (c, j) => !provided.has(j) && !isMemrefType(abiParamToType(c)),
   );
   emitAlloc(w, 32 * n, { zeroFill, note: `tuplenew ${n} words` }); // [ptr]
   // omitted memref members → their typed zero (provided members are stored just below)

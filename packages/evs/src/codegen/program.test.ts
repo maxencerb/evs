@@ -31,7 +31,7 @@ import { AsmWriter, assemble, type LabelId } from '../asm/assembler.js';
 import { disassemble } from '../asm/disasm.js';
 import type { EvmVersion } from '../asm/ops.js';
 import {
-  isEvsType,
+  isStringType,
   isWordType,
   typeToAbiParam,
   type EvsType,
@@ -192,7 +192,7 @@ class IrB {
   }): { outs: readonly ValueId[]; success: ValueId | null; site: number } {
     const mode = o.mode ?? 'strict';
     const outs = o.abi.outputs.map((p) => {
-      if (!isEvsType(p.type)) throw new Error(`IrB: unsupported output type '${p.type}'`);
+      if (!isStringType(p.type)) throw new Error(`IrB: unsupported output type '${p.type}'`);
       return this.val(p.type);
     });
     const success = mode === 'try' ? this.val('bool') : null;

@@ -16,7 +16,7 @@ import {
   type NamedType,
   type ArrayType,
   type TupleType,
-  isDynamicType,
+  isMemrefType,
   isEvsValueType,
   elemTypeOf,
   type EvsType,
@@ -228,7 +228,7 @@ export function allMembersNamed(t: TupleType): boolean {
  *  string/bytes) — i.e. an `array of pointers` : `tuple[]`, `uint256[][]`, `string[]`,
  *  `bytes[]`. A word-element array (`uint256[]`, `address[]`) is NOT composite. */
 export function isCompositeElemArray(type: ArrayType | TupleType): boolean {
-  return isDynamicType(elemTypeOf(type));
+  return isMemrefType(elemTypeOf(type));
 }
 
 /** A short debug tag for a tuple value's `debugName` (field names, or the positional arity). */

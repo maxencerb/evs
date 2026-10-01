@@ -1,10 +1,11 @@
 /**
  * `core/types/predicates.ts` — runtime type predicates and metadata (word-type sets, array-suffix
- * parsing, dynamic / packed / array classification, ABI-param conversion) and the internal
- * helpers (`assertEvsType`, `installStagingTraps`, …).
+ * parsing, memref / packed / array classification, ABI-param conversion) and the internal
+ * helpers: eager validation (`assertEvsType`, and `canonicalizeComponents`, the one canonicalizer
+ * for host-supplied tuple components) and `installStagingTraps`.
  */
 
-import { EvsTypeError, EvsStagingError } from '../errors.js';
+import { EvsTypeError, EvsStagingError, EvsInternalError } from '../errors.js';
 import type {
   StringType,
   TupleType,
@@ -137,7 +138,7 @@ export function assertArrayDepth(s: string, context: string): void {
  * fixed-size (`[N]`) suffixes. Structural only — the depth ceiling ({@link MAX_ARRAY_DEPTH}) is
  * enforced separately with `UNSUPPORTED_V0`. Tuples are objects — see {@link isEvsValueType}.
  */
-export function isEvsType(s: string): s is StringType {
+export function isStringType(s: string): s is StringType {
   // a loop, not a recursion per suffix: a hostile `'uint256' + '[]'.repeat(50_000)` must reach
   // the depth gate instead of overflowing the host stack
   let leaf = s;
@@ -160,29 +161,31 @@ export function isTupleTag(s: string): s is TupleType['type'] {
   return true;
 }
 
-/** A composite (tuple/struct) type descriptor — the only non-string {@link EvsType}. */
+/** A composite (tuple/struct) type descriptor — the only non-string {@link EvsType}. Checks the
+ *  tag and that `components` is an array; {@link isEvsValueType} checks the members too. */
 export function isTupleType(v: unknown): v is TupleType {
   if (typeof v !== 'object' || v === null || Array.isArray(v)) return false;
   const o = v as { type?: unknown; components?: unknown };
   return typeof o.type === 'string' && isTupleTag(o.type) && Array.isArray(o.components);
 }
 
-/** Any valid {@link EvsType} value (string-encoded or a tuple descriptor). */
+/**
+ * Any valid {@link EvsType} value, already in canonical form: a {@link isStringType} string, or a
+ * tuple descriptor whose members pass {@link tupleComponentsIssue}. Structural only, like
+ * {@link isStringType}: the size gates (array depth, static size, at least one component) are
+ * {@link canonicalizeComponents}'s, so the IR validator can report an empty tuple in its own words.
+ */
 export function isEvsValueType(v: unknown): v is EvsType {
-  return (
-    (typeof v === 'string' && isEvsType(v)) || (isTupleType(v) && componentsValid(v.components))
-  );
-}
-
-function componentsValid(components: readonly unknown[]): boolean {
-  return tupleComponentsIssue(components) === undefined;
+  if (typeof v === 'string') return isStringType(v);
+  return isTupleType(v) && tupleComponentsIssue(v.components) === undefined;
 }
 
 /**
  * Why a tuple descriptor's `components` are not valid members — the first offending member by
  * path (`components[1].components[0] has no string \`name\``) — or `undefined` when they all are.
  * The single source of truth for {@link isEvsValueType}'s component check, so an error message
- * built from it names exactly the member the predicate rejected.
+ * built from it names exactly the member the predicate rejected. The per-member rules are
+ * {@link readComponent}'s, shared with {@link canonicalizeComponents}.
  */
 export function tupleComponentsIssue(
   components: readonly unknown[],
@@ -190,24 +193,53 @@ export function tupleComponentsIssue(
 ): string | undefined {
   for (const [i, c] of components.entries()) {
     const at = `${path}[${i}]`;
-    if (typeof c !== 'object' || c === null) return `${at} is not an object`;
-    const o = c as { name?: unknown; type?: unknown; components?: unknown };
-    if (typeof o.name !== 'string') {
-      return `${at} has no string \`name\` (a tuple member needs one; '' for an unnamed member)`;
-    }
-    if (typeof o.type !== 'string') return `${at} has no string \`type\``;
-    if (o.type.startsWith('tuple')) {
-      if (!isTupleTag(o.type)) return `${at} has an invalid tuple type ${JSON.stringify(o.type)}`;
-      if (!Array.isArray(o.components)) return `${at} (${o.type}) has no \`components\` array`;
-      const inner = tupleComponentsIssue(o.components, `${at}.components`);
+    const member = readComponent(c, 'strict');
+    if (typeof member === 'string') return `${at} ${member}`;
+    if (member.components !== undefined) {
+      const inner = tupleComponentsIssue(member.components, `${at}.components`);
       if (inner !== undefined) return inner;
-    } else if (!isEvsType(o.type)) {
-      return `${at} has an invalid type ${JSON.stringify(o.type)}`;
-    } else if (o.components !== undefined) {
-      return `${at} (${o.type}) must not carry \`components\``;
     }
   }
   return undefined;
+}
+
+/** One tuple member as {@link readComponent} read it: its raw `name`, its `type`, and the
+ *  `components` of a `tuple…` member (`undefined` for a leaf member). */
+type ComponentParts =
+  | { readonly name: unknown; readonly type: string; readonly components: undefined }
+  | {
+      readonly name: unknown;
+      readonly type: TupleType['type'];
+      readonly components: readonly unknown[];
+    };
+
+/**
+ * One tuple member checked against the rules both walks share, in order: an object, a string
+ * `name` (`'strict'` only), a string `type`; a `tuple…` member has a well-formed tag
+ * ({@link isTupleTag}) and a `components` array. A leaf member is checked here only in `'strict'`
+ * mode (in the vocabulary, no `components`): the canonicalizer instead runs {@link assertEvsType}
+ * on it (which explains the rejection and gates its size), fills a missing `name` with `''` and
+ * drops a stray `components` (the leniency raw ABIs need: abitype's `name` is optional). Returns
+ * the rule the member breaks, phrased to follow its position, or its parts. Not recursive:
+ * callers walk a tuple member's `components` themselves.
+ */
+function readComponent(c: unknown, mode: 'strict' | 'lenient'): ComponentParts | string {
+  if (typeof c !== 'object' || c === null) return 'is not an object';
+  const o = c as { name?: unknown; type?: unknown; components?: unknown };
+  if (mode === 'strict' && typeof o.name !== 'string') {
+    return `has no string \`name\` (a tuple member needs one; '' for an unnamed member)`;
+  }
+  if (typeof o.type !== 'string') return 'has no string `type`';
+  if (o.type.startsWith('tuple')) {
+    if (!isTupleTag(o.type)) return `has an invalid tuple type ${quoteTypeString(o.type)}`;
+    if (!Array.isArray(o.components)) return `(${o.type}) has no \`components\` array`;
+    return { name: o.name, type: o.type, components: o.components };
+  }
+  if (mode === 'strict') {
+    if (!isStringType(o.type)) return `has an invalid type ${JSON.stringify(o.type)}`;
+    if (o.components !== undefined) return `(${o.type}) must not carry \`components\``;
+  }
+  return { name: o.name, type: o.type, components: undefined };
 }
 
 /** {@link describeTypeInput} for a value rejected as a type: a tuple descriptor whose components
@@ -231,12 +263,14 @@ export function isBitsOperand(s: EvsType): s is WordType {
  *  array) yields the {@link TupleType} with the suffix appended to its tag. Callers pass an
  *  already-validated element type (the result is further classified by `layoutOfType`). */
 export function arrayTypeOf(elem: EvsType, fixed: number | null = null): ArrayType | TupleType {
-  const suffix = fixed === null ? '[]' : `[${fixed}]`;
-  if (typeof elem === 'string') {
-    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- elem is a validated StringType; `${elem}${suffix}` is a valid ArrayType (further classified by layoutOfType).
-    return `${elem}${suffix}` as ArrayType;
-  }
+  if (typeof elem === 'string') return `${elem}${arraySuffix(fixed)}`;
   return Object.freeze({ type: tupleArrayTag(elem.type, fixed), components: elem.components });
+}
+
+/** The array suffix for an optional fixed length: `null` → `'[]'` (dynamic), `N` → `'[N]'`. The
+ *  one place a suffix is spelled ({@link arrayTypeOf}, {@link tupleArrayTag}). */
+function arraySuffix(fixed: number | null): '[]' | `[${number}]` {
+  return fixed === null ? '[]' : `[${fixed}]`;
 }
 
 /** Human-readable rendering of a value type for error messages (a tuple → its JSON descriptor). */
@@ -263,17 +297,20 @@ export function isSigned(s: EvsType): boolean {
   return typeof s === 'string' && SETS.signed.has(s);
 }
 
-/** address→160, bool→8 (canonical 0/1), bytesN→8N, uintN/intN→N. */
+/** address→160, bool→8 (canonical 0/1), bytesN→8N, uintN/intN→N. A non-word argument is an
+ *  internal error: every caller holds a type it already classified as a word. */
 export function bitsOf(s: WordType): number {
   const bits = SETS.bits.get(s);
   if (bits === undefined) {
-    throw new EvsTypeError('TYPE_MISMATCH', `bitsOf: ${JSON.stringify(s)} is not a word type`);
+    throw new EvsInternalError('INTERNAL', `bitsOf: ${JSON.stringify(s)} is not a word type`);
   }
   return bits;
 }
 
-/** Memref-valued (not a single stack word): string | bytes | any array (`T[]`/`T[N]`) | tuple. */
-export function isDynamicType(s: EvsType): boolean {
+/** Memref-valued (a pointer, not a single stack word): string | bytes | any array (`T[]`/`T[N]`)
+ *  | tuple. Not the ABI's notion of dynamic: a static `uint256[2]` or tuple is a memref too (the
+ *  ABI one is `isDynamic` over a layout, in `abi/layout.ts`, or a `null` {@link staticSizeOf}). */
+export function isMemrefType(s: EvsType): boolean {
   if (typeof s !== 'string') return true; // tuples are always memref pointers
   return s === 'string' || s === 'bytes' || s.endsWith(']');
 }
@@ -298,18 +335,19 @@ export function isArrayValueType(s: EvsType): s is ArrayType | TupleType {
 
 /** A type with a length — the operand domain of `.length()` and the IR `len` statement:
  *  `string`, `bytes` or any array (`T[]`/`T[N]`, any element). A plain tuple is a memref too
- *  ({@link isDynamicType}) but has no length. */
+ *  ({@link isMemrefType}) but has no length. */
 export function isLengthType(s: EvsType): boolean {
   return isArrayValueType(s) || s === 'string' || s === 'bytes';
 }
 
-/** The fixed length `N` of an array type `T[N]`, or `null` for a dynamic `T[]`. Throws for a
- *  non-array type. Only the OUTERMOST suffix is consulted (`uint256[2][]` → `null`). */
+/** The fixed length `N` of an array type `T[N]`, or `null` for a dynamic `T[]`. Only the
+ *  OUTERMOST suffix is consulted (`uint256[2][]` → `null`). A non-array type is an internal error
+ *  (callers check {@link isArrayValueType} first, or hold an already-validated IR type). */
 export function fixedLengthOf(s: ArrayType | TupleType): number | null {
   const peeled = peelArraySuffix(typeof s === 'string' ? s : s.type);
   if (peeled === null) {
-    throw new EvsTypeError(
-      'TYPE_MISMATCH',
+    throw new EvsInternalError(
+      'INTERNAL',
       `fixedLengthOf: ${typeof s === 'string' ? JSON.stringify(s) : 'a tuple'} is not an array type`,
     );
   }
@@ -317,19 +355,18 @@ export function fixedLengthOf(s: ArrayType | TupleType): number | null {
 }
 
 /** The element type of an array type: the outermost suffix peeled off (string arrays), or the
- *  element tuple / tuple-array descriptor with the same components (tuple arrays). */
+ *  element tuple / tuple-array descriptor with the same components (tuple arrays). A non-array
+ *  type is an internal error (callers check {@link isArrayValueType} first, or hold an
+ *  already-validated IR type). */
 export function elemTypeOf(s: ArrayType | TupleType): EvsType {
   if (typeof s === 'string') {
     const peeled = peelArraySuffix(s);
-    if (peeled !== null && isEvsType(peeled.inner)) return peeled.inner;
-    throw new EvsTypeError(
-      'TYPE_MISMATCH',
-      `elemTypeOf: ${JSON.stringify(s)} is not an array type`,
-    );
+    if (peeled !== null && isStringType(peeled.inner)) return peeled.inner;
+    throw new EvsInternalError('INTERNAL', `elemTypeOf: ${JSON.stringify(s)} is not an array type`);
   }
   const peeled = peelArraySuffix(s.type);
   if (s.type === 'tuple' || peeled === null || !isTupleTag(peeled.inner)) {
-    throw new EvsTypeError('TYPE_MISMATCH', `elemTypeOf: a tuple is not an array type`);
+    throw new EvsInternalError('INTERNAL', `elemTypeOf: a tuple is not an array type`);
   }
   // 'tuple[]' → 'tuple', 'tuple[][]' → 'tuple[]', 'tuple[3][]' → 'tuple[3]'
   return Object.freeze({ type: peeled.inner, components: s.components });
@@ -377,8 +414,7 @@ export function describeTypeInput(v: unknown): string {
  *  `('tuple[]', 2)` → `'tuple[][2]'`. The one place the tag string is rebuilt (shared by the
  *  builder and the validator so the IR/type tags never drift). */
 export function tupleArrayTag(tag: TupleType['type'], fixed: number | null): TupleType['type'] {
-  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- appending a well-formed `[]`/`[N]` suffix to a tuple tag yields a tuple tag
-  return `${tag}${fixed === null ? '[]' : `[${fixed}]`}` as TupleType['type'];
+  return `${tag}${arraySuffix(fixed)}`;
 }
 
 // ---------------------------------------------------------------------------
@@ -392,7 +428,7 @@ export function tupleArrayTag(tag: TupleType['type'], fixed: number | null): Tup
  * point explains a rejection the same way.
  */
 export function explainBadTypeString(s: string): string {
-  if (s === 'tuple' || s.startsWith('tuple')) {
+  if (s.startsWith('tuple')) {
     return `a tuple type must be a \`t.struct\`/\`t.tuple\` descriptor (or a raw AbiParameter[]), not the string ${quoteTypeString(s)}`;
   }
   // walk the suffix chain inward: the first bracketed suffix that does not parse is the
@@ -422,7 +458,7 @@ export function quoteTypeString(s: string): string {
  * {@link MAX_ARRAY_DEPTH} or one whose ABI static size exceeds {@link MAX_STATIC_SIZE}.
  */
 export function assertEvsType(s: string, context: string): asserts s is StringType {
-  if (!isEvsType(s)) {
+  if (!isStringType(s)) {
     throw new EvsTypeError('TYPE_MISMATCH', `${context}: ${explainBadTypeString(s)}`);
   }
   assertArrayDepth(s, context);
@@ -471,6 +507,69 @@ export function assertStaticSize(type: EvsType, context: string): void {
  *  type string or tuple tag (also used by `abi/layout`, which measures the size on the layout). */
 export function staticSizeMessage(context: string, type: string, size: bigint | number): string {
   return `${context}: type ${quoteTypeString(type)} has an ABI static size of ${size} bytes — at most 2^32 − 1 bytes are supported`;
+}
+
+/**
+ * The one canonicalizer for host-supplied tuple components, behind every `t` constructor that
+ * takes a tuple descriptor or a raw `readonly AbiParameter[]` (`t.struct` / `t.tuple` /
+ * `t.array`, `t.fromOutputs` / `t.fromAbiParameter`) and, through {@link canonicalizeTupleType},
+ * the size gates of the declarators (`namedArg`, `evscript` args, `s.fn` and `t.error` params).
+ * At every nesting level:
+ * - a tuple has at least one component (`TYPE_MISMATCH`);
+ * - each component passes {@link readComponent} in its lenient mode (`TYPE_MISMATCH`): a missing
+ *   `name` becomes `''` and a stray `components` on a non-tuple member is dropped;
+ * - a leaf member passes {@link assertEvsType} (`TYPE_MISMATCH` outside the vocabulary,
+ *   `UNSUPPORTED_V0` past {@link MAX_ARRAY_DEPTH} or {@link MAX_STATIC_SIZE});
+ * - a `tuple…` member's tag stays within {@link MAX_ARRAY_DEPTH} and, once its own components are
+ *   canonicalized, its static size within {@link MAX_STATIC_SIZE} (the enclosing type's size
+ *   check measures nothing when that type is ABI-dynamic, so each tuple member is gated on its
+ *   own, like a leaf member).
+ *
+ * Errors name the member by path (`t.struct() field "a" component #1 component #0: …`). The
+ * output is a fresh, deeply frozen list that {@link isEvsValueType} accepts.
+ */
+export function canonicalizeComponents(
+  components: readonly unknown[],
+  ctx: string,
+): readonly NamedType[] {
+  if (components.length === 0) {
+    throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: a tuple must have at least one component`);
+  }
+  return Object.freeze(
+    components.map((c, i): NamedType => {
+      const where = `${ctx} component #${i}`;
+      const member = readComponent(c, 'lenient');
+      if (typeof member === 'string') {
+        throw new EvsTypeError('TYPE_MISMATCH', `${where} ${member}`);
+      }
+      const name = typeof member.name === 'string' ? member.name : '';
+      if (member.components === undefined) {
+        assertEvsType(member.type, where);
+        return Object.freeze({ name, type: member.type });
+      }
+      const tuple = canonicalizeTupleType(member, where);
+      return Object.freeze({ name, type: tuple.type, components: tuple.components });
+    }),
+  );
+}
+
+/**
+ * A structurally valid tuple descriptor (its tag well-formed, `components` an array) → its frozen
+ * canonical copy, through the gates of {@link canonicalizeComponents}: the depth of its own tag,
+ * then its members, then its own static size. The declarators, whose descriptors must already be
+ * canonical ({@link isEvsValueType}), call it for those gates alone and keep the caller's object.
+ */
+export function canonicalizeTupleType(
+  ty: { readonly type: TupleType['type']; readonly components: readonly unknown[] },
+  ctx: string,
+): TupleType {
+  assertArrayDepth(ty.type, ctx);
+  const type: TupleType = Object.freeze({
+    type: ty.type,
+    components: canonicalizeComponents(ty.components, ctx),
+  });
+  assertStaticSize(type, ctx);
+  return type;
 }
 
 /**

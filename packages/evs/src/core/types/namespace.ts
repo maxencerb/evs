@@ -32,20 +32,14 @@ import {
   describeTypeInput,
   assertArrayDepth,
   assertStaticSize,
-  tupleArrayTag,
+  arrayTypeOf,
+  canonicalizeComponents,
+  canonicalizeTupleType,
   MAX_FIXED_LENGTH,
   abiParamToType,
   typeToAbiParam,
 } from './predicates.js';
-import type {
-  WordType,
-  DynType,
-  StringType,
-  TupleType,
-  EvsType,
-  NamedType,
-  ArrayType,
-} from './vocabulary.js';
+import type { WordType, DynType, StringType, TupleType, EvsType, NamedType } from './vocabulary.js';
 
 type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
   // `t.array(elem)` → a dynamic `elem[]`; `t.array(elem, n)` → a fixed-size `elem[n]` (n ≥ 1,
@@ -203,75 +197,28 @@ export const t: TypeNamespace = Object.freeze({
 // `t.struct` / `t.tuple` / `t.array` runtime constructors
 // ---------------------------------------------------------------------------
 
-/** A user-supplied member/element type → a canonical {@link NamedType} component. Accepts a
- *  type string, a {@link TupleType}, or a raw `readonly AbiParameter[]` (interpreted as a tuple's
- *  components). */
-function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
+/**
+ * A user-supplied member/element type → its canonical {@link EvsType}: a type string
+ * ({@link assertEvsType}), or a {@link TupleType} descriptor or raw `readonly AbiParameter[]` (a
+ * tuple's components), both through {@link canonicalizeTupleType} — the one canonicalizer
+ * ({@link canonicalizeComponents}) with its depth and static-size gates.
+ */
+function toTypeRT(ty: unknown, ctx: string): EvsType {
   if (typeof ty === 'string') {
     assertEvsType(ty, ctx);
-    return Object.freeze({ name, type: ty });
+    return ty;
   }
-  if (isTupleType(ty)) {
-    assertArrayDepth(ty.type, ctx);
-    return sizedComponent(
-      { name, type: ty.type, components: normalizeComponents(ty.components, ctx) },
-      ctx,
-    );
-  }
-  if (Array.isArray(ty)) {
-    return sizedComponent({ name, type: 'tuple', components: componentsFromAbi(ty, ctx) }, ctx);
-  }
+  if (isTupleType(ty)) return canonicalizeTupleType(ty, ctx);
+  if (Array.isArray(ty)) return canonicalizeTupleType({ type: 'tuple', components: ty }, ctx);
   throw new EvsTypeError(
     'TYPE_MISMATCH',
     `${ctx}: expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
   );
 }
 
-function normalizeComponents(components: readonly NamedType[], ctx: string): readonly NamedType[] {
-  return Object.freeze(
-    components.map((c) => {
-      if (c.components === undefined) return toComponentRT(c.name, c.type, ctx);
-      assertArrayDepth(c.type, ctx);
-      return sizedComponent(
-        { name: c.name, type: c.type, components: normalizeComponents(c.components, ctx) },
-        ctx,
-      );
-    }),
-  );
-}
-
-/** Validate + canonicalize a raw `readonly AbiParameter[]` into tuple components. */
-function componentsFromAbi(params: readonly unknown[], ctx: string): readonly NamedType[] {
-  if (params.length === 0) {
-    throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: a tuple must have at least one component`);
-  }
-  return Object.freeze(
-    params.map((p, i) => {
-      if (typeof p !== 'object' || p === null) {
-        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} is not an ABI parameter`);
-      }
-      const o = p as { name?: unknown; type?: unknown; components?: unknown };
-      const name = typeof o.name === 'string' ? o.name : '';
-      if (typeof o.type !== 'string') {
-        throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} has no \`type\``);
-      }
-      if (o.type.startsWith('tuple')) {
-        assertArrayDepth(o.type, `${ctx} component #${i}`);
-        if (!Array.isArray(o.components)) {
-          throw new EvsTypeError(
-            'TYPE_MISMATCH',
-            `${ctx}: tuple component #${i} ("${name}") has no \`components\``,
-          );
-        }
-        return sizedComponent(
-          { name, type: o.type, components: componentsFromAbi(o.components, ctx) },
-          `${ctx} component #${i}`,
-        );
-      }
-      assertEvsType(o.type, `${ctx} component #${i}`);
-      return Object.freeze({ name, type: o.type });
-    }),
-  );
+/** A user-supplied member type → its canonical {@link NamedType} component ({@link toTypeRT}). */
+function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
+  return typeToAbiParam(name, toTypeRT(ty, ctx));
 }
 
 function structTypeRT(spec: unknown): TupleType {
@@ -297,7 +244,7 @@ function structTypeRT(spec: unknown): TupleType {
         'TYPE_MISMATCH',
         name === '__proto__'
           ? `t.struct(): field name "__proto__" is rejected — ${PROTO_RESERVED}`
-          : `t.struct(): field name ${JSON.stringify(name)} must be a non-empty identifier matching /^[A-Za-z_]\\w*$/ (an empty/odd name would collapse the struct to a positional array on the viem side)`,
+          : `t.struct(): field name ${JSON.stringify(name)} ${identProblem(name)} (an empty/odd name would collapse the struct to a positional array on the viem side)`,
       );
     }
     return toComponentRT(name, ty, `t.struct() field "${name}"`);
@@ -314,64 +261,35 @@ function tupleTypeRT(items: readonly unknown[]): TupleType {
 }
 
 /** Freezes a constructed tuple type after the {@link MAX_STATIC_SIZE} gate: every member passed
- *  its own checks, but an all-static tuple sums them (and a tuple array multiplies them), so the
- *  total is measured once more on the result (`UNSUPPORTED_V0` at 2^32 bytes or more). */
+ *  its own checks, but an all-static tuple sums them, so the total is measured once more on the
+ *  result (`UNSUPPORTED_V0` at 2^32 bytes or more). */
 function sized(type: TupleType, ctx: string): TupleType {
   assertStaticSize(type, ctx);
   return Object.freeze(type);
 }
 
-/** Freezes a tuple-typed component after the {@link MAX_STATIC_SIZE} gate on the component
- *  itself: the enclosing type's own {@link sized} check measures nothing when that type is
- *  ABI-dynamic (a string member elsewhere), so an oversized static tuple member would slip
- *  through it. String-typed members get the same check from `assertEvsType`. */
-function sizedComponent(
-  component: NamedType & { components: readonly NamedType[] },
-  ctx: string,
-): NamedType {
-  assertStaticSize(abiParamToType(component), ctx);
-  return Object.freeze(component);
-}
-
-/** `t.array(elem)` → `elem[]`; `t.array(elem, n)` → `elem[n]`. The suffix string is validated
- *  through the same parser every other entry point uses (`isEvsType`/`isTupleTag`), so the
- *  runtime and type-level vocabularies agree by construction; nesting is capped at
- *  {@link MAX_ARRAY_DEPTH} and a static size at {@link MAX_STATIC_SIZE} (`UNSUPPORTED_V0`
- *  beyond either). */
+/** `t.array(elem)` → `elem[]`; `t.array(elem, n)` → `elem[n]`. The element goes through
+ *  {@link toTypeRT} (the same rules as every other entry point), then the array type itself is
+ *  capped at {@link MAX_ARRAY_DEPTH} nesting levels and a static size of {@link MAX_STATIC_SIZE}
+ *  (`UNSUPPORTED_V0` beyond either). */
 function arrayTypeRT(elem: unknown, length: unknown): EvsType {
-  const suffix = arraySuffixRT(length, 't.array()');
-  if (typeof elem === 'string') {
-    assertEvsType(elem, 't.array() element');
-    const type: ArrayType = `${elem}${suffix}`;
-    assertArrayDepth(type, 't.array()');
-    assertStaticSize(type, 't.array()');
-    return type;
-  }
-  const fixed = suffix === '[]' ? null : Number(suffix.slice(1, -1));
-  if (isTupleType(elem)) {
-    const type = tupleArrayTag(elem.type, fixed);
-    assertArrayDepth(type, 't.array()');
-    return sized(
-      { type, components: normalizeComponents(elem.components, 't.array()') },
-      't.array()',
+  const fixed = fixedLengthRT(length, 't.array()');
+  if (typeof elem !== 'string' && !isTupleType(elem) && !Array.isArray(elem)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `t.array(): element type ${describeTypeInput(elem)} is not a type (use the \`t\` namespace)`,
     );
   }
-  if (Array.isArray(elem)) {
-    return sized(
-      { type: tupleArrayTag('tuple', fixed), components: componentsFromAbi(elem, 't.array()') },
-      't.array()',
-    );
-  }
-  throw new EvsTypeError(
-    'TYPE_MISMATCH',
-    `t.array(): element type ${describeTypeInput(elem)} is not a type (use the \`t\` namespace)`,
-  );
+  const type = arrayTypeOf(toTypeRT(elem, 't.array() element'), fixed);
+  assertArrayDepth(typeof type === 'string' ? type : type.type, 't.array()');
+  assertStaticSize(type, 't.array()');
+  return type;
 }
 
-/** The `[]` / `[n]` suffix for an optional fixed length: `undefined` → dynamic; otherwise a
- *  positive safe integer below 2^32 (the allocation cap) → fixed. */
-function arraySuffixRT(length: unknown, ctx: string): '[]' | `[${number}]` {
-  if (length === undefined) return '[]';
+/** An optional fixed array length: `undefined` → `null` (a dynamic `[]`); otherwise a positive
+ *  safe integer below 2^32 (the allocation cap), the `N` of `[N]`. */
+function fixedLengthRT(length: unknown, ctx: string): number | null {
+  if (length === undefined) return null;
   const n = typeof length === 'bigint' ? Number(length) : length;
   if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > MAX_FIXED_LENGTH) {
     throw new EvsTypeError(
@@ -379,14 +297,14 @@ function arraySuffixRT(length: unknown, ctx: string): '[]' | `[${number}]` {
       `${ctx}: a fixed array length must be a positive integer below 2^32, got ${describeTypeInput(length)}`,
     );
   }
-  return `[${n}]`;
+  return n;
 }
 
 /**
  * `t.fromOutputs(abi, name)` runtime: locate the single function `name` selects — a bare name, or a
  * canonical signature `'get(uint256)'` for an overloaded function (issue #4; there are no args to
  * resolve overloads by, so an overloaded bare name is an `ABI_SHAPE` ambiguity listing the
- * signatures) — validate + canonicalize its outputs through {@link componentsFromAbi},
+ * signatures) — validate + canonicalize its outputs through {@link canonicalizeComponents},
  * and return a SINGLE output's {@link EvsType} directly or wrap MANY outputs in a `tuple`
  * {@link TupleType} (named, in ABI order). The result flows wherever a `t.struct`/`t.tuple` type
  * does and round-trips with a `s.read({…, struct: true})` decode of the same function.
@@ -427,11 +345,11 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
     );
   }
   const ctx = `t.fromOutputs("${name}")`;
-  const components = componentsFromAbi(outputs, ctx);
+  const components = canonicalizeComponents(outputs, ctx);
   const single = components[0];
   const type: EvsType =
     components.length === 1 && single !== undefined
-      ? abiParamToType(single)
+      ? frozenTypeOf(single)
       : Object.freeze({ type: 'tuple', components });
   assertStaticSize(type, ctx);
   return type;
@@ -491,12 +409,19 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
  * {@link EvsType} (a {@link TupleType} for a `tuple…` param, else the scalar/array string).
  */
 function fromAbiParameterRT(param: unknown): EvsType {
-  const components = componentsFromAbi([param], 't.fromAbiParameter()');
+  const components = canonicalizeComponents([param], 't.fromAbiParameter()');
   const single = components[0];
   if (single === undefined) {
     throw new EvsTypeError('ABI_SHAPE', `t.fromAbiParameter(): missing parameter`);
   }
-  const type = abiParamToType(single);
+  const type = frozenTypeOf(single);
   assertStaticSize(type, 't.fromAbiParameter()');
   return type;
+}
+
+/** A canonical component's {@link EvsType}, a tuple descriptor frozen like every other `t`
+ *  result ({@link abiParamToType} builds a fresh, unfrozen one). */
+function frozenTypeOf(c: NamedType): EvsType {
+  const type = abiParamToType(c);
+  return typeof type === 'string' ? type : Object.freeze(type);
 }
