@@ -477,9 +477,9 @@ Dirty bits in word-typed outputs are **normalized, not reverted**: a `uintN`, `a
 `bytesN` output is masked to its declared width, an `intN` output is sign-extended from its
 width, and any nonzero `bool` word reads as `true`. A `uint8` output whose word holds 300 comes
 back as 44, and an `int8` word of `0x1f6` as −10. This is how Solidity's legacy ABI coder v1
-cleans returndata; coder v2, the default since 0.8, reverts instead. viem's decoder does not do
-either: it returns a `uintN`/`intN` word unmasked (300 stays 300) and throws on a `bool` word
-other than 0 or 1, so a misbehaving callee can read differently through evs and through a plain
+cleans returndata; coder v2, the default since 0.8, reverts instead. viem's decoder sits in
+between: it masks `address` and `bytesN` the same way, but returns a `uintN`/`intN` word unmasked
+(300 stays 300) and throws on a `bool` word other than 0 or 1, so a misbehaving callee can read differently through evs and through a plain
 `readContract`. Every output is decoded from the original returndata, so even non-canonical data
 whose offsets make two outputs share bytes decodes each of them exactly as if it were alone,
 within one shared [decode-work budget](#overlapping-offsets-and-the-decode-work-budget): the

@@ -106,8 +106,9 @@ lengths, off-by-one truncations, and empty returndata. The suite asserts the scr
 with `EvsDecodeError(site)` — attributable to the exact `s.read` call by its site id — and **never** hits an
 exceptional halt that would consume all gas (gas usage is sanity-checked). Dirty high bits in
 word-typed outputs are the deliberate exception: they are normalized (masked, sign-extended or
-booleanized, as Solidity's legacy ABI coder v1 does; viem's decoder returns such words unmasked
-instead), not reverted — see [Calls](/guides/calls/#revert-behavior-verbatim-bubbling).
+booleanized, as Solidity's legacy ABI coder v1 does; viem's decoder masks `address` and `bytesN`
+the same way but returns a dirty `uintN`/`intN` word unmasked and throws on a `bool` word other
+than 0 or 1), not reverted — see [Calls](/guides/calls/#revert-behavior-verbatim-bubbling).
 A real solc `Reverter` contract covers the bubbling path end to end: `Error(string)`, `Panic`,
 custom errors, and empty reverts must all surface through the script unchanged.
 

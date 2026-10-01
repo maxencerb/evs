@@ -1529,11 +1529,17 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
   });
 
   test('composite literals in s.return are rejected, each with the constructor that fits', () => {
-    // s.return infers the return ABI from handles and never coerces a literal: a composite-array
-    // literal needs s.lit (string-typed shapes) or s.newArray / a member slot (tuple[])
+    // s.return infers the return ABI from handles and never coerces a literal: every literal
+    // needs s.lit (or, by shape, s.tuple for a struct / s.newArray for a tuple[])
     const cases: readonly (readonly [unknown, RegExp])[] = [
-      [[{ a: 1n }, { a: 2n }], /\(tuple\[\]\) with s\.newArray\(type, n\)/],
-      [{ a: 1n }, /build a struct with s\.tuple\(type, value\)/],
+      [
+        [{ a: 1n }, { a: 2n }],
+        /\(tuple\[\]\) literal with s\.lit\(t\.array\(type\), value\), or build one with s\.newArray\(type, n\)/,
+      ],
+      [
+        { a: 1n },
+        /struct literal with s\.lit\(type, value\) or build it with s\.tuple\(type, value\)/,
+      ],
       [[[1n, 2n], [3n]], /type a literal with s\.lit\(type, value\)/],
       [['a', 'bc'], /type a literal with s\.lit\(type, value\)/],
     ];
@@ -1545,6 +1551,52 @@ describe('checklist: s.return missing / duplicated / inside a block / bad keys',
         /s\.return\(\) value "v": must be an Expr, Tuple or MutArray handle/,
       );
       expect(e.message).toMatch(fix);
+    }
+  });
+
+  test('call results in s.return get the call-result fix, not the literal one', () => {
+    // a multi-output s.read result is a frozen array of handles and a try verb's result is a
+    // { success, value } host object: neither is a literal, so neither may get the s.tuple /
+    // s.newArray hint (or the "a literal has no type here" lead)
+    const multiAbi = [
+      {
+        type: 'function',
+        name: 'multi',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'a', type: 'uint256' },
+          { name: 'b', type: 'uint256' },
+        ],
+      },
+    ] as const satisfies Abi;
+    const cases: readonly (readonly [(s: AnyBuilder, a: Args) => unknown, RegExp])[] = [
+      [
+        (s, a) => s.read({ address: a.who, abi: multiAbi, functionName: 'multi' }),
+        /array of handles \(such as a multi-output s\.read result\).*struct: true/,
+      ],
+      [
+        (s) => [s.lit(t.uint256, 1n), s.lit(t.uint256, 2n)],
+        /array of handles .*return each element under its own key/,
+      ],
+      [
+        (s, a) => s.tryRead({ address: a.who, abi: erc20Abi, functionName: 'decimals' }),
+        /try-verb result \(\{ success, value \}\).*return \.success and \.value/,
+      ],
+      [
+        (s, a) => s.tryRead({ address: a.who, abi: multiAbi, functionName: 'multi' }),
+        /try-verb result \(\{ success, value \}\)/,
+      ],
+    ];
+    for (const [make, fix] of cases) {
+      const e = expectEvs(
+        () => rec((s, a) => s.return({ v: make(s, a) as never })),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /s\.return\(\) value "v": must be an Expr, Tuple or MutArray handle/,
+      );
+      expect(e.message).toMatch(fix);
+      expect(e.message).not.toMatch(/a literal has no type|s\.tuple\(type, value\)|tuple\[\]/);
     }
   });
 });

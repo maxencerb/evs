@@ -9,6 +9,7 @@
  */
 
 import {
+  decodeAbiParameters,
   decodeFunctionResult,
   encodeAbiParameters,
   encodeErrorResult,
@@ -100,6 +101,12 @@ describe('calls', () => {
     expect(viemDecode('decimals', dirty.decimals)).toBe(300);
     expect(viemDecode('tick', dirty.tick)).toBe(0x1fffff6);
     expect(() => viemDecode('flag', dirty.flag)).toThrow(/not a valid boolean/);
+    // …but viem DOES mask a dirty address (low 20 bytes) and bytesN (first N bytes), like evs —
+    // the docs scope the "unmasked" contrast to uintN/intN only
+    const dirtyAddr: Hex = `0x${'ff'.repeat(12)}${'11'.repeat(20)}`;
+    const dirtyB4: Hex = `0x${'aa'.repeat(4)}${'ff'.repeat(28)}`;
+    expect(decodeAbiParameters([{ type: 'address' }], dirtyAddr)[0]).toBe(`0x${'11'.repeat(20)}`);
+    expect(decodeAbiParameters([{ type: 'bytes4' }], dirtyB4)[0]).toBe('0xaaaaaaaa');
   });
 
   test('multi-output static call destructures into a tuple', async () => {

@@ -15,26 +15,43 @@ import {
 } from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
 import { RecorderCalls } from './calls.js';
-import { RETURN_BRAND } from './handles.js';
+import { RETURN_BRAND, isStagedHandle } from './handles.js';
 import { describeHost, newScope, unsafeCast } from './helpers.js';
 
-/** A plain (non-array) object: the literal of a struct. */
-function isStructLiteral(x: unknown): boolean {
-  return typeof x === 'object' && x !== null && !Array.isArray(x);
+/** A plain (non-array) object that is not a staged handle: the literal of a struct. */
+function isStructLiteral(x: unknown): x is object {
+  return typeof x === 'object' && x !== null && !Array.isArray(x) && !isStagedHandle(x);
+}
+
+/** The `{ success, value }` wrapper a try verb (`s.tryRead` / `s.tryCall` / `s.trySimulate`)
+ *  returns — a host object, not a value. */
+function isTryResult(x: unknown): boolean {
+  return isStructLiteral(x) && 'success' in x && 'value' in x && isStagedHandle(x.success);
 }
 
 /**
- * The fix for a literal passed to `s.return`. `s.lit` types any value whose type is a plain
- * string (words, `string`, `uint256[][]`, `string[]`), but a struct has no string type, so a
- * struct literal goes through `s.tuple` and an array of struct literals through `s.newArray` or
- * a typed member slot.
+ * What to do with a non-handle passed to `s.return`. Two host containers of handles come first
+ * (they are mistakes about call results, not literals): a try verb's `{ success, value }` wrapper
+ * and an array of handles (a multi-output call's positional result). Then the literals: `s.lit`
+ * types any value literal (words, `string`, `uint256[][]`, `string[]`, a struct, a `tuple[]`), so
+ * the hint names it with the constructor that fits the literal's shape: `s.tuple` for a struct,
+ * `s.newArray` for a struct array built element by element.
  */
-function returnLiteralFix(v: unknown): string {
-  if (Array.isArray(v) && v.some(isStructLiteral)) {
-    return 'build a struct array (tuple[]) with s.newArray(type, n), or type the literal through a member of s.tuple(t.struct({ … }), { … })';
+function returnValueFix(v: unknown): string {
+  if (isTryResult(v)) {
+    return 'a try-verb result ({ success, value }) is a host wrapper, not a value: return .success and .value (or each output of .value) under their own keys';
   }
-  if (isStructLiteral(v)) return 'build a struct with s.tuple(type, value)';
-  return 'type a literal with s.lit(type, value)';
+  if (Array.isArray(v) && v.some(isStagedHandle)) {
+    return "an array of handles (such as a multi-output s.read result) is a host array, not a value: return each element under its own key, decode a call's outputs into one Tuple with s.read({ …, struct: true }), or build an array with s.newArray(type, n)";
+  }
+  const lead = 's.return infers the return ABI from handles, so a literal has no type here';
+  if (Array.isArray(v) && v.some(isStructLiteral)) {
+    return `${lead}: type a struct array (tuple[]) literal with s.lit(t.array(type), value), or build one with s.newArray(type, n)`;
+  }
+  if (isStructLiteral(v)) {
+    return `${lead}: type a struct literal with s.lit(type, value) or build it with s.tuple(type, value)`;
+  }
+  return `${lead}: type a literal with s.lit(type, value)`;
 }
 
 /** The recording engine behind one `evscript` body; the layers it extends are listed on the
@@ -253,7 +270,7 @@ export class Recorder extends RecorderCalls {
       if (c.kind !== 'expr') {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `s.return() value "${key}": must be an Expr, Tuple or MutArray handle — s.return infers the return ABI from handles, so a literal has no type here: ${returnLiteralFix(v)}`,
+          `s.return() value "${key}": must be an Expr, Tuple or MutArray handle — ${returnValueFix(v)}`,
         );
       }
       returns.push({ name: key, type: c.type, value: c.id });
