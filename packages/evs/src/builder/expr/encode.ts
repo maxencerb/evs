@@ -66,20 +66,11 @@ export abstract class RecorderEncode extends RecorderComposites {
     }
     return values.map((v, i) => {
       const valueWhat = `${what} value #${i}`;
-      let id: ValueId;
-      const bare = this.bareHandleId(v, valueWhat);
-      if (bare !== null) {
-        id = bare;
-      } else {
-        const c = this.classify(v, valueWhat);
-        if (c.kind !== 'expr') {
-          throw new EvsTypeError(
-            'TYPE_MISMATCH',
-            `${valueWhat}: must be an Expr, Tuple, or MutArray handle — type a literal with s.lit(type, value)`,
-          );
-        }
-        id = c.id;
-      }
+      const id = this.valueIdOf(
+        v,
+        valueWhat,
+        'must be an Expr, Tuple, or MutArray handle — type a literal with s.lit(type, value)',
+      );
       if (mode === 'packed') {
         const ty = this.typeOfValue(id);
         if (!isPackedEncodable(ty)) {

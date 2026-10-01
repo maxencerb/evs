@@ -1,10 +1,12 @@
 /**
- * `builder/expr/helpers.ts` — the recorder's scopes and small pure helpers: op tables, literal
- * range / canonical-word conversions, host-value descriptions, and the constant folders
+ * `builder/expr/helpers.ts` — the recorder's scopes and small pure helpers: the `StmtBody`
+ * statement shape (a `Stmt` before the recorder stamps its `site`), op tables, literal range /
+ * canonical-word conversions, the layout-classifier error re-wrap (`assertLayout`), host-value
+ * descriptions, and the constant folders
  * (`foldBin`, `foldModArith`).
  */
 
-import { layoutOf, layoutOfType } from '../../abi/layout.js';
+import { layoutOfType } from '../../abi/layout.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import { functionSignature } from '../../core/signature.js';
 import {
@@ -39,6 +41,13 @@ export interface Scope {
 export function newScope(kind: ScopeKind): Scope {
   return { kind, stmts: [], consts: new Map() };
 }
+
+/** `Omit` applied to each member of a union separately (a plain `Omit` merges the members). */
+type DistributiveOmit<T, K extends PropertyKey> = T extends unknown ? Omit<T, K> : never;
+
+/** A statement as a recorder layer builds it: one {@link Stmt} variant without its `site`, which
+ *  `appendStmt` assigns. Distributive, so each literal is checked against its own variant. */
+export type StmtBody = DistributiveOmit<Stmt, 'site'>;
 
 // ---------------------------------------------------------------------------
 // small helpers
@@ -129,11 +138,20 @@ export function assertV0Type(type: unknown, what: string): asserts type is Strin
       `${what}: type must be a type string (use the \`t\` namespace), got ${describeHost(type)}`,
     );
   }
+  assertLayout(type, what);
+}
+
+/**
+ * Validates a type (or any type string) through the layout classifier (`abi/layout.ts`),
+ * rethrowing its `EvsTypeError` under `what` with the same code: malformed or outside the
+ * vocabulary → `TYPE_MISMATCH`, an array nested deeper than `MAX_ARRAY_DEPTH` → `UNSUPPORTED_V0`.
+ */
+export function assertLayout(type: TupleType | string, what: string): void {
   try {
-    layoutOf(type);
+    layoutOfType(type);
   } catch (e) {
     if (e instanceof EvsTypeError) {
-      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf: /, '')}`);
+      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
     }
     throw e;
   }
@@ -156,14 +174,7 @@ export function assertValueType(type: unknown, what: string): asserts type is Ev
       `${what}: type must be a \`t\` type (a type string or a t.struct/t.tuple descriptor), got ${describeHost(type)}`,
     );
   }
-  try {
-    layoutOfType(type);
-  } catch (e) {
-    if (e instanceof EvsTypeError) {
-      throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
-    }
-    throw e;
-  }
+  assertLayout(type, what);
 }
 
 export function describeHost(v: unknown): string {
@@ -276,11 +287,10 @@ export function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
     case 'add':
     case 'sub':
     case 'mul': {
-      const wt = type;
       const r = op === 'add' ? a + b : op === 'sub' ? a - b : a * b;
-      const [min, max] = rangeOf(wt);
+      const [min, max] = rangeOf(type);
       if (r < min || r > max) {
-        const verb = op === 'sub' && !isSigned(wt) ? 'underflows' : 'overflows';
+        const verb = op === 'sub' && !isSigned(type) ? 'underflows' : 'overflows';
         const sym = op === 'add' ? '+' : op === 'sub' ? '−' : '×';
         return { ok: false, panic: 0x11, reason: `${a} ${sym} ${b} ${verb} ${type}` };
       }
@@ -336,23 +346,20 @@ export function foldBin(op: BinOp, type: WordType, a: bigint, b: bigint): Fold {
     case 'bitand':
     case 'bitor':
     case 'bitxor': {
-      const wt = type;
-      const ua = toUnsignedN(wt, a);
-      const ub = toUnsignedN(wt, b);
+      const ua = toUnsignedN(type, a);
+      const ub = toUnsignedN(type, b);
       const r = op === 'bitand' ? ua & ub : op === 'bitor' ? ua | ub : ua ^ ub;
-      return { ok: true, value: fromUnsignedN(wt, r) };
+      return { ok: true, value: fromUnsignedN(type, r) };
     }
     case 'shl': {
-      const wt = type;
       const sh = b > 256n ? 256n : b;
-      const mask = (1n << BigInt(bitsOf(wt))) - 1n;
-      return { ok: true, value: fromUnsignedN(wt, (toUnsignedN(wt, a) << sh) & mask) };
+      const mask = (1n << BigInt(bitsOf(type))) - 1n;
+      return { ok: true, value: fromUnsignedN(type, (toUnsignedN(type, a) << sh) & mask) };
     }
     case 'shr': {
-      const wt = type;
       const sh = b > 256n ? 256n : b;
       // SAR for intN (arithmetic — bigint >> floors), logical SHR for uintN/bytesN
-      return { ok: true, value: isSigned(wt) ? a >> sh : toUnsignedN(wt, a) >> sh };
+      return { ok: true, value: isSigned(type) ? a >> sh : toUnsignedN(type, a) >> sh };
     }
     default: {
       throw new EvsInternalError('INTERNAL', `foldBin: unknown op '${String(op)}'`);

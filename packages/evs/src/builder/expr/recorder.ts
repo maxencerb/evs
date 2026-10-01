@@ -146,20 +146,14 @@ export class Recorder extends RecorderCalls {
     const what =
       index === null ? `s.fn("${fnName}") result` : `s.fn("${fnName}") result [${index}]`;
     // a Tuple / MutArray handle is returnable from a fn body DIRECTLY (composite/array result —
-    // issue #5 ask #1): return its ValueId verbatim (byte-identical to `.expr()`) after owner +
-    // visibility checks. The fncall result is a single pointer word, so the IR/codegen/validate
-    // layers carry it unchanged. classify() (below) still rejects these handles on the arithmetic
-    // paths with the "use .expr()" message.
-    const bare = this.bareHandleId(v, what);
-    if (bare !== null) return bare;
-    const c = this.classify(v, what);
-    if (c.kind !== 'expr') {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `${what}: fn bodies must return an Expr, a Tuple, a MutArray, a readonly array of those, or void — got ${describeHost(v)}`,
-      );
-    }
-    return c.id;
+    // issue #5 ask #1): its ValueId verbatim (byte-identical to `.expr()`). The fncall result is a
+    // single pointer word, so the IR/codegen/validate layers carry it unchanged. classify() still
+    // rejects these handles on the arithmetic paths with the "use .expr()" message.
+    return this.valueIdOf(
+      v,
+      what,
+      `fn bodies must return an Expr, a Tuple, a MutArray, a readonly array of those, or void — got ${describeHost(v)}`,
+    );
   }
 
   private fnCall(
@@ -197,7 +191,7 @@ export class Recorder extends RecorderCalls {
     if (shape === 'void') return undefined;
     // wrap each result by its recorded type (issue #5 ask #1): a plain `tuple` result → a Tuple
     // handle (so named field access works at the call site, like `s.call`); a composite array
-    // (`tuple[]`) or any scalar/word-array → an Expr. Mirrors `subcall`'s `handleFor`.
+    // (`tuple[]`) or any scalar/word-array → an Expr. Mirrors `subcall`'s `wrapCallResult`.
     const wrap = (id: ValueId): Expr | object => this.valueHandle(id, this.typeOfValue(id));
     const first = outIds[0];
     if (shape === 'single' && first !== undefined) return wrap(first);
@@ -258,22 +252,15 @@ export class Recorder extends RecorderCalls {
         );
       }
       // a Tuple / MutArray handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS
-      // the memref, so we return its ValueId verbatim — byte-identical to `handle.expr()`.
-      // classify() (below) still rejects these handles on the arithmetic paths with the targeted
+      // the memref, so its ValueId is returned verbatim — byte-identical to `handle.expr()`.
+      // classify() still rejects these handles on the arithmetic paths with the targeted
       // "use .expr()" message (issue #5 asks #5 / #2's bare-Tuple precedent).
-      const bare = this.bareHandleId(v, `s.return() value "${key}"`);
-      if (bare !== null) {
-        returns.push({ name: key, type: this.typeOfValue(bare), value: bare });
-        continue;
-      }
-      const c = this.classify(v, `s.return() value "${key}"`);
-      if (c.kind !== 'expr') {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `s.return() value "${key}": must be an Expr, Tuple or MutArray handle — ${returnValueFix(v)}`,
-        );
-      }
-      returns.push({ name: key, type: c.type, value: c.id });
+      const value = this.valueIdOf(
+        v,
+        `s.return() value "${key}"`,
+        `must be an Expr, Tuple or MutArray handle — ${returnValueFix(v)}`,
+      );
+      returns.push({ name: key, type: this.typeOfValue(value), value });
     }
     this.returnsList = returns;
     this.sealed = true; // the recorder seals on s.return

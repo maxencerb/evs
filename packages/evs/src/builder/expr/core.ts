@@ -9,7 +9,6 @@ import {
   encodeLiteralWord,
   encodeLiteralData,
 } from '../../abi/artifact.js';
-import { layoutOfType } from '../../abi/layout.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError } from '../../core/errors.js';
 import {
   type EvsType,
@@ -30,6 +29,7 @@ import {
   type NamedType,
   abiParamToType,
   isMemrefType,
+  MAX_FIXED_LENGTH,
 } from '../../core/types.js';
 import type {
   PlainAbiError,
@@ -39,7 +39,6 @@ import type {
   FnIr,
   FnId,
   CellId,
-  Stmt,
 } from '../../ir/nodes.js';
 import {
   makeTuple,
@@ -50,15 +49,13 @@ import {
   TUPLE_INTERNALS,
   FIELD_INTERNALS,
   isStagedHandle,
-  type TupleInternals,
-  type ArrInternals,
   CellImpl,
 } from './handles.js';
 import {
   type Scope,
   newScope,
-  unsafeCast,
   type ScopeKind,
+  type StmtBody,
   type Operand,
   logicalFromCanonical,
   canonicalHex,
@@ -68,6 +65,7 @@ import {
   allMembersNamed,
   tupleDebugTag,
   assertValueType,
+  assertLayout,
 } from './helpers.js';
 import type { Recorder } from './recorder.js';
 
@@ -222,9 +220,8 @@ export abstract class RecorderCore {
     return this.stack.includes(scope);
   }
 
-  appendStmt(body: Record<string, unknown>): void {
-    // statement bodies are built per the declared Stmt union (re-checked by ir/validate)
-    this.top().stmts.push(unsafeCast<Stmt>({ ...body, site: this.nextSite++ }));
+  appendStmt(body: StmtBody): void {
+    this.top().stmts.push({ ...body, site: this.nextSite++ });
   }
 
   // -- internals --------------------------------------------------------------------------
@@ -259,14 +256,8 @@ export abstract class RecorderCore {
     if (typeof v === 'object' && v !== null) {
       const ei = EXPR_INTERNALS.get(v);
       if (ei !== undefined) {
-        if (ei.owner !== this.self) {
-          throw new EvsScopeError(
-            'FOREIGN_HANDLE',
-            `${what}: this Expr (${ei.owner.describeValue(ei.id)}) belongs to script "${ei.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
-          );
-        }
-        this.checkVisible(ei.id, what);
-        return { kind: 'expr', id: ei.id, type: this.typeOfValue(ei.id) };
+        const id = this.handleId(ei, 'Expr', what);
+        return { kind: 'expr', id, type: this.typeOfValue(id) };
       }
       if (CELL_INTERNALS.has(v)) {
         throw new EvsTypeError(
@@ -411,7 +402,7 @@ export abstract class RecorderCore {
     if (isArrayValueType(type) && typeof v === 'object' && v !== null) {
       const ai = ARR_INTERNALS.get(v);
       if (ai !== undefined) {
-        const id = this.arrHandleId(ai, what);
+        const id = this.handleId(ai, 'MutArray', what);
         const at = this.typeOfValue(id);
         if (!typesEqual(at, type)) this.typeMismatch(what, type, at);
         return id;
@@ -475,16 +466,7 @@ export abstract class RecorderCore {
         `${what}: a ${stringifyType(type)} literal must be a JS array, got ${describeHost(value)}`,
       );
     }
-    // validate the array type via the layout classifier (malformed → TYPE_MISMATCH, nested deeper
-    // than MAX_ARRAY_DEPTH → UNSUPPORTED_V0).
-    try {
-      layoutOfType(type);
-    } catch (e) {
-      if (e instanceof EvsTypeError) {
-        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
-      }
-      throw e;
-    }
+    assertLayout(type, what);
     const elem = elemTypeOf(type);
     const fixed = fixedLengthOf(type);
     if (fixed !== null && value.length !== fixed) {
@@ -493,7 +475,7 @@ export abstract class RecorderCore {
         `${what}: a ${stringifyType(type)} literal must have exactly ${fixed} element(s), got ${value.length}`,
       );
     }
-    if (BigInt(value.length) >= 1n << 32n) {
+    if (value.length > MAX_FIXED_LENGTH) {
       this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
     }
     const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
@@ -523,23 +505,17 @@ export abstract class RecorderCore {
     if (typeof v === 'object' && v !== null) {
       const ti = TUPLE_INTERNALS.get(v);
       if (ti !== undefined) {
-        if (ti.owner !== this.self) {
-          throw new EvsScopeError(
-            'FOREIGN_HANDLE',
-            `${what}: this Tuple (${ti.owner.valueRef(ti.id)}) belongs to script "${ti.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
-          );
-        }
-        this.checkVisible(ti.id, what);
+        const id = this.handleId(ti, 'Tuple', what);
         if (!typesEqual(ti.tt, type)) this.typeMismatch(what, type, ti.tt);
-        return ti.id; // reference: aliases the SAME flat block
+        return id; // reference: aliases the SAME flat block
       }
       // an Expr memref of the SAME tuple type (e.g. another tuple's `.expr()`) is also accepted.
       const ei = EXPR_INTERNALS.get(v);
       if (ei !== undefined) {
-        this.classify(v, what); // ownership + visibility check (rethrows FOREIGN_HANDLE)
-        const et = this.typeOfValue(ei.id);
+        const id = this.handleId(ei, 'Expr', what);
+        const et = this.typeOfValue(id);
         if (!typesEqual(et, type)) this.typeMismatch(what, type, et);
-        return ei.id;
+        return id;
       }
     }
     // a plain object/array literal → build the tuple from its members (buildTupleNew rejects
@@ -547,45 +523,34 @@ export abstract class RecorderCore {
     return this.buildTupleNew(type, v, what);
   }
 
-  /** FOREIGN_HANDLE check for a bare {@link TupleHandle}/{@link MutArrayImpl} reused in a return /
-   *  member / array slot — handles never cross scripts. */
-  private assertHandleOwner(
-    owner: Recorder,
-    id: ValueId,
-    kind: 'Tuple' | 'MutArray',
+  /** The ValueId behind an Expr / Tuple / MutArray handle, after the owner check (handles never
+   *  cross scripts: `FOREIGN_HANDLE`) and the visibility check ({@link checkVisible}). */
+  private handleId(
+    h: { readonly owner: Recorder; readonly id: ValueId },
+    kind: 'Expr' | 'Tuple' | 'MutArray',
     what: string,
-  ): void {
-    if (owner === this.self) return;
-    throw new EvsScopeError(
-      'FOREIGN_HANDLE',
-      `${what}: this ${kind} (${owner.valueRef(id)}) belongs to script "${owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
-    );
-  }
-
-  /** The ValueId behind a bare {@link Tuple} handle, after owner + visibility checks. Reused by the
-   *  direct-return paths (`s.return`, `s.fn` result — issue #5 ask #1). */
-  private tupleHandleId(ti: TupleInternals, what: string): ValueId {
-    this.assertHandleOwner(ti.owner, ti.id, 'Tuple', what);
-    this.checkVisible(ti.id, what);
-    return ti.id;
-  }
-
-  /** The ValueId behind a bare {@link MutArray} handle, after owner + visibility checks (issue #5
-   *  ask #5 — a bare array handle is returnable / passable, byte-identical to `.expr()`). */
-  private arrHandleId(ai: ArrInternals, what: string): ValueId {
-    this.assertHandleOwner(ai.owner, ai.id, 'MutArray', what);
-    this.checkVisible(ai.id, what);
-    return ai.id;
+  ): ValueId {
+    if (h.owner !== this.self) {
+      // an Expr names its type; a Tuple's type would print as its full JSON descriptor
+      const ref = kind === 'Expr' ? h.owner.describeValue(h.id) : h.owner.valueRef(h.id);
+      throw new EvsScopeError(
+        'FOREIGN_HANDLE',
+        `${what}: this ${kind} (${ref}) belongs to script "${h.owner.name}" and cannot be used in script "${this.name}" — handles never cross scripts`,
+      );
+    }
+    this.checkVisible(h.id, what);
+    return h.id;
   }
 
   /** The ValueId behind a bare {@link Tuple} / {@link MutArray} handle (owner + visibility
-   *  checked), or null when `v` is neither. */
+   *  checked), or null when `v` is neither. A bare handle is returnable / passable where a memref
+   *  is expected, byte-identical to its `.expr()` (issue #5 asks #1 and #5). */
   protected bareHandleId(v: unknown, what: string): ValueId | null {
     if (typeof v !== 'object' || v === null) return null;
     const ti = TUPLE_INTERNALS.get(v);
-    if (ti !== undefined) return this.tupleHandleId(ti, what);
+    if (ti !== undefined) return this.handleId(ti, 'Tuple', what);
     const ai = ARR_INTERNALS.get(v);
-    if (ai !== undefined) return this.arrHandleId(ai, what);
+    if (ai !== undefined) return this.handleId(ai, 'MutArray', what);
     return null;
   }
 
@@ -605,6 +570,18 @@ export abstract class RecorderCore {
         'init must be a literal of members, not a handle — pass the handle itself where the tuple is expected',
       );
     }
+  }
+
+  /** The ValueId of a position that takes a recorded value but no literal (`s.return`, an `s.fn`
+   *  result, `s.encode` / `s.keccak256` values): an Expr, or a bare Tuple / MutArray handle (its
+   *  memref, see {@link bareHandleId}). A host literal is a `TYPE_MISMATCH` reading
+   *  `${what}: ${rawHint}`. */
+  protected valueIdOf(v: unknown, what: string, rawHint: string): ValueId {
+    const bare = this.bareHandleId(v, what);
+    if (bare !== null) return bare;
+    const c = this.classify(v, what);
+    if (c.kind !== 'expr') throw new EvsTypeError('TYPE_MISMATCH', `${what}: ${rawHint}`);
+    return c.id;
   }
 
   /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),

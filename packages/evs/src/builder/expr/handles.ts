@@ -69,7 +69,7 @@ export function isStagedHandle(v: unknown): boolean {
 }
 
 // ---------------------------------------------------------------------------
-// the Expr handle (staging traps installed per instance)
+// the Expr handle (staging traps live on the prototype, installed once below)
 // ---------------------------------------------------------------------------
 
 class ExprHandle {
