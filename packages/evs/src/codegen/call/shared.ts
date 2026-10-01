@@ -10,7 +10,7 @@ import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
 import { abiParamToType, stringifyType, type Hex } from '../../core/types.js';
 import { callOutputs, type Stmt, type ConstData, type SiteId } from '../../ir/nodes.js';
-import { type SlotRef, emitCeil32, emitWithinStackBudget } from '../abi.js';
+import { type SlotRef, emitCeil32, emitWithinStackBudget, encodeFramesOf } from '../abi.js';
 import { SCRATCH_0, FREE_PTR, emitZeroValue } from '../memory.js';
 
 // ---------------------------------------------------------------------------
@@ -95,6 +95,18 @@ export function emitPushWordChunk(w: AsmWriter, chunk: Uint8Array, note?: string
   w.op('SHL');
 }
 
+/**
+ * Pushes a 4-byte function selector as the left-aligned word `selector << 224` through
+ * {@link emitPushWordChunk}: `PUSH4 <sel> PUSH1 0xE0 SHL` (8 bytes) instead of a 33-byte
+ * `PUSH32`, the same idiom the template calldata path gets for free.
+ */
+export function emitSelectorWord(w: AsmWriter, selector: Uint8Array, note: string): void {
+  if (selector.length !== 4) throw internal(`${note}: a selector must be 4 bytes`);
+  const chunk = new Uint8Array(32);
+  chunk.set(selector);
+  emitPushWordChunk(w, chunk, note);
+}
+
 // ---------------------------------------------------------------------------
 // machinery shared by emitStaticCall and emitSimulateCall. The two emitters
 // legitimately diverge only in the middle — per-output in-place decode vs whole-tuple
@@ -177,6 +189,20 @@ export function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: s
 export function callSiteAllocates(stmt: Extract<Stmt, { k: 'call' }>): boolean {
   if (stmt.kind === 'simulate') return true;
   return callOutputs(stmt).some((p) => layoutOfType(abiParamToType(p)).kind !== 'word');
+}
+
+/**
+ * How many encode frames a call site's ARGS need (`encodeFramesOf`, max over the inputs): args
+ * holding fixed-size arrays, arrays of structs / strings / arrays, or dynamic structs nested three
+ * or more levels deep. The calldata builder reserves that many frames by bumping the free pointer
+ * once (`reserveEncodeFrames`), so a site with any allocates even when its outputs are words — the
+ * `LOOP_ALLOCATION` diagnostic reads it here too. 0 → no bump.
+ */
+export function callArgEncodeFrames(stmt: Extract<Stmt, { k: 'call' }>): number {
+  return stmt.fnAbi.inputs.reduce(
+    (n, p) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(p)))),
+    0,
+  );
 }
 
 /**

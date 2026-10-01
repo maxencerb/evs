@@ -29,7 +29,7 @@ import { isBytesN } from '../core/types.js';
 import { walkStmts, type FnId, type ScriptIr, type Stmt, type ValueId } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
-import { callSiteAllocates } from './call.js';
+import { callArgEncodeFrames, callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -271,8 +271,12 @@ function describeAllocation(
         ? `a ${canonicalTypeSignature(s.type)} literal (materialized in memory)`
         : null;
     case 'call':
-      // word-only s.read/s.call outputs read a transient snapshot (see callSiteAllocates)
-      return callSiteAllocates(s) ? `${callVerb(s)}(${s.fnAbi.name}) (returndata snapshot)` : null;
+      // word-only s.read/s.call outputs read a transient snapshot (see callSiteAllocates), but
+      // args that need encode frames reserve them by bumping the free pointer (callArgEncodeFrames)
+      if (callSiteAllocates(s)) return `${callVerb(s)}(${s.fnAbi.name}) (returndata snapshot)`;
+      return callArgEncodeFrames(s) > 0
+        ? `${callVerb(s)}(${s.fnAbi.name}) (call-arg encode frames)`
+        : null;
     case 'slice':
       return '.slice(…) (fresh copy)';
     case 'convert':

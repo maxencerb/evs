@@ -46,6 +46,6 @@
  */
 
 export type { CallSitePlan } from './call/shared.js';
-export { callSiteAllocates } from './call/shared.js';
+export { callArgEncodeFrames, callSiteAllocates } from './call/shared.js';
 export { emitStaticCall } from './call/static-call.js';
 export { emitSimulateCall } from './call/simulate-call.js';

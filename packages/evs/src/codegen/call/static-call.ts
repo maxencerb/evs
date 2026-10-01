@@ -124,10 +124,9 @@ export function emitStaticCall(
   if (template !== null && template.regime === 'static') {
     w.push(template.staticSize); // [argsSize, …]
   } else {
+    w.op('DUP3'); // [buf, retOff, retSize, buf]
     w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [tailEnd, retOff, retSize, buf]
-    w.op('DUP4'); // [buf, tailEnd, …]
-    w.op('SWAP1'); // [tailEnd, buf, …]
+    w.op('MLOAD'); // [tailEnd, buf, retOff, retSize, buf]
     w.op('SUB'); // [argsSize, retOff, retSize, buf]
   }
   w.op('DUP4'); // [argsOff = buf, argsSize, retOff, retSize, buf]

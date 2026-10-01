@@ -21,7 +21,7 @@ import {
 } from '../abi.js';
 import { SCRATCH_1, FREE_PTR } from '../memory.js';
 import {
-  SIMULATE_TRAMPOLINE_SELECTOR_NUM,
+  SIMULATE_TRAMPOLINE_SELECTOR,
   SIMULATE_PAYLOAD_OFFSET,
   SIMULATE_MAGIC,
 } from '../simulate.js';
@@ -37,6 +37,8 @@ import {
   pushSnap,
   pushSnapEnd,
   emitTryEpilogue,
+  emitSelectorWord,
+  literalBytes,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -44,8 +46,8 @@ import {
 // trampoline body in codegen/simulate.ts)
 // ---------------------------------------------------------------------------
 
-/** Reserved 4-byte trampoline selector as a left-shifted 32-byte word (`sel << 224`). */
-const TRAMP_SELECTOR_WORD = BigInt(SIMULATE_TRAMPOLINE_SELECTOR_NUM) << 224n;
+/** The reserved 4-byte trampoline selector, pushed as a left-aligned word by `emitSelectorWord`. */
+const TRAMP_SELECTOR = literalBytes(SIMULATE_TRAMPOLINE_SELECTOR, 'trampoline selector');
 /** Scratch slot holding the wrapper argsSize (68 + payload length) across the payload memcpy
  *  (the pre-cancun `@memcpy` only clobbers scratch 0x00, so 0x20 survives it). */
 const SIM_ARGSIZE_SLOT = SCRATCH_1;
@@ -119,11 +121,10 @@ export function emitSimulateCall(
   if (template !== null && template.regime === 'static') {
     w.push(template.staticSize, { note: 'payload size L' }); // [L]
   } else {
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [tailEnd]
     w.push(FREE_PTR);
-    w.op('MLOAD'); // [buf, tailEnd]
-    w.op('SWAP1');
+    w.op('MLOAD'); // [buf]
+    w.push(TAIL_CURSOR);
+    w.op('MLOAD'); // [tailEnd, buf]
     w.op('SUB'); // [L = tailEnd − buf]
   }
   // argsSize = 68 + L → SIM_ARGSIZE_SLOT (survives the payload memcpy — @memcpy only clobbers 0x00).
@@ -136,10 +137,9 @@ export function emitSimulateCall(
   // `@memcpy` requires the stack to be EXACTLY [dst, src, len]); instead it is recomputed from the
   // stored argsSize as buf + ceil32(argsSize − 68) wherever needed.
   const pushWrapperBase = (): void => {
+    w.push(SIM_HEADER);
     w.push(SIM_ARGSIZE_SLOT);
     w.op('MLOAD');
-    w.push(SIM_HEADER);
-    w.op('SWAP1');
     w.op('SUB'); // [L = argsSize − 68]
     emitCeil32(w); // [ceil32(L)]
     w.push(FREE_PTR);
@@ -148,7 +148,7 @@ export function emitSimulateCall(
   };
   pushWrapperBase(); // [W]
   // header word 0: MSTORE(W, trampSel << 224)
-  w.push(TRAMP_SELECTOR_WORD, { note: 'trampoline selector' }); // [sel, W]
+  emitSelectorWord(w, TRAMP_SELECTOR, 'trampoline selector'); // [sel<<224, W]
   w.op('DUP2');
   w.op('MSTORE'); // [W]   mem[W] = sel<<224 (zeros [W+4,W+32))
   // header word 1: MSTORE(W+4, target) (overwrites those zeros with the address)
@@ -174,10 +174,9 @@ export function emitSimulateCall(
   w.op('ADD'); // [W+68]   (dst)
   w.push(FREE_PTR);
   w.op('MLOAD'); // [buf, W+68]   (src)
+  w.push(SIM_HEADER);
   w.push(SIM_ARGSIZE_SLOT);
   w.op('MLOAD');
-  w.push(SIM_HEADER);
-  w.op('SWAP1');
   w.op('SUB'); // [L, buf, W+68]   (len = argsSize − 68)
   w.op('SWAP2'); // [W+68, buf, L]
   emitMemCopy(w, tails, opts); // []   (W+68 > buf+L ⇒ non-overlapping, all forks)
@@ -235,9 +234,8 @@ export function emitSimulateCall(
     w.op('JUMP'); // → zero block (via the free-pointer restore)
   } else {
     // strict: bubble the target's revert verbatim — revert(buf+64, rds−64)
-    w.op('RETURNDATASIZE');
     w.push(64);
-    w.op('SWAP1');
+    w.op('RETURNDATASIZE');
     w.op('SUB'); // [rds−64, buf]
     w.op('SWAP1');
     w.push(64);
@@ -250,9 +248,8 @@ export function emitSimulateCall(
   if (outputs.length > 0) {
     const minSize = headBytes(outputs);
     // head-size guard on the INNER length: rds−64 ≥ headBytes(outputs)
-    w.op('RETURNDATASIZE');
     w.push(64);
-    w.op('SWAP1');
+    w.op('RETURNDATASIZE');
     w.op('SUB'); // [rds−64, buf]
     w.push(minSize, { note: `staticMinSize ${minSize}` });
     w.op('GT'); // [minSize > rds−64, buf]

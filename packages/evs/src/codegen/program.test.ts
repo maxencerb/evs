@@ -746,7 +746,7 @@ describe('dispatcher', () => {
       0x000c  6004        PUSH1 0x04
       0x000e  36          CALLDATASIZE
       0x000f  10          LT
-      0x0010  61004f      PUSH2 0x004f → @badcd
+      0x0010  61004e      PUSH2 0x004e → @badcd
       0x0013  57          JUMPI
       0x0014  5f          PUSH0
       0x0015  35          CALLDATALOAD
@@ -756,14 +756,14 @@ describe('dispatcher', () => {
       0x001e  14          EQ
       0x001f  610027      PUSH2 0x0027 → @main
       0x0022  57          JUMPI
-      0x0023  61004f      PUSH2 0x004f → @badcd
+      0x0023  61004e      PUSH2 0x004e → @badcd
       0x0026  56          JUMP
       @main:
       0x0027  5b          JUMPDEST  ; @main
       0x0028  6024        PUSH1 0x24  ; calldata floor 36
       0x002a  36          CALLDATASIZE
       0x002b  10          LT
-      0x002c  61004f      PUSH2 0x004f → @badcd
+      0x002c  61004e      PUSH2 0x004e → @badcd
       0x002f  57          JUMPI
       0x0030  6004        PUSH1 0x04  ; arg #0 head
       0x0032  35          CALLDATALOAD
@@ -780,25 +780,24 @@ describe('dispatcher', () => {
       0x0041  6040        PUSH1 0x40
       0x0043  51          MLOAD
       0x0044  52          MSTORE  ; head x
-      0x0045  5f          PUSH0
-      0x0046  51          MLOAD
-      0x0047  6040        PUSH1 0x40
-      0x0049  51          MLOAD
-      0x004a  80          DUP1
-      0x004b  91          SWAP2
-      0x004c  03          SUB
-      0x004d  90          SWAP1
-      0x004e  f3          RETURN  ; return tuple
+      0x0045  6040        PUSH1 0x40
+      0x0047  51          MLOAD
+      0x0048  80          DUP1
+      0x0049  5f          PUSH0
+      0x004a  51          MLOAD
+      0x004b  03          SUB
+      0x004c  90          SWAP1
+      0x004d  f3          RETURN  ; return tuple
       @badcd:
-      0x004f  5b          JUMPDEST  ; @badcd
-      0x0050  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
-      0x0055  60e0        PUSH1 0xe0
-      0x0057  1b          SHL
-      0x0058  5f          PUSH0
-      0x0059  52          MSTORE
-      0x005a  6004        PUSH1 0x04
-      0x005c  5f          PUSH0
-      0x005d  fd          REVERT  ; EvsInvalidCalldata()"
+      0x004e  5b          JUMPDEST  ; @badcd
+      0x004f  63f43fed56  PUSH4 0xf43fed56  ; selector 0xf43fed56
+      0x0054  60e0        PUSH1 0xe0
+      0x0056  1b          SHL
+      0x0057  5f          PUSH0
+      0x0058  52          MSTORE
+      0x0059  6004        PUSH1 0x04
+      0x005b  5f          PUSH0
+      0x005c  fd          REVERT  ; EvsInvalidCalldata()"
     `);
   });
 
@@ -1138,6 +1137,40 @@ describe('diagnostics', () => {
       's.encode(…) (fresh bytes memref)',
       's.encodePacked(…) (fresh bytes memref)',
     ]);
+  });
+
+  test('LOOP_ALLOCATION: word-output calls whose args reserve encode frames are flagged', () => {
+    const b = new IrB('framed', [
+      ['n', 'uint256'],
+      ['names', 'string[]'],
+      ['ids', 'uint256[]'],
+    ]);
+    const zero = b.word('uint256', 0n);
+    const i = b.cell('uint256', zero);
+    const target = b.word('address', BigInt(TARGET));
+    let framedSite = -1;
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        // a string[] arg is encoded through an array loop whose frame is reserved by bumping the
+        // free pointer, so the site grows memory even though its only output is a word
+        framedSite = b.call({
+          target,
+          abi: fnAbi('count', ['string[]'], ['uint256']),
+          args: [1],
+        }).site; // flagged
+        // a word-element array arg needs no frame → not flagged
+        b.call({ target, abi: fnAbi('sum', ['uint256[]'], ['uint256']), args: [2] });
+        b.cellSet(i, b.bin('add', b.cellGet(i), b.word('uint256', 1n)));
+      },
+    );
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
+    expect(loopAllocs.map((d) => d.message.split(' allocates memory')[0])).toEqual([
+      's.read(count) (call-arg encode frames)',
+    ]);
+    expect(loopAllocs[0]?.site).toBe(framedSite);
   });
 
   test('no LOOP_ALLOCATION outside loops', () => {
