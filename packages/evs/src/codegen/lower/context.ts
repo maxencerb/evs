@@ -110,7 +110,11 @@ export function createLowerCtx(
 }
 
 /** Runs `body` with `ctx.loop` set to `loop` (`null` for a fn body), then restores it. */
-export function withLoop(ctx: LowerCtx, loop: LoopTargets | null, body: () => void): void {
+export function withLoop(
+  ctx: Pick<LowerCtx, 'loop'>,
+  loop: LoopTargets | null,
+  body: () => void,
+): void {
   const saved = ctx.loop;
   ctx.loop = loop;
   try {

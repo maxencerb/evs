@@ -404,6 +404,22 @@ describe('verifyShapes — RETURNDATACOPY windows', () => {
     expect(at).toBe(SANCTIONED_RETURNDATACOPY_WINDOW);
   });
 
+  test('the verifier reads exactly the sanctioned window (fixed-role reads stay in lockstep)', () => {
+    // verifyShapes reads nodes[i - 3..i - 1] by role; the constant must name that same length
+    expect(SANCTIONED_RETURNDATACOPY_WINDOW).toBe(3);
+    const w = new AsmWriter();
+    w.returndatacopyAll('zero');
+    const nodes = w.nodes();
+    const at = nodes.findIndex((n) => n.k === 'op' && n.op === 'RETURNDATACOPY');
+    expect(() => verifyShapes(nodes, { evmVersion: 'cancun' })).not.toThrow();
+    // the window's first node is checked: swapping it breaks the shape
+    const broken = nodes.with(at - SANCTIONED_RETURNDATACOPY_WINDOW, {
+      k: 'op',
+      op: 'CALLDATASIZE',
+    });
+    expect(() => verifyShapes(broken, { evmVersion: 'cancun' })).toThrow(/sanctioned window/);
+  });
+
   test('accepts both sanctioned shapes from the writer', () => {
     const w = new AsmWriter();
     // bubble path

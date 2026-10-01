@@ -46,6 +46,7 @@ import type {
   UnOp,
   ValueId,
 } from '../ir/nodes.js';
+import { withLoop, type LoopTargets, type LowerCtx } from './lower/context.js';
 import { lowerProgram } from './program.js';
 
 // ---------------------------------------------------------------------------
@@ -1306,10 +1307,13 @@ describe('control flow', () => {
     expect((await run(ir, [false])).data).toBe(tupleHex(c, { r: 9n }));
   });
 
-  test('loop targets nest: a looping fn and an inner while keep the outer break on its loop', async () => {
+  test('loop targets nest: the outer break still targets its loop after an inner while', async () => {
     const b = new IrB('nested_loops', [['n', 'uint256']]);
     const one = (): ValueId => b.word('uint256', 1n);
-    // capped(p) = min(p, 2), counted by a loop of its own that breaks at 2
+    // capped(p) = min(p, 2), counted by a loop of its own that breaks at 2. Fn bodies are
+    // emitted after the whole main body (`emitFnSubroutines` runs last), so this fn's loop is
+    // end-to-end coverage of a `break` inside a fn, not of loop-target nesting across the
+    // fncall; the `withLoop` unit test below pins the fn-body guard directly.
     const capped = b.fn('capped', ['uint256'], (p) => {
       const k = b.cell('uint256', b.word('uint256', 0n));
       b.while(
@@ -1338,7 +1342,7 @@ describe('control flow', () => {
             b.brk();
           },
         );
-        // after the inner loop (and the fncall), `break` targets the outer loop again
+        // after the inner loop, `break` targets the outer loop again
         b.if(b.bin('eq', iv, b.word('uint256', 3n)), () => b.brk());
       },
     );
@@ -1349,6 +1353,27 @@ describe('control flow', () => {
     expect((await run(ir, [10n])).data).toBe(tupleHex(c, { total: 45n }));
     expect((await run(ir, [2n])).data).toBe(tupleHex(c, { total: 21n }));
     expect((await run(ir, [0n])).data).toBe(tupleHex(c, { total: 0n }));
+  });
+
+  test('withLoop: a fn-body null scope inside a loop restores the loop, even on throw', () => {
+    // Not reachable through lowerProgram today (fn bodies are emitted after the main body, when
+    // ctx.loop is already null); pins the guard against a future inline-emission change.
+    const ctx: Pick<LowerCtx, 'loop'> = { loop: null };
+    const outer = { breakTo: 1, continueTo: 2 };
+    const seen: (LoopTargets | null)[] = [];
+    withLoop(ctx, outer, () => {
+      seen.push(ctx.loop);
+      withLoop(ctx, null, () => seen.push(ctx.loop));
+      seen.push(ctx.loop);
+      expect(() =>
+        withLoop(ctx, null, () => {
+          throw new Error('boom');
+        }),
+      ).toThrow('boom');
+      seen.push(ctx.loop);
+    });
+    seen.push(ctx.loop);
+    expect(seen).toEqual([outer, null, outer, outer, null]);
   });
 });
 

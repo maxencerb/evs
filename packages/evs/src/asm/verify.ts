@@ -324,8 +324,11 @@ export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmV
       fail(`${op} requires evmVersion >= ${info.since}, but the build targets ${opts.evmVersion}`);
     }
     if (op === 'RETURNDATACOPY') {
-      const w = SANCTIONED_RETURNDATACOPY_WINDOW;
-      const [a, b, c] = i >= w ? nodes.slice(i - w, i) : [];
+      // These three fixed-role reads ARE the window SANCTIONED_RETURNDATACOPY_WINDOW (3) names:
+      // change both together (verify.test.ts pins the length against the writer).
+      const a = nodes[i - 3];
+      const b = nodes[i - 2];
+      const c = nodes[i - 1];
       const ok =
         a !== undefined &&
         b !== undefined &&
