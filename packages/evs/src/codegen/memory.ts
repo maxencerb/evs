@@ -19,6 +19,13 @@
  *   (`STAGING_SLOT` in `call/calldata.ts`), and the wrapper argsSize across the simulate payload
  *   copy (`SIM_ARGSIZE_SLOT` in `call/simulate-call.ts`).
  *
+ * Memory above the free pointer is dirty: sub-call calldata images are built there without a
+ * bump, and a failed try-decode rolls the free pointer back over its returndata snapshot.
+ * {@link emitAlloc} is the bump allocator of the construction templates (`s.newArray`, `s.tuple`,
+ * typed zero values, dynamic literals, `slice`, `bytesN → string`) and zero-fills a fresh block
+ * (a CALLDATACOPY from past the calldata end) only when some word of it would otherwise be read
+ * before it is written.
+ *
  * It also owns the typed zero-value emitters ({@link emitZeroValue}, {@link emitZeroMemrefMembers})
  * shared by `s.newArray`, `s.tuple` and the try-mode zero block: a zero-filled block is only a
  * valid zero value for word slots — a string/bytes/`T[]` slot must point at the zero slot and a
@@ -60,12 +67,64 @@ export const FRAME_BASE = 0x80;
 export const MAX_U64 = 0xffffffffffffffffn;
 
 /**
+ * Bump-allocates a fresh block at the free pointer: `[…] → [ptr, …]` for a constant `size`, or
+ * `[size, …] → [ptr, …]` for a runtime size already on the stack (`'onStack'`). The free pointer
+ * ends at `ptr + size`.
+ *
+ * `zeroFill: true` zeroes `[ptr, ptr + size)` (CALLDATACOPY from past the calldata end reads
+ * zeros); it is required whenever a word of the block can be read before the caller writes it,
+ * since memory above the free pointer is dirty (see the module header). Pass `false` only when
+ * the caller writes every word of the block itself. `note` annotates the first instruction.
+ */
+export function emitAlloc(
+  w: AsmWriter,
+  size: number | 'onStack',
+  opts: { readonly zeroFill: boolean; readonly note?: string },
+): void {
+  const head = opts.note === undefined ? {} : { note: opts.note };
+  if (size !== 'onStack') {
+    w.push(FREE_PTR, head);
+    w.op('MLOAD'); // [ptr]
+    w.op('DUP1');
+    w.push(size);
+    w.op('ADD'); // [ptr+size, ptr]
+    w.push(FREE_PTR);
+    w.op('MSTORE'); // [ptr]   freePtr bumped
+    if (!opts.zeroFill) return;
+    w.push(size); // [size, ptr]
+    w.op('CALLDATASIZE');
+    w.op('DUP3'); // [ptr, cds, size, ptr]
+    w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
+    return;
+  }
+  w.push(FREE_PTR, head);
+  w.op('MLOAD'); // [ptr, size]
+  if (!opts.zeroFill) {
+    w.op('SWAP1'); // [size, ptr]
+    w.op('DUP2'); // [ptr, size, ptr]
+    w.op('ADD'); // [ptr+size, ptr]
+    w.push(FREE_PTR);
+    w.op('MSTORE'); // [ptr]   freePtr bumped
+    return;
+  }
+  w.op('DUP2');
+  w.op('DUP2');
+  w.op('ADD'); // [ptr+size, ptr, size]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [ptr, size]   freePtr bumped
+  w.op('SWAP1'); // [size, ptr]
+  w.op('CALLDATASIZE');
+  w.op('DUP3'); // [ptr, cds, size, ptr]
+  w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
+}
+
+/**
  * Pushes a zero value of `type` onto the stack (net +1): `0` for a word, the `0x60` zero slot for
  * a string/bytes/dynamic `T[]` (an empty memref — `tuple[]` included), a freshly-allocated
- * zero-filled flat block for a plain tuple (its memref members set by
+ * flat block for a plain tuple (word members zero-filled, memref members set by
  * {@link emitZeroMemrefMembers}), or a fresh `[N][slot…]` block for a fixed-size `T[N]` (its
- * length is part of the type, so it can never be "empty": word slots stay zero, composite slots
- * each get their own typed zero via a loop). Matches the interpreter's `zeroValue`. Every call
+ * length is part of the type, so it can never be "empty": word slots are zero-filled, composite
+ * slots each get their own typed zero via a loop). Matches the interpreter's `zeroValue`. Every call
  * allocates a NEW block for a tuple / fixed array: they have reference semantics, so two zero
  * values must never share one. `height` is the absolute operand-stack height on entry — the
  * fixed-array fill loop's labels are checked against it.
@@ -81,43 +140,25 @@ export function emitZeroValue(w: AsmWriter, type: EvsType, height: number): void
     w.push(isDynamicType(type) ? ZERO_SLOT : 0);
     return;
   }
-  const n = type.components.length;
-  // allocate 32·n, zero-fill via CALLDATACOPY past the calldata end (memory above freePtr is dirty)
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [flat]
-  w.op('DUP1');
-  w.push(32 * n);
-  w.op('ADD'); // [flat+32n, flat]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [flat]   freePtr bumped
-  w.push(32 * n);
-  w.op('CALLDATASIZE');
-  w.op('DUP3'); // [flat, cds, 32n, flat]
-  w.op('CALLDATACOPY', { note: 'zero-fill tuple' }); // [flat]
+  // the fill is the zero of the word members; memref members each get their typed zero below
+  const hasWordMember = type.components.some((c) => !isDynamicType(abiParamToType(c)));
+  emitAlloc(w, 32 * type.components.length, { zeroFill: hasWordMember }); // [flat]
   emitZeroMemrefMembers(w, type.components, height + 1);
 }
 
-/** The fixed-size arm of {@link emitZeroValue}: `[…] → [arr, …]` with `arr` a fresh zero-filled
- *  `[N][slot…]` block whose memref slots (composite element) each hold their own typed zero. */
+/** The fixed-size arm of {@link emitZeroValue}: `[…] → [arr, …]` with `arr` a fresh `[N][slot…]`
+ *  block — zero-filled word slots, or memref slots (composite element) each holding their own
+ *  typed zero. */
 function emitZeroFixedArray(w: AsmWriter, type: ArrayType | TupleType, height: number): void {
   const n = fixedLengthOf(type) ?? 0;
   const elem = elemTypeOf(type);
-  const bytes = 32 + 32 * n;
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [arr]
-  w.op('DUP1');
-  w.push(bytes);
-  w.op('ADD'); // [arr+bytes, arr]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [arr]   freePtr bumped
-  w.push(bytes);
-  w.op('CALLDATASIZE');
-  w.op('DUP3'); // [arr, cds, bytes, arr]
-  w.op('CALLDATACOPY', { note: `zero-fill ${stringifyType(type)}` }); // [arr]
+  const memrefSlots = isDynamicType(elem);
+  // word slots: the fill is their zero value; memref slots are each written by the loop below
+  emitAlloc(w, 32 + 32 * n, { zeroFill: !memrefSlots, note: `zero ${stringifyType(type)}` }); // [arr]
   w.push(n);
   w.op('DUP2');
   w.op('MSTORE'); // [arr]   length word = N
-  if (!isDynamicType(elem)) return; // word slots: the zero-fill already is their zero value
+  if (!memrefSlots) return;
   // memref slots: p walks the slots DOWN from arr+32N to arr+32, storing a fresh typed zero into
   // each — two live words per level ([p, arr]; the bound is arr itself), so deeply nested
   // fixed-size zeros stay inside the stack window
@@ -145,7 +186,7 @@ function emitZeroFixedArray(w: AsmWriter, type: ArrayType | TupleType, height: n
 }
 
 /**
- * With a zero-filled flat tuple block `[flat]` on top of the stack (left there), stores the zero
+ * With a fresh flat tuple block `[flat]` on top of the stack (left there), stores the zero
  * value of every memref member (string/bytes/`T[]` → `0x60`, nested tuple / fixed-size array → a
  * fresh zeroed block, recursively) into its slot, skipping the indices in `skip` (members the
  * caller initialises itself). Word members are left to the zero-fill — no code for them.

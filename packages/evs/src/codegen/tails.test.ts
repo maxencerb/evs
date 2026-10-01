@@ -170,6 +170,36 @@ describe('memcpy lowering', () => {
     }
   });
 
+  test('pre-cancun word loop copies ceil32(len) bytes for every length up to 3 words', async () => {
+    const pattern = ['11', '22', '33'].map((b) => b.repeat(32));
+    const runs = (['paris', 'shanghai'] as const).flatMap((evmVersion) =>
+      Array.from({ length: 97 }, (_, len) => ({ evmVersion, len })),
+    );
+    const results = await Promise.all(
+      runs.map(({ evmVersion, len }) => execRuntime(copyRuntime(len, evmVersion), '0x')),
+    );
+    results.forEach((res, i) => {
+      const words = Math.ceil((runs[i]?.len ?? 0) / 32);
+      expect(res.success).toBe(true);
+      expect(res.data).toBe(
+        `0x${pattern.slice(0, words).join('')}${'00'.repeat(32 * (3 - words))}`,
+      );
+    });
+  });
+
+  test('pre-cancun word loop costs 67 gas per word (one shared byte offset)', async () => {
+    // every copy lands inside the region RETURN expands anyway, so the gas difference between
+    // n and n−1 words (0 words included: the setup is shared) is exactly one loop iteration.
+    // paris only: the runtime's own `PUSH len` is then PUSH1 for every length (shanghai would
+    // push a 0 length with the cheaper PUSH0); the loop itself is the same on both forks.
+    const gas = await Promise.all(
+      [0, 32, 64, 96].map(
+        async (len) => (await execRuntime(copyRuntime(len, 'paris'), '0x')).gasUsed,
+      ),
+    );
+    expect(gas.slice(1).map((g, i) => g - (gas[i] ?? 0n))).toEqual([67n, 67n, 67n]);
+  });
+
   test('two call sites share one subroutine (return labels are per-site)', async () => {
     const evmVersion: EvmVersion = 'shanghai';
     const w = new AsmWriter();

@@ -689,21 +689,18 @@ describe('deep struct / array nesting (review finding 5)', () => {
   }
 
   test('s.tuple / s.newArray zero values of too-deep types are UNSUPPORTED_V0, never INTERNAL', () => {
-    const deep = structs(13).type;
-    expect(
-      unsupportedOf(() =>
-        compile(evscript({ name: 'z' }, (s) => s.return({ v: s.tuple(deep as never) }))),
-      ),
-    ).toBe(UNSUPPORTED);
-    expect(
-      unsupportedOf(() =>
-        compile(
-          evscript({ name: 'z' }, (s) =>
-            s.return({ v: s.newArray(structs(10).type as never, 2n) }),
-          ),
-        ),
-      ),
-    ).toBe(UNSUPPORTED);
+    // deepest that fits: struct^13{string} as a tuple, struct^10{string} as a newArray element
+    // (the innermost all-memref level allocates without a zero-fill, one stack word lighter)
+    const tupleOf = (n: number) => () =>
+      compile(evscript({ name: 'z' }, (s) => s.return({ v: s.tuple(structs(n).type as never) })));
+    const arrayOf = (n: number) => () =>
+      compile(
+        evscript({ name: 'z' }, (s) => s.return({ v: s.newArray(structs(n).type as never, 2n) })),
+      );
+    expect(unsupportedOf(tupleOf(13))).toBe('no throw');
+    expect(unsupportedOf(tupleOf(14))).toBe(UNSUPPORTED);
+    expect(unsupportedOf(arrayOf(10))).toBe('no throw');
+    expect(unsupportedOf(arrayOf(11))).toBe(UNSUPPORTED);
   });
 });
 

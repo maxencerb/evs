@@ -8,6 +8,7 @@ import { layoutOfType } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import { selectorBytes } from '../../core/bytes.js';
 import {
+  abiParamToType,
   isDynamicType,
   type TupleType,
   isTupleType,
@@ -23,7 +24,8 @@ import {
   emitMemCopy,
   emitCeil32,
 } from '../abi.js';
-import { FREE_PTR, emitZeroValue, emitZeroMemrefMembers } from '../memory.js';
+import { emitAlloc, emitZeroValue, emitZeroMemrefMembers } from '../memory.js';
+import { emitSelectorRevert } from '../tails.js';
 import {
   type LowerCtx,
   type NodeMeta,
@@ -34,7 +36,6 @@ import {
   storeOut,
   typeOf,
   internal,
-  emitBumpAlloc,
 } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -151,10 +152,10 @@ function lowerByteAt(
 /**
  * `slice` — a fresh string/bytes memref holding `a`'s bytes `[start, end)`: Panic 0x32 unless
  * `start ≤ end ≤ len(a)`, then `[n = end − start][payload…]` in a `32 + ceil32(n)` block from
- * `emitBumpAlloc`. The copy runs at exactly `[dst, src, n]` (`emitMemCopy`'s pre-cancun
- * contract), so `out` goes to its slot (after the last operand read) and is read back for the
- * zero word written at the payload's end, which pads the trailing partial word (and heals the
- * `@memcpy` whole-word over-copy).
+ * `emitAlloc` (no zero-fill: every word is written). The copy runs at exactly `[dst, src, n]`
+ * (`emitMemCopy`'s pre-cancun contract), so `out` goes to its slot (after the last operand read)
+ * and is read back for the zero word written at the payload's end, which pads the trailing
+ * partial word (and heals the `@memcpy` whole-word over-copy).
  */
 export function lowerSlice(w: AsmWriter, s: Extract<Stmt, { k: 'slice' }>, ctx: LowerCtx): void {
   loadOperand(w, ctx, s.end, meta(`slice ${fmtType(typeOf(ctx, s.a))}`)); // [end]
@@ -174,7 +175,7 @@ export function lowerSlice(w: AsmWriter, s: Extract<Stmt, { k: 'slice' }>, ctx: 
   emitCeil32(w);
   w.push(32);
   w.op('ADD'); // [32 + ceil32(n)]
-  emitBumpAlloc(w, 'onStack'); // [out]
+  emitAlloc(w, 'onStack', { zeroFill: false }); // [out]
   loadOperand(w, ctx, s.start); // [start, out]
   loadOperand(w, ctx, s.end); // [end, start, out]
   w.op('SUB'); // [n, out]
@@ -211,50 +212,34 @@ export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx
   w.op('LT'); // [cap < n, n]
   w.pushLabel(ctx.tails.panicAlloc);
   w.op('JUMPI'); // [n]                   Panic 0x41 on len ≥ 2^32
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [ptr, n]
-  // freePtr += 32 + 32·n
-  w.op('DUP2'); // [n, ptr, n]
-  w.push(5);
-  w.op('SHL'); // [32n, ptr, n]
-  w.push(32);
-  w.op('ADD'); // [size, ptr, n]
-  w.op('DUP2'); // [ptr, size, ptr, n]
-  w.op('ADD'); // [ptr+size, ptr, n]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [ptr, n]
-  // zero-fill [ptr, ptr+size) — CALLDATACOPY from past the calldata end reads zeros
-  w.op('DUP2');
+  w.op('DUP1');
   w.push(5);
   w.op('SHL');
   w.push(32);
-  w.op('ADD'); // [size, ptr, n]
-  w.op('CALLDATASIZE'); // [cds, size, ptr, n]
-  w.op('DUP3'); // [ptr, cds, size, ptr, n]
-  w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr, n]
-  // length word
-  w.op('DUP2'); // [n, ptr, n]
-  w.op('DUP2'); // [ptr, n, ptr, n]
-  w.op('MSTORE'); // [ptr, n]
+  w.op('ADD'); // [size = 32 + 32·n, n]
   if (!isDynamicType(s.elem)) {
     // word elements: the zero-filled slots already are their zero value
-    storeOut(w, ctx, s.out); // [n]
-    w.op('POP'); // []
+    emitAlloc(w, 'onStack', { zeroFill: true }); // [ptr, n]
+    w.op('SWAP1'); // [n, ptr]
+    w.op('DUP2'); // [ptr, n, ptr]
+    w.op('MSTORE'); // [ptr]                 length word
+    storeOut(w, ctx, s.out); // []
     return;
   }
   // memref elements: a zeroed slot is pointer 0x00 (scratch), not a zero value. Store each slot's
   // typed zero — 0x60 for string/bytes/T[], a FRESH zeroed block per slot for a tuple (tuples are
-  // references: a shared block would leak a .set() through one element into the others).
-  w.op('SWAP1'); // [n, ptr]
-  w.push(5);
-  w.op('SHL'); // [32n, ptr]
-  w.op('DUP2'); // [ptr, 32n, ptr]
+  // references: a shared block would leak a .set() through one element into the others). The loop
+  // writes every slot, so the block needs no zero-fill.
+  w.op('DUP1'); // [size, size, n]
+  emitAlloc(w, 'onStack', { zeroFill: false }); // [ptr, size, n]
+  w.op('SWAP2'); // [n, size, ptr]
+  w.op('DUP3'); // [ptr, n, size, ptr]
+  w.op('MSTORE'); // [size, ptr]           length word
+  w.op('DUP2'); // [ptr, size, ptr]
+  w.op('ADD'); // [end, ptr]
+  w.op('DUP2'); // [ptr, end, ptr]
   w.push(32);
-  w.op('ADD'); // [p = ptr+32, 32n, ptr]
-  w.op('SWAP1'); // [32n, p, ptr]
-  w.op('DUP2'); // [p, 32n, p, ptr]
-  w.op('ADD'); // [end, p, ptr]
-  w.op('SWAP1'); // [p, end, ptr]
+  w.op('ADD'); // [p = ptr+32, end, ptr]
   const head = w.newLabel('arrnew_zero');
   const done = w.newLabel('arrnew_zero_done');
   w.label(head, STMT_BASELINE + 3); // [p, end, ptr]
@@ -304,10 +289,11 @@ function tupleTypeOf(ctx: LowerCtx, v: ValueId): TupleType {
   return ty;
 }
 
-/** `s.tuple(type, init)` → bump-alloc `32·n`, zero-fill (CALLDATACOPY past-end), store the typed
- *  zero of each omitted memref member (string/bytes/T[] → `0x60`, nested tuple → a fresh zeroed
- *  block — a zeroed slot would be pointer `0x00`, i.e. scratch), then MSTORE each provided member
- *  at `ptr + 32·i`. Only omitted/literal-0 WORD members rely on the zero-fill alone. */
+/** `s.tuple(type, init)` → bump-alloc `32·n`, store the typed zero of each omitted memref member
+ *  (string/bytes/T[] → `0x60`, nested tuple → a fresh zeroed block — a zeroed slot would be
+ *  pointer `0x00`, i.e. scratch), then MSTORE each provided member at `ptr + 32·i`. Omitted (or
+ *  literal-0) WORD members rely on the zero-fill alone, so the block is zero-filled only when
+ *  there is one. */
 export function lowerTupleNew(
   w: AsmWriter,
   s: Extract<Stmt, { k: 'tuplenew' }>,
@@ -315,33 +301,17 @@ export function lowerTupleNew(
 ): void {
   const ty = tupleTypeOf(ctx, s.out);
   const n = ty.components.length;
-  const size = 32 * n;
-  w.push(FREE_PTR, meta(`tuplenew ${n} words`));
-  w.op('MLOAD'); // [ptr]
-  // freePtr += size
-  w.op('DUP1'); // [ptr, ptr]
-  w.push(size);
-  w.op('ADD'); // [ptr+size, ptr]
-  w.push(FREE_PTR);
-  w.op('MSTORE'); // [ptr]
-  // zero-fill [ptr, ptr+size): CALLDATACOPY from past the calldata end reads zeros. At stack
-  // height exactly [ptr] here; the @memcpy contract is not used (no memref copy).
-  w.push(size); // [size, ptr]
-  w.op('CALLDATASIZE'); // [cds, size, ptr]
-  w.op('DUP3'); // [ptr, cds, size, ptr]
-  w.op('CALLDATACOPY', { note: 'zero-fill' }); // [ptr]
+  const provided = new Set(s.inits.map((init) => init.index));
+  const zeroFill = ty.components.some(
+    (c, j) => !provided.has(j) && !isDynamicType(abiParamToType(c)),
+  );
+  emitAlloc(w, 32 * n, { zeroFill, note: `tuplenew ${n} words` }); // [ptr]
   // omitted memref members → their typed zero (provided members are stored just below)
   emitWithinStackBudget(
     w,
     STMT_BASELINE + 1,
     () => `s.tuple() of ${stringifyType(ty)}`,
-    () =>
-      emitZeroMemrefMembers(
-        w,
-        ty.components,
-        STMT_BASELINE + 1,
-        new Set(s.inits.map((init) => init.index)),
-      ),
+    () => emitZeroMemrefMembers(w, ty.components, STMT_BASELINE + 1, provided),
   ); // [ptr]
   // MSTORE each provided member at ptr + 32·index
   for (const init of s.inits) {
@@ -419,23 +389,20 @@ export function lowerEncode(w: AsmWriter, s: Extract<Stmt, { k: 'encode' }>, ctx
  * With params: the standard-encode emitter materializes `abi.encode(args)` as a fresh
  * `[len | payload…]` memref at `ptr`; the selector word is then MSTOREd AT `ptr`, landing its
  * 4 bytes in `[ptr+28, ptr+32)` — clobbering the low bytes of the length word, which is dead
- * at this point — and the frame reverts with `(ptr+28, len+4)`. Zero params: the shared-tail
- * selector-store shape (`sel << 224` at offset 0, revert(0, 4)) — memory is dead pre-revert.
+ * at this point — and the frame reverts with `(ptr+28, len+4)`. Zero params: the shared tails'
+ * {@link emitSelectorRevert} (`sel << 224` at offset 0, revert(0, 4)) — memory is dead
+ * pre-revert.
  */
 export function lowerThrow(w: AsmWriter, s: Extract<Stmt, { k: 'throw' }>, ctx: LowerCtx): void {
   const err = (ctx.ir.errors ?? [])[s.error];
   if (err === undefined) throw internal(`throw with unknown error #${s.error} survived validateIr`);
   const m = meta(`throw ${err.name}`);
-  const sel = selectorBytes(err.selector, 'codegen/lower throw');
   if (s.args.length === 0) {
-    w.pushBytes(sel, m); // [sel]
-    w.push(0xe0);
-    w.op('SHL'); // [selWord]
-    w.push(0);
-    w.op('MSTORE'); // []           mem[0..4) = selector
-    w.push(4);
-    w.push(0);
-    w.op('REVERT', { note: `${err.name}()` }); // revert(0, 4)
+    emitSelectorRevert(w, err.selector, {
+      withTopWord: false,
+      headNote: `throw ${err.name}`,
+      note: `${err.name}()`,
+    }); // revert(0, 4)
     return;
   }
   const items = s.args.map((a) => ({
@@ -450,7 +417,7 @@ export function lowerThrow(w: AsmWriter, s: Extract<Stmt, { k: 'throw' }>, ctx: 
   w.push(4);
   w.op('ADD'); // [len+4, ptr]
   w.op('SWAP1'); // [ptr, len+4]
-  w.pushBytes(sel); // [sel, ptr, len+4]
+  w.pushBytes(selectorBytes(err.selector, 'codegen/lower throw')); // [sel, ptr, len+4]
   w.op('DUP2'); // [ptr, sel, ptr, len+4]
   w.op('MSTORE'); // [ptr, len+4]   mem[ptr+28..ptr+32) = selector
   w.push(28);
