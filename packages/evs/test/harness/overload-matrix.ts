@@ -135,7 +135,18 @@ export const abis = {
     fn([{ name: 'x', type: 'tuple', components: [A] }], 'bool'),
     fn([{ name: 'x', type: 'tuple', components: [A_ADDR] }], 'uint8'),
   ],
+  // a tuple only partly named: positional (abitype's rule — one unnamed member is enough)
+  mixedTuple: [
+    fn([{ name: 'x', type: 'tuple', components: [A, { name: '', type: 'address' }] }], 'bool'),
+    fn(
+      [{ name: 'x', type: 'tuple', components: [A_ADDR, { name: '', type: 'uint256' }] }],
+      'uint8',
+    ),
+  ],
 } as const satisfies Record<string, Abi>;
+
+/** The first overload's mixed tuple `(uint256 a, address)`, as an evs type (for a Tuple handle). */
+const MIXED = t.fromAbiParameter(abis.mixedTuple[0].inputs[0]);
 
 export const ALICE = '0x00000000000000000000000000000000000000a1';
 export const HASH = '0x00000000000000000000000000000000000000000000000000000000000000ff';
@@ -501,6 +512,31 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       abi: abis.structByMemberType,
       args: [{ a: ALICE }],
       expect: 'f((address))',
+    },
+    // -- partly named tuples (abitype's positional rule) ----------------------------------------
+    {
+      name: 'positional [uint256, address] vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTuple,
+      args: [[1n, ALICE]],
+      expect: 'f((uint256,address))',
+    },
+    {
+      name: 'positional [address, uint256] vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTuple,
+      args: [[ALICE, x]],
+      expect: 'f((address,uint256))',
+    },
+    {
+      name: '{a} record vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTuple,
+      args: [{ a: 1n }],
+      expect: 'none',
+    },
+    {
+      name: 'mixed Tuple handle vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTuple,
+      args: [s.tuple(MIXED, [x, ALICE])],
+      expect: 'f((uint256,address))',
     },
   ] as const;
 }

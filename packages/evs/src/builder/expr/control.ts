@@ -67,7 +67,7 @@ export abstract class RecorderControl extends RecorderOps {
         }
       }
       ids = decl.params.map((p) => {
-        if (!(p.name in a)) {
+        if (!Object.hasOwn(a, p.name)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${what}: missing arg "${p.name}" for error "${decl.ir.name}" — every declared param is required`,

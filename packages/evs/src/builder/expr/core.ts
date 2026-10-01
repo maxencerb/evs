@@ -61,6 +61,7 @@ import {
   isCompositeElemArray,
   describeHost,
   memberName,
+  allMembersNamed,
   tupleDebugTag,
   assertV0Type,
 } from './helpers.js';
@@ -518,14 +519,9 @@ export abstract class RecorderCore {
         if (!typesEqual(et, type)) this.typeMismatch(what, type, et);
         return ei.id;
       }
-      if (FIELD_INTERNALS.has(v)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${what}: a Field is not a tuple — read it with .get()`,
-        );
-      }
     }
-    // a plain object/array literal → build the tuple from its members.
+    // a plain object/array literal → build the tuple from its members (buildTupleNew rejects
+    // the remaining handles: Cell, Field, MutArray).
     return this.buildTupleNew(type, v, what);
   }
 
@@ -571,31 +567,78 @@ export abstract class RecorderCore {
     return null;
   }
 
+  /** Rejects a staged handle where a tuple LITERAL is read (`s.tuple` init, a tuple slot whose
+   *  value is not a same-typed Tuple/Expr): its properties are not members, so reading it as a
+   *  record would silently build an all-zero tuple. */
+  private assertNotHandle(v: unknown, what: string): void {
+    if (typeof v !== 'object' || v === null) return;
+    const fail = (hint: string): never => {
+      throw new EvsTypeError('TYPE_MISMATCH', `${what}: ${hint}`);
+    };
+    if (CELL_INTERNALS.has(v)) fail('a Cell is not a tuple — read it with .get()');
+    if (FIELD_INTERNALS.has(v)) fail('a Field is not a tuple — read it with .get()');
+    if (ARR_INTERNALS.has(v)) fail('a MutArray is not a tuple — read an element with .get(i)');
+    if (TUPLE_INTERNALS.has(v) || EXPR_INTERNALS.has(v)) {
+      fail(
+        'init must be a literal of members, not a handle — pass the handle itself where the tuple is expected',
+      );
+    }
+  }
+
   /** Lowers a tuple literal/init to a `tuplenew` (alloc + zero-fill + MSTORE provided members),
-   *  returning the new tuple ValueId. Members are name-keyed (struct) or positional (t.tuple);
-   *  an omitted or literal-zero WORD member is left to the zero-fill (no MSTORE); an omitted
-   *  memref member gets its typed zero from codegen (`lowerTupleNew`). */
+   *  returning the new tuple ValueId. The literal's shape follows abitype's rule
+   *  ({@link allMembersNamed}): a record keyed by member name when every member is named, else a
+   *  positional array; a key that names no member, or an element past the last member, is
+   *  rejected. Members are read from OWN properties only. An omitted or literal-zero WORD member
+   *  is left to the zero-fill (no MSTORE); an omitted memref member gets its typed zero from
+   *  codegen (`lowerTupleNew`). */
   protected buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
-    const isPositional = type.components.every((c) => c.name === '');
+    this.assertNotHandle(init, what);
+    const named = allMembersNamed(type);
+    const n = type.components.length;
     let lookup: (comp: NamedType, index: number) => unknown;
     if (init === undefined) {
       lookup = () => undefined;
     } else if (Array.isArray(init)) {
-      if (!isPositional) {
+      if (named) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: this struct expects a name-keyed init record, not a positional array`,
         );
       }
+      if (init.length > n) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: too many members — this tuple has ${n}, got ${init.length}`,
+        );
+      }
       lookup = (_comp, index) => init[index];
     } else if (typeof init === 'object' && init !== null) {
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- guarded: init is a non-null object here
-      const rec = init as Record<string, unknown>;
-      lookup = isPositional ? (_comp, index) => rec[index] : (comp) => rec[comp.name];
+      if (!named) {
+        // a tuple with any unnamed member is positional, whatever its other members are called
+        const members = type.components.map((c, i) => memberName(c, i)).join(', ');
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a tuple with an unnamed member takes a positional array of its ${n} member(s) (${members}), not a record — abitype/viem's rule`,
+        );
+      }
+      const known = new Set(type.components.map((c) => c.name));
+      for (const key of Object.keys(init)) {
+        if (!known.has(key)) {
+          throw new EvsTypeError(
+            'TYPE_MISMATCH',
+            `${what}: unknown member ${JSON.stringify(key)} (expected: ${[...known].join(', ')})`,
+          );
+        }
+      }
+      // own properties only: an omitted member named like an Object.prototype method
+      // (`toString`, `constructor`, …) must zero-fill, not read the inherited function
+      lookup = (comp) =>
+        Object.hasOwn(init, comp.name) ? Reflect.get(init, comp.name) : undefined;
     } else {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: init must be a record of members (or a positional array for a t.tuple), got ${describeHost(init)}`,
+        `${what}: init must be a record of members (or a positional array for a tuple with an unnamed member), got ${describeHost(init)}`,
       );
     }
 

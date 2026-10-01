@@ -62,6 +62,19 @@ export type TupleArrayOf<e extends TupleType, n extends number | null = null> = 
 // derived components are in ABI declaration order, matching the runtime decode + `s.read({...,
 // struct: true})`).
 
+/**
+ * abitype's (and viem's) tuple-literal rule over a component list: `true` when EVERY member is
+ * named (the literal is a record keyed by member name), `false` as soon as one member is unnamed
+ * (`''` or absent — the literal is a positional array). Written as abitype's
+ * `AbiComponentsToPrimitiveType` writes it, so the literal shapes `TupleInit` and `FitsStruct`
+ * accept agree with `TupleLitOf`. The runtime twin is `allMembersNamed`
+ * (builder/expr/helpers.ts).
+ */
+export type AllMembersNamed<comps extends readonly { readonly name?: string | undefined }[]> =
+  comps[number]['name'] extends Exclude<comps[number]['name'] & string, undefined | ''>
+    ? true
+    : false;
+
 /** An abitype `AbiParameter`'s `name` (`''` when absent) — abitype params name is optional. */
 type AbiParamName<p extends AbiParameter> = p extends { readonly name: infer n extends string }
   ? n

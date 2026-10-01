@@ -18,6 +18,7 @@ import type {
   OuterArraySize,
   PeelArraySuffix,
 } from '../../core/types.js';
+import type { AllMembersNamed } from '../../core/types/derive.js';
 import type { Expr, exprBrand } from '../../core/types/expr.js';
 import type { ArgHandle } from './evscript.js';
 import type {
@@ -156,7 +157,7 @@ type ComponentsOf<p> = p extends { readonly components: infer c extends readonly
  * lockstep (see CONTRIBUTING.md). A handle (`Expr`, `MutArray`, `Tuple`) fits iff it carries
  * exactly that type ({@link SameType}); a literal fits by JS kind: an array type ← an array whose
  * elements all fit (a fixed `T[N]` ← exactly N of them), a `tuple` ← a record keyed by member
- * name (a positional array/record for an unnamed tuple) whose members all fit, bool ← boolean,
+ * name (a positional array when any member is unnamed) whose members all fit, bool ← boolean,
  * (u)intN ← number | bigint, address/bytesN/bytes ← a `0x` string, string ← any string. Value
  * ranges and byte lengths are NOT considered (`5n` fits every `uintN`).
  */
@@ -212,21 +213,25 @@ type AllElemsFit<v extends readonly unknown[], elem extends string, comps> = [
   ? true
   : false;
 
-/** A tuple literal: a positional array/record for an unnamed tuple, else a (non-array) record
- *  keyed by member name; every member present and fitting. */
+/** A tuple literal, by abitype's rule ({@link AllMembersNamed}): a (non-array) record keyed by
+ *  member name when every member is named, else a positional array (a single unnamed member
+ *  makes the whole tuple positional); every member present and fitting. Extra keys / elements are
+ *  not considered here — the coercion of the resolved overload rejects them. */
 type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
   ? v extends object
-    ? [Exclude<comps[number]['name'], '' | undefined>] extends [never]
-      ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
-        ? true
-        : false
-      : v extends readonly unknown[]
+    ? AllMembersNamed<comps> extends true
+      ? v extends readonly unknown[]
         ? false
         : [
               { [i in keyof comps]: NoFit<MemberFits<v, NameOf<comps[i]>, comps[i]>> }[number],
             ] extends [never]
           ? true
           : false
+      : v extends readonly unknown[]
+        ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
+          ? true
+          : false
+        : false
     : false
   : false;
 
@@ -257,11 +262,12 @@ type SameType<x, ty extends string, comps> = [x] extends [string]
 
 type Exact<a, b> = [a] extends [b] ? ([b] extends [a] ? true : false) : false;
 
-// Named components are compared as a SET through `xc[number]`: a `t.struct` descriptor's
+// Fully-named components are compared as a SET through `xc[number]`: a `t.struct` descriptor's
 // `components` is a mapped object over its `UnionToTuple` keys, not a real tuple (no usable
-// `length`). Positional components (`t.tuple`, an ABI-derived type) are compared index by index.
+// `length`). Components with any unnamed member (`t.tuple`, an ABI-derived type — both real
+// tuples) are compared index by index.
 type SameComps<xc, pc> = pc extends readonly AbiParameter[]
-  ? [Exclude<pc[number]['name'], '' | undefined>] extends [never]
+  ? AllMembersNamed<pc> extends false
     ? xc extends readonly unknown[]
       ? Exact<xc['length'], pc['length']> extends true
         ? [

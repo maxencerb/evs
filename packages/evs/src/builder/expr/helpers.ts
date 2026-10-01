@@ -146,7 +146,6 @@ export function describeHost(v: unknown): string {
   return String(v);
 }
 
-/** A tuple member's human-facing name (its struct field name, or `[i]` for a positional member). */
 /** The comma-joined canonical signatures of ABI function entries (overload error messages). */
 export function signatureList(fns: readonly Record<string, unknown>[]): string {
   return fns.map(functionSignature).join(', ');
@@ -158,8 +157,19 @@ export function abiInputsOf(fn: Record<string, unknown>): readonly unknown[] {
   return Array.isArray(inputs) ? inputs : [];
 }
 
+/** A tuple member's human-facing name (its struct field name, or `[i]` for a positional member). */
 export function memberName(comp: NamedType, index: number): string {
   return comp.name === '' ? `[${index}]` : comp.name;
+}
+
+/**
+ * abitype's (and viem's) tuple-literal rule: a tuple's host literal is a record keyed by member
+ * name only when EVERY member is named; a single unnamed member makes it a positional array. The
+ * interpreter's JS boundary (`ir/interp/coerce.ts`) applies the same rule, and the type-level
+ * twin is `AllMembersNamed` (core/types/derive.ts).
+ */
+export function allMembersNamed(t: TupleType): boolean {
+  return t.components.every((c) => c.name !== '');
 }
 
 /** True for an array type whose ELEMENT is composite/dynamic (a tuple, an inner array, or
@@ -171,9 +181,8 @@ export function isCompositeElemArray(type: ArrayType | TupleType): boolean {
 
 /** A short debug tag for a tuple value's `debugName` (field names, or the positional arity). */
 export function tupleDebugTag(t: TupleType): string {
-  const named = t.components.filter((c) => c.name !== '');
-  return named.length === t.components.length
-    ? named.map((c) => c.name).join(', ')
+  return allMembersNamed(t)
+    ? t.components.map((c) => c.name).join(', ')
     : `${t.components.length} members`;
 }
 

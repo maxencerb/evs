@@ -14,6 +14,7 @@ import type {
   ArrayType,
   PeelArraySuffix,
 } from '../../core/types.js';
+import type { AllMembersNamed } from '../../core/types/derive.js';
 import type { Expr } from '../../core/types/expr.js';
 import type { ArgHandle } from './evscript.js';
 
@@ -256,20 +257,19 @@ export type TypeOfReturn<v> =
   v extends Expr<infer t> ? t : v extends { expr(): Expr<infer c extends EvsType> } ? c : never;
 
 /**
- * The partial member record accepted by `s.tuple(type, init?)`. A fully-named struct takes a
- * name-keyed object; a positional `t.tuple` takes a positional record. Every member is optional
- * (omitted → zero) and accepts a literal, an {@link Expr}, or a {@link Tuple} (per member type).
+ * The partial member init accepted by `s.tuple(type, init?)`, by abitype's rule
+ * ({@link AllMembersNamed}): a struct whose members are ALL named takes a name-keyed object; a
+ * tuple with any unnamed member (a `t.tuple`, or an ABI tuple only partly named) takes a
+ * positional array. Every member is optional (omitted → zero) and accepts a literal, an
+ * {@link Expr}, or a {@link Tuple} (per member type).
  */
-export type TupleInit<C extends TupleType> = C['components'][number]['name'] extends ''
-  ? PositionalInit<C['components']>
-  : {
-      readonly [
-        c in C['components'][number] as c['name'] extends '' ? never : c['name']
-      ]?: IntoMember<ComponentToType<c>>;
-    };
+export type TupleInit<C extends TupleType> =
+  AllMembersNamed<C['components']> extends true
+    ? { readonly [c in C['components'][number] as c['name']]?: IntoMember<ComponentToType<c>> }
+    : PositionalInit<C['components']>;
 
-/** The partial positional init record for a `t.tuple` (homomorphic over the components tuple, so
- *  a tuple literal — e.g. `[42n, addr]` — stays assignable). */
+/** The partial positional init for a tuple with an unnamed member (homomorphic over the
+ *  components tuple, so a tuple literal — e.g. `[42n, addr]` — stays assignable). */
 type PositionalInit<comps extends readonly NamedType[]> = {
   readonly [i in keyof comps]?: IntoMember<ComponentToType<comps[i]>>;
 };
