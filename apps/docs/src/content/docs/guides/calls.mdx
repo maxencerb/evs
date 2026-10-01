@@ -12,8 +12,8 @@ can also be an `Expr` produced earlier in the script — and each has a `try*` c
 | Verb | Opcode | Mutability | State semantics | Use it for |
 | --- | --- | --- | --- | --- |
 | [`s.read`](#sread--stryread) / `s.tryRead` | `STATICCALL` | `view` / `pure` | static — no state change possible | normal view reads |
-| [`s.call`](#mutable-calls-scall--strycall) / `s.tryCall` | `CALL` (value 0) | `nonpayable` / `payable` | a real non-static frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` (the `eth_call` itself never commits) | non-view functions that need a real frame but don't usefully keep state — the canonical case is a Uniswap quoter |
-| [`s.simulate`](#simulating-writes-ssimulate--strysimulate) / `s.trySimulate` | `CALL` (value 0) via a self-call trampoline | `nonpayable` / `payable` | the write is **rolled back** and isolated from later reads, yet its return value is read back | dry-run a true write and read what it would return |
+| [`s.call`](#mutable-calls-scall--strycall) / `s.tryCall` | `CALL` (value 0 unless you [send ETH](#sending-eth-value)) | `nonpayable` / `payable` | a real non-static frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` (the `eth_call` itself never commits) | non-view functions that need a real frame but don't usefully keep state — the canonical case is a Uniswap quoter |
+| [`s.simulate`](#simulating-writes-ssimulate--strysimulate) / `s.trySimulate` | `CALL` (value 0 unless you [send ETH](#sending-eth-value)) via a self-call trampoline | `nonpayable` / `payable` | the write is **rolled back** and isolated from later reads, yet its return value is read back | dry-run a true write and read what it would return |
 
 The verb you pick is enforced at the `functionName` **type** level: a `nonpayable` function under
 `s.read` is a compile error (steered to `s.call`/`s.simulate`), and a `view`/`pure` function under
@@ -70,7 +70,9 @@ freely in one call. See [values and types](/guides/values-and-types/) for the co
 ### Parameters
 
 These keys are the **same for all six verbs** (only the `functionName` mutability filter changes),
-except `revertReturns`, which only `s.call` / `s.tryCall` accept.
+except `value`, which only the four `CALL` verbs accept (for a `payable` function), and
+`revertReturns`, which only `s.call` / `s.tryCall` accept. Any other key is an `EvsTypeError` at
+recording (and an excess-property error in TypeScript), so a typo never silently does nothing.
 
 | Key            | Type                                  | Notes                                                              |
 | -------------- | ------------------------------------- | ------------------------------------------------------------------ |
@@ -79,6 +81,7 @@ except `revertReturns`, which only `s.call` / `s.tryCall` accept.
 | `functionName` | name union                            | Restricted per verb — `pure`/`view` for `s.read`, `nonpayable`/`payable` for `s.call`/`s.simulate` |
 | `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
 | `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the target call — see [capping a target's gas](#capping-a-targets-gas); by default all available gas is forwarded |
+| `value`        | `IntoExpr<'uint256'>` (optional, **`payable` functions under `s.call` / `s.simulate` and their `try*` forms**) | Wei sent with the call (`msg.value`), paid from the script's own balance — see [sending ETH](#sending-eth-value); default 0 |
 | `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named — see [below](#decoding-multiple-outputs-into-a-struct) |
 | `revertReturns` | `readonly EvsType[]` (optional, **`s.call` / `s.tryCall` only**) | The output types carried by the target's **revert data** (the QuoterV1 pattern); replaces the ABI outputs as the decode schema — see [decoding revert data](#decoding-revert-data-as-the-result-revertreturns) |
 
@@ -888,6 +891,71 @@ Two EVM rules shape what `gas` means:
 - **Out-of-gas is an empty revert.** A target that exhausts its cap fails with no revert data.
   `s.read`/`s.call`/`s.simulate` bubble that empty revert; the `try*` variants report
   `success = false` with a zeroed `value`.
+
+### Sending ETH (`value`)
+
+`s.call`, `s.simulate` and their `try*` forms take an optional `value` — a literal or an
+`Expr<'uint256'>`, in wei — that the target receives as `msg.value`. It is accepted for a
+**`payable`** function only: a `nonpayable` target reverts on any ETH, and `s.read`'s `STATICCALL`
+cannot carry any, so both are compile errors (and an `EvsTypeError` at recording when the types are
+bypassed). For an overloaded name, the overload the `args` resolve to decides.
+
+The ETH comes from **the script's own balance**: the script makes the call, not the `eth_call`'s
+`account`. Run it in [state-override mode](/guides/execution/#state-override-mode) and give the
+script address a `balance` in the same override entry:
+
+```ts
+import { compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, http, parseEther, zeroAddress } from 'viem';
+
+const lidoAbi = [
+  {
+    type: 'function',
+    name: 'submit',
+    stateMutability: 'payable',
+    inputs: [{ name: '_referral', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+const previewStake = evscript(
+  { name: 'previewStake', args: [t.address, t.uint256] },
+  (s, lido, amount) => {
+    // stake `amount` ETH, read the stETH shares it mints, then roll the deposit back
+    const shares = s.simulate({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'submit',
+      args: [zeroAddress],
+      value: amount,
+    });
+    return s.return({ shares });
+  },
+);
+
+const compiled = compile(previewStake);
+const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+const params = compiled.toViem({ mode: 'stateOverride' });
+
+const result = await client.readContract({
+  ...params,
+  // fund the script: same address and code, plus a balance
+  stateOverride: [{ ...params.stateOverride[0], balance: parseEther('32') }],
+  functionName: 'previewStake',
+  args: ['0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84', parseEther('32')], // Lido stETH
+});
+// result: { shares: bigint }
+```
+
+- **Sender mode** runs the script at the sender's address, so the sender's own ETH pays; override
+  its `balance` the same way to dry-run more than it holds.
+- **Deployless mode** cannot fund the script: it runs at a counterfactual address created during
+  the call, which holds no ETH. Use state-override mode for scripts that send value.
+- **An unfunded script** fails the `CALL` before the target runs: `s.call` reverts with empty data,
+  `s.simulate` reverts `EvsDecodeError(site)` (its self-call hop, which carries the value, is what
+  fails), and the `try*` forms report `success = false` with a zeroed `value`.
+- Under `s.simulate` the ETH is rolled back with the rest of the write; under `s.call` it stays with
+  the target for the rest of the `eth_call` (nothing is ever committed on-chain).
 
 ### Choosing `msg.sender`: sender mode
 

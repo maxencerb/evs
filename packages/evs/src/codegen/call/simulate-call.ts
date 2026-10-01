@@ -32,6 +32,7 @@ import {
   makeDecodeFail,
   TAIL_CURSOR,
   pushWordRef,
+  pushValueRef,
   emitSnapshotReturndata,
   pushSnap,
   pushSnapEnd,
@@ -62,7 +63,9 @@ const SIM_HEADER = SIMULATE_PAYLOAD_OFFSET;
  *
  * The site's optional `gas` cap rides in the header's `gas` word and bounds the INNER target
  * CALL (2^256−1 = forward all when absent); the self-call hop itself always forwards `GAS`, so
- * the trampoline's MAGIC-tagged epilogue stays funded however much the target burns.
+ * the trampoline's MAGIC-tagged epilogue stays funded however much the target burns. The site's
+ * optional `value` rides on the hop itself: the self-call sends it (a self-transfer, the balance
+ * is unchanged) and the trampoline forwards its `CALLVALUE` to the target.
  */
 export function emitSimulateCall(
   w: AsmWriter,
@@ -179,15 +182,17 @@ export function emitSimulateCall(
   w.op('SWAP2'); // [W+68, buf, L]
   emitMemCopy(w, tails, opts); // []   (W+68 > buf+L ⇒ non-overlapping, all forks)
 
-  // -- 3. self-CALL(GAS, ADDRESS(), 0, W, argsSize, 0, 0) — W recomputed from argsSize ----------
+  // -- 3. self-CALL(GAS, ADDRESS(), value, W, argsSize, 0, 0) — W recomputed from argsSize ------
   // The hop forwards ALL gas: the user's cap (if any) already rides in the header and bounds the
   // inner CALL inside the trampoline, so the trampoline epilogue is never starved by the target.
+  // It carries the site's `value` (0 when absent), which the trampoline forwards as CALLVALUE; an
+  // unfunded script fails the hop itself (no MAGIC) — a decode failure, like a codeless self.
   w.push(0); // [retSize=0]
   w.push(0); // [retOff=0, 0]
   w.push(SIM_ARGSIZE_SLOT);
   w.op('MLOAD'); // [argsSize, 0, 0]
   pushWrapperBase(); // [argsOff=W, argsSize, 0, 0]
-  w.push(0, { note: 'value 0' }); // [value=0, …]
+  pushValueRef(w, plan.valueRef, `value of ${fnAbi.name}`); // [value, …]
   w.op('ADDRESS', { note: 'self (the script holds the trampoline)' }); // [self, …]
   w.op('GAS');
   w.op('CALL', {

@@ -1329,6 +1329,155 @@ describe('checklist: call-site ABI validation', () => {
   });
 });
 
+// a payable entry point next to a nonpayable one, plus a payable/nonpayable overload pair
+const payableAbi = [
+  {
+    type: 'function',
+    name: 'submit',
+    stateMutability: 'payable',
+    inputs: [{ name: 'referral', type: 'address' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'deposit',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amount', type: 'uint256' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'stake',
+    stateMutability: 'payable',
+    inputs: [],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'stake',
+    stateMutability: 'nonpayable',
+    inputs: [{ name: 'amount', type: 'uint256' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const satisfies Abi;
+
+describe('checklist: call value + unknown params', () => {
+  test('an unknown param key is rejected on every verb, naming the key', () => {
+    const verbs = ['read', 'tryRead', 'call', 'tryCall', 'simulate', 'trySimulate'] as const;
+    for (const verb of verbs) {
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            (s[verb] as (p: unknown) => unknown)({
+              address: a.who,
+              abi: erc20Abi,
+              functionName: 'balanceOf',
+              args: [a.who],
+              valu: 1n,
+            }),
+          ),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        new RegExp(`s\\.${verb}\\(\\): unknown parameter \`valu\` — expected \\{ address, abi`),
+      );
+    }
+    // the expected shape lists `value` for the CALL verbs only
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: payableAbi,
+            functionName: 'stake',
+            blockTag: 'latest',
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /unknown parameter `blockTag`.*value\?, struct\?, revertReturns\? \}/,
+    );
+  });
+
+  test('value on s.read / s.tryRead steers to s.call / s.simulate', () => {
+    for (const verb of ['read', 'tryRead'] as const) {
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            (s[verb] as (p: never) => unknown)({
+              address: a.who,
+              abi: erc20Abi,
+              functionName: 'decimals',
+              value: 1n,
+            } as never),
+          ),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /`value` is not supported — STATICCALL cannot send ETH.*s\.call.*s\.simulate/,
+      );
+    }
+  });
+
+  test('value on a nonpayable function is rejected (it would revert on any ETH)', () => {
+    for (const verb of ['call', 'tryCall', 'simulate', 'trySimulate'] as const) {
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            (s[verb] as (p: never) => unknown)({
+              address: a.who,
+              abi: payableAbi,
+              functionName: 'deposit',
+              args: [1n],
+              value: a.x,
+            } as never),
+          ),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /`value` is only accepted for a payable function — "deposit" is nonpayable/,
+      );
+    }
+  });
+
+  test('value follows the resolved overload: payable stake() accepts it, stake(uint256) does not', () => {
+    rec((s, a) => {
+      const shares = s.call({ address: a.who, abi: payableAbi, functionName: 'stake', value: a.x });
+      return s.return({ shares });
+    });
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: payableAbi,
+            functionName: 'stake',
+            args: [1n],
+            value: a.x,
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /"stake" is nonpayable/,
+    );
+  });
+
+  test('value must coerce to uint256', () => {
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: payableAbi,
+            functionName: 'submit',
+            args: [a.who],
+            value: a.s8,
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.call\(\) value/,
+    );
+  });
+});
+
 // ---------------------------------------------------------------------------
 // foreign handles + scopes + sealing
 // ---------------------------------------------------------------------------

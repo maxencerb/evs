@@ -483,6 +483,27 @@ export type SubcallStruct<
   ? Tuple<TupleType>
   : StructOf<ResolveOverload<abi, name, mut, args>>;
 
+/** What `value` accepts where the function cannot receive ETH: nothing. The name is the compile
+ *  error (`Type 'bigint' is not assignable to type 'ValueRequiresPayableFunction'`). */
+interface ValueRequiresPayableFunction {
+  readonly 'evs: value is only accepted for a payable function (s.call / s.simulate)': never;
+}
+
+/**
+ * The type of the `value` param: the wei to send, accepted iff the function the call resolves to
+ * ({@link ResolveOverload}) is `payable` — so never under `s.read` / `s.tryRead`, and never for a
+ * `nonpayable` target (which would revert on any ETH). A widened ABI (no literal entries to look
+ * at) accepts it; the recorder then checks the resolved entry at run time, like everything else.
+ */
+export type CallValue<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+  args = readonly unknown[],
+> = [ResolveOverload<abi, name, mut, args>] extends [{ readonly stateMutability: 'payable' }]
+  ? IntoExpr<'uint256'>
+  : ValueRequiresPayableFunction;
+
 export interface SubcallParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, mut>,
@@ -495,6 +516,9 @@ export interface SubcallParams<
   readonly functionName: name | SubcallFunctionName<abi, mut>; // autocomplete union
   readonly args?: args;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
+  // the wei the CALL sends (payable functions only, see {@link CallValue}); paid from the
+  // script's own balance — fund it with a stateOverride `balance`. Default 0.
+  readonly value?: CallValue<abi, name, mut, args>;
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
   // the default positional `[many]` array. See {@link SubcallStruct}.
   readonly struct?: boolean;

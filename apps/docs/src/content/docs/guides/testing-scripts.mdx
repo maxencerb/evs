@@ -45,8 +45,15 @@ interface MockChainShape {
     success: boolean;
     data: `0x${string}`;
   };
-  // optional: a separate oracle for the mutable verbs, told which verb is calling
-  call?(req: { to: `0x${string}`; data: `0x${string}`; kind: 'call' | 'simulate'; gas?: bigint }): {
+  // optional: a separate oracle for the mutable verbs, told which verb is calling; `value` is
+  // the wei the site sends (absent = 0)
+  call?(req: {
+    to: `0x${string}`;
+    data: `0x${string}`;
+    kind: 'call' | 'simulate';
+    gas?: bigint;
+    value?: bigint;
+  }): {
     success: boolean;
     data: `0x${string}`;
   };
@@ -71,7 +78,8 @@ interface MockChainShape {
   compiled script would send. `s.call`/`s.simulate` go to the optional `call` oracle (or fall
   back to `staticcall`). A site's `gas` cap rides along as `req.gas` — the interpreter has no
   gas model, so it is informational: answer `{ success: false, data: '0x' }` to emulate a target
-  that ran out of gas.
+  that ran out of gas. A site's `value` rides along as `req.value` (the target's `msg.value`); the
+  script's balance is not modeled.
   `s.balance`/`s.codeSize`/`s.codeHash` ask the optional `account` oracle instead (see
   [mocking account state](#mocking-account-state)).
 - `opts.dce` — `true` by default: run `eliminateDeadCode(ir)`, the IR the bytecode is

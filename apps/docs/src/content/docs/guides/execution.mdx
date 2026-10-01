@@ -98,8 +98,9 @@ the call targets that address like a normal contract read. The default address i
 `address` to relocate the script per call.
 
 This mode requires a provider that supports the state-override `eth_call` extension, and it
-unlocks two things deployless mode cannot do: a stable, controllable `address(this)`, and a
-controllable `msg.sender` via the `account` call parameter.
+unlocks what deployless mode cannot do: a stable, controllable `address(this)`, a controllable
+`msg.sender` via the `account` call parameter, and a script balance — add `balance` to the override
+entry to fund a script that [sends ETH](/guides/calls/#sending-eth-value).
 
 :::caution
 Overriding `code` does **not** clear the account's existing balance, nonce, or storage. If you

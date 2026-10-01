@@ -1,17 +1,18 @@
 /**
  * `codegen/call.ts` — the external-call site emitters: `emitStaticCall` (STATICCALL for `s.read`,
- * CALL with value 0 for `s.call`) and `emitSimulateCall` (the `s.simulate` self-call).
+ * CALL for `s.call`) and `emitSimulateCall` (the `s.simulate` self-call).
  *
  * A barrel over `codegen/call/`:
  * - `shared.ts` — the `CallSitePlan` contract, literal helpers, and the machinery both emitters
- *   share (decode-failure routing, gas / word refs, the returndata snapshot, the try epilogue);
+ *   share (decode-failure routing, gas / value / word refs, the returndata snapshot, the try
+ *   epilogue);
  * - `calldata.ts` — the calldata template (compile-time const folding) and its build emission,
  *   including the recursive tuple-bearing encoder;
  * - `static-call.ts` — `emitStaticCall`;
  * - `simulate-call.ts` — `emitSimulateCall` (the self-call trampoline site).
  *
- * `CallSitePlan` carries the call *target* location (and optional gas cap) alongside the args
- * — `targetRef` (required) and `gasRef` (optional) mirror `argRefs`'
+ * `CallSitePlan` carries the call *target* location (and optional gas cap and value) alongside the
+ * args — `targetRef` (required), `gasRef` and `valueRef` (optional) mirror `argRefs`'
  * `SlotRef | { literal: ConstData }` shape — since the emitters cannot emit the call opcode
  * without them.
  *
@@ -22,8 +23,8 @@
  *   zero-padding). All-literal calls collapse to one const segment: ≤ 96 bytes →
  *   PUSH-chunked MSTOREs; larger → data segment + CODECOPY. The buffer lives at transient
  *   scratch `MLOAD(0x40)` and is NOT bumped.
- * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds a `value = 0` word) — retSize 0
- *   always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
+ * - `STATICCALL(gas, addr, buf, argsSize, 0, 0)` (CALL adds the `value` word, 0 by default) —
+ *   retSize 0 always; returndata is fetched via the two sanctioned RETURNDATACOPY shapes only
  *   (`w.returndatacopyAll`).
  * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
  *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).

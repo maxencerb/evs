@@ -49,6 +49,20 @@ interface SubcallShape {
   readonly value: unknown; // void | Expr | readonly Expr[]
 }
 
+/** Every key a call verb's params object may carry (`value` and `revertReturns` are further
+ *  restricted per verb below). Anything else — a typo, or an option evs does not have — is a
+ *  recording-time error rather than a silently ignored key. */
+const SUBCALL_PARAM_KEYS: ReadonlySet<string> = new Set([
+  'address',
+  'abi',
+  'functionName',
+  'args',
+  'gas',
+  'value',
+  'struct',
+  'revertReturns',
+]);
+
 /** Sub-calls and overload resolution (a `Recorder` layer). */
 export abstract class RecorderCalls extends RecorderControl {
   // -- calls -------------------------------------------------------------------------------
@@ -64,11 +78,17 @@ export abstract class RecorderCalls extends RecorderControl {
         : `s.${verbBase}`;
     const label = `${callerName}()`;
     this.assertOpen(label);
+    const expected = `{ address, abi, functionName, args?, gas?${kind === 'static' ? '' : ', value?'}, struct?${kind === 'call' ? ', revertReturns?' : ''} }`;
     if (typeof p !== 'object' || p === null) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `${label}: expected { address, abi, functionName, args?, gas?, struct?${kind === 'call' ? ', revertReturns?' : ''} }`,
-      );
+      throw new EvsTypeError('TYPE_MISMATCH', `${label}: expected ${expected}`);
+    }
+    for (const key of Object.keys(p)) {
+      if (!SUBCALL_PARAM_KEYS.has(key)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${label}: unknown parameter \`${key}\` — expected ${expected}`,
+        );
+      }
     }
     const params = unsafeCast<{
       address?: unknown;
@@ -76,9 +96,16 @@ export abstract class RecorderCalls extends RecorderControl {
       functionName?: unknown;
       args?: unknown;
       gas?: unknown;
+      value?: unknown;
       struct?: unknown;
       revertReturns?: unknown;
     }>(p);
+    if (params.value !== undefined && kind === 'static') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`value\` is not supported — STATICCALL cannot send ETH; call a payable function with s.call (a real CALL) or s.simulate (rolled back) instead`,
+      );
+    }
     if (params.struct !== undefined && typeof params.struct !== 'boolean') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -139,6 +166,14 @@ export abstract class RecorderCalls extends RecorderControl {
         `${label}: ABI entry for "${fname}" is malformed (missing inputs/outputs arrays)`,
       );
     }
+    // `value` (the wei the CALL sends) is for payable functions only: a nonpayable target reverts
+    // on any value, so it is refused here, after overload resolution picked the entry.
+    if (params.value !== undefined && item['stateMutability'] !== 'payable') {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${label}: \`value\` is only accepted for a payable function — "${fname}" is ${String(item['stateMutability'])} and would revert on any ETH sent`,
+      );
+    }
     // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
     const plain = toPlainAbiFunction(unsafeCast<AbiFunction>(item));
     // debug names use the entry's bare name, so a signature `functionName` records the same IR
@@ -169,6 +204,10 @@ export abstract class RecorderCalls extends RecorderControl {
     });
     const gasId =
       params.gas === undefined ? undefined : this.coerceToId(params.gas, 'uint256', `${label} gas`);
+    const valueId =
+      params.value === undefined
+        ? undefined
+        : this.coerceToId(params.value, 'uint256', `${label} value`);
     // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
     // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
     // Tuple handle on unwrap; scalars/arrays yield an Expr. Under `revertReturns` the declared
@@ -203,6 +242,7 @@ export abstract class RecorderCalls extends RecorderControl {
       ...(kind !== 'static' ? { kind } : {}),
       ...(successId !== undefined ? { successOut: successId } : {}),
       ...(gasId !== undefined ? { gas: gasId } : {}),
+      ...(valueId !== undefined ? { value: valueId } : {}),
       ...(revertReturns !== undefined ? { revertReturns } : {}),
     });
     // unwrap a tuple (NOT a tuple ARRAY) out ValueId to a Tuple handle; a composite array

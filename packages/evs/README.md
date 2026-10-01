@@ -314,7 +314,8 @@ a named `EvsDecodeError(site)`. ⚠ `s.call`/`s.simulate` make a real call where
 `msg.sender` as your script's address — use `toViem({ mode: 'stateOverride', sender })` (the
 script runs _at_ `sender`) for `msg.sender`-sensitive targets. Every verb takes an optional `gas`
 cap (for `s.simulate` it bounds the inner target call), and simulate sites nest freely — inside
-`s.fn` bodies, one dry-run feeding the next.
+`s.fn` bodies, one dry-run feeding the next. `s.call` / `s.simulate` send ETH to a `payable`
+function with `value`, paid from the script's balance (fund it with a state-override `balance`).
 
 ### Checked arithmetic
 

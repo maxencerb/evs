@@ -1,0 +1,5 @@
+---
+'@maxencerb/evs': minor
+---
+
+`s.call`, `s.simulate` and their `try*` forms can now send ETH: pass `value` (a literal or an `Expr<'uint256'>`, in wei) to call a `payable` function with `msg.value`. The types accept `value` only for a payable function, so a `nonpayable` target or `s.read` is a compile error, and the recorder rejects the same misuses with `EvsTypeError` when the types are bypassed. The ETH is paid from the script's own balance: run the script in state-override mode and add a `balance` to its override entry. Under `s.simulate` the value rides on the self-call hop and is rolled back with the write. The simulate trampoline now forwards its `CALLVALUE` instead of a constant 0, so the bytecode of every script that uses `s.simulate` changes by one byte (never larger, never more gas). Sub-call params with an unknown key (a typo, or an option evs does not have) now throw `EvsTypeError` at recording. Before, an untyped `value` key was silently dropped and the call sent no ETH.

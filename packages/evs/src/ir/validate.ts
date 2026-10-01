@@ -854,6 +854,14 @@ class IrValidator {
       this.fail(`${what}: successOut is only legal when mode === 'try'`);
     }
     if (s.gas !== undefined) this.use(s.gas, 'uint256', `${what} gas`);
+    if (s.value !== undefined) {
+      if (s.kind !== 'call' && s.kind !== 'simulate') {
+        this.fail(
+          `${what}: value is only legal when kind is 'call' or 'simulate' (STATICCALL sends no value), got kind ${s.kind === undefined ? "'static' (absent)" : `'${s.kind}'`}`,
+        );
+      }
+      this.use(s.value, 'uint256', `${what} value`);
+    }
   }
 
   private checkPlainAbi(fnAbi: PlainAbiFunction, what: string): void {
