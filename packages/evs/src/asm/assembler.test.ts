@@ -2,6 +2,7 @@ import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
 import { AsmWriter, assemble, type AsmNode } from './assembler.js';
+import { lookupPc } from './sourcemap.js';
 
 const hex = (bytes: Uint8Array): string =>
   [...bytes].map((b) => b.toString(16).padStart(2, '0')).join('');
@@ -119,6 +120,137 @@ describe('AsmWriter', () => {
   });
 });
 
+describe('AsmWriter — checkpoint / rollback', () => {
+  test('rollback discards nodes, reuses label ids, forgets names and references', () => {
+    const w = new AsmWriter();
+    const tail = w.newLabel('tail');
+    w.push(1n);
+    const before = w.nodes();
+    const cp = w.checkpoint();
+
+    const scratch = w.newLabel('scratch');
+    w.pushLabel(tail);
+    w.pushLabel(scratch);
+    w.op('JUMPI');
+    w.label(scratch, 0);
+    expect(w.isReferenced(tail)).toBe(true);
+    expect(w.isReferenced(scratch)).toBe(true);
+
+    w.rollback(cp);
+    expect(w.nodes()).toEqual(before);
+    expect(w.isReferenced(tail)).toBe(false); // only the discarded code referenced it
+    expect(w.isReferenced(scratch)).toBe(false);
+    // the id is handed out again, without the discarded label's name
+    const reused = w.newLabel();
+    expect(reused).toBe(scratch);
+    w.label(reused, 0);
+    expect(w.nodes().at(-1)).toEqual({ k: 'label', label: reused, stack: 0 });
+  });
+
+  test('a reference made before the checkpoint survives the rollback', () => {
+    const w = new AsmWriter();
+    const tail = w.newLabel('tail');
+    w.pushLabel(tail);
+    const cp = w.checkpoint();
+    w.pushLabel(tail); // already referenced: not a new reference to undo
+    w.rollback(cp);
+    expect(w.isReferenced(tail)).toBe(true);
+    expect(w.nodes()).toEqual([{ k: 'pushLabel', label: tail }]);
+  });
+
+  test('nested checkpoints roll back independently (inner, then outer)', () => {
+    const w = new AsmWriter();
+    const outer = w.checkpoint();
+    const a = w.newLabel('a');
+    w.pushLabel(a);
+    const inner = w.checkpoint();
+    const b = w.newLabel('b');
+    w.pushLabel(b);
+
+    w.rollback(inner);
+    expect(w.isReferenced(a)).toBe(true);
+    expect(w.isReferenced(b)).toBe(false);
+    expect(w.newLabel()).toBe(b);
+
+    w.rollback(outer);
+    expect(w.nodes()).toEqual([]);
+    expect(w.isReferenced(a)).toBe(false);
+    expect(w.newLabel()).toBe(a);
+  });
+});
+
+describe('AsmWriter — peakHeightSince', () => {
+  test('measures only the nodes emitted since the checkpoint, from the entry height', () => {
+    const w = new AsmWriter();
+    w.push(1n);
+    w.push(2n);
+    w.push(3n); // before the checkpoint: not counted
+    const cp = w.checkpoint();
+    expect(w.peakHeightSince(cp, 3)).toBe(3); // nothing emitted yet
+    w.push(4n);
+    w.push(5n);
+    w.op('ADD');
+    w.op('POP');
+    expect(w.peakHeightSince(cp, 3)).toBe(5);
+    expect(w.peakHeightSince(cp, 10)).toBe(12);
+  });
+
+  test('a checked label resets the height to its annotation', () => {
+    const w = new AsmWriter();
+    const cp = w.checkpoint();
+    const l = w.newLabel();
+    w.push(1n); // 1
+    w.label(l, 6); // reset to 6
+    w.push(2n); // 7
+    w.op('POP');
+    expect(w.peakHeightSince(cp, 0)).toBe(7);
+  });
+
+  test("an 'any' region (failure stub) is skipped until the next checked label", () => {
+    const w = new AsmWriter();
+    const cp = w.checkpoint();
+    const stub = w.newLabel();
+    const next = w.newLabel();
+    w.push(1n); // 1
+    w.op('STOP');
+    w.label(stub, 'any');
+    for (let i = 0; i < 20; i++) w.push(0n); // never counted
+    w.op('REVERT');
+    w.label(next, 2);
+    w.push(9n); // 3
+    expect(w.peakHeightSince(cp, 0)).toBe(3);
+  });
+
+  test.each(['JUMP', 'RETURN', 'REVERT', 'STOP', 'INVALID'] as const)(
+    '%s ends liveness until the next label',
+    (end) => {
+      const w = new AsmWriter();
+      const cp = w.checkpoint();
+      const l = w.newLabel();
+      w.push(1n);
+      w.push(1n);
+      w.op(end);
+      for (let i = 0; i < 10; i++) w.push(0n); // dead code: not counted
+      w.label(l, 1);
+      w.push(0n); // 2
+      expect(w.peakHeightSince(cp, 0)).toBe(2);
+    },
+  );
+
+  test('JUMPI does not end liveness (the fallthrough continues)', () => {
+    const w = new AsmWriter();
+    const cp = w.checkpoint();
+    const l = w.newLabel();
+    w.push(1n);
+    w.pushLabel(l);
+    w.op('JUMPI'); // 0
+    w.push(1n);
+    w.push(2n);
+    w.push(3n); // 3
+    expect(w.peakHeightSince(cp, 0)).toBe(3);
+  });
+});
+
 const program = (value: bigint): readonly AsmNode[] => [
   { k: 'push', value },
   { k: 'op', op: 'POP' },
@@ -147,6 +279,8 @@ describe('assemble — push lowering', () => {
       [0x100n, '610100'],
       [0xffffn, '61ffff'],
       [0x010000n, '62010000'],
+      [1n << 64n, `6801${'00'.repeat(8)}`],
+      [0x0102030405060708090an, '690102030405060708090a'],
       [(1n << 256n) - 1n, `7f${'ff'.repeat(32)}`],
     ];
     for (const [value, expected] of cases) {
@@ -389,6 +523,86 @@ describe('assemble — sourceMap', () => {
     expect(answer).toBeDefined();
     expect(sourceMap.segments.some((s) => s.note === 'data segment guard')).toBe(true);
     expect(sourceMap.segments.some((s) => s.note === 'blob bytes')).toBe(true);
+  });
+});
+
+describe('assemble — layout buffer', () => {
+  test('grows past its initial capacity without losing bytes (large data blob, few nodes)', () => {
+    const blob = Uint8Array.from({ length: 5000 }, (_, i) => (i * 7) & 0xff);
+    const w = new AsmWriter();
+    const data = w.newLabel('blob');
+    w.push(1n);
+    w.op('POP');
+    w.op('STOP');
+    w.dataLabel(data);
+    w.data(blob);
+    const { bytecode, labelPcs } = assemble(w.nodes(), { evmVersion: 'cancun' });
+    expect(bytecode.length).toBe(4 + 1 + blob.length);
+    expect(hex(bytecode.subarray(0, 5))).toBe('60015000fe');
+    expect(labelPcs.get(data)).toBe(5);
+    expect(bytecode.subarray(5)).toEqual(blob);
+  });
+
+  test('a long code stream lays out the same as its instructions one by one', () => {
+    const w = new AsmWriter();
+    let expected = '';
+    for (let i = 1; i <= 3000; i++) {
+      w.push(BigInt(i));
+      w.op('POP');
+      const imm = i.toString(16).padStart(i > 0xff ? 4 : 2, '0');
+      expected += `${i > 0xff ? '61' : '60'}${imm}50`;
+    }
+    w.op('STOP');
+    const { bytecode } = assemble(w.nodes(), { evmVersion: 'cancun' });
+    expect(hex(bytecode)).toBe(`${expected}00`);
+  });
+});
+
+describe('assemble — sourceMap segment coalescing', () => {
+  test('adjacent nodes with the same note share one segment; a note change starts a new one', () => {
+    const w = new AsmWriter();
+    const main = w.newLabel('main');
+    w.pushLabel(main);
+    w.op('JUMP');
+    w.label(main, 0);
+    w.push(1n, { note: 'add' });
+    w.push(2n, { note: 'add' });
+    w.op('ADD', { note: 'add' });
+    w.op('POP', { note: 'drop' });
+    w.op('STOP');
+    const { bytecode, sourceMap } = assemble(w.nodes(), { evmVersion: 'cancun' });
+    expect(sourceMap.segments).toEqual([
+      { pc: 0, len: 4 }, // PUSH2 main + JUMP: no note, one run
+      { pc: 4, len: 1, note: '@main' }, // JUMPDEST
+      { pc: 5, len: 5, note: 'add' }, // PUSH1 1, PUSH1 2, ADD
+      { pc: 10, len: 1, note: 'drop' },
+      { pc: 11, len: 1 },
+    ]);
+    expect(bytecode.length).toBe(12);
+    // every pc answers its instruction's own note
+    const notes = Array.from({ length: bytecode.length }, (_, pc) => lookupPc(sourceMap, pc)?.note);
+    expect(notes).toEqual([
+      ...Array<undefined>(4).fill(undefined),
+      '@main',
+      ...Array<string>(5).fill('add'),
+      'drop',
+      undefined,
+    ]);
+  });
+
+  test('the data guard keeps its own segment between same-note code and data', () => {
+    const w = new AsmWriter();
+    const blob = w.newLabel();
+    w.op('STOP', { note: 'x' });
+    w.dataLabel(blob);
+    w.data(Uint8Array.of(1, 2), 'x');
+    w.data(Uint8Array.of(3), 'x');
+    const { sourceMap } = assemble(w.nodes(), { evmVersion: 'cancun' });
+    expect(sourceMap.segments).toEqual([
+      { pc: 0, len: 1, note: 'x' },
+      { pc: 1, len: 1, note: 'data segment guard' },
+      { pc: 2, len: 3, note: 'x' }, // two same-note blobs, one run
+    ]);
   });
 });
 

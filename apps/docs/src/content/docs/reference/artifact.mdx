@@ -375,7 +375,7 @@ for (const site of compiled.sourceMap.sites) {
 | Field | Shape | Notes |
 | --- | --- | --- |
 | `version` | `1` | Format version |
-| `segments` | `readonly { pc, len, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte |
+| `segments` | `readonly { pc, len, note? }[]` | Sorted by `pc`, non-overlapping; together they cover every emitted code byte. Each is a maximal run of consecutive instructions sharing one note (or none), so neighbouring segments always differ |
 | `sites` | `readonly { id, kind, detail, panicCodes? }[]` | Revert-attribution sites; `kind` is `'panic' \| 'decode' \| 'call' \| 'stmt'`; `id` is a number; `panicCodes` (panic sites only) lists the `Panic(uint256)` codes the site can raise; `detail` is display text |
 | `labels` | `readonly { pc, name }[]` | Label name per jump-destination pc |
 

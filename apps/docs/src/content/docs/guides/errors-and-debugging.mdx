@@ -368,13 +368,13 @@ The first lines of the real listing for this `echo(uint256)` script (cancun targ
 
 ## `sourceMap` and `lookupPc`
 
-The artifact's `sourceMap` is the data behind both tools: `segments` cover every emitted pc
-range (with a short note on what the code does), `sites` give each panic/decode/call site an
-id, a kind, a human-readable detail naming its operands, and — on panic sites — the
-`panicCodes` it can raise (this is what `explainRevert` resolves `EvsDecodeError(site)` and
-panic candidates against), and `labels` name the pcs of internal jump targets.
-`lookupPc(map, pc)` binary-searches the segments — handy for decorating an execution trace from
-a node or a fork tool with what each pc range belongs to.
+The artifact's `sourceMap` is the data behind both tools: `segments` cover every emitted pc range
+(with a short note on what the code does; consecutive instructions that share a note, or have none,
+form one segment), `sites` give each panic/decode/call site an id, a kind, a human-readable detail
+naming its operands, and — on panic sites — the `panicCodes` it can raise (this is what
+`explainRevert` resolves `EvsDecodeError(site)` and panic candidates against), and `labels` name
+the pcs of internal jump targets. `lookupPc(map, pc)` binary-searches the segments — handy for
+decorating an execution trace from a node or a fork tool with what each pc range belongs to.
 
 For debugging script *logic* without a node at all, run the IR oracle instead — see
 [testing scripts](/guides/testing-scripts/). Full artifact shapes are in the

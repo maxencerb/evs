@@ -2,9 +2,11 @@
  * `asm/sourcemap.ts` — the PC map: code segments (with their optional codegen notes), sites and
  * labels.
  *
- * `segments` are sorted by `pc` and non-overlapping; together they cover every emitted code
- * byte (assemble guarantees this). `sites` are merged in by compile.ts (the assembler emits
- * `sites: []`).
+ * `segments` are sorted by `pc` and non-overlapping; together they cover every emitted code byte
+ * (assemble guarantees this). Each is a maximal run of consecutive bytes sharing the same note (or
+ * no note): adjacent instructions with one note share a segment, so a segment spans one or more
+ * whole instructions (or data blobs) and `lookupPc` is the per-pc view. `sites` are merged in by
+ * compile.ts (the assembler emits `sites: []`).
  */
 
 // structural twin of `SiteId` from ir/nodes.js — asm may only import core/* (module DAG)

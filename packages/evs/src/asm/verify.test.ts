@@ -304,6 +304,18 @@ describe("verifyStack — 'any' labels", () => {
     expect(() => verifyStack(nodes, NO_PCS)).toThrow(/dynamic JUMP/);
   });
 
+  test("rejects a dynamic JUMPI inside an 'any' region", () => {
+    const nodes: readonly AsmNode[] = [
+      { k: 'op', op: 'STOP' },
+      { k: 'label', label: 0, stack: 'any', name: 'stub' },
+      { k: 'push', value: 1n },
+      { k: 'push', value: 4n },
+      { k: 'op', op: 'JUMPI' },
+      { k: 'op', op: 'INVALID' },
+    ];
+    expect(() => verifyStack(nodes, NO_PCS)).toThrow(/dynamic JUMPI/);
+  });
+
   test("INVALID terminates an 'any' region", () => {
     const nodes: readonly AsmNode[] = [
       { k: 'op', op: 'STOP' },
