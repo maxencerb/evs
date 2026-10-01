@@ -718,6 +718,17 @@ describe('checklist: composite s.let / s.lit, folded s.select, .length(), failed
     }
   });
 
+  test('s.let(badType) with one argument → the unknown-type diagnosis, not a missing init', () => {
+    for (const bad of ['abc', 'uint7']) {
+      expectEvs(
+        () => rec((s) => s.let(bad as never)),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /s\.let\(\): unknown type/,
+      );
+    }
+  });
+
   test('s.let(type, init): the type and the init are validated against each other', () => {
     expectEvs(
       () => rec((s) => s.let({ type: 'tuple' } as never, 1n as never)),

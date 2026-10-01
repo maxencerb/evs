@@ -655,6 +655,9 @@ export abstract class RecorderCore {
       return new CellImpl(this.self, this.makeCell(a, b));
     }
     if (typeof a === 'string' || isTupleType(a)) {
+      // a malformed type string keeps its "unknown type" diagnosis; only a valid type is missing
+      // its init.
+      assertValueType(a, 's.let()');
       throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
     }
     const c = this.classify(a, 's.let()');
