@@ -359,13 +359,7 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
 // `t.error` runtime (issue #15)
 // ---------------------------------------------------------------------------
 
-/** Names a user error may not take, because they already name an arm of the client-side
- *  switch: Panic/Error (Solidity built-ins) and EvsDecodeError/EvsInvalidCalldata (the evs
- *  runtime) have their own selectors and decode arms; 'empty'/'unknown' are the built-in
- *  decode arms for an empty revert and an unrecognized selector; '_' is the matchScriptError
- *  default-arm key. Sharing a `name` discriminant with any of them would route those reverts
- *  to the declared handler. Mirrored in `buildScriptAbi` (abi/artifact.ts). */
-const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
+const RESERVED_ERROR_NAME_LIST = [
   'Panic',
   'Error',
   'EvsDecodeError',
@@ -373,7 +367,21 @@ const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
   'empty',
   'unknown',
   '_',
-]);
+] as const;
+
+/** One of the {@link RESERVED_ERROR_NAMES}. `abi/artifact.ts` types its runtime-error name set
+ *  with it, so an evs runtime error added to `EVS_ERROR_ABI` without being reserved here fails
+ *  to compile. */
+export type ReservedErrorName = (typeof RESERVED_ERROR_NAME_LIST)[number];
+
+/** Names a user error may not take, because they already name an arm of the client-side
+ *  switch: Panic/Error (Solidity built-ins) and EvsDecodeError/EvsInvalidCalldata (the evs
+ *  runtime) have their own selectors and decode arms; 'empty'/'unknown' are the built-in
+ *  decode arms for an empty revert and an unrecognized selector; '_' is the matchScriptError
+ *  default-arm key. Sharing a `name` discriminant with any of them would route those reverts
+ *  to the declared handler. The single list: `t.error` rejects these at declaration and
+ *  `buildScriptAbi` (abi/artifact.ts, which core cannot import) re-checks hand-built inputs. */
+export const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set(RESERVED_ERROR_NAME_LIST);
 
 function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
   if (typeof name !== 'string' || !IDENT_RE.test(name)) {

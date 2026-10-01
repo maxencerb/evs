@@ -9,16 +9,13 @@ import type { ContractConstructorArgs } from 'viem';
 import {
   type ScriptAbi,
   type ResolveArgName,
-  PANIC_SELECTOR,
-  ERROR_STRING_SELECTOR,
-  EVS_DECODE_ERROR_SELECTOR,
-  EVS_INVALID_CALLDATA_SELECTOR,
+  BUILTIN_ERROR_SIGNATURES,
+  EVS_ERROR_NAMES,
   errorSelectorOf,
   buildScriptAbi,
 } from '../../abi/artifact.js';
-import * as compileModule from '../../compile.js';
-import type { CompileOptions, CompiledEvsScript } from '../../compile.js';
-import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
+import { compile, type CompileOptions, type CompiledEvsScript } from '../../compile.js';
+import { EvsTypeError } from '../../core/errors.js';
 import {
   type ArgSpec,
   type EvsErrorType,
@@ -168,29 +165,17 @@ function isEvsErrorValue(v: unknown): v is EvsErrorType {
   return o.kind === 'error' && typeof o.name === 'string' && Array.isArray(o.params);
 }
 
-// the four built-in selectors a declared error may not collide with (issue #15): Solidity's
-// Panic/Error plus the evs runtime errors. Name shadowing is rejected separately (t.error +
-// buildScriptAbi); this catches the astronomically-unlikely selector collision under a
-// DIFFERENT name, which would corrupt every decode path.
-const BUILTIN_ERROR_SELECTORS: ReadonlyMap<string, string> = new Map([
-  [PANIC_SELECTOR, 'Panic(uint256)'],
-  [ERROR_STRING_SELECTOR, 'Error(string)'],
-  [EVS_DECODE_ERROR_SELECTOR, 'EvsDecodeError(uint256)'],
-  [EVS_INVALID_CALLDATA_SELECTOR, 'EvsInvalidCalldata()'],
-]);
+/** The def's `errors` list sugar: omitted → `[]`, a lone entry → a one-element list. */
+function asList(input: unknown): readonly unknown[] {
+  if (input === undefined) return [];
+  return Array.isArray(input) ? input : [input];
+}
 
 /** Normalizes + validates the def's `errors` list into recorder decls (issue #15): each entry
  *  must be a `t.error` value with evs param types; names and selectors must be unique (and
  *  selector-disjoint from the built-ins). */
 function normalizeErrorDecls(scriptName: string, errorsIn: unknown): readonly RecErrorDecl[] {
-  let list: readonly unknown[];
-  if (errorsIn === undefined) {
-    list = [];
-  } else if (Array.isArray(errorsIn)) {
-    list = errorsIn;
-  } else {
-    list = [errorsIn];
-  }
+  const list = asList(errorsIn);
   const seenNames = new Set<string>();
   const seenSelectors = new Map<string, string>();
   return list.map((e, i): RecErrorDecl => {
@@ -233,7 +218,10 @@ function normalizeErrorDecls(scriptName: string, errorsIn: unknown): readonly Re
       params.map((p, j) => typeToAbiParam(p.name === '' ? `arg${j}` : p.name, p.type)),
     );
     const selector = errorSelectorOf(e.name, inputs);
-    const builtin = BUILTIN_ERROR_SELECTORS.get(selector);
+    // name shadowing of a built-in is rejected by t.error + buildScriptAbi; this catches the
+    // astronomically-unlikely selector collision under a DIFFERENT name, which would corrupt
+    // every decode path.
+    const builtin = BUILTIN_ERROR_SIGNATURES.get(selector);
     if (builtin !== undefined) {
       throw new EvsTypeError(
         'ERROR_DECL',
@@ -268,6 +256,7 @@ export function evscript<
     ...args: ArgHandles<NormalizeArgs<args>>
   ) => ScriptReturn<ret>,
 ): EvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
+  // the def object, its name and the body callback, before anything is normalized
   if (typeof def !== 'object' || def === null) {
     throw new EvsTypeError('TYPE_MISMATCH', `evscript: def must be { name, args? }`);
   }
@@ -297,14 +286,11 @@ export function evscript<
   // the script name must not also name an error of the artifact ABI (issue #63) — the
   // function entry would be shadowed for viem (buildScriptAbi re-checks; failing here keeps
   // the error at the def).
-  if (
-    def.name === 'EvsDecodeError' ||
-    def.name === 'EvsInvalidCalldata' ||
-    errorDecls.some((d) => d.ir.name === def.name)
-  ) {
+  const runtimeError = EVS_ERROR_NAMES.has(def.name);
+  if (runtimeError || errorDecls.some((d) => d.ir.name === def.name)) {
     throw new EvsTypeError(
       'ERROR_DECL',
-      `evscript "${def.name}": script name "${def.name}" collides with the error "${def.name}" in its ABI (${def.name.startsWith('Evs') ? 'an evs runtime error every artifact carries' : 'a declared error'}) — viem would resolve the error entry instead of the function; rename the script or the error`,
+      `evscript "${def.name}": script name "${def.name}" collides with the error "${def.name}" in its ABI (${runtimeError ? 'an evs runtime error every artifact carries' : 'a declared error'}) — viem would resolve the error entry instead of the function; rename the script or the error`,
     );
   }
 
@@ -334,26 +320,7 @@ export function evscript<
     ir,
     abi,
     errors,
-    compile(
-      options?: CompileOptions,
-    ): CompiledEvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>> {
-      // namespace access keeps this tolerant of the compile module landing separately
-      const compileFn: unknown = (compileModule as Record<string, unknown>)['compile'];
-      if (typeof compileFn !== 'function') {
-        throw new EvsInternalError(
-          'INTERNAL',
-          'compile() is not available — the evs compile module failed to load',
-        );
-      }
-      // the `compile()` signature; the namespace-loaded compile is intentionally typed `unknown`.
-      const typedCompile =
-        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
-        compileFn as (
-          sc: unknown,
-          o?: CompileOptions,
-        ) => CompiledEvsScript<name, NormalizeArgs<args>, ret, NormalizeErrors<errs>>;
-      return typedCompile(script, options);
-    },
+    compile: (options?: CompileOptions) => compile(script, options),
   };
   return Object.freeze(script);
 }

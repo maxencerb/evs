@@ -6,18 +6,26 @@ import {
   encodeAbiParameters,
   keccak256,
   stringToHex,
+  toFunctionSelector,
 } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
-import { t } from '../core/types.js';
+import { RESERVED_ERROR_NAMES, t } from '../core/types.js';
 import type { ArrayType, DynType, WordType } from '../core/types.js';
 import {
+  BUILTIN_ERROR_SIGNATURES,
   buildScriptAbi,
   encodeLiteralData,
   encodeLiteralWord,
+  ERROR_STRING_SELECTOR,
+  errorSelectorOf,
+  EVS_DECODE_ERROR_SELECTOR,
   EVS_ERROR_ABI,
+  EVS_ERROR_NAMES,
+  EVS_INVALID_CALLDATA_SELECTOR,
   literalHash,
+  PANIC_SELECTOR,
   selectorOf,
   toPlainAbiFunction,
 } from './artifact.js';
@@ -50,6 +58,29 @@ describe('EVS_ERROR_ABI', () => {
       { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
     ]);
   });
+
+  test('the built-in error tables agree with it (one source per fact)', () => {
+    // the runtime error names are read off the ABI, and every one is reserved for t.error
+    expect([...EVS_ERROR_NAMES]).toEqual(EVS_ERROR_ABI.map((e) => e.name));
+    for (const name of EVS_ERROR_NAMES) {
+      expect(RESERVED_ERROR_NAMES.has(name)).toBe(true);
+      expect(() => t.error(name as never)).toThrow(/reserved/);
+    }
+    // every built-in selector maps to its own signature, and every runtime error is in the map
+    for (const [selector, signature] of BUILTIN_ERROR_SIGNATURES) {
+      expect(toFunctionSelector(signature)).toBe(selector);
+    }
+    for (const e of EVS_ERROR_ABI) {
+      const signature = BUILTIN_ERROR_SIGNATURES.get(errorSelectorOf(e.name, e.inputs));
+      expect(signature?.startsWith(`${e.name}(`)).toBe(true);
+    }
+    expect([...BUILTIN_ERROR_SIGNATURES.keys()]).toEqual([
+      PANIC_SELECTOR,
+      ERROR_STRING_SELECTOR,
+      EVS_DECODE_ERROR_SELECTOR,
+      EVS_INVALID_CALLDATA_SELECTOR,
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -63,9 +94,11 @@ describe('selectorOf', () => {
     expect(selectorOf('transfer', ['address', 'uint256'])).toBe('0xa9059cbb');
   });
 
-  test('evs error selectors (computed once via selectorOf — the codegen constants)', () => {
-    expect(selectorOf('EvsInvalidCalldata', [])).toBe('0xf43fed56');
-    expect(selectorOf('EvsDecodeError', ['uint256'])).toBe('0x20cf27b7');
+  test('built-in error selectors (the constants codegen and every decode path share)', () => {
+    expect(EVS_INVALID_CALLDATA_SELECTOR).toBe('0xf43fed56');
+    expect(EVS_DECODE_ERROR_SELECTOR).toBe('0x20cf27b7');
+    expect(PANIC_SELECTOR).toBe('0x4e487b71');
+    expect(ERROR_STRING_SELECTOR).toBe('0x08c379a0');
   });
 });
 
@@ -585,6 +618,38 @@ describe('buildScriptAbi', () => {
     expect((fixed[0] as { inputs: readonly { type: string }[] }).inputs[0]?.type).toBe(
       'uint256[2]',
     );
+  });
+
+  test('name checks: each section keeps its own message and code', () => {
+    const ok = [{ name: 'ok', type: 'bool' as const }];
+    const u = (name: string) => ({ name, type: 'uint256' as const });
+    const rule = ': must be a non-empty identifier matching /^[A-Za-z_]\\w*$/';
+    const cases = [
+      [() => buildScriptAbi('not a name', [], ok), 'ABI_SHAPE', 'invalid script name'],
+      [() => buildScriptAbi('s', [u('a'), u('1a')], ok), 'ABI_SHAPE', 'argument #1 has an'],
+      [() => buildScriptAbi('s', [u('a'), u('a')], ok), 'ABI_SHAPE', 'duplicate argument name'],
+      [() => buildScriptAbi('s', [], [u('')]), 'ABI_SHAPE', 'viem degrades the result object'],
+      [() => buildScriptAbi('s', [], [u('r'), u('r')]), 'ABI_SHAPE', 'duplicate return component'],
+      [
+        () => buildScriptAbi('s', [], ok, [{ name: 'E', inputs: [u('x'), u('')] }]),
+        'ERROR_DECL',
+        'error "E" input #1 (""): invalid input name',
+      ],
+      [
+        () => buildScriptAbi('s', [], ok, [{ name: 'E', inputs: [u('x'), u('x')] }]),
+        'ERROR_DECL',
+        'error "E" has a duplicate input name "x"',
+      ],
+      [() => buildScriptAbi('s', [], ok, [{ name: '1E', inputs: [] }]), 'ERROR_DECL', rule],
+    ] as const;
+    for (const [run, code, message] of cases) {
+      const e = catchEvs(run);
+      expect(e.code).toBe(code);
+      expect(e.message).toContain(message);
+    }
+    // the identifier rule is the shared identProblem text (core/types/args.ts)
+    expect(catchEvs(() => buildScriptAbi('not a name', [], ok)).message).toContain(rule);
+    expect(catchEvs(() => buildScriptAbi('s', [u('1a')], ok)).message).toContain(rule);
   });
 
   test('arg names: user names (namedArg) surface as input labels; duplicates rejected (issue #9)', () => {

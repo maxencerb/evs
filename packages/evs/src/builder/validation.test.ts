@@ -318,18 +318,25 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
   test('a script name colliding with an error name in its ABI is ERROR_DECL (issue #63)', () => {
     // the artifact ABI would hold a function AND an error of that name: viem's getAbiItem
     // resolves the error, so encodeFunctionData/readContract fail with "Function not found"
+    // the parenthetical names the colliding entry's origin: the runtime errors by their exact
+    // name, so a declared error that merely starts with `Evs` is still "a declared error"
+    const runtime = 'an evs runtime error every artifact carries';
+    const declared = 'a declared error';
     const cases = [
-      ['EvsDecodeError', []],
-      ['EvsInvalidCalldata', []],
-      ['Boom', [t.error('Boom', [namedArg('x', t.uint256)])]],
+      ['EvsDecodeError', [], runtime],
+      ['EvsInvalidCalldata', [], runtime],
+      ['Boom', [t.error('Boom', [namedArg('x', t.uint256)])], declared],
+      ['EvsFoo', [t.error('EvsFoo', [namedArg('x', t.uint256)])], declared],
     ] as const;
-    for (const [name, errors] of cases) {
+    for (const [name, errors, origin] of cases) {
       expectEvs(
         () =>
           evscript({ name, args: [t.uint256], errors: errors as never }, (s, a) => s.return({ a })),
         EvsTypeError,
         'ERROR_DECL',
-        new RegExp(`script name "${name}" collides with the error "${name}"`),
+        new RegExp(
+          `script name "${name}" collides with the error "${name}" in its ABI \\(${origin}\\)`,
+        ),
       );
     }
     // Solidity built-in error names are not ABI entries of the artifact: still callable

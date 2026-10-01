@@ -526,8 +526,9 @@ export interface SubcallParams<
 
 // ---------------------------------------------------------------------------
 // the six calling verbs (issue #1) as callable interfaces — one set of three struct-aware
-// overloads per (mutability bucket × strict/try). `read`/`tryRead` filter to ViewMutability
-// (STATICCALL); `call`/`tryCall`/`simulate`/`trySimulate` filter to WriteMutability (CALL).
+// overloads per mutability bucket, shared by the strict and try flavours (`Tried`).
+// `read`/`tryRead` filter to ViewMutability (STATICCALL); `call`/`tryCall`/`simulate`/
+// `trySimulate` filter to WriteMutability (CALL).
 // ---------------------------------------------------------------------------
 
 /**
@@ -542,63 +543,48 @@ export type ResolvedSubcallParams<
   args,
 > = SubcallParams<abi, name, mut, args & OverloadGuard<abi, name, mut, args>>;
 
-/** The strict result shape, parameterized over the mutability bucket. */
-export interface SubcallVerb<mut extends AbiStateMutability> {
+/**
+ * A verb's result for the strict (`tried = false`) or the try (`tried = true`) flavour: the try
+ * verbs wrap the strict result `v` as `{ success, value }` (`value` is zeroed when `success` is
+ * false). The one place the two flavours differ, so each verb set is declared once.
+ */
+export type Tried<tried extends boolean, v> = tried extends true
+  ? { readonly success: Expr<'bool'>; readonly value: v }
+  : v;
+
+/** The calling-verb shape for one mutability bucket and flavour (see {@link Tried}). */
+export interface SubcallVerbOf<mut extends AbiStateMutability, tried extends boolean> {
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
     p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct: true },
-  ): SubcallStruct<abi, name, mut, args>;
+  ): Tried<tried, SubcallStruct<abi, name, mut, args>>;
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
     p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct?: false },
-  ): UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
+  ): Tried<tried, UnwrapSingle<SubcallOutputs<abi, name, mut, args>>>;
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
     p: ResolvedSubcallParams<abi, name, mut, args>,
-  ): SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
+  ): Tried<
+    tried,
+    SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>
+  >;
 }
 
+/** The strict result shape, parameterized over the mutability bucket. */
+export type SubcallVerb<mut extends AbiStateMutability> = SubcallVerbOf<mut, false>;
+
 /** The try result shape (`{ success, value }`), parameterized over the mutability bucket. */
-export interface TrySubcallVerb<mut extends AbiStateMutability> {
-  <
-    const abi extends Abi | readonly unknown[],
-    name extends SubcallFunctionName<abi, mut>,
-    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
-  >(
-    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct: true },
-  ): { readonly success: Expr<'bool'>; readonly value: SubcallStruct<abi, name, mut, args> };
-  <
-    const abi extends Abi | readonly unknown[],
-    name extends SubcallFunctionName<abi, mut>,
-    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
-  >(
-    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct?: false },
-  ): {
-    readonly success: Expr<'bool'>;
-    readonly value: UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
-  };
-  <
-    const abi extends Abi | readonly unknown[],
-    name extends SubcallFunctionName<abi, mut>,
-    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
-  >(
-    p: ResolvedSubcallParams<abi, name, mut, args>,
-  ): {
-    readonly success: Expr<'bool'>;
-    readonly value:
-      | SubcallStruct<abi, name, mut, args>
-      | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>;
-  };
-}
+export type TrySubcallVerb<mut extends AbiStateMutability> = SubcallVerbOf<mut, true>;
 
 /** `s.read` — STATICCALL of a `view`/`pure` function. */
 export type ReadVerb = SubcallVerb<ViewMutability>;
@@ -639,9 +625,10 @@ export type RevertReturnHandles<rr extends readonly EvsType[]> = {
   readonly [i in keyof rr]: rr[i] extends EvsType ? ArgHandle<rr[i]> : never;
 };
 
-/** `s.call` — {@link WriteVerb} plus the `revertReturns` overload (issue #35), whose result is
- *  typed from the declared list (`[] → void`, `[one] → handle`, `[many] → readonly tuple`). */
-export interface CallVerb extends WriteVerb {
+/** The `s.call` / `s.tryCall` shape: {@link SubcallVerbOf} over the write bucket plus the
+ *  `revertReturns` overload (issue #35), whose strict result is typed from the declared list
+ *  (`[] → void`, `[one] → handle`, `[many] → readonly tuple`). */
+export interface CallVerbOf<tried extends boolean> extends SubcallVerbOf<WriteMutability, tried> {
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, WriteMutability>,
@@ -653,21 +640,11 @@ export interface CallVerb extends WriteVerb {
     >,
   >(
     p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
-  ): UnwrapSingle<RevertReturnHandles<rr>>;
+  ): Tried<tried, UnwrapSingle<RevertReturnHandles<rr>>>;
 }
 
+/** `s.call` — {@link WriteVerb} plus the `revertReturns` overload (issue #35). */
+export type CallVerb = CallVerbOf<false>;
+
 /** `s.tryCall` — {@link TryWriteVerb} plus the `revertReturns` overload (issue #35). */
-export interface TryCallVerb extends TryWriteVerb {
-  <
-    const abi extends Abi | readonly unknown[],
-    name extends SubcallFunctionName<abi, WriteMutability>,
-    const rr extends readonly EvsType[],
-    const args extends SubcallInputs<abi, name, WriteMutability> = SubcallInputs<
-      abi,
-      name,
-      WriteMutability
-    >,
-  >(
-    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
-  ): { readonly success: Expr<'bool'>; readonly value: UnwrapSingle<RevertReturnHandles<rr>> };
-}
+export type TryCallVerb = CallVerbOf<true>;

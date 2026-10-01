@@ -3,9 +3,10 @@
  * deep imports). Pins the helper types a public declaration mentions — `ScriptAbi['inputs']`,
  * the `EvsFn`/`ArgHandles` label default, the `s.forEach`/`.at` tuple-array bound,
  * `ReturnSpecToComponents`, `RevertExplanation`/`SourceMap` site ids, `AsmNode['op']`,
- * `Disassembly['lines']`, `ToViemMode`, `InterpOptions` / `InterpValues` — so dropping one
- * from `index.ts` fails here. The IR node types behind `ScriptIr` are deliberately not exported
- * (the IR schema is not a stable API). Typecheck only.
+ * `Disassembly['lines']`, `ToViemMode`, `InterpOptions` / `InterpValues`, the shared call-verb
+ * shapes behind `ReadVerb` & co — so dropping one from `index.ts` fails here. The IR node types
+ * behind `ScriptIr` are deliberately not exported (the IR schema is not a stable API). Typecheck
+ * only.
  */
 import type { Address as ViemAddress } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
@@ -16,6 +17,8 @@ import type {
   AbiParametersSignature,
   ArgName,
   ArgsToInputs,
+  CallVerb,
+  CallVerbOf,
   DisasmLine,
   Disassembly,
   InterpOptions,
@@ -25,11 +28,16 @@ import type {
   ResolveArgName,
   SignatureName,
   SiteId,
+  SubcallVerbOf,
   ToArgSpec,
   ToViemMode,
+  Tried,
+  TryCallVerb,
+  TryReadVerb,
   TupleArrayTag,
   TypeOfReturn,
   Expr,
+  ViewMutability,
 } from './index.js';
 
 test('public-signature helper types are exported by name', () => {
@@ -79,6 +87,15 @@ test('public-signature helper types are exported by name', () => {
   >().toEqualTypeOf<{ y: bigint }>();
   // the run-time mode accepted by toViem()'s catch-all overload
   expectTypeOf<ToViemMode>().toEqualTypeOf<'deployless' | 'stateOverride'>();
+  // the verb types are aliases of the shared strict/try shapes
+  expectTypeOf<TryReadVerb>().toEqualTypeOf<SubcallVerbOf<ViewMutability, true>>();
+  expectTypeOf<CallVerb>().toEqualTypeOf<CallVerbOf<false>>();
+  expectTypeOf<TryCallVerb>().toEqualTypeOf<CallVerbOf<true>>();
+  expectTypeOf<Tried<true, Expr<'uint8'>>>().toEqualTypeOf<{
+    readonly success: Expr<'bool'>;
+    readonly value: Expr<'uint8'>;
+  }>();
+  expectTypeOf<Tried<false, Expr<'uint8'>>>().toEqualTypeOf<Expr<'uint8'>>();
 });
 
 // Without a `Register` augmentation two abitype copies agree on `0x${string}`, so this only pins

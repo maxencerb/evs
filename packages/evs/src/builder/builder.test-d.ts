@@ -21,6 +21,7 @@ import {
   type MutArray,
   type ScriptReturn,
   type SubcallFunctionName,
+  type Tried,
   type Tuple,
   type WideSubcallResult,
 } from './script.js';
@@ -1472,6 +1473,73 @@ test('tryCall + revertReturns: success Expr<bool> + the revertReturns-typed valu
     const picked = s.select(r.success, r.value, 0n);
     expectTypeOf(picked).toEqualTypeOf<Expr<'uint256'>>();
     return s.return({ ok: r.success, amountOut: picked });
+  });
+});
+
+test('every try verb returns exactly Tried<true, the strict result> (one verb set per bucket)', () => {
+  evscript({ name: 'parity', args: [t.address, t.uint256] }, (s, target, amountIn) => {
+    const strictRead = s.read({ address: target, abi: erc20Fixture, functionName: 'decimals' });
+    const triedRead = s.tryRead({ address: target, abi: erc20Fixture, functionName: 'decimals' });
+    expectTypeOf(triedRead).toEqualTypeOf<Tried<true, typeof strictRead>>();
+    expectTypeOf(triedRead).toEqualTypeOf<{
+      readonly success: Expr<'bool'>;
+      readonly value: Expr<'uint8'>;
+    }>();
+    // the strict flavour is the bare value
+    expectTypeOf<Tried<false, typeof strictRead>>().toEqualTypeOf<Expr<'uint8'>>();
+
+    const strictStruct = s.read({
+      address: target,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: true,
+    });
+    const triedStruct = s.tryRead({
+      address: target,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: true,
+    });
+    expectTypeOf(triedStruct).toEqualTypeOf<Tried<true, typeof strictStruct>>();
+
+    // a non-literal `struct` resolves to the union overload in both flavours
+    const flag = Math.random() > 0.5;
+    const strictEither = s.read({
+      address: target,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: flag,
+    });
+    const triedEither = s.tryRead({
+      address: target,
+      abi: poolFixture,
+      functionName: 'slot0',
+      struct: flag,
+    });
+    expectTypeOf(triedEither).toEqualTypeOf<Tried<true, typeof strictEither>>();
+
+    const transfer = {
+      address: target,
+      abi: erc20Fixture,
+      functionName: 'transfer',
+      args: [target, amountIn],
+    } as const;
+    const strictSim = s.simulate(transfer);
+    expectTypeOf(s.trySimulate(transfer)).toEqualTypeOf<Tried<true, typeof strictSim>>();
+    const strictCall = s.call(transfer);
+    expectTypeOf(s.tryCall(transfer)).toEqualTypeOf<Tried<true, typeof strictCall>>();
+
+    const quote = {
+      address: target,
+      abi: quoterV1Fixture,
+      functionName: 'quoteExactInput',
+      args: [amountIn],
+      revertReturns: [t.uint256, t.bool],
+    } as const;
+    const strictQuote = s.call(quote);
+    expectTypeOf(strictQuote).toEqualTypeOf<readonly [Expr<'uint256'>, Expr<'bool'>]>();
+    expectTypeOf(s.tryCall(quote)).toEqualTypeOf<Tried<true, typeof strictQuote>>();
+    return s.return({ d: strictRead });
   });
 });
 
