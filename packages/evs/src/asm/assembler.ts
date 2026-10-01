@@ -8,6 +8,9 @@
  *   sequence-level lowering (MCOPY).
  * - `op` nodes never carry an immediate: a bare `PUSH1`..`PUSH32` op is rejected by both
  *   `AsmWriter.op` and `assemble()` (the latter also guards `peephole` hook output).
+ * - A `push` node's `value` must be a bigint: `assemble()` rejects any other type (a `peephole`
+ *   hook's number `0` would otherwise assemble to PUSH0 on every fork, paris included), and
+ *   `CodeBuffer.minimalPush` refuses zero as a second line of defence.
  * - All `data`/`dataLabel` nodes are placed after the last code node, preceded by exactly one
  *   `INVALID` (0xFE) guard byte inserted here; codegen must still place them last in the node
  *   stream (asserted).
@@ -317,9 +320,10 @@ function assembleError(message: string): EvsInternalError {
 /**
  * The layout pass's output buffer: one byte array that doubles when full, written in place (no
  * per-node arrays to allocate and concatenate). Every node has a fixed width, so the final
- * length is known once the stream is laid out; {@link CodeBuffer.finish} trims to it.
+ * length is known once the stream is laid out; {@link CodeBuffer.finish} trims to it. Exported
+ * for the unit tests only (not re-exported from the package entry).
  */
-class CodeBuffer {
+export class CodeBuffer {
   #bytes: Uint8Array;
   /** Bytes written so far — the pc of the next byte. */
   pc = 0;

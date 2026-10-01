@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
-import { AsmWriter, assemble, type AsmNode } from './assembler.js';
+import { AsmWriter, assemble, CodeBuffer, type AsmNode } from './assembler.js';
 import { encodedPushWidth, EVM_VERSIONS } from './ops.js';
 import { lookupPc } from './sourcemap.js';
 
@@ -738,6 +738,23 @@ describe('assemble — hooks and verification wiring', () => {
       peephole: (nodes) => [{ k: 'push', value: 0n }, { k: 'op', op: 'POP' }, ...nodes],
     });
     expect(hex(ok.bytecode)).toBe('60005000');
+  });
+
+  test('CodeBuffer.minimalPush refuses zero instead of writing a bare PUSH0', () => {
+    // defence in depth behind assemble()'s bigint + `=== 0n` gates: width 0 would write
+    // `PUSH1_CODE - 1` (0x5f, PUSH0) whatever the fork
+    const zero = new CodeBuffer(0);
+    const run = (): void => {
+      zero.minimalPush(0n);
+    };
+    expect(run).toThrow(EvsInternalError);
+    expect(run).toThrow(/minimalPush needs a non-zero value, got 0/);
+    expect(zero.pc).toBe(0);
+    // control: non-zero values take their minimal width
+    const ok = new CodeBuffer(0);
+    ok.minimalPush(1n);
+    ok.minimalPush(0x1234n);
+    expect(hex(ok.finish())).toBe('6001611234');
   });
 
   test('verification is on by default and catches a stack bug', () => {
