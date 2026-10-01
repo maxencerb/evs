@@ -694,6 +694,27 @@ test('composite s.let / s.lit: typed cells and literals of struct, tuple and tup
   expectTypeOf<Out['pair']>().toEqualTypeOf<readonly [bigint, boolean]>();
 });
 
+test('account reads: address operand, uint256 balance / code size, bytes32 code hash', () => {
+  const script = evscript({ name: 'acct', args: [t.address, t.uint256] }, (s, who, n) => {
+    expectTypeOf(s.balance(who)).toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf(s.codeSize(who)).toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf(s.codeHash(who)).toEqualTypeOf<Expr<'bytes32'>>();
+    // an address literal or the script's own address are operands too
+    expectTypeOf(s.balance(s.env('address'))).toEqualTypeOf<Expr<'uint256'>>();
+    s.codeSize('0x000000000000000000000000000000000000dEaD');
+    // @ts-expect-error — the operand must be an address
+    s.balance(n);
+    // @ts-expect-error — not an address-typed handle either
+    s.codeHash(s.env('chainid'));
+    return s.return({ bal: s.balance(who), size: s.codeSize(who), hash: s.codeHash(who) });
+  });
+  expectTypeOf<ReadContractReturnType<typeof script.abi, 'acct'>>().toEqualTypeOf<{
+    bal: bigint;
+    size: bigint;
+    hash: `0x${string}`;
+  }>();
+});
+
 test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays (issue #12)', () => {
   const Pair = t.struct({ token: t.address, fee: t.uint24 });
   evscript(

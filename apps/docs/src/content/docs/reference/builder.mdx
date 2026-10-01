@@ -223,6 +223,58 @@ controllable; caller-relative reads require state-override mode plus the `accoun
 approximate L1 block number, not the L2 block. Read `ArbSys(0x64).arbBlockNumber()` for the L2
 height — see [`s.env` and frame dependence](/guides/execution/#senv-and-frame-dependence).
 
+## s.balance / s.codeSize / s.codeHash
+
+```ts nocheck
+balance(account: IntoExpr<'address'>): Expr<'uint256'>;
+codeSize(account: IntoExpr<'address'>): Expr<'uint256'>;
+codeHash(account: IntoExpr<'address'>): Expr<'bytes32'>;
+```
+
+Read the state of any address — Solidity's `a.balance`, `a.code.length` and `a.codehash`.
+The operand is an `Expr<'address'>` or an address literal; anything else throws `EvsTypeError`.
+
+- `s.balance(a)` — the native balance in wei (`BALANCE`). No Multicall3 `getEthBalance`
+  detour needed.
+- `s.codeSize(a)` — the size of the deployed code in bytes (`EXTCODESIZE`): `0` for an EOA, an
+  address with no state, or a contract still in its constructor.
+- `s.codeHash(a)` — `keccak256` of the code (`EXTCODEHASH`). An account that exists but has no
+  code (an EOA with a balance or a nonce) hashes to `keccak256(0x)`
+  (`0xc5d2…a470`); an account that does not exist reads as `bytes32(0)`.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const account = evscript({ name: 'account', args: [t.address] }, (s, who) =>
+  s.return({
+    wei: s.balance(who),
+    isContract: s.codeSize(who).gt(0n),
+    codeHash: s.codeHash(who),
+  }),
+);
+```
+
+Each read is one opcode: 2,600 gas the first time an address is touched in the call, 100 after
+(EIP-2929). `codeSize(a) > 0` is the usual "is this a contract" check, with the usual caveats:
+an EOA that delegates through an EIP-7702 authorization has a 23-byte designator as its code,
+and a contract mid-construction reports `0`. `s.tryRead` cannot make that distinction for you —
+a call to an EOA succeeds with empty returndata.
+
+`s.balance(s.env('address'))` — the script's own balance — compiles to `SELFBALANCE` and is
+**frame-dependent**: in the default deployless mode the script runs at a fresh counterfactual
+address (normally holding nothing), in state-override mode at the override address, whose
+balance you can set in the same override. `compile` emits an `ENV_FRAME_DEPENDENT` diagnostic
+for it; see [execution modes](/guides/execution/#senv-and-frame-dependence). The script's own
+code size and hash are the same in both modes.
+
+In [sender mode](/guides/execution/#sender-mode) (`toViem({ mode: 'stateOverride', sender })`)
+the script's runtime **replaces the code at `sender`** for the call, so reads of the sender's own
+account see the script, not the account: `s.codeSize(sender)` is non-zero even for an EOA (it
+looks like a contract), and `s.codeHash(sender)` is the script's hash, not a Safe's real one.
+`s.balance(sender)` — which is `s.balance(s.env('address'))` there — is the sender's real balance,
+since the override only swaps code. No diagnostic catches this when `sender` reaches the script
+as an argument; read the sender's code in a separate deployless call if you need it.
+
 ## s.add / s.sub / s.mul / s.div / s.mod
 
 ```ts nocheck
@@ -572,7 +624,8 @@ a range check: an out-of-range word (a `uint8` output holding 300) is normalized
 `s.read` and reports `success = true` (see [calls — s.tryRead](/guides/calls/#stryread)). For a
 function with **no outputs**, a call to an address without code succeeds and `success` is `true` (for
 every `try*` verb) — there is nothing to decode, and evs adds no `extcodesize` check (see
-[calls](/guides/calls/#when-to-use-which)).
+[calls](/guides/calls/#when-to-use-which)); guard with
+[`s.codeSize(target).gt(0n)`](#sbalance--scodesize--scodehash) when it matters.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

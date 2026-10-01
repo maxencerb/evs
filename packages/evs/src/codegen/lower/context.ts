@@ -48,12 +48,31 @@ export const STMT_BASELINE = 0;
 export interface LowerInternals {
   /** every `const` stmt's payload, keyed by its out ValueId (call-site literal folding). */
   consts: ReadonlyMap<ValueId, ConstData>;
+  /** every value an `env address` stmt defines (the script's own address → SELFBALANCE). */
+  selfAddresses: ReadonlySet<ValueId>;
   /** strict-call decode-fail stubs the program assembler must emit after the body. */
   dfailStubs: { label: LabelId; site: SiteId }[];
   /** fn entry labels, allocated on first `fncall` — uncalled fns never enter the map. */
   fnEntries: Map<FnId, LabelId>;
   /** fn emission worklist in discovery order (grows while subroutines are emitted). */
   fnQueue: FnId[];
+}
+
+/**
+ * @internal Every value an `env address` statement defines, in the body and in every fn body
+ * (values are single-assignment, so a ValueId is the script's own address wherever it is read).
+ * The ONE definition of "the script's own address": `s.balance` of these values lowers to
+ * SELFBALANCE (`values.ts`) and gets the self-balance ENV_FRAME_DEPENDENT note (`program.ts`
+ * `collectDiagnostics`) — both read this set, so the note and the opcode cannot drift apart.
+ */
+export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
+  const out = new Set<ValueId>();
+  const scan = (s: Stmt): void => {
+    if (s.k === 'env' && s.op === 'address') out.add(s.out);
+  };
+  walkStmts(ir.body, scan);
+  for (const fn of ir.fns) walkStmts(fn.body, scan);
+  return out;
 }
 
 const INTERNALS = new WeakMap<LowerCtx, LowerInternals>();
@@ -63,14 +82,13 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
   let state = INTERNALS.get(ctx);
   if (state === undefined) {
     const consts = new Map<ValueId, ConstData>();
-    const scan = (stmts: readonly Stmt[]): void => {
-      walkStmts(stmts, (s) => {
-        if (s.k === 'const') consts.set(s.out, s.data);
-      });
+    const scan = (s: Stmt): void => {
+      if (s.k === 'const') consts.set(s.out, s.data);
     };
-    scan(ctx.ir.body);
-    for (const fn of ctx.ir.fns) scan(fn.body);
-    state = { consts, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
+    walkStmts(ctx.ir.body, scan);
+    for (const fn of ctx.ir.fns) walkStmts(fn.body, scan);
+    const selfAddresses = selfAddressValues(ctx.ir);
+    state = { consts, selfAddresses, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
     INTERNALS.set(ctx, state);
   }
   return state;

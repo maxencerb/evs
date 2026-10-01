@@ -48,7 +48,7 @@ import type {
   ValueId,
 } from '../ir/nodes.js';
 import type { FrameLayout } from './frame.js';
-import { lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import { lowerInternals, lowerStmts, selfAddressValues, type LowerCtx } from './lower.js';
 import { lowerProgram } from './program.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
@@ -139,6 +139,12 @@ class IrB {
   env(op: 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid'): ValueId {
     const out = this.val(op === 'address' || op === 'caller' ? 'address' : 'uint256');
     this.emit({ k: 'env', op, out });
+    return out;
+  }
+
+  account(op: 'balance' | 'codesize' | 'codehash', a: ValueId): ValueId {
+    const out = this.val(op === 'codehash' ? 'bytes32' : 'uint256');
+    this.emit({ k: 'account', op, a, out });
     return out;
   }
 
@@ -1226,6 +1232,82 @@ describe('diagnostics', () => {
       evmVersion: 'cancun',
     }).diagnostics;
     expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+
+  test("ENV_FRAME_DEPENDENT: the script's own balance is flagged; its code and other balances are not", () => {
+    const b = new IrB('mine', [['who', 'address']]);
+    const self = b.env('address');
+    b.account('balance', self);
+    b.account('codesize', self);
+    b.account('codehash', self);
+    b.account('balance', 0);
+    b.ret('who', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    // one for s.env('address') itself, one for the self balance
+    expect(envDiags).toHaveLength(2);
+    const selfBalance = envDiags.filter((d) => d.message.includes("s.balance(s.env('address'))"));
+    expect(selfBalance).toHaveLength(1);
+    expect(selfBalance[0]?.message).toContain('deployless');
+    expect(selfBalance[0]?.message).toContain('stateOverride');
+    // per-statement: the self-balance warning carries its own site, apart from the env read's
+    expect(selfBalance[0]?.site).toBeTypeOf('number');
+    expect(new Set(envDiags.map((d) => d.site)).size).toBe(2);
+
+    const other = new IrB('theirs', [['who', 'address']]);
+    other.account('balance', 0);
+    other.account('codehash', 0);
+    other.ret('who', 0);
+    const otherDiags = lowerProgram(other.build(), { evmVersion: 'cancun' }).diagnostics;
+    expect(otherDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+
+  test('account reads lower to BALANCE / EXTCODESIZE / EXTCODEHASH; the self balance to SELFBALANCE', () => {
+    const b = new IrB('ops', [['who', 'address']]);
+    b.account('balance', b.env('address'));
+    b.account('balance', 0);
+    b.account('codesize', 0);
+    b.account('codehash', 0);
+    b.ret('who', 0);
+    const { nodes } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const ops = nodes.flatMap((n) =>
+      n.k === 'op' && ['BALANCE', 'SELFBALANCE', 'EXTCODESIZE', 'EXTCODEHASH'].includes(n.op)
+        ? [n.op]
+        : [],
+    );
+    expect(ops).toEqual(['SELFBALANCE', 'BALANCE', 'EXTCODESIZE', 'EXTCODEHASH']);
+  });
+
+  test('the self-balance note and SELFBALANCE come from one set of self-address values', () => {
+    const b = new IrB('lockstep', [['who', 'address']]);
+    const top = b.env('address');
+    b.account('balance', top); // body: SELFBALANCE + note
+    b.account('balance', 0); // someone else's balance: BALANCE, no note
+    let inFn = -1;
+    const called = b.fn('selfbal', [], () => {
+      const self = b.env('address');
+      inFn = self;
+      return [b.account('balance', self)]; // emitted fn: SELFBALANCE + note
+    });
+    let inGhost = -1;
+    b.fn('ghost', [], () => {
+      const self = b.env('address');
+      inGhost = self;
+      return [b.account('balance', self)]; // never called: neither
+    });
+    b.fncall(called, []);
+    b.ret('who', 0);
+    const ir = b.build();
+
+    expect([...selfAddressValues(ir)].toSorted((x, y) => x - y)).toEqual([top, inFn, inGhost]);
+    const { nodes, diagnostics } = lowerProgram(ir, { evmVersion: 'cancun' });
+    const selfBalanceOps = nodes.filter((n) => n.k === 'op' && n.op === 'SELFBALANCE');
+    const selfBalanceNotes = diagnostics.filter((d) =>
+      d.message.includes("s.balance(s.env('address'))"),
+    );
+    expect(selfBalanceOps).toHaveLength(2);
+    expect(selfBalanceNotes).toHaveLength(selfBalanceOps.length);
+    expect(nodes.filter((n) => n.k === 'op' && n.op === 'BALANCE')).toHaveLength(1);
   });
 
   test('ENV_FRAME_DEPENDENT: flagged inside emitted fn bodies, not in dropped fns', () => {

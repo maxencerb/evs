@@ -44,6 +44,7 @@ export {
   MIN_I256,
   MINUS_ONE_WORD,
   numClass,
+  selfAddressValues,
   typeOf,
 } from './lower/context.js';
 export type { LowerCtx, LowerInternals } from './lower/context.js';

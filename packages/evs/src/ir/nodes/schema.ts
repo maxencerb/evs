@@ -1,6 +1,7 @@
 /**
  * `ir/nodes/schema.ts` — the ScriptIr node inventory: ids, the value / cell / fn tables, the
- * statement union, the plain ABI shapes, and the op vocabularies (`BinOp`, `isEnvOp`, …).
+ * statement union, the plain ABI shapes, and the op vocabularies (`BinOp`, `isEnvOp`,
+ * `isAccountOp`, …).
  */
 
 import { type ArgType, type EvsType, type Hex, typeToAbiParam } from '../../core/types.js';
@@ -77,6 +78,11 @@ export type UnOp = 'not' | 'bitnot' | 'iszero';
  */
 export type ModArithOp = 'addmod' | 'mulmod' | 'muldiv' | 'muldivup';
 export type EnvOp = 'address' | 'caller' | 'timestamp' | 'blocknumber' | 'chainid';
+/**
+ * Account-state reads of an `address` operand: BALANCE (wei, `uint256`), EXTCODESIZE
+ * (`uint256`) and EXTCODEHASH (`bytes32`, zero for an account that does not exist).
+ */
+export type AccountOp = 'balance' | 'codesize' | 'codehash';
 
 export type ConstData =
   | { kind: 'word'; hex: Hex } // canonical 32-byte value
@@ -112,6 +118,9 @@ export type Stmt = { readonly site: SiteId } & (
   // (Panic 0x12 when zero; see {@link ModArithOp})
   | { k: 'modarith'; op: ModArithOp; a: ValueId; b: ValueId; n: ValueId; out: ValueId }
   | { k: 'env'; op: EnvOp; out: ValueId }
+  // account state of the address `a` (s.balance / s.codeSize / s.codeHash). A kind of its own
+  // rather than an `env` op: `env` reads the frame and takes no operand, this reads `a`.
+  | { k: 'account'; op: AccountOp; a: ValueId; out: ValueId }
   | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
   // bounds-checked element read (Panic 0x32): an array's element, or the byte at `i` of a
@@ -235,6 +244,11 @@ const ENV_OPS: ReadonlySet<string> = new Set([
   'blocknumber',
   'chainid',
 ] satisfies EnvOp[]);
+const ACCOUNT_OPS: ReadonlySet<string> = new Set([
+  'balance',
+  'codesize',
+  'codehash',
+] satisfies AccountOp[]);
 
 export function isBinOp(s: string): s is BinOp {
   return BIN_OPS.has(s);
@@ -248,4 +262,7 @@ export function isModArithOp(s: string): s is ModArithOp {
 /** An {@link EnvOp} name (shared with the builder's `s.env` check). */
 export function isEnvOp(s: string): s is EnvOp {
   return ENV_OPS.has(s);
+}
+export function isAccountOp(s: string): s is AccountOp {
+  return ACCOUNT_OPS.has(s);
 }

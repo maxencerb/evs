@@ -33,7 +33,7 @@ import {
   typeOf,
   STMT_BASELINE,
 } from './context.js';
-import { lowerConst, lowerUn, lowerEnv, lowerConvert } from './values.js';
+import { lowerConst, lowerUn, lowerEnv, lowerAccount, lowerConvert } from './values.js';
 
 export function lowerStmts(w: AsmWriter, stmts: readonly Stmt[], ctx: LowerCtx): void {
   for (const s of stmts) lowerStmt(w, s, ctx);
@@ -98,6 +98,9 @@ function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
       return;
     case 'env':
       lowerEnv(w, s, ctx);
+      return;
+    case 'account':
+      lowerAccount(w, s, ctx);
       return;
     case 'convert':
       lowerConvert(w, s, ctx);

@@ -1,23 +1,34 @@
 /* oxlint-disable vitest/expect-expect --
  * every test asserts through the shared `expectAgreement` runner. */
 /**
- * Differential suite — checked arithmetic (boundary matrix), word ops, env ops.
+ * Differential suite — checked arithmetic (boundary matrix), word ops, env ops, account reads.
  *
  * One slice of the anti-miscompilation corpus: `interpret(script.ir)` must agree byte-for-byte
  * with the compiled bytecode on returndata and revert payloads, on the default output and its
  * `optimize: true` twin. Runner, callee table and fixture constants: `test/harness/differential.ts`.
  */
 
-import { decodeFunctionResult, encodeFunctionData } from 'viem';
+import { decodeFunctionResult, encodeFunctionData, keccak256 } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
-import { chainOf, expectAgreement, panicData } from '../../test/harness/differential.js';
+import {
+  chainOf,
+  DEAD,
+  ECHO,
+  EVM_VERSIONS,
+  expectAgreement,
+  panicData,
+  TOKA,
+  USER,
+} from '../../test/harness/differential.js';
 import {
   CALLER_ADDRESS,
   DEPLOYLESS_WRAPPER_ADDRESS,
+  execRuntime,
   execRuntimeDeployless,
   SCRIPT_ADDRESS,
 } from '../../test/harness/evm.js';
+import { word } from '../../test/harness/fixtures.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
 import { t, type NumericType } from '../core/types.js';
@@ -266,5 +277,114 @@ describe('env ops', () => {
     const dflt = interpret(script.ir, [], chainOf({})).outcome;
     expect(dflt.kind).toBe('return');
     expect(dflt.data).not.toBe(res.data);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 4. account reads — s.balance / s.codeSize / s.codeHash (BALANCE, EXTCODESIZE, EXTCODEHASH)
+// ---------------------------------------------------------------------------
+
+describe('account reads', () => {
+  // TOKA: a contract with a balance; ECHO: a contract without one; USER: a funded EOA (code
+  // hash keccak256(0x)); DEAD: nothing at all (code hash 0). Both legs see the same state.
+  const table = { [TOKA]: { kind: 'return', data: word(7n) }, [ECHO]: { kind: 'echo' } } as const;
+  const balances = { [TOKA]: 5n, [USER]: 10n ** 18n };
+
+  test.each(EVM_VERSIONS)(
+    'balance / codeSize / codeHash agree per account kind [%s]',
+    async (v) => {
+      const script = evscript({ name: 'acct', args: [t.address] }, (s, who) =>
+        s.return({ bal: s.balance(who), size: s.codeSize(who), hash: s.codeHash(who) }),
+      );
+      const outcomes = await expectAgreement(script, [[TOKA], [ECHO], [USER], [DEAD]], table, v, {
+        balances,
+      });
+      const decoded = outcomes.map(
+        (o) =>
+          decodeFunctionResult({ abi: script.abi, functionName: 'acct', data: o.data }) as {
+            bal: bigint;
+            size: bigint;
+            hash: string;
+          },
+      );
+      expect(decoded.map((d) => d.bal)).toEqual([5n, 0n, 10n ** 18n, 0n]);
+      expect(decoded[0]?.size).toBeGreaterThan(0n);
+      expect(decoded[2]?.size).toBe(0n);
+      expect(decoded[2]?.hash).toBe(keccak256('0x')); // an existing account without code
+      expect(decoded[3]?.hash).toBe(`0x${'0'.repeat(64)}`); // a nonexistent account
+    },
+  );
+
+  test('literal operands and reads inside fns and loops', async () => {
+    const script = evscript({ name: 'lits', args: [t.uint256] }, (s, n) => {
+      const sizeOf = s.fn('sizeOf', [t.address], (a) => s.codeSize(a));
+      const total = s.let(t.uint256, 0n);
+      s.for({ type: t.uint256, from: 0n, until: n }, () => {
+        total.set(s.add(total.get(), s.balance(TOKA)));
+      });
+      return s.return({ total: total.get(), size: sizeOf(ECHO), hash: s.codeHash(USER) });
+    });
+    await expectAgreement(script, [[0n], [3n]], table, 'cancun', { balances });
+  });
+
+  test("the script's own balance (SELFBALANCE) equals BALANCE of its address", async () => {
+    const script = evscript({ name: 'mine', args: [t.address] }, (s, self) =>
+      s.return({ mine: s.balance(s.env('address')), viaArg: s.balance(self) }),
+    );
+    const [out] = await expectAgreement(script, [[SCRIPT_ADDRESS]], {}, 'cancun', {
+      balances: { [SCRIPT_ADDRESS.toLowerCase()]: 42n },
+    });
+    const decoded = decodeFunctionResult({
+      abi: script.abi,
+      functionName: 'mine',
+      data: out?.data ?? '0x',
+    });
+    expect(decoded).toEqual({ mine: 42n, viaArg: 42n });
+  });
+
+  // The interpreter cannot see the compiled runtime, so `MockChain.account` hands it over for the
+  // script's own address — per output, since the optimized twin's runtime differs.
+  test("the script's own code size / hash match its runtime (default and optimized)", async () => {
+    const script = evscript({ name: 'me', args: [] }, (s) => {
+      const self = s.env('address');
+      return s.return({ size: s.codeSize(self), hash: s.codeHash(self) });
+    });
+    for (const optimize of [false, true]) {
+      const compiled = compile(script, { optimize });
+      const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'me' });
+      // oxlint-disable-next-line no-await-in-loop -- two sequential runs
+      const fromEvm = await execRuntime(compiled.runtimeBytecode, calldata);
+      const fromInterp = interpret(script.ir, [], {
+        ...chainOf({}),
+        account: (address) =>
+          address === SCRIPT_ADDRESS.toLowerCase() ? { code: compiled.runtimeBytecode } : undefined,
+      }).outcome;
+      expect(fromEvm.success).toBe(true);
+      expect(fromInterp.data).toBe(fromEvm.data);
+      const decoded = decodeFunctionResult({
+        abi: compiled.abi,
+        functionName: 'me',
+        data: fromEvm.data,
+      });
+      expect(decoded.size).toBe(BigInt((compiled.runtimeBytecode.length - 2) / 2));
+      expect(decoded.hash).toBe(keccak256(compiled.runtimeBytecode));
+    }
+  });
+
+  // Deployless: the script runs at a fresh CREATEd address, whose balance is 0 even when the
+  // state-override address is funded — the ENV_FRAME_DEPENDENT note on s.balance(s.env('address')).
+  test('deployless frame: the self balance is the created address balance', async () => {
+    const script = evscript({ name: 'mine', args: [] }, (s) =>
+      s.return({ mine: s.balance(s.env('address')) }),
+    );
+    const compiled = compile(script);
+    const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'mine' });
+    const res = await execRuntimeDeployless(compiled.initBytecode, calldata, {
+      balances: { [SCRIPT_ADDRESS]: 42n },
+    });
+    expect(res.success).toBe(true);
+    expect(
+      decodeFunctionResult({ abi: compiled.abi, functionName: 'mine', data: res.data }),
+    ).toEqual({ mine: 0n });
   });
 });

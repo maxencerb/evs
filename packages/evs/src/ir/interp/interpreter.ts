@@ -1,7 +1,8 @@
 /**
  * `ir/interp/interpreter.ts` — the reference interpreter's public interface (`interpret`,
  * `MockChain`, `InterpResult`, `InterpEnvOverrides`) and `Interp`, the statement executor: value
- * and cell tables, step budget, tracing, sub-calls against the `MockChain` and `s.fn` calls.
+ * and cell tables, step budget, tracing, sub-calls and account reads against the `MockChain`, and
+ * `s.fn` calls.
  * The binding invariants are documented on the `ir/interp.ts` barrel.
  */
 
@@ -24,6 +25,7 @@ import {
 } from '../../core/types.js';
 import { eliminateDeadCode } from '../dce.js';
 import {
+  type AccountOp,
   type ScriptIr,
   type ValueId,
   type CellId,
@@ -61,6 +63,7 @@ import {
   isPlainTuple,
   concatBytes,
   MASK256,
+  U64_MAX,
   hexToBytesChecked,
   decodeErrorSignal,
 } from './values.js';
@@ -98,6 +101,20 @@ export interface MockChain {
     success: boolean;
     data: Hex;
   };
+  /**
+   * Optional account-state oracle for `s.balance` / `s.codeSize` / `s.codeHash`: the state of
+   * `address` (lowercase 0x hex) — its `balance` in wei, its deployed runtime `code` and its
+   * `nonce` — or `undefined` for an account that does not exist. Omitted fields read as `0n` /
+   * `'0x'` / `0n`; omitting the method makes every account nonexistent (balance 0, no code).
+   * `s.codeHash` follows EXTCODEHASH: `keccak256(code)`, or zero for an EMPTY account (no code,
+   * zero balance, zero nonce — EIP-161), so a funded or used EOA hashes to `keccak256(0x)`.
+   *
+   * The interpreter never sees the compiled bytecode, so a mock that answers for the script's
+   * own address (`opts.env.address`) supplies the `runtimeBytecode` itself. Like the call
+   * oracles it is STATELESS: a balance read after an `s.call` that moved ETH is still whatever
+   * this returns.
+   */
+  account?(address: Hex): { balance?: bigint; code?: Hex; nonce?: bigint } | undefined;
 }
 
 /**
@@ -205,6 +222,19 @@ function dceOf(ir: ScriptIr): ScriptIr {
     dceCache.set(ir, program);
   }
   return program;
+}
+
+/** A {@link MockChain.account} numeric field: absent → 0, else a bigint in `[0, max]`. */
+function accountWord(value: unknown, max: bigint, what: string): bigint {
+  if (value === undefined) return 0n;
+  if (typeof value !== 'bigint' || value < 0n || value > max) {
+    const got = typeof value === 'bigint' ? `${value}n` : `a ${typeof value}`;
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `interpret: ${what} must be a bigint in [0, ${max === MASK256 ? '2^256' : '2^64'}), got ${got}`,
+    );
+  }
+  return value;
 }
 
 // ---------------------------------------------------------------------------
@@ -390,6 +420,10 @@ class Interp {
       }
       case 'env': {
         this.values.set(s.out, envValue(s.op, this.env));
+        return;
+      }
+      case 'account': {
+        this.values.set(s.out, this.accountValue(s.op, this.word(s.a)));
         return;
       }
       case 'convert': {
@@ -643,6 +677,39 @@ class Interp {
       default: {
         const op = String((s as { op: unknown }).op);
         throw new EvsInternalError('INTERNAL', `interpret: unknown un op '${op}'`);
+      }
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // account state
+  // -------------------------------------------------------------------------
+
+  /** BALANCE / EXTCODESIZE / EXTCODEHASH of `address` against {@link MockChain.account}. */
+  private accountValue(op: AccountOp, address: bigint): bigint {
+    const hex: Hex = `0x${address.toString(16).padStart(40, '0')}`;
+    const state = this.chain.account?.(hex);
+    if (state !== undefined && (typeof state !== 'object' || state === null)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `interpret: MockChain.account returned a malformed result for ${hex}`,
+      );
+    }
+    const balance = accountWord(state?.balance, MASK256, `MockChain.account(${hex}).balance`);
+    const nonce = accountWord(state?.nonce, U64_MAX, `MockChain.account(${hex}).nonce`);
+    const code = hexToBytesChecked(state?.code ?? '0x', `MockChain.account(${hex}).code`);
+    switch (op) {
+      case 'balance':
+        return balance;
+      case 'codesize':
+        return BigInt(code.length);
+      case 'codehash':
+        // EIP-1052: zero for an account that does not exist or is empty (EIP-161)
+        if (code.length === 0 && balance === 0n && nonce === 0n) return 0n;
+        return BigInt(viemKeccak256(code));
+      default: {
+        const name = String(op);
+        throw new EvsInternalError('INTERNAL', `interpret: unknown account op '${name}'`);
       }
     }
   }

@@ -239,6 +239,8 @@ export function noteOf(s: Stmt): string {
       return s.op;
     case 'env':
       return `env ${s.op}`;
+    case 'account':
+      return `account ${s.op}`;
     case 'convert':
       return 'convert';
     case 'select':

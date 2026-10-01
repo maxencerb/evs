@@ -11,7 +11,7 @@
  * (de)serialization (`json.ts`), and the def/use tables + tree traversal (`walk.ts`).
  */
 
-export { callOutputs, isEnvOp } from './nodes/schema.js';
+export { callOutputs, isAccountOp, isEnvOp } from './nodes/schema.js';
 export type {
   ValueId,
   CellId,
@@ -25,6 +25,7 @@ export type {
   UnOp,
   ModArithOp,
   EnvOp,
+  AccountOp,
   ConstData,
   PlainAbiParam,
   PlainAbiFunction,

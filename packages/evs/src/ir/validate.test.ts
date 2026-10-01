@@ -846,6 +846,48 @@ describe('validateIr — bin/un/env op table', () => {
       /produces 'uint256'/,
     );
   });
+
+  test('account reads: an address operand; uint256 balance / codesize, bytes32 codehash', () => {
+    const env = mk({ k: 'env', op: 'caller', out: 0 });
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('address'), vi('uint256'), vi('uint256'), vi('bytes32')],
+          body: [
+            env,
+            mk({ k: 'account', op: 'balance', a: 0, out: 1 }),
+            mk({ k: 'account', op: 'codesize', a: 0, out: 2 }),
+            mk({ k: 'account', op: 'codehash', a: 0, out: 3 }),
+          ],
+        }),
+      ),
+    ).not.toThrow();
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint256')],
+        body: [
+          mk({ k: 'env', op: 'timestamp', out: 0 }),
+          mk({ k: 'account', op: 'balance', a: 0, out: 1 }),
+        ],
+      }),
+      /account balance\): operand type mismatch — expected 'address'/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('address'), vi('uint256')],
+        body: [env, mk({ k: 'account', op: 'codehash', a: 0, out: 1 })],
+      }),
+      /produces 'bytes32'/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('address'), vi('uint256')],
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately invalid op
+        body: [env, mk({ k: 'account', op: 'storage' as 'balance', a: 0, out: 1 })],
+      }),
+      /unknown account op/,
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

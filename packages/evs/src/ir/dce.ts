@@ -19,9 +19,9 @@
  *          statement live, and every `arrset`/`tupleset` that mutates memory the value may
  *          alias (see aliasing); an `if` is live iff any statement in either branch is live
  *          (then its condition is live); everything else — `const`, `bin`, `un`, `modarith`,
- *          `env`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`, `arrset`, `tuplenew`,
- *          `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a pure fn — is
- *          pure and dropped when nothing live depends on it.
+ *          `env`, `account`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`, `arrset`,
+ *          `tuplenew`, `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a
+ *          pure fn — is pure and dropped when nothing live depends on it.
  *   cells  a cell is live iff a LIVE `cellget` of it exists anywhere (a `cellget` nobody reads
  *          is dead like any other pure statement; no per-position reasoning beyond that — loop
  *          back-edges make it a real dataflow problem for no payoff): its `cellnew` and every

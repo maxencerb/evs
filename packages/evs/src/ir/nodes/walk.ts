@@ -29,6 +29,7 @@ export function stmtReads(s: Stmt): readonly ValueId[] {
     case 'convert':
     case 'len':
     case 'keccak256':
+    case 'account':
       return [s.a];
     case 'select':
       return [s.cond, s.a, s.b];
@@ -85,6 +86,7 @@ export function stmtDefs(s: Stmt): readonly ValueId[] {
     case 'field': // the member word or nested pointer
     case 'encode': // the fresh bytes memref pointer
     case 'keccak256': // the bytes32 hash word
+    case 'account': // the balance / code size / code hash word
       return [s.out];
     case 'call':
       return s.successOut === undefined ? s.outs : [...s.outs, s.successOut];

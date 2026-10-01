@@ -31,7 +31,13 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
-import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import {
+  emitFnSubroutines,
+  lowerInternals,
+  lowerStmts,
+  selfAddressValues,
+  type LowerCtx,
+} from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
@@ -295,6 +301,7 @@ function describeAllocation(
     case 'un':
     case 'modarith':
     case 'env':
+    case 'account':
     case 'select':
     case 'index':
     case 'len':
@@ -347,12 +354,27 @@ const ENV_FRAME_MESSAGES: Partial<Record<string, string>> = {
     `toViem({ mode: 'stateOverride' }) for a stable, controllable script address`,
 };
 
+/**
+ * `s.balance(s.env('address'))` (lowered to SELFBALANCE) reads the script's own balance, which
+ * is a property of the frame too: the deployless script runs at a fresh counterfactual address,
+ * the stateOverride one at an address the caller controls. Code size and code hash of the
+ * script's own address are not flagged: both modes run the same runtime there.
+ */
+const SELF_BALANCE_MESSAGE =
+  `s.balance(s.env('address')) reads the script's own balance, which is execution-frame-` +
+  `dependent: in the default deployless toViem() mode the script runs at a fresh ` +
+  `counterfactual CREATE2 address (normally 0 wei); in toViem({ mode: 'stateOverride' }) it is ` +
+  `the override address's balance, which a \`balance\` field in that state override sets`;
+
 function collectDiagnostics(
   ir: ScriptIr,
   frame: FrameLayout,
   emittedFns: readonly FnId[],
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
+
+  // the script's own address values — the same set the SELFBALANCE lowering reads
+  const selfAddresses = selfAddressValues(ir);
 
   // fn bodies allocating transitively (the call graph is acyclic; the seen-set keeps
   // the walk finite even on malformed input).
@@ -400,6 +422,14 @@ function collectDiagnostics(
             site: s.site,
           });
         }
+      }
+      if (s.k === 'account' && s.op === 'balance' && selfAddresses.has(s.a)) {
+        diagnostics.push({
+          severity: 'warning',
+          code: 'ENV_FRAME_DEPENDENT',
+          message: SELF_BALANCE_MESSAGE,
+          site: s.site,
+        });
       }
       if (s.k === 'if') {
         visit(s.then, inLoop);

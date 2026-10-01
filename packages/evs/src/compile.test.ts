@@ -314,6 +314,26 @@ describe('pipeline hooks', () => {
     compile(blocky, { onDiagnostic: (d) => blockDiags.push(d) });
     expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
   });
+
+  test("s.balance(s.env('address')) adds an ENV_FRAME_DEPENDENT note for the self balance", () => {
+    const mine = evscript({ name: 'mine', args: [t.address] }, (s, who) =>
+      s.return({ mine: s.balance(s.env('address')), theirs: s.balance(who) }),
+    );
+    const diags: EvsDiagnostic[] = [];
+    compile(mine, { onDiagnostic: (d) => diags.push(d) });
+    const messages = diags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT').map((d) => d.message);
+    expect(messages).toHaveLength(2); // s.env('address') + the self balance; s.balance(who) is not
+    expect(messages.filter((m) => m.startsWith("s.balance(s.env('address'))"))).toHaveLength(1);
+
+    // an unused self balance is dropped by DCE, and so is its note
+    const unused = evscript({ name: 'unused', args: [t.address] }, (s, who) => {
+      s.balance(s.env('address'));
+      return s.return({ who });
+    });
+    const unusedDiags: EvsDiagnostic[] = [];
+    compile(unused, { onDiagnostic: (d) => unusedDiags.push(d) });
+    expect(unusedDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
 });
 
 // ---------------------------------------------------------------------------

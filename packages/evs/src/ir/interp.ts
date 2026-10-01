@@ -52,6 +52,11 @@
  * per-script counterfactual CREATE2 address — can be modeled and differential-tested
  * (the `InterpEnvOverrides` opts).
  *
+ * Account ops (`s.balance` / `s.codeSize` / `s.codeHash`) ask the optional `MockChain.account`
+ * oracle for the address's balance, code and nonce; without it every account is nonexistent
+ * (zero balance, no code, zero code hash), which is also what the unit harness's empty state
+ * answers for an address it has not planted.
+ *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
  * statement + one per loop iteration + one per zero-filled array element) throws

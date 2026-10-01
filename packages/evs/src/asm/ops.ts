@@ -24,8 +24,9 @@ type StackReach = 1 | 2 | 3 | 4 | 5 | 6 | 7 | 8 | 9 | 10 | 11 | 12 | 13 | 14 | 1
 export type Mnemonic = 'STOP' | 'ADD' | 'MUL' | 'SUB' | 'DIV' | 'SDIV' | 'MOD' | 'SMOD'
   | 'ADDMOD' | 'MULMOD' | 'EXP' | 'SIGNEXTEND' | 'LT' | 'GT' | 'SLT' | 'SGT' | 'EQ' | 'ISZERO'
   | 'AND' | 'OR' | 'XOR' | 'NOT' | 'BYTE' | 'SHL' | 'SHR' | 'SAR' | 'KECCAK256' | 'ADDRESS'
-  | 'CALLER' | 'CALLVALUE' | 'CALLDATALOAD' | 'CALLDATASIZE' | 'CALLDATACOPY' | 'CODECOPY'
-  | 'RETURNDATASIZE' | 'RETURNDATACOPY' | 'TIMESTAMP' | 'NUMBER' | 'CHAINID' | 'POP' | 'MLOAD'
+  | 'BALANCE' | 'CALLER' | 'CALLVALUE' | 'CALLDATALOAD' | 'CALLDATASIZE' | 'CALLDATACOPY'
+  | 'CODECOPY' | 'EXTCODESIZE' | 'RETURNDATASIZE' | 'RETURNDATACOPY' | 'EXTCODEHASH'
+  | 'TIMESTAMP' | 'NUMBER' | 'CHAINID' | 'SELFBALANCE' | 'POP' | 'MLOAD'
   | 'MSTORE' | 'MSTORE8' | 'JUMP' | 'JUMPI' | 'PC' | 'MSIZE' | 'GAS' | 'JUMPDEST' | 'MCOPY'
   | 'PUSH0' | `PUSH${PushWidth}` | `DUP${StackReach}` | `SWAP${StackReach}`
   | 'CALL' | 'STATICCALL' | 'RETURN' | 'REVERT' | 'INVALID';
@@ -77,17 +78,21 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   SAR: { code: 0x1d, pops: 2, pushes: 1, since: 'frontier' },
   KECCAK256: { code: 0x20, pops: 2, pushes: 1, since: 'frontier' },
   ADDRESS: { code: 0x30, pops: 0, pushes: 1, since: 'frontier' },
+  BALANCE: { code: 0x31, pops: 1, pushes: 1, since: 'frontier' },
   CALLER: { code: 0x33, pops: 0, pushes: 1, since: 'frontier' },
   CALLVALUE: { code: 0x34, pops: 0, pushes: 1, since: 'frontier' },
   CALLDATALOAD: { code: 0x35, pops: 1, pushes: 1, since: 'frontier' },
   CALLDATASIZE: { code: 0x36, pops: 0, pushes: 1, since: 'frontier' },
   CALLDATACOPY: { code: 0x37, pops: 3, pushes: 0, since: 'frontier' },
   CODECOPY: { code: 0x39, pops: 3, pushes: 0, since: 'frontier' },
+  EXTCODESIZE: { code: 0x3b, pops: 1, pushes: 1, since: 'frontier' },
   RETURNDATASIZE: { code: 0x3d, pops: 0, pushes: 1, since: 'frontier' },
   RETURNDATACOPY: { code: 0x3e, pops: 3, pushes: 0, since: 'frontier' },
+  EXTCODEHASH: { code: 0x3f, pops: 1, pushes: 1, since: 'frontier' },
   TIMESTAMP: { code: 0x42, pops: 0, pushes: 1, since: 'frontier' },
   NUMBER: { code: 0x43, pops: 0, pushes: 1, since: 'frontier' },
   CHAINID: { code: 0x46, pops: 0, pushes: 1, since: 'frontier' },
+  SELFBALANCE: { code: 0x47, pops: 0, pushes: 1, since: 'frontier' },
   POP: { code: 0x50, pops: 1, pushes: 0, since: 'frontier' },
   MLOAD: { code: 0x51, pops: 1, pushes: 1, since: 'frontier' },
   MSTORE: { code: 0x52, pops: 2, pushes: 0, since: 'frontier' },

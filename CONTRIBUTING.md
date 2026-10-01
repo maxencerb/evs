@@ -319,7 +319,10 @@ Three tiers, all run by CI (`ci.yml`):
   compiled bytecode** must agree byte-for-byte on returndata and revert payloads for every
   fixture — for the default output and its `optimize: true` twin alike (the interpreter runs
   `dce(ir)` like `compile()`; the recorded IR is checked too, see the pipeline note); ABI
-  codecs vs viem's `encodeAbiParameters` / `encodeFunctionData`.
+  codecs vs viem's `encodeAbiParameters` / `encodeFunctionData`. One callee table (plus an
+  optional balance table, `{ balances }` in the options) feeds both legs
+  (`test/harness/differential.ts`): the `MockChain` answers sub-calls and `account` reads, the
+  EVM fixture plants the same code and balances.
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker

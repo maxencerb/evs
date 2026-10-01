@@ -165,7 +165,10 @@ the normal case (its balance and nonce stay in place, so the targets' view of it
 intact). A *contract* sender — a Safe, a vault — loses its own code for the call: targets that call
 back into `msg.sender` (an `onERC721Received` hook, an EIP-1271 signature check) will hit the script
 instead and revert. A plain ETH payment to the sender (`WETH.withdraw`) still succeeds: the script
-accepts empty calldata.
+accepts empty calldata. The script's own reads of that address see the swap too:
+[`s.codeSize(sender)` / `s.codeHash(sender)`](/reference/builder/#sbalance--scodesize--scodehash)
+return the script's runtime (an EOA sender looks like a contract), while `s.balance(sender)` is the
+sender's real balance.
 :::
 
 ## Choosing a mode
@@ -325,6 +328,32 @@ counterfactual deployment address as `address(this)`. Neither is controllable, a
 deployless workaround. **Caller-relative reads — `balanceOf(s.env('caller'))` and friends —
 require `toViem({ mode: 'stateOverride' })` plus the `account` call parameter.**
 
+The script's own balance, [`s.balance(s.env('address'))`](/reference/builder/#sbalance--scodesize--scodehash),
+inherits the same split: deployless, it is the balance of the fresh counterfactual address
+(normally zero); in state-override mode it is whatever the override address holds, which the
+same override entry can set:
+
+```ts
+import { evscript } from '@maxencerb/evs';
+import { createPublicClient, http, parseEther } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const selfBalance = evscript({ name: 'selfBalance' }, (s) =>
+  s.return({ wei: s.balance(s.env('address')) }),
+).compile();
+
+const params = selfBalance.toViem({ mode: 'stateOverride' });
+const { wei } = await client.readContract({
+  ...params,
+  functionName: 'selfBalance',
+  // the script entry keeps its code; `balance` funds the script address for this call
+  stateOverride: params.stateOverride.map((o) => ({ ...o, balance: parseEther('1') })),
+});
+// wei === 10n ** 18n
+```
+
 `s.env('blocknumber')` is Solidity's `block.number`: the `NUMBER` opcode, which reports what the
 chain defines. On Arbitrum that is an approximate **L1** (Ethereum) block number, not the L2
 block you pinned with `blockNumber`; read the L2 height from the `ArbSys` precompile instead:
@@ -348,8 +377,8 @@ const heights = evscript({ name: 'heights' }, (s) =>
 ```
 
 Because compile time cannot know which mode you will pick, `compile()` flags every
-`s.env('caller')` / `s.env('address')` with an `ENV_FRAME_DEPENDENT` warning through the
-`onDiagnostic` channel (never logged):
+`s.env('caller')` / `s.env('address')` — and every `s.balance(s.env('address'))` — with an
+`ENV_FRAME_DEPENDENT` warning through the `onDiagnostic` channel (never logged):
 
 ```ts
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';

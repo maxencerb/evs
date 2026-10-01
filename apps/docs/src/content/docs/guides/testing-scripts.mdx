@@ -50,6 +50,10 @@ interface MockChainShape {
     success: boolean;
     data: `0x${string}`;
   };
+  // optional: account state for s.balance / s.codeSize / s.codeHash (undefined = no account)
+  account?(address: `0x${string}`):
+    | { balance?: bigint; code?: `0x${string}`; nonce?: bigint }
+    | undefined;
 }
 ```
 
@@ -68,6 +72,8 @@ interface MockChainShape {
   back to `staticcall`). A site's `gas` cap rides along as `req.gas` — the interpreter has no
   gas model, so it is informational: answer `{ success: false, data: '0x' }` to emulate a target
   that ran out of gas.
+  `s.balance`/`s.codeSize`/`s.codeHash` ask the optional `account` oracle instead (see
+  [mocking account state](#mocking-account-state)).
 - `opts.dce` — `true` by default: run `eliminateDeadCode(ir)`, the IR the bytecode is
   compiled from. `false` executes the recorded IR, every unused revert guard included.
 - `InterpResult.outcome` is either `{ kind: 'return', data, values }` — `data` is the
@@ -128,6 +134,45 @@ if (decimals !== 6) throw new Error('wrong decimals');
 The `to` address your mock receives is always **lowercase** (it is formatted from the 160-bit
 word the script holds), so normalize before comparing — `USDC.toLowerCase()` above.
 :::
+
+### Mocking account state
+
+`s.balance`, `s.codeSize` and `s.codeHash` read account state, not a sub-call, so they go to the
+optional `account(address)` oracle (the address is lowercase, like `to`). Return the account's
+`balance` (wei), its deployed `code` and its `nonce` — any field may be omitted and reads as
+zero / `'0x'` — or `undefined` for an address with no account at all. Without the oracle every
+address reads as nonexistent: zero balance, no code, zero code hash.
+
+```ts
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { keccak256 } from 'viem';
+
+const probe = evscript({ name: 'probe', args: [t.address] }, (s, who) =>
+  s.return({ wei: s.balance(who), size: s.codeSize(who), hash: s.codeHash(who) }),
+);
+
+const VAULT = '0x00000000000000000000000000000000000000aa';
+const VAULT_CODE = '0x600160005260206000f3';
+
+const chain: MockChain = {
+  staticcall: () => ({ success: false, data: '0x' }),
+  account: (address) => (address === VAULT ? { balance: 5n, code: VAULT_CODE } : undefined),
+};
+
+const result = interpret(probe.ir, [VAULT], chain);
+
+if (result.outcome.kind !== 'return') throw new Error('expected a return');
+if (result.outcome.values['wei'] !== 5n) throw new Error('wrong balance');
+if (result.outcome.values['size'] !== 10n) throw new Error('wrong code size');
+if (result.outcome.values['hash'] !== keccak256(VAULT_CODE)) throw new Error('wrong code hash');
+```
+
+`s.codeHash` follows `EXTCODEHASH`: `keccak256(code)` for an account with code,
+`keccak256(0x)` for one without code but with a balance or a nonce (an EOA), and zero for an
+empty or missing account. The oracle is stateless like the call oracles — a balance read after an
+`s.call` that moved ETH is still whatever it returns. The interpreter never sees the compiled
+bytecode, so a test that reads the script's own code (`s.codeSize(s.env('address'))`) must hand
+back the artifact's `runtimeBytecode` for the script address itself.
 
 ## Arguments in, values out
 

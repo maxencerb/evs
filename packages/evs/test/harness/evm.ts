@@ -10,7 +10,8 @@
  * - `createEVM(opts?)` async constructor (`@ethereumjs/evm` `constructors.ts`); defaults to
  *   `new Common({ chain: Mainnet })` (default hardfork **Prague** — matches the pinned anvil
  *   hardfork of the integration tier) and a `SimpleStateManager`.
- * - code planting: `evm.stateManager.putCode(address, bytes)` (`StateManagerInterface`).
+ * - code planting: `evm.stateManager.putCode(address, bytes)` (`StateManagerInterface`);
+ *   balances: `evm.stateManager.modifyAccountFields(address, { balance })`.
  * - execution: `evm.runCall(EVMRunCallOpts)` → `EVMResult` with `execResult: ExecResult`
  *   (`returnValue: Uint8Array`, `executionGasUsed: bigint`, `exceptionError?: EVMError`).
  *   A REVERT surfaces as `exceptionError.error === 'revert'` with the payload in
@@ -53,7 +54,25 @@ export const DEFAULT_GAS_LIMIT = 30_000_000n;
 
 export interface EvmFixture {
   contracts?: Record<Address, Hex>;
+  /** wei balances planted before the call (s.balance / s.codeHash of a funded EOA). */
+  balances?: Record<Address, bigint>;
   gasLimit?: bigint;
+}
+
+/** Plants the fixture's contract code, then its balances (which keep the planted code). */
+async function plantFixture(
+  evm: Awaited<ReturnType<typeof createEVM>>,
+  fixture: EvmFixture | undefined,
+): Promise<void> {
+  await Promise.all(
+    Object.entries(fixture?.contracts ?? {}).map(([address, code]) =>
+      evm.stateManager.putCode(toEthAddress(address), hexToBytes(code)),
+    ),
+  );
+  for (const [address, balance] of Object.entries(fixture?.balances ?? {})) {
+    // oxlint-disable-next-line no-await-in-loop -- sequential: a few accounts, one state manager
+    await evm.stateManager.modifyAccountFields(toEthAddress(address), { balance });
+  }
 }
 
 export async function execRuntime(
@@ -64,11 +83,7 @@ export async function execRuntime(
   const evm = await createEVM();
 
   await evm.stateManager.putCode(toEthAddress(SCRIPT_ADDRESS), hexToBytes(runtime));
-  await Promise.all(
-    Object.entries(fixture?.contracts ?? {}).map(([address, code]) =>
-      evm.stateManager.putCode(toEthAddress(address), hexToBytes(code)),
-    ),
-  );
+  await plantFixture(evm, fixture);
 
   const caller = toEthAddress(CALLER_ADDRESS);
   const result = await evm.runCall({
@@ -108,12 +123,7 @@ export async function execRuntimeDeployless(
   callerAddress: Address;
 }> {
   const evm = await createEVM();
-
-  await Promise.all(
-    Object.entries(fixture?.contracts ?? {}).map(([address, code]) =>
-      evm.stateManager.putCode(toEthAddress(address), hexToBytes(code)),
-    ),
-  );
+  await plantFixture(evm, fixture);
 
   const wrapper = toEthAddress(DEPLOYLESS_WRAPPER_ADDRESS);
   const gasLimit = fixture?.gasLimit ?? DEFAULT_GAS_LIMIT;

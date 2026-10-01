@@ -2,7 +2,7 @@
  * `builder/expr/ops.ts` — the recorder layer for operators: arithmetic (checked and wrapping) /
  * comparison / logic / bit ops with constant folding and domain checks, `addmod` / `mulmod` /
  * `mulDiv`, `not` / `bitNot`, conversions, `length` / `at` (and `byteAt` / `slice` on
- * string/bytes), `env` and `select`.
+ * string/bytes), `env`, the account reads (`balance` / `codeSize` / `codeHash`) and `select`.
  */
 
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
@@ -24,7 +24,13 @@ import {
   isOrdered,
   isBytesN,
 } from '../../core/types.js';
-import { isEnvOp, type BinOp, type ModArithOp, type ValueId } from '../../ir/nodes.js';
+import {
+  isEnvOp,
+  type AccountOp,
+  type BinOp,
+  type ModArithOp,
+  type ValueId,
+} from '../../ir/nodes.js';
 import { RecorderEncode } from './encode.js';
 import { makeExpr } from './handles.js';
 import {
@@ -55,6 +61,15 @@ export abstract class RecorderOps extends RecorderEncode {
     const outType: EvsType = op === 'address' || op === 'caller' ? 'address' : 'uint256';
     const out = this.newValue(outType, `s.env(${op})`);
     this.appendStmt({ k: 'env', op, out });
+    return makeExpr(this.self, out);
+  }
+
+  /** `s.balance` / `s.codeSize` / `s.codeHash`: one account-state read of an address. */
+  accountOp(op: AccountOp, account: unknown, what: string): Expr {
+    this.assertOpen(what);
+    const a = this.coerceToId(account, 'address', `${what} account`);
+    const out = this.newValue(op === 'codehash' ? 'bytes32' : 'uint256', what);
+    this.appendStmt({ k: 'account', op, a, out });
     return makeExpr(this.self, out);
   }
 

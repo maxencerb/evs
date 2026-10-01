@@ -48,11 +48,12 @@ export class EvsInternalError extends EvsError {
 
 export interface EvsDiagnostic {
   severity: 'warning';
-  // 'ENV_FRAME_DEPENDENT': s.env('caller')/s.env('address') read
-  // the execution frame, whose shape differs between toViem() deployless (default) and
-  // stateOverride modes. 'DEPLOYLESS_RESULT_PREFIX' / 'DEPLOYLESS_RESULT_SIZE': the result
-  // shape can start with 0xEF / is always over 24,576 bytes, which the deployless mode rejects
-  // (it deposits the result as contract code — see deployless.ts).
+  // 'ENV_FRAME_DEPENDENT': s.env('caller')/s.env('address') (and the script's own balance,
+  // s.balance(s.env('address'))) read the execution frame, whose shape differs between
+  // toViem() deployless (default) and stateOverride modes. 'DEPLOYLESS_RESULT_PREFIX' /
+  // 'DEPLOYLESS_RESULT_SIZE': the result shape can start with 0xEF / is always over 24,576
+  // bytes, which the deployless mode rejects (it deposits the result as contract code — see
+  // deployless.ts).
   code:
     | 'LOOP_ALLOCATION'
     | 'LARGE_FRAME'
