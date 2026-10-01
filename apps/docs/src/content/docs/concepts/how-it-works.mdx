@@ -230,9 +230,10 @@ From there:
 - **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
   transiently without bumping, and a failed `try*` decode rolls the free pointer back over its
   returndata copy. So the return encoder zero-pads dynamic tails explicitly, and a fresh
-  allocation is zero-filled whenever one of its words would otherwise be read unwritten: a
-  word-element `s.newArray`, or an `s.tuple` with an omitted word member. Blocks whose every
-  word is written right away (a `string[]`'s element pointers, a struct of only strings and
+  allocation is zero-filled whenever one of its words would otherwise be read unwritten — for
+  example a word-element `s.newArray`, an `s.tuple` with an omitted word member, or the zero
+  value of a struct with a word member or of a fixed-size word array. Blocks whose every word is
+  written right away (a `string[]`'s element pointers, a struct of only strings and
   arrays, a literal) skip the fill.
 
 ## What evs deliberately does not do (yet)
