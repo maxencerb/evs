@@ -4,11 +4,11 @@
  *
  * A barrel over `codegen/call/`:
  * - `shared.ts` — the `CallSitePlan` contract, literal helpers, and the machinery both emitters
- *   share (decode-failure routing, gas / value / word refs, the returndata snapshot, the try
- *   epilogue);
+ *   share (plan validation, decode-failure routing, gas / value / word refs, the returndata
+ *   snapshot, the try epilogue);
  * - `calldata.ts` — the calldata template (compile-time const folding) and its build emission,
  *   including the recursive tuple-bearing encoder;
- * - `static-call.ts` — `emitStaticCall`;
+ * - `static-call.ts` — `emitStaticCall` (the subcall, its failure arm, the per-output decode);
  * - `simulate-call.ts` — `emitSimulateCall` (the self-call trampoline site).
  *
  * `CallSitePlan` carries the call *target* location (and optional gas cap and value) alongside the
@@ -28,12 +28,17 @@
  *   (`w.returndatacopyAll`).
  * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
  *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).
- * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata at
- *   `MLOAD(0x40)`. The free pointer is bumped past it only when an output is a memref
- *   (`callSiteAllocates`): word-only outputs are copied out at once, so their snapshot stays
- *   transient and a loop of word reads does not grow memory.
- * - word outputs normalize-don't-revert; dynamic outputs validate in place (2^64 guards,
- *   overflow-free bounds) aliasing the snapshot; array elements normalize eagerly.
+ * - `rds ≥ headBytes(outputs)` guard BEFORE any head read; then snapshot the whole returndata
+ *   at `MLOAD(0x40)`. The free pointer is bumped past it only when an output is a memref
+ *   (`callSiteAllocates`) or its decode is budgeted: word-only outputs are copied out at once, so
+ *   their snapshot stays transient and a loop of word reads does not grow memory.
+ * - word outputs normalize-don't-revert; `string` / `bytes` / word-array outputs validate in
+ *   place (2^64 guards, overflow-free bounds) and alias the snapshot, a narrow-element array
+ *   being normalized into a fresh copy (never in place — another output may alias the same
+ *   bytes); tuple and recursive-codec array outputs decode from the snapshot through
+ *   `emitDecodeFromRegion` (`codegen/abi/decode.ts`), budgeted when they can charge.
+ * - `s.simulate` decodes the carried returndata as one tuple (`emitDecodeTupleToMem` over the
+ *   outputs block) and copies each word into its out slot.
  * - try mode: `plan.dfailLabel` IS the zero block, emitted inline here as a *checked* label
  *   (it rejoins the program): every failure path cleans its stack to height 0 and jumps to
  *   it; it zeroes `successOut`/word outs and points memref outs at the `0x60` zero slot, then

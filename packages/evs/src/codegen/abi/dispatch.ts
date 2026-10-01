@@ -7,11 +7,12 @@
 import { layoutOfType, headBytes, isDynamic, type TypeLayout } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { typeToAbiParam, isTupleType, abiParamToType, stringifyType } from '../../core/types.js';
-import { FREE_PTR } from '../memory.js';
-import { type DecodeFail, emitDecodeTupleToMem, emitDecodeArrayToMem } from './decode.js';
+import { typeToAbiParam, abiParamToType, stringifyType } from '../../core/types.js';
+import { FREE_PTR, SNAP_SLOT, TAIL_CURSOR } from '../memory.js';
+import { type DecodeOptions, type DecodeRegion, emitDecodeFromRegion } from './decode.js';
 import {
   headOffsets,
+  headOffsetAt,
   type PushBase,
   encodeFramesOf,
   reserveEncodeFrames,
@@ -21,16 +22,13 @@ import {
 import {
   type SlotRef,
   type SharedTails,
-  needsMemorySnapshot,
-  TAIL_CURSOR,
+  usesRecursiveCodec,
   emitCeil32,
   emitNormalizeWord,
   internal,
-  isRecursiveArray,
   wordElemAbi,
   wordNeedsNormalize,
   emitNormalizeElemsLoop,
-  emitWithinStackBudget,
   emitAboveU64,
 } from './shared.js';
 
@@ -45,15 +43,15 @@ import {
  *   (a static tuple arg inlines its whole head, so the head walk is cumulative, not `32·i`).
  * - Word args: `CALLDATALOAD` + normalize (mask / SIGNEXTEND / `ISZERO ISZERO`) + `MSTORE`
  *   (normalize-don't-revert on dirty high bits).
- * - Dynamic args: overflow-free bounds checks (`off ≤ 2^64−1`, `4+off+32 ≤ cds`,
- *   `len ≤ 2^64−1`, tail-end ≤ cds) → `tails.invalidCalldata` on any structural failure;
- *   then allocate, `CALLDATACOPY` the `[len][payload]` segment, explicit zero-pad of the
- *   trailing partial word (bytes/string), eager element normalization (arrays of sub-word
- *   element types), and store the memref pointer.
- * - Tuple args: the whole calldata is snapshotted into memory once (ceil32, zero-padded by
- *   CALLDATACOPY past-end), then `emitDecodeTupleToMem` builds the flat-pointer block from the
- *   snapshot (its dynamic members alias the snapshot). Tuple-arg offsets are relative to the
- *   args region start (calldata byte 4 → snapshot byte `snap+4`).
+ * - Dynamic `string` / `bytes` / word-array args ({@link emitDynCalldataArg}): overflow-free
+ *   bounds checks (`off ≤ 2^64−1`, `4+off+32 ≤ cds`, `len ≤ 2^64−1`, tail-end ≤ cds) →
+ *   `tails.invalidCalldata` on any structural failure; then allocate, `CALLDATACOPY` the
+ *   `[len][payload]` segment, explicit zero-pad of the trailing partial word (bytes/string), eager
+ *   element normalization (arrays of sub-word element types), and store the memref pointer.
+ * - Tuple and recursive-codec array args ({@link usesRecursiveCodec}): the whole calldata is
+ *   snapshotted into memory once ({@link emitSnapshotCalldata}), then each decodes from the
+ *   snapshot through {@link emitDecodeFromRegion} (its dynamic members alias the snapshot). Their
+ *   offsets are relative to the args region start (calldata byte 4 → snapshot byte `snap+4`).
  *
  * Net stack 0. `evmVersion` only selects how a fixed-size word array is copied (`MCOPY` on
  * cancun); everything else is fork-independent (zero-push lowering is the assembler's job).
@@ -66,10 +64,6 @@ export function emitCalldataDecode(
 ): void {
   const params = args.map((ref) => typeToAbiParam('', ref.type));
   const headOffs = headOffsets(params); // cumulative head byte offsets within the args region
-  // tuple args AND recursive-codec array args (`tuple[]`/`T[][]`/`string[]`, every `T[N]`) decode
-  // from a memory snapshot of the calldata (the recursive decoders read source bytes from memory,
-  // not calldata).
-  const hasTuple = args.some((ref) => needsMemorySnapshot(layoutOfType(ref.type)));
 
   // -- size guard: cds < 4 + headBytes(args) → EvsInvalidCalldata ----------------------
   const minSize = 4 + headBytes(params);
@@ -79,193 +73,91 @@ export function emitCalldataDecode(
   w.pushLabel(tails.invalidCalldata);
   w.op('JUMPI');
 
-  // tuple args decode from a single memory snapshot of the whole calldata (zero-padded by the
-  // CALLDATACOPY past-end idiom — copying ceil32(cds) bytes reads zeros past the calldata end)
-  const snapSlot = TAIL_CURSOR; // scratch holds the snapshot base pointer for the arg loop
-  if (hasTuple) {
-    // size := ceil32(cds)
-    w.op('CALLDATASIZE');
-    emitCeil32(w); // [size]
-    w.push(FREE_PTR);
-    w.op('MLOAD'); // [snap, size]
-    // freePtr := snap + size
-    w.op('DUP1');
-    w.op('DUP3');
-    w.op('ADD'); // [snap+size, snap, size]
-    w.push(FREE_PTR);
-    w.op('MSTORE'); // [snap, size]
-    // scratch[snapSlot] := snap
-    w.op('DUP1');
-    w.push(snapSlot);
-    w.op('MSTORE'); // [snap, size]
-    // CALLDATACOPY(dst = snap, off = 0, len = size)
-    w.op('SWAP1'); // [size, snap]
-    w.push(0); // [0, size, snap]
-    w.op('DUP3'); // [snap, 0, size, snap]
-    w.op('CALLDATACOPY'); // [snap]
-    w.op('POP'); // []
-  }
+  // the recursive decoders read their source from memory, not calldata
+  if (args.some((ref) => usesRecursiveCodec(layoutOfType(ref.type)))) emitSnapshotCalldata(w);
 
-  const failCalldata: DecodeFail = () => {
-    w.pushLabel(tails.invalidCalldata);
-    w.op('JUMPI');
+  // the args region of the snapshot: [snap+4, snap+cds)
+  const region: DecodeRegion = {
+    pushBase: () => {
+      w.push(SNAP_SLOT);
+      w.op('MLOAD'); // [snap]
+      w.push(4);
+      w.op('ADD'); // [snap+4]  (args region start in the snapshot)
+    },
+    pushEnd: () => {
+      w.push(SNAP_SLOT);
+      w.op('MLOAD');
+      w.op('CALLDATASIZE');
+      w.op('ADD'); // [snap + cds]  (one past last valid source byte)
+    },
+    fail: () => {
+      w.pushLabel(tails.invalidCalldata);
+      w.op('JUMPI');
+    },
+    live: 0,
+    arrayOffsetBound: 'end',
   };
-
-  // snapshot-relative source thunks for the recursive decoders (tuple / composite-array args)
-  const pushArgsBase = (): void => {
-    w.push(snapSlot);
-    w.op('MLOAD'); // [snap]
-    w.push(4);
-    w.op('ADD'); // [snap+4]  (args region start in the snapshot)
-  };
-  const pushEnd = (): void => {
-    w.push(snapSlot);
-    w.op('MLOAD');
-    w.op('CALLDATASIZE');
-    w.op('ADD'); // [snap + cds]  (one past last valid source byte)
-  };
+  // script args are the caller's own calldata: no decode-work budget
+  const decodeOpts: DecodeOptions = { budget: 'off', evmVersion: opts.evmVersion };
 
   args.forEach((ref, i) => {
     const layout = layoutOfType(ref.type);
-    const headOff = 4 + (headOffs[i] ?? 32 * i);
-
+    const within = headOffsetAt(headOffs, i); // head offset within the args region
     if (layout.kind === 'word') {
-      w.push(headOff, { note: `arg #${i} head` });
+      w.push(4 + within, { note: `arg #${i} head` });
       w.op('CALLDATALOAD'); // [raw]
       emitNormalizeWord(w, layout.abi);
-      w.push(ref.slot);
-      w.op('MSTORE'); // []
-      return;
-    }
-
-    if (layout.kind === 'tuple') {
-      // tuple arg: decode from the memory snapshot; offsets are relative to the args region
-      // (snapshot byte snap+4). A static tuple inlines at snap+4+headOff; a dynamic tuple's
-      // block is at snap+4+off where off = MLOAD(snap+4+headOff).
-      const pushTupleBase: PushBase = layout.dynamic
-        ? () => {
-            // base = (snap+4) + MLOAD(snap+4+headOff_within_region)
-            pushArgsBase(); // [argsBase]
-            w.op('DUP1'); // [argsBase, argsBase]
-            const within = headOff - 4;
-            if (within !== 0) {
-              w.push(within);
-              w.op('ADD');
-            }
-            w.op('MLOAD'); // [off, argsBase]
-            w.op('ADD'); // [base]
-          }
-        : () => {
-            pushArgsBase();
-            const within = headOff - 4;
-            if (within !== 0) {
-              w.push(within);
-              w.op('ADD');
-            } // [base = snap+4+within]
-          };
-      if (!isTupleType(ref.type)) throw internal(`arg #${i} layout is tuple but type is not`);
-      // for a DYNAMIC tuple, first bounds-check its offset word (off ≤ 2^64−1) and its whole head
-      // (region+off+headBytes ≤ end — the tuple decoder reads every head word unchecked)
-      if (layout.dynamic) {
-        pushArgsBase();
-        const within = headOff - 4;
-        if (within !== 0) {
-          w.push(within);
-          w.op('ADD');
-        }
-        w.op('MLOAD'); // [off]
-        w.op('DUP1');
-        emitAboveU64(w); // [off >> 64, off]
-        failCalldata(1); // [off]
-        pushArgsBase();
-        w.op('ADD'); // [base]
-        w.push(headBytes(ref.type.components));
-        w.op('ADD'); // [base+head]
-        pushEnd();
-        w.op('LT'); // [end < base+head]
-        failCalldata(0); // []
-      }
-      const components = ref.type.components;
-      emitWithinStackBudget(
+    } else if (usesRecursiveCodec(layout)) {
+      emitDecodeFromRegion(
         w,
-        0,
+        ref.type,
+        within,
+        region,
+        decodeOpts,
         () => `script argument #${i} (${stringifyType(ref.type)})`,
-        // script args are the caller's own calldata: no decode-work budget
-        () =>
-          emitDecodeTupleToMem(w, components, pushTupleBase, pushEnd, failCalldata, 0, {
-            budget: 'off',
-            evmVersion: opts.evmVersion,
-          }),
-      ); // [flat]
-      w.push(ref.slot);
-      w.op('MSTORE'); // []
+      ); // [block]
+    } else if (layout.kind === 'bytes' || layout.kind === 'array') {
+      emitDynCalldataArg(w, ref, layout, 4 + within, i, tails); // []   (stores its own slot)
       return;
+    } else {
+      throw internal(`arg #${i}: a ${layout.kind} layout outside the recursive codec`);
     }
-
-    if (layout.kind === 'array' && isRecursiveArray(layout)) {
-      // recursive-codec array arg (`tuple[]`/`T[][]`/`string[]`, or any `T[N]`): decode from the
-      // snapshot. A STATIC fixed-size array inlines at snap+4+headOff (no offset word); otherwise
-      // the head word at snap+4+headOff is an offset relative to the args region (snap+4) and the
-      // array block starts at (snap+4)+off.
-      const within = headOff - 4;
-      let pushArrBase: PushBase;
-      if (isDynamic(layout)) {
-        // bounds the offset word: off ≤ 2^64−1, region+off+32 ≤ end
-        pushArgsBase();
-        if (within !== 0) {
-          w.push(within);
-          w.op('ADD');
-        }
-        w.op('MLOAD'); // [off]
-        w.op('DUP1');
-        emitAboveU64(w); // [off >> 64, off]
-        failCalldata(1); // [off]
-        pushArgsBase();
-        w.op('ADD'); // [base]
-        w.push(32);
-        w.op('ADD'); // [base+32]
-        pushEnd();
-        w.op('LT'); // [end < base+32]
-        failCalldata(0); // []
-        pushArrBase = () => {
-          pushArgsBase();
-          w.op('DUP1'); // [argsBase, argsBase]
-          if (within !== 0) {
-            w.push(within);
-            w.op('ADD');
-          }
-          w.op('MLOAD'); // [off, argsBase]
-          w.op('ADD'); // [base]
-        };
-      } else {
-        pushArrBase = () => {
-          pushArgsBase();
-          if (within !== 0) {
-            w.push(within);
-            w.op('ADD');
-          } // [base = snap+4+within]
-        };
-      }
-      emitWithinStackBudget(
-        w,
-        0,
-        () => `script argument #${i} (${stringifyType(ref.type)})`,
-        () =>
-          emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0, {
-            budget: 'off',
-            evmVersion: opts.evmVersion,
-          }),
-      ); // [arr]
-      w.push(ref.slot);
-      w.op('MSTORE'); // []
-      return;
-    }
-
-    emitDynCalldataArg(w, ref, layout, headOff, i, tails);
+    w.push(ref.slot);
+    w.op('MSTORE'); // []
   });
 }
 
-/** One dynamic (`string`/`bytes`/`T[]`) script argument — net stack 0. */
+/**
+ * `[] → []`: snapshots the whole calldata into a fresh allocation and stores its base in scratch
+ * `SNAP_SLOT`. It copies `ceil32(cds)` bytes, so the tail past the calldata end reads as zeros
+ * (`CALLDATACOPY` past-end).
+ */
+function emitSnapshotCalldata(w: AsmWriter): void {
+  // size := ceil32(cds)
+  w.op('CALLDATASIZE');
+  emitCeil32(w); // [size]
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [snap, size]
+  // freePtr := snap + size
+  w.op('DUP1');
+  w.op('DUP3');
+  w.op('ADD'); // [snap+size, snap, size]
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // [snap, size]
+  // scratch[SNAP_SLOT] := snap
+  w.op('DUP1');
+  w.push(SNAP_SLOT);
+  w.op('MSTORE'); // [snap, size]
+  // CALLDATACOPY(dst = snap, off = 0, len = size)
+  w.op('SWAP1'); // [size, snap]
+  w.push(0); // [0, size, snap]
+  w.op('DUP3'); // [snap, 0, size, snap]
+  w.op('CALLDATACOPY'); // [snap]
+  w.op('POP'); // []
+}
+
+/** One dynamic (`string`/`bytes`/word-element `T[]`) script argument, copied out of calldata into
+ *  a fresh memref stored in its frame slot — net stack 0. */
 function emitDynCalldataArg(
   w: AsmWriter,
   ref: SlotRef,

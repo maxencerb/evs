@@ -11,7 +11,7 @@ import { forkAtLeast, OPS, type EvmVersion } from '../../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
 import { EvsCompileError, EvsInternalError } from '../../core/errors.js';
 import type { EvsType, WordType, NamedType } from '../../core/types.js';
-import { FREE_PTR, SCRATCH_0, SCRATCH_1 } from '../memory.js';
+import { FREE_PTR, SCRATCH_1 } from '../memory.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -36,9 +36,6 @@ export interface SlotRef {
 // ---------------------------------------------------------------------------
 // shared constants / helpers
 // ---------------------------------------------------------------------------
-
-/** Scratch slot for running tail cursors (intra-template temporary). */
-export const TAIL_CURSOR = SCRATCH_0;
 
 /**
  * Words per reserved encode frame: `{arrPtr, D, len, i, elem, base}`. An array loop owns the
@@ -108,7 +105,7 @@ export function internal(message: string): EvsInternalError {
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. Runs a template fragment emitter (`emit`, entered at
+ * @internal Shared with `codegen/call/` and `codegen/lower/`. Runs a template fragment emitter (`emit`, entered at
  * absolute operand-stack height `entryHeight`) and checks what it produced against the 16-item
  * template budget. Used around the decoders and the try-mode zero values, whose stack use grows
  * with the nesting of the type: the array decoder already falls back from its stack fast path to
@@ -136,7 +133,7 @@ export function emitWithinStackBudget(
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. The decoders' overflow-free `x ≤ 2^64−1` bound on an
+ * @internal Shared with `codegen/call/static-call.ts`. The decoders' overflow-free `x ≤ 2^64−1` bound on an
  * offset or length word: `[x] → [x >> 64]`, nonzero exactly when `x > 2^64−1`. Three bytes
  * (`PUSH1 64 SHR`) where `PUSH8 0xff…ff LT` takes ten, for the same gas. The result is not a
  * boolean, so it may only feed a branch: a `JUMPI`, or a try-mode {@link DecodeFail} router's
@@ -154,13 +151,20 @@ export function fmtType(t: EvsType): string {
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. True when decoding `l` needs a memory snapshot of the
- * source bytes: a tuple, or any array other than a dynamic word-element `T[]` (composite elements
- * `tuple[]`/`T[][]`/`string[]`, and every fixed-size `T[N]`) — all decode through the recursive
- * memory decoders, which read from memory (not calldata/returndata directly). A dynamic word
- * array / `string` / `bytes` keeps its direct alias-and-normalize fast path.
+ * @internal Shared with `codegen/call/`. True when a value of layout `l` goes through the
+ * RECURSIVE codec: a tuple, or any array other than a dynamic word-element `T[]` (composite
+ * elements `tuple[]`/`T[][]`/`string[]`, and every fixed-size `T[N]`). In both directions:
+ *
+ * - decode: it decodes through the recursive memory decoders ({@link emitDecodeArrayToMem} and
+ *   the tuple decoder), which read their source from a memory snapshot of the calldata or the
+ *   returndata, not from calldata / returndata directly;
+ * - encode: a call whose args hold one is built by the recursive head/tail encoder, not the
+ *   const-folding calldata template.
+ *
+ * A word, `string` / `bytes` and a dynamic word array keep their direct alias-and-normalize
+ * (decode) and leaf-tail (encode) paths.
  */
-export function needsMemorySnapshot(l: TypeLayout): boolean {
+export function usesRecursiveCodec(l: TypeLayout): boolean {
   return l.kind === 'tuple' || isRecursiveArray(l);
 }
 
@@ -210,7 +214,7 @@ export function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): Wor
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. True when a decoded word of `type` can carry dirty
+ * @internal Shared with `codegen/call/` and `codegen/lower/`. True when a decoded word of `type` can carry dirty
  * bits that normalization must clean — false only for the three full-word types.
  */
 export function wordNeedsNormalize(type: WordType): boolean {
@@ -218,7 +222,7 @@ export function wordNeedsNormalize(type: WordType): boolean {
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. Normalizes the word on top of the stack to the
+ * @internal Shared with `codegen/call/` and `codegen/lower/`. Normalizes the word on top of the stack to the
  * canonical form of `type`: `uintN`/`address` masked, `intN` sign-extended,
  * `bool` collapsed to 0/1 (`ISZERO ISZERO`), `bytesN` masked left-aligned. Net stack 0.
  */
@@ -243,8 +247,8 @@ export function emitNormalizeWord(w: AsmWriter, type: WordType): void {
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. Eager element-normalization loop over an array
- * memref payload.
+ * @internal Eager element-normalization loop over an array memref payload (the script's
+ * word-array arguments).
  *
  * Stack contract: entry `[cur, end, …depthBelow items]` → exit `[cur, end, …]` with
  * `cur == end`; the loop labels are checked at absolute height `depthBelow + 2`, so the
@@ -274,7 +278,7 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. Copies a (bounds-checked) word-array memref `[len][e…]`
+ * @internal Shared with `codegen/call/static-call.ts`. Copies a (bounds-checked) word-array memref `[len][e…]`
  * into a freshly-allocated block, normalizing every element on the way: `[src, …] → [dst, …]`.
  *
  * The decoders alias `string`/`bytes`/`T[]` members straight into the source snapshot, so a
@@ -368,7 +372,7 @@ function layoutToNamed(l: TypeLayout): NamedType {
 // emitMemCopy — evmVersion lowering (MCOPY on cancun, @memcpy subroutine before)
 // ---------------------------------------------------------------------------
 
-/** @internal Shared by `codegen/call.ts`. Rounds the top of the stack up to a whole word:
+/** @internal Shared with `codegen/call/` and `codegen/lower/`. Rounds the top of the stack up to a whole word:
  *  `[x] → [ceil32(x)]` (`(x + 31) & ~31`). */
 export function emitCeil32(w: AsmWriter): void {
   w.push(31);

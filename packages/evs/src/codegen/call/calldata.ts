@@ -10,16 +10,15 @@ import type { EvmVersion } from '../../asm/ops.js';
 import { u256ToBytes } from '../../core/bytes.js';
 import { abiParamToType, type NamedType } from '../../core/types.js';
 import {
-  isRecursiveArray,
+  usesRecursiveCodec,
   type SharedTails,
   emitLeafDynTail,
-  encodeFramesOf,
   reserveEncodeFrames,
   type PushWord,
   type PushBase,
   emitEncodeBlock,
 } from '../abi.js';
-import { FREE_PTR, SCRATCH_1 } from '../memory.js';
+import { FREE_PTR, SCRATCH_1, TAIL_CURSOR } from '../memory.js';
 import {
   type CallSitePlan,
   internal,
@@ -30,7 +29,6 @@ import {
   emitPushWordChunk,
   emitSelectorWord,
   callArgEncodeFrames,
-  TAIL_CURSOR,
   literalWordValue,
 } from './shared.js';
 
@@ -61,16 +59,24 @@ interface CalldataTemplate {
   staticSize: number;
 }
 
-function buildTemplate(plan: CallSitePlan): CalldataTemplate {
+/** Checks the call's ABI against its plan (one arg ref per input, a 4-byte selector) and returns
+ *  the selector bytes — shared by the template and the recursive-encoder builds. */
+function validateCallAbi(plan: CallSitePlan): Uint8Array {
   const { fnAbi } = plan.stmt;
-  const inputs = fnAbi.inputs;
-  if (inputs.length !== plan.argRefs.length) {
+  if (fnAbi.inputs.length !== plan.argRefs.length) {
     throw internal(
-      `call to ${fnAbi.name}: ${inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
+      `call to ${fnAbi.name}: ${fnAbi.inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
     );
   }
   const selector = literalBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
   if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
+  return selector;
+}
+
+function buildTemplate(plan: CallSitePlan): CalldataTemplate {
+  const { fnAbi } = plan.stmt;
+  const inputs = fnAbi.inputs;
+  const selector = validateCallAbi(plan);
 
   const layouts: TypeLayout[] = inputs.map((p) => layoutOf(p.type));
   const headEnd = 4 + 32 * inputs.length;
@@ -118,13 +124,13 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
       }
       return;
     }
-    // dynamic arg. A recursive-codec array call arg (`tuple[]`/`T[][]`/`string[]`, any `T[N]`) is
-    // routed to the recursive encoder (`emitCalldataBuildTuples`) by `emitStaticCall`'s
-    // `needsRecursiveEncode` dispatch and never reaches the template path — this backstop catches a
+    // dynamic arg. A recursive-codec arg (a tuple, `tuple[]`/`T[][]`/`string[]`, any `T[N]`) is
+    // routed to the recursive encoder (`emitCalldataBuildTuples`) by `emitCalldataFor`'s
+    // `usesRecursiveCodec` dispatch and never reaches the template path — this backstop catches a
     // routing regression that would otherwise silently mis-encode it as a word-array memref tail.
-    if (isRecursiveArray(l)) {
+    if (usesRecursiveCodec(l)) {
       throw internal(
-        `${what}: recursive-codec array call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
+        `${what}: recursive-codec call arg reached the template encoder (should route to emitCalldataBuildTuples)`,
       );
     }
     if (isLiteralRef(ref)) {
@@ -166,34 +172,51 @@ function buildTemplate(plan: CallSitePlan): CalldataTemplate {
 // calldata build emission
 // ---------------------------------------------------------------------------
 
-/** Const run at a compile-time-known buffer offset: PUSH-chunked MSTOREs or CODECOPY. */
-function emitConstRun(w: AsmWriter, run: ConstRun, dataSeg: (bytes: Uint8Array) => LabelId): void {
-  if (run.bytes.length > CONST_SEGMENT_INLINE_MAX) {
-    const label = dataSeg(run.bytes);
-    w.push(run.bytes.length, { note: `const segment ${run.bytes.length}B` });
-    w.pushLabel(label); // [src, size]
-    w.push(FREE_PTR);
-    w.op('MLOAD'); // [buf, src, size]
-    if (run.offset !== 0) {
-      w.push(run.offset);
+/**
+ * Writes compile-time `bytes` at `MLOAD(ptrSlot) + offset`: one CODECOPY from a data segment past
+ * {@link CONST_SEGMENT_INLINE_MAX} bytes, else PUSH-chunked MSTOREs (a trailing partial chunk is
+ * zero-padded, so it may spill into bytes the caller writes later). `notes.segment` annotates the
+ * CODECOPY size push, `notes.firstChunk` the first chunk push. Net stack 0.
+ */
+function emitConstBytes(
+  w: AsmWriter,
+  bytes: Uint8Array,
+  ptrSlot: number,
+  offset: number,
+  dataSeg: (bytes: Uint8Array) => LabelId,
+  notes: { readonly segment: string; readonly firstChunk?: string },
+): void {
+  const pushDst = (at: number): void => {
+    w.push(ptrSlot);
+    w.op('MLOAD'); // [ptr]
+    if (at !== 0) {
+      w.push(at);
       w.op('ADD');
-    }
+    } // [ptr + at]
+  };
+  if (bytes.length > CONST_SEGMENT_INLINE_MAX) {
+    const label = dataSeg(bytes);
+    w.push(bytes.length, { note: notes.segment });
+    w.pushLabel(label); // [src, size]
+    pushDst(offset); // [dst, src, size]
     w.op('CODECOPY'); // []
     return;
   }
-  for (let k = 0; k < run.bytes.length; k += 32) {
+  for (let k = 0; k < bytes.length; k += 32) {
     const chunk = new Uint8Array(32);
-    chunk.set(run.bytes.slice(k, k + 32));
-    emitPushWordChunk(w, chunk, k === 0 ? 'const calldata' : undefined); // [val]
-    w.push(FREE_PTR);
-    w.op('MLOAD'); // [buf, val]
-    const offset = run.offset + k;
-    if (offset !== 0) {
-      w.push(offset);
-      w.op('ADD');
-    }
+    chunk.set(bytes.slice(k, k + 32));
+    emitPushWordChunk(w, chunk, k === 0 ? notes.firstChunk : undefined); // [val]
+    pushDst(offset + k); // [dst, val]
     w.op('MSTORE'); // []
   }
+}
+
+/** Const run at a compile-time-known buffer offset (`MLOAD(0x40) + run.offset`). */
+function emitConstRun(w: AsmWriter, run: ConstRun, dataSeg: (bytes: Uint8Array) => LabelId): void {
+  emitConstBytes(w, run.bytes, FREE_PTR, run.offset, dataSeg, {
+    segment: `const segment ${run.bytes.length}B`,
+    firstChunk: 'const calldata',
+  });
 }
 
 /** Const bytes at the runtime tail cursor (regime 'dynamic' literal-dyn tails). */
@@ -202,27 +225,7 @@ function emitConstBytesAtCursor(
   bytes: Uint8Array,
   dataSeg: (bytes: Uint8Array) => LabelId,
 ): void {
-  if (bytes.length > CONST_SEGMENT_INLINE_MAX) {
-    const label = dataSeg(bytes);
-    w.push(bytes.length, { note: `const tail ${bytes.length}B` });
-    w.pushLabel(label); // [src, size]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [dst, src, size]
-    w.op('CODECOPY'); // []
-    return;
-  }
-  for (let k = 0; k < bytes.length; k += 32) {
-    const chunk = new Uint8Array(32);
-    chunk.set(bytes.slice(k, k + 32));
-    emitPushWordChunk(w, chunk); // [val]
-    w.push(TAIL_CURSOR);
-    w.op('MLOAD'); // [tail, val]
-    if (k !== 0) {
-      w.push(k);
-      w.op('ADD');
-    }
-    w.op('MSTORE'); // []
-  }
+  emitConstBytes(w, bytes, TAIL_CURSOR, 0, dataSeg, { segment: `const tail ${bytes.length}B` });
 }
 
 /** Builds the calldata template into transient scratch at `MLOAD(0x40)`. Net stack 0. */
@@ -325,13 +328,7 @@ function emitCalldataBuildTuples(
 ): void {
   const { fnAbi } = plan.stmt;
   const inputs = fnAbi.inputs;
-  if (inputs.length !== plan.argRefs.length) {
-    throw internal(
-      `call to ${fnAbi.name}: ${inputs.length} ABI input(s) but ${plan.argRefs.length} arg ref(s)`,
-    );
-  }
-  const selector = literalBytes(fnAbi.selector, `selector of ${fnAbi.name}`);
-  if (selector.length !== 4) throw internal(`selector of ${fnAbi.name} must be 4 bytes`);
+  const selector = validateCallAbi(plan);
 
   // CALL ARGS that need encode frames (composite-element / fixed-size array loops, and dynamic
   // tuple levels nested deeper than the frameless ones) keep that state in a reserved in-memory
@@ -446,11 +443,11 @@ function emitCalldataBuildTuples(
 }
 
 /**
- * Builds the call payload at `MLOAD(0x40)`. tuple args AND composite-element array args
- * (`tuple[]`/`T[][]`/`string[]`, here or inside a tuple member) force the recursive encoder
- * (no const-folding); word/word-array/string/bytes args stay on the template path. Returns
- * the template (`null` when the recursive encoder ran) so the caller derives argsSize from
- * its regime — the tail cursor holds the payload end in the non-static regimes.
+ * Builds the call payload at `MLOAD(0x40)`. An arg that goes through the recursive codec (a tuple,
+ * `tuple[]`/`T[][]`/`string[]`, any `T[N]` — {@link usesRecursiveCodec}) forces the recursive
+ * encoder (no const-folding); word/word-array/string/bytes args stay on the template path.
+ * Returns the template (`null` when the recursive encoder ran) so the caller derives argsSize
+ * from its regime — the tail cursor holds the payload end in the non-static regimes.
  */
 export function emitCalldataFor(
   w: AsmWriter,
@@ -460,8 +457,8 @@ export function emitCalldataFor(
   dataSeg: (bytes: Uint8Array) => LabelId,
 ): CalldataTemplate | null {
   const { fnAbi } = plan.stmt;
-  const needsRecursiveEncode = fnAbi.inputs.some(
-    (p) => p.type.startsWith('tuple') || encodeFramesOf(layoutOfType(abiParamToType(p))) > 0,
+  const needsRecursiveEncode = fnAbi.inputs.some((p) =>
+    usesRecursiveCodec(layoutOfType(abiParamToType(p))),
   );
   const template = needsRecursiveEncode ? null : buildTemplate(plan);
   if (template === null) {

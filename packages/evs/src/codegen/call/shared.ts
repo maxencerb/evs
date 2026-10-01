@@ -8,10 +8,23 @@ import { layoutOfType } from '../../abi/layout.js';
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
 import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
-import { abiParamToType, stringifyType, type Hex } from '../../core/types.js';
+import {
+  abiParamToType,
+  stringifyType,
+  typesEqual,
+  type Hex,
+  type NamedType,
+} from '../../core/types.js';
 import { callOutputs, type Stmt, type ConstData, type SiteId } from '../../ir/nodes.js';
-import { type SlotRef, emitCeil32, emitWithinStackBudget, encodeFramesOf } from '../abi.js';
-import { SCRATCH_0, FREE_PTR, emitZeroValue } from '../memory.js';
+import {
+  type DecodeFail,
+  type SlotRef,
+  emitCeil32,
+  emitWithinStackBudget,
+  encodeFramesOf,
+  fmtType,
+} from '../abi.js';
+import { SNAP_SLOT, FREE_PTR, emitZeroValue } from '../memory.js';
 
 // ---------------------------------------------------------------------------
 // contract types
@@ -35,10 +48,6 @@ export interface CallSitePlan {
 // ---------------------------------------------------------------------------
 // helpers
 // ---------------------------------------------------------------------------
-
-export const TAIL_CURSOR = SCRATCH_0; // scratch — calldata-template tail cursor (transient)
-const SNAP_SLOT = SCRATCH_0; // scratch — returndata snapshot base during tuple-output decode (transient,
-//                         dead once the calldata cursor's job is done — the call already happened)
 
 /** Const segments at or under this size are PUSH-chunked; larger ones go to a data segment. */
 export const CONST_SEGMENT_INLINE_MAX = 96;
@@ -114,6 +123,40 @@ export function emitSelectorWord(w: AsmWriter, selector: Uint8Array, note: strin
 // ---------------------------------------------------------------------------
 
 /**
+ * Checks a call site's plan against its decode schema `outputs` (the emitters' shared
+ * invariants, all guaranteed by lowering): one out ref per output, each typed as its output, and
+ * a success ref exactly in try mode. `what` names the site in the INTERNAL error
+ * (`call to f`, `simulate f`).
+ */
+export function assertSitePlan(
+  plan: CallSitePlan,
+  outputs: readonly NamedType[],
+  what: string,
+): void {
+  const { siteId } = plan;
+  if (outputs.length !== plan.outRefs.length) {
+    throw internal(
+      `${what} (site ${siteId}): ${outputs.length} output(s) in the decode schema but ${plan.outRefs.length} out ref(s)`,
+    );
+  }
+  outputs.forEach((out, j) => {
+    const ref = plan.outRefs[j];
+    if (ref !== undefined && !typesEqual(ref.type, abiParamToType(out))) {
+      throw internal(
+        `${what} (site ${siteId}): output #${j} is ${out.type} but its slot is typed ${fmtType(ref.type)}`,
+      );
+    }
+  });
+  const tryMode = plan.stmt.mode === 'try';
+  if (tryMode && plan.successRef === null) {
+    throw internal(`try ${what} (site ${siteId}): successRef is required`);
+  }
+  if (!tryMode && plan.successRef !== null) {
+    throw internal(`strict ${what} (site ${siteId}): successRef must be null`);
+  }
+}
+
+/**
  * try-mode failure router. Stack on entry: `[bad, …live]`; on exit (continue path):
  * `[…live]`. Strict mode jumps straight to the `'any'` dfail stub; try mode inverts the
  * branch, cleans the stack to height 0, and jumps to `tryTarget` — the (checked, height-0) zero
@@ -126,7 +169,7 @@ export function makeDecodeFail(
   tryMode: boolean,
   labelPrefix: string,
   tryTarget: LabelId = plan.dfailLabel,
-): (liveDepth: number) => void {
+): DecodeFail {
   return (liveDepth: number): void => {
     if (!tryMode) {
       w.pushLabel(plan.dfailLabel);
@@ -255,19 +298,6 @@ export function pushSnapEnd(w: AsmWriter): void {
   pushSnap(w);
   w.op('RETURNDATASIZE');
   w.op('ADD'); // [buf + rds]
-}
-
-/** `[] → [buf + MLOAD(buf + headOffset)]`: the base of a dynamic output whose head word at
- *  `headOffset` holds a buf-relative offset (bounds-checked by the caller beforehand). */
-export function pushSnapOffsetBase(w: AsmWriter, headOffset: number): void {
-  pushSnap(w); // [buf]
-  w.op('DUP1');
-  if (headOffset !== 0) {
-    w.push(headOffset);
-    w.op('ADD');
-  }
-  w.op('MLOAD'); // [off, buf]
-  w.op('ADD'); // [base]
 }
 
 /**

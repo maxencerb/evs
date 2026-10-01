@@ -16,11 +16,23 @@ import {
   type DecodeCharge,
 } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
-import type { EvmVersion } from '../../asm/ops.js';
+import type { EvmVersion, Mnemonic } from '../../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
-import { type NamedType, type WordType, abiParamToType } from '../../core/types.js';
+import {
+  type EvsType,
+  type NamedType,
+  type WordType,
+  abiParamToType,
+  isTupleType,
+} from '../../core/types.js';
 import { FREE_PTR } from '../memory.js';
-import { type PushBase, headOffsets, emitOffsetBase, emitSubTupleBase } from './encode.js';
+import {
+  type PushBase,
+  headOffsets,
+  headOffsetAt,
+  emitOffsetBase,
+  emitSubTupleBase,
+} from './encode.js';
 import {
   emitNormalizeWord,
   isRecursiveArray,
@@ -42,18 +54,119 @@ import {
   TFRAME_PARENT,
   tupleComponents,
   emitAboveU64,
+  emitWithinStackBudget,
+  internal,
+  usesRecursiveCodec,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
 // recursive ABI decoder (memory head/tail → flat-pointer block)
 // ---------------------------------------------------------------------------
 
+type ArrayLayout = Extract<TypeLayout, { kind: 'array' }>;
+
 /**
- * @internal Shared by `codegen/call.ts`. A decode failure router: stack on entry `[bad, …live]`
+ * @internal Shared with `codegen/call/`. A decode failure router: stack on entry `[bad, …live]`
  * → on the continue path `[…live]` (`liveDepth` items). Strict/calldata callers jump straight to
  * a checked stub; try-mode callers invert the branch, clean the stack, and jump to the zero block.
  */
 export type DecodeFail = (liveDepth: number) => void;
+
+/**
+ * @internal Shared with `codegen/call/`. The source region a list of top-level ABI values is
+ * decoded from — the script's arguments in a calldata snapshot, or a call's outputs in a
+ * returndata snapshot — as thunks that re-read the snapshot base from scratch, so the decoders'
+ * free-pointer churn never moves it.
+ */
+export interface DecodeRegion {
+  /** Pushes the address of the region start: what head offsets and top-level offset words are
+   *  relative to (`snap + 4` for the arguments, `snap` for a call's returndata). */
+  readonly pushBase: PushBase;
+  /** Pushes the address one past the last valid source byte. */
+  readonly pushEnd: () => void;
+  readonly fail: DecodeFail;
+  /** Live operand-stack items beneath the decode (its absolute entry height). */
+  readonly live: number;
+  /**
+   * How a dynamic recursive-codec ARRAY's offset word is bounded (its first word must lie inside
+   * the source): `'end'` — `base + off + 32 ≤ end`, as for a dynamic tuple; `'returndata'` — the
+   * call path's `off + 32 ≤ RETURNDATASIZE`, the same check for a region that starts at the
+   * snapshot base, kept on the stack instead of re-deriving the base. A dynamic tuple is bounded
+   * the `'end'` way in both regions.
+   */
+  readonly arrayOffsetBound: 'end' | 'returndata';
+}
+
+/**
+ * @internal Shared with `codegen/call/`. Decodes the top-level value of `type` — a tuple or a
+ * recursive-codec array (see {@link usesRecursiveCodec}) — whose head sits at `headOffset` in
+ * `region`, into a fresh block, and pushes its pointer: `[…live] → [block, …live]`.
+ *
+ * A static value inlines at `base + headOffset`. A dynamic one's head word is an offset relative
+ * to the region base; it is bounded (`off ≤ 2^64−1`, and its first block must lie inside the
+ * source — a tuple's whole head, as the interpreter's `decodeBlock` guard reads every head word
+ * unchecked; an array's length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
+ * before the decoder reads it, then re-derived inside the decoder's base thunk
+ * (`base + MLOAD(base + headOffset)`), so nothing rides the stack through the recursion. `opts` is
+ * threaded to the decoder unchanged. The decode runs inside {@link emitWithinStackBudget}, `what`
+ * naming the value in its error.
+ */
+export function emitDecodeFromRegion(
+  w: AsmWriter,
+  type: EvsType,
+  headOffset: number,
+  region: DecodeRegion,
+  opts: DecodeOptions,
+  what: () => string,
+): void {
+  const l = layoutOfType(type);
+  if (!usesRecursiveCodec(l)) {
+    throw internal(`emitDecodeFromRegion: ${l.abi} does not decode through the recursive codec`);
+  }
+  const { live, fail } = region;
+  let pushBlockBase: PushBase;
+  if (isDynamic(l)) {
+    region.pushBase();
+    if (headOffset !== 0) {
+      w.push(headOffset);
+      w.op('ADD');
+    }
+    w.op('MLOAD'); // [off, …live]
+    w.op('DUP1');
+    emitAboveU64(w); // [off >> 64, off, …live]
+    fail(live + 1); // [off, …live]
+    if (l.kind === 'array' && region.arrayOffsetBound === 'returndata') {
+      w.op('DUP1');
+      w.push(minBlockBytes(l));
+      w.op('ADD'); // [off+32, off, …live]
+      w.op('RETURNDATASIZE');
+      w.op('LT'); // [rds < off+32, off, …live]
+      fail(live + 1); // [off, …live]
+      w.op('POP'); // […live]   (the base is re-derived inside the thunk)
+    } else {
+      region.pushBase();
+      w.op('ADD'); // [blockPtr, …live]
+      w.push(minBlockBytes(l));
+      w.op('ADD'); // [blockPtr+min, …live]
+      region.pushEnd();
+      w.op('LT'); // [end < blockPtr+min, …live]
+      fail(live); // […live]
+    }
+    pushBlockBase = () => emitSubTupleBase(w, region.pushBase, headOffset);
+  } else {
+    pushBlockBase = () => emitOffsetBase(w, region.pushBase, headOffset);
+  }
+  emitWithinStackBudget(w, live, what, () => {
+    if (l.kind === 'array') {
+      emitDecodeArrayToMem(w, l, pushBlockBase, region.pushEnd, fail, live, opts);
+      return;
+    }
+    if (l.kind !== 'tuple' || !isTupleType(type)) {
+      throw internal(`emitDecodeFromRegion: ${l.abi} is neither a tuple nor an array`);
+    }
+    emitDecodeTupleToMem(w, type.components, pushBlockBase, region.pushEnd, fail, live, opts);
+  }); // [block, …live]
+}
 
 // ---------------------------------------------------------------------------
 // decode-work budget (see DECODE_BUDGET_SLACK in abi/layout.ts)
@@ -86,12 +199,12 @@ export interface DecodeOptions {
 }
 
 /** The budget mode of an ABI-dynamic array's elements (they sit behind offsets or a length). */
-function elemBudget(budget: DecodeBudget, l: Extract<TypeLayout, { kind: 'array' }>): DecodeBudget {
+function elemBudget(budget: DecodeBudget, l: ArrayLayout): DecodeBudget {
   return budget === 'off' || !isDynamic(l) ? budget : 'repeated';
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. True when decoding `outputs` can charge the decode-work
+ * @internal Shared with `codegen/call/`. True when decoding `outputs` can charge the decode-work
  * budget at all — some output holds a block {@link mayChargeDecodeBudget} finds. A call site
  * reserves and initialises the budget word only then, so shapes that never charge (words,
  * strings, structs of those, `uint256[]`, …) keep their bytecode.
@@ -117,7 +230,7 @@ function mayChargeDecodeBudget(l: TypeLayout, topLevel: boolean, repeated: boole
 }
 
 /**
- * @internal Shared by `codegen/call.ts`. `[] → []`: stores the initial decode-work budget,
+ * @internal Shared with `codegen/call/`. `[] → []`: stores the initial decode-work budget,
  * `RETURNDATASIZE − payloadOffset + DECODE_BUDGET_SLACK` (the decoded payload starts
  * `payloadOffset` bytes into the returndata), into the reserved word at `pushEnd()`.
  */
@@ -249,7 +362,7 @@ export function emitDecodeTupleToMem(
   w.op('MSTORE'); // [flat, …]      freePtr bumped
 
   components.forEach((comp, j) => {
-    const ho = offs[j] ?? 0;
+    const ho = headOffsetAt(offs, j);
     const layout = layoutOfType(abiParamToType(comp));
     // stack here: [flat, …below]; `belowFlat` items sit beneath flat.
 
@@ -261,12 +374,7 @@ export function emitDecodeTupleToMem(
       }
       w.op('MLOAD'); // [raw, flat, …]
       emitNormalizeWord(w, layout.abi); // normalize-don't-revert
-      w.op('DUP2'); // [flat, word, flat, …]
-      if (j !== 0) {
-        w.push(32 * j);
-        w.op('ADD');
-      }
-      w.op('MSTORE'); // [flat, …]
+      emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
 
@@ -282,12 +390,7 @@ export function emitDecodeTupleToMem(
         inner,
         derivedBase,
       ); // [subFlat, flat, …]
-      w.op('DUP2'); // [flat, subFlat, flat, …]
-      if (j !== 0) {
-        w.push(32 * j);
-        w.op('ADD');
-      }
-      w.op('MSTORE'); // [flat, …]
+      emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
 
@@ -303,12 +406,7 @@ export function emitDecodeTupleToMem(
         belowFlat + 1,
         inner,
       ); // [arr, flat, …]
-      w.op('DUP2'); // [flat, arr, flat, …]
-      if (j !== 0) {
-        w.push(32 * j);
-        w.op('ADD');
-      }
-      w.op('MSTORE'); // [flat, …]
+      emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
 
@@ -352,12 +450,7 @@ export function emitDecodeTupleToMem(
       pushDFrameLoad(w, TFRAME_PARENT);
       w.push(DECODE_FRAME);
       w.op('MSTORE'); // [sub, flat, …]
-      w.op('DUP2'); // [flat, sub, flat, …]
-      if (j !== 0) {
-        w.push(32 * j);
-        w.op('ADD');
-      }
-      w.op('MSTORE'); // [flat, …]
+      emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
 
@@ -380,12 +473,7 @@ export function emitDecodeTupleToMem(
         // `tuple[]`, `T[][]`, `string[]`, dynamic `T[N]`: a fresh `[len][p0…]` pointer block
         emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, inner);
       } // [sub, flat, …]
-      w.op('DUP2'); // [flat, sub, flat, …]
-      if (j !== 0) {
-        w.push(32 * j);
-        w.op('ADD');
-      }
-      w.op('MSTORE'); // [flat, …]
+      emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
 
@@ -434,14 +522,19 @@ export function emitDecodeTupleToMem(
       emitCopyNormalizeWordArray(w, elemAbi, belowFlat + 1); // [copy, flat, …]
     }
 
-    // store ptr (the alias, or the normalized copy) into flat + 32·j (consumed as the MSTORE value)
-    w.op('DUP2'); // [flat, ptr, flat, …]
-    if (j !== 0) {
-      w.push(32 * j);
-      w.op('ADD');
-    } // [flat+32j, ptr, flat, …]
-    w.op('MSTORE'); // [flat, …]
+    emitStoreFlatSlot(w, j); // [flat, …]   (the alias, or the normalized copy)
   });
+}
+
+/** Stores the decoded value of member `j` into its flat-block slot, consuming it:
+ *  `[v, flat, …] → [flat, …]` (`MSTORE(flat + 32·j, v)`). */
+function emitStoreFlatSlot(w: AsmWriter, j: number): void {
+  w.op('DUP2'); // [flat, v, flat, …]
+  if (j !== 0) {
+    w.push(32 * j);
+    w.op('ADD');
+  } // [flat+32j, v, flat, …]
+  w.op('MSTORE'); // [flat, …]
 }
 
 /**
@@ -471,7 +564,7 @@ export function emitDecodeTupleToMem(
  */
 export function emitDecodeArrayToMem(
   w: AsmWriter,
-  layout: Extract<TypeLayout, { kind: 'array' }>,
+  layout: ArrayLayout,
   pushBase: PushBase,
   pushEnd: () => void,
   fail: DecodeFail,
@@ -485,12 +578,12 @@ export function emitDecodeArrayToMem(
   const elem = layout.elem;
   if (n !== null && elem.kind === 'word' && charge === null) {
     const fits = emitIfWithinBudget(w, belowFlat, () =>
-      emitDecodeFixedWordArray(w, n, elem.abi, pushBase, pushEnd, fail, belowFlat, opts),
+      emitDecodeFixedWordArray(w, layout, n, elem.abi, pushBase, pushEnd, fail, belowFlat, opts),
     );
     if (fits) return;
   } else if (isStackDecodedArray(layout)) {
     const fits = emitIfWithinBudget(w, belowFlat, () =>
-      emitDecodeArrayToMemStack(w, elem, pushBase, pushEnd, fail, belowFlat, inner, charge),
+      emitDecodeArrayToMemStack(w, layout, pushBase, pushEnd, fail, belowFlat, inner, charge),
     );
     if (fits) return;
   }
@@ -505,6 +598,149 @@ function emitIfWithinBudget(w: AsmWriter, belowFlat: number, emit: () => void): 
   if (w.peakHeightSince(cp, belowFlat) <= MAX_TEMPLATE_DEPTH) return true;
   w.rollback(cp);
   return false;
+}
+
+/**
+ * Where an array decode loop keeps its state, for the emitters the stack and heap-frame paths
+ * share. Each accessor pushes one loop word given how many items (`above`) sit on top of the loop
+ * state: the stack path `DUP`s it out of `[i, D, arr, len, saved, …]`; the heap-frame path loads
+ * `i` / `D` from the current decode frame and `DUP`s `arr`, the one loop word it keeps on the
+ * stack.
+ */
+interface ArrayLoop {
+  /** Live items at the loop head — the absolute height its labels are checked at. */
+  readonly height: number;
+  pushI(above: number): void;
+  pushD(above: number): void;
+  pushArr(above: number): void;
+}
+
+/**
+ * Bounds an array's body against the source end BEFORE anything is allocated, mirroring the
+ * interpreter: `D + body ≤ end`, where `D` is the data start (`base + 32` past a dynamic array's
+ * length word, `base` itself for a fixed-size `E[N]`) and `body` the bytes the elements occupy
+ * (`32·len` offset words for a dynamic element, `len·staticSize` inline for a static one — a
+ * constant for `E[N]`). A length word the source cannot back fails here, so the allocation that
+ * follows is bounded by the source size. `[len, …] → [len, …]` for a dynamic array (`len` on top),
+ * `[…] → […]` for `E[N]`; `live` counts the items on the stack (`len` included).
+ */
+function emitArrayBodyBound(
+  w: AsmWriter,
+  layout: ArrayLayout,
+  pushBase: PushBase,
+  pushEnd: () => void,
+  fail: DecodeFail,
+  live: number,
+): void {
+  const elem = layout.elem;
+  const elemDynamic = isDynamic(elem);
+  pushBase(); // [base, len, …]
+  if (layout.length === null) {
+    w.push(32);
+    w.op('ADD'); // [D, len, …]
+    w.op('DUP2'); // [len, D, len, …]
+    if (elemDynamic) {
+      // offset-word region: D + 32·len ≤ end
+      w.push(5);
+      w.op('SHL'); // [32·len, D, len, …]
+    } else {
+      // static body: D + len·staticSize ≤ end
+      const ss = staticSize(elem);
+      if (ss !== 1) {
+        w.push(ss);
+        w.op('MUL'); // [len·ss, D, len, …]
+      }
+    }
+  } else {
+    // fixed `E[N]`: the body size is a constant
+    w.push(layout.length * (elemDynamic ? 32 : staticSize(elem))); // [body, D, …]
+  }
+  w.op('ADD'); // [D+body, …]
+  pushEnd();
+  w.op('LT'); // [end < D+body, …]
+  fail(live); // […]
+}
+
+/**
+ * Pushes the source base of element `i` (`[…loop] → [elemBase, …loop]`): `D + i·staticSize` for a
+ * static element (the body bound already covers it); for a dynamic element, `offᵢ` at `D + 32·i`
+ * (relative to `D`, bound `offᵢ ≤ 2^64−1`), `elemPtr = D + offᵢ`, and its first block must fit:
+ * `elemPtr + minBlockBytes ≤ end` (a dynamic tuple element's whole head).
+ */
+function emitElemSourceBase(
+  w: AsmWriter,
+  elemLayout: TypeLayout,
+  loop: ArrayLoop,
+  pushEnd: () => void,
+  fail: DecodeFail,
+): void {
+  if (!isDynamic(elemLayout)) {
+    const ss = staticSize(elemLayout);
+    loop.pushI(0); // [i, …loop]
+    if (ss !== 1) {
+      w.push(ss);
+      w.op('MUL'); // [i·ss, …loop]
+    }
+    loop.pushD(1);
+    w.op('ADD'); // [elemBase, …loop]
+    return;
+  }
+  loop.pushI(0);
+  w.push(5);
+  w.op('SHL'); // [32·i, …loop]
+  loop.pushD(1);
+  w.op('ADD');
+  w.op('MLOAD'); // [off, …loop]
+  w.op('DUP1');
+  emitAboveU64(w); // [off >> 64, off, …loop]
+  fail(loop.height + 1); // [off, …loop]
+  loop.pushD(1);
+  w.op('ADD'); // [elemPtr, …loop]
+  w.op('DUP1');
+  w.push(minBlockBytes(elemLayout));
+  w.op('ADD'); // [elemPtr+min, elemPtr, …loop]
+  pushEnd();
+  w.op('LT'); // [end < elemPtr+min, elemPtr, …loop]
+  fail(loop.height + 1); // [elemPtr, …loop]
+}
+
+/** Stores the decoded element value into its pointer-block slot, consuming it:
+ *  `[elemVal, …loop] → […loop]` (`MSTORE(arr + 32 + 32·i, elemVal)`). */
+function emitStoreArraySlot(w: AsmWriter, loop: ArrayLoop): void {
+  loop.pushI(1);
+  w.push(5);
+  w.op('SHL'); // [32·i, elemVal, …loop]
+  loop.pushArr(2); // [arr, 32·i, elemVal, …loop]
+  w.op('ADD');
+  w.push(32);
+  w.op('ADD'); // [slotAddr, elemVal, …loop]
+  w.op('MSTORE'); // […loop]
+}
+
+const DUPS: readonly Mnemonic[] = [
+  'DUP1',
+  'DUP2',
+  'DUP3',
+  'DUP4',
+  'DUP5',
+  'DUP6',
+  'DUP7',
+  'DUP8',
+  'DUP9',
+  'DUP10',
+  'DUP11',
+  'DUP12',
+  'DUP13',
+  'DUP14',
+  'DUP15',
+  'DUP16',
+];
+
+/** `DUP<n>` for a stack position computed at codegen time. */
+function emitDup(w: AsmWriter, n: number): void {
+  const op = DUPS[n - 1];
+  if (op === undefined) throw internal(`DUP${n} is out of the EVM's reach`);
+  w.op(op);
 }
 
 /**
@@ -531,6 +767,7 @@ function emitIfWithinBudget(w: AsmWriter, belowFlat: number, emit: () => void): 
  */
 function emitDecodeFixedWordArray(
   w: AsmWriter,
+  layout: ArrayLayout,
   n: number,
   elem: WordType,
   pushBase: PushBase,
@@ -539,13 +776,8 @@ function emitDecodeFixedWordArray(
   belowFlat: number,
   opts: DecodeOptions,
 ): void {
-  // -- body bound: base + 32·N ≤ end  ⇔  ¬(end < base + 32·N) ------------------------------
-  pushBase();
-  w.push(32 * n);
-  w.op('ADD'); // [base+32N, …below]
-  pushEnd();
-  w.op('LT'); // [end < base+32N, …]
-  fail(belowFlat); // […]
+  // -- body bound: base + 32·N ≤ end (no length word on the stack) ---------------------------
+  emitArrayBodyBound(w, layout, pushBase, pushEnd, fail, belowFlat); // […]
 
   // -- allocate the `[N][w…]` block at the free pointer and push `arr` ----------------------
   const emitAllocBlock = (): void => {
@@ -609,7 +841,7 @@ function emitDecodeFixedWordArray(
  */
 function emitDecodeArrayToMemStack(
   w: AsmWriter,
-  elemLayout: TypeLayout,
+  layout: ArrayLayout,
   pushBase: PushBase,
   pushEnd: () => void,
   fail: DecodeFail,
@@ -617,7 +849,7 @@ function emitDecodeArrayToMemStack(
   elemOpts: DecodeOptions,
   charge: DecodeCharge | null,
 ): void {
-  const elemDynamic = isDynamic(elemLayout);
+  const elemLayout = layout.elem;
   // D = base + 32, re-derivable from `pushBase()` so nothing has to ride the stack.
   const pushD = (): void => {
     pushBase();
@@ -632,27 +864,10 @@ function emitDecodeArrayToMemStack(
   emitAboveU64(w); // [len >> 64, len, …]
   fail(belowFlat + 1); // [len, …]
 
-  // -- up-front element-body bounds (mirrors the interp), BEFORE anything is allocated: a length
-  //    word the source cannot back fails here, so the allocation below is bounded by the source
-  //    size (an unchecked `len` up to 2^64−1 would otherwise bump FREE_PTR by up to 2^69 bytes)
-  pushD(); // [D, len, …]
-  w.op('DUP2'); // [len, D, len, …]
-  if (elemDynamic) {
-    // offset-word region: D + 32·len ≤ end  ⇔  ¬(end < D + 32·len)
-    w.push(5);
-    w.op('SHL'); // [32·len, D, len, …]
-  } else {
-    // static body: D + len·staticSize ≤ end  ⇔  ¬(end < D + len·ss)
-    const ss = staticSize(elemLayout);
-    if (ss !== 1) {
-      w.push(ss);
-      w.op('MUL'); // [len·ss, D, len, …]
-    }
-  }
-  w.op('ADD'); // [D+body, len, …]
-  pushEnd();
-  w.op('LT'); // [end < D+body, len, …]
-  fail(belowFlat + 1); // [len, …]
+  // -- up-front element-body bound, BEFORE anything is allocated: a length word the source cannot
+  //    back fails here, so the allocation below is bounded by the source size (an unchecked `len`
+  //    up to 2^64−1 would otherwise bump FREE_PTR by up to 2^69 bytes)
+  emitArrayBodyBound(w, layout, pushBase, pushEnd, fail, belowFlat + 1); // [len, …]
   if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
   // -- allocate the pointer block [len][p0…]: 32 + 32·len bytes, bump FREE_PTR --------------
@@ -687,10 +902,15 @@ function emitDecodeArrayToMemStack(
   pushD(); // [D, arr, len, saved, …]   (last pushBase call — ELEM_BASE still = parent base)
   w.push(0); // [i=0, D, arr, len, saved, …]
 
-  const height = belowFlat + 5;
+  const loop: ArrayLoop = {
+    height: belowFlat + 5,
+    pushI: (above) => emitDup(w, 1 + above),
+    pushD: (above) => emitDup(w, 2 + above),
+    pushArr: (above) => emitDup(w, 3 + above),
+  };
   const head = w.newLabel('arrdec');
   const done = w.newLabel('arrdec_done');
-  w.label(head, height);
+  w.label(head, loop.height);
   // continue while i < len
   w.op('DUP4'); // [len, i, D, arr, len, saved, …]
   w.op('DUP2'); // [i, len, i, D, arr, len, saved, …]
@@ -699,38 +919,7 @@ function emitDecodeArrayToMemStack(
   w.pushLabel(done);
   w.op('JUMPI'); // [i, D, arr, len, saved, …]
 
-  // element source base from D and i:
-  if (elemDynamic) {
-    // offᵢ at D + 32·i (relative to D); offᵢ ≤ 2^64−1; elemPtr = D + offᵢ;
-    // elemPtr + minBlockBytes ≤ end (a dynamic tuple element's whole head)
-    w.op('DUP1'); // [i, i, D, arr, len, saved, …]
-    w.push(5);
-    w.op('SHL'); // [32·i, i, D, arr, len, saved, …]
-    w.op('DUP3'); // [D, 32·i, i, D, arr, len, saved, …]
-    w.op('ADD'); // [D+32·i, i, D, arr, len, saved, …]
-    w.op('MLOAD'); // [off, i, D, arr, len, saved, …]
-    w.op('DUP1');
-    emitAboveU64(w); // [off >> 64, off, i, D, arr, len, saved, …]
-    fail(belowFlat + 6); // [off, i, D, arr, len, saved, …]
-    w.op('DUP3'); // [D, off, i, D, arr, len, saved, …]
-    w.op('ADD'); // [elemPtr, i, D, arr, len, saved, …]
-    w.op('DUP1');
-    w.push(minBlockBytes(elemLayout));
-    w.op('ADD'); // [elemPtr+min, elemPtr, i, D, arr, len, saved, …]
-    pushEnd();
-    w.op('LT'); // [end < elemPtr+min, elemPtr, i, D, arr, len, saved, …]
-    fail(belowFlat + 6); // [elemPtr, i, D, arr, len, saved, …]
-  } else {
-    // static element source base = D + i·staticSize
-    const ss = staticSize(elemLayout);
-    w.op('DUP1'); // [i, i, D, arr, len, saved, …]
-    if (ss !== 1) {
-      w.push(ss);
-      w.op('MUL'); // [i·ss, i, D, arr, len, saved, …]
-    }
-    w.op('DUP3'); // [D, i·ss, i, D, arr, len, saved, …]
-    w.op('ADD'); // [elemBase, i, D, arr, len, saved, …]
-  }
+  emitElemSourceBase(w, elemLayout, loop, pushEnd, fail); // [elemBase, i, D, arr, len, saved, …]
 
   // ELEM_BASE := elemBase; decode the element (recursive decoders read it back).
   w.push(ELEM_BASE);
@@ -741,22 +930,14 @@ function emitDecodeArrayToMemStack(
   };
   emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, elemOpts); // [elemVal, i, D, arr, len, saved, …]
 
-  // store elemVal into arr + 32 + 32·i: stack [elemVal, i, D, arr, len, saved, …]
-  w.op('DUP2'); // [i, elemVal, i, D, arr, len, saved, …]
-  w.push(5);
-  w.op('SHL'); // [32·i, elemVal, i, D, arr, len, saved, …]
-  w.op('DUP5'); // [arr, 32·i, elemVal, i, D, arr, len, saved, …]
-  w.op('ADD');
-  w.push(32);
-  w.op('ADD'); // [slotAddr, elemVal, i, D, arr, len, saved, …]
-  w.op('MSTORE'); // [i, D, arr, len, saved, …]
+  emitStoreArraySlot(w, loop); // [i, D, arr, len, saved, …]
 
   // i += 1
   w.push(1);
   w.op('ADD'); // [i+1, D, arr, len, saved, …]
   w.pushLabel(head);
   w.op('JUMP');
-  w.label(done, height); // [i, D, arr, len, saved, …]
+  w.label(done, loop.height); // [i, D, arr, len, saved, …]
   w.op('POP'); // [D, arr, len, saved, …]
   w.op('POP'); // [arr, len, saved, …]
   w.op('SWAP2'); // [saved, len, arr, …]
@@ -791,7 +972,7 @@ function emitDecodeArrayToMemStack(
  */
 function emitDecodeArrayToMemHeap(
   w: AsmWriter,
-  layout: Extract<TypeLayout, { kind: 'array' }>,
+  layout: ArrayLayout,
   pushBase: PushBase,
   pushEnd: () => void,
   fail: DecodeFail,
@@ -800,7 +981,6 @@ function emitDecodeArrayToMemHeap(
   charge: DecodeCharge | null,
 ): void {
   const elemLayout = layout.elem;
-  const elemDynamic = isDynamic(elemLayout);
 
   // -- len: dynamic → MLOAD(base), bound ≤ 2^64−1; fixed → the constant N ---------------------
   if (layout.length === null) {
@@ -813,32 +993,10 @@ function emitDecodeArrayToMemHeap(
     w.push(layout.length, { note: `fixed len ${layout.length}` }); // [len, …]
   }
 
-  // -- up-front element-body bounds (mirrors the interp): D + body ≤ end, BEFORE the pointer
-  //    block and the frame are allocated and written — the frame sits at arr + 32 + 32·len, so an
-  //    unchecked length would expand memory by 32·len before the check could fail ---------------
-  pushBase(); // [base, len, …]
-  if (layout.length === null) {
-    w.push(32);
-    w.op('ADD'); // [D, len, …]
-    w.op('DUP2'); // [len, D, len, …]
-    if (elemDynamic) {
-      w.push(5);
-      w.op('SHL'); // [32·len, D, len, …]
-    } else {
-      const ss = staticSize(elemLayout);
-      if (ss !== 1) {
-        w.push(ss);
-        w.op('MUL'); // [len·ss, D, len, …]
-      }
-    }
-  } else {
-    // fixed `E[N]`: the body size is a constant
-    w.push(layout.length * (elemDynamic ? 32 : staticSize(elemLayout))); // [body, D, len, …]
-  }
-  w.op('ADD'); // [D+body, len, …]
-  pushEnd();
-  w.op('LT'); // [end < D+body, len, …]
-  fail(belowFlat + 1); // [len, …]
+  // -- up-front element-body bound, BEFORE the pointer block and the frame are allocated and
+  //    written — the frame sits at arr + 32 + 32·len, so an unchecked length would expand memory
+  //    by 32·len before the check could fail ----------------------------------------------------
+  emitArrayBodyBound(w, layout, pushBase, pushEnd, fail, belowFlat + 1); // [len, …]
   // the block is charged here (`arrayDecodeCharge`), before anything is allocated
   if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
@@ -887,10 +1045,15 @@ function emitDecodeArrayToMemHeap(
   w.push(0);
   emitDFrameStore(w, DFRAME_I); // frame.i := 0
 
-  const height = belowFlat + 1;
+  const loop: ArrayLoop = {
+    height: belowFlat + 1,
+    pushI: () => pushDFrameLoad(w, DFRAME_I),
+    pushD: () => pushDFrameLoad(w, DFRAME_D),
+    pushArr: (above) => emitDup(w, 1 + above),
+  };
   const head = w.newLabel('arrdec_heap');
   const done = w.newLabel('arrdec_heap_done');
-  w.label(head, height); // [arr, …]
+  w.label(head, loop.height); // [arr, …]
   // continue while i < len
   pushDFrameLoad(w, DFRAME_I); // [i, arr, …]
   pushDFrameLoad(w, DFRAME_LEN); // [len, i, arr, …]
@@ -900,37 +1063,7 @@ function emitDecodeArrayToMemHeap(
   w.op('JUMPI'); // [arr, …]
 
   // element source base from D and i → frame.elemBase
-  if (elemDynamic) {
-    // offᵢ at D + 32·i (relative to D); offᵢ ≤ 2^64−1; elemPtr = D + offᵢ;
-    // elemPtr + minBlockBytes ≤ end (a dynamic tuple element's whole head)
-    pushDFrameLoad(w, DFRAME_I);
-    w.push(5);
-    w.op('SHL'); // [32·i, arr, …]
-    pushDFrameLoad(w, DFRAME_D);
-    w.op('ADD');
-    w.op('MLOAD'); // [off, arr, …]
-    w.op('DUP1');
-    emitAboveU64(w); // [off >> 64, off, arr, …]
-    fail(belowFlat + 2); // [off, arr, …]
-    pushDFrameLoad(w, DFRAME_D);
-    w.op('ADD'); // [elemPtr, arr, …]
-    w.op('DUP1');
-    w.push(minBlockBytes(elemLayout));
-    w.op('ADD'); // [elemPtr+min, elemPtr, arr, …]
-    pushEnd();
-    w.op('LT'); // [end < elemPtr+min, elemPtr, arr, …]
-    fail(belowFlat + 2); // [elemPtr, arr, …]
-  } else {
-    // static element source base = D + i·staticSize
-    const ss = staticSize(elemLayout);
-    pushDFrameLoad(w, DFRAME_I); // [i, arr, …]
-    if (ss !== 1) {
-      w.push(ss);
-      w.op('MUL'); // [i·ss, arr, …]
-    }
-    pushDFrameLoad(w, DFRAME_D);
-    w.op('ADD'); // [elemBase, arr, …]
-  }
+  emitElemSourceBase(w, elemLayout, loop, pushEnd, fail); // [elemBase, arr, …]
   emitDFrameStore(w, DFRAME_ELEM_BASE); // [arr, …]
 
   // decode the element (the recursive decoders read their base back from the frame)
@@ -944,15 +1077,7 @@ function emitDecodeArrayToMemHeap(
     elemOpts,
   ); // [elemVal, arr, …]
 
-  // store elemVal into arr + 32 + 32·i
-  pushDFrameLoad(w, DFRAME_I);
-  w.push(5);
-  w.op('SHL'); // [32·i, elemVal, arr, …]
-  w.op('DUP3');
-  w.op('ADD');
-  w.push(32);
-  w.op('ADD'); // [slotAddr, elemVal, arr, …]
-  w.op('MSTORE'); // [arr, …]
+  emitStoreArraySlot(w, loop); // [arr, …]
 
   // i += 1
   pushDFrameLoad(w, DFRAME_I);
@@ -961,7 +1086,7 @@ function emitDecodeArrayToMemHeap(
   emitDFrameStore(w, DFRAME_I); // [arr, …]
   w.pushLabel(head);
   w.op('JUMP');
-  w.label(done, height); // [arr, …]
+  w.label(done, loop.height); // [arr, …]
 
   // -- restore the parent's scratch value ---------------------------------------------------
   pushDFrameLoad(w, DFRAME_PARENT); // [parent, arr, …]
@@ -1015,27 +1140,28 @@ function minBlockBytes(l: TypeLayout): number {
   return l.components.reduce((n, c) => n + (isDynamic(c) ? 32 : staticSize(c)), 0);
 }
 
-/** Stores the top-of-stack value (consumed) at `FREE_PTR + 32·k` — word `k` of a heap decode frame
- *  about to be allocated at the free pointer (see {@link emitDecodeArrayToMemHeap}). */
-function emitStoreAtFree(w: AsmWriter, k: number): void {
-  w.push(FREE_PTR);
-  w.op('MLOAD'); // [free, v]
+/** Pushes the address of word `k` of the frame whose pointer is stored at `ptrSlot`:
+ *  `MLOAD(ptrSlot) + 32·k`. */
+function pushFrameWordAddr(w: AsmWriter, ptrSlot: number, k: number): void {
+  w.push(ptrSlot);
+  w.op('MLOAD'); // [frame]
   if (k !== 0) {
     w.push(32 * k);
     w.op('ADD');
   }
+}
+
+/** Stores the top-of-stack value (consumed) at `FREE_PTR + 32·k` — word `k` of a heap decode frame
+ *  about to be allocated at the free pointer (see {@link emitDecodeArrayToMemHeap}). */
+function emitStoreAtFree(w: AsmWriter, k: number): void {
+  pushFrameWordAddr(w, FREE_PTR, k); // [addr, v]
   w.op('MSTORE'); // []
 }
 
 /** Pushes word `k` of the CURRENT decode frame, a heap array frame or a tuple frame
  *  (`MLOAD(MLOAD(DECODE_FRAME) + 32·k)`). */
 function pushDFrameLoad(w: AsmWriter, k: number): void {
-  w.push(DECODE_FRAME);
-  w.op('MLOAD'); // [frame]
-  if (k !== 0) {
-    w.push(32 * k);
-    w.op('ADD');
-  }
+  pushFrameWordAddr(w, DECODE_FRAME, k);
   w.op('MLOAD');
 }
 
@@ -1062,12 +1188,7 @@ function emitEnterTupleFrame(w: AsmWriter): void {
 
 /** Stores the top-of-stack value into word `k` of the CURRENT heap decode frame (consumes it). */
 function emitDFrameStore(w: AsmWriter, k: number): void {
-  w.push(DECODE_FRAME);
-  w.op('MLOAD'); // [frame, v]
-  if (k !== 0) {
-    w.push(32 * k);
-    w.op('ADD');
-  }
+  pushFrameWordAddr(w, DECODE_FRAME, k); // [addr, v]
   w.op('MSTORE'); // []
 }
 
@@ -1141,6 +1262,6 @@ function emitDecodeElement(
 
 /** A dynamic full-word `T[]` (`uint256[]`, `int256[]`, `bytes32[]`): its source bytes already are
  *  the canonical memory block, so every decoder aliases it instead of copying it. */
-function aliasesSource(l: Extract<TypeLayout, { kind: 'array' }>): boolean {
+function aliasesSource(l: ArrayLayout): boolean {
   return !isRecursiveArray(l) && !wordNeedsNormalize(wordElemAbi(l));
 }
