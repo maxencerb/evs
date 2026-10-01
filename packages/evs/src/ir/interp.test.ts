@@ -2400,6 +2400,25 @@ describe('maxSteps + trace', () => {
     const notes = (res.trace ?? []).map((t) => t.note);
     expect(notes).toEqual(['fncall fns[0]', 'fn "double": bin add']);
   });
+
+  test('arrnew notes name the array type, including a fixed size', () => {
+    const script = ir({
+      name: 'arrtrace',
+      values: [vi('uint256'), vi('uint256[3]'), vi('uint256[]')],
+      body: [
+        mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(3n) }, type: 'uint256' }),
+        mk({ k: 'arrnew', elem: 'uint256', length: 0, fixed: 3, out: 1 }),
+        mk({ k: 'arrnew', elem: 'uint256', length: 0, out: 2 }),
+      ],
+      returns: [
+        { name: 'fixed', type: 'uint256[3]', value: 1 },
+        { name: 'dynamic', type: 'uint256[]', value: 2 },
+      ],
+    });
+    const res = interpret(script, [], deadChain, { trace: true });
+    const notes = (res.trace ?? []).map((t) => t.note);
+    expect(notes).toEqual(['const uint256', 'arrnew uint256[3]', 'arrnew uint256[]']);
+  });
 });
 
 describe('host misuse', () => {

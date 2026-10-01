@@ -123,7 +123,7 @@ export interface ArrayVal {
 /**
  * memref payload of a tuple/struct value — a flat-pointer block of one {@link Value} per member
  * (a word for a static member, a memref for a dynamic/composite one). Reference semantics: the
- * `fields` array is shared (like {@link ArrayVal}'s `words`); `tupleset` mutates `fields[i]` in
+ * `fields` array is shared (like {@link ArrayVal}'s `items`); `tupleset` mutates `fields[i]` in
  * place, so every alias sees the write.
  */
 export interface TupleVal {
@@ -252,7 +252,7 @@ export function noteOf(s: Stmt): string {
     case 'slice':
       return 'slice';
     case 'arrnew':
-      return `arrnew ${stringifyType(s.elem)}[]`;
+      return `arrnew ${stringifyType(s.elem)}[${s.fixed ?? ''}]`;
     case 'arrset':
       return 'arrset';
     case 'tuplenew':
@@ -285,7 +285,9 @@ export function noteOf(s: Stmt): string {
       return 'break';
     case 'continue':
       return 'continue';
-    default:
-      return 'stmt';
+    default: {
+      const unknown: never = s; // a compile error here means a Stmt kind has no note
+      return String((unknown as { k?: unknown }).k);
+    }
   }
 }

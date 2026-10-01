@@ -1551,6 +1551,124 @@ describe('validateIr — encode/keccak256 rules', () => {
 });
 
 // ---------------------------------------------------------------------------
+// tuples: tuplenew / field / tupleset
+// ---------------------------------------------------------------------------
+
+describe('validateIr — tuple rules', () => {
+  const Pair = {
+    type: 'tuple',
+    components: [
+      { name: 'owner', type: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+  } as const;
+  const Pairs = { ...Pair, type: 'tuple[]' } as const;
+  /** values: 0 = the uint256 7, 1 = a fresh Pair (member 1 set from value 0), then `extra` */
+  const withPair = (extra: readonly ValueInfo[], body: readonly Stmt[]): ScriptIr =>
+    ir({
+      values: [vi('uint256'), vi(Pair), ...extra],
+      body: [
+        u256Const(0, 7n),
+        mk({ k: 'tuplenew', inits: [{ index: 1, value: 0 }], out: 1 }),
+        ...body,
+      ],
+    });
+
+  test('accepts tuplenew, field and tupleset over a plain tuple', () => {
+    const ok = withPair(
+      [vi('uint256')],
+      [
+        mk({ k: 'tupleset', tuple: 1, index: 1, value: 0 }),
+        mk({ k: 'field', tuple: 1, index: 1, out: 2 }),
+      ],
+    );
+    expect(() => validateIr(ok)).not.toThrow();
+  });
+
+  test('tuplenew: out must be a plain tuple; each init in range, written once, member-typed', () => {
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint256')],
+        body: [u256Const(0, 7n), mk({ k: 'tuplenew', inits: [], out: 1 })],
+      }),
+      /\(tuplenew\): out value must be a plain tuple type/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi(Pair)],
+        body: [u256Const(0, 7n), mk({ k: 'tuplenew', inits: [{ index: 2, value: 0 }], out: 1 })],
+      }),
+      /init #0 index 2 out of range/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi(Pair)],
+        body: [
+          u256Const(0, 7n),
+          mk({
+            k: 'tuplenew',
+            inits: [
+              { index: 1, value: 0 },
+              { index: 1, value: 0 },
+            ],
+            out: 1,
+          }),
+        ],
+      }),
+      /init #1 writes member 1 twice/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi(Pair)],
+        body: [u256Const(0, 7n), mk({ k: 'tuplenew', inits: [{ index: 0, value: 0 }], out: 1 })],
+      }),
+      /init #0: operand type mismatch — expected 'address'/,
+    );
+  });
+
+  test('field: operand must be a plain tuple, index in range, out typed as the member', () => {
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint256')],
+        body: [u256Const(0, 7n), mk({ k: 'field', tuple: 0, index: 0, out: 1 })],
+      }),
+      /\(field\): operand must be a tuple, got 'uint256'/,
+    );
+    expectInvalid(
+      ir({
+        args: [{ name: 'xs', type: Pairs }],
+        values: [vi(Pairs), vi('address')],
+        body: [mk({ k: 'field', tuple: 0, index: 0, out: 1 })],
+      }),
+      /\(field\): operand must be a tuple, got .*tuple\[\]/,
+    );
+    expectInvalid(
+      withPair([vi('uint256')], [mk({ k: 'field', tuple: 1, index: 2, out: 2 })]),
+      /\(field\): member index 2 out of range/,
+    );
+    expectInvalid(
+      withPair([vi('address')], [mk({ k: 'field', tuple: 1, index: 1, out: 2 })]),
+      /\(field\): values\[2\] is declared 'address' but the statement produces 'uint256'/,
+    );
+  });
+
+  test('tupleset: operand must be a plain tuple, index in range, value typed as the member', () => {
+    expectInvalid(
+      withPair([], [mk({ k: 'tupleset', tuple: 0, index: 0, value: 0 })]),
+      /\(tupleset\): operand must be a tuple, got 'uint256'/,
+    );
+    expectInvalid(
+      withPair([], [mk({ k: 'tupleset', tuple: 1, index: 5, value: 0 })]),
+      /\(tupleset\): member index 5 out of range/,
+    );
+    expectInvalid(
+      withPair([], [mk({ k: 'tupleset', tuple: 1, index: 0, value: 0 })]),
+      /\(tupleset\) value: operand type mismatch — expected 'address'/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // cells
 // ---------------------------------------------------------------------------
 
@@ -1805,6 +1923,22 @@ describe('validateIr — call rules', () => {
       callIr({ kind: 'simulate', revertReturns: ['uint256'] }),
       /revertReturns is only legal when kind === 'call'.*'simulate'/,
     );
+  });
+
+  test('a malformed revertReturns entry fails validation instead of crashing', () => {
+    // the schema is only built from revertReturns once every entry passed the type guard
+    for (const bad of [null, undefined, 'uint257']) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately ill-typed IR
+      const revertReturns = [bad] as unknown as EvsType[];
+      expectInvalid(
+        callIr({ kind: 'call', revertReturns }),
+        /revertReturns\[0\] is not a supported EvsType/,
+      );
+      expectInvalid(
+        callIr({ kind: 'static', revertReturns }),
+        /revertReturns is only legal when kind === 'call'/,
+      );
+    }
   });
 
   test('revertReturns types the outs and the ABI outputs are ignored', () => {
@@ -2349,6 +2483,44 @@ describe('validateIr — error shape', () => {
     const err = caught as EvsInternalError;
     expect(err.message).toContain('bug in evs, please report');
     expect(err.message).toContain('invalid ScriptIr "fixture"');
+  });
+
+  test('a hand-built statement of an unknown kind is rejected at runtime, nested or not', () => {
+    // the statement switches are exhaustive at compile time; this is the runtime backstop
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately ill-typed IR
+    const garbage = { site: 0, k: 'frobnicate' } as unknown as Stmt;
+    expectInvalid(ir({ body: [garbage] }), /body\[0\]: unknown statement kind 'frobnicate'/);
+    expectInvalid(
+      ir({
+        values: [vi('bool')],
+        body: [boolConst(0, true), mk({ k: 'if', cond: 0, then: [], else: [garbage] })],
+      }),
+      /body\[1\]\.else\[0\]: unknown statement kind 'frobnicate'/,
+    );
+  });
+
+  test('hand-built un / env / modarith statements with an unknown op are rejected at runtime', () => {
+    // the op switches are exhaustive at compile time; an unknown op is not typed as bitnot,
+    // read as a uint256 env value or interpreted as mulmod
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately ill-typed IR
+    const un = { site: 0, k: 'un', op: 'neg', a: 0, out: 1 } as unknown as Stmt;
+    expectInvalid(
+      ir({ values: [vi('uint256'), vi('uint256')], body: [u256Const(0, 1n), un] }),
+      /body\[1\] \(un neg\): unknown un op 'neg'/,
+    );
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately ill-typed IR
+    const env = { site: 0, k: 'env', op: 'basefee', out: 0 } as unknown as Stmt;
+    expectInvalid(
+      ir({ values: [vi('uint256')], body: [env] }),
+      /body\[0\] \(env basefee\): unknown env op 'basefee'/,
+    );
+    const modBody = { k: 'modarith', op: 'expmod', a: 0, b: 0, n: 0, out: 1 };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberately ill-typed IR
+    const mod = { site: 0, ...modBody } as unknown as Stmt;
+    expectInvalid(
+      ir({ values: [vi('uint256'), vi('uint256')], body: [u256Const(0, 1n), mod] }),
+      /body\[1\] \(modarith expmod\): unknown modarith op 'expmod'/,
+    );
   });
 });
 

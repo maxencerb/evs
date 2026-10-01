@@ -299,11 +299,52 @@ function decodeStmts(v: unknown, path: string): readonly Stmt[] {
   return asArray(v, path).map((s, i) => decodeStmt(s, `${path}[${i}]`));
 }
 
+/**
+ * Every statement kind. `satisfies Record<Stmt['k'], true>` makes a kind added to the schema
+ * but missing here a compile error, and {@link isStmtKind} narrows the untrusted `k` to
+ * `Stmt['k']`, so `decodeStmt`'s switch is checked for exhaustiveness too.
+ */
+const STMT_KINDS = {
+  const: true,
+  bin: true,
+  un: true,
+  modarith: true,
+  env: true,
+  account: true,
+  convert: true,
+  select: true,
+  index: true,
+  len: true,
+  slice: true,
+  arrnew: true,
+  arrset: true,
+  tuplenew: true,
+  field: true,
+  tupleset: true,
+  encode: true,
+  keccak256: true,
+  throw: true,
+  cellnew: true,
+  cellget: true,
+  cellset: true,
+  call: true,
+  fncall: true,
+  if: true,
+  while: true,
+  break: true,
+  continue: true,
+} as const satisfies Record<Stmt['k'], true>;
+
+function isStmtKind(k: string): k is Stmt['k'] {
+  return Object.hasOwn(STMT_KINDS, k);
+}
+
 function decodeStmt(v: unknown, path: string): Stmt {
   const o = asRecord(v, path);
   const site = asId(o['site'], `${path}.site`);
   const k: unknown = o['k'];
   if (typeof k !== 'string') fail(`${path}.k`, `expected a statement kind, got ${describe(k)}`);
+  if (!isStmtKind(k)) fail(`${path}.k`, `unknown statement kind ${describe(k)}`);
   switch (k) {
     case 'const':
       return {
@@ -548,8 +589,15 @@ function decodeStmt(v: unknown, path: string): Stmt {
     case 'break':
     case 'continue':
       return { site, k };
-    default:
-      return fail(`${path}.k`, `unknown statement kind ${describe(k)}`);
+    default: {
+      // unreachable: isStmtKind rejected every other string above. A distinct error class and
+      // message, so a test of that guard cannot pass through here by accident.
+      const unknown: never = k; // a compile error here means a statement kind has no decoder
+      throw new EvsInternalError(
+        'INTERNAL',
+        `deserializeIr: ${path}.k: statement kind ${describe(unknown)} passed isStmtKind but has no decoder`,
+      );
+    }
   }
 }
 

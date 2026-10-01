@@ -52,11 +52,11 @@ import {
   typesEqual,
   type ArrayType,
   type EvsType,
+  type TupleType,
   type WordType,
 } from '../core/types.js';
 import {
   callOutputs,
-  isAccountOp,
   type CellId,
   type FnId,
   type PlainAbiFunction,
@@ -77,6 +77,9 @@ export function validateIr(ir: ScriptIr): void {
 const SELECTOR_RE = /^0x[0-9a-fA-F]{8}$/;
 const WORD_HEX_RE = /^0x[0-9a-fA-F]{64}$/;
 const DATA_HEX_RE = /^0x(?:[0-9a-fA-F]{2})+$/;
+
+/** The statement variant(s) of kind `K`. */
+type StmtOf<K extends Stmt['k']> = Extract<Stmt, { k: K }>;
 
 interface Scope {
   readonly values: Set<ValueId>;
@@ -352,7 +355,7 @@ class IrValidator {
   }
 
   // -------------------------------------------------------------------------
-  // statement walk
+  // statement walk — `checkStmt` dispatches each kind to its family's checker
   // -------------------------------------------------------------------------
 
   private walkBlock(stmts: readonly Stmt[], path: string): void {
@@ -363,351 +366,70 @@ class IrValidator {
 
   private checkStmt(s: Stmt, path: string): void {
     switch (s.k) {
-      case 'const': {
-        const what = `${path} (const)`;
-        if (!isEvsValueType(s.type) || isTupleType(s.type)) {
-          this.fail(`${what}: unsupported / non-const type ${JSON.stringify(s.type)}`);
-        }
-        this.checkConstData(s.type, s.data, what);
-        this.define(s.out, s.type, what);
-        if (s.data.kind === 'word') this.constWords.set(s.out, BigInt(s.data.hex));
-        return;
-      }
+      case 'const':
+        return this.checkConst(s, path);
       case 'bin':
-        this.checkBin(s, path);
-        return;
-      case 'modarith': {
-        // addmod / mulmod (issue #10) and muldiv / muldivup: uint256 only, like Solidity's
-        // builtins and FullMath
-        const what = `${path} (modarith ${s.op})`;
-        this.use(s.a, 'uint256', what);
-        this.use(s.b, 'uint256', what);
-        this.use(
-          s.n,
-          'uint256',
-          `${what} ${s.op.startsWith('muldiv') ? 'denominator' : 'modulus'}`,
-        );
-        this.define(s.out, 'uint256', what);
-        return;
-      }
-      case 'un': {
-        const what = `${path} (un ${s.op})`;
-        if (s.op === 'not') {
-          this.use(s.a, 'bool', what);
-          this.define(s.out, 'bool', what);
-          return;
-        }
-        if (s.op === 'iszero') {
-          const ta = this.use(s.a, null, what);
-          if (!isWordType(ta)) {
-            this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`);
-          }
-          this.define(s.out, 'bool', what);
-          return;
-        }
-        // bitnot
-        const ta = this.use(s.a, null, what);
-        if (!isBitsOperand(ta)) {
-          this.fail(`${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`);
-        }
-        this.define(s.out, ta, what);
-        return;
-      }
-      case 'env': {
-        const what = `${path} (env ${s.op})`;
-        const outType: EvsType = s.op === 'address' || s.op === 'caller' ? 'address' : 'uint256';
-        this.define(s.out, outType, what);
-        return;
-      }
-      case 'account': {
-        const what = `${path} (account ${s.op})`;
-        if (!isAccountOp(s.op)) this.fail(`${what}: unknown account op`);
-        this.use(s.a, 'address', what);
-        this.define(s.out, s.op === 'codehash' ? 'bytes32' : 'uint256', what);
-        return;
-      }
-      case 'convert': {
-        const what = `${path} (convert)`;
-        const from = this.use(s.a, null, what);
-        const outInfo = this.ir.values[s.out];
-        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
-        if (!convertOk(from, outInfo.type)) {
-          this.fail(
-            `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(outInfo.type)}' (legal: uintN/intN → uintN/intN, uint256|bytes32|uint160 → address, address → uint160, bytesN ↔ the same-width uintN, string ↔ bytes, bytesN → string)`,
-          );
-        }
-        this.define(s.out, outInfo.type, what);
-        return;
-      }
-      case 'select': {
-        const what = `${path} (select)`;
-        this.use(s.cond, 'bool', what);
-        const ta = this.use(s.a, null, what);
-        this.use(s.b, ta, what);
-        this.define(s.out, ta, what);
-        return;
-      }
-      case 'index': {
-        const what = `${path} (index)`;
-        const ta = this.use(s.arr, null, what);
-        this.use(s.i, 'uint256', what);
-        if (ta === 'string' || ta === 'bytes') {
-          this.define(s.out, 'bytes1', what); // `.byteAt(i)`
-          return;
-        }
-        if (!isArrayValueType(ta)) {
-          this.fail(
-            `${what}: operand must be a T[] array or string/bytes, got '${stringifyType(ta)}'`,
-          );
-        }
-        this.define(s.out, elemTypeOf(ta), what);
-        return;
-      }
-      case 'slice': {
-        const what = `${path} (slice)`;
-        const ta = this.use(s.a, null, what);
-        if (ta !== 'string' && ta !== 'bytes') {
-          this.fail(`${what}: operand must be string/bytes, got '${stringifyType(ta)}'`);
-        }
-        this.use(s.start, 'uint256', `${what} start`);
-        this.use(s.end, 'uint256', `${what} end`);
-        this.define(s.out, ta, what);
-        return;
-      }
-      case 'len': {
-        const what = `${path} (len)`;
-        const ta = this.use(s.a, null, what);
-        // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
-        if (!isLengthType(ta)) {
-          this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`);
-        }
-        this.define(s.out, 'uint256', what);
-        return;
-      }
-      case 'arrnew': {
-        const what = `${path} (arrnew)`;
-        const elem = this.checkElemType(s.elem, what);
-        this.use(s.length, 'uint256', what);
-        if (s.fixed !== undefined) {
-          // a fixed-size array `elem[N]`: the length operand must be the word const N, so the
-          // block's length word (what `.length`/encode/decode all read) provably equals N.
-          if (!Number.isSafeInteger(s.fixed) || s.fixed < 1 || s.fixed > 0xffffffff) {
-            this.fail(`${what}: fixed length must be an integer in [1, 2^32), got ${s.fixed}`);
-          }
-          const lit = this.constWords.get(s.length);
-          if (lit === undefined || lit !== BigInt(s.fixed)) {
-            this.fail(
-              `${what}: a fixed-size arrnew (${s.fixed}) must take a word const length equal to ${s.fixed}${lit === undefined ? ' (the length operand is not a const)' : ` (got ${lit})`}`,
-            );
-          }
-        }
-        this.define(s.out, arrayTypeOf(elem, s.fixed ?? null), what); // elem validated by checkElemType
-        this.arrnewOuts.add(s.out);
-        return;
-      }
-      case 'arrset': {
-        const what = `${path} (arrset)`;
-        const ta = this.use(s.arr, null, what);
-        if (!isArrayValueType(ta)) {
-          this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
-        }
-        if (!this.arrnewOuts.has(s.arr)) {
-          this.fail(
-            `${what}: ValueId ${s.arr} is not an arrnew result — only arrays built by arrnew (s.newArray) can be written in place`,
-          );
-        }
-        this.use(s.i, 'uint256', what);
-        this.use(s.value, elemTypeOf(ta), what);
-        return;
-      }
-      case 'tuplenew': {
-        const what = `${path} (tuplenew)`;
-        const outInfo = this.ir.values[s.out];
-        if (outInfo === undefined) this.fail(`${what}: unknown ValueId ${s.out}`);
-        const tt = outInfo.type;
-        // a plain tuple only: a tuple ARRAY tag (`tuple[]`, `tuple[2]`) would make codegen lay
-        // out a flat member block that every later array op reads as `[len][elements…]`
-        if (!isTupleType(tt) || tt.type !== 'tuple') {
-          this.fail(`${what}: out value must be a plain tuple type, got '${stringifyType(tt)}'`);
-        }
-        const seen = new Set<number>();
-        s.inits.forEach((init, j) => {
-          const comp = tt.components[init.index];
-          if (comp === undefined) {
-            this.fail(`${what}: init #${j} index ${init.index} out of range`);
-          }
-          if (seen.has(init.index)) {
-            this.fail(`${what}: init #${j} writes member ${init.index} twice`);
-          }
-          seen.add(init.index);
-          this.use(init.value, abiParamToType(comp), `${what} init #${j}`);
-        });
-        this.define(s.out, tt, what);
-        return;
-      }
-      case 'field': {
-        const what = `${path} (field)`;
-        const ta = this.use(s.tuple, null, what);
-        if (!isTupleType(ta) || ta.type !== 'tuple') {
-          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`);
-        }
-        const comp = ta.components[s.index];
-        if (comp === undefined) {
-          this.fail(`${what}: member index ${s.index} out of range`);
-        }
-        this.define(s.out, abiParamToType(comp), what);
-        return;
-      }
-      case 'tupleset': {
-        const what = `${path} (tupleset)`;
-        const ta = this.use(s.tuple, null, what);
-        if (!isTupleType(ta) || ta.type !== 'tuple') {
-          this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`);
-        }
-        const comp = ta.components[s.index];
-        if (comp === undefined) {
-          this.fail(`${what}: member index ${s.index} out of range`);
-        }
-        this.use(s.value, abiParamToType(comp), `${what} value`);
-        return;
-      }
-      case 'encode': {
-        const what = `${path} (encode ${s.mode})`;
-        if (s.args.length === 0) {
-          this.fail(`${what}: at least one value is required`);
-        }
-        s.args.forEach((a, i) => {
-          const ta = this.use(a, null, `${what} value #${i}`);
-          if (s.mode === 'packed' && !isPackedEncodable(ta)) {
-            this.fail(
-              `${what} value #${i}: '${stringifyType(ta)}' cannot be packed-encoded (abi.encodePacked supports words, string/bytes, and word-element arrays only)`,
-            );
-          }
-        });
-        this.define(s.out, 'bytes', what);
-        return;
-      }
-      case 'keccak256': {
-        const what = `${path} (keccak256)`;
-        const ta = this.use(s.a, null, what);
-        if (ta !== 'bytes' && ta !== 'string') {
-          this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`);
-        }
-        this.define(s.out, 'bytes32', what);
-        return;
-      }
-      case 'throw': {
-        const err = (this.ir.errors ?? [])[s.error];
-        if (err === undefined) {
-          this.fail(`${path} (throw): unknown error index ${s.error}`);
-        }
-        const what = `${path} (throw "${err.name}")`;
-        if (s.args.length !== err.inputs.length) {
-          this.fail(
-            `${what}: arity mismatch — ${s.args.length} args for ${err.inputs.length} declared inputs`,
-          );
-        }
-        s.args.forEach((a, i) => {
-          const p = err.inputs[i];
-          if (p === undefined) return; // unreachable: lengths checked above
-          this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`);
-        });
-        return;
-      }
-      case 'cellnew': {
-        const what = `${path} (cellnew)`;
-        const cell = this.cellInfo(s.cell, what);
-        if (this.cellCreated[s.cell] === true) {
-          this.fail(`${what}: cellnew for CellId ${s.cell} appears more than once`);
-        }
-        this.use(s.init, cell.type, what);
-        this.cellCreated[s.cell] = true;
-        this.top().cells.add(s.cell);
-        return;
-      }
-      case 'cellget': {
-        const what = `${path} (cellget)`;
-        const cellType = this.useCell(s.cell, what);
-        this.define(s.out, cellType, what);
-        return;
-      }
-      case 'cellset': {
-        const what = `${path} (cellset)`;
-        const cellType = this.useCell(s.cell, what);
-        this.use(s.value, cellType, what);
-        return;
-      }
+        return this.checkBin(s, path);
+      case 'modarith':
+      case 'un':
+      case 'env':
+      case 'account':
+      case 'convert':
+      case 'select':
+        return this.checkWordOp(s, path);
+      case 'index':
+      case 'slice':
+      case 'len':
+      case 'arrnew':
+      case 'arrset':
+        return this.checkArrayStmt(s, path);
+      case 'tuplenew':
+      case 'field':
+      case 'tupleset':
+        return this.checkTupleStmt(s, path);
+      case 'encode':
+      case 'keccak256':
+        return this.checkBytesStmt(s, path);
+      case 'throw':
+        return this.checkThrow(s, path);
+      case 'cellnew':
+      case 'cellget':
+      case 'cellset':
+        return this.checkCellStmt(s, path);
       case 'call':
-        this.checkCall(s, path);
-        return;
-      case 'fncall': {
-        const what = `${path} (fncall)`;
-        const fn = this.ir.fns[s.fn];
-        if (fn === undefined) this.fail(`${what}: unknown FnId ${s.fn}`);
-        if (s.args.length !== fn.params.length) {
-          this.fail(
-            `${what}: arity mismatch — ${s.args.length} args for fns[${s.fn}] ("${fn.name}") with ${fn.params.length} params`,
-          );
-        }
-        s.args.forEach((a, i) => {
-          const p = fn.params[i];
-          if (p === undefined) return; // unreachable: lengths checked above
-          this.use(a, p.type, `${what} arg ${i} ("${p.name}")`);
-        });
-        if (s.outs.length !== fn.results.length) {
-          this.fail(
-            `${what}: arity mismatch — ${s.outs.length} outs for fns[${s.fn}] ("${fn.name}") with ${fn.results.length} results`,
-          );
-        }
-        s.outs.forEach((out, i) => {
-          const r = fn.results[i];
-          if (r === undefined) return; // unreachable: lengths checked above
-          this.define(out, r.type, `${what} out ${i}`);
-        });
-        if (this.currentFn !== null) this.fnCalls[this.currentFn]?.add(s.fn);
-        return;
-      }
-      case 'if': {
-        const what = `${path} (if)`;
-        this.use(s.cond, 'bool', what);
-        this.scopes.push(newScope());
-        this.walkBlock(s.then, `${path}.then`);
-        this.scopes.pop();
-        this.scopes.push(newScope());
-        this.walkBlock(s.else, `${path}.else`);
-        this.scopes.pop();
-        return;
-      }
-      case 'while': {
-        const what = `${path} (while)`;
-        // the body scope is a child of the header scope: header values dominate the body
-        this.scopes.push(newScope());
-        this.walkBlock(s.header, `${path}.header`);
-        this.use(s.cond, 'bool', `${what} cond`);
-        this.scopes.push(newScope());
-        this.loopDepth += 1;
-        this.walkBlock(s.body, `${path}.body`);
-        this.loopDepth -= 1;
-        this.scopes.pop();
-        this.scopes.pop();
-        return;
-      }
+        return this.checkCall(s, path);
+      case 'fncall':
+        return this.checkFnCall(s, path);
+      case 'if':
+      case 'while':
       case 'break':
-      case 'continue': {
-        if (this.loopDepth === 0) {
-          this.fail(`${path}: '${s.k}' outside a while body`);
-        }
-        return;
-      }
-      default: {
-        // exhaustive over Stmt; reachable only for hand-built garbage
-        const kind = String((s as { k: unknown }).k);
-        this.fail(`${path}: unknown statement kind '${kind}'`);
-      }
+      case 'continue':
+        return this.checkControl(s, path);
+      default:
+        return this.unknownStmt(s, path);
     }
   }
 
-  private checkBin(s: Extract<Stmt, { k: 'bin' }>, path: string): void {
+  /**
+   * The `default` of every statement switch: `s: never` makes a missing case a compile error,
+   * and the runtime throw rejects hand-built garbage (deserialized IR is shape-checked first).
+   */
+  private unknownStmt(s: never, path: string): never {
+    const kind = String((s as { k?: unknown }).k);
+    return this.fail(`${path}: unknown statement kind '${kind}'`);
+  }
+
+  private checkConst(s: StmtOf<'const'>, path: string): void {
+    const what = `${path} (const)`;
+    if (!isEvsValueType(s.type) || isTupleType(s.type)) {
+      this.fail(`${what}: unsupported / non-const type ${JSON.stringify(s.type)}`);
+    }
+    this.checkConstData(s.type, s.data, what);
+    this.define(s.out, s.type, what);
+    if (s.data.kind === 'word') this.constWords.set(s.out, BigInt(s.data.hex));
+  }
+
+  private checkBin(s: StmtOf<'bin'>, path: string): void {
     const what = `${path} (bin ${s.op})`;
     switch (s.op) {
       case 'add':
@@ -796,13 +518,444 @@ class IrValidator {
         return;
       }
       default: {
-        const op = String((s as { op: unknown }).op);
-        this.fail(`${what}: unknown bin op '${op}'`);
+        const op: never = s.op; // a compile error here means a BinOp has no case
+        this.fail(`${what}: unknown bin op '${String(op)}'`);
       }
     }
   }
 
-  private checkCall(s: Extract<Stmt, { k: 'call' }>, path: string): void {
+  /**
+   * The other single-word operations: addmod/mulmod/muldiv/muldivup, unary ops, env and account
+   * reads, convert, select.
+   */
+  private checkWordOp(
+    s: StmtOf<'modarith' | 'un' | 'env' | 'account' | 'convert' | 'select'>,
+    path: string,
+  ): void {
+    switch (s.k) {
+      case 'modarith': {
+        // addmod / mulmod (issue #10) and muldiv / muldivup: uint256 only, like Solidity's
+        // builtins and FullMath
+        const what = `${path} (modarith ${s.op})`;
+        const { op } = s;
+        let third: string;
+        switch (op) {
+          case 'addmod':
+          case 'mulmod':
+            third = 'modulus';
+            break;
+          case 'muldiv':
+          case 'muldivup':
+            third = 'denominator';
+            break;
+          default: {
+            const unknown: never = op; // a compile error here means a ModArithOp has no case
+            return this.fail(`${what}: unknown modarith op '${String(unknown)}'`);
+          }
+        }
+        this.use(s.a, 'uint256', what);
+        this.use(s.b, 'uint256', what);
+        this.use(s.n, 'uint256', `${what} ${third}`);
+        this.define(s.out, 'uint256', what);
+        return;
+      }
+      case 'un': {
+        const what = `${path} (un ${s.op})`;
+        const { op } = s;
+        switch (op) {
+          case 'not': {
+            this.use(s.a, 'bool', what);
+            this.define(s.out, 'bool', what);
+            return;
+          }
+          case 'iszero': {
+            const ta = this.use(s.a, null, what);
+            if (!isWordType(ta)) {
+              this.fail(`${what}: operand must be a word type, got '${stringifyType(ta)}'`);
+            }
+            this.define(s.out, 'bool', what);
+            return;
+          }
+          case 'bitnot': {
+            const ta = this.use(s.a, null, what);
+            if (!isBitsOperand(ta)) {
+              this.fail(`${what}: operand must be uintN/intN/bytesN, got '${stringifyType(ta)}'`);
+            }
+            this.define(s.out, ta, what);
+            return;
+          }
+          default: {
+            const unknown: never = op; // a compile error here means a UnOp has no case
+            return this.fail(`${what}: unknown un op '${String(unknown)}'`);
+          }
+        }
+      }
+      case 'env': {
+        const what = `${path} (env ${s.op})`;
+        const { op } = s;
+        switch (op) {
+          case 'address':
+          case 'caller':
+            this.define(s.out, 'address', what);
+            return;
+          case 'timestamp':
+          case 'blocknumber':
+          case 'chainid':
+            this.define(s.out, 'uint256', what);
+            return;
+          default: {
+            const unknown: never = op; // a compile error here means an EnvOp has no case
+            return this.fail(`${what}: unknown env op '${String(unknown)}'`);
+          }
+        }
+      }
+      case 'account': {
+        const what = `${path} (account ${s.op})`;
+        const { op } = s;
+        let out: EvsType;
+        switch (op) {
+          case 'balance':
+          case 'codesize':
+            out = 'uint256';
+            break;
+          case 'codehash':
+            out = 'bytes32';
+            break;
+          default: {
+            const unknown: never = op; // a compile error here means an AccountOp has no case
+            return this.fail(`${what}: unknown account op '${String(unknown)}'`);
+          }
+        }
+        this.use(s.a, 'address', what);
+        this.define(s.out, out, what);
+        return;
+      }
+      case 'convert': {
+        const what = `${path} (convert)`;
+        const from = this.use(s.a, null, what);
+        const to = this.declaredType(s.out, what);
+        if (!convertOk(from, to)) {
+          this.fail(
+            `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(to)}' (legal: uintN/intN → uintN/intN, uint256|bytes32|uint160 → address, address → uint160, bytesN ↔ the same-width uintN, string ↔ bytes, bytesN → string)`,
+          );
+        }
+        this.define(s.out, to, what);
+        return;
+      }
+      case 'select': {
+        const what = `${path} (select)`;
+        this.use(s.cond, 'bool', what);
+        const ta = this.use(s.a, null, what);
+        this.use(s.b, ta, what);
+        this.define(s.out, ta, what);
+        return;
+      }
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // memrefs: arrays, tuples, bytes
+  // -------------------------------------------------------------------------
+
+  private checkArrayStmt(
+    s: StmtOf<'index' | 'slice' | 'len' | 'arrnew' | 'arrset'>,
+    path: string,
+  ): void {
+    const what = `${path} (${s.k})`;
+    switch (s.k) {
+      case 'index': {
+        const ta = this.use(s.arr, null, what);
+        this.use(s.i, 'uint256', what);
+        if (ta === 'string' || ta === 'bytes') {
+          this.define(s.out, 'bytes1', what); // `.byteAt(i)`
+          return;
+        }
+        if (!isArrayValueType(ta)) {
+          this.fail(
+            `${what}: operand must be a T[] array or string/bytes, got '${stringifyType(ta)}'`,
+          );
+        }
+        this.define(s.out, elemTypeOf(ta), what);
+        return;
+      }
+      case 'slice': {
+        const ta = this.use(s.a, null, what);
+        if (ta !== 'string' && ta !== 'bytes') {
+          this.fail(`${what}: operand must be string/bytes, got '${stringifyType(ta)}'`);
+        }
+        this.use(s.start, 'uint256', `${what} start`);
+        this.use(s.end, 'uint256', `${what} end`);
+        this.define(s.out, ta, what);
+        return;
+      }
+      case 'len': {
+        const ta = this.use(s.a, null, what);
+        // string/bytes or any array (word/string/tuple element) — a PLAIN tuple has no length.
+        if (!isLengthType(ta)) {
+          this.fail(`${what}: operand must be string/bytes/T[], got '${stringifyType(ta)}'`);
+        }
+        this.define(s.out, 'uint256', what);
+        return;
+      }
+      case 'arrnew': {
+        const elem = this.checkElemType(s.elem, what);
+        this.use(s.length, 'uint256', what);
+        if (s.fixed !== undefined) this.checkFixedLength(s.fixed, s.length, what);
+        this.define(s.out, arrayTypeOf(elem, s.fixed ?? null), what); // elem validated by checkElemType
+        this.arrnewOuts.add(s.out);
+        return;
+      }
+      case 'arrset': {
+        const ta = this.useArray(s.arr, what);
+        if (!this.arrnewOuts.has(s.arr)) {
+          this.fail(
+            `${what}: ValueId ${s.arr} is not an arrnew result — only arrays built by arrnew (s.newArray) can be written in place`,
+          );
+        }
+        this.use(s.i, 'uint256', what);
+        this.use(s.value, elemTypeOf(ta), what);
+        return;
+      }
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  /** Uses `id` as the array operand of `arrset`: any `T[]` / `T[N]` value. */
+  private useArray(id: ValueId, what: string): ArrayType | TupleType {
+    const ta = this.use(id, null, what);
+    if (!isArrayValueType(ta)) {
+      this.fail(`${what}: operand must be a T[] array, got '${stringifyType(ta)}'`);
+    }
+    return ta;
+  }
+
+  /**
+   * A fixed-size `arrnew` (`elem[N]`): the length operand must be the word const N, so the
+   * block's length word (what `.length`/encode/decode all read) provably equals N.
+   */
+  private checkFixedLength(fixed: number, length: ValueId, what: string): void {
+    if (!Number.isSafeInteger(fixed) || fixed < 1 || fixed > 0xffffffff) {
+      this.fail(`${what}: fixed length must be an integer in [1, 2^32), got ${fixed}`);
+    }
+    const lit = this.constWords.get(length);
+    if (lit === undefined || lit !== BigInt(fixed)) {
+      this.fail(
+        `${what}: a fixed-size arrnew (${fixed}) must take a word const length equal to ${fixed}${lit === undefined ? ' (the length operand is not a const)' : ` (got ${lit})`}`,
+      );
+    }
+  }
+
+  private checkTupleStmt(s: StmtOf<'tuplenew' | 'field' | 'tupleset'>, path: string): void {
+    const what = `${path} (${s.k})`;
+    switch (s.k) {
+      case 'tuplenew': {
+        const tt = this.declaredType(s.out, what);
+        // a plain tuple only: a tuple ARRAY tag (`tuple[]`, `tuple[2]`) would make codegen lay
+        // out a flat member block that every later array op reads as `[len][elements…]`
+        if (!isTupleType(tt) || tt.type !== 'tuple') {
+          this.fail(`${what}: out value must be a plain tuple type, got '${stringifyType(tt)}'`);
+        }
+        const seen = new Set<number>();
+        s.inits.forEach((init, j) => {
+          const comp = tt.components[init.index];
+          if (comp === undefined) {
+            this.fail(`${what}: init #${j} index ${init.index} out of range`);
+          }
+          if (seen.has(init.index)) {
+            this.fail(`${what}: init #${j} writes member ${init.index} twice`);
+          }
+          seen.add(init.index);
+          this.use(init.value, abiParamToType(comp), `${what} init #${j}`);
+        });
+        this.define(s.out, tt, what);
+        return;
+      }
+      case 'field':
+        this.define(s.out, this.tupleMember(s.tuple, s.index, what), what);
+        return;
+      case 'tupleset':
+        this.use(s.value, this.tupleMember(s.tuple, s.index, what), `${what} value`);
+        return;
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  /** The type of member `index` of the plain-tuple operand `tuple` (`field` / `tupleset`). */
+  private tupleMember(tuple: ValueId, index: number, what: string): EvsType {
+    const ta = this.use(tuple, null, what);
+    if (!isTupleType(ta) || ta.type !== 'tuple') {
+      this.fail(`${what}: operand must be a tuple, got '${stringifyType(ta)}'`);
+    }
+    const comp = ta.components[index];
+    if (comp === undefined) {
+      this.fail(`${what}: member index ${index} out of range`);
+    }
+    return abiParamToType(comp);
+  }
+
+  private checkBytesStmt(s: StmtOf<'encode' | 'keccak256'>, path: string): void {
+    switch (s.k) {
+      case 'encode': {
+        const what = `${path} (encode ${s.mode})`;
+        if (s.args.length === 0) {
+          this.fail(`${what}: at least one value is required`);
+        }
+        s.args.forEach((a, i) => {
+          const ta = this.use(a, null, `${what} value #${i}`);
+          if (s.mode === 'packed' && !isPackedEncodable(ta)) {
+            this.fail(
+              `${what} value #${i}: '${stringifyType(ta)}' cannot be packed-encoded (abi.encodePacked supports words, string/bytes, and word-element arrays only)`,
+            );
+          }
+        });
+        this.define(s.out, 'bytes', what);
+        return;
+      }
+      case 'keccak256': {
+        const what = `${path} (keccak256)`;
+        const ta = this.use(s.a, null, what);
+        if (ta !== 'bytes' && ta !== 'string') {
+          this.fail(`${what}: operand must be bytes/string, got '${stringifyType(ta)}'`);
+        }
+        this.define(s.out, 'bytes32', what);
+        return;
+      }
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  /** The type the value table declares for `id` — for statements whose output type is not
+   *  derived from their operands (`convert`'s target, `tuplenew`'s tuple). */
+  private declaredType(id: ValueId, what: string): EvsType {
+    const info = this.ir.values[id];
+    if (info === undefined) this.fail(`${what}: unknown ValueId ${id}`);
+    return info.type;
+  }
+
+  // -------------------------------------------------------------------------
+  // cells
+  // -------------------------------------------------------------------------
+
+  private checkCellStmt(s: StmtOf<'cellnew' | 'cellget' | 'cellset'>, path: string): void {
+    const what = `${path} (${s.k})`;
+    switch (s.k) {
+      case 'cellnew': {
+        const cell = this.cellInfo(s.cell, what);
+        if (this.cellCreated[s.cell] === true) {
+          this.fail(`${what}: cellnew for CellId ${s.cell} appears more than once`);
+        }
+        this.use(s.init, cell.type, what);
+        this.cellCreated[s.cell] = true;
+        this.top().cells.add(s.cell);
+        return;
+      }
+      case 'cellget':
+        this.define(s.out, this.useCell(s.cell, what), what);
+        return;
+      case 'cellset':
+        this.use(s.value, this.useCell(s.cell, what), what);
+        return;
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  // -------------------------------------------------------------------------
+  // control flow + reverts
+  // -------------------------------------------------------------------------
+
+  private checkControl(s: StmtOf<'if' | 'while' | 'break' | 'continue'>, path: string): void {
+    switch (s.k) {
+      case 'if': {
+        this.use(s.cond, 'bool', `${path} (if)`);
+        this.scopes.push(newScope());
+        this.walkBlock(s.then, `${path}.then`);
+        this.scopes.pop();
+        this.scopes.push(newScope());
+        this.walkBlock(s.else, `${path}.else`);
+        this.scopes.pop();
+        return;
+      }
+      case 'while': {
+        // the body scope is a child of the header scope: header values dominate the body
+        this.scopes.push(newScope());
+        this.walkBlock(s.header, `${path}.header`);
+        this.use(s.cond, 'bool', `${path} (while) cond`);
+        this.scopes.push(newScope());
+        this.loopDepth += 1;
+        this.walkBlock(s.body, `${path}.body`);
+        this.loopDepth -= 1;
+        this.scopes.pop();
+        this.scopes.pop();
+        return;
+      }
+      case 'break':
+      case 'continue': {
+        if (this.loopDepth === 0) {
+          this.fail(`${path}: '${s.k}' outside a while body`);
+        }
+        return;
+      }
+      default:
+        return this.unknownStmt(s, path);
+    }
+  }
+
+  private checkThrow(s: StmtOf<'throw'>, path: string): void {
+    const err = (this.ir.errors ?? [])[s.error];
+    if (err === undefined) {
+      this.fail(`${path} (throw): unknown error index ${s.error}`);
+    }
+    const what = `${path} (throw "${err.name}")`;
+    if (s.args.length !== err.inputs.length) {
+      this.fail(
+        `${what}: arity mismatch — ${s.args.length} args for ${err.inputs.length} declared inputs`,
+      );
+    }
+    s.args.forEach((a, i) => {
+      const p = err.inputs[i];
+      if (p === undefined) return; // unreachable: lengths checked above
+      this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`);
+    });
+  }
+
+  // -------------------------------------------------------------------------
+  // calls: internal fns + external sub-calls
+  // -------------------------------------------------------------------------
+
+  private checkFnCall(s: StmtOf<'fncall'>, path: string): void {
+    const what = `${path} (fncall)`;
+    const fn = this.ir.fns[s.fn];
+    if (fn === undefined) this.fail(`${what}: unknown FnId ${s.fn}`);
+    if (s.args.length !== fn.params.length) {
+      this.fail(
+        `${what}: arity mismatch — ${s.args.length} args for fns[${s.fn}] ("${fn.name}") with ${fn.params.length} params`,
+      );
+    }
+    s.args.forEach((a, i) => {
+      const p = fn.params[i];
+      if (p === undefined) return; // unreachable: lengths checked above
+      this.use(a, p.type, `${what} arg ${i} ("${p.name}")`);
+    });
+    if (s.outs.length !== fn.results.length) {
+      this.fail(
+        `${what}: arity mismatch — ${s.outs.length} outs for fns[${s.fn}] ("${fn.name}") with ${fn.results.length} results`,
+      );
+    }
+    s.outs.forEach((out, i) => {
+      const r = fn.results[i];
+      if (r === undefined) return; // unreachable: lengths checked above
+      this.define(out, r.type, `${what} out ${i}`);
+    });
+    if (this.currentFn !== null) this.fnCalls[this.currentFn]?.add(s.fn);
+  }
+
+  private checkCall(s: StmtOf<'call'>, path: string): void {
     const what = `${path} (call${s.mode === 'try' ? ' try' : ''} "${s.fnAbi.name}")`;
     if (s.kind !== undefined && s.kind !== 'static' && s.kind !== 'call' && s.kind !== 'simulate') {
       this.fail(`${what}: kind must be 'static' | 'call' | 'simulate', got ${String(s.kind)}`);
@@ -821,7 +974,8 @@ class IrValidator {
     });
     // revert-data-as-result (issue #35): `revertReturns` replaces the ABI outputs as the decode
     // schema. It is a `kind: 'call'` feature only (STATICCALL reads have no reverting-quoter use;
-    // the simulate trampoline carries its own revert framing).
+    // the simulate trampoline carries its own revert framing). `callOutputs` reads each entry, so
+    // it runs only after the entries passed the type guard below.
     if (s.revertReturns !== undefined) {
       if (s.kind !== 'call') {
         this.fail(
@@ -863,6 +1017,10 @@ class IrValidator {
       this.use(s.value, 'uint256', `${what} value`);
     }
   }
+
+  // -------------------------------------------------------------------------
+  // ABI params + array element types
+  // -------------------------------------------------------------------------
 
   private checkPlainAbi(fnAbi: PlainAbiFunction, what: string): void {
     if (fnAbi.name.length === 0) this.fail(`${what}: fnAbi.name must be non-empty`);

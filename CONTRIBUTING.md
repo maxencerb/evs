@@ -146,6 +146,15 @@ Releases: see [Releasing](#releasing) below.
   verifiers. It is off by default so the default bytes stay the plain lowering. The allocator
   (`codegen/frame.ts`) walks the `if`/`while` region tree and scans with two heaps; a seeded
   test in `frame.test.ts` holds it slot for slot to a naive reference model of the same rules.
+- **Adding a statement kind or an op.** The IR-side switches over `Stmt['k']`, `BinOp`, `UnOp`,
+  `ModArithOp` and `EnvOp` end in a `default` that assigns the subject to `never`
+  (`ir/nodes/walk.ts`, `ir/nodes/json.ts`, `ir/validate.ts`, `ir/interp/`, and `ir/dce.ts`'s
+  `isObservable` and `unionAliases`), so `vp check` lists every IR site that needs a case;
+  `json.ts`'s `STMT_KINDS` table is checked the same way. Still unguarded, so update them by
+  hand: `ir/dce.ts`'s `isPureFn` walker, `isSeed` and `rebuildStmt` (they special-case a few
+  kinds and defer the rest to `isObservable` or keep them as is, so a new kind that holds nested
+  blocks or mutates memory needs a case there), the codegen switches (`codegen/program.ts`,
+  `codegen/lower/`) and the op sets in `ir/nodes/schema.ts` (`BIN_OPS`, …).
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures, unset `s.newArray` elements and omitted
   `s.tuple` members point at — a zero-filled pointer slot would alias scratch, so memref slots

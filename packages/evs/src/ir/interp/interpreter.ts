@@ -629,7 +629,8 @@ class Interp {
         throw new LoopSignal(s.k);
       }
       default: {
-        const kind = String((s as { k: unknown }).k);
+        const unknown: never = s; // a compile error here means a Stmt kind has no case
+        const kind = String((unknown as { k?: unknown }).k);
         throw new EvsInternalError('INTERNAL', `interpret: unknown statement kind '${kind}'`);
       }
     }
@@ -681,8 +682,8 @@ class Interp {
         return;
       }
       default: {
-        const op = String((s as { op: unknown }).op);
-        throw new EvsInternalError('INTERNAL', `interpret: unknown un op '${op}'`);
+        const op: never = s.op; // a compile error here means a UnOp has no case
+        throw new EvsInternalError('INTERNAL', `interpret: unknown un op '${String(op)}'`);
       }
     }
   }
