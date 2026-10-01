@@ -338,6 +338,143 @@ describe('named args (namedArg)', () => {
     expect(incFn?.params.map((p) => p.name)).toEqual(['a']); // named
     expect(() => validateIr(script.ir)).not.toThrow();
   });
+
+  // -- ABI parameters as declarators: a struct parameter is a tuple TYPE that carries its own
+  // name (it was misread as namedArg('p', 'tuple') and threw), a scalar one an ArgSpec value.
+  const quoterAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'view',
+      inputs: [
+        {
+          name: 'p',
+          type: 'tuple',
+          internalType: 'struct Quoter.Params',
+          components: [
+            { name: 'tokenIn', type: 'address', internalType: 'address' },
+            { name: 'amountIn', type: 'uint256', internalType: 'uint256' },
+          ],
+        },
+        { name: 'amount', type: 'uint256', internalType: 'uint256' },
+      ],
+      outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    },
+  ] as const satisfies Abi;
+  const [structParam] = quoterAbi[0].inputs;
+  const Params = { type: 'tuple', components: structParam.components };
+
+  test("a function's ABI inputs are script args: a struct parameter is a named Tuple arg", () => {
+    const script = evscript({ name: 'qa', args: quoterAbi[0].inputs }, (s, p, amount) =>
+      s.return({ amountIn: p.amountIn.get(), amount }),
+    );
+    // the ABI name labels the arg; the recorded type is the bare `{ type, components }`
+    expect(script.ir.args).toEqual([
+      { name: 'p', type: Params },
+      { name: 'amount', type: 'uint256' },
+    ]);
+    expect(script.ir.args[0]?.type).not.toHaveProperty('name');
+    expect(script.abi[0].inputs).toEqual([
+      { name: 'p', type: 'tuple', components: structParam.components },
+      { name: 'amount', type: 'uint256' },
+    ]);
+    expect(script.ir.values[0]).toMatchObject({ debugName: 'args.p' });
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('a struct ABI parameter is an s.fn param and a t.error param, named by the ABI', () => {
+    const Bad = t.error('Bad', [structParam, t.uint256]);
+    expect(Bad.params).toEqual([
+      { name: 'p', type: Params },
+      { name: '', type: 'uint256' },
+    ]);
+    expect(Bad.abi.inputs).toEqual([
+      { name: 'p', type: 'tuple', components: structParam.components },
+      { name: 'arg1', type: 'uint256' },
+    ]);
+    const script = evscript({ name: 'qf', args: [t.uint256], errors: [Bad] }, (s, x) => {
+      const amountOf = s.fn('amountOf', [structParam], (p) => p.amountIn.get());
+      const p = s.tuple(structParam, {
+        tokenIn: '0x0000000000000000000000000000000000000001',
+        amountIn: x,
+      });
+      return s.return({ amountIn: amountOf(p) });
+    });
+    expect(script.ir.fns[0]?.params).toEqual([{ name: 'p', type: Params, value: 1 }]);
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('an unnamed ABI parameter takes the positional arg{i} name, as in the types', () => {
+    const unnamed = { name: '', type: 'uint256' } as const;
+    const script = evscript({ name: 'qu', args: [t.address, unnamed] }, (s, _who, x) => {
+      const id = s.fn('id', [t.bool, unnamed], (_b, v) => v);
+      return s.return({ x: id(true, x) });
+    });
+    expect(script.ir.args.map((a) => a.name)).toEqual(['arg0', 'arg1']);
+    expect(script.ir.fns[0]?.params.map((p) => p.name)).toEqual(['arg0', 'arg1']);
+    expect(t.error('E', [t.bool, unnamed]).abi.inputs.map((i) => i.name)).toEqual(['arg0', 'arg1']);
+  });
+
+  test('a struct-array ABI parameter (tuple[] / tuple[N]) is a named arg too', () => {
+    const batchAbi = [
+      {
+        type: 'function',
+        name: 'batch',
+        stateMutability: 'view',
+        inputs: [
+          {
+            name: 'orders',
+            type: 'tuple[]',
+            internalType: 'struct Book.Order[]',
+            components: [
+              { name: 'token', type: 'address', internalType: 'address' },
+              { name: 'amount', type: 'uint256', internalType: 'uint256' },
+            ],
+          },
+          { name: 'pair', type: 'tuple[2]', components: [{ name: 'x', type: 'uint8' }] },
+        ],
+        outputs: [],
+      },
+    ] as const satisfies Abi;
+    const [orders, pair] = batchAbi[0].inputs;
+    const script = evscript({ name: 'qb', args: batchAbi[0].inputs }, (s, os, ps) =>
+      s.return({ n: os.length(), amount: os.at(0n).amount.get(), x: ps.at(1n).x.get() }),
+    );
+    // labeled by the ABI names; the recorded types are the bare `{ type, components }`
+    expect(script.ir.args).toEqual([
+      { name: 'orders', type: { type: 'tuple[]', components: orders.components } },
+      { name: 'pair', type: { type: 'tuple[2]', components: pair.components } },
+    ]);
+    for (const a of script.ir.args) expect(a.type).not.toHaveProperty('name');
+    expect(script.abi[0].inputs).toEqual([
+      { name: 'orders', type: 'tuple[]', components: orders.components },
+      { name: 'pair', type: 'tuple[2]', components: pair.components },
+    ]);
+    expect(script.ir.returns.map((r) => r.type)).toEqual(['uint256', 'uint256', 'uint8']);
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('namedArg(param.name, t.fromAbiParameter(param)) keeps the label of a nameless-member struct', () => {
+    const param = {
+      name: 'w',
+      type: 'tuple',
+      components: [{ type: 'address' }, { type: 'uint256' }],
+    } as const;
+    const Bare = t.fromAbiParameter(param); // fills the member names in, drops `w`
+    expect(Bare).toEqual({
+      type: 'tuple',
+      components: [
+        { name: '', type: 'address' },
+        { name: '', type: 'uint256' },
+      ],
+    });
+    const labeled = evscript({ name: 'qw', args: [namedArg(param.name, Bare)] }, (s, w) =>
+      s.return({ w }),
+    );
+    expect(labeled.abi[0].inputs.map((i) => i.name)).toEqual(['w']);
+    const positional = evscript({ name: 'qw', args: [Bare] }, (s, w) => s.return({ w }));
+    expect(positional.abi[0].inputs.map((i) => i.name)).toEqual(['arg0']);
+  });
 });
 
 // ---------------------------------------------------------------------------

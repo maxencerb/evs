@@ -13,6 +13,7 @@ import type {
   IntoExpr,
   IntType,
   LitOf,
+  NormalizeArgs,
   PeelArraySuffix,
   TupleType,
   UintType,
@@ -43,6 +44,66 @@ test('namedArg accepts every EvsType — composite types included (issue #25)', 
   // still rejects non-types
   // @ts-expect-error — a number is not an EvsType
   namedArg('x', 42);
+});
+
+test('ToArgSpec: an ABI parameter is named by its `name` — tuple and scalar alike', () => {
+  type Inputs = readonly [
+    {
+      readonly name: 'p';
+      readonly type: 'tuple';
+      readonly internalType: 'struct Q.P';
+      readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+    },
+    { readonly name: 'amount'; readonly type: 'uint256' },
+    { readonly name: ''; readonly type: 'address' },
+  ];
+  // the tuple spec's type is reduced to `{ type, components }`, as at run time
+  expectTypeOf<NormalizeArgs<Inputs>>().toEqualTypeOf<
+    readonly [
+      ArgSpec<
+        'p',
+        {
+          readonly type: 'tuple';
+          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+        }
+      >,
+      { readonly name: 'amount'; readonly type: 'uint256' },
+      { readonly name: ''; readonly type: 'address' },
+    ]
+  >();
+  // a nameless descriptor (t.struct / t.tuple) stays positional
+  const Pair = t.tuple(t.address, t.uint24);
+  expectTypeOf<NormalizeArgs<typeof Pair>>().toEqualTypeOf<readonly [ArgSpec<'', typeof Pair>]>();
+});
+
+test('ToArgSpec: a struct-array ABI parameter is named too, its type reduced (no `name`)', () => {
+  type Orders = {
+    readonly name: 'orders';
+    readonly type: 'tuple[]';
+    readonly internalType: 'struct B.Order[]';
+    readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+  };
+  expectTypeOf<NormalizeArgs<Orders>>().toEqualTypeOf<
+    readonly [
+      ArgSpec<
+        'orders',
+        {
+          readonly type: 'tuple[]';
+          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+        }
+      >,
+    ]
+  >();
+});
+
+test('t.fromAbiParameter drops the parameter name; namedArg(param.name, …) keeps it', () => {
+  const param = { name: 'w', type: 'tuple', components: [{ type: 'address' }] } as const;
+  const Bare = t.fromAbiParameter(param);
+  expectTypeOf<NormalizeArgs<typeof Bare>>().toEqualTypeOf<readonly [ArgSpec<'', typeof Bare>]>();
+  const labeled = namedArg(param.name, Bare);
+  expectTypeOf<NormalizeArgs<typeof labeled>>().toEqualTypeOf<
+    readonly [ArgSpec<'w', typeof Bare>]
+  >();
 });
 
 test('t namespace literal types', () => {

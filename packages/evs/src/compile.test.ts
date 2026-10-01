@@ -1106,3 +1106,76 @@ describe('custom errors (issue #15)', () => {
     );
   });
 });
+
+// ---------------------------------------------------------------------------
+// ABI parameters as declarators: a function's struct input reused as a script arg, an s.fn
+// param and a t.error param (it was misread as namedArg('p', 'tuple') and threw TYPE_MISMATCH)
+// ---------------------------------------------------------------------------
+
+describe('struct ABI parameters as arg / param / error declarators', () => {
+  const quoterAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'view',
+      inputs: [
+        {
+          name: 'p',
+          type: 'tuple',
+          internalType: 'struct Quoter.Params',
+          components: [
+            { name: 'tokenIn', type: 'address', internalType: 'address' },
+            { name: 'amountIn', type: 'uint256', internalType: 'uint256' },
+          ],
+        },
+        { name: 'amount', type: 'uint256', internalType: 'uint256' },
+      ],
+      outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    },
+  ] as const;
+  const [structParam] = quoterAbi[0].inputs;
+  const ZeroAmount = t.error('ZeroAmount', structParam);
+
+  function quoteScript() {
+    return evscript(
+      { name: 'quote', args: quoterAbi[0].inputs, errors: [ZeroAmount] },
+      (s, p, amount) => {
+        const amountOf = s.fn('amountOf', structParam, (q) => q.amountIn.get());
+        s.if(amount.eq(0n), () => {
+          s.throw(ZeroAmount, { p });
+        });
+        return s.return({ total: s.add(amountOf(p), amount), tokenIn: p.tokenIn.get() });
+      },
+    );
+  }
+
+  // an all-digit address reads back identical from viem's checksumming decoder
+  const TOKEN_IN = '0x0000000000000000000000000000000000001234' as const;
+  const P = { tokenIn: TOKEN_IN, amountIn: 123_456_789n * 10n ** 18n };
+
+  test('the arg is labeled by its ABI name and decodes as the struct', async () => {
+    const compiled = compile(quoteScript());
+    expect(compiled.abi[0].inputs.map((i) => i.name)).toEqual(['p', 'amount']);
+    const res = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({ abi: compiled.abi, functionName: 'quote', args: [P, 7n] }),
+    );
+    expect(res.success).toBe(true);
+    expect(
+      decodeFunctionResult({ abi: compiled.abi, functionName: 'quote', data: res.data }),
+    ).toEqual({ total: P.amountIn + 7n, tokenIn: TOKEN_IN });
+  });
+
+  test('the error param encodes like Solidity and decodes by its ABI name', async () => {
+    const compiled = compile(quoteScript());
+    const res = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({ abi: compiled.abi, functionName: 'quote', args: [P, 0n] }),
+    );
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(
+      encodeErrorResult({ abi: compiled.abi, errorName: 'ZeroAmount', args: [P] }),
+    );
+    expect(compiled.explainRevert(res.data).errorArgs).toEqual({ p: P });
+  });
+});

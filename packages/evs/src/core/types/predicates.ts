@@ -173,15 +173,46 @@ export function isEvsValueType(v: unknown): v is EvsType {
 }
 
 function componentsValid(components: readonly unknown[]): boolean {
-  return components.every((c) => {
-    if (typeof c !== 'object' || c === null) return false;
+  return tupleComponentsIssue(components) === undefined;
+}
+
+/**
+ * Why a tuple descriptor's `components` are not valid members — the first offending member by
+ * path (`components[1].components[0] has no string \`name\``) — or `undefined` when they all are.
+ * The single source of truth for {@link isEvsValueType}'s component check, so an error message
+ * built from it names exactly the member the predicate rejected.
+ */
+export function tupleComponentsIssue(
+  components: readonly unknown[],
+  path = 'components',
+): string | undefined {
+  for (const [i, c] of components.entries()) {
+    const at = `${path}[${i}]`;
+    if (typeof c !== 'object' || c === null) return `${at} is not an object`;
     const o = c as { name?: unknown; type?: unknown; components?: unknown };
-    if (typeof o.name !== 'string' || typeof o.type !== 'string') return false;
-    if (o.type.startsWith('tuple')) {
-      return isTupleTag(o.type) && Array.isArray(o.components) && componentsValid(o.components);
+    if (typeof o.name !== 'string') {
+      return `${at} has no string \`name\` (a tuple member needs one; '' for an unnamed member)`;
     }
-    return isEvsType(o.type) && o.components === undefined;
-  });
+    if (typeof o.type !== 'string') return `${at} has no string \`type\``;
+    if (o.type.startsWith('tuple')) {
+      if (!isTupleTag(o.type)) return `${at} has an invalid tuple type ${JSON.stringify(o.type)}`;
+      if (!Array.isArray(o.components)) return `${at} (${o.type}) has no \`components\` array`;
+      const inner = tupleComponentsIssue(o.components, `${at}.components`);
+      if (inner !== undefined) return inner;
+    } else if (!isEvsType(o.type)) {
+      return `${at} has an invalid type ${JSON.stringify(o.type)}`;
+    } else if (o.components !== undefined) {
+      return `${at} (${o.type}) must not carry \`components\``;
+    }
+  }
+  return undefined;
+}
+
+/** {@link describeTypeInput} for a value rejected as a type: a tuple descriptor whose components
+ *  are malformed is described by its first bad member ({@link tupleComponentsIssue}). */
+export function describeRejectedType(v: unknown): string {
+  const issue = isTupleType(v) ? tupleComponentsIssue(v.components) : undefined;
+  return issue === undefined ? describeTypeInput(v) : `a tuple descriptor whose ${issue}`;
 }
 
 export function isWordType(s: string | TupleType): s is WordType {

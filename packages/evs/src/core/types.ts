@@ -38,7 +38,7 @@ export type {
   BitsType,
 } from './types/vocabulary.js';
 export type { exprBrand, Expr, LitOf, TupleLitOf, TupleAsParam, IntoExpr } from './types/expr.js';
-export { IDENT_RE, namedArg } from './types/args.js';
+export { IDENT_RE, namedArg, isArgSpecValue, normalizeArgsInput } from './types/args.js';
 export type {
   ArgSpec,
   ArgInput,
@@ -62,7 +62,7 @@ export type {
   FromAbiOutputs,
   UnionToTuple,
 } from './types/derive.js';
-export { t, isArgSpecValue } from './types/namespace.js';
+export { t } from './types/namespace.js';
 export {
   MAX_ARRAY_DEPTH,
   MAX_STATIC_SIZE,
