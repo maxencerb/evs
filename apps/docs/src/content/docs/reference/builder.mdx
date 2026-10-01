@@ -267,6 +267,14 @@ balance you can set in the same override. `compile` emits an `ENV_FRAME_DEPENDEN
 for it; see [execution modes](/guides/execution/#senv-and-frame-dependence). The script's own
 code size and hash are the same in both modes.
 
+In [sender mode](/guides/execution/#sender-mode) (`toViem({ mode: 'stateOverride', sender })`)
+the script's runtime **replaces the code at `sender`** for the call, so reads of the sender's own
+account see the script, not the account: `s.codeSize(sender)` is non-zero even for an EOA (it
+looks like a contract), and `s.codeHash(sender)` is the script's hash, not a Safe's real one.
+`s.balance(sender)` — which is `s.balance(s.env('address'))` there — is the sender's real balance,
+since the override only swaps code. No diagnostic catches this when `sender` reaches the script
+as an argument; read the sender's code in a separate deployless call if you need it.
+
 ## s.add / s.sub / s.mul / s.div / s.mod
 
 ```ts nocheck
@@ -616,7 +624,8 @@ a range check: an out-of-range word (a `uint8` output holding 300) is normalized
 `s.read` and reports `success = true` (see [calls — s.tryRead](/guides/calls/#stryread)). For a
 function with **no outputs**, a call to an address without code succeeds and `success` is `true` (for
 every `try*` verb) — there is nothing to decode, and evs adds no `extcodesize` check (see
-[calls](/guides/calls/#when-to-use-which)).
+[calls](/guides/calls/#when-to-use-which)); guard with
+[`s.codeSize(target).gt(0n)`](#sbalance--scodesize--scodehash) when it matters.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

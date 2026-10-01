@@ -999,7 +999,9 @@ Pick the verb by the callee's mutability first, then by what you need from the r
     function declares outputs, `s.read` reverts as `EvsDecodeError` and `s.tryRead` reports
     `success = false`. For a function with **no outputs** there is nothing to decode, so `s.read`
     and `s.call` succeed and the `try*` verbs report `success = true` — that proves nothing about
-    whether the target is a contract (unlike Solidity ≥ 0.8.10, evs adds no `extcodesize` check);
+    whether the target is a contract (unlike Solidity ≥ 0.8.10, evs adds no `extcodesize` check —
+    guard with [`s.codeSize(target).gt(0n)`](/reference/builder/#sbalance--scodesize--scodehash)
+    when it matters);
   - one bad element must not kill a batch loop — see
     [batch token balances](/examples/token-balances/).
 - **`s.call` / `s.tryCall`** — a `nonpayable`/`payable` function you need a real frame for but whose

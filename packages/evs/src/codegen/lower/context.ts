@@ -58,6 +58,23 @@ export interface LowerInternals {
   fnQueue: FnId[];
 }
 
+/**
+ * @internal Every value an `env address` statement defines, in the body and in every fn body
+ * (values are single-assignment, so a ValueId is the script's own address wherever it is read).
+ * The ONE definition of "the script's own address": `s.balance` of these values lowers to
+ * SELFBALANCE (`values.ts`) and gets the self-balance ENV_FRAME_DEPENDENT note (`program.ts`
+ * `collectDiagnostics`) — both read this set, so the note and the opcode cannot drift apart.
+ */
+export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
+  const out = new Set<ValueId>();
+  const scan = (s: Stmt): void => {
+    if (s.k === 'env' && s.op === 'address') out.add(s.out);
+  };
+  walkStmts(ir.body, scan);
+  for (const fn of ir.fns) walkStmts(fn.body, scan);
+  return out;
+}
+
 const INTERNALS = new WeakMap<LowerCtx, LowerInternals>();
 
 /** @internal Lazily-created per-lowering state (program.ts reads it after the body pass). */
@@ -65,15 +82,12 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
   let state = INTERNALS.get(ctx);
   if (state === undefined) {
     const consts = new Map<ValueId, ConstData>();
-    const selfAddresses = new Set<ValueId>();
-    const scan = (stmts: readonly Stmt[]): void => {
-      walkStmts(stmts, (s) => {
-        if (s.k === 'const') consts.set(s.out, s.data);
-        else if (s.k === 'env' && s.op === 'address') selfAddresses.add(s.out);
-      });
+    const scan = (s: Stmt): void => {
+      if (s.k === 'const') consts.set(s.out, s.data);
     };
-    scan(ctx.ir.body);
-    for (const fn of ctx.ir.fns) scan(fn.body);
+    walkStmts(ctx.ir.body, scan);
+    for (const fn of ctx.ir.fns) walkStmts(fn.body, scan);
+    const selfAddresses = selfAddressValues(ctx.ir);
     state = { consts, selfAddresses, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
     INTERNALS.set(ctx, state);
   }

@@ -26,19 +26,18 @@ import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
 import { isBytesN } from '../core/types.js';
-import {
-  walkStmts,
-  type FnId,
-  type ScriptIr,
-  type SiteId,
-  type Stmt,
-  type ValueId,
-} from '../ir/nodes.js';
+import { walkStmts, type FnId, type ScriptIr, type Stmt, type ValueId } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
-import { emitFnSubroutines, lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import {
+  emitFnSubroutines,
+  lowerInternals,
+  lowerStmts,
+  selfAddressValues,
+  type LowerCtx,
+} from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
@@ -374,13 +373,8 @@ function collectDiagnostics(
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
 
-  // values an `env address` statement defines (anywhere: values are single-assignment)
-  const selfAddresses = new Set<ValueId>();
-  const scanSelf = (s: Stmt): void => {
-    if (s.k === 'env' && s.op === 'address') selfAddresses.add(s.out);
-  };
-  walkStmts(ir.body, scanSelf);
-  for (const fn of ir.fns) walkStmts(fn.body, scanSelf);
+  // the script's own address values — the same set the SELFBALANCE lowering reads
+  const selfAddresses = selfAddressValues(ir);
 
   // fn bodies allocating transitively (the call graph is acyclic; the seen-set keeps
   // the walk finite even on malformed input).

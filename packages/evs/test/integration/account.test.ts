@@ -4,6 +4,7 @@
  * the same block, in both `toViem()` modes, for a funded contract, a used EOA and an address
  * with no state at all. The script's own balance (SELFBALANCE) is frame-dependent: the
  * stateOverride address's override balance, and zero at the deployless counterfactual address.
+ * Sender mode swaps only the sender's code: its own reads see the script runtime there.
  */
 
 import { getAddress, keccak256, size, zeroHash, type Address } from 'viem';
@@ -81,6 +82,23 @@ describe("the script's own account (SELFBALANCE, frame-dependent)", () => {
       functionName: 'mine',
     });
     expect(out).toStrictEqual({ bal: 777n, size: BigInt(size(mine.runtimeBytecode)) });
+  });
+
+  test("sender mode: the sender's real balance, but the script runtime as its code", async () => {
+    // an EOA sender: the override swaps its code (none) for the script's runtime, so it reads as
+    // a contract from inside the script; its balance is untouched
+    const sender = deployer.address;
+    const out = await publicClient.readContract({
+      ...probe.toViem({ mode: 'stateOverride', sender }),
+      functionName: 'probe',
+      args: [sender],
+    });
+    expect(out).toStrictEqual({
+      bal: await publicClient.getBalance({ address: sender }),
+      size: BigInt(size(probe.runtimeBytecode)),
+      hash: keccak256(probe.runtimeBytecode),
+    });
+    expect(await publicClient.getCode({ address: sender })).toBeUndefined();
   });
 
   test('deployless: the counterfactual script address holds nothing', async () => {

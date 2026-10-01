@@ -48,7 +48,7 @@ import type {
   ValueId,
 } from '../ir/nodes.js';
 import type { FrameLayout } from './frame.js';
-import { lowerInternals, lowerStmts, type LowerCtx } from './lower.js';
+import { lowerInternals, lowerStmts, selfAddressValues, type LowerCtx } from './lower.js';
 import { lowerProgram } from './program.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
@@ -1276,6 +1276,38 @@ describe('diagnostics', () => {
         : [],
     );
     expect(ops).toEqual(['SELFBALANCE', 'BALANCE', 'EXTCODESIZE', 'EXTCODEHASH']);
+  });
+
+  test('the self-balance note and SELFBALANCE come from one set of self-address values', () => {
+    const b = new IrB('lockstep', [['who', 'address']]);
+    const top = b.env('address');
+    b.account('balance', top); // body: SELFBALANCE + note
+    b.account('balance', 0); // someone else's balance: BALANCE, no note
+    let inFn = -1;
+    const called = b.fn('selfbal', [], () => {
+      const self = b.env('address');
+      inFn = self;
+      return [b.account('balance', self)]; // emitted fn: SELFBALANCE + note
+    });
+    let inGhost = -1;
+    b.fn('ghost', [], () => {
+      const self = b.env('address');
+      inGhost = self;
+      return [b.account('balance', self)]; // never called: neither
+    });
+    b.fncall(called, []);
+    b.ret('who', 0);
+    const ir = b.build();
+
+    expect([...selfAddressValues(ir)].toSorted((x, y) => x - y)).toEqual([top, inFn, inGhost]);
+    const { nodes, diagnostics } = lowerProgram(ir, { evmVersion: 'cancun' });
+    const selfBalanceOps = nodes.filter((n) => n.k === 'op' && n.op === 'SELFBALANCE');
+    const selfBalanceNotes = diagnostics.filter((d) =>
+      d.message.includes("s.balance(s.env('address'))"),
+    );
+    expect(selfBalanceOps).toHaveLength(2);
+    expect(selfBalanceNotes).toHaveLength(selfBalanceOps.length);
+    expect(nodes.filter((n) => n.k === 'op' && n.op === 'BALANCE')).toHaveLength(1);
   });
 
   test('ENV_FRAME_DEPENDENT: flagged inside emitted fn bodies, not in dropped fns', () => {

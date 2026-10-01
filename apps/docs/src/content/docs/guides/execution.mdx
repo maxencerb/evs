@@ -165,7 +165,10 @@ the normal case (its balance and nonce stay in place, so the targets' view of it
 intact). A *contract* sender — a Safe, a vault — loses its own code for the call: targets that call
 back into `msg.sender` (an `onERC721Received` hook, an EIP-1271 signature check) will hit the script
 instead and revert. A plain ETH payment to the sender (`WETH.withdraw`) still succeeds: the script
-accepts empty calldata.
+accepts empty calldata. The script's own reads of that address see the swap too:
+[`s.codeSize(sender)` / `s.codeHash(sender)`](/reference/builder/#sbalance--scodesize--scodehash)
+return the script's runtime (an EOA sender looks like a contract), while `s.balance(sender)` is the
+sender's real balance.
 :::
 
 ## Choosing a mode
