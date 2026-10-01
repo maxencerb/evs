@@ -129,8 +129,9 @@ same message and different sites.
 Each `LOOP_ALLOCATION` message names the builder call that allocates — `s.read(symbol)`,
 `s.read(pair) struct` for a `struct: true` read, `s.keccak256(…) encoded bytes`,
 `s.newArray((uint256,address))`, `s.tuple(a, b)`, or the type of the literal it builds
-(`(uint256,address) literal` for a struct literal, `uint256[] literal` for an array literal) —
-and says what to do about it:
+(`(uint256,address) literal` for a struct literal, `uint256[] literal` for an array literal
+with a runtime element, `a uint256[3] literal (materialized in memory)` for one whose elements
+are all constants) — and says what to do about it:
 
 ```ts
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
