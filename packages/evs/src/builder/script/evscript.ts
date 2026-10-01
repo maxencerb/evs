@@ -21,10 +21,12 @@ import {
   type EvsErrorType,
   type EvsType,
   type TupleType,
+  canonicalizeTupleType,
   IDENT_RE,
   identProblem,
   isArgSpecValue,
   isEvsValueType,
+  isTupleType,
   normalizeArgsInput,
   typeToAbiParam,
   type ArgsInput,
@@ -165,6 +167,19 @@ function isEvsErrorValue(v: unknown): v is EvsErrorType {
   return o.kind === 'error' && typeof o.name === 'string' && Array.isArray(o.params);
 }
 
+/** A hand-built error param's tuple type through the canonicalizer's gates (at least one
+ *  component at every level, the array depth, the static size) — the ones `t.error` applies —
+ *  reported as `ERROR_DECL`, like every other bad param of a hand-built declaration. */
+function assertErrorParamGates(type: EvsType, ctx: string): void {
+  if (!isTupleType(type)) return;
+  try {
+    canonicalizeTupleType(type, ctx);
+  } catch (err) {
+    if (err instanceof EvsTypeError) throw new EvsTypeError('ERROR_DECL', err.message);
+    throw err;
+  }
+}
+
 /** The def's `errors` list sugar: omitted → `[]`, a lone entry → a one-element list. */
 function asList(input: unknown): readonly unknown[] {
   if (input === undefined) return [];
@@ -212,6 +227,7 @@ function normalizeErrorDecls(scriptName: string, errorsIn: unknown): readonly Re
           `${ctx} ("${e.name}"): param #${j} is not a valid t.error param`,
         );
       }
+      assertErrorParamGates(p.type, `${ctx} ("${e.name}"): param #${j}`);
       return { name: p.name, type: p.type };
     });
     const inputs = Object.freeze(

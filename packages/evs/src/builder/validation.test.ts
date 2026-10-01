@@ -2768,9 +2768,185 @@ describe('checklist: revertReturns (issue #35)', () => {
           } as never),
         ),
       EvsTypeError,
-      'ABI_SHAPE',
-      /revertReturns\[0\]: tuple type carries no components/,
+      'TYPE_MISMATCH',
+      /revertReturns\[0\]: a tuple must have at least one component$/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tuple descriptor gates: every entry point that takes a hand-written descriptor applies the
+// canonicalizer's gates (at least one component at every level, array depth, static size) while
+// the script records. These used to record and then fail at compile as EvsInternalError INTERNAL
+// ("tuple type carries no components (this is a bug in evs, please report)").
+// ---------------------------------------------------------------------------
+
+describe('checklist: tuple descriptor gates at every entry point', () => {
+  const E0 = { type: 'tuple', components: [] } as const;
+  const Enested = {
+    type: 'tuple',
+    components: [{ name: 'a', type: 'tuple', components: [] }],
+  } as const;
+  // each member stays under the 2^32 − 1 static-size cap, together they pass it; the enclosing
+  // tuple is ABI-dynamic (the string), so its own size check measures nothing
+  const half = 'uint256[134217727]'; // 32 × (2^27 − 1) bytes
+  const Ebig = {
+    type: 'tuple',
+    components: [
+      { name: 's', type: 'string' },
+      {
+        name: 'big',
+        type: 'tuple',
+        components: [
+          { name: 'a', type: half },
+          { name: 'b', type: half },
+        ],
+      },
+    ],
+  } as const;
+  const EMPTY_TOP = /: a tuple must have at least one component$/;
+  const EMPTY_NESTED = / component #0: a tuple must have at least one component$/;
+  const TOO_BIG = / component #1: type "tuple" has an ABI static size of \d+ bytes/;
+
+  test('s.lit: an empty tuple at any level → TYPE_MISMATCH, an oversized member → UNSUPPORTED_V0', () => {
+    expectEvs(
+      () => rec((s) => s.lit(E0 as never, {} as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /^s\.lit\(\): a tuple must have at least one component$/,
+    );
+    expectEvs(
+      () => rec((s) => s.lit(Enested as never, { a: {} } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /^s\.lit\(\) component #0: a tuple must have at least one component$/,
+    );
+    expectEvs(
+      () => rec((s) => s.lit(Ebig as never, {} as never)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_BIG,
+    );
+  });
+
+  test('s.let: an empty tuple at any level → TYPE_MISMATCH, an oversized member → UNSUPPORTED_V0', () => {
+    expectEvs(
+      () => rec((s) => s.let(E0 as never, {} as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /^s\.let\(\): a tuple must have at least one component$/,
+    );
+    expectEvs(
+      () => rec((s) => s.let(Enested as never, { a: {} } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /^s\.let\(\) component #0: a tuple must have at least one component$/,
+    );
+    // the one-argument form diagnoses the type before the missing init
+    expectEvs(() => rec((s) => s.let(E0 as never)), EvsTypeError, 'TYPE_MISMATCH', EMPTY_TOP);
+    expectEvs(
+      () => rec((s) => s.let(Ebig as never, {} as never)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_BIG,
+    );
+  });
+
+  test('s.newArray: an empty tuple element at any level → TYPE_MISMATCH, oversized → UNSUPPORTED_V0', () => {
+    expectEvs(
+      () => rec((s) => s.newArray(E0 as never, 1n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /^s\.newArray\(\): a tuple must have at least one component$/,
+    );
+    expectEvs(
+      () => rec((s) => s.newArray(Enested as never, 2n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      EMPTY_NESTED,
+    );
+    expectEvs(
+      () => rec((s) => s.newArray({ type: 'tuple[]', components: [] } as never, 1n)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      EMPTY_TOP,
+    );
+    expectEvs(
+      () => rec((s) => s.newArray(Ebig as never, 1n)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_BIG,
+    );
+  });
+
+  test('revertReturns: a nested empty tuple → TYPE_MISMATCH naming the entry', () => {
+    const quoterAbi = [
+      {
+        type: 'function',
+        name: 'quote',
+        stateMutability: 'nonpayable',
+        inputs: [],
+        outputs: [{ name: 'amountOut', type: 'uint256' }],
+      },
+    ] as const satisfies Abi;
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'quote',
+            revertReturns: [t.uint256, Enested],
+          } as never),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /revertReturns\[1\] component #0: a tuple must have at least one component$/,
+    );
+  });
+
+  test('hand-built error params: an empty or oversized tuple → ERROR_DECL naming the param', () => {
+    const cases = [
+      [E0, /errors\[0\] \("E"\): param #1: a tuple must have at least one component$/],
+      [Enested, /errors\[0\] \("E"\): param #1 component #0: a tuple must have at least one/],
+      [Ebig, /errors\[0\] \("E"\): param #1 component #1: type "tuple" has an ABI static size/],
+    ] as const;
+    for (const [type, msg] of cases) {
+      const decl = {
+        kind: 'error',
+        name: 'E',
+        params: [
+          { name: 'n', type: t.uint256 },
+          { name: 'x', type },
+        ],
+      };
+      expectEvs(
+        () =>
+          evscript({ name: 'bad', errors: [decl] as never }, (s: AnyBuilder) =>
+            s.return({ ok: s.lit(t.bool, true) }),
+          ),
+        EvsTypeError,
+        'ERROR_DECL',
+        msg,
+      );
+    }
+  });
+
+  test('the same descriptors record and compile once every tuple has a member', () => {
+    const Ok = {
+      type: 'tuple',
+      components: [{ name: 'a', type: 'tuple', components: [{ name: 'v', type: 'uint256' }] }],
+    } as const;
+    expect(() =>
+      compile(
+        evscript({ name: 'ok' }, (s) => {
+          const lit = s.lit(Ok, { a: { v: 1n } });
+          const cell = s.let(Ok, { a: { v: 2n } });
+          const arr = s.newArray(Ok, 2n);
+          return s.return({ lit, cell: cell.get(), arr: arr.expr() });
+        }),
+      ),
+    ).not.toThrow();
   });
 });
 

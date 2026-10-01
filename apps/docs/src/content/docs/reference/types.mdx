@@ -59,7 +59,9 @@ size of 2^32 bytes or more, throw `UNSUPPORTED_V0`. The result is a frozen canon
 member without a `name` gets `name: ''`, and `components` on a non-tuple member is dropped.
 `namedArg`, `evscript` args, `s.fn` and `t.error` params and `s.tuple` apply the same limits,
 but take a descriptor only in its canonical form (every member carries a string `name`, `''` when
-unnamed), the form every `t.*` constructor returns.
+unnamed), the form every `t.*` constructor returns. `s.lit`, `s.let`, `s.newArray` and
+`revertReturns` apply them too, so an empty tuple at any level throws while the script records,
+not at compile.
 
 ```ts
 import { t } from '@maxencerb/evs';

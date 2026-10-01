@@ -42,6 +42,7 @@ import {
   allMembersNamed,
   normalizeAbiParam,
   assertLayout,
+  assertTupleGates,
 } from './helpers.js';
 
 type CallKind = 'static' | 'call' | 'simulate';
@@ -468,9 +469,7 @@ export abstract class RecorderCalls extends RecorderControl {
           `${what}: expected a type (use the \`t\` namespace — t.uint256, t.string, t.struct(...)), got ${describeHost(ty)}`,
         );
       }
-      if (isTupleType(ty) && ty.components.length === 0) {
-        throw new EvsTypeError('ABI_SHAPE', `${what}: tuple type carries no components`);
-      }
+      assertTupleGates(ty, what);
       assertLayout(ty, what);
       return ty;
     });
