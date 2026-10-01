@@ -21,6 +21,7 @@ import {
   isTupleType,
   describeTypeInput,
   assertArrayDepth,
+  assertStaticSize,
   tupleArrayTag,
   MAX_FIXED_LENGTH,
   abiParamToType,
@@ -199,6 +200,7 @@ function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
     return Object.freeze({ name, type: ty });
   }
   if (isTupleType(ty)) {
+    assertArrayDepth(ty.type, ctx);
     return Object.freeze({
       name,
       type: ty.type,
@@ -216,15 +218,15 @@ function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
 
 function normalizeComponents(components: readonly NamedType[], ctx: string): readonly NamedType[] {
   return Object.freeze(
-    components.map((c) =>
-      c.components === undefined
-        ? toComponentRT(c.name, c.type, ctx)
-        : Object.freeze({
-            name: c.name,
-            type: c.type,
-            components: normalizeComponents(c.components, ctx),
-          }),
-    ),
+    components.map((c) => {
+      if (c.components === undefined) return toComponentRT(c.name, c.type, ctx);
+      assertArrayDepth(c.type, ctx);
+      return Object.freeze({
+        name: c.name,
+        type: c.type,
+        components: normalizeComponents(c.components, ctx),
+      });
+    }),
   );
 }
 
@@ -244,6 +246,7 @@ function componentsFromAbi(params: readonly unknown[], ctx: string): readonly Na
         throw new EvsTypeError('TYPE_MISMATCH', `${ctx}: component #${i} has no \`type\``);
       }
       if (o.type.startsWith('tuple')) {
+        assertArrayDepth(o.type, `${ctx} component #${i}`);
         if (!Array.isArray(o.components)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
@@ -282,7 +285,7 @@ function structTypeRT(spec: unknown): TupleType {
     }
     return toComponentRT(name, ty, `t.struct() field "${name}"`);
   });
-  return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
+  return sized({ type: 'tuple', components: Object.freeze(components) }, 't.struct()');
 }
 
 function tupleTypeRT(items: readonly unknown[]): TupleType {
@@ -290,35 +293,45 @@ function tupleTypeRT(items: readonly unknown[]): TupleType {
     throw new EvsTypeError('TYPE_MISMATCH', `t.tuple(): a tuple must have at least one member`);
   }
   const components = items.map((ty, i) => toComponentRT('', ty, `t.tuple() member #${i}`));
-  return Object.freeze({ type: 'tuple', components: Object.freeze(components) });
+  return sized({ type: 'tuple', components: Object.freeze(components) }, 't.tuple()');
+}
+
+/** Freezes a constructed tuple type after the {@link MAX_STATIC_SIZE} gate: every member passed
+ *  its own checks, but an all-static tuple sums them (and a tuple array multiplies them), so the
+ *  total is measured once more on the result (`UNSUPPORTED_V0` at 2^32 bytes or more). */
+function sized(type: TupleType, ctx: string): TupleType {
+  assertStaticSize(type, ctx);
+  return Object.freeze(type);
 }
 
 /** `t.array(elem)` → `elem[]`; `t.array(elem, n)` → `elem[n]`. The suffix string is validated
  *  through the same parser every other entry point uses (`isEvsType`/`isTupleTag`), so the
  *  runtime and type-level vocabularies agree by construction; nesting is capped at
- *  {@link MAX_ARRAY_DEPTH} (`UNSUPPORTED_V0` beyond). */
+ *  {@link MAX_ARRAY_DEPTH} and a static size at {@link MAX_STATIC_SIZE} (`UNSUPPORTED_V0`
+ *  beyond either). */
 function arrayTypeRT(elem: unknown, length: unknown): EvsType {
   const suffix = arraySuffixRT(length, 't.array()');
   if (typeof elem === 'string') {
     assertEvsType(elem, 't.array() element');
     const type: ArrayType = `${elem}${suffix}`;
     assertArrayDepth(type, 't.array()');
+    assertStaticSize(type, 't.array()');
     return type;
   }
   const fixed = suffix === '[]' ? null : Number(suffix.slice(1, -1));
   if (isTupleType(elem)) {
     const type = tupleArrayTag(elem.type, fixed);
     assertArrayDepth(type, 't.array()');
-    return Object.freeze({
-      type,
-      components: normalizeComponents(elem.components, 't.array()'),
-    });
+    return sized(
+      { type, components: normalizeComponents(elem.components, 't.array()') },
+      't.array()',
+    );
   }
   if (Array.isArray(elem)) {
-    return Object.freeze({
-      type: tupleArrayTag('tuple', fixed),
-      components: componentsFromAbi(elem, 't.array()'),
-    });
+    return sized(
+      { type: tupleArrayTag('tuple', fixed), components: componentsFromAbi(elem, 't.array()') },
+      't.array()',
+    );
   }
   throw new EvsTypeError(
     'TYPE_MISMATCH',
@@ -389,10 +402,15 @@ function fromOutputsRT(abi: unknown, name: unknown): EvsType {
       `t.fromOutputs("${name}"): function "${name}" has no outputs to derive a type from`,
     );
   }
-  const components = componentsFromAbi(outputs, `t.fromOutputs("${name}")`);
+  const ctx = `t.fromOutputs("${name}")`;
+  const components = componentsFromAbi(outputs, ctx);
   const single = components[0];
-  if (components.length === 1 && single !== undefined) return abiParamToType(single);
-  return Object.freeze({ type: 'tuple', components });
+  const type: EvsType =
+    components.length === 1 && single !== undefined
+      ? abiParamToType(single)
+      : Object.freeze({ type: 'tuple', components });
+  assertStaticSize(type, ctx);
+  return type;
 }
 
 // ---------------------------------------------------------------------------
@@ -511,5 +529,7 @@ function fromAbiParameterRT(param: unknown): EvsType {
   if (single === undefined) {
     throw new EvsTypeError('ABI_SHAPE', `t.fromAbiParameter(): missing parameter`);
   }
-  return abiParamToType(single);
+  const type = abiParamToType(single);
+  assertStaticSize(type, 't.fromAbiParameter()');
+  return type;
 }

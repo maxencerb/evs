@@ -261,6 +261,23 @@ export function envValue(op: string, env: ResolvedEnv): bigint {
   }
 }
 
+/**
+ * How many array elements {@link zeroValue} materializes for `type`: `N · (1 + slots(T))` for a
+ * fixed-size `T[N]`, the members' sum for a plain tuple, `0` for everything else (a dynamic
+ * array zeroes to an empty one). The interpreter charges this to its step budget BEFORE it
+ * allocates, so a zero of `uint256[1e8][1e8]` fails as `COMPILE_LIMIT` instead of exhausting the
+ * host heap. A bigint: four nested `[2^32 − 1]` levels overflow a JS number.
+ */
+export function zeroFillSlots(type: EvsType): bigint {
+  if (isPlainTuple(type)) {
+    return type.components.reduce((n, c) => n + zeroFillSlots(abiParamToType(c)), 0n);
+  }
+  if (isWordType(type) || type === 'string' || type === 'bytes') return 0n;
+  const arr = asArrayType(type);
+  const fixed = fixedLengthOf(arr);
+  return fixed === null ? 0n : BigInt(fixed) * (1n + zeroFillSlots(elemTypeOf(arr)));
+}
+
 export function zeroValue(type: EvsType): Value {
   if (isPlainTuple(type)) {
     // a plain tuple zeroes to a flat block of zeroed fields (a tuple[] is an array — falls through).

@@ -206,10 +206,13 @@ Pass `{ trace: true }` and the result carries a `trace` array with one entry per
 statement — `{ stmtPath, note }`: the statement's path in the IR tree and a short note such as `call symbol() [strict] site 0`. It is the quickest
 way to see which branch ran or how many loop iterations executed.
 
-Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement plus
-one per loop iteration). Exceeding it throws `EvsCompileError` with code `COMPILE_LIMIT` on
-the host — usually an unbounded loop in the script; raise `opts.maxSteps` if the workload is
-genuinely that large.
+Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement, one
+per loop iteration, and one per array element a zero-fill creates: `s.newArray`, and the zero
+value of a fixed-size `T[N]` in a new struct or a failed `try*` output). Exceeding it throws
+`EvsCompileError` with code `COMPILE_LIMIT` on the host — usually an unbounded loop in the
+script; raise `opts.maxSteps` if the workload is genuinely that large. A zero-fill is charged
+before anything is allocated, so a huge array (`s.newArray(t.uint256, n)` with `n` near 2^32)
+fails with `COMPILE_LIMIT` instead of running the host out of memory.
 
 ## Shipping IR: `serializeIr` and `deserializeIr`
 

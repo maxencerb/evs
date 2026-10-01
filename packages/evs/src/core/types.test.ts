@@ -20,8 +20,10 @@ import {
   isTupleType,
   isWordType,
   MAX_ARRAY_DEPTH,
+  MAX_STATIC_SIZE,
   namedArg,
   t,
+  staticSizeOf,
   typesEqual,
   type ArrayType,
   type EvsType,
@@ -348,6 +350,142 @@ describe('t namespace', () => {
     }
     // the structural predicate still recognizes the vocabulary; only the ceiling is gated
     expect(isEvsType('uint256[][][][][]')).toBe(true);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathological type sizes: hostile suffix chains and static sizes past MAX_STATIC_SIZE
+// ---------------------------------------------------------------------------
+
+/** The code (and message) a type constructor throws, failing on a non-evs error or no throw. */
+function codeOf(build: () => unknown): { code: string; message: string } {
+  let caught: unknown;
+  try {
+    build();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(EvsTypeError);
+  return { code: (caught as EvsTypeError).code, message: (caught as EvsTypeError).message };
+}
+
+describe('pathological type sizes', () => {
+  // 50,000 suffixes overflowed the host stack (a raw RangeError) before the depth gate ran
+  const deep = `uint256${'[]'.repeat(50_000)}`;
+  const outputsAbi = (type: string) =>
+    [
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ name: '', type }],
+      },
+    ] as const;
+
+  test('a 50,000-suffix chain is UNSUPPORTED_V0 at every t entry point, not a RangeError', () => {
+    const entries: (() => unknown)[] = [
+      () => t.array(deep as never),
+      () => t.array(deep as never, 2),
+      () => t.fromAbiParameter({ name: '', type: deep } as never),
+      () => t.fromOutputs(outputsAbi(deep) as never, 'f' as never),
+      () => t.struct({ x: deep as never }),
+      () => t.tuple(deep as never),
+      () => namedArg('x', deep as never),
+      () =>
+        t.fromAbiParameter({
+          name: '',
+          type: `tuple${'[]'.repeat(50_000)}`,
+          components: [{ name: 'a', type: 'uint8' }],
+        } as never),
+      () =>
+        t.struct({
+          x: { type: `tuple${'[2]'.repeat(50_000)}`, components: [{ name: 'a', type: 'uint8' }] },
+        } as never),
+    ];
+    for (const build of entries) {
+      const { code, message } = codeOf(build);
+      expect(code).toBe('UNSUPPORTED_V0');
+      expect(message).toMatch(/nests arrays 50000 levels deep — at most 4/);
+      // the type is quoted cut short, not 100,000 characters verbatim
+      expect(message.length).toBeLessThan(400);
+      expect(message).toMatch(/"… \(\d{6} characters\)/);
+    }
+    // the structural predicate stays a total function (no depth gate, no recursion)
+    expect(isEvsType(deep)).toBe(true);
+    expect(arrayDepthOf(deep)).toBe(50_000);
+  });
+
+  test('a malformed leaf under a long chain stays TYPE_MISMATCH (the leaf is checked first)', () => {
+    const bad = codeOf(() => t.array(`uint7${'[]'.repeat(50_000)}` as never));
+    expect(bad.code).toBe('TYPE_MISMATCH');
+    expect(bad.message).toMatch(/unknown type "uint7\[\]\[\]/);
+    expect(codeOf(() => t.array(`${deep}[0]` as never)).code).toBe('TYPE_MISMATCH');
+  });
+
+  test('peelArraySuffix peels only the last suffix, as before the linear rewrite', () => {
+    expect(peelArraySuffix('uint256[2][]')).toEqual({ inner: 'uint256[2]', length: null });
+    expect(peelArraySuffix('uint256[][7]')).toEqual({ inner: 'uint256[]', length: 7 });
+    expect(peelArraySuffix('[]')).toEqual({ inner: '', length: null });
+    for (const s of ['uint256', 'uint256[0]', 'uint256[07]', 'uint256[x]', 'uint256[]]', ']']) {
+      expect(peelArraySuffix(s)).toBeNull();
+    }
+    expect(peelArraySuffix('uint256[4294967295]')?.length).toBe(2 ** 32 - 1);
+    expect(peelArraySuffix('uint256[4294967296]')).toBeNull();
+  });
+
+  test('staticSizeOf: bytes inlined into an ABI head, null when ABI-dynamic', () => {
+    expect(staticSizeOf('uint8')).toBe(32n);
+    expect(staticSizeOf('uint256[3][2]')).toBe(192n);
+    expect(staticSizeOf(t.array(t.struct({ a: t.uint8, b: t.bool }), 2))).toBe(128n);
+    expect(staticSizeOf('uint256[100000000][100000000]')).toBe(320_000_000_000_000_000n);
+    for (const dyn of ['string', 'bytes', 'uint256[]', 'string[2]', 'uint256[][2]']) {
+      expect(staticSizeOf(dyn as EvsType)).toBeNull();
+    }
+    expect(staticSizeOf(t.struct({ a: t.uint8, s: t.string }))).toBeNull();
+  });
+
+  test('a static size of 2^32 bytes or more is UNSUPPORTED_V0; just below it is accepted', () => {
+    expect(MAX_STATIC_SIZE).toBe(2 ** 32 - 1);
+    // 32 · (2^27 − 1) = 2^32 − 32 bytes fits; 32 · 2^27 = 2^32 does not
+    expect(t.array(t.uint256, 2 ** 27 - 1)).toBe('uint256[134217727]');
+    // a dynamic element (string) makes the array ABI-dynamic: only its offset is inlined
+    expect(t.array(t.array(t.string, 100_000_000), 100_000_000)).toBe(
+      'string[100000000][100000000]',
+    );
+    const half = t.array(t.uint256, 2 ** 26); // 2^31 bytes each
+    const tooBig: (() => unknown)[] = [
+      () => t.array(t.uint256, 2 ** 27),
+      () => t.array(t.array(t.uint256, 100_000_000), 100_000_000),
+      () => namedArg('x', 'uint256[100000000][100000000]' as never),
+      () => t.fromAbiParameter({ name: '', type: 'uint256[100000000][100000000]' } as never),
+      () => t.struct({ a: half, b: half }),
+      () => t.tuple(half, half),
+      () => t.array(t.struct({ a: t.array(t.uint256, 1000) }), 1_000_000),
+      () => t.array([{ name: 'a', type: 'uint256[1000]' }] as never, 1_000_000),
+      () =>
+        t.fromOutputs(
+          [
+            {
+              type: 'function',
+              name: 'f',
+              stateMutability: 'view',
+              inputs: [],
+              outputs: [
+                { name: 'a', type: 'uint256[67108864]' },
+                { name: 'b', type: 'uint256[67108864]' },
+              ],
+            },
+          ] as never,
+          'f' as never,
+        ),
+    ];
+    for (const build of tooBig) {
+      const { code, message } = codeOf(build);
+      expect(code).toBe('UNSUPPORTED_V0');
+      expect(message).toMatch(/has an ABI static size of \d+ bytes — at most 2\^32 − 1/);
+    }
+    expect(codeOf(tooBig[1] ?? (() => undefined)).message).toContain('320000000000000000 bytes');
   });
 });
 

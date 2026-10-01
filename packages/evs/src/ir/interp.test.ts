@@ -2079,6 +2079,57 @@ describe('maxSteps + trace', () => {
     expect(retOf(interpret(script, [], deadChain, { maxSteps: 2 }))).toEqual({ r: 2n });
   });
 
+  test('zero-fills are charged one step per array element, before anything is allocated', () => {
+    /** A tryRead of `get()` whose call fails, so its single output zero-fills to `type`. */
+    const failedRead = (type: EvsType): ScriptIr =>
+      ir({
+        name: 'zero',
+        args: [{ name: 'target', type: 'address' }],
+        values: [vi('address'), vi(type), vi('bool')],
+        body: [
+          mk({
+            k: 'call',
+            target: 0,
+            fnAbi: fnAbi('get', [], [{ name: '', type }]),
+            args: [],
+            outs: [1],
+            mode: 'try',
+            successOut: 2,
+          }),
+        ],
+        returns: [{ name: 'ok', type: 'bool', value: 2 }],
+      });
+    const failing = chainOf(() => ({ success: false, data: '0x' }));
+    // uint256[3][2]: 2 outer + 2 · 3 inner elements = 8 steps, plus 1 for the call statement
+    const small = failedRead('uint256[3][2]');
+    expect(retOf(interpret(small, [TOKEN], failing, { maxSteps: 9 }))).toEqual({ ok: false });
+    expect(() => interpret(small, [TOKEN], failing, { maxSteps: 8 })).toThrowError(
+      /exceeded maxSteps = 8 zero-filling 8 array elements/,
+    );
+    // 1e16 elements: used to exhaust the host heap; now refused up front
+    expect(() =>
+      interpret(failedRead('uint256[100000000][100000000]'), [TOKEN], failing),
+    ).toThrowError(EvsCompileError);
+    // s.newArray of 2^32 − 1 words (the largest length below the 0x41 guard) likewise
+    const bigNew = ir({
+      name: 'bignew',
+      values: [vi('uint256'), vi('uint8[]')],
+      body: [
+        mk({
+          k: 'const',
+          out: 0,
+          data: { kind: 'word', hex: wordHex(2n ** 32n - 1n) },
+          type: 'uint256',
+        }),
+        mk({ k: 'arrnew', elem: 'uint8', length: 0, out: 1 }),
+      ],
+      returns: [{ name: 'xs', type: 'uint8[]', value: 1 }],
+    });
+    expect(() => interpret(bigNew, [], deadChain)).toThrowError(
+      /zero-filling 4294967295 array elements/,
+    );
+  });
+
   test('invalid maxSteps → EvsTypeError', () => {
     expect(() => interpret(infinite, [], deadChain, { maxSteps: 0 })).toThrowError(EvsTypeError);
     expect(() => interpret(infinite, [], deadChain, { maxSteps: 1.5 })).toThrowError(EvsTypeError);

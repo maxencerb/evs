@@ -15,6 +15,7 @@ import { inspect } from 'node:util';
 import type { Abi } from 'abitype';
 import { describe, expect, test } from 'vite-plus/test';
 
+import { compile } from '../compile.js';
 import {
   EvsError,
   EvsScopeError,
@@ -1909,5 +1910,83 @@ describe('checklist: revertReturns (issue #35)', () => {
       'ABI_SHAPE',
       /revertReturns\[0\]: tuple type carries no components/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathological type sizes: a 50,000-suffix chain used to overflow the host stack (a raw
+// RangeError) and a static size past 2^53 bytes reached the assembler (EvsInternalError INTERNAL)
+// ---------------------------------------------------------------------------
+
+describe('checklist: pathological type sizes', () => {
+  const deep = `uint256${'[]'.repeat(50_000)}`;
+  const getterAbi = (type: string, components?: readonly unknown[]) =>
+    [
+      {
+        type: 'function',
+        name: 'get',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ name: '', type, ...(components === undefined ? {} : { components }) }],
+      },
+    ] as never;
+
+  test('a 50,000-suffix chain in an arg or a JSON-ABI output → UNSUPPORTED_V0', () => {
+    expectEvs(
+      () =>
+        compile(
+          evscript({ name: 'p', args: [t.uint256, deep as never] }, (s: AnyBuilder, a: unknown) =>
+            s.return({ a } as never),
+          ),
+        ),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /nests arrays 50000 levels deep/,
+    );
+    expectEvs(
+      () => rec((s, a) => s.read({ address: a.who, abi: getterAbi(deep), functionName: 'get' })),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /nests arrays 50000 levels deep/,
+    );
+  });
+
+  test('a static size of 2^32 bytes or more → UNSUPPORTED_V0 at recording, not INTERNAL', () => {
+    const huge = 'uint256[100000000][100000000]'; // 3.2e17 bytes
+    expectEvs(
+      () => rec((s, a) => s.tryRead({ address: a.who, abi: getterAbi(huge), functionName: 'get' })),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /output parameter #0 \(unnamed\): .*ABI static size of 320000000000000000 bytes/,
+    );
+    expectEvs(
+      () =>
+        evscript({ name: 'q', args: [t.address, huge as never] }, (s: AnyBuilder, a: unknown) =>
+          s.return({ a } as never),
+        ),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /ABI static size of 320000000000000000 bytes/,
+    );
+    expectEvs(
+      () => t.array(t.array(t.uint256, 100_000_000), 100_000_000),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /ABI static size/,
+    );
+  });
+
+  test('a tuple-array output too large in total → UNSUPPORTED_V0 from compile(), not INTERNAL', () => {
+    // each component passes its own check at recording; the 3.2e12-byte total is caught when the
+    // output's layout is built
+    const script = evscript({ name: 'r', args: [t.address] }, (s: AnyBuilder, who: unknown) => {
+      const r = s.tryRead({
+        address: who as never,
+        abi: getterAbi('tuple[100000000]', [{ name: 'a', type: 'uint256[100]' }]),
+        functionName: 'get',
+      }) as { success: unknown };
+      return s.return({ ok: r.success } as never);
+    });
+    expectEvs(() => compile(script), EvsTypeError, 'UNSUPPORTED_V0', /ABI static size/);
   });
 });

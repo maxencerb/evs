@@ -177,7 +177,14 @@ Releases: see [Releasing](#releasing) below.
   decode through these decoders rolls the free pointer back to the returndata snapshot on a
   decode failure before its zero block (`emitTryEpilogue`). Arrays nest at most
   `MAX_ARRAY_DEPTH` (4) levels; deeper types are `UNSUPPORTED_V0` in `t.array`, type-string
-  validation, `abi/layout`, `abi/artifact` and `ir/validate`.
+  validation, `abi/layout`, `abi/artifact` and `ir/validate`. Suffix chains are peeled
+  iteratively and validated before `abi/layout` recurses, so a hostile 50,000-suffix string
+  reaches that gate instead of overflowing the host stack. An ABI-static type must also stay
+  below `MAX_STATIC_SIZE` (2^32 bytes): codegen pushes static sizes and head sizes as
+  immediates, which must be exact JS integers, so nested fixed lengths (`uint256[1e8][1e8]`)
+  are `UNSUPPORTED_V0` in the `t` constructors, type-string validation and `abi/layout` (the
+  funnel every codegen path goes through). The interpreter charges zero-filled array elements
+  to `maxSteps` before allocating them, so a huge zero is `COMPILE_LIMIT`, not a host OOM.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
   narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
   differentially against solc-compiled reference contracts. `pow` has three templates, all

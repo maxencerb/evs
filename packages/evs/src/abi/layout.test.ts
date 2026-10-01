@@ -3,7 +3,7 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';
-import { t, type TupleType, type WordType } from '../core/types.js';
+import { staticSizeOf, t, type EvsType, type TupleType, type WordType } from '../core/types.js';
 import {
   headBytes,
   isDynamic,
@@ -350,6 +350,92 @@ describe('staticSize', () => {
       components: [{ name: 'x', type: 'bytes' }],
     } as unknown as TupleType);
     expect(() => staticSize(dynTuple)).toThrow(/is dynamic/);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// pathological sizes (regression: a RangeError / an INTERNAL push instead of a coded error)
+// ---------------------------------------------------------------------------
+
+/** The `EvsTypeError` code `fn` throws (any other error, or none, fails the test). */
+function codeOf(fn: () => unknown): string {
+  let caught: unknown;
+  try {
+    fn();
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(EvsTypeError);
+  return (caught as EvsTypeError).code;
+}
+
+describe('pathological sizes', () => {
+  test('a 50,000-suffix chain is rejected before any recursion (UNSUPPORTED_V0, no RangeError)', () => {
+    expect(codeOf(() => layoutOf(`uint256${'[]'.repeat(50_000)}`))).toBe('UNSUPPORTED_V0');
+    expect(codeOf(() => layoutOf(`string${'[3]'.repeat(50_000)}`))).toBe('UNSUPPORTED_V0');
+    // a malformed leaf keeps its TYPE_MISMATCH precedence over the depth gate
+    expect(codeOf(() => layoutOf(`uint7${'[]'.repeat(50_000)}`))).toBe('TYPE_MISMATCH');
+    expect(codeOf(() => layoutOf(`tuple${'[]'.repeat(50_000)}`))).toBe('TYPE_MISMATCH');
+    const deepTuple = {
+      type: `tuple${'[]'.repeat(50_000)}`,
+      components: [{ name: 'x', type: 'uint256' }],
+    } as unknown as TupleType;
+    expect(codeOf(() => layoutOfType(deepTuple))).toBe('UNSUPPORTED_V0');
+    expect(codeOf(() => headBytes([{ name: 'a', type: `address${'[]'.repeat(50_000)}` }]))).toBe(
+      'UNSUPPORTED_V0',
+    );
+  });
+
+  test('a static size of 2^32 bytes or more is UNSUPPORTED_V0, never an unsafe-integer size', () => {
+    // just below the cap: 32 · (2^27 − 1) = 2^32 − 32 bytes
+    expect(staticSize(layoutOf('uint256[134217727]'))).toBe(2 ** 32 - 32);
+    expect(headBytes([{ name: 'a', type: 'uint256[134217727]' }])).toBe(2 ** 32 - 32);
+    const tooBig = [
+      () => layoutOf('uint256[134217728]'),
+      // 3.2e17 bytes: compile() used to push this past 2^53 and fail with INTERNAL
+      () => layoutOf('uint256[100000000][100000000]'),
+      () => headBytes([{ name: 'a', type: 'uint256[100000000][100000000]' }]),
+      () => layoutOf('bytes32[4294967295][4294967295][4294967295][4294967295]'),
+      // hand-built descriptors (deserialized IR, raw ABI) skip the `t` gates; layout still catches them
+      () =>
+        layoutOfType({
+          type: 'tuple',
+          components: [
+            { name: 'a', type: 'uint256[67108864]' },
+            { name: 'b', type: 'uint256[67108864]' },
+          ],
+        } as unknown as TupleType),
+      () =>
+        layoutOfType({
+          type: 'tuple[100000000]',
+          components: [{ name: 'a', type: 'uint256[100]' }],
+        } as unknown as TupleType),
+    ];
+    for (const fn of tooBig) expect(codeOf(fn)).toBe('UNSUPPORTED_V0');
+    expect(() => layoutOf('uint256[100000000][100000000]')).toThrowError(
+      /ABI static size of 320000000000000000 bytes — at most 2\^32 − 1/,
+    );
+    // ABI-dynamic shapes inline one offset word whatever their element count
+    expect(isDynamic(layoutOf('string[100000000][100000000]'))).toBe(true);
+    expect(headBytes([{ name: 'a', type: 'uint256[100000000][]' }])).toBe(32);
+  });
+
+  test('staticSizeOf (core/types, over the type) agrees with staticSize (over the layout)', () => {
+    const types: EvsType[] = [
+      'uint8',
+      'bytes32[3]',
+      'uint256[2][3]',
+      'string',
+      'uint256[]',
+      'string[2]',
+      t.struct({ a: t.uint8, b: t.array(t.address, 4) }),
+      t.array(t.struct({ a: t.uint8, b: t.tuple(t.bool, t.uint16) }), 5),
+      t.array(t.struct({ a: t.uint8, s: t.string }), 2),
+    ];
+    for (const type of types) {
+      const layout = layoutOfType(type);
+      expect(staticSizeOf(type)).toBe(isDynamic(layout) ? null : BigInt(staticSize(layout)));
+    }
   });
 });
 

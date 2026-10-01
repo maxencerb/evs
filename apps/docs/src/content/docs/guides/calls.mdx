@@ -185,8 +185,10 @@ hard type errors where viem is also permissive:
   dynamic-leaf arrays (`string[]`, `bytes[][]`), and fixed-size arrays (`uint256[2]`,
   `Position[3]`, `string[2]`) — see
   [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs). A deeper
-  array (`uint256[][][][][]`) throws `EvsTypeError` (`UNSUPPORTED_V0`) at recording and a
-  malformed type (`uint256[0]`, `tuple[0]`) `TYPE_MISMATCH`/`ABI_SHAPE`, naming the parameter.
+  array (`uint256[][][][][]`) or a static type of 2^32 bytes or more
+  (`uint256[100000000][100000000]`, see [values and types](/guides/values-and-types/)) throws
+  `EvsTypeError` (`UNSUPPORTED_V0`) at recording and a malformed type (`uint256[0]`, `tuple[0]`)
+  `TYPE_MISMATCH`/`ABI_SHAPE`, naming the parameter.
 
 ## Overloaded functions
 

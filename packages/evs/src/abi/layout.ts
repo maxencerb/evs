@@ -4,9 +4,10 @@
  * Implements the memory model (canonical word invariant) and the ABI head/tail shapes for the
  * whole evs type vocabulary: words, `string`/`bytes`, (nested) tuples, and arrays over any
  * element — dynamic `T[]` and fixed-size `T[N]` alike (`uint256[2]`, `tuple[][]`, `string[][]`,
- * `uint256[][][]`, `address[3][]`, …) — up to `MAX_ARRAY_DEPTH` suffixes; deeper chains are
- * rejected with `UNSUPPORTED_V0`. A raw `'tuple…'` type STRING is rejected with `TYPE_MISMATCH`
- * (tuples are descriptor objects, see {@link layoutOfType}).
+ * `uint256[][][]`, `address[3][]`, …) — up to `MAX_ARRAY_DEPTH` suffixes; deeper chains, and
+ * ABI-static types larger than `MAX_STATIC_SIZE` bytes, are rejected with `UNSUPPORTED_V0`. A raw
+ * `'tuple…'` type STRING is rejected with `TYPE_MISMATCH` (tuples are descriptor objects, see
+ * {@link layoutOfType}).
  *
  * Fixed-size arrays: in MEMORY a `T[N]` is laid out exactly like a `T[]` — a length-prefixed
  * `[N][slot0 … slot_{N-1}]` block (inline words for a word element, pointers otherwise) whose
@@ -24,11 +25,15 @@ import {
   assertArrayDepth,
   bitsOf,
   explainBadTypeString,
+  isEvsType,
   isSigned,
   isTupleTag,
   isTupleType,
   isWordType,
+  MAX_STATIC_SIZE,
   peelArraySuffix,
+  quoteTypeString,
+  staticSizeMessage,
   type EvsType,
   type TupleType,
   type WordType,
@@ -78,7 +83,8 @@ function badTypeError(abiType: string): EvsTypeError {
 
 /** Layout of a string-encoded type (word, `string`/`bytes`, or an array of those — dynamic or
  *  fixed-size). Throws `EvsTypeError`: `TYPE_MISMATCH` for a tuple STRING or junk,
- *  `UNSUPPORTED_V0` for arrays nested deeper than `MAX_ARRAY_DEPTH`. */
+ *  `UNSUPPORTED_V0` for arrays nested deeper than `MAX_ARRAY_DEPTH` or a static size past
+ *  `MAX_STATIC_SIZE` bytes. */
 export function layoutOf(abiType: string): TypeLayout {
   const hit = layoutByString.get(abiType);
   if (hit !== undefined) return hit;
@@ -96,22 +102,34 @@ const layoutByTuple = new WeakMap<TupleType, TypeLayout>();
 function computeLayoutOf(abiType: string): TypeLayout {
   if (isWordType(abiType)) return wordLayoutOf(abiType);
   if (abiType === 'bytes' || abiType === 'string') return { kind: 'bytes', abi: abiType };
+  // the whole string is validated BEFORE recursing, so a hostile suffix chain never recurses
+  // once per suffix: a malformed leaf (or a tuple string) is TYPE_MISMATCH for the OUTER string,
+  // then the narrowed #4 gate — arrays nest at most MAX_ARRAY_DEPTH levels
   const peeled = peelArraySuffix(abiType);
-  if (peeled !== null && !peeled.inner.startsWith('tuple')) {
-    // recurse on the element — `layoutOf` (not `computeLayoutOf`) so inner types memoize too
-    let elem: TypeLayout;
-    try {
-      elem = layoutOf(peeled.inner);
-    } catch (e) {
-      // re-attribute a malformed-leaf failure to the OUTER string the caller passed
-      if (e instanceof EvsTypeError && e.code === 'TYPE_MISMATCH') throw badTypeError(abiType);
-      throw e;
-    }
-    // the narrowed #4 gate: arrays nest at most MAX_ARRAY_DEPTH levels
-    assertArrayDepth(abiType, 'layoutOf');
-    return { kind: 'array', abi: abiType, elem, length: peeled.length };
+  if (peeled === null || !isEvsType(abiType)) throw badTypeError(abiType);
+  assertArrayDepth(abiType, 'layoutOf');
+  // recurse on the element — `layoutOf` (not `computeLayoutOf`) so inner types memoize too
+  const elem = layoutOf(peeled.inner);
+  return assertLayoutSize(
+    { kind: 'array', abi: abiType, elem, length: peeled.length },
+    abiType,
+    'layoutOf',
+  );
+}
+
+/**
+ * The `MAX_STATIC_SIZE` gate on a freshly built layout: an ABI-static layout whose size reaches
+ * 2^32 bytes is `UNSUPPORTED_V0` (codegen pushes static sizes as immediates, which must stay
+ * exact). Its members were gated when they were built, so `staticSize` is exact up to this
+ * level's own product or sum; a size past 2^53 prints rounded, which only the message sees.
+ */
+function assertLayoutSize<L extends TypeLayout>(layout: L, type: string, context: string): L {
+  if (isDynamic(layout)) return layout;
+  const size = staticSize(layout);
+  if (size > MAX_STATIC_SIZE) {
+    throw new EvsTypeError('UNSUPPORTED_V0', staticSizeMessage(context, type, size));
   }
-  throw badTypeError(abiType);
+  return layout;
 }
 
 /**
@@ -144,18 +162,26 @@ function computeTupleLayout(t: TupleType): TypeLayout {
   if (peeled === null || !isTupleTag(peeled.inner)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `layoutOfType: malformed tuple tag ${JSON.stringify(t.type)}`,
+      `layoutOfType: malformed tuple tag ${quoteTypeString(t.type)}`,
     );
   }
   // the narrowed #4 gate: tuple arrays nest at most MAX_ARRAY_DEPTH levels
   assertArrayDepth(t.type, 'layoutOfType');
   const elem = layoutOfType({ type: peeled.inner, components: t.components });
-  return { kind: 'array', abi: t.type, elem, length: peeled.length };
+  return assertLayoutSize(
+    { kind: 'array', abi: t.type, elem, length: peeled.length },
+    t.type,
+    'layoutOfType',
+  );
 }
 
 function tupleLayoutOf(t: TupleType): Extract<TypeLayout, { kind: 'tuple' }> {
   const components = t.components.map((c) => layoutOfType(abiParamToType(c)));
-  return { kind: 'tuple', abi: t.type, components, dynamic: components.some(isDynamic) };
+  return assertLayoutSize(
+    { kind: 'tuple', abi: t.type, components, dynamic: components.some(isDynamic) },
+    t.type,
+    'layoutOfType',
+  );
 }
 
 /** ABI-dynamic (offset-pointer head + appended tail): `string`/`bytes`, any `T[]`, a `T[N]` whose
