@@ -48,15 +48,18 @@ export function identProblem(name: unknown): string {
 }
 
 /**
- * Whether a name-keyed record (a `t.struct` spec, an `s.return` record) is a plain object whose
- * keys `Object.entries` sees in full. A literal `{ __proto__: x }` key never becomes an entry: an
- * object or `null` value replaces the record's prototype, so the prototype must be a root
- * prototype (`Object.prototype`, of any realm). A primitive value (`{ __proto__: t.uint256 }`) is
- * dropped by JavaScript without a trace at runtime; the `NoProtoKey` type guard covers that case.
+ * The prototype of a name-keyed record (a `t.struct` spec, an `s.return` record) when it is not
+ * a root prototype (`Object.prototype`, of any realm) or `null`, else `null`. A literal
+ * `{ __proto__: x }` key never becomes an entry: an object value replaces the record's prototype
+ * (the value is lost), so a caller rejects the record when this returns what such a key would
+ * carry there (an evs type, a handle). Any other prototype is no lost value — `Object.create(null)`
+ * dictionaries and class instances are read through their own keys in full. A primitive value
+ * (`{ __proto__: t.uint256 }`) is dropped by JavaScript without a trace at runtime; the
+ * `NoProtoKey` type guard covers that case.
  */
-export function hasPlainPrototype(o: object): boolean {
-  const proto: unknown = Object.getPrototypeOf(o);
-  return proto !== null && Object.getPrototypeOf(proto) === null;
+export function nonRootPrototype(o: object): object | null {
+  const proto: object | null = Object.getPrototypeOf(o);
+  return proto === null || Object.getPrototypeOf(proto) === null ? null : proto;
 }
 
 /**

@@ -52,6 +52,20 @@ export const ARR_INTERNALS = new WeakMap<object, ArrInternals>();
 export const TUPLE_INTERNALS = new WeakMap<object, TupleInternals>();
 export const FIELD_INTERNALS = new WeakMap<object, FieldInternals>();
 
+/**
+ * The one own enumerable key of every Tuple handle (a symbol, so `Object.keys(handle)` stays
+ * empty). Its field accessors live on the shared prototype, so a spread / `Object.assign` copy of
+ * a handle holds no member — only this mark, which object spread copies — and the recorder rejects
+ * such a copy where it reads a record instead of silently zero-filling every member.
+ */
+const TUPLE_COPY_MARK: unique symbol = Symbol('evs.tupleCopy');
+
+/** Whether `v` is a spread / `Object.assign` copy of a Tuple handle (it carries
+ *  {@link TUPLE_COPY_MARK} but is no handle itself). */
+export function isTupleCopy(v: object): boolean {
+  return Object.hasOwn(v, TUPLE_COPY_MARK) && !TUPLE_INTERNALS.has(v);
+}
+
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
 export const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
 
@@ -406,6 +420,7 @@ function tupleProtoOf(tt: TupleType): object {
 
 export function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {
   const handle: object = Object.create(tupleProtoOf(tt));
+  Object.defineProperty(handle, TUPLE_COPY_MARK, { value: true, enumerable: true });
   TUPLE_INTERNALS.set(handle, { owner, id, tt });
   return handle;
 }

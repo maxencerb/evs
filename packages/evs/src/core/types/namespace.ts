@@ -15,7 +15,7 @@ import {
   type NormalizeArgs,
   IDENT_RE,
   PROTO_RESERVED,
-  hasPlainPrototype,
+  nonRootPrototype,
   identProblem,
   normalizeArgsInput,
 } from './args.js';
@@ -228,7 +228,10 @@ function structTypeRT(spec: unknown): TupleType {
       `t.struct(): expected a record of { field: type }, got ${describeTypeInput(spec)}`,
     );
   }
-  if (!hasPlainPrototype(spec)) {
+  // a literal `{ __proto__: Inner }` key put a field type (or component list) in the prototype,
+  // where Object.entries below would never see it
+  const proto = nonRootPrototype(spec);
+  if (proto !== null && (isTupleType(proto) || Array.isArray(proto))) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `t.struct(): expected a plain object literal of { field: type }, but the record's prototype was replaced — an object-literal \`__proto__\` key does that instead of declaring a field. ${PROTO_RESERVED}`,

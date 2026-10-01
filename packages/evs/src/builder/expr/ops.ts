@@ -572,14 +572,14 @@ export abstract class RecorderOps extends RecorderEncode {
    *  path applies to it — so `s.select(true, a, b)` accepts the same `b` as `s.select(flag, a, b)`.
    *  A word literal is range-checked without interning. Any other literal (string/bytes, an array
    *  — composite elements or staged handles included — or a struct) goes through `coerceToId`
-   *  itself and its value is left unused: the dead const / construction is dropped by
-   *  `eliminateDeadCode` before codegen, so the bytecode is the chosen branch's alone. */
+   *  itself, inside {@link withRollback}: nothing it records is left in the IR, so the script is
+   *  the chosen branch's alone (no dead construction for DCE to miss, no `LOOP_ALLOCATION`). */
   private checkDroppedBranch(ty: EvsType, value: unknown): void {
     if (isWordType(ty)) {
       this.wordLiteral(ty, value);
       return;
     }
-    this.coerceToId(value, ty, 's.select() branch');
+    this.withRollback(() => this.coerceToId(value, ty, 's.select() branch'));
   }
 }
 

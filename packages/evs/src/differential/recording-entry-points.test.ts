@@ -149,6 +149,92 @@ describe.each(EVM_VERSIONS)('s.select with a folded condition [%s]', (evmVersion
   });
 });
 
+describe.each(EVM_VERSIONS)(
+  'a dropped s.select branch holding a live handle [%s]',
+  (evmVersion) => {
+    // the dropped `[x]` literal names a live Tuple: it is validated without being recorded, so no
+    // dead allocation of it survives (DCE keeps an array store that aliases a live value)
+    const S = t.struct({ a: t.uint256 });
+    const script = (select: boolean) =>
+      evscript({ name: 'drop', args: [t.uint256] }, (s, n) => {
+        const x = s.tuple(S, { a: 5n });
+        const arr = s.newArray(S, 1n);
+        arr.set(0n, x);
+        // a Tuple handle as a `tuple[]` literal element: the runtime takes it, the literal type not
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+        const lit = [x] as never;
+        const r = select ? s.select(true, arr.expr(), lit) : arr.expr();
+        const acc = s.let(t.uint256, 0n);
+        s.for({ type: t.uint256, from: 0n, until: n }, () => {
+          const q = select ? s.select(false, lit, arr.expr()) : arr.expr();
+          acc.set(acc.get().add(q.length()));
+        });
+        return s.return({ r, x, acc: acc.get() });
+      });
+
+    test('the recorded IR is the chosen branch alone', () => {
+      expect(script(true).ir).toEqual(script(false).ir);
+      expect(compile(script(true), { evmVersion }).runtimeBytecode).toBe(
+        compile(script(false), { evmVersion }).runtimeBytecode,
+      );
+    });
+
+    test('no LOOP_ALLOCATION for the dropped literal in a loop', async () => {
+      const codes: string[] = [];
+      compile(script(true), { evmVersion, onDiagnostic: (d) => codes.push(d.code) });
+      expect(codes).not.toContain('LOOP_ALLOCATION');
+      expect(await agreedResult(script(true), [2n], evmVersion)).toEqual({
+        r: [{ a: 5n }],
+        x: { a: 5n },
+        acc: 2n,
+      });
+    });
+
+    test('an invalid dropped branch still throws, and recording carries on cleanly', () => {
+      const Pair2 = t.tuple(t.uint256, t.address);
+      const caught = evscript({ name: 'bad', args: [t.uint256] }, (s, x) => {
+        const p = s.tuple(Pair2, [x, ONE]);
+        // each invalid literal records part of itself (the `7n` const) before it throws
+        const drop = (bad: readonly unknown[]) => () =>
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- seeded invalid literals
+          s.select(true, p.expr(), bad as never);
+        expect(drop([1n, ONE, 2n])).toThrow(/too many members/);
+        expect(drop([7n, 'not an address'])).toThrow(/address literal must be/);
+        expect(drop([[x]])).toThrow(/uint256 literal must be/);
+        return s.return({ p });
+      });
+      const plain = evscript({ name: 'bad', args: [t.uint256] }, (s, x) =>
+        s.return({ p: s.tuple(Pair2, [x, ONE]) }),
+      );
+      expect(caught.ir).toEqual(plain.ir);
+    });
+  },
+);
+
+describe.each(EVM_VERSIONS)('struct literals with a `type` member [%s]', (evmVersion) => {
+  test('memref .eq() / s.select() read them as tuple literals', async () => {
+    const S = t.struct({ type: t.string });
+    const script = evscript({ name: 'ty', args: [t.string, t.bool] }, (s, tag, c) => {
+      const x = s.tuple(S, { type: tag });
+      return s.return({
+        isAddress: x.expr().eq({ type: 'address' }),
+        notUint: s.neq(x.expr(), { type: 'uint256' }),
+        picked: s.select(c, x.expr(), { type: 'bool' }),
+      });
+    });
+    expect(await agreedResult(script, ['address', false], evmVersion)).toEqual({
+      isAddress: true,
+      notUint: true,
+      picked: { type: 'bool' },
+    });
+    expect(await agreedResult(script, ['uint256', true], evmVersion)).toEqual({
+      isAddress: false,
+      notUint: false,
+      picked: { type: 'uint256' },
+    });
+  });
+});
+
 describe.each(EVM_VERSIONS)('a caught s.fn recording error [%s]', (evmVersion) => {
   test('the failed definition leaves no fn behind; the fallback runs', async () => {
     const script = evscript({ name: 'fallback', args: [t.uint256] }, (s, x) => {

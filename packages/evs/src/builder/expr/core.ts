@@ -49,6 +49,7 @@ import {
   TUPLE_INTERNALS,
   FIELD_INTERNALS,
   isStagedHandle,
+  isTupleCopy,
   CellImpl,
 } from './handles.js';
 import {
@@ -241,6 +242,30 @@ export abstract class RecorderCore {
     return id;
   }
 
+  /**
+   * Runs `fn` (a validation that records through the usual coercions) and then undoes everything
+   * it recorded: the statements appended to the current block, the values it defined, the consts
+   * it interned and the sites it used. Errors still propagate. Nothing it records may outlive it
+   * (its ValueIds are gone), and it records into the current block only (it opens no scope).
+   */
+  protected withRollback<T>(fn: () => T): T {
+    const scope = this.top();
+    const stmts = scope.stmts.length;
+    const consts = scope.consts.size;
+    const values = this.values.length;
+    const site = this.nextSite;
+    try {
+      return fn();
+    } finally {
+      scope.stmts.length = stmts;
+      for (const key of [...scope.consts.keys()].slice(consts)) scope.consts.delete(key);
+      for (let id = values; id < this.values.length; id++) this.litValues.delete(id);
+      this.values.length = values;
+      this.valueScopes.length = values;
+      this.nextSite = site;
+    }
+  }
+
   protected pushScope(kind: ScopeKind): Scope {
     const s = newScope(kind);
     this.stack.push(s);
@@ -283,9 +308,11 @@ export abstract class RecorderCore {
           `${what}: a Field is not an Expr — read a snapshot with .get()`,
         );
       }
+      // an Expr of another evs copy: a word-type tag AND the handle methods (a struct literal
+      // with a member named `type` has no methods, so it stays a raw literal)
       if (!Array.isArray(v)) {
-        const tag = (v as { type?: unknown }).type;
-        if (typeof tag === 'string' && isWordType(tag)) {
+        const { type: tag, eq } = v as { type?: unknown; eq?: unknown };
+        if (typeof tag === 'string' && isWordType(tag) && typeof eq === 'function') {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
             `${what}: value looks like an Expr handle but was not created by this copy of evs (forged object, or a duplicate @maxencerb/evs install)`,
@@ -568,6 +595,11 @@ export abstract class RecorderCore {
     if (TUPLE_INTERNALS.has(v) || EXPR_INTERNALS.has(v)) {
       fail(
         'init must be a literal of members, not a handle — pass the handle itself where the tuple is expected',
+      );
+    }
+    if (isTupleCopy(v)) {
+      fail(
+        'init is a spread/Object.assign copy of a Tuple handle, which copies no members — read each field with .get() (e.g. { a: x, b: p.b.get() })',
       );
     }
   }

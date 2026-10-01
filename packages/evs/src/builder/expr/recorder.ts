@@ -7,7 +7,7 @@ import { EvsTypeError, EvsScopeError, EvsInternalError } from '../../core/errors
 import {
   IDENT_RE,
   PROTO_RESERVED,
-  hasPlainPrototype,
+  nonRootPrototype,
   identProblem,
   normalizeArgsInput,
   type Expr,
@@ -15,7 +15,7 @@ import {
 } from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
 import { RecorderCalls } from './calls.js';
-import { RETURN_BRAND, isStagedHandle } from './handles.js';
+import { CELL_INTERNALS, RETURN_BRAND, isStagedHandle, isTupleCopy } from './handles.js';
 import { describeHost, newScope, unsafeCast } from './helpers.js';
 
 /** A plain (non-array) object that is not a staged handle: the literal of a struct. */
@@ -222,11 +222,19 @@ export class Recorder extends RecorderCalls {
       );
     }
     // a literal `{ __proto__: handle }` key replaced the record's prototype (Object.entries below
-    // would never see it); a primitive value is dropped by JS and caught only by `NoProtoKey`.
-    if (!hasPlainPrototype(values)) {
+    // would never see it); a primitive value is dropped by JS and caught only by `NoProtoKey`. Any
+    // other prototype (`Object.create(null)`, a class instance) lost nothing: its own keys are read.
+    const proto = nonRootPrototype(values);
+    if (proto !== null && (isStagedHandle(proto) || CELL_INTERNALS.has(proto))) {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `s.return(): expected a plain object literal of named values, but the record's prototype was replaced — an object-literal \`__proto__\` key does that instead of naming a return value. ${PROTO_RESERVED}`,
+      );
+    }
+    if (isTupleCopy(values)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.return(): the record is a spread/Object.assign copy of a Tuple handle, which copies no members — name each value (e.g. { a: p.a.get() }), or return the handle itself under one key`,
       );
     }
     // an empty record would emit a zero-component result tuple: it ABI-encodes to 0 bytes, so every

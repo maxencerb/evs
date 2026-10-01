@@ -1569,8 +1569,9 @@ describe('checklist: foreign handle / closed scope / use-after-seal', () => {
   });
 
   test('forged handle-shaped object → FOREIGN_HANDLE', () => {
+    // a word-type tag and the handle methods: an Expr of another evs copy
     expectEvs(
-      () => rec((s, a) => s.add(a.x, { type: 'uint256' } as never)),
+      () => rec((s, a) => s.add(a.x, { type: 'uint256', eq() {} } as never)),
       EvsScopeError,
       'FOREIGN_HANDLE',
       /not created by this copy of evs/,
@@ -2912,13 +2913,19 @@ describe('checklist: `__proto__` is not a name', () => {
       'TYPE_MISMATCH',
       /t\.struct\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
     );
+    // a component list in the prototype is a lost member too
     expectEvs(
-      // @ts-expect-error -- `NoProtoKey` (and `null` is not a type)
-      () => t.struct({ __proto__: null, b: t.uint256 }),
+      // @ts-expect-error -- `NoProtoKey`
+      () => t.struct({ __proto__: [namedArg('a', t.uint256)], b: t.uint256 }),
       EvsTypeError,
       'TYPE_MISMATCH',
       /prototype was replaced/,
     );
+    // `null` is no type: the record merely loses its prototype and every member is still seen
+    // @ts-expect-error -- `NoProtoKey`
+    expect(t.struct({ __proto__: null, b: t.uint256 }).components).toEqual([
+      { name: 'b', type: 'uint256' },
+    ]);
     // a primitive value is dropped by JS before evs sees the record: only the type guard
     // (`NoProtoKey`, the @ts-expect-error) can reject it
     // @ts-expect-error -- `NoProtoKey`
@@ -2929,7 +2936,7 @@ describe('checklist: `__proto__` is not a name', () => {
     expect(t.struct(plain).components).toEqual([{ name: 'a', type: 'uint256' }]);
   });
 
-  test('s.return with a literal `__proto__` key → ABI_SHAPE (handle or null value)', () => {
+  test('s.return with a literal `__proto__` key → ABI_SHAPE (handle value)', () => {
     expectEvs(
       // @ts-expect-error -- `NoProtoKey`
       () => rec((s, a) => s.return({ __proto__: a.x, y: a.x })),
@@ -2938,12 +2945,46 @@ describe('checklist: `__proto__` is not a name', () => {
       /s\.return\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
     );
     expectEvs(
-      // @ts-expect-error -- `NoProtoKey`
-      () => rec((s, a) => s.return({ __proto__: null, y: a.x })),
+      () =>
+        evscript({ name: 'tup', args: [t.struct({ a: t.uint256 })] }, (s, p) =>
+          // @ts-expect-error -- `NoProtoKey`
+          s.return({ __proto__: p, y: p.a.get() }),
+        ),
       EvsTypeError,
       'ABI_SHAPE',
       /prototype was replaced/,
     );
+    // `null` is no value: the record merely loses its prototype and every key is still seen
+    const script = evscript({ name: 'nul', args: [t.uint256] }, (s, x) =>
+      // @ts-expect-error -- `NoProtoKey`
+      s.return({ __proto__: null, y: x }),
+    );
+    expect(script.ir.returns.map((r) => r.name)).toEqual(['y']);
+  });
+
+  test('a null-prototype or class-instance record is read through its own keys', () => {
+    // `Object.create(null)` is the usual dynamic dictionary; a class instance keeps its fields
+    // as own properties. Neither replaced a prototype with a lost value.
+    const Spec = t.struct(Object.assign(Object.create(null) as object, { a: t.uint256 }));
+    expect(Spec.components).toEqual([{ name: 'a', type: 'uint256' }]);
+    class Fields {
+      readonly b = t.address;
+    }
+    expect(t.struct(new Fields() as never).components).toEqual([{ name: 'b', type: 'address' }]);
+
+    const dict = evscript({ name: 'dict', args: [t.uint256] }, (s, x) => {
+      const out = Object.create(null) as Record<string, unknown>;
+      out['x'] = x;
+      return s.return(out as never);
+    });
+    expect(dict.ir.returns.map((r) => r.name)).toEqual(['x']);
+    const inst = evscript({ name: 'inst', args: [t.uint256] }, (s, x) => {
+      class Out {
+        readonly y = x;
+      }
+      return s.return(new Out() as never);
+    });
+    expect(inst.ir.returns.map((r) => r.name)).toEqual(['y']);
   });
 
   test('a third-party struct with a `__proto__` member cannot enter the script ABI', () => {
@@ -3022,5 +3063,90 @@ describe('checklist: `__proto__` is not a name', () => {
     expect(() => validateIr({ ...script.ir, args: [{ ...arg!, name: PROTO }] })).toThrow(
       /args\[0\] has an invalid name "__proto__": `__proto__` is reserved/,
     );
+  });
+});
+
+describe('checklist: a copy of a Tuple handle is not a tuple literal', () => {
+  // a Tuple handle's field accessors live on its prototype: a spread / Object.assign copy holds
+  // no member, so reading it as an init would silently zero-fill every member it omits.
+  const P = t.struct({ a: t.uint256, b: t.address });
+  const COPY = /init is a spread\/Object\.assign copy of a Tuple handle.*\.get\(\)/;
+  const rp = (body: (s: AnyBuilder, p: object, x: Expr<'uint256'>) => void) =>
+    evscript({ name: 'cp', args: [P, t.uint256] }, (s, p, x) => {
+      body(s, p, x);
+      return s.return({ x });
+    });
+
+  test('s.tuple(P, { ...p, a: x }) / Object.assign({}, p) → TYPE_MISMATCH', () => {
+    expectEvs(
+      () => rp((s, p, x) => s.tuple(P, { ...p, a: x })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      COPY,
+    );
+    expectEvs(
+      () => rp((s, p) => s.tuple(P, Object.assign({}, p))),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      COPY,
+    );
+  });
+
+  test('a copy nested as a member or an array element → TYPE_MISMATCH', () => {
+    const Outer = t.struct({ inner: P, n: t.uint256 });
+    expectEvs(
+      () => rp((s, p, x) => s.tuple(Outer, { inner: { ...p }, n: x } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      COPY,
+    );
+    expectEvs(
+      () => rp((s, p) => s.lit(t.array(P), [{ ...p }] as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      COPY,
+    );
+  });
+
+  test('s.return({ ...p }) → TYPE_MISMATCH (it would drop every member)', () => {
+    const RET = /s\.return\(\): the record is a spread\/Object\.assign copy of a Tuple handle/;
+    expectEvs(
+      () => evscript({ name: 'r', args: [P] }, (s, p) => s.return({ ...p } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      RET,
+    );
+    expectEvs(
+      () => rp((s, p, x) => s.return({ ...p, x } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      RET,
+    );
+  });
+
+  test('the handle itself still has no own keys', () => {
+    rp((_s, p) => {
+      expect(Object.keys(p)).toEqual([]);
+      expect(Object.getOwnPropertyNames(p)).toEqual([]);
+    });
+  });
+});
+
+describe('checklist: a struct literal with a `type` member is not a forged handle', () => {
+  const S = t.struct({ type: t.string });
+  const W = t.struct({ type: t.address });
+
+  test('memref .eq() / .neq() / s.eq() / s.select() take it as a tuple literal', () => {
+    const script = evscript({ name: 'ty', args: [t.bool] }, (s, c) => {
+      const x = s.tuple(S, { type: 'hi' });
+      return s.return({
+        eq: x.expr().eq({ type: 'address' }),
+        neq: x.expr().neq({ type: 'uint256' }),
+        seq: s.eq(x.expr(), { type: 'uint256' }),
+        sel: s.select(c, x.expr(), { type: 'bool' }),
+        word: s.tuple(W, { type: '0x0000000000000000000000000000000000000001' }),
+      });
+    });
+    expect(() => validateIr(script.ir)).not.toThrow();
   });
 });

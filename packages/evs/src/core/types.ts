@@ -47,7 +47,7 @@ export {
   IDENT_RE,
   PROTO_RESERVED,
   identProblem,
-  hasPlainPrototype,
+  nonRootPrototype,
   namedArg,
   isArgSpecValue,
   normalizeArgsInput,

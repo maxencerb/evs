@@ -164,8 +164,10 @@ name when every member is named (a `t.struct`), else a positional array (a `t.tu
 tuple with any unnamed member: abitype and viem's rule). Every member is optional, defaults to its
 zero value, and accepts a literal, an `Expr`, or a nested `Tuple`. A key that names no member, an
 element past the last member, or a staged handle in place of the init (a `Cell`, `MutArray`,
-`Field`, `Tuple` or `Expr`) throws `TYPE_MISMATCH`. Use the returned handle's
-[`Field.set`](#field) to fill or overwrite members later.
+`Field`, `Tuple` or `Expr`) throws `TYPE_MISMATCH`. So does a spread or `Object.assign` copy of
+a `Tuple` handle (`{ ...pos, owner }`, also a type error): the handle's fields live on its
+prototype, so the copy holds no member and would zero-fill them — read each field with `.get()`
+instead. Use the returned handle's [`Field.set`](#field) to fill or overwrite members later.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -889,7 +891,8 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 
 - Record keys become the named components of the single tuple output; viem consumers receive an
   **object**. Keys must be identifiers other than `__proto__` (viem's decoder would drop that
-  key: a literal `__proto__:` key is a type error, and throws `ABI_SHAPE` at recording); empty
+  key: a literal `__proto__:` key is a type error, and throws `ABI_SHAPE` at recording when its
+  value is a handle); empty
   keys are rejected (`ABI_SHAPE`) because an unnamed component silently degrades viem's result
   to a positional array.
 - The record must name **at least one** value: `s.return({})` is a type error and throws
@@ -977,9 +980,11 @@ own ABI, because assigning that key on a JavaScript object (viem's decoded resul
 replaces the object's prototype instead of storing the value. A computed key (`[key]: …`) or a
 `namedArg` name throws `EvsTypeError` at recording. A literal `{ __proto__: … }` key in a
 `t.struct` spec or an `s.return` record is a **type error**; at runtime JavaScript never makes it a
-key: an object or `null` value replaces the record's prototype, which evs detects and rejects
-(`TYPE_MISMATCH` / `ABI_SHAPE`), while a primitive value such as `t.uint256` is dropped before evs
-sees the record, so only the type check catches that one.
+key: an object value replaces the record's prototype, which evs detects and rejects when it is
+what the record would hold (a type in a `t.struct` spec: `TYPE_MISMATCH`; a handle in an
+`s.return` record: `ABI_SHAPE`), while a primitive value such as `t.uint256` is dropped before evs
+sees the record, so only the type check catches that one. Any other prototype loses nothing: a
+`null` one (`Object.create(null)`) or a class instance's record is read through its own keys.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
