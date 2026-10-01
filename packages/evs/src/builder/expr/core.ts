@@ -667,7 +667,7 @@ export abstract class RecorderCore {
   protected certainPanic(what: string, reason: string, panic: number): never {
     throw new EvsTypeError(
       'CERTAIN_PANIC',
-      `${what}: ${reason} — this would always revert with Panic(0x${panic.toString(16)}) at runtime, so recording refuses it. If a guaranteed runtime panic is intended, route one operand through a cell: s.let(t.uint256, x).get()`,
+      `${what}: ${reason} — this would always revert with Panic(0x${panic.toString(16)}) at runtime, so recording refuses it. If a guaranteed runtime panic is intended, route one operand through a cell (s.let(t.uint256, x).get()) and use the result: a result nothing reads is dead code, and compile() drops it with its panic`,
     );
   }
 

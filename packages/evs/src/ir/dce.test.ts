@@ -3,18 +3,20 @@
 /**
  * `ir/dce.ts` unit tests — hand-built IR per statement kind, the liveness seeds (returns,
  * throw, call, live cells, impure fns), aliasing through composite values, idempotence, the
- * documented revert-guard decision, and source-map resolution after the pass. The whole
- * builder corpus is gated separately by `differential/*.test.ts`
- * (`interpret(ir) == interpret(dce(ir)) == bytecode(dce(ir))`).
+ * documented revert-guard decision (and `interpret()` following it unless `dce: false`), and
+ * source-map resolution after the pass. The whole builder corpus is gated separately by
+ * `differential/*.test.ts` (`interpret(ir, { dce: false }) == interpret(ir) == bytecode`, except
+ * for the dead-revert-guard cases, where only the last two must agree).
  */
 import { describe, expect, test } from 'vite-plus/test';
 
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
-import { t, type EvsType, type Hex } from '../core/types.js';
+import { namedArg, t, type EvsType, type Hex } from '../core/types.js';
 import { dce, eliminateDeadCode } from './dce.js';
 import { interpret, type MockChain } from './interp.js';
 import {
+  deepFreeze,
   serializeIr,
   walkStmts,
   type PlainAbiFunction,
@@ -608,11 +610,11 @@ describe('revert guards are not side effects', () => {
     });
     const out = check(x);
     expect(out.body).toEqual([]);
-    expect(interpret(x, [1n], NO_CHAIN).outcome.kind).toBe('revert'); // Panic(0x11)
-    expect(interpret(out, [1n], NO_CHAIN).outcome).toMatchObject({
-      kind: 'return',
-      values: { a: 1n },
-    });
+    // the recorded IR panics; what ships (and what interpret() runs by default) returns
+    expect(interpret(x, [1n], NO_CHAIN, { dce: false }).outcome.kind).toBe('revert'); // Panic(0x11)
+    for (const shipped of [interpret(out, [1n], NO_CHAIN), interpret(x, [1n], NO_CHAIN)]) {
+      expect(shipped.outcome).toMatchObject({ kind: 'return', values: { a: 1n } });
+    }
   });
 
   test('pow / mulmod / addmod are pure: dead ones go with their Panic 0x11 / 0x12 (issue #10)', () => {
@@ -630,8 +632,8 @@ describe('revert guards are not side effects', () => {
     });
     const out = check(x);
     expect(out.body).toEqual([]);
-    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('revert');
-    expect(interpret(out, [MAX], NO_CHAIN).outcome).toMatchObject({
+    expect(interpret(x, [MAX], NO_CHAIN, { dce: false }).outcome.kind).toBe('revert');
+    expect(interpret(x, [MAX], NO_CHAIN).outcome).toMatchObject({
       kind: 'return',
       values: { a: MAX },
     });
@@ -650,6 +652,64 @@ describe('revert guards are not side effects', () => {
     });
     expect(check(x)).toBe(x);
     expect(interpret(x, [1n], NO_CHAIN).outcome.kind).toBe('revert');
+    expect(interpret(x, [1n], NO_CHAIN, { dce: false }).outcome.kind).toBe('revert');
+  });
+
+  test('a dead pure s.fn call goes with the Panic inside it; interpret() follows compile()', () => {
+    const script = evscript({ name: 'deadFn', args: [t.uint256] }, (s, a) => {
+      const inc = s.fn('inc', [namedArg('x', t.uint256)] as const, (x) => x.add(1n));
+      inc(a); // pure, result unused: dropped, and the overflow inside with it
+      return s.return({ a });
+    });
+    const MAX = (1n << 256n) - 1n;
+    expect(kinds(eliminateDeadCode(script.ir).body)).toEqual([]);
+    expect(interpret(script.ir, [MAX], NO_CHAIN, { dce: false }).outcome.kind).toBe('revert');
+    expect(interpret(script.ir, [MAX], NO_CHAIN).outcome).toMatchObject({
+      kind: 'return',
+      values: { a: MAX },
+    });
+  });
+
+  test('trace paths index the IR that ran: dce(ir) by default, the recorded IR under dce: false', () => {
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('uint256'), vi('uint256'), vi('uint256')],
+      body: [
+        constU(1, 1n),
+        mk({ k: 'bin', op: 'add', a: 0, b: 1, out: 2 }), // dead
+        mk({ k: 'bin', op: 'mul', a: 0, b: 1, out: 3 }), // returned
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 3 }],
+    });
+    const paths = (opts: { dce?: boolean }) =>
+      interpret(x, [2n], NO_CHAIN, { ...opts, trace: true }).trace?.map((e) => e.stmtPath);
+    expect(paths({})).toEqual([[0], [1]]);
+    expect(paths({ dce: false })).toEqual([[0], [1], [2]]);
+  });
+
+  test('interpret() reuses the pass per frozen IR and re-runs it on a mutable one', () => {
+    const MAX = (1n << 256n) - 1n;
+    // returns `a`; the checked `a + 1` is dead until `returns` is pointed at it
+    const returns: { name: string; type: EvsType; value: number }[] = [
+      { name: 'r', type: 'uint256', value: 0 },
+    ];
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('uint256'), vi('uint256')],
+      body: [constU(1, 1n), mk({ k: 'bin', op: 'add', a: 0, b: 1, out: 2 })],
+      returns,
+    });
+    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('return');
+    returns[0] = { name: 'r', type: 'uint256', value: 2 }; // the add is live now
+    expect(interpret(x, [MAX], NO_CHAIN).outcome.kind).toBe('revert'); // no stale dce(ir)
+    // a frozen IR (recorded or deserialized) gets the same answer on every call
+    returns[0] = { name: 'r', type: 'uint256', value: 0 };
+    deepFreeze(x);
+    for (let i = 0; i < 3; i++) {
+      const run = interpret(x, [MAX], NO_CHAIN, { trace: true });
+      expect(run.outcome.kind).toBe('return');
+      expect(run.trace?.map((e) => e.stmtPath)).toEqual([]);
+    }
   });
 });
 

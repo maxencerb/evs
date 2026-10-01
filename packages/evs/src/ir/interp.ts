@@ -15,7 +15,10 @@
  * decode bounds, normalization, tryCall zeroing) and the ABI encode shapes.
  *
  * Binding invariant: bit-for-bit agreement with the compiled bytecode on both returndata and
- * revert payloads. Consequences baked in here:
+ * revert payloads. `interpret()` therefore executes `eliminateDeadCode(ir)` — what `compile()`
+ * lowers — by default, so a revert guard whose result nothing reads is gone on both sides;
+ * `opts.dce: false` runs the recorded IR as-is (the differential suite's DCE check).
+ * Consequences baked in here:
  *
  * - Every word value is held as its canonical 256-bit slot image (uintN zero-extended, intN
  *   sign-extended two's complement, bool ∈ {0,1}, bytesN left-aligned, address 160-bit
@@ -49,8 +52,9 @@
  *
  * Host-side misuse (wrong arg arity, uncoercible arg values, malformed `MockChain` replies)
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
- * statement + one per loop iteration + one per zero-filled array element) throws `EvsCompileError(COMPILE_LIMIT)`. Neither is a
- * chain outcome. `validateIr` runs on entry, so garbage IR fails loudly instead of diverging.
+ * statement + one per loop iteration + one per zero-filled array element) throws
+ * `EvsCompileError(COMPILE_LIMIT)`. Neither is a chain outcome. `validateIr` runs on entry
+ * (before DCE), so garbage IR fails loudly instead of diverging.
  */
 
 export { interpret } from './interp/interpreter.js';

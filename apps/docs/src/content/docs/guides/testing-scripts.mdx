@@ -10,6 +10,13 @@ returndata, `Panic` codes, decode errors, bubbled reverts, and `try*` zeroing al
 real thing exactly (see [Why trust the bytecode?](/concepts/trust-and-testing/)). If your
 script behaves under `interpret()`, the bytecode behaves the same way on-chain.
 
+`interpret()` runs the program `compile()` actually lowers: the IR after
+[dead-code elimination](/concepts/how-it-works/#stage-3-dead-code-elimination). That pass drops a
+checked operation whose result nothing reads, and its revert with it, so a script that
+overflows while computing an unused value returns, under `interpret()` and on-chain alike.
+`{ dce: false }` runs the IR exactly as recorded instead (see
+[Unused results do not revert](#unused-results-do-not-revert)).
+
 ## The signature
 
 ```ts
@@ -19,7 +26,7 @@ declare function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides },
+  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean },
 ): InterpResult;
 
 interface MockChainShape {
@@ -46,6 +53,8 @@ interface MockChainShape {
   back to `staticcall`). A site's `gas` cap rides along as `req.gas` — the interpreter has no
   gas model, so it is informational: answer `{ success: false, data: '0x' }` to emulate a target
   that ran out of gas.
+- `opts.dce` — `true` by default: run `eliminateDeadCode(ir)`, the IR the bytecode is
+  compiled from. `false` executes the recorded IR, every unused revert guard included.
 - `InterpResult.outcome` is either `{ kind: 'return', data, values }` — `data` is the
   ABI-encoded returndata, `values` the decoded result record — or `{ kind: 'revert', data }`
   with the byte-exact revert payload.
@@ -159,6 +168,36 @@ with truncated or structurally invalid bytes and a strict `s.read` reverts with
 `EvsDecodeError(site)`, while a `s.tryRead` reports `success = false` with zeroed values —
 exactly like the bytecode. See [Calling contracts](/guides/calls/) for those semantics.
 
+### Unused results do not revert
+
+A checked `add`/`sub`/`mul`/`div`/`mod`/`pow`, an `addmod`/`mulmod`, a checked conversion
+(`toUint`/`toInt`, `asAddress`), `array.at(i)`, a `set(i, v)` on an array nothing reads,
+`s.newArray` or a call to a pure `s.fn` reverts only if its result is used.
+When nothing reads the value, the compiled script never computes it, so it cannot panic.
+This differs from Solidity, where `a - b;` on its own still reverts on underflow.
+`interpret()` follows the bytecode; pass `{ dce: false }` to see what the recorded IR would do:
+
+```ts
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const check = evscript({ name: 'check', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  a.sub(b); // result unused: dropped, its underflow Panic with it
+  return s.return({ a });
+});
+
+const noCalls: MockChain = {
+  staticcall() {
+    throw new Error('this script makes no sub-calls');
+  },
+};
+
+interpret(check.ir, [1n, 2n], noCalls).outcome.kind; // 'return', like the bytecode
+interpret(check.ir, [1n, 2n], noCalls, { dce: false }).outcome.kind; // 'revert': Panic(0x11)
+```
+
+To make a check fail on purpose, use its result (return it, or feed it to `s.throw`, a
+sub-call or a cell that is read), or test the condition explicitly with `s.if` and `s.throw`.
+
 ## Modeling the execution frame
 
 `s.env(…)` values default to the state-override execution frame:
@@ -204,7 +243,9 @@ both frames — and read [Executing scripts](/guides/execution/) before relying 
 
 Pass `{ trace: true }` and the result carries a `trace` array with one entry per executed
 statement — `{ stmtPath, note }`: the statement's path in the IR tree and a short note such as `call symbol() [strict] site 0`. It is the quickest
-way to see which branch ran or how many loop iterations executed.
+way to see which branch ran or how many loop iterations executed. Paths index the IR that
+ran: `eliminateDeadCode(ir)` by default (the same deterministic output you get by calling it
+yourself), the recorded IR under `{ dce: false }`.
 
 Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement, one
 per loop iteration, and one per array element a zero-fill creates: `s.newArray`, and the zero

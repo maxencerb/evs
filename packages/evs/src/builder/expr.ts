@@ -25,7 +25,8 @@
  *   header scope; `s.fn` bodies push an isolated stack (params only — no outer capture).
  * - All-literal pure ops (`bin`/`un`/`convert`/`select` with a literal condition) fold at
  *   recording; folds that would certainly Panic throw `EvsTypeError(CERTAIN_PANIC)` with the
- *   documented escape hatch (route one operand through a cell).
+ *   documented escape hatch (route one operand through a cell, and use the result — a dead
+ *   one is dropped by DCE together with its Panic).
  */
 
 export { assertV0Type } from './expr/helpers.js';

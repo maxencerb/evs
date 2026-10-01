@@ -28,10 +28,19 @@ generated from the same table — and must agree **byte for byte** on:
   verbatim, and `try*` zeroing.
 
 The same corpus gates the dead-code elimination pass `compile()` runs
-([How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)): for every script,
-`interpret(script.ir)`, `interpret(eliminateDeadCode(script.ir))` and the compiled bytecode must
-agree byte for byte, the pass output must re-validate, and applying the pass twice must be a
-no-op.
+([How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)). `interpret()` runs
+that pass too, so the oracle executes the program that ships; the suite additionally runs the
+recorded IR (`interpret(script.ir, args, chain, { dce: false })`) and requires it to agree,
+byte for byte, for every script whose dead code cannot revert. The pass output must
+re-validate, and applying the pass twice must be a no-op.
+
+The one place where the recorded IR and the bytecode legitimately differ is a revert guard
+whose result nothing reads, such as an unused checked `sub` that would underflow: the pass
+drops it, so the bytecode and `interpret()` return where the recorded IR (and Solidity) would
+revert. A dedicated slice of the corpus pins that case for each kind of guard the pass drops:
+checked arithmetic, checked conversions, array bounds and length checks, and calls to pure
+`s.fn`s (see [Unused results do not revert](/guides/testing-scripts/#unused-results-do-not-revert)).
+For the arg sets that do not trip the guard, the recorded IR must still agree byte for byte.
 
 Every script goes through the EVM side twice: the default output and its `optimize: true` twin,
 so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator and the

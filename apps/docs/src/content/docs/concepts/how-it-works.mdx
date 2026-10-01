@@ -87,16 +87,18 @@ statements whose results nothing observable depends on, and nothing else:
 - **Revert guards are not side effects.** A checked `add` that overflows, an `array.at(i)` out
   of bounds, a narrowing `convert` — these revert, but when the value they guard is never read
   the guard is dead work too, and the pass removes it: a script that overflows while computing
-  an unused sum returns instead of panicking. This matches what the Solidity optimizer does
-  with unused expressions. Anything that must fail has to feed a return, a `s.throw`, a
-  sub-call, or a cell that is read.
+  an unused sum returns instead of panicking. This is an evs choice, not Solidity's: solc keeps
+  the Panic of an unused `a - b;`, with or without its optimizer. Anything that must fail has
+  to feed a return, a `s.throw`, a sub-call, or a cell that is read. `interpret()` runs the
+  same pass by default, so it agrees with the bytecode here; `{ dce: false }` runs the recorded
+  IR (see [Testing scripts](/guides/testing-scripts/#unused-results-do-not-revert)).
 
 The pass keeps the value table and every surviving statement — its site id, its source
 location — untouched, so the source map and `explainRevert` still resolve, and `compiled.ir`
 stays the recorded IR (`script.ir`). It is idempotent, its output is re-validated before
-lowering, and the differential suite checks `interpret(ir)`, `interpret(dce(ir))` and the
-compiled bytecode agree on the whole corpus (see
-[Why trust the bytecode?](/concepts/trust-and-testing/)). One practical consequence:
+lowering, and the differential suite checks the recorded IR, `dce(ir)` and the compiled
+bytecode agree on the whole corpus, except where a dropped guard is the statement that would
+revert (see [Why trust the bytecode?](/concepts/trust-and-testing/)). One practical consequence:
 `s.forEach(xs, () => { ... })` with an unused element records the element load like any other
 iteration, and the pass removes it — no builder special case.
 
