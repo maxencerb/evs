@@ -36,7 +36,7 @@ import {
   isArrayValueType,
   isBitsOperand,
   isBytesN,
-  isEvsType,
+  isStringType,
   isEvsValueType,
   isLengthType,
   isNumeric,
@@ -1066,7 +1066,7 @@ class IrValidator {
     if (p.components !== undefined) {
       this.fail(`${what}: non-tuple type '${p.type}' must not carry components`);
     }
-    if (!isEvsType(p.type)) {
+    if (!isStringType(p.type)) {
       this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
     this.checkArrayDepth(p.type, what);

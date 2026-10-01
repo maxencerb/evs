@@ -5,11 +5,17 @@
 
 import { EvsTypeError, type EvsErrorCode } from '../errors.js';
 import type { TypeToComponent } from './derive.js';
-import { assertEvsType, isEvsValueType, isTupleType, describeRejectedType } from './predicates.js';
+import {
+  assertEvsType,
+  canonicalizeTupleType,
+  isEvsValueType,
+  isTupleType,
+  describeRejectedType,
+} from './predicates.js';
 import type { ArgType, EvsType, TupleType } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
-// namedArg() declarator + the `t` type namespace
+// namedArg() declarator
 // ---------------------------------------------------------------------------
 
 export interface ArgSpec<name extends string = string, type extends ArgType = ArgType> {
@@ -77,7 +83,8 @@ export type NoProtoKey<rec> = string extends keyof rec
  * arrays, and composite `t.struct`/`t.tuple` descriptors (a named struct arg arrives as a `Tuple`
  * handle, exactly like a bare one — in a script's `args` and in an `s.fn`'s params alike). Nested
  * composite fields are named via `t.struct` and keep their behaviour. A bare (unnamed) top-level
- * arg keeps the positional `arg{i}` fallback name.
+ * arg keeps the positional `arg{i}` fallback name. The type is checked eagerly
+ * ({@link assertDeclaredType}) and kept as passed.
  */
 export function namedArg<const name extends string, const type extends EvsType>(
   name: name,
@@ -89,15 +96,30 @@ export function namedArg<const name extends string, const type extends EvsType>(
       `invalid argument name ${JSON.stringify(name)}: ${identProblem(name)}`,
     );
   }
+  assertDeclaredType(type, `argument "${name}"`, 'a type (use the `t` namespace)');
+  return Object.freeze({ name, type });
+}
+
+/**
+ * The eager check of a declared arg/param type ({@link namedArg}, {@link normalizeArgsInput}): a
+ * type string goes through {@link assertEvsType}; a tuple descriptor must already be canonical
+ * ({@link isEvsValueType}, else `TYPE_MISMATCH` naming the first bad member) and passes the
+ * canonicalizer's gates ({@link canonicalizeTupleType}: at least one component at every level,
+ * the array depth and the static size), like a descriptor given to the `t` constructors. The
+ * caller keeps its own object: a declarator's type is not copied.
+ */
+function assertDeclaredType(type: unknown, ctx: string, expected: string): asserts type is EvsType {
   if (typeof type === 'string') {
-    assertEvsType(type, `argument "${name}"`);
-  } else if (!isEvsValueType(type)) {
+    assertEvsType(type, ctx);
+    return;
+  }
+  if (!isEvsValueType(type) || !isTupleType(type)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `argument "${name}": expected a type (use the \`t\` namespace), got ${describeRejectedType(type)}`,
+      `${ctx}: expected ${expected}, got ${describeRejectedType(type)}`,
     );
   }
-  return Object.freeze({ name, type });
+  canonicalizeTupleType(type, ctx);
 }
 
 // ---------------------------------------------------------------------------
@@ -158,8 +180,8 @@ export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i
 // user name (`namedArg`) or the positional `arg0`/`arg1`/… fallback, and a tuple arg expands to
 // `{ name, type: 'tuple', components }` via {@link TypeToComponent}. A purely HOMOMORPHIC mapped
 // type — order/labels preserved structurally (no `UnionToTuple`), and no conditional over `args`
-// itself, so `args` stays a COVARIANT type parameter. (Moved from abi/artifact.ts — issue #15 —
-// which re-exports it; `t.error` uses it for the literal error-ABI inputs.)
+// itself, so `args` stays a COVARIANT type parameter. `t.error` uses it for the literal error-ABI
+// inputs; abi/artifact.ts re-exports it.
 export type ArgsToInputs<args extends readonly ArgSpec[]> = {
   readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
 };
@@ -197,8 +219,8 @@ export interface NormalizedArg {
  * lone declarator → a one-element list; each entry is an {@link ArgSpec} value (its name must be
  * an identifier, or `''` for the positional fallback) or a bare type — a tuple descriptor that
  * carries a `name` (an ABI parameter) is named by it and reduced to `{ type, components }`.
- * Labels must be unique (`site.nameCode`); a type outside the vocabulary is `TYPE_MISMATCH`
- * (`UNSUPPORTED_V0` for over-deep arrays).
+ * Labels must be unique (`site.nameCode`); each type passes {@link assertDeclaredType}
+ * (`TYPE_MISMATCH` outside the vocabulary, `UNSUPPORTED_V0` past the depth or size limits).
  */
 export function normalizeArgsInput(input: unknown, site: ArgsSite): NormalizedArg[] {
   let decls: readonly unknown[];
@@ -226,14 +248,7 @@ export function normalizeArgsInput(input: unknown, site: ArgsSite): NormalizedAr
       );
     }
     const ctx = name === '' ? at : `${at} ("${name}")`;
-    if (typeof type === 'string') {
-      assertEvsType(type, ctx);
-    } else if (!isEvsValueType(type)) {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `${ctx}: expected a type (use the \`t\` namespace) or namedArg(...), got ${describeRejectedType(type)}`,
-      );
-    }
+    assertDeclaredType(type, ctx, 'a type (use the `t` namespace) or namedArg(...)');
     const label = name === '' ? `arg${i}` : name;
     if (seen.has(label)) {
       throw new EvsTypeError(

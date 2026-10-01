@@ -16,7 +16,7 @@ import { bytesToHex, execRuntime, DEFAULT_GAS_LIMIT } from '../../test/harness/e
 import { buildScriptAbi, canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
-import { isDynamicType, typeToAbiParam, type EvsType, type Hex } from '../core/types.js';
+import { isMemrefType, typeToAbiParam, type EvsType, type Hex } from '../core/types.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { createSharedTails, emitSharedTails } from './tails.js';
 
@@ -34,7 +34,7 @@ const word = (v: bigint): Hex => `0x${(v & U256_MASK).toString(16).padStart(64, 
 const concat = (...parts: readonly Hex[]): Hex => `0x${parts.map((p) => p.slice(2)).join('')}`;
 
 function isDyn(type: EvsType): boolean {
-  return isDynamicType(type);
+  return isMemrefType(type);
 }
 
 /** prologue → decode(args) → return-encode(args) → tails. */

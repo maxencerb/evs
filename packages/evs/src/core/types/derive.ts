@@ -85,8 +85,9 @@ type AbiParamName<p extends AbiParameter> = p extends { readonly name: infer n e
   : '';
 
 /** One ABI `AbiParameter` → a canonical {@link NamedType} component (recursing into tuple
- *  components, preserving names/order). The mirror of {@link ComponentToType} in the ABI→type
- *  direction, normalizing the optional `name` to a string so the result is a valid `NamedType`. */
+ *  components, preserving names/order). The mirror of the builder's `ComponentToType`
+ *  (`builder/script/handles.ts`) in the ABI→type direction, normalizing the optional `name` to a
+ *  string so the result is a valid `NamedType`. */
 export type AbiParamToComponent<p extends AbiParameter> = p extends {
   readonly type: `tuple${string}`;
   readonly components: infer comps extends readonly AbiParameter[];

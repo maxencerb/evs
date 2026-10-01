@@ -28,7 +28,7 @@ import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { assemble } from '../asm/assembler.js';
 import type { EvmVersion, Mnemonic } from '../asm/ops.js';
 import {
-  isEvsType,
+  isStringType,
   isWordType,
   typeToAbiParam,
   type EvsType,
@@ -197,7 +197,7 @@ class IrB {
   }): { outs: readonly ValueId[]; success: ValueId | null } {
     const mode = o.mode ?? 'strict';
     const outs = o.abi.outputs.map((p) => {
-      if (!isEvsType(p.type)) throw new Error(`IrB: unsupported output type '${p.type}'`);
+      if (!isStringType(p.type)) throw new Error(`IrB: unsupported output type '${p.type}'`);
       return this.val(p.type);
     });
     const success = mode === 'try' ? this.val('bool') : null;

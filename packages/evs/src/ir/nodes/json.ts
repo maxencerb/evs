@@ -7,7 +7,13 @@
 
 import { isHexString } from '../../core/bytes.js';
 import { EvsInternalError, EvsTypeError } from '../../core/errors.js';
-import { type Hex, type EvsType, isEvsType, isTupleTag, type ArgType } from '../../core/types.js';
+import {
+  type Hex,
+  type EvsType,
+  isStringType,
+  isTupleTag,
+  type ArgType,
+} from '../../core/types.js';
 import {
   type ScriptIr,
   type ValueInfo,
@@ -162,7 +168,7 @@ function asHex(v: unknown, path: string): Hex {
 
 function asEvsType(v: unknown, path: string): EvsType {
   if (typeof v === 'string') {
-    if (!isEvsType(v)) fail(path, `expected a valid EvsType string, got ${describe(v)}`);
+    if (!isStringType(v)) fail(path, `expected a valid EvsType string, got ${describe(v)}`);
     return v;
   }
   const o = asRecord(v, path);

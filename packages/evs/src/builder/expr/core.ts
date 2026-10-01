@@ -29,7 +29,7 @@ import {
   fixedLengthOf,
   type NamedType,
   abiParamToType,
-  isDynamicType,
+  isMemrefType,
 } from '../../core/types.js';
 import type {
   PlainAbiError,
@@ -677,7 +677,7 @@ export abstract class RecorderCore {
         `${what} member "${memberName(comp, index)}"`,
       );
       // a literal-zero word member is already covered by the zero-fill — skip its MSTORE.
-      if (!isDynamicType(memberType) && this.litValues.get(valId) === 0n) return;
+      if (!isMemrefType(memberType) && this.litValues.get(valId) === 0n) return;
       inits.push({ index, value: valId });
     });
 

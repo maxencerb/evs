@@ -3,7 +3,8 @@
  * deliberately performs the host coercions the traps exist to intercept. */
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsStagingError, EvsTypeError } from './errors.js';
+import { evscript } from '../builder/script.js';
+import { EvsInternalError, EvsStagingError, EvsTypeError, type EvsErrorCode } from './errors.js';
 import {
   arrayDepthOf,
   bitsOf,
@@ -12,8 +13,8 @@ import {
   installStagingTraps,
   isTupleTag,
   peelArraySuffix,
-  isDynamicType,
-  isEvsType,
+  isMemrefType,
+  isStringType,
   isEvsValueType,
   isNumeric,
   isSigned,
@@ -47,8 +48,8 @@ const ARRAY_TYPES = WORD_TYPES.map((w) => `${w}[]`);
 const ALL_EVS_TYPES = [...WORD_TYPES, ...DYN_TYPES, ...ARRAY_TYPES];
 
 // Nested arrays (`uint256[][]`, `string[]`, …) are in the string-encoded vocabulary and
-// `isEvsType` accepts them. `tuple`/`tuple[]` are NOT string-encoded (they are TupleType
-// objects), so `isEvsType` rejects those strings.
+// `isStringType` accepts them. `tuple`/`tuple[]` are NOT string-encoded (they are TupleType
+// objects), so `isStringType` rejects those strings.
 const REJECTED = [
   '',
   'uint',
@@ -73,18 +74,18 @@ const REJECTED = [
   'uint256 ',
 ];
 
-describe('isEvsType / isWordType (exhaustive table)', () => {
+describe('isStringType / isWordType (exhaustive table)', () => {
   test(`accepts every evs type string (${ALL_EVS_TYPES.length} total)`, () => {
     expect(WORD_TYPES).toHaveLength(98);
     expect(ALL_EVS_TYPES).toHaveLength(198);
-    for (const s of ALL_EVS_TYPES) expect(isEvsType(s)).toBe(true);
+    for (const s of ALL_EVS_TYPES) expect(isStringType(s)).toBe(true);
     for (const s of WORD_TYPES) expect(isWordType(s)).toBe(true);
     for (const s of [...DYN_TYPES, ...ARRAY_TYPES]) expect(isWordType(s)).toBe(false);
   });
 
   test('rejects unsupported type strings', () => {
     for (const s of REJECTED) {
-      expect(isEvsType(s)).toBe(false);
+      expect(isStringType(s)).toBe(false);
       expect(isWordType(s)).toBe(false);
     }
   });
@@ -101,8 +102,8 @@ describe('isEvsType / isWordType (exhaustive table)', () => {
       'bytes[][3][]',
       'uint8[99][99][99][99]',
     ]) {
-      expect(isEvsType(s)).toBe(true);
-      expect(isDynamicType(s as EvsType)).toBe(true);
+      expect(isStringType(s)).toBe(true);
+      expect(isMemrefType(s as EvsType)).toBe(true);
     }
     expect(peelArraySuffix('uint256[2][]')).toEqual({ inner: 'uint256[2]', length: null });
     expect(peelArraySuffix('uint256[][2]')).toEqual({ inner: 'uint256[]', length: 2 });
@@ -111,7 +112,8 @@ describe('isEvsType / isWordType (exhaustive table)', () => {
     expect(fixedLengthOf('uint256[2]')).toBe(2);
     expect(fixedLengthOf('uint256[2][]')).toBeNull();
     expect(fixedLengthOf(t.array(t.struct({ a: t.uint8 }), 4))).toBe(4);
-    expect(() => fixedLengthOf('uint256' as ArrayType)).toThrow(EvsTypeError);
+    // a non-array type never reaches it from user input: an internal error
+    expect(() => fixedLengthOf('uint256' as ArrayType)).toThrow(EvsInternalError);
     expect(isTupleTag('tuple[2][]')).toBe(true);
     expect(isTupleTag('tuple[0]')).toBe(false);
     expect(isTupleTag('tuple(uint256)')).toBe(false);
@@ -131,9 +133,9 @@ describe('bitsOf (exhaustive table)', () => {
     }
   });
 
-  test('throws EvsTypeError on a non-word type', () => {
+  test('throws EvsInternalError on a non-word type (callers classify first)', () => {
     for (const s of ['uint7', 'string', 'address[]', 'tuple']) {
-      expect(() => bitsOf(s as WordType)).toThrow(EvsTypeError);
+      expect(() => bitsOf(s as WordType)).toThrow(EvsInternalError);
     }
   });
 });
@@ -153,9 +155,9 @@ describe('predicates', () => {
     }
   });
 
-  test('isDynamicType: string | bytes | T[]', () => {
-    for (const s of [...DYN_TYPES, ...ARRAY_TYPES]) expect(isDynamicType(s as EvsType)).toBe(true);
-    for (const s of WORD_TYPES) expect(isDynamicType(s as EvsType)).toBe(false);
+  test('isMemrefType: string | bytes | T[]', () => {
+    for (const s of [...DYN_TYPES, ...ARRAY_TYPES]) expect(isMemrefType(s as EvsType)).toBe(true);
+    for (const s of WORD_TYPES) expect(isMemrefType(s as EvsType)).toBe(false);
   });
 
   test('elemTypeOf round-trips every array type', () => {
@@ -170,7 +172,7 @@ describe('predicates', () => {
     expect(elemTypeOf('uint256[][][]')).toBe('uint256[][]');
     // non-array strings (and the non-string `tuple[]` tag) have no string element type
     for (const s of ['string', 'uint256', 'tuple[]']) {
-      expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsTypeError);
+      expect(() => elemTypeOf(s as ArrayType)).toThrow(EvsInternalError);
     }
   });
 });
@@ -349,7 +351,7 @@ describe('t namespace', () => {
       expect((caught as EvsTypeError).message).toMatch(/nests arrays 5 levels deep — at most 4/);
     }
     // the structural predicate still recognizes the vocabulary; only the ceiling is gated
-    expect(isEvsType('uint256[][][][][]')).toBe(true);
+    expect(isStringType('uint256[][][][][]')).toBe(true);
   });
 });
 
@@ -412,7 +414,7 @@ describe('pathological type sizes', () => {
       expect(message).toMatch(/"… \(\d{6} characters\)/);
     }
     // the structural predicate stays a total function (no depth gate, no recursion)
-    expect(isEvsType(deep)).toBe(true);
+    expect(isStringType(deep)).toBe(true);
     expect(arrayDepthOf(deep)).toBe(50_000);
   });
 
@@ -599,8 +601,8 @@ describe('t.struct / t.tuple (composite types)', () => {
     expect(typesEqual('uint256', a)).toBe(false);
   });
 
-  test('isDynamicType: a tuple is always memref-valued', () => {
-    expect(isDynamicType(t.struct({ x: t.uint256 }))).toBe(true);
+  test('isMemrefType: a tuple is always memref-valued', () => {
+    expect(isMemrefType(t.struct({ x: t.uint256 }))).toBe(true);
   });
 });
 
@@ -814,5 +816,145 @@ describe('t.error (issue #15)', () => {
         ],
       },
     ]);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tuple descriptors: one canonicalizer behind every entry point
+// ---------------------------------------------------------------------------
+
+describe('tuple descriptors: the same rules at every entry point', () => {
+  const U8 = { name: 'a', type: 'uint8' };
+  /** A one-member tuple wrapping `member`, so each rule is exercised below the top level. */
+  const wrap = (member: unknown): unknown => ({ type: 'tuple', components: [member] });
+
+  const MALFORMED: readonly (readonly [string, unknown, EvsErrorCode])[] = [
+    ['an empty tuple', { type: 'tuple', components: [] }, 'TYPE_MISMATCH'],
+    ['an empty nested tuple', wrap({ name: 'x', type: 'tuple', components: [] }), 'TYPE_MISMATCH'],
+    ['an unknown leaf', wrap({ name: 'x', type: 'uint7' }), 'TYPE_MISMATCH'],
+    [
+      'an unknown leaf carrying components',
+      wrap({ name: 'x', type: 'garbage', components: [] }),
+      'TYPE_MISMATCH',
+    ],
+    [
+      'a malformed nested tag',
+      wrap({ name: 'x', type: 'tuple[0]', components: [U8] }),
+      'TYPE_MISMATCH',
+    ],
+    ['a nested tuple without components', wrap({ name: 'x', type: 'tuple' }), 'TYPE_MISMATCH'],
+    ['a member without a type', wrap({ name: 'x' }), 'TYPE_MISMATCH'],
+    ['a non-object member', wrap(42), 'TYPE_MISMATCH'],
+    ['a leaf nested too deep', wrap({ name: 'x', type: 'uint256[][][][][]' }), 'UNSUPPORTED_V0'],
+    [
+      'a tuple tag nested too deep',
+      wrap({ name: 'x', type: 'tuple[][][][][]', components: [U8] }),
+      'UNSUPPORTED_V0',
+    ],
+    [
+      'a member past the static size cap',
+      wrap({ name: 'x', type: 'uint256[100000000][100]' }),
+      'UNSUPPORTED_V0',
+    ],
+  ];
+
+  /** The slice of the builder these probes drive with untyped (malformed) descriptors. */
+  interface Loose {
+    tuple(type: unknown): unknown;
+    fn(name: string, params: readonly unknown[], body: () => unknown): unknown;
+  }
+  /** Records a script whose body first runs `probe` on the untyped builder. */
+  const record = (probe: (s: Loose) => void): unknown =>
+    evscript({ name: 'x' }, (s) => {
+      probe(s as unknown as Loose);
+      return s.return({ ok: s.lit(t.bool, true) });
+    });
+
+  const ENTRY_POINTS: readonly (readonly [string, (descriptor: unknown) => unknown])[] = [
+    ['namedArg', (d) => namedArg('x', d as never)],
+    ['t.tuple', (d) => t.tuple(d as never)],
+    ['t.struct', (d) => t.struct({ s: d } as never)],
+    ['t.array', (d) => t.array(d as never)],
+    ['t.error', (d) => t.error('E', [d] as never)],
+    ['t.fromAbiParameter', (d) => t.fromAbiParameter({ name: 'p', ...(d as object) } as never)],
+    [
+      'evscript args',
+      (d) =>
+        evscript({ name: 'x', args: [d] as never }, (s) => s.return({ ok: s.lit(t.bool, true) })),
+    ],
+    [
+      'evscript named args',
+      (d) =>
+        evscript({ name: 'x', args: [{ name: 'x', type: d }] as never }, (s) =>
+          s.return({ ok: s.lit(t.bool, true) }),
+        ),
+    ],
+    ['s.fn params', (d) => record((s) => s.fn('f', [d], () => undefined))],
+    ['s.tuple', (d) => record((s) => s.tuple(d))],
+  ];
+
+  for (const [entry, build] of ENTRY_POINTS) {
+    test.each(MALFORMED)(`${entry}: rejects %s`, (_label, descriptor, code) => {
+      let caught: unknown;
+      try {
+        build(descriptor);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvsTypeError);
+      expect((caught as EvsTypeError).code).toBe(code);
+    });
+  }
+
+  test("isEvsValueType stays structural: the size gates are the canonicalizer's", () => {
+    // an empty tuple, too-deep arrays and oversized members are well-formed structurally (the IR
+    // validator reports an empty tuple in its own words); every other case is malformed
+    const structural = new Set(['an empty tuple', 'an empty nested tuple']);
+    for (const [label, descriptor, code] of MALFORMED) {
+      expect(isEvsValueType(descriptor)).toBe(code === 'UNSUPPORTED_V0' || structural.has(label));
+    }
+  });
+
+  test('errors name the member by its path', () => {
+    const nested = wrap({
+      name: 'x',
+      type: 'tuple',
+      components: [U8, { name: 'y', type: 'uint7' }],
+    });
+    expect(() => t.struct({ s: nested } as never)).toThrow(
+      /^t\.struct\(\) field "s" component #0 component #1: unknown type "uint7"/,
+    );
+    expect(() => t.tuple(wrap({ name: 'x', type: 'tuple', components: [] }) as never)).toThrow(
+      /^t\.tuple\(\) member #0 component #0: a tuple must have at least one component$/,
+    );
+    expect(() => namedArg('q', wrap({ name: 'x', type: 'uint256[][][][][]' }) as never)).toThrow(
+      /^argument "q" component #0: type "uint256\[\]\[\]\[\]\[\]\[\]" nests arrays 5 levels deep/,
+    );
+  });
+
+  test('the t constructors canonicalize: names default to "", stray components drop', () => {
+    const loose = wrap({ type: 'uint8', components: [] }); // abitype's `name` is optional
+    const canonical = { type: 'tuple', components: [{ name: '', type: 'uint8' }] };
+    const built: readonly unknown[] = [
+      t.tuple(loose as never).components[0],
+      t.struct({ s: loose } as never).components[0],
+      t.array(loose as never),
+      t.fromAbiParameter(loose as never),
+    ];
+    const [member, field, array, fromAbi] = built;
+    expect(member).toEqual({ name: '', ...canonical });
+    expect(field).toEqual({ name: 's', ...canonical });
+    expect(array).toEqual({ ...canonical, type: 'tuple[]' });
+    expect(fromAbi).toEqual(canonical);
+    for (const v of built) {
+      expect(Object.isFrozen(v)).toBe(true);
+      expect(Object.isFrozen((v as TupleType).components)).toBe(true);
+      expect(Object.isFrozen((v as TupleType).components[0])).toBe(true);
+    }
+    // the declarators keep requiring the canonical form (and keep the caller's object)
+    expect(isEvsValueType(loose)).toBe(false);
+    expect(() => namedArg('x', loose as never)).toThrow(/components\[0\] has no string `name`/);
+    const canon = t.tuple(t.uint8);
+    expect(namedArg('x', canon).type).toBe(canon);
   });
 });

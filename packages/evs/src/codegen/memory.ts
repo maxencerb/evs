@@ -39,7 +39,7 @@ import {
   elemTypeOf,
   fixedLengthOf,
   isArrayValueType,
-  isDynamicType,
+  isMemrefType,
   isTupleType,
   stringifyType,
   type ArrayType,
@@ -137,11 +137,11 @@ export function emitZeroValue(w: AsmWriter, type: EvsType, height: number): void
   if (!isTupleType(type) || type.type !== 'tuple') {
     // a word, string/bytes, or any dynamic array (a `tuple[]` is an array: its zero is the empty
     // memref)
-    w.push(isDynamicType(type) ? ZERO_SLOT : 0);
+    w.push(isMemrefType(type) ? ZERO_SLOT : 0);
     return;
   }
   // the fill is the zero of the word members; memref members each get their typed zero below
-  const hasWordMember = type.components.some((c) => !isDynamicType(abiParamToType(c)));
+  const hasWordMember = type.components.some((c) => !isMemrefType(abiParamToType(c)));
   emitAlloc(w, 32 * type.components.length, { zeroFill: hasWordMember }); // [flat]
   emitZeroMemrefMembers(w, type.components, height + 1);
 }
@@ -152,7 +152,7 @@ export function emitZeroValue(w: AsmWriter, type: EvsType, height: number): void
 function emitZeroFixedArray(w: AsmWriter, type: ArrayType | TupleType, height: number): void {
   const n = fixedLengthOf(type) ?? 0;
   const elem = elemTypeOf(type);
-  const memrefSlots = isDynamicType(elem);
+  const memrefSlots = isMemrefType(elem);
   // word slots: the fill is their zero value; memref slots are each written by the loop below
   emitAlloc(w, 32 + 32 * n, { zeroFill: !memrefSlots, note: `zero ${stringifyType(type)}` }); // [arr]
   w.push(n);
@@ -201,7 +201,7 @@ export function emitZeroMemrefMembers(
   components.forEach((c, j) => {
     if (skip?.has(j) === true) return;
     const ct = abiParamToType(c);
-    if (!isDynamicType(ct)) return; // word member stays 0 (zero-filled)
+    if (!isMemrefType(ct)) return; // word member stays 0 (zero-filled)
     emitZeroValue(w, ct, height); // [member, flat]
     w.op('DUP2'); // [flat, member, flat]
     if (j !== 0) {
