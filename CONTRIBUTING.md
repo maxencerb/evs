@@ -241,7 +241,9 @@ Releases: see [Releasing](#releasing) below.
   every block's memory is within a type-fixed factor of its charge (decode memory stays linear).
   That is also why the fixed-word path has no charge site of its own (a static `T[N]` never
   charges; `emitDecodeArrayToMem` takes it only when `arrayDecodeCharge` is `null`), and why a
-  tuple frame (two words per framed dynamic tuple) needs none either. The remaining budget lives in the word at the source end (`buf + rds`,
+  tuple frame (two words per framed dynamic tuple) needs none either: it is allocated between the
+  sub-tuple's head bound and its charge, so a failing charge leaves at most those 64 uncharged
+  bytes, which a try verb rolls back with the rest of its decode. The remaining budget lives in the word at the source end (`buf + rds`,
   unaligned; the snapshot's free-pointer bump reserves it), initialised by
   `emitInitDecodeBudget` only at sites whose output types can charge (`needsDecodeBudget`), so
   other shapes keep their bytes; running out is the ordinary decode failure. A well-formed
