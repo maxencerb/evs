@@ -527,6 +527,13 @@ ways:
   is within a factor fixed by its type of what it is charged, so decode work stays linear in the
   returndata size.
 
+  A call whose outputs hold a single charged block, decoded once (a lone `string[]`, `bytes[]`,
+  `uint256[][]` or static-struct array output such as `(uint256,address)[]`, or one such array
+  inside a struct output), compiles without the budget: like a word-array output, that block is
+  decoded exactly once, and it lies inside the returndata, so its one charge can never exceed
+  the returndata size, let alone the budget. Such a call site is about 40 bytes smaller and
+  100 gas cheaper.
+
 The 8192-word slack matches viem's decoder, which throws `RecursiveReadLimitExceededError` once
 it has re-read already-visited positions 8192 times (its default `recursiveReadLimit`): for
 overlapping `uint8[][]` returndata evs and viem give up at the same amount of overlap, to within
