@@ -104,8 +104,9 @@ export interface DecodeRegion {
  *
  * A static value inlines at `base + headOffset`. A dynamic one's head word is an offset relative
  * to the region base; it is bounded (`off ≤ 2^64−1`, and its first block must lie inside the
- * source — a tuple's whole head, as the interpreter's `decodeBlock` guard reads every head word
- * unchecked; an array's length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
+ * source — a tuple's whole head, since the tuple decoder ({@link emitDecodeTupleToMem}) reads
+ * every head word unchecked (the bound mirrors the interpreter's `decodeBlock` guard); an array's
+ * length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
  * before the decoder reads it, then re-derived inside the decoder's base thunk
  * (`base + MLOAD(base + headOffset)`), so nothing rides the stack through the recursion. `opts` is
  * threaded to the decoder unchanged. The decode runs inside {@link emitWithinStackBudget}, `what`
@@ -570,7 +571,7 @@ function emitStoreFlatSlot(w: AsmWriter, j: number): void {
  * taken only when `arrayDecodeCharge` has none for it — always, today; a rule that ever charged
  * one would send it down the heap path rather than skip the charge.
  */
-export function emitDecodeArrayToMem(
+function emitDecodeArrayToMem(
   w: AsmWriter,
   layout: ArrayLayout,
   pushBase: PushBase,
