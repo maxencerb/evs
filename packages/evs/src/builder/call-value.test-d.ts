@@ -7,7 +7,7 @@
  * overload the args resolve to. A widened ABI accepts it (the recorder checks at run time).
  * Typecheck only.
  */
-import type { Abi } from 'abitype';
+import type { Abi } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { t, type Expr } from '../core/types.js';
