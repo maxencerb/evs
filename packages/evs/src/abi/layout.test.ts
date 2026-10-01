@@ -5,6 +5,7 @@ import { describe, expect, test } from 'vite-plus/test';
 import { EvsTypeError } from '../core/errors.js';
 import { staticSizeOf, t, type EvsType, type TupleType, type WordType } from '../core/types.js';
 import {
+  chargesDecodeBudget,
   headBytes,
   isDynamic,
   layoutOf,
@@ -482,5 +483,34 @@ describe('layout memoization', () => {
     // a `tuple[][]` descriptor is a layout now (issue #4), cached per descriptor
     const arr2: TupleType = { type: 'tuple[][]', components: [{ name: 'x', type: 'uint256' }] };
     expect(layoutOfType(arr2)).toBe(layoutOfType(arr2));
+  });
+});
+
+describe('chargesDecodeBudget (the decode-work budget, shared by codegen and the interpreter)', () => {
+  const charged = (types: readonly string[], topLevel: boolean): Record<string, boolean> =>
+    Object.fromEntries(
+      types.map((type) => {
+        const l = layoutOf(type);
+        if (l.kind !== 'array') throw new Error(`${type} is not an array`);
+        return [type, chargesDecodeBudget(l, topLevel)];
+      }),
+    );
+  const all = (types: readonly string[], v: boolean): Record<string, boolean> =>
+    Object.fromEntries(types.map((type) => [type, v]));
+
+  test('dynamic arrays that build a fresh block are charged, wherever they sit', () => {
+    const narrow = ['uint8[]', 'address[]', 'bool[]', 'int8[]', 'bytes4[]'];
+    expect(charged(narrow, false)).toEqual(all(narrow, true));
+    const composite = ['string[]', 'bytes[]', 'uint256[][]', 'uint8[][]', 'uint256[2][]'];
+    expect(charged(composite, false)).toEqual(all(composite, true));
+    expect(charged(composite, true)).toEqual(all(composite, true));
+    const tuples = layoutOfType({ type: 'tuple[]', components: [{ name: 'x', type: 'uint8[]' }] });
+    expect(tuples.kind === 'array' && chargesDecodeBudget(tuples, true)).toBe(true);
+  });
+
+  test('aliased full-word arrays, fixed-size arrays and top-level narrow outputs are not', () => {
+    const free = ['uint256[]', 'int256[]', 'bytes32[]', 'uint8[2]', 'uint256[][2]', 'string[3]'];
+    expect(charged(free, false)).toEqual(all(free, false));
+    expect(charged(['uint8[]', 'address[]'], true)).toEqual(all(['uint8[]', 'address[]'], false));
   });
 });

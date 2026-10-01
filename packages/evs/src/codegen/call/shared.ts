@@ -157,14 +157,24 @@ export function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: s
  * `[buf] → [buf]`: snapshot the ENTIRE returndata at buf (RETURNDATACOPY shape 2) and bump
  * the free pointer to `buf + ceil32(rds)`. With `storeSnapSlot`, also store the base in
  * scratch `SNAP_SLOT` — the recursive memory decoders churn the free ptr, so they read
- * base/end from scratch (a stack-resident base would drift).
+ * base/end from scratch (a stack-resident base would drift). With `reserveBudgetWord`, the free
+ * pointer moves one word further, past the decode-work budget word at `buf + rds`
+ * (`emitInitDecodeBudget` in `codegen/abi/decode.ts`).
  */
-export function emitSnapshotReturndata(w: AsmWriter, storeSnapSlot: boolean): void {
+export function emitSnapshotReturndata(
+  w: AsmWriter,
+  storeSnapSlot: boolean,
+  reserveBudgetWord = false,
+): void {
   w.returndatacopyAll({ dupDepth: 1 }); // [buf]
   w.op('RETURNDATASIZE');
   emitCeil32(w); // [ceil32(rds), buf]
+  if (reserveBudgetWord) {
+    w.push(32);
+    w.op('ADD'); // [ceil32(rds) + 32, buf]
+  }
   w.op('DUP2');
-  w.op('ADD'); // [buf + ceil32(rds), buf]
+  w.op('ADD'); // [buf + ceil32(rds) (+32), buf]
   w.push(FREE_PTR);
   w.op('MSTORE'); // [buf]
   if (storeSnapSlot) {

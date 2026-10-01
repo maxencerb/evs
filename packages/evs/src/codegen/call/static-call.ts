@@ -21,6 +21,8 @@ import {
   wordNeedsNormalize,
   emitCopyNormalizeWordArray,
   emitWithinStackBudget,
+  needsDecodeBudget,
+  emitInitDecodeBudget,
 } from '../abi.js';
 import { FREE_PTR, MAX_U64 } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
@@ -85,6 +87,12 @@ export function emitStaticCall(
   // the memory snapshot (SNAP_SLOT) via the recursive decoders — they need the scratch-resident
   // base/end (the decoders churn the free ptr, so a stack-resident base would drift).
   const hasTupleOut = outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))));
+  // outputs whose decode can charge the decode-work budget (arrays nested in structs / arrays —
+  // always memory-snapshot shapes) get a budget word right after the snapshot
+  const budgeted = needsDecodeBudget(outputs);
+  if (budgeted && !hasTupleOut) {
+    throw internal(`call to ${fnAbi.name} (site ${siteId}): a budgeted decode without a snapshot`);
+  }
   // try mode over such outputs: a decode failure after the snapshot rolls the free pointer back
   // to the snapshot base on its way to the zero block (see emitTryEpilogue). Failures before the
   // snapshot (the head-size guard) go straight to the zero block.
@@ -165,8 +173,9 @@ export function emitStaticCall(
 
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
     // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
-    emitSnapshotReturndata(w, hasTupleOut); // [buf]
+    emitSnapshotReturndata(w, hasTupleOut, budgeted); // [buf]
     const pushEnd = (): void => pushSnapEnd(w);
+    if (budgeted) emitInitDecodeBudget(w, pushEnd, 0); // [buf]
 
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
@@ -229,7 +238,7 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1),
+          () => emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, budgeted),
         ); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
@@ -277,7 +286,7 @@ export function emitStaticCall(
           w,
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1),
+          () => emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, budgeted),
         ); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]

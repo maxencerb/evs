@@ -461,7 +461,8 @@ Two failure modes are distinguished:
 - **The callee reverted** — its revert data bubbles verbatim out of the script.
 - **The call succeeded but the returndata does not decode** against the ABI (too short,
   out-of-bounds offsets, a length word the returndata cannot back, a nested struct whose head is
-  cut short, a non-contract address returning nothing) — the script reverts with
+  cut short, a non-contract address returning nothing, offsets that exhaust the
+  [decode-work budget](#overlapping-offsets-and-the-decode-work-budget)) — the script reverts with
   the `EvsDecodeError(site)` custom error. This error is part of the script's own ABI, so viem
   names it, and `explainRevert` maps the site id back to the offending
   call. See [errors and debugging](/guides/errors-and-debugging/).
@@ -470,6 +471,37 @@ Dirty high bits in word-typed outputs are **normalized, not reverted** (viem-len
 `uint8` output with garbage in its upper bytes comes back masked to its declared width. Every
 output is decoded from the original returndata, so even non-canonical data whose offsets make
 two outputs share bytes decodes each of them exactly as if it were alone.
+
+### Overlapping offsets and the decode-work budget
+
+The ABI encodes an array of dynamic elements (`uint256[][]`, `string[]`, a struct array) as a
+list of offsets, and nothing in the format stops a hostile callee from pointing every offset at
+the same inner array. Decoding such data naively costs far more than its size: 600 offsets at
+one 600-element `uint8[]` is 38 KB of returndata but 600 copies of the inner array, enough to
+run the whole `eth_call` out of gas from inside a `try*` verb (the cost is paid in the script's
+own frame after the callee returned, so the call's `gas` cap does not help). evs bounds that
+work two ways:
+
+- **Full-word inner arrays are never copied.** A `uint256[]`, `int256[]` or `bytes32[]` needs no
+  normalization, so wherever it sits (an output, a struct member, an element of an outer array)
+  it points straight into the returndata. Overlapping offsets at one `uint256[]` cost one bounds
+  check each, and the data decodes.
+- **Everything else draws on a decode-work budget.** Each dynamic array the decoder has to build
+  (a `uint8[]`, `address[]`, … normalized into a fresh copy, or a pointer block for an array of
+  arrays, strings or structs) costs `32 + 32 × length` bytes, out of a per-call budget of the
+  returndata size plus 8192 words (256 KiB). A well-formed encoding never needs more than its
+  own size, so only overlapping offsets can exhaust the budget; when they do, the call fails
+  like any other malformed returndata: `success = false` under `s.tryRead` / `s.tryCall` /
+  `s.trySimulate`, `EvsDecodeError(site)` under the strict verbs. Fixed-size `T[N]` arrays, and a
+  word array that is itself one of the call's outputs (a call has a fixed number of outputs),
+  are not charged.
+
+The 8192-word slack matches viem's decoder, which throws `RecursiveReadLimitExceededError` once
+it has re-read already-visited positions 8192 times (its default `recursiveReadLimit`): for
+overlapping `uint8[][]` returndata evs and viem give up at the same amount of overlap, to within
+one word. Script arguments are
+your own calldata and are not budgeted. The [interpreter](/guides/testing-scripts/) applies the
+same budget, so it agrees with the compiled script on every payload.
 
 ## s.tryRead
 
@@ -516,7 +548,9 @@ const cappedSymbol = evscript({ name: 'cappedSymbol', args: [t.address] }, (s, t
 ```
 
 The `gas` cap pairs naturally with `s.tryRead`: it bounds how much a misbehaving callee can
-burn before the script moves on.
+burn before the script moves on. Decoding what the callee returned happens in the script's own
+frame, outside that cap; the [decode-work budget](#overlapping-offsets-and-the-decode-work-budget)
+keeps that part proportional to the returndata size.
 
 ## Mutable calls (s.call / s.tryCall)
 

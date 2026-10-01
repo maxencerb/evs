@@ -220,6 +220,45 @@ export function staticSize(l: TypeLayout): number {
 }
 
 /**
+ * The decode-work budget's slack over the payload size, in bytes: decoding one call's outputs may
+ * materialize at most `payloadBytes + DECODE_BUDGET_SLACK` bytes of charged array blocks (see
+ * {@link chargesDecodeBudget}) before it fails like any other malformed payload (`try*` →
+ * `success = false`, strict → `EvsDecodeError(site)`). Shared by the compiled decoder
+ * (`codegen/abi/decode.ts`) and the interpreter (`ir/interp/decode.ts`), which must agree on it.
+ *
+ * Why it exists: an array of dynamic elements is a list of offsets, and nothing in the ABI stops
+ * N offsets from pointing at the same inner array, so a payload of `R` bytes could make the
+ * decoder build N copies of an L-element block (`32·N·L` bytes from `~32·(N + L)`: quadratic
+ * memory and gas, an out-of-gas halt no `try*` verb can catch). A well-formed encoding charges at
+ * most its own size (every charged block mirrors a disjoint region of the payload: its length
+ * word plus at least one word per element), so only overlapping offsets can use the slack.
+ *
+ * The slack is 8192 words, viem's default `recursiveReadLimit` (`createCursor` in viem's
+ * `utils/cursor.ts`): viem's decoder throws `RecursiveReadLimitExceededError` once it has re-read
+ * already-visited positions 8192 times, and a re-materialized element costs evs about one word
+ * per word viem re-reads, so both give up at roughly the same amount of overlap.
+ */
+export const DECODE_BUDGET_SLACK = 32 * 8192;
+
+/**
+ * Whether materializing the array `l` charges the decode-work budget ({@link DECODE_BUDGET_SLACK})
+ * its `32 + 32·len` block bytes: every DYNAMIC-length array whose decode builds a fresh block — a
+ * composite element (a pointer block) or a narrow word element (`uint8[]`, `address[]`, …: a
+ * normalized copy). Never charged: a fixed-size `T[N]` (its size is part of the type), a full-word
+ * `T[]` (`uint256[]`, `int256[]`, `bytes32[]`: it aliases the payload, O(1) wherever it sits) and,
+ * with `topLevel`, a narrow word array that is itself one of the call's outputs (a call has a fixed
+ * number of outputs, so they cannot multiply the work).
+ */
+export function chargesDecodeBudget(
+  l: Extract<TypeLayout, { kind: 'array' }>,
+  topLevel: boolean,
+): boolean {
+  if (l.length !== null) return false;
+  if (l.elem.kind !== 'word') return true;
+  return !topLevel && l.elem.bits !== 256;
+}
+
+/**
  * Size in bytes of the ABI head for `params`: each param occupies one 32-byte offset slot when
  * dynamic, else its full static size inlined (a static tuple's members, a static fixed-size
  * array's `N` elements — no offset pointer). Each type is validated through `layoutOfType` so

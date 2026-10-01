@@ -51,6 +51,11 @@ export {
 export type { PushWord, PushBase } from './abi/encode.js';
 export { emitAbiEncodeToBytes, emitPackedEncodeToBytes } from './abi/encode-bytes.js';
 export type { EncodeSrcItem, EncodeMeta } from './abi/encode-bytes.js';
-export { emitDecodeTupleToMem, emitDecodeArrayToMem } from './abi/decode.js';
+export {
+  emitDecodeTupleToMem,
+  emitDecodeArrayToMem,
+  needsDecodeBudget,
+  emitInitDecodeBudget,
+} from './abi/decode.js';
 export type { DecodeFail } from './abi/decode.js';
 export { emitCalldataDecode, emitReturnEncode } from './abi/dispatch.js';
