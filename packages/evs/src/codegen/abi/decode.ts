@@ -1,10 +1,20 @@
 /**
  * `codegen/abi/decode.ts` — the recursive ABI decoder (memory head/tail → flat-pointer block):
  * tuples, and the array codec's two lowerings, the stack fast path and the heap-frame path. The
- * paths recurse into each other through `emitDecodeElement`, so they stay in one module.
+ * paths recurse into each other through `emitDecodeElement`, so they stay in one module. It also
+ * owns the decode-work budget that bounds what overlapping offsets can make them allocate.
  */
 
-import { layoutOfType, isDynamic, type TypeLayout, staticSize } from '../../abi/layout.js';
+import {
+  layoutOfType,
+  isDynamic,
+  type TypeLayout,
+  staticSize,
+  arrayDecodeCharge,
+  tupleDecodeCharge,
+  DECODE_BUDGET_SLACK,
+  type DecodeCharge,
+} from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
@@ -39,6 +49,129 @@ import {
  */
 export type DecodeFail = (liveDepth: number) => void;
 
+// ---------------------------------------------------------------------------
+// decode-work budget (see DECODE_BUDGET_SLACK in abi/layout.ts)
+// ---------------------------------------------------------------------------
+//
+// A BUDGETED decode (a call's returndata) keeps the bytes it may still charge in the word at the
+// source end, `MLOAD(pushEnd())` — an unaligned word just past the payload, which the caller
+// reserves when it bumps the free pointer past the snapshot and initialises with
+// {@link emitInitDecodeBudget}. Each charged block (`arrayDecodeCharge` / `tupleDecodeCharge`)
+// subtracts its charge BEFORE it is allocated; running out takes the decode-failure path. Script
+// args (the caller's own calldata) decode unbudgeted.
+
+/**
+ * How a decoder charges the decode-work budget: `'off'` (unbudgeted: script args, or outputs that
+ * can never charge), `'once'` (a call's outputs, outside every ABI-dynamic array) or `'repeated'`
+ * (inside an element of an ABI-dynamic array, where overlapping offsets can re-decode a block:
+ * dynamic tuples and dynamic `T[N]` are charged too).
+ */
+export type DecodeBudget = 'off' | 'once' | 'repeated';
+
+/**
+ * @internal Named settings the memory decoders thread through every nesting level (named, not
+ * positional, so further per-decode settings join without a call binding one to the wrong slot).
+ */
+export interface DecodeOptions {
+  /** How this decode charges the decode-work budget (see {@link DecodeBudget}). */
+  readonly budget: DecodeBudget;
+}
+
+/** The budget mode of an ABI-dynamic array's elements (they sit behind offsets or a length). */
+function elemBudget(budget: DecodeBudget, l: Extract<TypeLayout, { kind: 'array' }>): DecodeBudget {
+  return budget === 'off' || !isDynamic(l) ? budget : 'repeated';
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. True when decoding `outputs` can charge the decode-work
+ * budget at all — some output holds a block {@link mayChargeDecodeBudget} finds. A call site
+ * reserves and initialises the budget word only then, so shapes that never charge (words,
+ * strings, structs of those, `uint256[]`, …) keep their bytecode.
+ */
+export function needsDecodeBudget(outputs: readonly NamedType[]): boolean {
+  return outputs.some((p) => mayChargeDecodeBudget(layoutOfType(abiParamToType(p)), true, false));
+}
+
+/** Whether decoding a value of layout `l` can charge the budget (`topLevel`: `l` is an output;
+ *  `repeated`: inside an ABI-dynamic array's element) — the decoders' charge sites, walked. */
+function mayChargeDecodeBudget(l: TypeLayout, topLevel: boolean, repeated: boolean): boolean {
+  if (l.kind === 'tuple') {
+    return (
+      tupleDecodeCharge(l, repeated) !== null ||
+      l.components.some((c) => mayChargeDecodeBudget(c, false, repeated))
+    );
+  }
+  if (l.kind !== 'array') return false;
+  return (
+    arrayDecodeCharge(l, topLevel, repeated) !== null ||
+    mayChargeDecodeBudget(l.elem, false, repeated || isDynamic(l))
+  );
+}
+
+/**
+ * @internal Shared by `codegen/call.ts`. `[] → []`: stores the initial decode-work budget,
+ * `RETURNDATASIZE − payloadOffset + DECODE_BUDGET_SLACK` (the decoded payload starts
+ * `payloadOffset` bytes into the returndata), into the reserved word at `pushEnd()`.
+ */
+export function emitInitDecodeBudget(
+  w: AsmWriter,
+  pushEnd: () => void,
+  payloadOffset: number,
+): void {
+  w.op('RETURNDATASIZE');
+  w.push(DECODE_BUDGET_SLACK - payloadOffset, { note: 'decode budget slack' });
+  w.op('ADD'); // [budget]
+  pushEnd();
+  w.op('MSTORE'); // []
+}
+
+/**
+ * `[bytes, …] → […]`: subtracts `bytes` from the decode-work budget, routing to `fail` once it is
+ * spent. The remaining budget stays below 2^64 (the payload size plus the slack) and a charge far
+ * below 2^192 (a constant, or `fixed + perElem·len` after the body bound held), so a subtraction
+ * that wraps, and only one, sets a bit at or above 2^64. `below` is the number of live items
+ * beneath `bytes`; the fragment peaks two items above it plus `pushEnd`'s own.
+ */
+function emitCharge(w: AsmWriter, pushEnd: () => void, fail: DecodeFail, below: number): void {
+  pushEnd();
+  w.op('MLOAD'); // [left, bytes, …]
+  w.op('SUB'); // [left' = left − bytes, …]
+  w.op('DUP1');
+  w.push(64);
+  w.op('SHR'); // [left' ≥ 2^64 (wrapped: spent), left', …]
+  fail(below + 1); // [left', …]
+  pushEnd();
+  w.op('MSTORE', { note: 'decode budget' }); // […]
+}
+
+/** Charges an array block about to be materialized, `fixed + perElem·len` bytes: `[len, …] →
+ *  [len, …]`. `belowLen` is the number of live items beneath `len`. */
+function emitChargeArrayBlock(
+  w: AsmWriter,
+  pushEnd: () => void,
+  fail: DecodeFail,
+  belowLen: number,
+  c: DecodeCharge,
+): void {
+  if (c.perElem === 0) {
+    w.push(c.fixed); // [bytes, len, …]
+  } else {
+    w.op('DUP1');
+    if (c.perElem === 32) {
+      w.push(5);
+      w.op('SHL');
+    } else {
+      w.push(c.perElem);
+      w.op('MUL');
+    } // [perElem·len, len, …]
+    if (c.fixed !== 0) {
+      w.push(c.fixed);
+      w.op('ADD');
+    } // [bytes, len, …]
+  }
+  emitCharge(w, pushEnd, fail, belowLen + 1); // [len, …]
+}
+
 /**
  * Decodes one ABI tuple located in memory at `pushBase()` (offsets inside the tuple are relative
  * to that base) into a freshly-allocated flat-pointer block, and leaves the block pointer on the
@@ -49,6 +182,13 @@ export type DecodeFail = (liveDepth: number) => void;
  * same bytes); dynamic inner tuple → its whole head bounded (`ptr + headBytes ≤ end`), then a
  * recurse into its own block. Net stack +1 (the flat pointer); one live word (`flat`) per tuple
  * nesting level. No `emitMemCopy`, so the element-normalize loops are the only checked regions.
+ *
+ * `opts.budget` charges the decode-work budget for the blocks it materializes (see
+ * {@link DecodeBudget}): under `'repeated'` a dynamic tuple charges its head size before it
+ * allocates its flat block, and every narrow member copy / array member is charged by its own
+ * rule. `opts.outputsBlock` marks the tuple as a call's whole output list (`s.simulate`), whose
+ * own narrow word-array members are top-level outputs and not charged; it never reaches nested
+ * decodes.
  */
 export function emitDecodeTupleToMem(
   w: AsmWriter,
@@ -57,9 +197,28 @@ export function emitDecodeTupleToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
+  opts: DecodeOptions & { readonly outputsBlock?: boolean },
 ): void {
+  const { outputsBlock = false, ...inner } = opts;
+  const { budget } = inner;
   const offs = headOffsets(components);
   const n = components.length;
+
+  // a re-decodable dynamic tuple charges its head size before it allocates anything
+  if (budget !== 'off') {
+    const layouts = components.map((c) => layoutOfType(abiParamToType(c)));
+    const self = {
+      kind: 'tuple',
+      abi: 'tuple',
+      components: layouts,
+      dynamic: layouts.some(isDynamic),
+    } as const;
+    const c = tupleDecodeCharge(self, budget === 'repeated');
+    if (c !== null) {
+      w.push(c); // [bytes, …below]
+      emitCharge(w, pushEnd, fail, belowFlat); // […below]
+    }
+  }
 
   // allocate the flat block (32·n words); bump the free pointer
   w.push(FREE_PTR);
@@ -101,6 +260,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
+        inner,
       ); // [subFlat, flat, …]
       w.op('DUP2'); // [flat, subFlat, flat, …]
       if (j !== 0) {
@@ -121,6 +281,7 @@ export function emitDecodeTupleToMem(
         pushEnd,
         fail,
         belowFlat + 1,
+        inner,
       ); // [arr, flat, …]
       w.op('DUP2'); // [flat, arr, flat, …]
       if (j !== 0) {
@@ -160,10 +321,11 @@ export function emitDecodeTupleToMem(
       const pushSub: PushBase = () => emitSubTupleBase(w, pushBase, ho);
       if (layout.kind === 'tuple') {
         // its offsets are relative to ptr (the sub-tuple base)
-        emitDecodeTupleToMem(w, comp.components ?? [], pushSub, pushEnd, fail, belowFlat + 1);
+        const sub = comp.components ?? [];
+        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, inner);
       } else {
         // `tuple[]`, `T[][]`, `string[]`, dynamic `T[N]`: a fresh `[len][p0…]` pointer block
-        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1);
+        emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, inner);
       } // [sub, flat, …]
       w.op('DUP2'); // [flat, sub, flat, …]
       if (j !== 0) {
@@ -207,6 +369,16 @@ export function emitDecodeTupleToMem(
     if (elemAbi !== null && wordNeedsNormalize(elemAbi)) {
       // narrow elements: normalize into a fresh copy — never in place, since another decoded
       // value may alias the same source bytes (overlapping offsets in non-canonical data)
+      const c =
+        budget !== 'off' && layout.kind === 'array'
+          ? arrayDecodeCharge(layout, outputsBlock, budget === 'repeated')
+          : null;
+      if (c !== null) {
+        w.op('DUP1');
+        w.op('MLOAD'); // [len, ptr, flat, …]
+        emitChargeArrayBlock(w, pushEnd, fail, belowFlat + 2, c);
+        w.op('POP'); // [ptr, flat, …]
+      }
       emitCopyNormalizeWordArray(w, elemAbi, belowFlat + 1); // [copy, flat, …]
     }
 
@@ -235,6 +407,10 @@ export function emitDecodeTupleToMem(
  * template budget at this depth (a fast-path shape nested inside deep tuples or heap levels), it
  * is rolled back and the heap-frame path is emitted instead. Every shape that decoded before #4
  * fit the budget where it was used, so its bytes are unchanged.
+ *
+ * `opts.budget`: both paths charge the block (`arrayDecodeCharge`, see {@link DecodeBudget}) right
+ * after its body bound, before allocating it; the elements of an ABI-dynamic array decode
+ * `'repeated'`.
  */
 export function emitDecodeArrayToMem(
   w: AsmWriter,
@@ -243,23 +419,29 @@ export function emitDecodeArrayToMem(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
+  opts: DecodeOptions,
 ): void {
+  const { budget } = opts;
+  const charge = budget === 'off' ? null : arrayDecodeCharge(layout, false, budget === 'repeated');
+  const inner: DecodeOptions = { ...opts, budget: elemBudget(budget, layout) };
   if (isStackDecodedArray(layout)) {
     // speculative: emit the fast path, keep it only if it fits the template budget at this
     // depth (a fast-path shape nested deep inside tuples / heap levels may not)
     const cp = w.checkpoint();
-    emitDecodeArrayToMemStack(w, layout.elem, pushBase, pushEnd, fail, belowFlat);
+    emitDecodeArrayToMemStack(w, layout.elem, pushBase, pushEnd, fail, belowFlat, inner, charge);
     if (w.peakHeightSince(cp, belowFlat) <= MAX_TEMPLATE_DEPTH) return;
     w.rollback(cp);
   }
-  emitDecodeArrayToMemHeap(w, layout, pushBase, pushEnd, fail, belowFlat);
+  emitDecodeArrayToMemHeap(w, layout, pushBase, pushEnd, fail, belowFlat, inner, charge);
 }
 
 /**
  * The stack fast path of {@link emitDecodeArrayToMem} for a DYNAMIC array `E[]`:
  *
  * - read `len` at `base`, bound `len ≤ 2^64−1`; `D = base + 32`; bound the body (below) — only
- *   then bump-alloc `32 + 32·len`, so the allocation never outgrows the source.
+ *   then charge (`charge`) and bump-alloc `32 + 32·len`, so this level's block never outgrows its
+ *   own source bytes. Overlapping offsets can still make a parent decode the same source block
+ *   once per element, which only the decode-work budget bounds.
  * - static element `E` (a STATIC tuple, or a word — `string[]`/`bytes[]` are dynamic): the body is
  *   contiguous, bound `D + len·staticSize ≤ end` up front, then each element decodes at
  *   `D + i·staticSize`. A static tuple element decodes to a fresh flat block (its pointer stored
@@ -282,6 +464,8 @@ function emitDecodeArrayToMemStack(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
+  elemOpts: DecodeOptions,
+  charge: DecodeCharge | null,
 ): void {
   const elemDynamic = isDynamic(elemLayout);
   // D = base + 32, re-derivable from `pushBase()` so nothing has to ride the stack.
@@ -320,6 +504,7 @@ function emitDecodeArrayToMemStack(
   pushEnd();
   w.op('LT'); // [end < D+body, len, …]
   fail(belowFlat + 1); // [len, …]
+  if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
   // -- allocate the pointer block [len][p0…]: 32 + 32·len bytes, bump FREE_PTR --------------
   w.push(FREE_PTR);
@@ -406,7 +591,7 @@ function emitDecodeArrayToMemStack(
     w.push(ELEM_BASE);
     w.op('MLOAD');
   };
-  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5); // [elemVal, i, D, arr, len, saved, …]
+  emitDecodeElement(w, elemLayout, pushElemBase, pushEnd, fail, belowFlat + 5, elemOpts); // [elemVal, i, D, arr, len, saved, …]
 
   // store elemVal into arr + 32 + 32·i: stack [elemVal, i, D, arr, len, saved, …]
   w.op('DUP2'); // [i, elemVal, i, D, arr, len, saved, …]
@@ -463,6 +648,8 @@ function emitDecodeArrayToMemHeap(
   pushEnd: () => void,
   fail: DecodeFail,
   belowFlat: number,
+  elemOpts: DecodeOptions,
+  charge: DecodeCharge | null,
 ): void {
   const elemLayout = layout.elem;
   const elemDynamic = isDynamic(elemLayout);
@@ -505,6 +692,8 @@ function emitDecodeArrayToMemHeap(
   pushEnd();
   w.op('LT'); // [end < D+body, len, …]
   fail(belowFlat + 1); // [len, …]
+  // the block is charged here (`arrayDecodeCharge`), before anything is allocated
+  if (charge !== null) emitChargeArrayBlock(w, pushEnd, fail, belowFlat, charge); // [len, …]
 
   // -- allocate the decode frame (32·DFRAME_SLOTS bytes) at the free pointer and the pointer
   //    block [len][p0…] (32 + 32·len bytes) right after it; bump FREE_PTR once past both. Every
@@ -606,6 +795,7 @@ function emitDecodeArrayToMemHeap(
     pushEnd,
     fail,
     belowFlat + 1,
+    elemOpts,
   ); // [elemVal, arr, …]
 
   // store elemVal into arr + 32 + 32·i
@@ -683,9 +873,10 @@ function emitDFrameStore(w: AsmWriter, k: number): void {
  * Decodes one array element whose source block starts at `pushBase()` (the owning array loop
  * wrote it to scratch — the element base itself on the stack path, word 0 of the current heap
  * frame on the heap-frame path), pushing the decoded element value (a normalized word for a word
- * element, otherwise a fresh block pointer / aliased bytes pointer). Net stack +1. The caller
- * already validated the per-element bounds (dynamic) / body bounds (static). `belowElem` is the
- * number of live items on the stack on entry (the array loop state).
+ * element, otherwise a fresh block pointer, or a pointer aliasing the source for `string` /
+ * `bytes` / a full-word `T[]`). Net stack +1. The caller already validated the per-element
+ * bounds (dynamic) / body bounds (static). `belowElem` is the number of live items on the stack
+ * on entry (the array loop state).
  *
  * `pushBase` is stack-depth-independent (so the decoders' internal stack churn never loses the
  * base). A nested array decode saves/restores the scratch slot, so it cannot clobber this base.
@@ -697,6 +888,7 @@ function emitDecodeElement(
   pushEnd: () => void,
   fail: DecodeFail,
   belowElem: number,
+  opts: DecodeOptions,
 ): void {
   if (elemLayout.kind === 'word') {
     // word element: base points at the inline word; normalize and push it.
@@ -708,18 +900,24 @@ function emitDecodeElement(
 
   if (elemLayout.kind === 'tuple') {
     // tuple element (static or dynamic): decode into a flat block; offsets relative to base.
-    emitDecodeTupleToMem(w, tupleComponents(elemLayout), pushBase, pushEnd, fail, belowElem); // [flat, …]
+    const components = tupleComponents(elemLayout);
+    emitDecodeTupleToMem(w, components, pushBase, pushEnd, fail, belowElem, opts); // [flat, …]
     return;
   }
 
-  if (elemLayout.kind === 'array') {
-    // nested array element (`T[][]`, `T[N][]`, …): recurse — it saves/restores the scratch slot.
-    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem); // [arr, …]
+  const aliasedArray = elemLayout.kind === 'array' && aliasesSource(elemLayout);
+  if (elemLayout.kind === 'array' && !aliasedArray) {
+    // nested array element (`T[][]`, `T[N][]`, `uint8[][]`, …): recurse — it saves/restores the
+    // scratch slot.
+    emitDecodeArrayToMem(w, elemLayout, pushBase, pushEnd, fail, belowElem, opts); // [arr, …]
     return;
   }
 
-  // bytes/string element (`string[]`/`bytes[]`): base points at `[len][payload]`; bounds + alias.
-  // len ≤ 2^64−1; ptr + 32 + len ≤ end. The decoded value IS base (we alias in place).
+  // leaf element aliased in place: base points at `[len][payload]` — `string`/`bytes`
+  // (`string[]`/`bytes[]`) or a full-word `T[]` (`uint256[][]`, …), which needs no normalization,
+  // so it aliases the source exactly like a top-level output or a struct member does (no copy:
+  // N offsets at one inner array cost N bounds checks, not N copies). len ≤ 2^64−1;
+  // ptr + 32 + nbytes ≤ end (nbytes = len, or 32·len for an array). The decoded value IS base.
   pushBase(); // [base, …]
   w.op('DUP1');
   w.op('MLOAD'); // [len, base, …]
@@ -727,11 +925,21 @@ function emitDecodeElement(
   w.push(MAX_U64);
   w.op('LT'); // [len > max, len, base, …]
   fail(belowElem + 2); // [len, base, …]
+  if (aliasedArray) {
+    w.push(5);
+    w.op('SHL'); // [nbytes, base, …]
+  }
   w.op('DUP2');
   w.op('ADD');
   w.push(32);
-  w.op('ADD'); // [base+32+len, base, …]
+  w.op('ADD'); // [base+32+nbytes, base, …]
   pushEnd();
-  w.op('LT'); // [end < base+32+len, base, …]
-  fail(belowElem + 1); // [base, …]   (base is the aliased bytes block = the elem value)
+  w.op('LT'); // [end < base+32+nbytes, base, …]
+  fail(belowElem + 1); // [base, …]   (base is the aliased block = the elem value)
+}
+
+/** A dynamic full-word `T[]` (`uint256[]`, `int256[]`, `bytes32[]`): its source bytes already are
+ *  the canonical memory block, so every decoder aliases it instead of copying it. */
+function aliasesSource(l: Extract<TypeLayout, { kind: 'array' }>): boolean {
+  return !isRecursiveArray(l) && !wordNeedsNormalize(wordElemAbi(l));
 }

@@ -118,6 +118,8 @@ export const RUNTIME_SPIN: Hex = '0x5b600056';
  *   5f        PUSH0
  *   f3        RETURN                  ; return(0, len)
  *   <payload>
+ *
+ * A payload over 64 KiB takes the same shape with `PUSH3` operands (a 13-byte prefix).
  */
 export function returner(payload: Hex): Hex {
   return exitWithPayload(payload, 'f3');
@@ -130,7 +132,11 @@ export function reverter(payload: Hex): Hex {
 
 function exitWithPayload(payload: Hex, exitOp: 'f3' | 'fd'): Hex {
   const bytes = hexToBytes(payload); // validates the hex
-  if (bytes.length > 0xffff) throw new Error('fixtures: payload exceeds PUSH2 range');
+  if (bytes.length > 0xffffff) throw new Error('fixtures: payload exceeds PUSH3 range');
+  if (bytes.length > 0xffff) {
+    const len = bytes.length.toString(16).padStart(6, '0');
+    return `0x62${len}806200000d5f395f${exitOp}${payload.slice(2)}`;
+  }
   const len = bytes.length.toString(16).padStart(4, '0');
   return `0x61${len}8061000b5f395f${exitOp}${payload.slice(2)}`;
 }

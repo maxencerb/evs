@@ -9,6 +9,10 @@
  *   never an out-of-gas halt;
  * - nested dynamic structs whose head is cut short: rejected like any malformed returndata;
  * - two outputs sharing bytes (aliased tails): each decodes as if it were alone;
+ * - N element offsets at one inner array (overlapping offsets, ~38 KB of returndata that used to
+ *   cost ~290M gas to decode): a full-word `uint256[][]` aliases its inner arrays and decodes,
+ *   copied or re-decoded shapes (narrow copies, wide structs, fixed-size `T[N]` blocks) exhaust
+ *   the decode-work budget and fail cleanly, inside the default gas cap;
  * - script args with a huge length word: `EvsInvalidCalldata`.
  *
  * Both execution modes (state override and deployless).
@@ -187,6 +191,92 @@ describe.each(['stateOverride', 'deployless'] as const)('decode bounds on anvil 
     const payload = words(0x40n, 0x40n, 1n, 0x1ffn);
     expect(await run(strict, 'strict', payload)).toEqual({ v0: [255], v1: [511n] });
     expect(await run(attempt, 'attempt', payload)).toEqual({ ok: true, v0: [255], v1: [511n] });
+  });
+
+  /** Like {@link scripts}, but returning only the decoded array's length (`n`). */
+  function lengthScripts(output: AbiParameter) {
+    const abi = echoAbi([output]);
+    type Arr = { length: () => Expr<'uint256'> };
+    const strict = evscript(
+      { name: 'strict', args: [t.address, t.bytes] },
+      (s, target, payload) => {
+        const v = (s.read as unknown as LooseRead)({
+          address: target,
+          abi,
+          functionName: 'echoRaw',
+          args: [payload],
+        });
+        return s.return({ n: (v as Arr).length() });
+      },
+    ).compile() as unknown as CompiledEvsScript;
+    const attempt = evscript(
+      { name: 'attempt', args: [t.address, t.bytes] },
+      (s, target, payload) => {
+        const r = (s.tryRead as unknown as LooseRead)({
+          address: target,
+          abi,
+          functionName: 'echoRaw',
+          args: [payload],
+        });
+        const tr = r as { success: Expr<'bool'>; value: Arr };
+        return s.return({ ok: tr.success, n: tr.value.length() });
+      },
+    ).compile() as unknown as CompiledEvsScript;
+    return { strict, attempt };
+  }
+
+  const rep = (n: number, x: bigint): bigint[] => Array.from({ length: n }, () => x);
+  const N = 600;
+  const OVERLAPS: readonly [string, AbiParameter, Hex, boolean][] = [
+    [
+      'uint256[][] (inner arrays aliased: decodes)',
+      { name: 'r', type: 'uint256[][]' },
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), BigInt(N), ...rep(N, 1n)),
+      true,
+    ],
+    [
+      'uint8[][] (copies: over budget)',
+      { name: 'r', type: 'uint8[][]' },
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), BigInt(N), ...rep(N, 1n)),
+      false,
+    ],
+    [
+      '(uint8[] a)[] (copies: over budget)',
+      { name: 'r', type: 'tuple[]', components: [{ name: 'a', type: 'uint8[]' }] },
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), 0x20n, BigInt(N), ...rep(N, 1n)),
+      false,
+    ],
+    [
+      '(uint256 ×100, string)[] (wide struct re-decoded: over budget)',
+      {
+        name: 'r',
+        type: 'tuple[]',
+        components: [
+          ...rep(100, 0n).map((_, i) => ({ name: `a${i}`, type: 'uint256' })),
+          { name: 's', type: 'string' },
+        ],
+      },
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), ...rep(100, 1n), 32n * 101n, 0n),
+      false,
+    ],
+    [
+      'uint256[100][][] (fixed-size blocks re-decoded: over budget)',
+      { name: 'r', type: 'uint256[100][][]' },
+      // L=5 inner elements keep the payload (35 KB) under deployless mode's 48 KiB initcode cap
+      words(0x20n, BigInt(N), ...rep(N, BigInt(32 * N)), 5n, ...rep(500, 1n)),
+      false,
+    ],
+  ];
+
+  test.each(OVERLAPS)('overlapping offsets, N=600: %s', async (_, out, payload, decodes) => {
+    const { strict, attempt } = lengthScripts(out);
+    if (decodes) {
+      expect(await run(strict, 'strict', payload)).toEqual({ n: BigInt(N) });
+      expect(await run(attempt, 'attempt', payload)).toEqual({ ok: true, n: BigInt(N) });
+    } else {
+      await expectStrictDecodeError(strict, payload);
+      expect(await run(attempt, 'attempt', payload)).toEqual({ ok: false, n: 0n });
+    }
   });
 
   const ARG_TYPES: readonly [string, EvsType][] = [

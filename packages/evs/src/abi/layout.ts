@@ -220,6 +220,85 @@ export function staticSize(l: TypeLayout): number {
 }
 
 /**
+ * The decode-work budget's slack over the payload size, in bytes: decoding one call's outputs may
+ * charge at most `payloadBytes + DECODE_BUDGET_SLACK` bytes (see {@link arrayDecodeCharge} and
+ * {@link tupleDecodeCharge}) before it fails like any other malformed payload (`try*` →
+ * `success = false`, strict → `EvsDecodeError(site)`). Shared by the compiled decoder
+ * (`codegen/abi/decode.ts`) and the interpreter (`ir/interp/decode.ts`), which must agree on it.
+ *
+ * Why it exists: an array of dynamic elements is a list of offsets, and nothing in the ABI stops
+ * N offsets from pointing at the same element, so a payload of `R` bytes could make the decoder
+ * build N copies of one large block (an inner array, a wide struct: `N·L` words from `~N + L`:
+ * quadratic memory and gas, an out-of-gas halt no `try*` verb can catch).
+ *
+ * What is charged: every TAIL BLOCK the decoder materializes, at its source-equivalent size — the
+ * payload bytes the block mirrors (a length word, an array body, the offset words of a dynamic
+ * `T[N]`, a dynamic tuple's head), including any static structs / static `T[N]` inlined there,
+ * which never charge on their own. So a well-formed (non-overlapping) encoding charges at most
+ * its own size — every charge mirrors a disjoint region of the payload — and only overlapping
+ * offsets can use the slack; and every block's memory is within a type-fixed factor of its charge
+ * (pointer slots and length words of inlined static composites), so total decode memory stays
+ * linear in the returndata size. Not charged: aliased values (`string`, `bytes`, full-word `T[]`,
+ * O(1) wherever they sit), and the blocks a call materializes a type-fixed number of times — its
+ * own outputs (a narrow word-array output, the outputs block) and, outside every ABI-dynamic
+ * array, dynamic tuples and dynamic `T[N]` (`repeated: false`). A dynamic-length `T[]` is charged
+ * wherever it sits.
+ *
+ * The slack is 8192 words, viem's default `recursiveReadLimit` (`createCursor` in viem's
+ * `utils/cursor.ts`): viem's decoder throws `RecursiveReadLimitExceededError` once it has re-read
+ * already-visited positions 8192 times, and a re-materialized element costs evs about one word
+ * per word viem re-reads, so both give up at roughly the same amount of overlap.
+ */
+export const DECODE_BUDGET_SLACK = 32 * 8192;
+
+/** A block's decode-work charge: `fixed + perElem · len` bytes. */
+export interface DecodeCharge {
+  readonly fixed: number;
+  readonly perElem: number;
+}
+
+/**
+ * The decode-work charge ({@link DECODE_BUDGET_SLACK}) of materializing the array `l`, or `null`
+ * when it is not charged. `topLevel`: `l` is itself one of the call's outputs; `repeated`: `l`
+ * sits inside an element of an ABI-dynamic array (offsets can make it decode many times).
+ *
+ * - a dynamic-length `T[]`: its length word plus its body, `32 + len · elemBytes` (`elemBytes` =
+ *   32 for an offset or word element, `staticSize(T)` for a static struct / static `T[N]`
+ *   element, inlined in the body) — except a full-word `T[]` (`uint256[]`, `int256[]`,
+ *   `bytes32[]`: aliased, never copied) and a narrow word-array output (`topLevel`);
+ * - an ABI-dynamic `T[N]` (dynamic element), when `repeated`: its `N` offset words, `32·N`;
+ * - a static `T[N]`: never on its own (inlined, it is charged with the block that holds it).
+ */
+export function arrayDecodeCharge(
+  l: Extract<TypeLayout, { kind: 'array' }>,
+  topLevel: boolean,
+  repeated: boolean,
+): DecodeCharge | null {
+  if (l.length !== null) {
+    return repeated && isDynamic(l.elem) ? { fixed: 32 * l.length, perElem: 0 } : null;
+  }
+  if (l.elem.kind === 'word') {
+    return topLevel || l.elem.bits === 256 ? null : { fixed: 32, perElem: 32 };
+  }
+  return { fixed: 32, perElem: isDynamic(l.elem) ? 32 : staticSize(l.elem) };
+}
+
+/**
+ * The decode-work charge of materializing the tuple `l` (see {@link arrayDecodeCharge}), or `null`:
+ * a DYNAMIC tuple inside an element of an ABI-dynamic array (`repeated`) is charged its head size
+ * (one word per dynamic member, the static size of every static one). A static tuple is inlined
+ * and charged with the block that holds it; a dynamic one outside every array decodes a
+ * type-fixed number of times.
+ */
+export function tupleDecodeCharge(
+  l: Extract<TypeLayout, { kind: 'tuple' }>,
+  repeated: boolean,
+): number | null {
+  if (!repeated || !l.dynamic) return null;
+  return l.components.reduce((n, c) => n + (isDynamic(c) ? 32 : staticSize(c)), 0);
+}
+
+/**
  * Size in bytes of the ABI head for `params`: each param occupies one 32-byte offset slot when
  * dynamic, else its full static size inlined (a static tuple's members, a static fixed-size
  * array's `N` elements — no offset pointer). Each type is validated through `layoutOfType` so

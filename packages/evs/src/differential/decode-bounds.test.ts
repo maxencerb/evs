@@ -15,6 +15,12 @@
  *   INTERNAL asm-verifier crash.
  * - **Aliased tails.** Two outputs whose offsets share the same bytes: normalizing a narrow
  *   word array must not rewrite the bytes another decoded value reads.
+ * - **Overlapping element offsets.** N offsets of a nested array pointing at one inner block:
+ *   full-word inner arrays alias it (linear work, the payload decodes), anything copied or
+ *   re-materialized (narrow copies, pointer blocks, wide struct blocks, fixed-size `T[N]`
+ *   blocks) is charged to the decode-work budget and fails cleanly past it — never a quadratic
+ *   out-of-gas halt — at viem's `RecursiveReadLimitExceededError` threshold for `uint8[][]`;
+ *   well-formed payloads larger than the budget's slack still decode.
  *
  * interp == bytecode (plain and optimized) byte-for-byte, and == viem where viem decodes.
  */
@@ -779,4 +785,214 @@ describe('aliased tails: normalizing a narrow word array never rewrites shared b
       });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// overlapping element offsets: the decode-work budget (field-test PoC
+// codegen-abi-call-nested-array-overlap-quadratic-alloc)
+// ---------------------------------------------------------------------------
+
+describe('overlapping element offsets: decode work stays linear (decode-work budget)', () => {
+  /** `f(address)`: one `verb` over `g() returns (output)`, returning only the array's length (the
+   *  decoded values themselves would be quadratic to re-encode). */
+  function lengthScript(output: AbiParameter, verb: Verb) {
+    const abi = getterAbi([output], verb);
+    type Arr = { length: () => Expr<'uint256'> };
+    return evscript({ name: 'f', args: [t.address] }, (s, target) => {
+      const r = (s as unknown as LooseVerbs)[verb]({ address: target, abi, functionName: 'g' });
+      if (isTry(verb)) {
+        const tr = r as { success: Expr<'bool'>; value: Arr };
+        return s.return({ ok: tr.success, n: tr.value.length() });
+      }
+      return s.return({ n: (r as Arr).length() });
+    });
+  }
+
+  const outcomeOf = (script: AnyScript, verb: Verb, o: Outcome | undefined): unknown =>
+    o?.kind === 'return' || isTry(verb) ? decodeOut(script, o) : failureOf(script, verb, o);
+  const decoded = (verb: Verb, n: number): unknown =>
+    isTry(verb) ? { ok: true, n: BigInt(n) } : { n: BigInt(n) };
+  const rejected = (verb: Verb): unknown => failureWant(verb, 0n);
+  // `failureWant` names the zero value `v`; this corpus returns the length as `n`
+  const rejectedN = (verb: Verb): unknown =>
+    isTry(verb) ? { ok: false, n: 0n } : (rejected(verb) as object);
+
+  const rep = (n: number, x: bigint): bigint[] => Array.from({ length: n }, () => x);
+  /** `T[][]` whose N element offsets all point at one inner `[L][1 …]` block. */
+  const overlapNested = (n: number, l: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), BigInt(l), ...rep(l, 1n));
+  /** `(uint8[] a)[]` whose N tuple offsets all point at one tuple whose `a` is `[L][1 …]`. */
+  const overlapTuples = (n: number, l: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), 0x20n, BigInt(l), ...rep(l, 1n));
+  /** `uint256[][][]`: N offsets at one middle `uint256[][]` whose M offsets share one inner `[1][1]`. */
+  const overlapCube = (n: number, m: number): Hex =>
+    words(
+      0x20n,
+      BigInt(n),
+      ...rep(n, BigInt(32 * n)),
+      BigInt(m),
+      ...rep(m, BigInt(32 * m)),
+      1n,
+      1n,
+    );
+
+  /** `(uint256 a0…a{w−1}, string s)[]` whose N tuple offsets all point at one wide tuple. */
+  const overlapWideTuples = (n: number, w: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), ...rep(w, 1n), BigInt(32 * (w + 1)), 0n);
+  /** `string[K][]` whose N offsets share one `string[K]`, whose K offsets share one empty string
+   *  (the fixed-size block is the only thing copied). */
+  const overlapFixedOfStrings = (n: number, k: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), ...rep(k, BigInt(32 * k)), 0n);
+  /** `T[][]` whose N offsets share one inner `T[]` of L elements, each `w` static words. */
+  const overlapStaticElems = (n: number, l: number, w: number): Hex =>
+    words(0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), BigInt(l), ...rep(l * w, 1n));
+  const wideWords = (w: number): AbiParameter[] =>
+    Array.from({ length: w }, (_, i) => ({ name: `a${i}`, type: 'uint256' }));
+  const WIDE_DYN_TUPLE = [...wideWords(100), { name: 's', type: 'string' }];
+
+  const U8_NESTED: AbiParameter = { name: 'r', type: 'uint8[][]' };
+  const TUPLES: AbiParameter = {
+    name: 'r',
+    type: 'tuple[]',
+    components: [{ name: 'a', type: 'uint8[]' }],
+  };
+
+  const POC: readonly { label: string; output: AbiParameter; data: Hex; n: number | null }[] = [
+    // full-word inner arrays alias the payload: 600 offsets cost 600 bounds checks, not copies
+    {
+      label: 'uint256[][] N=L=600',
+      output: { name: 'r', type: 'uint256[][]' },
+      data: overlapNested(600, 600),
+      n: 600,
+    },
+    {
+      label: 'int256[][] N=L=600',
+      output: { name: 'r', type: 'int256[][]' },
+      data: overlapNested(600, 600),
+      n: 600,
+    },
+    // copies / pointer blocks past the budget: a clean decode failure
+    { label: 'uint8[][] N=L=600', output: U8_NESTED, data: overlapNested(600, 600), n: null },
+    { label: '(uint8[] a)[] N=L=600', output: TUPLES, data: overlapTuples(600, 600), n: null },
+    {
+      label: 'uint256[][][] N=M=600',
+      output: { name: 'r', type: 'uint256[][][]' },
+      data: overlapCube(600, 600),
+      n: null,
+    },
+    // re-materialized tuple flat blocks and fixed-size `T[N]` blocks are charged too (review of
+    // PR #117): ~51–58 KB payloads that used to halt out of gas at 30M, even under try verbs
+    {
+      label: '(uint256 ×100, string)[] N=1500',
+      output: { name: 'r', type: 'tuple[]', components: WIDE_DYN_TUPLE },
+      data: overlapWideTuples(1500, 100),
+      n: null,
+    },
+    {
+      label: 'string[1000][] N=600',
+      output: { name: 'r', type: 'string[1000][]' },
+      data: overlapFixedOfStrings(600, 1000),
+      n: null,
+    },
+    {
+      label: 'uint256[100][][] N=800 L=10',
+      output: { name: 'r', type: 'uint256[100][][]' },
+      data: overlapStaticElems(800, 10, 100),
+      n: null,
+    },
+    {
+      label: '(uint256 ×100)[][] N=800 L=10',
+      output: { name: 'r', type: 'tuple[][]', components: wideWords(100) },
+      data: overlapStaticElems(800, 10, 100),
+      n: null,
+    },
+  ];
+
+  for (const c of POC) {
+    for (const verb of VERBS) {
+      for (const evmVersion of EVM_VERSIONS) {
+        test(`${c.label} × ${verb} [${evmVersion}]`, async () => {
+          const script = lengthScript(c.output, verb);
+          // expectAgreement also pins the gas (no halt): interp == bytecode, never out of gas
+          const [o] = await expectAgreement(
+            script,
+            [[addr(1)]],
+            { [addr(1)]: { kind: 'return', data: c.data } },
+            evmVersion,
+          );
+          expect(outcomeOf(script, verb, o)).toEqual(
+            c.n === null ? rejectedN(verb) : decoded(verb, c.n),
+          );
+        }, 60_000);
+      }
+    }
+  }
+
+  test('uint8[][]: the budget gives up exactly where viem does (N around the threshold)', async () => {
+    // L=64: viem re-reads (N−1)·65 words, past its 8192 limit from N=128; evs charges
+    // 32(N+1) + 32N·65 bytes against 32(N+67) + 32·8192, past it from N=128 too
+    for (const verb of VERBS) {
+      const script = lengthScript(U8_NESTED, verb);
+      const ns = [126, 127, 128, 129];
+      const table: Record<string, CalleeTable[string]> = {};
+      ns.forEach((n, k) => {
+        table[addr(k + 1)] = { kind: 'return', data: overlapNested(n, 64) };
+      });
+      // oxlint-disable-next-line no-await-in-loop -- sequential: deterministic labels
+      const outcomes = await expectAgreement(
+        script,
+        ns.map((_, k) => [addr(k + 1)]),
+        table,
+      );
+      ns.forEach((n, k) => {
+        let viemDecodes = true;
+        try {
+          decodeFunctionResult({
+            abi: getterAbi([U8_NESTED], 'read'),
+            functionName: 'g',
+            data: overlapNested(n, 64),
+          });
+        } catch {
+          viemDecodes = false;
+        }
+        expect(viemDecodes, `viem at N=${n}`).toBe(n < 128);
+        expect(outcomeOf(script, verb, outcomes[k]), `${verb} at N=${n}`).toEqual(
+          viemDecodes ? decoded(verb, n) : rejectedN(verb),
+        );
+      });
+    }
+  }, 60_000);
+
+  test('well-formed payloads larger than the budget slack still decode', async () => {
+    // 288–384 KiB of charged blocks each (over the 256 KiB slack) — but a canonical encoding
+    // never charges more than its own size, which the budget always covers: array bodies, wide
+    // struct heads and the offset words of a fixed-size `T[N]` alike
+    const big = rep(9000, 7n);
+    const wide = Object.fromEntries([
+      ...rep(100, 0n).map((_, i) => [`a${i}`, BigInt(i)]),
+      ['s', 'x'],
+    ]);
+    const cases: readonly [AbiParameter, unknown, number][] = [
+      [U8_NESTED, [big, [1n, 2n]], 2],
+      [TUPLES, [{ a: big }, { a: big.slice(0, 10) }], 2],
+      [
+        { name: 'r', type: 'tuple[]', components: WIDE_DYN_TUPLE },
+        rep(100, 0n).map(() => wide),
+        100,
+      ],
+      [{ name: 'r', type: 'uint256[100][][]' }, [rep(100, 0n).map(() => rep(100, 7n))], 1],
+      [{ name: 'r', type: 'string[3][]' }, rep(3000, 0n).map(() => ['', '', '']), 3000],
+    ];
+    for (const [output, value, n] of cases) {
+      for (const verb of VERBS) {
+        const script = lengthScript(output, verb);
+        const data = encodeLoose([output], [value]);
+        // oxlint-disable-next-line no-await-in-loop -- sequential: deterministic labels
+        const [o] = await expectAgreement(script, [[addr(1)]], {
+          [addr(1)]: { kind: 'return', data },
+        });
+        expect(outcomeOf(script, verb, o)).toEqual(decoded(verb, n));
+      }
+    }
+  }, 60_000);
 });

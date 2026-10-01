@@ -170,7 +170,8 @@ Releases: see [Releasing](#releasing) below.
   at that depth (a fast-path shape deep inside tuples or heap levels). Both paths save and
   restore `0x20`, so they nest in either order. The heap path is ~15–19% more gas on the
   two-level shapes (#52), which is why the fast path stays: a shape that decoded before #4 must
-  keep its size and gas (the `#52 corpus` entries of `compile.bytecode.test.ts`). Both paths
+  not grow in size or gas (the `#52 corpus` entries of `compile.bytecode.test.ts`; `uint256[][]`
+  shrank when inner full-word arrays started aliasing the source). Both paths
   bound the array body against the source end (`D + 32·len`, or `D + len·staticSize`) BEFORE
   they allocate anything, so an unbacked length word (anything up to the `2^64−1` guard) fails
   cleanly instead of bumping the free pointer or writing a heap frame at `32·len`; the heap frame
@@ -182,7 +183,25 @@ Releases: see [Releasing](#releasing) below.
   may alias. The interpreter decodes fresh copies instead, so `validateIr` only admits an
   `arrset` whose target is an `arrnew` result (all the builder emits: `MutArray` handles exist
   only for `s.newArray`); tuples are always decoded into their own block, so `tupleset` stays
-  legal on any tuple. Each tuple level and each heap array level keeps one live stack word, so a deep
+  legal on any tuple.
+  Full-word `T[]` (`uint256[]`, `int256[]`, `bytes32[]`) alias at every level, array
+  elements included. Returndata decodes are **budgeted** against overlapping offsets (N offsets
+  at one element would otherwise make the decode quadratic in the returndata size): every tail
+  block the decoder materializes is charged its source-equivalent size (`arrayDecodeCharge` /
+  `tupleDecodeCharge` in `abi/layout.ts`) after its bounds and before it is allocated, out of
+  `payload + DECODE_BUDGET_SLACK` (8192 words, viem's default `recursiveReadLimit`): a
+  dynamic-length `T[]` its length word plus body (`32 + len·elemBytes`, a static struct /
+  static `T[N]` element at its static size; not aliased full-word arrays nor a call's own narrow
+  word-array outputs) and, under `'repeated'` (inside an ABI-dynamic array's element), a dynamic
+  tuple its head and a dynamic `T[N]` its `32·N` offsets. Static composites are inlined and
+  charged with their holder, so a non-overlapping encoding charges at most its own size, and
+  every block's memory is within a type-fixed factor of its charge (decode memory stays linear). The remaining budget lives in the word at the source end (`buf + rds`,
+  unaligned; the snapshot's free-pointer bump reserves it), initialised by
+  `emitInitDecodeBudget` only at sites whose output types can charge (`needsDecodeBudget`), so
+  other shapes keep their bytes; running out is the ordinary decode failure. A well-formed
+  encoding charges at most its own size, so only overlap can exhaust it. `ir/interp/decode.ts`
+  charges the same blocks, so interp == bytecode on every payload. Script args (the caller's own
+  calldata) are not budgeted. Each tuple level and each heap array level keeps one live stack word, so a deep
   enough struct/array chain cannot fit the 16-item window at all: `emitWithinStackBudget`
   (`codegen/abi/shared.ts`) turns that into a coded `UNSUPPORTED_V0` compile error at every
   decode / zero-value entry instead of the asm verifier's INTERNAL one. A try verb whose outputs

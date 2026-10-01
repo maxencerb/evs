@@ -15,6 +15,9 @@ import {
   emitDecodeTupleToMem,
   needsMemorySnapshot,
   emitWithinStackBudget,
+  needsDecodeBudget,
+  emitInitDecodeBudget,
+  type DecodeBudget,
 } from '../abi.js';
 import { SCRATCH_1, FREE_PTR } from '../memory.js';
 import {
@@ -96,6 +99,9 @@ export function emitSimulateCall(
     tryMode && outputs.some((p) => needsMemorySnapshot(layoutOfType(abiParamToType(p))))
       ? w.newLabel(`sim_restore_${siteId}`)
       : null;
+  // outputs whose decode can charge the decode-work budget get a budget word after the snapshot
+  const budgeted = needsDecodeBudget(outputs);
+  const budget: DecodeBudget = budgeted ? 'once' : 'off';
   const emitDecodeFailPre = makeDecodeFail(w, plan, tryMode, 'sim');
   const emitDecodeFail =
     restore === null ? emitDecodeFailPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
@@ -199,7 +205,7 @@ export function emitSimulateCall(
   // snapshot the whole returndata (the trampoline revert payload) at buf; SNAP_SLOT = buf
   w.push(FREE_PTR);
   w.op('MLOAD'); // [buf]
-  emitSnapshotReturndata(w, true); // [buf]
+  emitSnapshotReturndata(w, true, { reserveBudgetWord: budgeted }); // [buf]
 
   // magic check: MLOAD(buf) === MAGIC, else decode-fail
   w.op('DUP1');
@@ -254,11 +260,18 @@ export function emitSimulateCall(
       w.op('ADD'); // [buf+64]
     };
     const pushEnd = (): void => pushSnapEnd(w);
+    // the budget covers the carried returndata only (rds − 64), like a plain call's returndata
+    if (budgeted) emitInitDecodeBudget(w, pushEnd, 64); // [buf]
     emitWithinStackBudget(
       w,
       1,
       () => `the outputs of ${fnAbi.name} (site ${siteId})`,
-      () => emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1),
+      // the outputs block itself: its narrow word-array members are top-level outputs (uncharged)
+      () =>
+        emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, {
+          budget,
+          outputsBlock: true,
+        }),
     ); // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];

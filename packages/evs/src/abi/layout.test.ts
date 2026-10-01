@@ -5,6 +5,8 @@ import { describe, expect, test } from 'vite-plus/test';
 import { EvsTypeError } from '../core/errors.js';
 import { staticSizeOf, t, type EvsType, type TupleType, type WordType } from '../core/types.js';
 import {
+  arrayDecodeCharge,
+  tupleDecodeCharge,
   headBytes,
   isDynamic,
   layoutOf,
@@ -482,5 +484,72 @@ describe('layout memoization', () => {
     // a `tuple[][]` descriptor is a layout now (issue #4), cached per descriptor
     const arr2: TupleType = { type: 'tuple[][]', components: [{ name: 'x', type: 'uint256' }] };
     expect(layoutOfType(arr2)).toBe(layoutOfType(arr2));
+  });
+});
+
+describe('decode-work budget charges (shared by codegen and the interpreter)', () => {
+  const arrayCharge = (type: string | TupleType, topLevel: boolean, repeated: boolean) => {
+    const l = typeof type === 'string' ? layoutOf(type) : layoutOfType(type);
+    if (l.kind !== 'array') throw new Error(`${JSON.stringify(type)} is not an array`);
+    return arrayDecodeCharge(l, topLevel, repeated);
+  };
+  const tupleCharge = (type: TupleType, repeated: boolean) => {
+    const l = layoutOfType(type);
+    if (l.kind !== 'tuple') throw new Error('not a tuple');
+    return tupleDecodeCharge(l, repeated);
+  };
+
+  test('a dynamic-length T[] charges its length word plus its body, wherever it sits', () => {
+    for (const [topLevel, repeated] of [
+      [false, false],
+      [false, true],
+      [true, false],
+    ] as const) {
+      for (const type of ['uint8[]', 'address[]', 'bool[]', 'int8[]', 'bytes4[]']) {
+        if (topLevel) continue; // a narrow output is not charged (below)
+        expect(arrayCharge(type, topLevel, repeated)).toEqual({ fixed: 32, perElem: 32 });
+      }
+      for (const type of ['string[]', 'bytes[]', 'uint256[][]', 'uint8[][]', 'string[2][]']) {
+        expect(arrayCharge(type, topLevel, repeated)).toEqual({ fixed: 32, perElem: 32 });
+      }
+      // static composite elements are inlined in the body: charged at their static size
+      expect(arrayCharge('uint256[2][]', topLevel, repeated)).toEqual({ fixed: 32, perElem: 64 });
+      const wide = { type: 'tuple[]', components: [{ name: 'a', type: 'uint256[3]' }] } as const;
+      expect(arrayCharge(wide, topLevel, repeated)).toEqual({ fixed: 32, perElem: 96 });
+    }
+  });
+
+  test('aliased word arrays, narrow outputs and static T[N] are never charged', () => {
+    for (const repeated of [false, true]) {
+      for (const type of ['uint256[]', 'int256[]', 'bytes32[]']) {
+        expect(arrayCharge(type, false, repeated)).toBeNull();
+      }
+      for (const type of ['uint8[2]', 'uint256[2][3]']) {
+        expect(arrayCharge(type, false, repeated)).toBeNull();
+      }
+    }
+    expect(arrayCharge('uint8[]', true, false)).toBeNull();
+    expect(arrayCharge('address[]', true, false)).toBeNull();
+  });
+
+  test('a dynamic T[N] and a dynamic tuple are charged only inside an ABI-dynamic array', () => {
+    for (const type of ['string[3]', 'uint256[][2]', 'uint8[][4]']) {
+      expect(arrayCharge(type, false, false)).toBeNull();
+    }
+    expect(arrayCharge('string[3]', false, true)).toEqual({ fixed: 96, perElem: 0 });
+    expect(arrayCharge('uint8[][4]', false, true)).toEqual({ fixed: 128, perElem: 0 });
+
+    const dyn: TupleType = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint256' },
+        { name: 'p', type: 'tuple', components: [{ name: 'x', type: 'uint8[2]' }] },
+        { name: 's', type: 'string' },
+      ],
+    };
+    expect(tupleCharge(dyn, false)).toBeNull();
+    expect(tupleCharge(dyn, true)).toBe(32 + 64 + 32); // its head
+    const stat: TupleType = { type: 'tuple', components: [{ name: 'a', type: 'uint256' }] };
+    expect(tupleCharge(stat, true)).toBeNull(); // inlined, charged with its holder
   });
 });
