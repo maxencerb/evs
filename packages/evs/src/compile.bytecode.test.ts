@@ -14,7 +14,7 @@
  * issue #39, over the liveness-packed frame, issue #41), which is additionally asserted to
  * never be larger.
  */
-import type { Abi } from 'abitype';
+import type { Abi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import type { EvmVersion } from './asm/ops.js';

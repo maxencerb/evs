@@ -9,7 +9,7 @@
  * never the `uint` alias). Type-level ({@link AbiFunctionSignature}) and runtime
  * ({@link functionSignature}) forms agree character-for-character.
  */
-import type { AbiParameter } from 'abitype';
+import type { AbiParameter } from 'viem';
 
 /** One ABI parameter → its canonical type string (a `tuple…` expands to `(c1,c2)…`). */
 export type AbiParameterSignature<p extends AbiParameter> = p extends {

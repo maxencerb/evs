@@ -4,7 +4,7 @@
  * `FromAbiOutputs`.
  */
 
-import type { AbiParameter, Abi } from 'abitype';
+import type { AbiParameter, Abi } from 'viem';
 
 import type { SignatureName, AbiFunctionSignature } from '../signature.js';
 import type { EvsType, TupleType } from './vocabulary.js';

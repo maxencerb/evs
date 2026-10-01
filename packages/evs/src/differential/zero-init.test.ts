@@ -8,8 +8,7 @@
  * so an aliased scratch pointer would surface as garbage. Runner: `test/harness/differential.ts`.
  */
 
-import type { Abi } from 'abitype';
-import { decodeFunctionResult, encodeAbiParameters, getAddress } from 'viem';
+import { type Abi, decodeFunctionResult, encodeAbiParameters, getAddress } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {

@@ -7,8 +7,10 @@
  * `optimize: true` twin. Runner, callee table and fixture constants: `test/harness/differential.ts`.
  */
 
-import type { Abi, AbiParameter, Address } from 'abitype';
 import {
+  type Abi,
+  type AbiParameter,
+  type Address,
   decodeFunctionResult,
   encodeAbiParameters,
   encodeFunctionData,

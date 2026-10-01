@@ -35,6 +35,12 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
 | `typescript` | `>=5.5` | Optional peer dependency — the runtime works without it, but the typed surface (literal-typed ABI, `Expr` inference) is the point of the library. `strict` mode is required. |
 | Node.js | `>=20.19` | Or Bun. |
 
+The package has no dependencies of its own: its ABI types (`Address`, `Abi`, …) are abitype's,
+taken through viem, so they are the exact types viem uses. An abitype
+[`Register`](https://abitype.dev/config) augmentation in your app (a custom `addressType`, say)
+applies to evs and viem alike. Declare it against the abitype viem installs: under npm and bun
+that is the hoisted copy; under pnpm, add `abitype` at the version your viem pins.
+
 :::caution[TypeScript strict mode is required]
 Set `"strict": true` in your `tsconfig.json`. The typed builder surface — argument tuples,
 `Expr` branding, viem result inference — is only sound under strict mode, and the binding

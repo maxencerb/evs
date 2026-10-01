@@ -1,7 +1,6 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion --
  * rejection matrices deliberately feed wrongly-typed values through the public signatures. */
-import type { AbiFunction, AbiParameter } from 'abitype';
-import { encodeAbiParameters } from 'viem';
+import { type AbiFunction, type AbiParameter, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsTypeError } from '../core/errors.js';

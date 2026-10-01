@@ -22,7 +22,7 @@
  *   code/storage/balance on any major chain.
  */
 
-import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'abitype';
+import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'viem';
 
 import { describePanic } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';

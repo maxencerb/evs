@@ -7,9 +7,11 @@
  * from `index.ts` fails here. The IR node types behind `ScriptIr` are deliberately not exported
  * (the IR schema is not a stable API). Typecheck only.
  */
+import type { Address as ViemAddress } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import type {
+  Address,
   AbiParameterSignature,
   AbiParametersSignature,
   ArgName,
@@ -77,4 +79,26 @@ test('public-signature helper types are exported by name', () => {
   >().toEqualTypeOf<{ y: bigint }>();
   // the run-time mode accepted by toViem()'s catch-all overload
   expectTypeOf<ToViemMode>().toEqualTypeOf<'deployless' | 'stateOverride'>();
+});
+
+// Without a `Register` augmentation two abitype copies agree on `0x${string}`, so this only pins
+// the export; the single-copy guarantee is `abitype.test.ts`'s augmented fixture.
+test("abitype's types come through viem: evs's Address is viem's", () => {
+  expectTypeOf<Address>().toEqualTypeOf<ViemAddress>();
+});
+
+test('LabelCarrier keeps one element per spec past the six-at-a-time batch (through viem)', () => {
+  type Seven = readonly [
+    ToArgSpec<'uint256'>,
+    ToArgSpec<'address'>,
+    ToArgSpec<'bool'>,
+    ToArgSpec<'uint8'>,
+    ToArgSpec<'bytes32'>,
+    ToArgSpec<'string'>,
+    ToArgSpec<'int24'>,
+  ];
+  // the element type is the constant `uint256` placeholder; only the length and labels matter
+  expectTypeOf<LabelCarrier<Seven>>().toEqualTypeOf<
+    readonly [bigint, bigint, bigint, bigint, bigint, bigint, bigint]
+  >();
 });

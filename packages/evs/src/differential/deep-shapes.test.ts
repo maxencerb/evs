@@ -12,8 +12,9 @@
  * members, the try-mode zero block).
  */
 
-import type { Abi, AbiParameter } from 'abitype';
 import {
+  type Abi,
+  type AbiParameter,
   decodeFunctionResult,
   encodeAbiParameters,
   encodeFunctionData,

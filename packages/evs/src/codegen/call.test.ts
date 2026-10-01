@@ -16,8 +16,14 @@
  * - pre-cancun memcpy path for dynamic args.
  */
 
-import type { Abi, AbiFunction, Address } from 'abitype';
-import { encodeAbiParameters, encodeErrorResult, encodeFunctionData } from 'viem';
+import {
+  type Abi,
+  type AbiFunction,
+  type Address,
+  encodeAbiParameters,
+  encodeErrorResult,
+  encodeFunctionData,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {

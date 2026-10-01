@@ -8,8 +8,7 @@
  * here byte-for-byte.
  */
 
-import type { Abi } from 'abitype';
-import { decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
+import { type Abi, decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';

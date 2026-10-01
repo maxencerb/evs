@@ -22,7 +22,7 @@
  */
 
 import { createEVM } from '@ethereumjs/evm';
-import type { Address } from 'abitype';
+import type { Address } from 'viem';
 
 import type { Hex } from '../../src/core/types.js';
 

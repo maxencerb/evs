@@ -6,8 +6,13 @@
  * `optimize: true` twin. Runner, callee table and fixture constants: `test/harness/differential.ts`.
  */
 
-import type { Abi } from 'abitype';
-import { decodeFunctionResult, encodeAbiParameters, encodeFunctionData, getAddress } from 'viem';
+import {
+  type Abi,
+  decodeFunctionResult,
+  encodeAbiParameters,
+  encodeFunctionData,
+  getAddress,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {

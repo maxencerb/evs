@@ -28,7 +28,8 @@ const clamp = evscript(
 
 - **Parameters** accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a
   single `namedArg(name, type)`, or a `readonly` list mixing named/bare. A `namedArg` labels the
-  callback parameter (`(token) => …`); a bare param keeps the positional `arg{i}` name. A param may
+  callback parameter (`(token) => …`); a bare param keeps the positional `arg{i}` name. These
+  editor labels need viem ≥ 2.43.0; an older viem gives the same parameter types, unlabeled. A param may
   be **any evs type** — a word, `string`/`bytes`, an array, or a composite `t.struct`/`t.tuple` —
   exactly the vocabulary script args accept. The body receives the same handles a script body
   would: a struct/tuple param is a `Tuple` handle (named field access), everything else an

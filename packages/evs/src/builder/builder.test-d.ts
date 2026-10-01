@@ -5,8 +5,7 @@
  * `ScriptReturn` inference through `evscript`. Runs under the vitest `types` project (typecheck
  * only — nothing executes).
  */
-import type { Abi, AbiParametersToPrimitiveTypes } from 'abitype';
-import type { ReadContractReturnType } from 'viem';
+import type { Abi, ContractFunctionArgs, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
@@ -208,7 +207,7 @@ test('namedArg struct arg (issue #25): Tuple handle in the body; named tuple ABI
     ]
   >();
   // viem's inferred args tuple is the struct object
-  expectTypeOf<AbiParametersToPrimitiveTypes<(typeof script.abi)[0]['inputs']>>().toEqualTypeOf<
+  expectTypeOf<ContractFunctionArgs<typeof script.abi>>().toEqualTypeOf<
     readonly [{ loanToken: `0x${string}`; lltv: bigint }]
   >();
 });

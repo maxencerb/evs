@@ -87,6 +87,26 @@ export default defineConfig({
         },
       },
       {
+        // The library takes abitype's types through viem (a required peer that pins its own
+        // abitype): a direct `abitype` import needs a dependency of its own, which installs a
+        // second copy next to viem's, and an app's abitype `Register` augmentation would then
+        // reach only one of them.
+        files: ['packages/evs/**'],
+        rules: {
+          'no-restricted-imports': [
+            'error',
+            {
+              paths: [
+                {
+                  name: 'abitype',
+                  message: "import abitype's types from 'viem', which re-exports them",
+                },
+              ],
+            },
+          ],
+        },
+      },
+      {
         files: ['examples/**'],
         rules: {
           'no-console': 'off',

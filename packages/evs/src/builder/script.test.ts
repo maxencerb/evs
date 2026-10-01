@@ -1,4 +1,4 @@
-import type { Abi } from 'abitype';
+import type { Abi } from 'viem';
 /**
  * Builder unit tests — IR snapshots (`serializeIr`) per builder API family, value semantics,
  * constant folding, scope positives, and recorded-IR validity (`validateIr` on every script).

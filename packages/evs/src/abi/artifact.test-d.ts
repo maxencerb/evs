@@ -11,8 +11,7 @@
  * is harmless: viem infers an *object* from the fully-named single tuple output, and script
  * inputs come from the ArgSpec tuple (order-preserving by construction).
  */
-import type { Abi } from 'abitype';
-import type { ReadContractParameters, ReadContractReturnType } from 'viem';
+import type { Abi, ReadContractParameters, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import type { ArgSpec, Expr } from '../core/types.js';

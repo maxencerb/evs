@@ -24,7 +24,7 @@
  * (`Error(string)`, foreign selectors, the empty revert) — the strict call sites that bubble them.
  */
 
-import type { Address } from 'abitype';
+import type { Address } from 'viem';
 
 import { canonicalTypeSignature, describePanic, type ScriptAbi } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';

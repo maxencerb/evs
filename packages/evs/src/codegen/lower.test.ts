@@ -13,8 +13,7 @@
  * - env ops; fork smoke (paris/shanghai pushes + @memcpy return path).
  */
 
-import type { AbiParameter } from 'abitype';
-import { encodeAbiParameters } from 'viem';
+import { type AbiParameter, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {
