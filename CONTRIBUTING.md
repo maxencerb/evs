@@ -133,7 +133,9 @@ Releases: see [Releasing](#releasing) below.
   An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
   frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
   params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
-  for the whole loop) and a peephole pass between codegen and assembly (exported as
+  for the whole loop; `codegen/frame.ts` walks the `if`/`while` region tree and scans with two
+  heaps, and a seeded test in `frame.test.ts` holds it slot for slot to a naive reference
+  model of the same rules) and a peephole pass between codegen and assembly (exported as
   `evsPeephole`) that folds store-then-reload slot pairs, constants and stack identities, never
   crosses a `JUMPDEST` and never touches a label or jump target. Both outputs go through the same
   verifiers. It is off by default so the default bytes stay the plain lowering.
