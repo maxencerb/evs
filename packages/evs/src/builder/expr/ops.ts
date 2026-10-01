@@ -98,27 +98,8 @@ export abstract class RecorderOps extends RecorderEncode {
         );
       }
       ty = ca.type;
-    } else if (ca.kind === 'expr' && cb.kind === 'expr') {
-      if (!typesEqual(ca.type, cb.type)) {
-        let suggest = '';
-        if (isNumeric(ca.type) && isNumeric(cb.type)) {
-          suggest = ` — make the widths match explicitly with .toUint('…') / .toInt('…')`;
-        }
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${what}: operand types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)${suggest}`,
-        );
-      }
-      ty = ca.type;
-    } else if (ca.kind === 'expr') {
-      ty = ca.type;
-    } else if (cb.kind === 'expr') {
-      ty = cb.type;
     } else {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `${what}: at least one operand must be an Expr — type a literal with s.lit(type, value)`,
-      );
+      ty = this.unifyOperandTypes(ca, cb, what, 'operand');
     }
 
     // memref equality (issue #38): `a.eq(b)` on string/bytes/T[]/tuple values is HASH equality —
@@ -146,6 +127,36 @@ export abstract class RecorderOps extends RecorderEncode {
     const out = this.newValue(resultTy);
     this.appendStmt({ k: 'bin', op, a: ia, b: ib, out });
     return makeExpr(this.self, out);
+  }
+
+  /** The common type of two operands where at least one is an Expr (a host literal is then coerced
+   *  to it): both Exprs must have the same type. `noun` names the pair in messages — `bin`'s
+   *  operands, `select`'s branches. */
+  private unifyOperandTypes(
+    ca: Operand,
+    cb: Operand,
+    what: string,
+    noun: 'operand' | 'branch',
+  ): EvsType {
+    if (ca.kind === 'expr' && cb.kind === 'expr') {
+      if (!typesEqual(ca.type, cb.type)) {
+        const suggest =
+          isNumeric(ca.type) && isNumeric(cb.type)
+            ? ` — make the widths match explicitly with .toUint('…') / .toInt('…')`
+            : '';
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: ${noun} types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)${suggest}`,
+        );
+      }
+      return ca.type;
+    }
+    if (ca.kind === 'expr') return ca.type;
+    if (cb.kind === 'expr') return cb.type;
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: at least one ${noun} must be an Expr — type a literal with s.lit(type, value)`,
+    );
   }
 
   /** The exponent type of `pow`: an unsigned `Expr`'s own type, else (a literal) `uint256`. */
@@ -530,25 +541,7 @@ export abstract class RecorderOps extends RecorderEncode {
     this.assertOpen('s.select()');
     const ca = this.classify(a, 's.select() first branch');
     const cb = this.classify(b, 's.select() second branch');
-    let ty: EvsType;
-    if (ca.kind === 'expr' && cb.kind === 'expr') {
-      if (!typesEqual(ca.type, cb.type)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `s.select(): branch types differ (Expr<'${stringifyType(ca.type)}'> vs Expr<'${stringifyType(cb.type)}'>)`,
-        );
-      }
-      ty = ca.type;
-    } else if (ca.kind === 'expr') {
-      ty = ca.type;
-    } else if (cb.kind === 'expr') {
-      ty = cb.type;
-    } else {
-      throw new EvsTypeError(
-        'TYPE_MISMATCH',
-        `s.select(): at least one branch must be an Expr — type a literal with s.lit(type, value)`,
-      );
-    }
+    const ty = this.unifyOperandTypes(ca, cb, 's.select()', 'branch');
     // literal condition folds: both branches are already-computed values,
     // so picking one is exact — the chosen operand is aliased (or interned, for a literal).
     const cc = this.classify(cond, 's.select() condition');

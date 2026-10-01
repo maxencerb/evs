@@ -4,7 +4,6 @@
  */
 
 import { canonicalTypeSignature } from '../../abi/artifact.js';
-import { layoutOfType } from '../../abi/layout.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   isTupleType,
@@ -15,11 +14,12 @@ import {
   abiParamToType,
   type Expr,
   arrayTypeOf,
+  MAX_FIXED_LENGTH,
 } from '../../core/types.js';
 import type { ValueId } from '../../ir/nodes.js';
 import { RecorderCore } from './core.js';
 import { makeTuple, FieldHandle, makeExpr, MutArrayImpl } from './handles.js';
-import { describeHost, asLiteralIndex } from './helpers.js';
+import { describeHost, asLiteralIndex, assertLayout } from './helpers.js';
 
 /** Tuples, fields and mutable arrays (a `Recorder` layer). */
 export abstract class RecorderComposites extends RecorderCore {
@@ -120,7 +120,7 @@ export abstract class RecorderComposites extends RecorderCore {
     if (fixedOpt === true) {
       // the length of a fixed-size array is part of its TYPE, so it must be a record-time literal
       const n = typeof length === 'bigint' ? Number(length) : length;
-      if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > 0xffffffff) {
+      if (typeof n !== 'number' || !Number.isSafeInteger(n) || n < 1 || n > MAX_FIXED_LENGTH) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `s.newArray(…, { fixed: true }): the length of a fixed-size array must be a literal positive integer below 2^32, got ${describeHost(length)}`,
@@ -129,10 +129,10 @@ export abstract class RecorderComposites extends RecorderCore {
       fixed = n;
     }
     const arrType = arrayTypeOf(elemType, fixed);
-    this.validateArrayType(arrType, 's.newArray()');
+    assertLayout(arrType, 's.newArray()');
     const lenId = this.coerceToId(length, 'uint256', 's.newArray() length');
     const lenLit = this.litValues.get(lenId);
-    if (lenLit !== undefined && lenLit >= 1n << 32n) {
+    if (lenLit !== undefined && lenLit > BigInt(MAX_FIXED_LENGTH)) {
       this.certainPanic('s.newArray()', `literal length ${lenLit} is ≥ 2^32`, 0x41);
     }
     // the compact Solidity type name (`(uint256,address)`, not the JSON of a struct type): the
@@ -154,12 +154,12 @@ export abstract class RecorderComposites extends RecorderCore {
   /** Validate an `s.newArray` element type: any value type — a word, `string`/`bytes`, a tuple
    *  descriptor (plain or a tuple array), or any array (dynamic/fixed). The exact classification
    *  (malformed → TYPE_MISMATCH, nested deeper than MAX_ARRAY_DEPTH → UNSUPPORTED_V0) is delegated
-   *  to the layout of the resulting array type (`validateArrayType`). */
+   *  to the layout of the resulting array type (`assertLayout`). */
   private newArrayElemType(elem: unknown): EvsType {
     if (typeof elem === 'string') {
       // a non-StringType string still produces a string we can tag; the layout check on the
       // resulting array type rejects it with the shared TYPE_MISMATCH explanation.
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; validateArrayType rejects malformed ones.
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; assertLayout rejects malformed ones.
       return elem as EvsType;
     }
     if (isTupleType(elem)) return elem;
@@ -167,19 +167,6 @@ export abstract class RecorderComposites extends RecorderCore {
       'TYPE_MISMATCH',
       `s.newArray(): element type must be a t.* type (a word, string/bytes, an array, or a t.struct/t.tuple), got ${describeHost(elem)}`,
     );
-  }
-
-  /** Validates an array type through the layout classifier so the error text and code match
-   *  `abi/layout.ts`. */
-  private validateArrayType(arrType: EvsType, what: string): void {
-    try {
-      layoutOfType(arrType);
-    } catch (e) {
-      if (e instanceof EvsTypeError) {
-        throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
-      }
-      throw e;
-    }
   }
 
   arrSet(arrId: ValueId, elem: EvsType, i: unknown, v: unknown, what: string): void {

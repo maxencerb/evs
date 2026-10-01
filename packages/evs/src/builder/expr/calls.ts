@@ -7,7 +7,6 @@
 import type { AbiFunction } from 'viem';
 
 import { toPlainAbiFunction } from '../../abi/artifact.js';
-import { layoutOfType } from '../../abi/layout.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import { functionsByRef, signatureRefName, functionSignature } from '../../core/signature.js';
 import {
@@ -23,7 +22,7 @@ import {
   isNumeric,
   type TupleType,
 } from '../../core/types.js';
-import type { ValueId, PlainAbiParam } from '../../ir/nodes.js';
+import type { ValueId, PlainAbiParam, PlainAbiFunction } from '../../ir/nodes.js';
 import { RecorderControl } from './control.js';
 import {
   makeExpr,
@@ -42,7 +41,10 @@ import {
   isRecordObj,
   allMembersNamed,
   normalizeAbiParam,
+  assertLayout,
 } from './helpers.js';
+
+type CallKind = 'static' | 'call' | 'simulate';
 
 interface SubcallShape {
   readonly success: Expr | null;
@@ -63,11 +65,25 @@ const SUBCALL_PARAM_KEYS: ReadonlySet<string> = new Set([
   'revertReturns',
 ]);
 
+/** A call verb's params object, unvalidated: one object `subcall` hands to each helper that
+ *  needs a key of it, so a new option is read next to the ones it sits with. Its keys are
+ *  exactly {@link SUBCALL_PARAM_KEYS}. */
+interface CallParams {
+  readonly address?: unknown;
+  readonly abi?: unknown;
+  readonly functionName?: unknown;
+  readonly args?: unknown;
+  readonly gas?: unknown;
+  readonly value?: unknown;
+  readonly struct?: unknown;
+  readonly revertReturns?: unknown;
+}
+
 /** Sub-calls and overload resolution (a `Recorder` layer). */
 export abstract class RecorderCalls extends RecorderControl {
   // -- calls -------------------------------------------------------------------------------
 
-  subcall(p: unknown, mode: 'strict' | 'try', kind: 'static' | 'call' | 'simulate'): SubcallShape {
+  subcall(p: unknown, mode: 'strict' | 'try', kind: CallKind): SubcallShape {
     // verb name for error messages / debug names: static→read, call→call, simulate→simulate,
     // with a `try` prefix in try mode (s.read / s.tryRead / s.call / s.tryCall / s.simulate /
     // s.trySimulate).
@@ -90,16 +106,7 @@ export abstract class RecorderCalls extends RecorderControl {
         );
       }
     }
-    const params = unsafeCast<{
-      address?: unknown;
-      abi?: unknown;
-      functionName?: unknown;
-      args?: unknown;
-      gas?: unknown;
-      value?: unknown;
-      struct?: unknown;
-      revertReturns?: unknown;
-    }>(p);
+    const params = unsafeCast<CallParams>(p);
     if (params.value !== undefined && kind === 'static') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -131,8 +138,66 @@ export abstract class RecorderCalls extends RecorderControl {
         `${label}: \`functionName\` is required (got ${describeHost(fname)})`,
       );
     }
-    // a bare name selects every overload of that name; a canonical signature (`'get(uint256)'`,
-    // issue #4) selects exactly one entry and skips argument-based resolution.
+    const plain = this.selectAbiEntry(abi, fname, params, kind, label);
+    // debug names use the entry's bare name, so a signature `functionName` records the same IR
+    const fnTag = plain.name;
+    if (params.address === undefined) {
+      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`);
+    }
+    const target = this.coerceToId(params.address, 'address', `${label} address`);
+    const argIds = this.coerceCallArgs(plain, params.args, fname, label);
+    // the call options are coerced here, beside the statement that records them
+    const gasId =
+      params.gas === undefined ? undefined : this.coerceToId(params.gas, 'uint256', `${label} gas`);
+    const valueId =
+      params.value === undefined
+        ? undefined
+        : this.coerceToId(params.value, 'uint256', `${label} value`);
+    const outTypes = revertReturns ?? this.callOutputTypes(plain, label);
+    const outs = outTypes.map((type, i) => {
+      const tag =
+        outTypes.length === 1 ? `${callerName}(${fnTag})` : `${callerName}(${fnTag})[${i}]`;
+      return { type, id: this.newValue(type, tag) };
+    });
+    const outIds = outs.map((o) => o.id);
+    const successId =
+      mode === 'try' ? this.newValue('bool', `${callerName}(${fnTag}).success`) : undefined;
+    this.appendStmt({
+      k: 'call',
+      target,
+      fnAbi: plain,
+      args: argIds,
+      outs: outIds,
+      mode,
+      // omit `kind` when 'static' so STATICCALL IR stays byte-identical to the pre-issue-#1 shape
+      ...(kind !== 'static' ? { kind } : {}),
+      ...(successId !== undefined ? { successOut: successId } : {}),
+      ...(gasId !== undefined ? { gas: gasId } : {}),
+      ...(valueId !== undefined ? { value: valueId } : {}),
+      ...(revertReturns !== undefined ? { revertReturns } : {}),
+    });
+    // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
+    // `tuplenew` over the already-decoded output ValueIds; the default is the positional shape.
+    const value = wantStruct
+      ? this.buildSubcallStruct(plain.outputs, outIds, callerName, fnTag)
+      : this.wrapCallResult(outs);
+    return { success: successId !== undefined ? makeExpr(this.self, successId) : null, value };
+  }
+
+  /**
+   * The ONE ABI entry a call verb records: `functionName` (a bare name selects every overload of
+   * that name; a canonical signature such as `'get(uint256)'`, issue #4, selects exactly one entry
+   * and skips argument-based resolution), filtered by the verb's mutability bucket, then resolved
+   * against `params.args` ({@link resolveOverload}) and validated into its IR form. It takes the
+   * whole params object: a check that depends on the resolved entry belongs here.
+   */
+  private selectAbiEntry(
+    abi: readonly unknown[],
+    fname: string,
+    params: CallParams,
+    kind: CallKind,
+    label: string,
+  ): PlainAbiFunction {
     const { entries: named, bySignature } = functionsByRef(abi, fname);
     if (named.length === 0) {
       throw new EvsTypeError('ABI_SHAPE', this.noSuchFunction(label, abi, fname, bySignature));
@@ -175,24 +240,27 @@ export abstract class RecorderCalls extends RecorderControl {
       );
     }
     // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
-    const plain = toPlainAbiFunction(unsafeCast<AbiFunction>(item));
-    // debug names use the entry's bare name, so a signature `functionName` records the same IR
-    const fnTag = plain.name;
-    if (params.address === undefined) {
-      throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`address\` is required`);
-    }
-    const target = this.coerceToId(params.address, 'address', `${label} address`);
-    const rawArgs = params.args === undefined ? [] : params.args;
+    return toPlainAbiFunction(unsafeCast<AbiFunction>(item));
+  }
+
+  /** Coerces a call's `args` to the selected entry's input types (exact arity), in order. */
+  private coerceCallArgs(
+    fn: PlainAbiFunction,
+    args: unknown,
+    fname: string,
+    label: string,
+  ): ValueId[] {
+    const rawArgs = args === undefined ? [] : args;
     if (!Array.isArray(rawArgs)) {
       throw new EvsTypeError('TYPE_MISMATCH', `${label}: \`args\` must be an array`);
     }
-    if (rawArgs.length !== plain.inputs.length) {
+    if (rawArgs.length !== fn.inputs.length) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${label}: function "${fname}" expects ${plain.inputs.length} argument(s), got ${rawArgs.length}`,
+        `${label}: function "${fname}" expects ${fn.inputs.length} argument(s), got ${rawArgs.length}`,
       );
     }
-    const argIds = plain.inputs.map((inp, i) => {
+    return fn.inputs.map((inp, i) => {
       // abiParamToType turns a `'tuple'` input (carrying components) into a TupleType — coerceToId
       // then routes through its tuple branch (a Tuple handle or a literal struct object).
       const ity = abiParamToType(inp);
@@ -202,71 +270,32 @@ export abstract class RecorderCalls extends RecorderControl {
       const argLabel = inp.name === '' ? `args[${i}]` : `args[${i}] ("${inp.name}")`;
       return this.coerceToId(rawArgs[i], ity, `${label} ${argLabel}`);
     });
-    const gasId =
-      params.gas === undefined ? undefined : this.coerceToId(params.gas, 'uint256', `${label} gas`);
-    const valueId =
-      params.value === undefined
-        ? undefined
-        : this.coerceToId(params.value, 'uint256', `${label} value`);
-    // each out value's type is `abiParamToType(o)` — a `'tuple'` output (head/tail in the
-    // returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
-    // Tuple handle on unwrap; scalars/arrays yield an Expr. Under `revertReturns` the declared
-    // types ARE the outputs (the ABI outputs are ignored — the payload comes from the revert).
-    const outTypes: readonly EvsType[] =
-      revertReturns ??
-      plain.outputs.map((o): EvsType => {
-        const oty = abiParamToType(o);
-        if (!isEvsValueType(oty)) {
-          throw new EvsInternalError(
-            'INTERNAL',
-            `${label}: unsupported output survived validation`,
-          );
-        }
-        return oty;
-      });
-    const outIds = outTypes.map((oty, i) => {
-      const tag =
-        outTypes.length === 1 ? `${callerName}(${fnTag})` : `${callerName}(${fnTag})[${i}]`;
-      return this.newValue(oty, tag);
+  }
+
+  /** The types of a call's outputs, `abiParamToType(o)` each: a `'tuple'` output (head/tail in
+   *  the returndata) is decoded into a freshly-allocated flat block (codegen/call.ts) and yields a
+   *  Tuple handle on unwrap; scalars/arrays yield an Expr. (Under `revertReturns` the declared
+   *  types replace these: the payload comes from the revert.) */
+  private callOutputTypes(fn: PlainAbiFunction, label: string): readonly EvsType[] {
+    return fn.outputs.map((o): EvsType => {
+      const oty = abiParamToType(o);
+      if (!isEvsValueType(oty)) {
+        throw new EvsInternalError('INTERNAL', `${label}: unsupported output survived validation`);
+      }
+      return oty;
     });
-    const successId =
-      mode === 'try' ? this.newValue('bool', `${callerName}(${fnTag}).success`) : undefined;
-    this.appendStmt({
-      k: 'call',
-      target,
-      fnAbi: plain,
-      args: argIds,
-      outs: outIds,
-      mode,
-      // omit `kind` when 'static' so STATICCALL IR stays byte-identical to the pre-issue-#1 shape
-      ...(kind !== 'static' ? { kind } : {}),
-      ...(successId !== undefined ? { successOut: successId } : {}),
-      ...(gasId !== undefined ? { gas: gasId } : {}),
-      ...(valueId !== undefined ? { value: valueId } : {}),
-      ...(revertReturns !== undefined ? { revertReturns } : {}),
-    });
-    // unwrap a tuple (NOT a tuple ARRAY) out ValueId to a Tuple handle; a composite array
-    // (`tuple[]`/`T[][]`/`string[]`) or any scalar/word-array → an Expr (its `.at(i)`/`.length()`
-    // yield the element/length handles — a `tuple[]` element `.at(i)` is a `Tuple` handle).
-    const handleFor = (id: ValueId, oty: EvsType): Expr | object => this.valueHandle(id, oty);
-    let value: unknown;
-    if (wantStruct) {
-      // opt-in (issue #5 ask #2): decode the (named) outputs into ONE Tuple by composing a
-      // `tuplenew` over the already-decoded output ValueIds — the default positional `[many]`
-      // shape (above) is unchanged.
-      value = this.buildSubcallStruct(plain.outputs, outIds, callerName, fnTag);
-    } else {
-      const first = outIds[0];
-      const firstType = outTypes[0];
-      value =
-        outIds.length === 0
-          ? undefined
-          : outIds.length === 1 && first !== undefined && firstType !== undefined
-            ? handleFor(first, firstType)
-            : // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- outTypes is parallel to outIds (same length); the index is always in range
-              Object.freeze(outIds.map((id, i) => handleFor(id, outTypes[i] as EvsType)));
-    }
-    return { success: successId !== undefined ? makeExpr(this.self, successId) : null, value };
+  }
+
+  /** The default (positional) result of a call verb: nothing for no output, the output's handle
+   *  for one, a frozen array of handles for several. A tuple (NOT a tuple ARRAY) output is a Tuple
+   *  handle; a composite array (`tuple[]`/`T[][]`/`string[]`) or any scalar/word array is an Expr
+   *  (whose `.at(i)`/`.length()` yield the element/length handles — a `tuple[]` element `.at(i)`
+   *  is a `Tuple` handle). */
+  private wrapCallResult(outs: readonly { id: ValueId; type: EvsType }[]): unknown {
+    const [only] = outs;
+    if (only === undefined) return undefined;
+    if (outs.length === 1) return this.valueHandle(only.id, only.type);
+    return Object.freeze(outs.map((o) => this.valueHandle(o.id, o.type)));
   }
 
   /** The `ABI_SHAPE` message for a `functionName` that selects no ABI entry — for a signature
@@ -329,7 +358,12 @@ export abstract class RecorderCalls extends RecorderControl {
     );
     const picked = fitting[0];
     if (fitting.length === 1 && picked !== undefined) return picked;
-    const hint = `pass typed values (an Expr, or s.lit(t.uint8, 1) for a literal) or name the overload by signature (functionName: "${functionSignature(fitting[0] ?? only ?? first ?? {})}")`;
+    // two or more arity matches remain here (zero and one returned above)
+    const example = picked ?? only;
+    if (example === undefined) {
+      throw new EvsInternalError('INTERNAL', `${label}: overload resolution lost its candidates`);
+    }
+    const hint = `pass typed values (an Expr, or s.lit(t.uint8, 1) for a literal) or name the overload by signature (functionName: "${functionSignature(example)}")`;
     if (fitting.length === 0) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -400,7 +434,7 @@ export abstract class RecorderCalls extends RecorderControl {
    */
   private revertReturnTypes(
     raw: unknown,
-    kind: 'static' | 'call' | 'simulate',
+    kind: CallKind,
     wantStruct: boolean,
     label: string,
   ): readonly EvsType[] {
@@ -437,14 +471,7 @@ export abstract class RecorderCalls extends RecorderControl {
       if (isTupleType(ty) && ty.components.length === 0) {
         throw new EvsTypeError('ABI_SHAPE', `${what}: tuple type carries no components`);
       }
-      try {
-        layoutOfType(ty);
-      } catch (e) {
-        if (e instanceof EvsTypeError) {
-          throw new EvsTypeError(e.code, `${what}: ${e.message.replace(/^layoutOf(Type)?: /, '')}`);
-        }
-        throw e;
-      }
+      assertLayout(ty, what);
       return ty;
     });
     return Object.freeze(types);

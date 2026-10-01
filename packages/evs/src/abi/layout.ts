@@ -34,7 +34,6 @@ import {
   peelArraySuffix,
   quoteTypeString,
   staticSizeMessage,
-  type EvsType,
   type NamedType,
   type TupleType,
   type WordType,
@@ -137,14 +136,15 @@ function assertLayoutSize<L extends TypeLayout>(layout: L, type: string, context
 }
 
 /**
- * Layout of any {@link EvsType}: a {@link TupleType} descriptor → a `tuple` layout (recursing
- * over its components via `abiParamToType`), or — for an array tag (`'tuple[]'`, `'tuple[2]'`,
- * `'tuple[][]'`, …) — an `array` layout over the one-suffix-peeled descriptor; a string type →
- * the string-keyed `layoutOf`. A tuple is `dynamic` iff any component layout is dynamic.
- * Component arrays go through `layoutOf` and share its rules (a tag nested deeper than
- * `MAX_ARRAY_DEPTH` is `UNSUPPORTED_V0`, a malformed tag `TYPE_MISMATCH`).
+ * Layout of any `EvsType` or raw type string: a {@link TupleType} descriptor → a `tuple` layout
+ * (recursing over its components via `abiParamToType`), or — for an array tag (`'tuple[]'`,
+ * `'tuple[2]'`, `'tuple[][]'`, …) — an `array` layout over the one-suffix-peeled descriptor; any
+ * string, validated or not → the string-keyed `layoutOf`, which classifies or rejects it. A tuple
+ * is `dynamic` iff any component layout is dynamic. Component arrays go through `layoutOf` and
+ * share its rules (a tag nested deeper than `MAX_ARRAY_DEPTH` is `UNSUPPORTED_V0`, a malformed tag
+ * `TYPE_MISMATCH`).
  */
-export function layoutOfType(t: EvsType): TypeLayout {
+export function layoutOfType(t: TupleType | string): TypeLayout {
   if (typeof t === 'string') return layoutOf(t);
   // the memo before the shape check: only a validated descriptor's layout was ever stored
   const hit = cachedTupleLayout(t);

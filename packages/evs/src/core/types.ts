@@ -79,6 +79,7 @@ export type {
 export { t } from './types/namespace.js';
 export {
   MAX_ARRAY_DEPTH,
+  MAX_FIXED_LENGTH,
   MAX_STATIC_SIZE,
   peelArraySuffix,
   arrayDepthOf,

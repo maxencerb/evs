@@ -36,8 +36,7 @@ export abstract class RecorderControl extends RecorderOps {
    */
   throwStmt(error: unknown, argsIn: readonly unknown[], what: string): void {
     this.assertOpen(what);
-    const decl = this.findErrorDecl(error, what);
-    const index = this.errorDecls.indexOf(decl);
+    const { decl, index } = this.findErrorDecl(error, what);
     const n = decl.params.length;
     let ids: ValueId[] = [];
     if (n === 0) {
@@ -97,12 +96,13 @@ export abstract class RecorderControl extends RecorderOps {
     this.appendStmt({ k: 'throw', error: index, args: ids });
   }
 
-  /** Resolves a thrown value against the declared set: identity first, then a structural
-   *  name+shape match (a re-created but equal `t.error` value is accepted). */
-  private findErrorDecl(error: unknown, what: string): RecErrorDecl {
-    for (const d of this.errorDecls) {
-      if (d.value === error) return d;
-    }
+  /** Resolves a thrown value against the declared set, returning the declaration and its index
+   *  (the `throw` stmt's `error`): identity first, then a structural name+shape match (a
+   *  re-created but equal `t.error` value is accepted). */
+  private findErrorDecl(error: unknown, what: string): { decl: RecErrorDecl; index: number } {
+    const byIdentity = this.errorDecls.findIndex((d) => d.value === error);
+    const declared = this.errorDecls[byIdentity];
+    if (declared !== undefined) return { decl: declared, index: byIdentity };
     if (
       !isRecordObj(error) ||
       error['kind'] !== 'error' ||
@@ -116,7 +116,8 @@ export abstract class RecorderControl extends RecorderOps {
     }
     const name = error['name'];
     const params: readonly unknown[] = error['params'];
-    const sameName = this.errorDecls.find((d) => d.ir.name === name);
+    const index = this.errorDecls.findIndex((d) => d.ir.name === name);
+    const sameName = this.errorDecls[index];
     if (sameName !== undefined && sameName.params.length === params.length) {
       const structurallyEqual = sameName.params.every((p, i) => {
         const q = params[i];
@@ -127,7 +128,7 @@ export abstract class RecorderControl extends RecorderOps {
           typesEqual(q['type'], p.type)
         );
       });
-      if (structurallyEqual) return sameName;
+      if (structurallyEqual) return { decl: sameName, index };
     }
     throw new EvsTypeError(
       'ERROR_UNDECLARED',

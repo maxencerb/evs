@@ -59,8 +59,9 @@ const SETS = buildWordTypeSets();
 const FIXED_LENGTH_RE = /^[1-9]\d*$/;
 /** A tuple tag: `tuple` followed by zero or more `[]`/`[N]` suffixes. */
 const TUPLE_TAG_RE = /^tuple(?:\[(?:[1-9]\d*)?\])*$/;
-/** Fixed-size arrays at or above this length cannot be allocated (`arrnew` Panics 0x41 there),
- *  so the vocabulary rejects them outright rather than admitting an unconstructible type. */
+/** The longest array `arrnew` allocates (2^32 − 1 elements: a longer length Panics 0x41), so the
+ *  vocabulary rejects a fixed-size array above it outright rather than admitting an
+ *  unconstructible type. */
 export const MAX_FIXED_LENGTH = 0xffffffff;
 
 /**
