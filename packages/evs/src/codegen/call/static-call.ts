@@ -25,8 +25,9 @@ import {
   needsDecodeBudget,
   emitInitDecodeBudget,
   type DecodeBudget,
+  emitAboveU64,
 } from '../abi.js';
-import { FREE_PTR, MAX_U64 } from '../memory.js';
+import { FREE_PTR } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
 import {
   type CallSitePlan,
@@ -221,8 +222,7 @@ export function emitStaticCall(
           }
           w.op('MLOAD'); // [off, buf]
           w.op('DUP1');
-          w.push(MAX_U64);
-          w.op('LT'); // [off > max, off, buf]
+          emitAboveU64(w); // [off >> 64, off, buf]
           emitDecodeFail(2); // [off, buf]
           pushSnap(w);
           w.op('ADD'); // [base, buf]
@@ -249,7 +249,10 @@ export function emitStaticCall(
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
           () =>
-            emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, { budget }),
+            emitDecodeTupleToMem(w, components, pushBase, pushEnd, emitDecodeFail, 1, {
+              budget,
+              evmVersion: opts.evmVersion,
+            }),
         ); // [flat, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} tuple (flat block)` }); // [buf]
@@ -273,8 +276,7 @@ export function emitStaticCall(
           }
           w.op('MLOAD'); // [off, buf]
           w.op('DUP1');
-          w.push(MAX_U64);
-          w.op('LT'); // [off > max, off, buf]
+          emitAboveU64(w); // [off >> 64, off, buf]
           emitDecodeFail(2); // [off, buf]
           w.op('DUP1');
           w.push(32);
@@ -298,7 +300,10 @@ export function emitStaticCall(
           1,
           () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
           () =>
-            emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, { budget }),
+            emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, emitDecodeFail, 1, {
+              budget,
+              evmVersion: opts.evmVersion,
+            }),
         ); // [arr, buf]
         w.push(ref.slot);
         w.op('MSTORE', { note: `out #${j} ${out.type} (pointer block)` }); // [buf]
@@ -313,9 +318,8 @@ export function emitStaticCall(
         w.op('ADD');
       }
       w.op('MLOAD'); // [off, buf]
-      w.push(MAX_U64);
-      w.op('DUP2');
-      w.op('GT'); // [off > max, off, buf]
+      w.op('DUP1');
+      emitAboveU64(w); // [off >> 64, off, buf]
       emitDecodeFail(2); // [off, buf]
       w.op('DUP1');
       w.push(32);
@@ -329,9 +333,8 @@ export function emitStaticCall(
       w.op('ADD'); // [ptr, buf]
       w.op('DUP1');
       w.op('MLOAD'); // [len, ptr, buf]
-      w.push(MAX_U64);
-      w.op('DUP2');
-      w.op('GT'); // [len > max, len, ptr, buf]
+      w.op('DUP1');
+      emitAboveU64(w); // [len >> 64, len, ptr, buf]
       emitDecodeFail(3); // [len, ptr, buf]
       if (isArray) {
         w.push(5);

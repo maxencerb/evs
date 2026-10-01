@@ -185,18 +185,26 @@ Releases: see [Releasing](#releasing) below.
   root (the top-level block or an array element) keep their base and source pointer in a frame
   of their own, so a member access is one load at any depth; the first two levels re-derive them
   from the parent, which costs less than reserving a frame (`encodeFramesOf` mirrors that rule
-  to size the reserved region). The decoder has two lowerings,
+  to size the reserved region). The decoder has three lowerings,
   chosen per array level at codegen time: the **stack fast path** for the one- and two-level
   shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`/`bytes[]`) keeps five loop words per level on the
-  stack, and the **heap-frame path** for everything else (any `T[N]`, `uint256[][][]`,
-  `string[][]`, `tuple[][]`, …) keeps them in a heap frame chained through scratch `0x20` (one
-  stack word per level). The fast path is emitted speculatively (`AsmWriter.checkpoint` /
-  `rollback`) and replaced by the heap path when it would overflow the 16-item template budget
-  at that depth (a fast-path shape deep inside tuples or heap levels). Both paths save and
-  restore `0x20`, so they nest in either order. The heap path is ~15–19% more gas on the
-  two-level shapes (#52), which is why the fast path stays: a shape that decoded before #4 must
-  not grow in size or gas (the `#52 corpus` entries of `compile.bytecode.test.ts`; `uint256[][]`
-  shrank when inner full-word arrays started aliasing the source). Both paths
+  stack, the **fixed-word path** for a fixed-size word array (`uint256[N]`, `address[N]`,
+  `uint8[N]`, …) copies the wire body in bulk (its decoded block is that body behind a length
+  word): one `MCOPY` on cancun for a full-word element, else a fused copy-and-normalize loop
+  (inline, not `@memcpy`, whose calling convention needs an empty stack beneath it) — ~3 / ~70
+  gas per element against ~205 for the heap loop, and the **heap-frame path** for everything
+  else (any other `T[N]`, `uint256[][][]`, `string[][]`, `tuple[][]`, …) keeps the loop words in
+  a heap frame chained through scratch `0x20` (one stack word per level). Both fast paths are
+  emitted speculatively (`AsmWriter.checkpoint` / `rollback`) and replaced by the heap path when
+  they would overflow the 16-item template budget at that depth (a fast-path shape deep inside
+  tuples or heap levels), so neither ever needs more stack than the heap path. The stack and
+  heap paths save and restore `0x20`, so they nest in either order. The heap path is ~15–19%
+  more gas on the two-level shapes (#52), which is why the stack fast path stays: a shape that
+  decoded before #4 must never get bigger or dearer (the `#52 corpus` entries of
+  `compile.bytecode.test.ts`; `uint256[][]` shrank when inner full-word arrays started aliasing
+  the source). Every offset / length bound is `x >> 64 ≠ 0` (`emitAboveU64`,
+  `PUSH1 64 SHR`, 3 bytes against `PUSH8 … LT`'s 10); the shift result is not a boolean, so it
+  may only feed a branch, which is why it is a helper and not a peephole rule. The array paths
   bound the array body against the source end (`D + 32·len`, or `D + len·staticSize`) BEFORE
   they allocate anything, so an unbacked length word (anything up to the `2^64−1` guard) fails
   cleanly instead of bumping the free pointer or writing a heap frame at `32·len`; the heap frame
@@ -210,7 +218,14 @@ Releases: see [Releasing](#releasing) below.
   only for `s.newArray`); tuples are always decoded into their own block, so `tupleset` stays
   legal on any tuple.
   Full-word `T[]` (`uint256[]`, `int256[]`, `bytes32[]`) alias at every level, array
-  elements included. Returndata decodes are **budgeted** against overlapping offsets (N offsets
+  elements included. A dynamic sub-tuple's base is re-derived from its parent's
+  (`parentBase + MLOAD(parentBase + ho)`) at each use, which costs O(depth) per member access
+  down a chain of nested structs; so a dynamic sub-tuple whose parent base is itself re-derived
+  gets a two-word heap TUPLE FRAME `{base, parent}` chained through `0x20` like the heap array
+  frames, and its members read the base back in O(1) (the first re-derived level keeps the plain
+  derivation, cheaper than a frame for one level, and so does a sub-tuple whose base is read
+  fewer than 3 times, e.g. a lone `string` member: `framesTuple`). Returndata decodes are
+  **budgeted** against overlapping offsets (N offsets
   at one element would otherwise make the decode quadratic in the returndata size): every tail
   block the decoder materializes is charged its source-equivalent size (`arrayDecodeCharge` /
   `tupleDecodeCharge` in `abi/layout.ts`) after its bounds and before it is allocated, out of
@@ -220,7 +235,10 @@ Releases: see [Releasing](#releasing) below.
   word-array outputs) and, under `'repeated'` (inside an ABI-dynamic array's element), a dynamic
   tuple its head and a dynamic `T[N]` its `32·N` offsets. Static composites are inlined and
   charged with their holder, so a non-overlapping encoding charges at most its own size, and
-  every block's memory is within a type-fixed factor of its charge (decode memory stays linear). The remaining budget lives in the word at the source end (`buf + rds`,
+  every block's memory is within a type-fixed factor of its charge (decode memory stays linear).
+  That is also why the fixed-word path has no charge site of its own (a static `T[N]` never
+  charges; `emitDecodeArrayToMem` takes it only when `arrayDecodeCharge` is `null`), and why a
+  tuple frame (two words per framed dynamic tuple) needs none either. The remaining budget lives in the word at the source end (`buf + rds`,
   unaligned; the snapshot's free-pointer bump reserves it), initialised by
   `emitInitDecodeBudget` only at sites whose output types can charge (`needsDecodeBudget`), so
   other shapes keep their bytes; running out is the ordinary decode failure. A well-formed

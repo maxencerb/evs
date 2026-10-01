@@ -272,6 +272,7 @@ export function emitSimulateCall(
       () =>
         emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, {
           budget,
+          evmVersion: opts.evmVersion,
           outputsBlock: true,
         }),
     ); // [flat, buf]

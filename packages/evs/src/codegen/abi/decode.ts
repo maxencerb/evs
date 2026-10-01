@@ -16,9 +16,10 @@ import {
   type DecodeCharge,
 } from '../../abi/layout.js';
 import type { AsmWriter } from '../../asm/assembler.js';
+import type { EvmVersion } from '../../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
-import { type NamedType, abiParamToType } from '../../core/types.js';
-import { FREE_PTR, MAX_U64 } from '../memory.js';
+import { type NamedType, type WordType, abiParamToType } from '../../core/types.js';
+import { FREE_PTR } from '../memory.js';
 import { type PushBase, headOffsets, emitOffsetBase, emitSubTupleBase } from './encode.js';
 import {
   emitNormalizeWord,
@@ -26,6 +27,7 @@ import {
   wordElemAbi,
   wordNeedsNormalize,
   emitCopyNormalizeWordArray,
+  emitCopyWordsLoop,
   isStackDecodedArray,
   ELEM_BASE,
   DFRAME_SLOTS,
@@ -35,7 +37,11 @@ import {
   DFRAME_D,
   DFRAME_I,
   DFRAME_ELEM_BASE,
+  TFRAME_SLOTS,
+  TFRAME_BASE,
+  TFRAME_PARENT,
   tupleComponents,
+  emitAboveU64,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -75,6 +81,8 @@ export type DecodeBudget = 'off' | 'once' | 'repeated';
 export interface DecodeOptions {
   /** How this decode charges the decode-work budget (see {@link DecodeBudget}). */
   readonly budget: DecodeBudget;
+  /** The target fork: picks the fixed-word array copy (`MCOPY` on cancun, else a copy loop). */
+  readonly evmVersion: EvmVersion;
 }
 
 /** The budget mode of an ABI-dynamic array's elements (they sit behind offsets or a length). */
@@ -137,8 +145,7 @@ function emitCharge(w: AsmWriter, pushEnd: () => void, fail: DecodeFail, below: 
   w.op('MLOAD'); // [left, bytes, …]
   w.op('SUB'); // [left' = left − bytes, …]
   w.op('DUP1');
-  w.push(64);
-  w.op('SHR'); // [left' ≥ 2^64 (wrapped: spent), left', …]
+  emitAboveU64(w); // [left' ≥ 2^64 (wrapped: spent), left', …]
   fail(below + 1); // [left', …]
   pushEnd();
   w.op('MSTORE', { note: 'decode budget' }); // […]
@@ -189,6 +196,17 @@ function emitChargeArrayBlock(
  * rule. `opts.outputsBlock` marks the tuple as a call's whole output list (`s.simulate`), whose
  * own narrow word-array members are top-level outputs and not charged; it never reaches nested
  * decodes.
+ *
+ * A dynamic sub-tuple's base is `parentBase + MLOAD(parentBase + ho)`, re-derived at each use so
+ * nothing but `flat` rides the stack. Re-deriving through every enclosing level would make each
+ * member access cost O(depth) bytes, so a dynamic sub-tuple whose parent base is itself such a
+ * derivation (`derivedBase`, internal to the recursion) gets a heap TUPLE FRAME `{base, parent}`
+ * chained through scratch `0x20` (see `ELEM_BASE` in `shared.ts`) and its members read the base
+ * back in O(1). The first derived level keeps the plain re-derivation, which is cheaper than a
+ * frame for a single level, and so does a sub-tuple whose base is read fewer than 3 times
+ * ({@link framesTuple}), where the frame would cost more than the re-derivations it saves. A
+ * framed sub-tuple decodes through this same function, so it is charged exactly like an unframed
+ * one (the frame itself is two words per framed tuple, a type-fixed overhead).
  */
 export function emitDecodeTupleToMem(
   w: AsmWriter,
@@ -198,6 +216,7 @@ export function emitDecodeTupleToMem(
   fail: DecodeFail,
   belowFlat: number,
   opts: DecodeOptions & { readonly outputsBlock?: boolean },
+  derivedBase = false,
 ): void {
   const { outputsBlock = false, ...inner } = opts;
   const { budget } = inner;
@@ -261,6 +280,7 @@ export function emitDecodeTupleToMem(
         fail,
         belowFlat + 1,
         inner,
+        derivedBase,
       ); // [subFlat, flat, …]
       w.op('DUP2'); // [flat, subFlat, flat, …]
       if (j !== 0) {
@@ -301,12 +321,45 @@ export function emitDecodeTupleToMem(
     w.op('MLOAD'); // [off, flat, …]
     // off ≤ 2^64−1
     w.op('DUP1');
-    w.push(MAX_U64);
-    w.op('LT'); // [off > max, off, flat, …]
+    emitAboveU64(w); // [off >> 64, off, flat, …]
     fail(belowFlat + 2); // [off, flat, …]
     // ptr := base + off
     pushBase();
     w.op('ADD'); // [ptr, flat, …]
+
+    if (layout.kind === 'tuple' && derivedBase && framesTuple(layout)) {
+      // dynamic inner tuple below a derived base, read often enough to repay a frame: bound its
+      // whole head (ptr + headBytes ≤ end, the interpreter's `decodeBlock` guard), then hand ptr
+      // to a tuple frame so its members read it back in O(1) instead of re-deriving it through
+      // every enclosing offset word.
+      w.op('DUP1');
+      w.push(minBlockBytes(layout));
+      w.op('ADD'); // [ptr+min, ptr, flat, …]
+      pushEnd();
+      w.op('LT'); // [end < ptr+min, ptr, flat, …]
+      fail(belowFlat + 2); // [ptr, flat, …]
+      emitEnterTupleFrame(w); // [flat, …]
+      emitDecodeTupleToMem(
+        w,
+        comp.components ?? [],
+        () => pushDFrameLoad(w, TFRAME_BASE),
+        pushEnd,
+        fail,
+        belowFlat + 1,
+        inner,
+      ); // [sub, flat, …]
+      // restore the parent's scratch value
+      pushDFrameLoad(w, TFRAME_PARENT);
+      w.push(DECODE_FRAME);
+      w.op('MSTORE'); // [sub, flat, …]
+      w.op('DUP2'); // [flat, sub, flat, …]
+      if (j !== 0) {
+        w.push(32 * j);
+        w.op('ADD');
+      }
+      w.op('MSTORE'); // [flat, …]
+      return;
+    }
 
     if (layout.kind === 'tuple' || (layout.kind === 'array' && isRecursiveArray(layout))) {
       // dynamic inner tuple / composite-element array: bound its first block (ptr + minBytes ≤
@@ -320,9 +373,9 @@ export function emitDecodeTupleToMem(
       fail(belowFlat + 1); // [flat, …]
       const pushSub: PushBase = () => emitSubTupleBase(w, pushBase, ho);
       if (layout.kind === 'tuple') {
-        // its offsets are relative to ptr (the sub-tuple base)
+        // its offsets are relative to ptr (the sub-tuple base), now a derived base
         const sub = comp.components ?? [];
-        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, inner);
+        emitDecodeTupleToMem(w, sub, pushSub, pushEnd, fail, belowFlat + 1, inner, true);
       } else {
         // `tuple[]`, `T[][]`, `string[]`, dynamic `T[N]`: a fresh `[len][p0…]` pointer block
         emitDecodeArrayToMem(w, layout, pushSub, pushEnd, fail, belowFlat + 1, inner);
@@ -350,8 +403,7 @@ export function emitDecodeTupleToMem(
     w.op('DUP1');
     w.op('MLOAD'); // [len, ptr, flat, …]
     w.op('DUP1');
-    w.push(MAX_U64);
-    w.op('LT'); // [len > max, len, ptr, flat, …]
+    emitAboveU64(w); // [len >> 64, len, ptr, flat, …]
     fail(belowFlat + 3); // [len, ptr, flat, …]
     // nbytes = len (bytes/string) | 32·len (arrays); end check: ptr + 32 + nbytes ≤ end
     if (isArray) {
@@ -399,18 +451,23 @@ export function emitDecodeTupleToMem(
  * array), and leaves that block pointer on the stack (net stack +1). Mirrors the interpreter's
  * `decodeDynamic`/`decodeStatic` array arms byte-for-byte.
  *
- * Two lowerings, selected statically per array level (#52): the STACK fast path
- * ({@link emitDecodeArrayToMemStack}) for the one- and two-level shapes
- * ({@link isStackDecodedArray}), and the HEAP-FRAME path ({@link emitDecodeArrayToMemHeap}) for
- * everything deeper and every fixed-size array. The fast path keeps five loop words per level on
- * the operand stack, so it is emitted speculatively: when the fragment would exceed the 16-item
+ * Three lowerings, selected statically per array level: the FIXED-WORD fast path
+ * ({@link emitDecodeFixedWordArray}) for a fixed-size word array `E[N]` (one bulk copy, no
+ * element loop), the STACK fast path ({@link emitDecodeArrayToMemStack}, #52) for the one- and
+ * two-level dynamic shapes ({@link isStackDecodedArray}), and the HEAP-FRAME path
+ * ({@link emitDecodeArrayToMemHeap}) for everything else. Both fast paths can need more stack than
+ * the heap path, so they are emitted speculatively: when the fragment would exceed the 16-item
  * template budget at this depth (a fast-path shape nested inside deep tuples or heap levels), it
- * is rolled back and the heap-frame path is emitted instead. Every shape that decoded before #4
- * fit the budget where it was used, so its bytes are unchanged.
+ * is rolled back and the heap-frame path is emitted instead. A shape therefore never needs more
+ * stack than the heap path would, and every shape that decoded on the stack path before #4 keeps
+ * that path.
  *
- * `opts.budget`: both paths charge the block (`arrayDecodeCharge`, see {@link DecodeBudget}) right
- * after its body bound, before allocating it; the elements of an ABI-dynamic array decode
- * `'repeated'`.
+ * `opts.budget`: the stack and heap paths charge the block (`arrayDecodeCharge`, see
+ * {@link DecodeBudget}) right after its body bound, before allocating it; the elements of an
+ * ABI-dynamic array decode `'repeated'`. A static `T[N]` is never charged on its own (the block
+ * that inlines it is charged its bytes), so the fixed-word path, which has no charge site, is
+ * taken only when `arrayDecodeCharge` has none for it — always, today; a rule that ever charged
+ * one would send it down the heap path rather than skip the charge.
  */
 export function emitDecodeArrayToMem(
   w: AsmWriter,
@@ -424,15 +481,108 @@ export function emitDecodeArrayToMem(
   const { budget } = opts;
   const charge = budget === 'off' ? null : arrayDecodeCharge(layout, false, budget === 'repeated');
   const inner: DecodeOptions = { ...opts, budget: elemBudget(budget, layout) };
-  if (isStackDecodedArray(layout)) {
-    // speculative: emit the fast path, keep it only if it fits the template budget at this
-    // depth (a fast-path shape nested deep inside tuples / heap levels may not)
-    const cp = w.checkpoint();
-    emitDecodeArrayToMemStack(w, layout.elem, pushBase, pushEnd, fail, belowFlat, inner, charge);
-    if (w.peakHeightSince(cp, belowFlat) <= MAX_TEMPLATE_DEPTH) return;
-    w.rollback(cp);
+  const n = layout.length;
+  const elem = layout.elem;
+  if (n !== null && elem.kind === 'word' && charge === null) {
+    const fits = emitIfWithinBudget(w, belowFlat, () =>
+      emitDecodeFixedWordArray(w, n, elem.abi, pushBase, pushEnd, fail, belowFlat, opts),
+    );
+    if (fits) return;
+  } else if (isStackDecodedArray(layout)) {
+    const fits = emitIfWithinBudget(w, belowFlat, () =>
+      emitDecodeArrayToMemStack(w, elem, pushBase, pushEnd, fail, belowFlat, inner, charge),
+    );
+    if (fits) return;
   }
   emitDecodeArrayToMemHeap(w, layout, pushBase, pushEnd, fail, belowFlat, inner, charge);
+}
+
+/** Emits a fast-path fragment speculatively: keeps it and returns true when its stack peak fits
+ *  the template budget at this depth (entered at height `belowFlat`), else rolls it back. */
+function emitIfWithinBudget(w: AsmWriter, belowFlat: number, emit: () => void): boolean {
+  const cp = w.checkpoint();
+  emit();
+  if (w.peakHeightSince(cp, belowFlat) <= MAX_TEMPLATE_DEPTH) return true;
+  w.rollback(cp);
+  return false;
+}
+
+/**
+ * The fast path of {@link emitDecodeArrayToMem} for a fixed-size WORD array `E[N]` (`uint256[4]`,
+ * `address[3]`, `bool[2]`, …). On the wire it is N inline words with no length word, and its
+ * decoded block `[N][w0…w_{N−1}]` is that body behind a length word, so after the constant body
+ * bound (`base + 32·N ≤ end`, the heap path's check, before anything is allocated) the block is
+ * allocated and the body copied in bulk:
+ *
+ * - a full-word element (`uint256`/`int256`/`bytes32`, nothing to normalize) on cancun: one `MCOPY`
+ *   (about 3 gas per element);
+ * - otherwise the fused copy-and-normalize loop of {@link emitCopyWordsLoop} (fork-independent,
+ *   any stack depth; it normalizes a narrow element on the way, about 70 gas per element).
+ *
+ * The heap-frame element loop this replaces costs about 205 gas per element. Never
+ * `CALLDATACOPY`: the source is a memory snapshot (of the calldata or of the returndata). The
+ * MCOPY variant writes the body before bumping the free pointer, which keeps its stack peak at
+ * the heap path's; the loop's peak is higher, hence the speculative emit in the caller.
+ *
+ * Decode-work budget: a static `E[N]` has no charge of its own (`arrayDecodeCharge` is `null`; its
+ * `32·N` bytes are charged with the block that inlines it), so this path has no charge site and
+ * the caller takes it only when there is no charge to apply. It materializes `32 + 32·N` bytes,
+ * less than the heap path's frame plus block.
+ */
+function emitDecodeFixedWordArray(
+  w: AsmWriter,
+  n: number,
+  elem: WordType,
+  pushBase: PushBase,
+  pushEnd: () => void,
+  fail: DecodeFail,
+  belowFlat: number,
+  opts: DecodeOptions,
+): void {
+  // -- body bound: base + 32·N ≤ end  ⇔  ¬(end < base + 32·N) ------------------------------
+  pushBase();
+  w.push(32 * n);
+  w.op('ADD'); // [base+32N, …below]
+  pushEnd();
+  w.op('LT'); // [end < base+32N, …]
+  fail(belowFlat); // […]
+
+  // -- allocate the `[N][w…]` block at the free pointer and push `arr` ----------------------
+  const emitAllocBlock = (): void => {
+    w.push(FREE_PTR);
+    w.op('MLOAD'); // [arr, …]
+    w.push(n, { note: `fixed len ${n}` });
+    w.op('DUP2');
+    w.op('MSTORE'); // [arr, …]      arr[0] := N
+    w.op('DUP1');
+    w.push(32 + 32 * n);
+    w.op('ADD');
+    w.push(FREE_PTR);
+    w.op('MSTORE'); // [arr, …]      freePtr bumped
+  };
+
+  if (opts.evmVersion === 'cancun' && !wordNeedsNormalize(elem)) {
+    // MCOPY(arr + 32, base, 32·N) into the block about to be allocated at the free pointer
+    w.push(32 * n); // [32N, …]
+    pushBase(); // [base, 32N, …]
+    w.push(FREE_PTR);
+    w.op('MLOAD');
+    w.push(32);
+    w.op('ADD'); // [arr+32, base, 32N, …]
+    w.op('MCOPY'); // […]
+    emitAllocBlock(); // [arr, …]
+    return;
+  }
+
+  // copy loop over k = 32·N … 32: src[k] → arr[k], with src = base − 32 (one word before the
+  // first element, the `[len][e…]` shape the loop expects)
+  pushBase();
+  w.push(32);
+  w.op('SWAP1');
+  w.op('SUB'); // [src, …]
+  emitAllocBlock(); // [arr, src, …]
+  w.push(32 * n); // [k = 32·N, arr, src, …]
+  emitCopyWordsLoop(w, elem, belowFlat); // [arr, …]
 }
 
 /**
@@ -479,8 +629,7 @@ function emitDecodeArrayToMemStack(
   pushBase();
   w.op('MLOAD'); // [len, …below]
   w.op('DUP1');
-  w.push(MAX_U64);
-  w.op('LT'); // [len > max, len, …]
+  emitAboveU64(w); // [len >> 64, len, …]
   fail(belowFlat + 1); // [len, …]
 
   // -- up-front element-body bounds (mirrors the interp), BEFORE anything is allocated: a length
@@ -561,8 +710,7 @@ function emitDecodeArrayToMemStack(
     w.op('ADD'); // [D+32·i, i, D, arr, len, saved, …]
     w.op('MLOAD'); // [off, i, D, arr, len, saved, …]
     w.op('DUP1');
-    w.push(MAX_U64);
-    w.op('LT'); // [off > max, off, i, D, arr, len, saved, …]
+    emitAboveU64(w); // [off >> 64, off, i, D, arr, len, saved, …]
     fail(belowFlat + 6); // [off, i, D, arr, len, saved, …]
     w.op('DUP3'); // [D, off, i, D, arr, len, saved, …]
     w.op('ADD'); // [elemPtr, i, D, arr, len, saved, …]
@@ -659,8 +807,7 @@ function emitDecodeArrayToMemHeap(
     pushBase();
     w.op('MLOAD'); // [len, …below]
     w.op('DUP1');
-    w.push(MAX_U64);
-    w.op('LT'); // [len > max, len, …]
+    emitAboveU64(w); // [len >> 64, len, …]
     fail(belowFlat + 1); // [len, …]
   } else {
     w.push(layout.length, { note: `fixed len ${layout.length}` }); // [len, …]
@@ -763,8 +910,7 @@ function emitDecodeArrayToMemHeap(
     w.op('ADD');
     w.op('MLOAD'); // [off, arr, …]
     w.op('DUP1');
-    w.push(MAX_U64);
-    w.op('LT'); // [off > max, off, arr, …]
+    emitAboveU64(w); // [off >> 64, off, arr, …]
     fail(belowFlat + 2); // [off, arr, …]
     pushDFrameLoad(w, DFRAME_D);
     w.op('ADD'); // [elemPtr, arr, …]
@@ -823,6 +969,40 @@ function emitDecodeArrayToMemHeap(
   w.op('MSTORE'); // [arr, …below]    net +1
 }
 
+/** The fewest base reads that repay a tuple frame (see {@link framesTuple}). */
+const TFRAME_MIN_READS = 3;
+
+/**
+ * How many times decoding a dynamic sub-tuple of layout `l` UNFRAMED reads its base (each read a
+ * re-derivation `parentBase + MLOAD(parentBase + ho)`): a word member 1, a static inner tuple its
+ * own reads, a static array 2 (its body bound and its copy / frame), a dynamic member 2 (its offset
+ * word, then `ptr`), plus a dynamic inner tuple's own reads when it is not framed itself (its base
+ * is derived from this one), plus 2 for a composite-element array (its length and body reads).
+ * A gas heuristic only: framing or not decodes the same bytes.
+ */
+function tupleBaseReads(l: Extract<TypeLayout, { kind: 'tuple' }>): number {
+  return l.components.reduce((n, c) => {
+    if (c.kind === 'word') return n + 1;
+    if (!isDynamic(c)) return n + (c.kind === 'tuple' ? tupleBaseReads(c) : 2);
+    if (c.kind === 'tuple') {
+      const own = tupleBaseReads(c);
+      return n + 2 + (own >= TFRAME_MIN_READS ? 0 : own);
+    }
+    return n + 2 + (isRecursiveArray(c) ? 2 : 0);
+  }, 0);
+}
+
+/**
+ * @internal Exported for the decoder tests.
+ * Whether a dynamic sub-tuple below a derived base gets a tuple frame. Entering and leaving one
+ * (two frame words, a free-pointer bump, 64 bytes of memory, the parent restore) costs about what
+ * two-and-a-half re-derived base reads do, so a sub-tuple read fewer than 3 times (a lone
+ * `string` / `bytes` / word-array member, or a lone framed inner tuple) keeps the re-derivation.
+ */
+export function framesTuple(l: Extract<TypeLayout, { kind: 'tuple' }>): boolean {
+  return tupleBaseReads(l) >= TFRAME_MIN_READS;
+}
+
 /**
  * The smallest source block a DYNAMIC member / element of layout `l` needs at its pointer before
  * its decoder may read it: a dynamic tuple's whole head (`headBytes(components)` — the
@@ -847,7 +1027,8 @@ function emitStoreAtFree(w: AsmWriter, k: number): void {
   w.op('MSTORE'); // []
 }
 
-/** Pushes word `k` of the CURRENT heap decode frame (`MLOAD(MLOAD(DECODE_FRAME) + 32·k)`). */
+/** Pushes word `k` of the CURRENT decode frame, a heap array frame or a tuple frame
+ *  (`MLOAD(MLOAD(DECODE_FRAME) + 32·k)`). */
 function pushDFrameLoad(w: AsmWriter, k: number): void {
   w.push(DECODE_FRAME);
   w.op('MLOAD'); // [frame]
@@ -856,6 +1037,27 @@ function pushDFrameLoad(w: AsmWriter, k: number): void {
     w.op('ADD');
   }
   w.op('MLOAD');
+}
+
+/**
+ * Enters a tuple decode frame (see {@link emitDecodeTupleToMem}): `[base, …] → […]`. Writes
+ * `{base, parent = MLOAD(DECODE_FRAME)}` at the free pointer, points `DECODE_FRAME` at it and
+ * bumps the free pointer past it. The caller restores the parent value when the tuple is done.
+ */
+function emitEnterTupleFrame(w: AsmWriter): void {
+  emitStoreAtFree(w, TFRAME_BASE); // […]
+  w.push(DECODE_FRAME);
+  w.op('MLOAD'); // [parent, …]
+  emitStoreAtFree(w, TFRAME_PARENT); // […]
+  w.push(FREE_PTR);
+  w.op('MLOAD'); // [frame, …]
+  w.op('DUP1');
+  w.push(DECODE_FRAME);
+  w.op('MSTORE'); // [frame, …]
+  w.push(32 * TFRAME_SLOTS);
+  w.op('ADD');
+  w.push(FREE_PTR);
+  w.op('MSTORE'); // […]      freePtr bumped
 }
 
 /** Stores the top-of-stack value into word `k` of the CURRENT heap decode frame (consumes it). */
@@ -922,8 +1124,7 @@ function emitDecodeElement(
   w.op('DUP1');
   w.op('MLOAD'); // [len, base, …]
   w.op('DUP1');
-  w.push(MAX_U64);
-  w.op('LT'); // [len > max, len, base, …]
+  emitAboveU64(w); // [len >> 64, len, base, …]
   fail(belowElem + 2); // [len, base, …]
   if (aliasedArray) {
     w.push(5);

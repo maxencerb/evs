@@ -8,7 +8,7 @@ import { layoutOfType, headBytes, isDynamic, type TypeLayout } from '../../abi/l
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { typeToAbiParam, isTupleType, abiParamToType, stringifyType } from '../../core/types.js';
-import { FREE_PTR, MAX_U64 } from '../memory.js';
+import { FREE_PTR } from '../memory.js';
 import { type DecodeFail, emitDecodeTupleToMem, emitDecodeArrayToMem } from './decode.js';
 import {
   headOffsets,
@@ -31,6 +31,7 @@ import {
   wordNeedsNormalize,
   emitNormalizeElemsLoop,
   emitWithinStackBudget,
+  emitAboveU64,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -54,12 +55,14 @@ import {
  *   snapshot (its dynamic members alias the snapshot). Tuple-arg offsets are relative to the
  *   args region start (calldata byte 4 → snapshot byte `snap+4`).
  *
- * Net stack 0. Nothing here is fork-dependent (zero-push lowering is the assembler's job).
+ * Net stack 0. `evmVersion` only selects how a fixed-size word array is copied (`MCOPY` on
+ * cancun); everything else is fork-independent (zero-push lowering is the assembler's job).
  */
 export function emitCalldataDecode(
   w: AsmWriter,
   args: readonly SlotRef[],
   tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
 ): void {
   const params = args.map((ref) => typeToAbiParam('', ref.type));
   const headOffs = headOffsets(params); // cumulative head byte offsets within the args region
@@ -172,8 +175,7 @@ export function emitCalldataDecode(
         }
         w.op('MLOAD'); // [off]
         w.op('DUP1');
-        w.push(MAX_U64);
-        w.op('LT'); // [off > max, off]
+        emitAboveU64(w); // [off >> 64, off]
         failCalldata(1); // [off]
         pushArgsBase();
         w.op('ADD'); // [base]
@@ -192,6 +194,7 @@ export function emitCalldataDecode(
         () =>
           emitDecodeTupleToMem(w, components, pushTupleBase, pushEnd, failCalldata, 0, {
             budget: 'off',
+            evmVersion: opts.evmVersion,
           }),
       ); // [flat]
       w.push(ref.slot);
@@ -215,8 +218,7 @@ export function emitCalldataDecode(
         }
         w.op('MLOAD'); // [off]
         w.op('DUP1');
-        w.push(MAX_U64);
-        w.op('LT'); // [off > max, off]
+        emitAboveU64(w); // [off >> 64, off]
         failCalldata(1); // [off]
         pushArgsBase();
         w.op('ADD'); // [base]
@@ -249,7 +251,10 @@ export function emitCalldataDecode(
         0,
         () => `script argument #${i} (${stringifyType(ref.type)})`,
         () =>
-          emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0, { budget: 'off' }),
+          emitDecodeArrayToMem(w, layout, pushArrBase, pushEnd, failCalldata, 0, {
+            budget: 'off',
+            evmVersion: opts.evmVersion,
+          }),
       ); // [arr]
       w.push(ref.slot);
       w.op('MSTORE'); // []
@@ -274,9 +279,8 @@ function emitDynCalldataArg(
   // off := CALLDATALOAD(headOff); off ≤ 2^64−1
   w.push(headOff, { note: `arg #${index} head` });
   w.op('CALLDATALOAD'); // [off]
-  w.push(MAX_U64);
-  w.op('DUP2');
-  w.op('GT'); // [off > max, off]
+  w.op('DUP1');
+  emitAboveU64(w); // [off >> 64, off]
   w.pushLabel(tails.invalidCalldata);
   w.op('JUMPI'); // [off]
 
@@ -294,9 +298,8 @@ function emitDynCalldataArg(
   w.op('ADD'); // [src]
   w.op('DUP1');
   w.op('CALLDATALOAD'); // [len, src]
-  w.push(MAX_U64);
-  w.op('DUP2');
-  w.op('GT'); // [len > max, len, src]
+  w.op('DUP1');
+  emitAboveU64(w); // [len >> 64, len, src]
   w.pushLabel(tails.invalidCalldata);
   w.op('JUMPI'); // [len, src]
 

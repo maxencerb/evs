@@ -193,7 +193,7 @@ export function lowerProgram(
     if (slot === null) throw internal(`arg #${i} ("${a.name}") has no frame slot`);
     return { slot, type: a.type };
   });
-  emitCalldataDecode(w, argRefs, tails);
+  emitCalldataDecode(w, argRefs, tails, evm);
 
   // -- body --------------------------------------------------------------------------------
   lowerStmts(w, ir.body, ctx);

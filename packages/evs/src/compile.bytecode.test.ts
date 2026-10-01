@@ -260,12 +260,50 @@ const gridAbi = [
   },
 ] as const satisfies Abi;
 
+// three levels of nested dynamic structs: the innermost reads its base from a tuple frame
+const nestedAbi = [
+  {
+    type: 'function',
+    name: 'deep',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [
+      {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint256' },
+          { name: 's', type: 'string' },
+          {
+            name: 'inner',
+            type: 'tuple',
+            components: [
+              { name: 'a', type: 'uint256' },
+              { name: 's', type: 'string' },
+              {
+                name: 'inner',
+                type: 'tuple',
+                components: [
+                  { name: 'a', type: 'uint256' },
+                  { name: 's', type: 'string' },
+                ],
+              },
+            ],
+          },
+        ],
+      },
+    ],
+  },
+] as const satisfies Abi;
+
 // Array decode paths (#4, #52). The first two cases are the #52 regression corpus: one- and
-// two-level composite arrays decode on the STACK fast path, and their size and gas must stay what
-// they were before the heap-frame decoder existed (the body bounds check moved ahead of the
-// allocation in the 0.2.0 codec review — same instructions, reordered). The rest pin the new shapes, which take
-// the heap-frame path (fixed-size `T[N]`, `tuple[][]`, `uint256[][][]`) and the typed zeros of
-// fixed-size arrays.
+// two-level composite arrays decode on the STACK fast path, and their size and gas must never
+// exceed what they were before the heap-frame decoder existed (the body bounds check moved ahead
+// of the allocation in the 0.2.0 codec review — same instructions, reordered — and the u64
+// bounds shrank to `PUSH1 64 SHR` in the field-test efficiency review). The next ones pin the
+// shapes that take the heap-frame path (`string[2]`, `tuple[][]`, `uint256[][][]`) and the typed
+// zeros of fixed-size arrays; the last ones the fixed-word bulk copy (`MCOPY` on cancun, a copy
+// loop before) and the tuple frames of nested dynamic structs.
 const ARRAY_DECODE: readonly Case[] = [
   {
     name: '#52 corpus: uint256[][] + string[] args, nested forEach, returned back (stack fast path)',
@@ -335,6 +373,19 @@ const ARRAY_DECODE: readonly Case[] = [
         return s.return({ names, pairs, ps });
       }),
   },
+  ...(['cancun', 'paris'] as const).map((evmVersion): Case => ({
+    name: `fixed-word bulk copy + tuple frames: uint256[4] / uint8[3] args, nested-struct output [${evmVersion}]`,
+    evmVersion,
+    script: () =>
+      evscript(
+        { name: 'bulk', args: ['uint256[4]', 'uint8[3]', t.address] },
+        (s, words, bytes, target) => {
+          const deep = s.read({ address: target, abi: nestedAbi, functionName: 'deep' });
+          const leaf = deep.inner.get().inner.get();
+          return s.return({ words, bytes, a: leaf.a.get(), s: leaf.s.get() });
+        },
+      ),
+  })),
 ];
 
 const CUSTOM_ERRORS: readonly Case[] = [
