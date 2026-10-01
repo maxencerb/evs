@@ -487,6 +487,50 @@ describe('pathological type sizes', () => {
     }
     expect(codeOf(tooBig[1] ?? (() => undefined)).message).toContain('320000000000000000 bytes');
   });
+
+  test('an oversized static tuple member of an ABI-dynamic type is rejected too', () => {
+    // the enclosing type has a string member, so its own static size is null and measures
+    // nothing; the tuple member (3.2e11 bytes) is gated on its own, like a string member
+    const big = {
+      name: 'x',
+      type: 'tuple[100000000]',
+      components: [{ name: 'y', type: 'uint256[100]' }],
+    };
+    const str = { name: 's', type: 'string' };
+    const tooBig: (() => unknown)[] = [
+      () =>
+        t.fromOutputs(
+          [
+            {
+              type: 'function',
+              name: 'get',
+              stateMutability: 'view',
+              inputs: [],
+              outputs: [big, str],
+            },
+          ] as never,
+          'get' as never,
+        ),
+      () => t.fromAbiParameter({ name: '', type: 'tuple', components: [str, big] } as never),
+      () => t.array([str, big] as never),
+      () => t.struct({ s: t.string, x: big } as never),
+      () => t.tuple(t.string, big as never),
+      // nested one level down, inside a static tuple member of a dynamic struct
+      () => t.struct({ s: t.string, inner: { type: 'tuple', components: [big] } } as never),
+    ];
+    for (const build of tooBig) {
+      const { code, message } = codeOf(build);
+      expect(code).toBe('UNSUPPORTED_V0');
+      expect(message).toMatch(/"tuple\[100000000\]" has an ABI static size of 320000000000 bytes/);
+    }
+    // the same member at a size that fits is accepted
+    const ok = { ...big, type: 'tuple[1000]' };
+    expect(
+      t.fromAbiParameter({ name: '', type: 'tuple', components: [str, ok] } as never),
+    ).toMatchObject({
+      type: 'tuple',
+    });
+  });
 });
 
 // ---------------------------------------------------------------------------

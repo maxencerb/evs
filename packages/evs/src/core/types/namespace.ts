@@ -201,14 +201,13 @@ function toComponentRT(name: string, ty: unknown, ctx: string): NamedType {
   }
   if (isTupleType(ty)) {
     assertArrayDepth(ty.type, ctx);
-    return Object.freeze({
-      name,
-      type: ty.type,
-      components: normalizeComponents(ty.components, ctx),
-    });
+    return sizedComponent(
+      { name, type: ty.type, components: normalizeComponents(ty.components, ctx) },
+      ctx,
+    );
   }
   if (Array.isArray(ty)) {
-    return Object.freeze({ name, type: 'tuple', components: componentsFromAbi(ty, ctx) });
+    return sizedComponent({ name, type: 'tuple', components: componentsFromAbi(ty, ctx) }, ctx);
   }
   throw new EvsTypeError(
     'TYPE_MISMATCH',
@@ -221,11 +220,10 @@ function normalizeComponents(components: readonly NamedType[], ctx: string): rea
     components.map((c) => {
       if (c.components === undefined) return toComponentRT(c.name, c.type, ctx);
       assertArrayDepth(c.type, ctx);
-      return Object.freeze({
-        name: c.name,
-        type: c.type,
-        components: normalizeComponents(c.components, ctx),
-      });
+      return sizedComponent(
+        { name: c.name, type: c.type, components: normalizeComponents(c.components, ctx) },
+        ctx,
+      );
     }),
   );
 }
@@ -253,11 +251,10 @@ function componentsFromAbi(params: readonly unknown[], ctx: string): readonly Na
             `${ctx}: tuple component #${i} ("${name}") has no \`components\``,
           );
         }
-        return Object.freeze({
-          name,
-          type: o.type,
-          components: componentsFromAbi(o.components, ctx),
-        });
+        return sizedComponent(
+          { name, type: o.type, components: componentsFromAbi(o.components, ctx) },
+          `${ctx} component #${i}`,
+        );
       }
       assertEvsType(o.type, `${ctx} component #${i}`);
       return Object.freeze({ name, type: o.type });
@@ -302,6 +299,18 @@ function tupleTypeRT(items: readonly unknown[]): TupleType {
 function sized(type: TupleType, ctx: string): TupleType {
   assertStaticSize(type, ctx);
   return Object.freeze(type);
+}
+
+/** Freezes a tuple-typed component after the {@link MAX_STATIC_SIZE} gate on the component
+ *  itself: the enclosing type's own {@link sized} check measures nothing when that type is
+ *  ABI-dynamic (a string member elsewhere), so an oversized static tuple member would slip
+ *  through it. String-typed members get the same check from `assertEvsType`. */
+function sizedComponent(
+  component: NamedType & { components: readonly NamedType[] },
+  ctx: string,
+): NamedType {
+  assertStaticSize(abiParamToType(component), ctx);
+  return Object.freeze(component);
 }
 
 /** `t.array(elem)` → `elem[]`; `t.array(elem, n)` → `elem[n]`. The suffix string is validated

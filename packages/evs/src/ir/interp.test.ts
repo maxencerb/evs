@@ -27,6 +27,7 @@ import {
   type WordType,
 } from '../core/types.js';
 import { interpret, type InterpResult, type MockChain } from './interp.js';
+import { zeroFillSlots } from './interp/arith.js';
 import type { BinOp, PlainAbiFunction, ScriptIr, Stmt, UnOp, ValueInfo } from './nodes.js';
 
 // ---------------------------------------------------------------------------
@@ -2128,6 +2129,71 @@ describe('maxSteps + trace', () => {
     expect(() => interpret(bigNew, [], deadChain)).toThrowError(
       /zero-filling 4294967295 array elements/,
     );
+  });
+
+  test('tuplenew charges (and zero-fills) only the members it does not initialize', () => {
+    // like the bytecode (emitZeroMemrefMembers skips the inits): a member the literal provides
+    // is never zero-filled, so a big fixed-size member passed in costs nothing extra
+    const S: EvsType = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint256[1000]' },
+        { name: 'b', type: 'uint256' },
+      ],
+    };
+    const build = (inits: { index: number; value: number }[]): ScriptIr =>
+      ir({
+        name: 'lit',
+        args: [
+          { name: 'xs', type: 'uint256[1000]' },
+          { name: 'n', type: 'uint256' },
+        ],
+        values: [vi('uint256[1000]'), vi('uint256'), vi(S), vi('uint256[1000]'), vi('uint256')],
+        body: [
+          mk({ k: 'tuplenew', inits, out: 2 }),
+          mk({ k: 'field', tuple: 2, index: 0, out: 3 }),
+          mk({ k: 'field', tuple: 2, index: 1, out: 4 }),
+        ],
+        returns: [
+          { name: 'a', type: 'uint256[1000]', value: 3 },
+          { name: 'b', type: 'uint256', value: 4 },
+        ],
+      });
+    const xs = Array.from({ length: 1000 }, (_, i) => BigInt(i));
+    // every member given: 3 statements, no zero-fill
+    const full = build([
+      { index: 0, value: 0 },
+      { index: 1, value: 1 },
+    ]);
+    expect(retOf(interpret(full, [xs, 7n], deadChain, { maxSteps: 3 }))).toEqual({ a: xs, b: 7n });
+    // `a` omitted: its 1000 zero elements are charged (and materialized)
+    const partial = build([{ index: 1, value: 1 }]);
+    expect(retOf(interpret(partial, [xs, 7n], deadChain, { maxSteps: 1003 }))).toEqual({
+      a: Array.from({ length: 1000 }, () => 0n),
+      b: 7n,
+    });
+    // the tuplenew statement's own step + 1000 elements > 1000
+    expect(() => interpret(partial, [xs, 7n], deadChain, { maxSteps: 1000 })).toThrowError(
+      /exceeded maxSteps = 1000 zero-filling 1000 array elements/,
+    );
+  });
+
+  test('zeroFillSlots walks a fixed-size suffix chain without recursing per suffix', () => {
+    expect(zeroFillSlots('uint256')).toBe(0n);
+    expect(zeroFillSlots('uint256[]')).toBe(0n);
+    expect(zeroFillSlots('uint256[3][2]')).toBe(8n); // 2 + 2 · 3
+    expect(zeroFillSlots('uint256[3][][2]')).toBe(2n); // the inner dynamic array zeroes empty
+    expect(
+      zeroFillSlots({
+        type: 'tuple[2]',
+        components: [
+          { name: 'a', type: 'uint256[3]' },
+          { name: 's', type: 'string' },
+        ],
+      }),
+    ).toBe(8n); // 2 + 2 · 3
+    // 50,000 suffixes: no host-stack overflow (deserialized IR is not depth-gated yet)
+    expect(zeroFillSlots(`uint256[1]${'[1]'.repeat(49_999)}`)).toBe(50_000n);
   });
 
   test('invalid maxSteps → EvsTypeError', () => {

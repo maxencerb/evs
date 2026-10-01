@@ -365,9 +365,18 @@ class Interp {
             `interpret: tuplenew out is not a plain tuple type`,
           );
         }
-        // zero-filled flat block, then overwrite each provided member (reference semantics)
-        this.chargeZeroFill(zeroFillSlots(tt));
-        const fields: Value[] = tt.components.map((c) => zeroValue(abiParamToType(c)));
+        // the typed zero of each omitted member, then each provided one (reference semantics).
+        // Like the bytecode (`emitZeroMemrefMembers` skips the inits), a provided member is never
+        // zero-filled, so only the omitted ones are charged and materialized.
+        const given = new Set(s.inits.map((init) => init.index));
+        let slots = 0n;
+        tt.components.forEach((c, i) => {
+          if (!given.has(i)) slots += zeroFillSlots(abiParamToType(c));
+        });
+        this.chargeZeroFill(slots);
+        const fields: Value[] = tt.components.map((c, i) =>
+          given.has(i) ? 0n : zeroValue(abiParamToType(c)),
+        );
         for (const init of s.inits) {
           fields[init.index] = this.getValue(init.value);
         }
