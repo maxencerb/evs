@@ -172,7 +172,10 @@ Releases: see [Releasing](#releasing) below.
   (`headBytes`) must fit before it is read, at every level, matching `ir/interp/decode.ts`.
   Dynamic members alias the source snapshot, except narrow word arrays (`uint8[]`, …), which are
   normalized into a fresh copy — normalizing in place would rewrite bytes another decoded value
-  may alias. Each tuple level and each heap array level keeps one live stack word, so a deep
+  may alias. The interpreter decodes fresh copies instead, so `validateIr` only admits an
+  `arrset` whose target is an `arrnew` result (all the builder emits: `MutArray` handles exist
+  only for `s.newArray`); tuples are always decoded into their own block, so `tupleset` stays
+  legal on any tuple. Each tuple level and each heap array level keeps one live stack word, so a deep
   enough struct/array chain cannot fit the 16-item window at all: `emitWithinStackBudget`
   (`codegen/abi/shared.ts`) turns that into a coded `UNSUPPORTED_V0` compile error at every
   decode / zero-value entry instead of the asm verifier's INTERNAL one. A try verb whose outputs

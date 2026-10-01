@@ -30,6 +30,8 @@ import {
   type EvsDiagnostic,
 } from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
+import { interpret } from './ir/interp.js';
+import { deserializeIr, serializeIr } from './ir/nodes.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -869,6 +871,78 @@ describe('compile — IR validation wiring', () => {
       Error,
     );
     expect(err.message).toContain('invalid ScriptIr');
+  });
+
+  // Field-test PoCs: deserialized IR the builder cannot record. Before, compile() accepted both
+  // and the bytecode disagreed with interpret(); now both entry points reject them.
+  const noChain = { staticcall: () => ({ success: true, data: '0x' as Hex }) };
+
+  test('an arrset re-targeted at a decoded uint256[] call output is rejected', () => {
+    // the decoded array aliases the returndata snapshot in the bytecode: with overlapping ABI
+    // offsets, writing `a` also changed `b` there, while the interpreter decodes fresh copies
+    const fAbi = [
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'a', type: 'uint256[]' },
+          { name: 'b', type: 'uint256[]' },
+        ],
+      },
+    ] as const;
+    const script = evscript({ name: 'poc', args: [t.address] }, (s, target) => {
+      const [a, b] = s.read({ address: target, abi: fAbi, functionName: 'f' });
+      s.newArray(t.uint256, 1).set(0, 1000n); // only a template for the arrset node
+      return s.return({ a, b });
+    });
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- patching serialized JSON on purpose
+    const json = JSON.parse(serializeIr(script.ir)) as {
+      body: { k: string; outs?: number[]; arr?: number }[];
+    };
+    const call = json.body.find((st) => st.k === 'call');
+    const arrset = json.body.find((st) => st.k === 'arrset');
+    if (call?.outs?.[0] === undefined || arrset === undefined) throw new Error('fixture shape');
+    arrset.arr = call.outs[0]; // arrset(a, 0, 1000)
+    const ir = deserializeIr(JSON.stringify(json));
+    expect(() => compile({ name: script.name, abi: script.abi, ir })).toThrowError(
+      /is not an arrnew result/,
+    );
+    expect(() => interpret(ir, [DEFAULT_SCRIPT_ADDRESS], noChain)).toThrowError(
+      /is not an arrnew result/,
+    );
+  });
+
+  test('a tuplenew typed as a tuple ARRAY is rejected (the bytecode read member 0 as a length)', () => {
+    const wordHex = (n: bigint): Hex => `0x${n.toString(16).padStart(64, '0')}`;
+    const ta = { type: 'tuple[]', components: [{ name: 'a', type: 'uint256' }] };
+    const ir = deserializeIr(
+      JSON.stringify({
+        irVersion: 1,
+        name: 'x',
+        args: [],
+        cells: [],
+        fns: [],
+        values: [{ type: 'uint256' }, { type: ta }, { type: 'uint256' }],
+        body: [
+          {
+            site: 0,
+            k: 'const',
+            out: 0,
+            type: 'uint256',
+            data: { kind: 'word', hex: wordHex(1000n) },
+          },
+          { site: 1, k: 'tuplenew', inits: [{ index: 0, value: 0 }], out: 1 },
+          { site: 2, k: 'len', a: 1, out: 2 },
+        ],
+        returns: [{ name: 'n', type: 'uint256', value: 2 }],
+      }),
+    );
+    const abi = sumScript().abi; // any artifact ABI: validation runs before the ABI is used
+    expect(() => compile({ name: 'x', abi, ir })).toThrowError(
+      /tuplenew\): out value must be a plain tuple type/,
+    );
   });
 });
 

@@ -335,6 +335,100 @@ describe('validateIr — table rules', () => {
     );
   });
 
+  describe('types the builder cannot record', () => {
+    const EMPTY = { type: 'tuple', components: [] } as unknown as EvsType;
+    const NESTED_EMPTY = {
+      type: 'tuple',
+      components: [
+        { name: 'n', type: 'uint256' },
+        { name: 'e', type: 'tuple', components: [] },
+      ],
+    } as const;
+    const DEEP5 = 'uint256[][][][][]' as EvsType;
+
+    test('rejects a zero-component tuple, at the top level or nested, in every table', () => {
+      expectInvalid(ir({ values: [vi(EMPTY)] }), /values\[0\]: tuple type carries no components/);
+      expectInvalid(
+        ir({ values: [vi(NESTED_EMPTY)] }),
+        /values\[0\]\.components\[1\] \("e"\): tuple type carries no components/,
+      );
+      expectInvalid(
+        ir({ values: [vi({ type: 'tuple[]', components: [] } as unknown as EvsType)] }),
+        /values\[0\]: tuple type carries no components/,
+      );
+      expectInvalid(ir({ cells: [{ type: EMPTY }] }), /cells\[0\]: tuple type carries no/);
+      expectInvalid(
+        ir({ args: [{ name: 'a', type: EMPTY }], values: [vi(EMPTY)] }),
+        /values\[0\]: tuple type carries no components/,
+      );
+      const fn = { name: 'f', params: [], results: [], body: [], resultValues: [] };
+      expectInvalid(
+        ir({ fns: [{ ...fn, results: [{ type: EMPTY }], resultValues: [0] }] }),
+        /fns\[0\]\.results\[0\]: tuple type carries no components/,
+      );
+    });
+
+    test('rejects a returned zero-component tuple (the field-test PoC)', () => {
+      // before: interpret and compile both accepted it and returned `0x`
+      const fixture = ir({
+        values: [vi(EMPTY)],
+        body: [mk({ k: 'tuplenew', inits: [], out: 0 })],
+        returns: [{ name: 'e', type: EMPTY, value: 0 }],
+      });
+      expectInvalid(fixture, /tuple type carries no components/);
+      expectInvalid(
+        deserializeIr(serializeIr(fixture)),
+        /values\[0\]: tuple type carries no components/,
+      );
+    });
+
+    test('rejects arrays nested deeper than MAX_ARRAY_DEPTH in every table', () => {
+      expectInvalid(ir({ values: [vi(DEEP5)] }), /values\[0\]: .*nests arrays 5 levels deep/);
+      expectInvalid(ir({ cells: [{ type: DEEP5 }] }), /cells\[0\]: .*5 levels deep/);
+      expectInvalid(
+        ir({
+          values: [vi({ type: 'tuple[][][][][]', components: [{ name: 'x', type: 'bool' }] })],
+        }),
+        /values\[0\]: "tuple\[\]\[\]\[\]\[\]\[\]" nests arrays 5 levels deep/,
+      );
+      expectInvalid(
+        ir({
+          values: [vi({ type: 'tuple', components: [{ name: 'x', type: 'bool[][][][][]' }] })],
+        }),
+        /values\[0\]\.components\[0\] \("x"\): .*5 levels deep/,
+      );
+      const fn = { name: 'f', params: [], results: [], body: [], resultValues: [] };
+      expectInvalid(
+        ir({
+          values: [vi('uint256')],
+          fns: [{ ...fn, params: [{ name: 'x', type: DEEP5, value: 0 }] }],
+        }),
+        /fns\[0\]\.params\[0\] \("x"\): .*5 levels deep/,
+      );
+      // four levels is the ceiling, not past it
+      expect(() =>
+        validateIr(
+          ir({
+            args: [{ name: 'a', type: 'uint256[][][][]' }],
+            values: [vi('uint256[][][][]')],
+            returns: [{ name: 'a', type: 'uint256[][][][]', value: 0 }],
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    test('rejects a 5-deep arg echoed back (the field-test PoC: interpret accepted it)', () => {
+      expectInvalid(
+        ir({
+          args: [{ name: 'a', type: DEEP5 }],
+          values: [vi(DEEP5)],
+          returns: [{ name: 'a', type: DEEP5, value: 0 }],
+        }),
+        /values\[0\]: .*5 levels deep/,
+      );
+    });
+  });
+
   test('rejects invalid / empty / duplicate arg names', () => {
     expectInvalid(
       ir({ args: [{ name: '', type: 'uint256' }], values: [vi('uint256')] }),
@@ -871,7 +965,8 @@ describe('validateIr — select/index/len/array rules', () => {
       }),
       /produces 'uint256\[2\]\[\]'/,
     );
-    // the #4 ceiling: an element that already nests 4 levels would make a 5-level array
+    // the #4 ceiling: an element that already nests 4 levels would make a 5-level array (the
+    // value table's own depth check catches the out type first)
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('uint256[][][][][]')],
@@ -880,9 +975,9 @@ describe('validateIr — select/index/len/array rules', () => {
           mk({ k: 'arrnew', elem: 'uint256[][][][]' as WordType, length: 0, out: 1 }),
         ],
       }),
-      /nests arrays deeper than 4 levels/,
+      /values\[1\].*nests arrays 5 levels deep/,
     );
-    // a malformed element type is rejected
+    // a malformed element type is rejected once, by the shared declared-type gate (one wording)
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('uint256[]')],
@@ -891,7 +986,29 @@ describe('validateIr — select/index/len/array rules', () => {
           mk({ k: 'arrnew', elem: 'uint256[0]' as WordType, length: 0, out: 1 }),
         ],
       }),
-      /not a valid EvsType/,
+      /body\[1\] \(arrnew\) element type has an unsupported type "uint256\[0\]"/,
+    );
+    // ... and so is a builder-illegal one (a zero-component tuple), before the out-type match
+    expectInvalid(
+      ir({
+        values: [
+          vi('uint256'),
+          vi({
+            type: 'tuple[]',
+            components: [{ name: 'a', type: 'uint256' }],
+          } as unknown as EvsType),
+        ],
+        body: [
+          u256Const(0, 1n),
+          mk({
+            k: 'arrnew',
+            elem: { type: 'tuple', components: [] } as unknown as EvsType,
+            length: 0,
+            out: 1,
+          }),
+        ],
+      }),
+      /body\[1\] \(arrnew\) element type: tuple type carries no components/,
     );
     expectInvalid(
       ir({
@@ -919,15 +1036,252 @@ describe('validateIr — select/index/len/array rules', () => {
     );
     expectInvalid(
       ir({
-        values: [vi('uint256[]'), vi('uint256'), vi('bool')],
+        values: [vi('uint256'), vi('uint256[]'), vi('bool')],
         body: [
-          arrConst(0),
-          u256Const(1, 0n),
+          u256Const(0, 0n),
+          mk({ k: 'arrnew', elem: 'uint256', length: 0, out: 1 }),
           boolConst(2, true),
-          mk({ k: 'arrset', arr: 0, i: 1, value: 2 }),
+          mk({ k: 'arrset', arr: 1, i: 0, value: 2 }),
         ],
       }),
       /operand type mismatch/,
+    );
+  });
+
+  describe('arrset: only an arrnew result is written in place', () => {
+    // A full-word `T[]` call output (or one nested in a composite arg) aliases the returndata /
+    // calldata snapshot in the bytecode (two values may share bytes), while the interpreter
+    // decodes fresh copies: an in-place write there would make the two diverge. The builder
+    // only exposes `.set` on `s.newArray` results, so the validator admits exactly those.
+    const U256_ARR_ABI = {
+      name: 'f',
+      selector: '0x26121ff0',
+      inputs: [],
+      outputs: [
+        { name: 'a', type: 'uint256[]' },
+        { name: 'b', type: 'uint256[]' },
+      ],
+    } as const;
+
+    test('accepts an arrset on an arrnew result, from a nested block too', () => {
+      expect(() =>
+        validateIr(
+          ir({
+            values: [vi('uint256'), vi('uint256[]'), vi('bool')],
+            body: [
+              u256Const(0, 1n),
+              mk({ k: 'arrnew', elem: 'uint256', length: 0, out: 1 }),
+              boolConst(2, true),
+              mk({
+                k: 'if',
+                cond: 2,
+                then: [mk({ k: 'arrset', arr: 1, i: 0, value: 0 })],
+                else: [],
+              }),
+            ],
+          }),
+        ),
+      ).not.toThrow();
+    });
+
+    test('rejects an arrset on a decoded call output (the field-test PoC)', () => {
+      expectInvalid(
+        ir({
+          values: [vi('address'), vi('uint256[]'), vi('uint256[]'), vi('uint256')],
+          body: [
+            mk({ k: 'env', op: 'caller', out: 0 }),
+            mk({
+              k: 'call',
+              target: 0,
+              fnAbi: U256_ARR_ABI,
+              args: [],
+              outs: [1, 2],
+              mode: 'strict',
+            }),
+            u256Const(3, 0n),
+            mk({ k: 'arrset', arr: 1, i: 3, value: 3 }),
+          ],
+          returns: [
+            { name: 'a', type: 'uint256[]', value: 1 },
+            { name: 'b', type: 'uint256[]', value: 2 },
+          ],
+        }),
+        /body\[3\] \(arrset\): ValueId 1 is not an arrnew result/,
+      );
+    });
+
+    test('rejects an arrset on an arg, a const, or a fn param', () => {
+      expectInvalid(
+        ir({
+          args: [{ name: 'xs', type: 'uint256[]' }],
+          values: [vi('uint256[]'), vi('uint256')],
+          body: [u256Const(1, 0n), mk({ k: 'arrset', arr: 0, i: 1, value: 1 })],
+        }),
+        /ValueId 0 is not an arrnew result/,
+      );
+      expectInvalid(
+        ir({
+          values: [vi('uint256[]'), vi('uint256')],
+          body: [arrConst(0), u256Const(1, 0n), mk({ k: 'arrset', arr: 0, i: 1, value: 1 })],
+        }),
+        /ValueId 0 is not an arrnew result/,
+      );
+      expectInvalid(
+        ir({
+          values: [vi('uint256[]'), vi('uint256')],
+          fns: [
+            {
+              name: 'poke',
+              params: [{ name: 'p', type: 'uint256[]', value: 0 }],
+              results: [],
+              body: [u256Const(1, 0n), mk({ k: 'arrset', arr: 0, i: 1, value: 1 })],
+              resultValues: [],
+            },
+          ],
+        }),
+        /fns\[0\]\.body\[1\] \(arrset\): ValueId 0 is not an arrnew result/,
+      );
+    });
+
+    test('rejects an arrset through an alias of an arrnew (cellget, select, index)', () => {
+      // values: v0 len, v1 arrnew uint256[], v2 alias, v3 bool, v4 arrnew uint256[][], v5 inner
+      const base = (alias: Stmt[], target: number): ScriptIr =>
+        ir({
+          values: [
+            vi('uint256'),
+            vi('uint256[]'),
+            vi('uint256[]'),
+            vi('bool'),
+            vi('uint256[][]'),
+            vi('uint256[]'),
+          ],
+          cells: [{ type: 'uint256[]' }],
+          body: [
+            u256Const(0, 1n),
+            mk({ k: 'arrnew', elem: 'uint256', length: 0, out: 1 }),
+            boolConst(3, true),
+            mk({ k: 'arrnew', elem: 'uint256[]', length: 0, out: 4 }),
+            ...alias,
+            mk({ k: 'arrset', arr: target, i: 0, value: 0 }),
+          ],
+        });
+      expectInvalid(
+        base([mk({ k: 'cellnew', cell: 0, init: 1 }), mk({ k: 'cellget', cell: 0, out: 2 })], 2),
+        /ValueId 2 is not an arrnew result/,
+      );
+      expectInvalid(
+        base([mk({ k: 'select', cond: 3, a: 1, b: 1, out: 2 })], 2),
+        /ValueId 2 is not an arrnew result/,
+      );
+      // an element of an arrnew'd `T[][]` is whatever pointer was stored there — possibly a
+      // decoded array — so it is not writable either
+      expectInvalid(
+        base([mk({ k: 'index', arr: 4, i: 0, out: 5 })], 5),
+        /ValueId 5 is not an arrnew result/,
+      );
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// tuplenew / field / tupleset
+// ---------------------------------------------------------------------------
+
+describe('validateIr — tuple rules', () => {
+  const COMPONENTS = [{ name: 'a', type: 'uint256' }] as const;
+  const TUPLE = { type: 'tuple', components: COMPONENTS } as const;
+
+  /** values: v0 uint256 const 1000, v1 the tuplenew out typed `outType`. */
+  function tupleNewIr(outType: EvsType, extra: Partial<ScriptIr> = {}): ScriptIr {
+    return ir({
+      values: [vi('uint256'), vi(outType), vi('uint256')],
+      body: [
+        u256Const(0, 1000n),
+        mk({ k: 'tuplenew', inits: [{ index: 0, value: 0 }], out: 1 }),
+        ...(extra.body ?? []),
+      ],
+      ...(extra.returns === undefined ? {} : { returns: extra.returns }),
+    });
+  }
+
+  test('tuplenew: accepts a plain tuple out, with and without inits', () => {
+    expect(() => validateIr(tupleNewIr(TUPLE))).not.toThrow();
+    expect(() =>
+      validateIr(ir({ values: [vi(TUPLE)], body: [mk({ k: 'tuplenew', inits: [], out: 0 })] })),
+    ).not.toThrow();
+  });
+
+  test('tuplenew: rejects a tuple-ARRAY out type (the field-test PoC: len read member 0)', () => {
+    // `tuplenew` typed `(uint256)[]`, then `len`: the bytecode read member 0 (1000) as the
+    // length; returning the value walked memory past the 32-byte block
+    expectInvalid(
+      tupleNewIr(
+        { type: 'tuple[]', components: COMPONENTS },
+        { body: [mk({ k: 'len', a: 1, out: 2 })] },
+      ),
+      /tuplenew\): out value must be a plain tuple type, got .*tuple\[\]/,
+    );
+    expectInvalid(
+      tupleNewIr({ type: 'tuple[2]', components: COMPONENTS }),
+      /out value must be a plain tuple type/,
+    );
+    expectInvalid(
+      tupleNewIr({ type: 'tuple[][]', components: COMPONENTS }),
+      /out value must be a plain tuple type/,
+    );
+    expectInvalid(
+      tupleNewIr('uint256[]'),
+      /out value must be a plain tuple type, got 'uint256\[\]'/,
+    );
+  });
+
+  test('tuplenew: rejects out-of-range, duplicate and mistyped inits', () => {
+    const bad = (inits: { index: number; value: number }[]): ScriptIr =>
+      ir({
+        values: [vi('uint256'), vi(TUPLE), vi('bool')],
+        body: [u256Const(0, 1n), boolConst(2, true), mk({ k: 'tuplenew', inits, out: 1 })],
+      });
+    expectInvalid(bad([{ index: 1, value: 0 }]), /index 1 out of range/);
+    expectInvalid(
+      bad([
+        { index: 0, value: 0 },
+        { index: 0, value: 0 },
+      ]),
+      /writes member 0 twice/,
+    );
+    expectInvalid(bad([{ index: 0, value: 2 }]), /operand type mismatch/);
+  });
+
+  test('tupleset: any plain tuple value is writable, decoded call outputs included', () => {
+    // unlike arrays, a tuple is always its own flat block in the bytecode (the decoder copies
+    // every tuple, static or dynamic), so the builder's `field.set()` on a decoded struct is legal
+    const abi = {
+      name: 'g',
+      selector: '0xe2179b8e',
+      inputs: [],
+      outputs: [{ name: 'p', ...TUPLE }],
+    } as const;
+    expect(() =>
+      validateIr(
+        ir({
+          values: [vi('address'), vi(TUPLE), vi('uint256')],
+          body: [
+            mk({ k: 'env', op: 'caller', out: 0 }),
+            mk({ k: 'call', target: 0, fnAbi: abi, args: [], outs: [1], mode: 'strict' }),
+            u256Const(2, 5n),
+            mk({ k: 'tupleset', tuple: 1, index: 0, value: 2 }),
+          ],
+          returns: [{ name: 'p', type: TUPLE, value: 1 }],
+        }),
+      ),
+    ).not.toThrow();
+    expectInvalid(
+      ir({
+        args: [{ name: 'ps', type: { type: 'tuple[]', components: COMPONENTS } }],
+        values: [vi({ type: 'tuple[]', components: COMPONENTS }), vi('uint256')],
+        body: [u256Const(1, 5n), mk({ k: 'tupleset', tuple: 0, index: 0, value: 1 })],
+      }),
+      /tupleset\): operand must be a tuple/,
     );
   });
 });
@@ -1216,6 +1570,23 @@ describe('validateIr — call rules', () => {
         },
       }),
       /malformed tuple tag/,
+    );
+    // past the array-depth ceiling, as a string type or a tuple tag (the builder's layout check
+    // rejects such an ABI with UNSUPPORTED_V0 even when the output goes unused)
+    expectInvalid(
+      callIr({ fnAbi: { ...ABI, outputs: [{ name: '', type: 'uint256[][][][][]' }] } }),
+      /fnAbi\.outputs\[0\].*5 levels deep/,
+    );
+    expectInvalid(
+      callIr({
+        fnAbi: {
+          ...ABI,
+          inputs: [
+            { name: 'o', type: 'tuple[][][][][]', components: [{ name: 'a', type: 'uint8' }] },
+          ],
+        },
+      }),
+      /fnAbi\.inputs\[0\].*5 levels deep/,
     );
   });
 
@@ -1747,6 +2118,19 @@ describe('validateIr — return rules', () => {
       ]),
       /duplicate return name "x"/,
     );
+  });
+
+  test('rejects return names that are not identifiers', () => {
+    // the names become the script ABI's output names and the decoded result's keys
+    expectInvalid(retIr([{ name: 'not valid!', type: 'uint256', value: 0 }]), /invalid name/);
+    expectInvalid(retIr([{ name: '1x', type: 'uint256', value: 0 }]), /invalid name "1x"/);
+    expect(() => validateIr(retIr([{ name: '_x1', type: 'uint256', value: 0 }]))).not.toThrow();
+  });
+
+  test('accepts an empty returns list (an IR-level program that returns 0x)', () => {
+    // deliberately NOT a builder rule here: `s.return({})` is refused because viem cannot decode
+    // empty returndata, but the program itself is well-formed and IR fixtures rely on it
+    expect(() => validateIr(ir({}))).not.toThrow();
   });
 
   test('rejects unknown / mistyped / out-of-scope return values', () => {

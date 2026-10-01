@@ -569,25 +569,27 @@ describe('fns', () => {
   });
 
   test('a fn mutating memory aliased with a param is impure', () => {
-    // values: 0 arr(arg) 1 p(param) 2 zero 3 v 4 unused out
+    // a tupleset through a tuple param (an arrset may only target an arrnew in the same body)
+    // values: 0 pt(arg) 1 p(param) 2 v 3 unused out
+    const pt = { type: 'tuple', components: [{ name: 'x', type: 'uint256' }] } as const;
     const x = ir({
-      args: [{ name: 'arr', type: 'uint256[]' }],
-      values: [vi('uint256[]'), vi('uint256[]'), vi('uint256'), vi('uint256'), vi('uint256')],
+      args: [{ name: 'pt', type: pt }],
+      values: [vi(pt), vi(pt), vi('uint256'), vi('uint256')],
       fns: [
         {
           name: 'poke',
-          params: [{ name: 'p', type: 'uint256[]', value: 1 }],
+          params: [{ name: 'p', type: pt, value: 1 }],
           results: [{ type: 'uint256' }],
-          body: [constU(2, 0n), constU(3, 1n), mk({ k: 'arrset', arr: 1, i: 2, value: 3 })],
-          resultValues: [3],
+          body: [constU(2, 1n), mk({ k: 'tupleset', tuple: 1, index: 0, value: 2 })],
+          resultValues: [2],
         },
       ],
-      body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [4] })],
-      returns: [{ name: 'arr', type: 'uint256[]', value: 0 }],
+      body: [mk({ k: 'fncall', fn: 0, args: [0], outs: [3] })],
+      returns: [{ name: 'pt', type: pt, value: 0 }],
     });
     const out = check(x);
     expect(kinds(out.body)).toEqual(['fncall']);
-    expect(kinds(out.fns[0]?.body ?? [])).toEqual(['const', 'const', 'arrset']);
+    expect(kinds(out.fns[0]?.body ?? [])).toEqual(['const', 'tupleset']);
   });
 });
 
