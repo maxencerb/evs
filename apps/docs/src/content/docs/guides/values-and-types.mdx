@@ -124,6 +124,23 @@ const buildPosition = evscript({ name: 'buildPosition', args: [t.address] }, (s,
 });
 ```
 
+**A tuple literal follows abitype's naming rule.** It is an object keyed by member name only when *every* member is named; a single unnamed member makes it a positional array, the shape abitype and viem infer. That matters for types derived from real ABIs, whose outputs are often only partly named:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi(['function quote() view returns (uint256 amountOut, uint256)']);
+const Quote = t.fromOutputs(quoterAbi, 'quote'); // (uint256 amountOut, uint256): one member unnamed
+
+const mkQuote = evscript({ name: 'mkQuote', args: [t.uint256] }, (s, amount) => {
+  const q = s.tuple(Quote, [amount, 0n]); // positional, not { amountOut: amount }
+  return s.return({ q }); // → readonly [bigint, bigint]
+});
+```
+
+Recording checks the literal against the type: a key that names no member (a typo such as `amountin`) throws `TYPE_MISMATCH` instead of leaving that member at zero, and so does a record for a positional tuple, an array for a struct, or a `Cell`, `MutArray` or `Field` handle where a tuple is expected (read a cell or a field with `.get()` first).
+
 **Pass a struct to a call.** A `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal object:
 
 ```ts
@@ -407,7 +424,7 @@ Most operand positions are typed `IntoExpr<t>` — either an `Expr<t>` or a plai
 | `bytes`           | `0x` string                       | any even-length hex                                                    |
 | `string`          | `string`                          | UTF-8 encoded                                                          |
 | `T[]`             | readonly array of `T` literals    | element-wise rules of `T`                                              |
-| `t.struct`/`t.tuple` | object (named) or array (positional) of member literals | member-wise rules; omitted members default to their zero value (`0`, empty string/bytes/array, zeroed nested struct) |
+| `t.struct`/`t.tuple` | object keyed by member name when every member is named, else an array (positional) | member-wise rules; omitted members default to their zero value (`0`, empty string/bytes/array, zeroed nested struct); an unknown key or an extra element throws `TYPE_MISMATCH` |
 
 Word literals canonicalize at recording. Dynamic literals and word-array literals become bytecode **data segments**, materialized by `CODECOPY` the first time the script uses them. A composite-array literal (a `tuple[]`/`T[][]`/`string[]` JS array) is instead **built at record time** into a fresh array-of-pointers block (see [composite arrays](#composite-arrays-tuple-t-string)), so it has reference semantics like a constructed array. A `T[][]`/`string[]` literal can also be materialized directly with `s.lit` (its type is a plain string), but a `tuple[]` literal is built only when it flows through a coerced value position (a call arg, an `s.return` slot, or a member) — `s.lit` requires a string type and rejects the `t.array(t.struct(...))` object.
 

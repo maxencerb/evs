@@ -15,7 +15,6 @@ import {
   abiParamToType,
   isEvsValueType,
   type EvsType,
-  type NamedType,
   typesEqual,
   isTupleType,
   isArrayValueType,
@@ -35,7 +34,15 @@ import {
   FIELD_INTERNALS,
   makeTuple,
 } from './handles.js';
-import { unsafeCast, describeHost, abiInputsOf, signatureList, isRecordObj } from './helpers.js';
+import {
+  unsafeCast,
+  describeHost,
+  abiInputsOf,
+  signatureList,
+  isRecordObj,
+  allMembersNamed,
+  normalizeAbiParam,
+} from './helpers.js';
 
 interface SubcallShape {
   readonly success: Expr | null;
@@ -276,7 +283,8 @@ export abstract class RecorderCalls extends RecorderControl {
     const fitting = byArity.filter((fn) =>
       abiInputsOf(fn).every((inp, i) => {
         if (!isRecordObj(inp) || typeof inp['type'] !== 'string') return false;
-        return this.argFits(args[i], abiParamToType(unsafeCast<NamedType>(inp)));
+        // raw input: normalize absent member names (parseAbi) to `''` before reading the rule
+        return this.argFits(args[i], abiParamToType(normalizeAbiParam(inp)));
       }),
     );
     const picked = fitting[0];
@@ -299,10 +307,12 @@ export abstract class RecorderCalls extends RecorderControl {
    * A handle (Expr / Tuple / MutArray) fits iff its type equals `type`; a Cell/Field never fits.
    * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
    * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit (a
-   * fixed `T[N]` ← exactly N of them); a tuple ← a record keyed by member name (a positional
-   * array/record for an unnamed tuple) whose members all fit. The type-level twin is `FitsArg`
-   * (builder/script/calls.ts) — keep the two in lockstep (the overload-lockstep tests pin every
-   * shape on both sides).
+   * fixed `T[N]` ← exactly N of them); a tuple ← a record keyed by member name when every member
+   * is named, else a positional array (abitype's rule), whose members (own properties) all fit.
+   * `type` must come from {@link normalizeAbiParam} (a `parseAbi` member with no `name` key is
+   * unnamed, and a handle's type compares against `''` names). Extra keys / elements are left to the coercion, which rejects them. The type-level twin is
+   * `FitsArg` (builder/script/calls.ts) — keep the two in lockstep (the overload-lockstep tests
+   * pin every shape on both sides).
    */
   private argFits(v: unknown, type: EvsType): boolean {
     if (typeof v === 'object' && v !== null) {
@@ -316,11 +326,11 @@ export abstract class RecorderCalls extends RecorderControl {
     }
     if (isTupleType(type) && type.type === 'tuple') {
       if (typeof v !== 'object' || v === null) return false;
-      const positional = type.components.every((c) => c.name === '');
-      if (Array.isArray(v) && !positional) return false;
-      const rec = unsafeCast<Record<string, unknown>>(v);
+      const named = allMembersNamed(type);
+      if (Array.isArray(v) === named) return false; // a record iff all named, else an array
       return type.components.every((c, i) => {
-        const member = positional ? rec[i] : rec[c.name];
+        const key = named ? c.name : i;
+        const member: unknown = Object.hasOwn(v, key) ? Reflect.get(v, key) : undefined;
         return member !== undefined && this.argFits(member, abiParamToType(c));
       });
     }

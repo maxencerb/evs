@@ -1512,6 +1512,201 @@ describe('staging traps', () => {
 });
 
 // ---------------------------------------------------------------------------
+// tuple literals — unknown keys, staged handles, abitype's naming rule, own properties
+// ---------------------------------------------------------------------------
+
+describe('checklist: tuple literals', () => {
+  const ALICE = '0x00000000000000000000000000000000000000a1';
+  const Pair = t.struct({ token: t.address, fee: t.uint24 });
+  const PairErr = t.error('PairErr', [namedArg('p', Pair)]);
+  const PAIR = { name: 'p', type: 'tuple', components: Pair.components } as const;
+  const pairAbi = [
+    {
+      type: 'function',
+      name: 'take',
+      stateMutability: 'view',
+      inputs: [PAIR],
+      outputs: [{ name: '', type: 'bool' }],
+    },
+    {
+      type: 'function',
+      name: 'takeMany',
+      stateMutability: 'view',
+      inputs: [{ ...PAIR, type: 'tuple[]' }],
+      outputs: [{ name: '', type: 'bool' }],
+    },
+  ] as const satisfies Abi;
+  // a tuple only partly named (common in verified ABIs): its literal is positional
+  const Mixed = t.fromAbiParameter({
+    name: 'm',
+    type: 'tuple',
+    components: [
+      { name: 'amount', type: 'uint256' },
+      { name: '', type: 'address' },
+    ],
+  });
+
+  /** Records a throwaway script that declares `PairErr` (for the s.throw slot). */
+  function recT(body: (s: AnyBuilder, who: Expr<'address'>) => unknown): void {
+    evscript({ name: 'tstTuple', args: [t.address], errors: [PairErr] }, ((
+      s: AnyBuilder,
+      who: Expr<'address'>,
+    ) => body(s, who)) as never);
+  }
+
+  /** Every position that coerces a value to the `Pair` struct, fed the value `make` builds. */
+  const slots: readonly (readonly [
+    string,
+    (s: AnyBuilder, who: Expr<'address'>, make: (s: AnyBuilder) => unknown) => unknown,
+  ])[] = [
+    ['s.tuple init', (s, _who, make) => s.tuple(Pair, make(s) as never)],
+    [
+      'Field.set',
+      (s, _who, make) => s.tuple(t.struct({ inner: Pair }), {}).inner.set(make(s) as never),
+    ],
+    ['Cell.set', (s, _who, make) => s.let(s.tuple(Pair, {}).expr()).set(make(s) as never)],
+    ['MutArray.set', (s, _who, make) => s.newArray(Pair, 1n).set(0n, make(s) as never)],
+    [
+      'struct call arg',
+      (s, who, make) =>
+        s.read({ address: who, abi: pairAbi, functionName: 'take', args: [make(s) as never] }),
+    ],
+    [
+      'tuple[] literal element',
+      (s, who, make) =>
+        s.read({
+          address: who,
+          abi: pairAbi,
+          functionName: 'takeMany',
+          args: [[make(s)] as never],
+        }),
+    ],
+    ['s.fn param', (s, _who, make) => s.fn('feeOf', Pair, (p) => p.fee.get())(make(s) as never)],
+    ['s.throw arg', (s, _who, make) => s.throw(PairErr, { p: make(s) } as never)],
+  ];
+
+  test.each(slots)('%s: an unknown key is TYPE_MISMATCH naming it', (_name, slot) => {
+    expectEvs(
+      () => recT((s, who) => slot(s, who, () => ({ token: who, fe: 3000 }))),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /unknown member "fe" \(expected: token, fee\)/,
+    );
+  });
+
+  test.each(slots)('%s: a Cell / MutArray / Field is not a tuple', (_name, slot) => {
+    expectEvs(
+      () => recT((s, who) => slot(s, who, (b) => b.let(b.tuple(Pair, { token: who }).expr()))),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a Cell is not a tuple — read it with \.get\(\)/,
+    );
+    expectEvs(
+      () => recT((s, who) => slot(s, who, (b) => b.let(t.uint256, 1n))),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a Cell is not a tuple/,
+    );
+    expectEvs(
+      () => recT((s, who) => slot(s, who, (b) => b.newArray(t.uint256, 2n))),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a MutArray is not a tuple/,
+    );
+    expectEvs(
+      () => recT((s, who) => slot(s, who, (b) => b.tuple(t.struct({ inner: Pair }), {}).inner)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a Field is not a tuple — read it with \.get\(\)/,
+    );
+  });
+
+  test('s.tuple init: a Tuple / Expr handle is not a member literal', () => {
+    expectEvs(
+      () => recT((s, who) => s.tuple(Pair, s.tuple(Pair, { token: who }) as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.tuple\(\): init must be a literal of members, not a handle/,
+    );
+    expectEvs(
+      () => recT((s, who) => s.tuple(Pair, s.tuple(Pair, { token: who }).expr() as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /not a handle/,
+    );
+  });
+
+  test('a fully unnamed tuple rejects an index-keyed record (write the array)', () => {
+    const P = t.tuple(t.uint256, t.address);
+    expectEvs(
+      () => recT((s, who) => s.tuple(P, { 0: 1n, 1: who } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /takes a positional array of its 2 member\(s\) \(\[0\], \[1\]\), not a record/,
+    );
+  });
+
+  test('a partly named tuple takes a positional array (abitype/viem rule)', () => {
+    // records: the positional literal, a partial one (omitted → zero), and nested in a struct
+    const script = evscript({ name: 'mixed', args: [t.address] }, (s, who) => {
+      const m = s.tuple(Mixed, [1n, who]);
+      const partial = s.tuple(Mixed, [2n]);
+      const outer = s.tuple(t.struct({ m: Mixed, tag: t.uint8 }), { m: [3n, ALICE], tag: 7 });
+      return s.return({ m, partial, outer });
+    });
+    const inits = script.ir.body.flatMap((st) => (st.k === 'tuplenew' ? [st.inits.length] : []));
+    expect(inits).toEqual([2, 1, 2, 2]);
+    expectEvs(
+      () => recT((s) => s.tuple(Mixed, { amount: 1n } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /a tuple with an unnamed member takes a positional array of its 2 member\(s\) \(amount, \[1\]\), not a record/,
+    );
+    expectEvs(
+      () => recT((s, who) => s.tuple(Mixed, [1n, who, 3n] as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /too many members — this tuple has 2, got 3/,
+    );
+    // a fully-named struct still rejects the positional form
+    expectEvs(
+      () => recT((s, who) => s.tuple(Pair, [who, 3000] as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /expects a name-keyed init record, not a positional array/,
+    );
+  });
+
+  test('members are read from own properties only (Object.prototype names zero-fill)', () => {
+    const Odd = t.struct({
+      toString: t.uint256,
+      constructor: t.address,
+      valueOf: t.uint256,
+      hasOwnProperty: t.bool,
+      x: t.uint256,
+    });
+    const script = evscript({ name: 'odd', args: [] }, (s) =>
+      // `as never`: TS checks an omitted `toString` against Object's own method
+      s.return({ o: s.tuple(Odd, { x: 1n } as never) }),
+    );
+    const tn = script.ir.body.find((st) => st.k === 'tuplenew');
+    expect(tn?.k === 'tuplenew' ? tn.inits.map((i) => i.index) : null).toEqual([4]);
+    // s.throw: a missing param named like an Object.prototype method is a missing arg
+    const OddErr = t.error('OddErr', [namedArg('toString', t.uint256)]);
+    expectEvs(
+      () =>
+        evscript({ name: 'oddErr', args: [], errors: [OddErr] }, (s) => {
+          (s.throw as (...args: unknown[]) => void)(OddErr, {});
+          return s.return({ ok: s.lit(t.bool, true) });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /missing arg "toString"/,
+    );
+  });
+});
+
+// ---------------------------------------------------------------------------
 // custom errors — t.error / errors: [...] / s.throw (issue #15)
 // ---------------------------------------------------------------------------
 

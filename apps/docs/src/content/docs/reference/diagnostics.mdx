@@ -63,7 +63,7 @@ try {
 | Code | Class | Meaning | Timeline |
 | --- | --- | --- | --- |
 | `STAGING_MISUSE` | `EvsStagingError` | A handle was coerced to a host value: `x + 1`, a template literal, `JSON.stringify(x)` | Recording |
-| `TYPE_MISMATCH` | `EvsTypeError` | An operand or argument has the wrong type for the operation (including call args that fit no overload of an overloaded function); also structurally invalid host inputs to the public API entry points | Recording / API entry |
+| `TYPE_MISMATCH` | `EvsTypeError` | An operand or argument has the wrong type for the operation (including call args that fit no overload of an overloaded function, a struct literal key that names no member, and a `Cell` or `MutArray` where a tuple is expected); also structurally invalid host inputs to the public API entry points | Recording / API entry |
 | `LITERAL_RANGE` | `EvsTypeError` | A literal fails validation for its type: numeric value out of range or not a safe integer, hex of the wrong length or odd length | Recording |
 | `CERTAIN_PANIC` | `EvsTypeError` | An all-literal operation provably panics at run time, so recording refuses it: literal overflow/underflow, a literal cast that does not fit, division by a literal zero, a literal `s.newArray` length of 2^32 or more | Recording |
 | `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself | Recording |

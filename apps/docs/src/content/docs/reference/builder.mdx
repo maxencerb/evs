@@ -155,10 +155,13 @@ tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
 
 Allocates a tuple/struct in memory and returns a [`Tuple`](#tuple) handle. `type` is a
 [`TupleType`](/reference/types/#composite-types-tupletype) — a `t.struct`/`t.tuple` (or a raw
-`readonly AbiParameter[]`). `init` is a **partial**, name-keyed (struct) or positional
-(`t.tuple`) record of members; every member is optional, defaults to its zero value, and accepts a
-literal, an `Expr`, or a nested `Tuple`. Use the returned handle's [`Field.set`](#field) to fill
-or overwrite members later.
+`readonly AbiParameter[]`). `init` is a **partial** set of members: an object keyed by member
+name when every member is named (a `t.struct`), else a positional array (a `t.tuple`, or an ABI
+tuple with any unnamed member: abitype and viem's rule). Every member is optional, defaults to its
+zero value, and accepts a literal, an `Expr`, or a nested `Tuple`. A key that names no member, an
+element past the last member, or a staged handle in place of the init (a `Cell`, `MutArray`,
+`Field`, `Tuple` or `Expr`) throws `TYPE_MISMATCH`. Use the returned handle's
+[`Field.set`](#field) to fill or overwrite members later.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
