@@ -258,7 +258,7 @@ describe('tail elision (issue #73)', () => {
   test('emitSharedTails emits nothing when no tail is referenced', () => {
     for (const evmVersion of FORKS) {
       const w = new AsmWriter();
-      emitSharedTails(w, createSharedTails(w, { evmVersion }));
+      expect(emitSharedTails(w, createSharedTails(w, { evmVersion }))).toBeNull();
       expect(w.nodes()).toEqual([]);
     }
   });
@@ -268,7 +268,7 @@ describe('tail elision (issue #73)', () => {
     const tails = createSharedTails(w, { evmVersion: 'cancun' });
     w.pushLabel(tails.panicBounds);
     w.op('JUMP');
-    emitSharedTails(w, tails);
+    expect(emitSharedTails(w, tails)).toBe(tails.panicBounds); // the first tail placed
     const names = w
       .nodes()
       .flatMap((n) => (n.k === 'label' && n.name !== undefined ? [n.name] : []));

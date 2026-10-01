@@ -33,7 +33,7 @@ import {
   PANIC_SELECTOR,
 } from '../abi/artifact.js';
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
-import type { EvmVersion } from '../asm/ops.js';
+import { forkAtLeast, OPS, type EvmVersion } from '../asm/ops.js';
 import { selectorBytes } from '../core/bytes.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
@@ -79,8 +79,7 @@ export function emitSelectorRevert(
 // label allocation + emission
 // ---------------------------------------------------------------------------
 
-/** Every label name the shared tails allocate (`compile()`'s EIP-170 breakdown finds the tails
- *  region by these names). */
+/** Every label name the shared tails allocate (they show up in disassembly and the source map). */
 const TAIL_LABEL = {
   panicOverflow: 'panic_overflow',
   panicDivZero: 'panic_divzero',
@@ -93,8 +92,6 @@ const TAIL_LABEL = {
   memcpyLoop: 'memcpy_loop',
   memcpyDone: 'memcpy_done',
 } as const;
-
-export const SHARED_TAIL_LABEL_NAMES: ReadonlySet<string> = new Set(Object.values(TAIL_LABEL));
 
 /**
  * Allocates every `SharedTails` label on `w` (bodies are emitted only for the referenced ones —
@@ -110,7 +107,7 @@ export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }
     panicAlloc: w.newLabel(TAIL_LABEL.panicAlloc),
     invalidCalldata: w.newLabel(TAIL_LABEL.invalidCalldata),
     decodeRevert: w.newLabel(TAIL_LABEL.decodeRevert),
-    memcpy: opts.evmVersion === 'cancun' ? null : w.newLabel(TAIL_LABEL.memcpy),
+    memcpy: forkAtLeast(opts.evmVersion, OPS.MCOPY.since) ? null : w.newLabel(TAIL_LABEL.memcpy),
   };
 }
 
@@ -147,8 +144,16 @@ export function emitDecodeFailStub(
  * `@memcpy`'s own loop labels, both handled here. Every tail is unreachable by fallthrough:
  * panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a checked subroutine
  * entered only by `emitMemCopy` calls.
+ *
+ * Returns the label of the first tail it placed (`null` when nothing is referenced), so the
+ * caller can report where the tails region starts.
  */
-export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
+export function emitSharedTails(w: AsmWriter, tails: SharedTails): LabelId | null {
+  let first: LabelId | null = null;
+  const open = (label: LabelId): void => {
+    first ??= label;
+  };
+
   // -- panic stubs + core ------------------------------------------------------
   const stubs: readonly [LabelId, number][] = [
     [tails.panicOverflow, 0x11],
@@ -160,6 +165,7 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
   if (liveStubs.length > 0) {
     const panic = w.newLabel(TAIL_LABEL.panic);
     for (const [label, code] of liveStubs) {
+      open(label);
       w.label(label, 'any');
       w.push(code, { note: `panic code 0x${code.toString(16)}` });
       w.pushLabel(panic);
@@ -171,6 +177,7 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
 
   // -- @decode_revert: EvsDecodeError(uint256 site) -------------------------------
   if (w.isReferenced(tails.decodeRevert)) {
+    open(tails.decodeRevert);
     w.label(tails.decodeRevert, 'any'); // [site, …dead]
     emitSelectorRevert(w, EVS_DECODE_ERROR_SELECTOR, {
       withTopWord: true,
@@ -180,6 +187,7 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
 
   // -- @badcd: EvsInvalidCalldata() ------------------------------------------------
   if (w.isReferenced(tails.invalidCalldata)) {
+    open(tails.invalidCalldata);
     w.label(tails.invalidCalldata, 'any');
     emitSelectorRevert(w, EVS_INVALID_CALLDATA_SELECTOR, {
       withTopWord: false,
@@ -189,8 +197,10 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): void {
 
   // -- @memcpy word-loop subroutine (pre-cancun only) ------------------------------
   if (tails.memcpy !== null && w.isReferenced(tails.memcpy)) {
+    open(tails.memcpy);
     emitMemcpySubroutine(w, tails.memcpy);
   }
+  return first;
 }
 
 /**

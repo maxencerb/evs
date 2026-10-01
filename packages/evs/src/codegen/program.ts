@@ -50,8 +50,26 @@ export interface LowerResult {
   nodes: readonly AsmNode[];
   frameEnd: number;
   sites: SourceMap['sites'];
-  labelNames: ReadonlyMap<LabelId, string>;
+  regions: ProgramRegions;
   diagnostics: readonly EvsDiagnostic[]; // LOOP_ALLOCATION etc. — compile.ts forwards
+}
+
+/**
+ * The label that opens each region of the program layout (see the module doc), `null` when the
+ * region is empty. `compile()` reads their pcs to break an EIP-170 overflow down per region: the
+ * dispatcher is everything before `main`, and the data region starts one byte before `data`
+ * (the INVALID guard the assembler plants).
+ */
+export interface ProgramRegions {
+  readonly main: LabelId;
+  /** The first emitted fn subroutine. */
+  readonly fns: LabelId | null;
+  /** The simulate trampoline entrypoint (only with an `s.simulate` site). */
+  readonly trampoline: LabelId | null;
+  /** The first decode-fail stub, else the first shared tail placed. */
+  readonly tails: LabelId | null;
+  /** The first data segment. */
+  readonly data: LabelId | null;
 }
 
 /**
@@ -200,7 +218,7 @@ export function lowerProgram(
   // Shared tails are emitted only when referenced, so they must come after every region that
   // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
   for (const stub of ctx.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
-  emitSharedTails(w, tails);
+  const firstTail = emitSharedTails(w, tails);
 
   // -- data segments LAST (the assembler plants the INVALID guard) -------------------------
   for (const seg of segments) {
@@ -208,28 +226,22 @@ export function lowerProgram(
     w.data(seg.bytes, seg.name);
   }
 
-  const nodes = w.nodes();
+  // fn subroutines are emitted in fnQueue order, so the first queued fn opens their region
+  const firstFn = ctx.fnQueue[0];
+  const regions: ProgramRegions = {
+    main,
+    fns: firstFn === undefined ? null : (ctx.fnEntries.get(firstFn) ?? null),
+    trampoline,
+    tails: ctx.dfailStubs[0]?.label ?? firstTail,
+    data: segments[0]?.label ?? null,
+  };
   return {
-    nodes,
+    nodes: w.nodes(),
     frameEnd: frame.frameEnd,
     sites: collectSites(ctx, ctx.fnQueue),
-    labelNames: collectLabelNames(nodes),
+    regions,
     diagnostics: collectDiagnostics(ir, frame, ctx.fnQueue),
   };
-}
-
-// ---------------------------------------------------------------------------
-// helpers
-// ---------------------------------------------------------------------------
-
-function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, string> {
-  const names = new Map<LabelId, string>();
-  for (const node of nodes) {
-    if ((node.k === 'label' || node.k === 'dataLabel') && node.name !== undefined) {
-      names.set(node.label, node.name);
-    }
-  }
-  return names;
 }
 
 // ---------------------------------------------------------------------------

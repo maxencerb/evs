@@ -4,8 +4,8 @@
  *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates)
  *   [optimize: liveness frame allocator] → [optimize: built-in evsPeephole] → peephole (user
  *   hook) → assemble(EIP-170 check from its layout hook, before fixups — per-region breakdown
- *   via labelNames; then verify: jumpdests, stack, shapes) → merge sites into the sourceMap →
- *   build the artifact.
+ *   from the region labels lowering reports; then verify: jumpdests, stack, shapes) → merge
+ *   sites into the sourceMap → build the artifact.
  *
  * `optimize` (default false) is the single switch for the built-in optimizer passes: the
  * liveness-based frame allocator behind `codegen/frame.ts` (slot reuse across dead values,
@@ -34,9 +34,7 @@ import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
 import { evsPeephole } from './codegen/peephole.js';
-import { lowerProgram } from './codegen/program.js';
-import { SIMULATE_TRAMPOLINE_LABEL } from './codegen/simulate.js';
-import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
+import { lowerProgram, type ProgramRegions } from './codegen/program.js';
 import { bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
@@ -241,7 +239,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
       if (totalLen > EIP170_LIMIT) {
         throw new EvsCompileError(
           'COMPILE_LIMIT',
-          eip170Message(totalLen, labelPcs, lowered.labelNames),
+          eip170Message(totalLen, labelPcs, lowered.regions),
         );
       }
     },
@@ -297,26 +295,21 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
 function eip170Message(
   total: number,
   labelPcs: ReadonlyMap<LabelId, number>,
-  labelNames: ReadonlyMap<LabelId, string>,
+  regions: ProgramRegions,
 ): string {
-  const minPcWhere = (match: (name: string) => boolean): number | undefined => {
-    let min: number | undefined;
-    for (const [id, pc] of labelPcs) {
-      const name = labelNames.get(id);
-      if (name !== undefined && match(name) && (min === undefined || pc < min)) min = pc;
-    }
-    return min;
-  };
+  // a region whose opening label was not placed (or that is empty) has no start pc
+  const pcOf = (label: LabelId | null): number | undefined =>
+    label === null ? undefined : labelPcs.get(label);
 
   // program order: receive+prologue+dispatcher (pc 0 up to @main, reported as "dispatcher") ·
   // @main(arg decode + body + return encode) ·
   // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
   // tails · INVALID guard + data segments
-  const mainPc = minPcWhere((n) => n === 'main') ?? 0;
-  const fnPc = minPcWhere((n) => n.startsWith('fn_'));
-  const trampolinePc = minPcWhere((n) => n === SIMULATE_TRAMPOLINE_LABEL);
-  const tailPc = minPcWhere((n) => n.startsWith('dfail_') || SHARED_TAIL_LABEL_NAMES.has(n));
-  const firstDataPc = minPcWhere((n) => n.startsWith('data_'));
+  const mainPc = pcOf(regions.main) ?? 0;
+  const fnPc = pcOf(regions.fns);
+  const trampolinePc = pcOf(regions.trampoline);
+  const tailPc = pcOf(regions.tails);
+  const firstDataPc = pcOf(regions.data);
   const dataPc = firstDataPc === undefined ? undefined : firstDataPc - 1; // INVALID guard byte
 
   const dataStart = dataPc ?? total;

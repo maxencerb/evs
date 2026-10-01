@@ -7,7 +7,7 @@
 
 import { type TypeLayout, layoutOf } from '../../abi/layout.js';
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
-import type { EvmVersion } from '../../asm/ops.js';
+import { forkAtLeast, OPS, type EvmVersion } from '../../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
 import { EvsCompileError, EvsInternalError } from '../../core/errors.js';
 import type { EvsType, WordType, NamedType } from '../../core/types.js';
@@ -362,7 +362,7 @@ export function emitMemCopy(
   tails: SharedTails,
   opts: { evmVersion: EvmVersion },
 ): void {
-  if (opts.evmVersion === 'cancun') {
+  if (forkAtLeast(opts.evmVersion, OPS.MCOPY.since)) {
     w.op('MCOPY');
     return;
   }

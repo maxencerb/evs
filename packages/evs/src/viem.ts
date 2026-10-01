@@ -26,7 +26,7 @@ import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'vi
 
 import { describePanic } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';
-import type { EvmVersion } from './asm/ops.js';
+import { EVM_VERSIONS, forkAtLeast, isEvmVersion, OPS, type EvmVersion } from './asm/ops.js';
 import { HEX_BYTES_RE, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
 import type { Hex } from './core/types.js';
@@ -38,17 +38,19 @@ import type { Hex } from './core/types.js';
 /** EIP-170 keeps runtimes ≤ 24,576, far below the PUSH2 immediate ceiling. */
 const PUSH2_MAX = 0xffff;
 
-const EVM_VERSIONS: ReadonlySet<string> = new Set(['paris', 'shanghai', 'cancun']);
+/** `'paris', 'shanghai' or 'cancun'` — the supported forks, as the error message lists them. */
+const QUOTED_VERSIONS = EVM_VERSIONS.map((v) => `'${v}'`);
+const EXPECTED_VERSIONS = `${QUOTED_VERSIONS.slice(0, -1).join(', ')} or ${QUOTED_VERSIONS.slice(-1).join('')}`;
 
 /** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). */
 export function assertEvmVersion(
   evmVersion: string,
   prefix = '',
 ): asserts evmVersion is EvmVersion {
-  if (!EVM_VERSIONS.has(evmVersion)) {
+  if (!isEvmVersion(evmVersion)) {
     throw new EvsCompileError(
       'EVM_VERSION',
-      `${prefix}unknown evmVersion ${JSON.stringify(evmVersion)} — expected 'paris', 'shanghai' or 'cancun'`,
+      `${prefix}unknown evmVersion ${JSON.stringify(evmVersion)} — expected ${EXPECTED_VERSIONS}`,
     );
   }
 }
@@ -65,7 +67,7 @@ function runtimeByteLength(runtime: Hex, where: string): number {
 
 /** The 10-byte wrapper for a given runtime length (`61 RRRR 80 600A 5F 39 5F F3`). */
 function initWrapper(runtimeLength: number, evmVersion: EvmVersion): Hex {
-  const zero = evmVersion === 'paris' ? '3d' : '5f';
+  const zero = forkAtLeast(evmVersion, OPS.PUSH0.since) ? '5f' : '3d';
   const len = runtimeLength.toString(16).padStart(4, '0');
   return `0x61${len}80600a${zero}39${zero}f3`;
 }

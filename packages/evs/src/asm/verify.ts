@@ -13,7 +13,16 @@
 
 import { EvsInternalError } from '../core/errors.js';
 import type { AsmNode, LabelId } from './assembler.js';
-import { FORBIDDEN, isDupOp, OPS, type EvmVersion, type Mnemonic } from './ops.js';
+import {
+  FORBIDDEN,
+  forkAtLeast,
+  immediateWidth,
+  isDupOp,
+  isTerminator,
+  OPS,
+  type EvmVersion,
+  type Mnemonic,
+} from './ops.js';
 
 function fail(message: string): never {
   throw new EvsInternalError('INTERNAL', `asm verifier: ${message}`);
@@ -22,10 +31,6 @@ function fail(message: string): never {
 // ---------------------------------------------------------------------------
 // pass 1 — JUMPDEST scan
 // ---------------------------------------------------------------------------
-
-const PUSH1_CODE = 0x60;
-const PUSH32_CODE = 0x7f;
-const JUMPDEST_CODE = 0x5b;
 
 /**
  * Validates every statically-known jump target against the consensus JUMPDEST rule:
@@ -46,10 +51,9 @@ export function verifyJumpdests(
   while (pc < dataStart) {
     const op = bytecode[pc];
     if (op === undefined) break;
-    if (op === JUMPDEST_CODE) valid.add(pc);
+    if (op === OPS.JUMPDEST.code) valid.add(pc);
     if (FORBIDDEN.has(op)) fail(`forbidden opcode 0x${op.toString(16)} at pc 0x${pc.toString(16)}`);
-    if (op >= PUSH1_CODE && op <= PUSH32_CODE) pc += op - PUSH1_CODE + 1;
-    pc += 1;
+    pc += 1 + immediateWidth(op);
   }
   for (const target of jumpTargets) {
     if (target >= dataStart) {
@@ -88,15 +92,10 @@ function labelName(
   return name === undefined ? `label #${label}${at}` : `@${name}${at}`;
 }
 
-/** Ops that end a region: nothing after them is reachable until the next label. */
-function isTerminator(op: Mnemonic): boolean {
-  return op === 'RETURN' || op === 'REVERT' || op === 'STOP' || op === 'INVALID';
-}
-
 /**
  * The simulated operand-stack height BEFORE a node: a number inside a checked region, `'any'`
  * inside an `'any'` region (whose relative counter no rule reads), `null` where the node is
- * unreachable (after a JUMP or a terminator, until the next label).
+ * unreachable (after a `TERMINATORS` op — JUMP included — until the next label).
  */
 export type StackHeight = number | 'any' | null;
 
@@ -108,8 +107,8 @@ export type StackHeight = number | 'any' | null;
  *
  * Transitions: the program starts at 0 (checked); every `label` resets to its annotation (on a
  * verifier-clean stream a reachable fallthrough already carries that height); a push adds 1; an
- * op adds `pushes − pops`; JUMP and the terminators make what follows unreachable; JUMPI pops
- * its two operands and falls through. Data nodes change nothing.
+ * op adds `pushes − pops`; a `TERMINATORS` op (`asm/ops.ts`: the halting ops and JUMP) makes what
+ * follows unreachable; JUMPI pops its two operands and falls through. Data nodes change nothing.
  */
 export function stackHeights(nodes: readonly AsmNode[]): StackHeight[] {
   // the state is kept as three plain locals (not one `StackHeight`) so the hot loop stays on
@@ -135,7 +134,7 @@ export function stackHeights(nodes: readonly AsmNode[]): StackHeight[] {
         height += 1;
         break;
       case 'op':
-        if (node.op === 'JUMP' || isTerminator(node.op)) {
+        if (isTerminator(node.op)) {
           reachable = false;
         } else {
           const info = OPS[node.op];
@@ -163,24 +162,18 @@ export function verifyStack(
   nodes: readonly AsmNode[],
   labelPcs: ReadonlyMap<LabelId, number>,
 ): void {
-  // prepass: label annotations + names
+  // prepass: label annotations + names (code and data labels share one id space)
   const annotations = new Map<LabelId, number | 'any'>();
   const dataLabels = new Set<LabelId>();
   const names = new Map<LabelId, string>();
   for (const node of nodes) {
-    if (node.k === 'label') {
-      if (annotations.has(node.label) || dataLabels.has(node.label)) {
-        fail(`label ${labelName(node.label, names, labelPcs)} is defined twice`);
-      }
-      annotations.set(node.label, node.stack);
-      if (node.name !== undefined) names.set(node.label, node.name);
-    } else if (node.k === 'dataLabel') {
-      if (annotations.has(node.label) || dataLabels.has(node.label)) {
-        fail(`label ${labelName(node.label, names, labelPcs)} is defined twice`);
-      }
-      dataLabels.add(node.label);
-      if (node.name !== undefined) names.set(node.label, node.name);
+    if (node.k !== 'label' && node.k !== 'dataLabel') continue;
+    if (annotations.has(node.label) || dataLabels.has(node.label)) {
+      fail(`label ${labelName(node.label, names, labelPcs)} is defined twice`);
     }
+    if (node.k === 'label') annotations.set(node.label, node.stack);
+    else dataLabels.add(node.label);
+    if (node.name !== undefined) names.set(node.label, node.name);
   }
 
   const name = (l: LabelId): string => labelName(l, names, labelPcs);
@@ -258,7 +251,9 @@ export function verifyStack(
               `'any' region performs a dynamic ${node.op} — its targets cannot be proven to be 'any' labels`,
             );
           }
-        } else if (!isTerminator(node.op) && h !== 'any') {
+        }
+        // every op that falls through (JUMPI included) is held to the depth budget after it
+        if (!isTerminator(node.op) && h !== 'any') {
           const after = h + info.pushes - info.pops;
           if (after > MAX_TEMPLATE_DEPTH) {
             fail(
@@ -285,13 +280,6 @@ export function verifyStack(
 // pass 3 — shape lints
 // ---------------------------------------------------------------------------
 
-const FORK_RANK: Readonly<Record<EvmVersion | 'frontier', number>> = Object.freeze({
-  frontier: 0,
-  paris: 1,
-  shanghai: 2,
-  cancun: 3,
-});
-
 function isDup(node: AsmNode): boolean {
   return node.k === 'op' && isDupOp(node.op);
 }
@@ -314,13 +302,12 @@ export const SANCTIONED_RETURNDATACOPY_WINDOW = 3;
  * so `verifyJumpdests` checks the emitted bytes instead.
  */
 export function verifyShapes(nodes: readonly AsmNode[], opts: { evmVersion: EvmVersion }): void {
-  const maxRank = FORK_RANK[opts.evmVersion];
   for (let i = 0; i < nodes.length; i++) {
     const node = nodes[i];
     if (node === undefined || node.k !== 'op') continue;
     const op: Mnemonic = node.op;
     const info = OPS[op];
-    if (FORK_RANK[info.since] > maxRank) {
+    if (!forkAtLeast(opts.evmVersion, info.since)) {
       fail(`${op} requires evmVersion >= ${info.since}, but the build targets ${opts.evmVersion}`);
     }
     if (op === 'RETURNDATACOPY') {
