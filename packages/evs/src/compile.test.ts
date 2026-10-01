@@ -448,6 +448,36 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
       );
     }
   });
+  test('site ids are positional: an earlier statement shifts the id, the detail stays', () => {
+    const build = (extra: boolean) =>
+      evscript({ name: 'shifted', args: [t.array(t.address)] }, (s, xs) => {
+        const acc = s.let(t.uint256, 0n);
+        if (extra) acc.set(acc.get().add(1n)); // one more recorded statement before the loop
+        s.forEach(xs, (x) => {
+          const sym = s.read({ address: x, abi: PAIR_ABI, functionName: 'symbol' });
+          acc.set(acc.get().add(sym.length()));
+        });
+        return s.return({ acc: acc.get() });
+      });
+    const resolve = (script: EvsScript) => {
+      const diags: EvsDiagnostic[] = [];
+      const compiled = compile(script, { onDiagnostic: (d) => diags.push(d) });
+      const d = diags.find((x) => x.code === 'LOOP_ALLOCATION');
+      expect(d?.message).toContain('site ids are positional');
+      return {
+        site: d?.site,
+        detail: compiled.sourceMap.sites.find((x) => x.id === d?.site)?.detail,
+      };
+    };
+    const before = resolve(build(false));
+    const after = resolve(build(true));
+    // deterministic for an unchanged script …
+    expect(resolve(build(false))).toEqual(before);
+    // … but editing earlier code renumbers it: a bare-number filter would go stale
+    expect(after.site).not.toBe(before.site);
+    expect(after.detail).toBe(before.detail);
+    expect(before.detail).toBe('decoding symbol() returndata');
+  });
 });
 
 describe('optimize: the built-in passes — frame allocator (#41) + peephole (#39)', () => {

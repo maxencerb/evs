@@ -1096,6 +1096,7 @@ describe('diagnostics', () => {
     for (const d of loopAllocs) {
       expect(d.severity).toBe('warning');
       expect(d.message).toContain('filter this warning on its code and site');
+      expect(d.message).toContain('site ids are positional');
     }
     // each warning carries the id of the statement that raised it
     expect(loopAllocs[0]?.site).toBe(callSite);

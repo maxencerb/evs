@@ -305,8 +305,11 @@ function describeAllocation(
     case 'break':
     case 'continue':
       return null;
-    default:
-      throw internal(`unknown statement kind '${String((s as { k?: unknown }).k)}'`);
+    default: {
+      // compile-time exhaustiveness: a new Stmt kind fails tsc here until it is classified
+      const unreachable: never = s;
+      throw internal(`unknown statement kind '${String((unreachable as { k?: unknown }).k)}'`);
+    }
   }
 }
 
@@ -369,7 +372,8 @@ function collectDiagnostics(
             `pointer, so memory grows monotonically for the lifetime of the call and each ` +
             `iteration pays more memory-expansion gas than the last. Hoist it out of the loop ` +
             `when it does not depend on the iteration; for a short, bounded loop the cost is ` +
-            `small — filter this warning on its code and site`,
+            `small — filter this warning on its code and site (site ids are positional: re-check ` +
+            `the filter after editing the script)`,
           site: s.site,
         });
       }
