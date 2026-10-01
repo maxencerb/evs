@@ -18,7 +18,7 @@ presentation page (npm, GitHub) and stays user-facing.
 
 The pipeline order: `builder/` records the callback into the IR (`ir/`), `codegen/` lowers it to
 an assembly stream, `asm/` lays it out and verifies it, `compile.ts` ties them together and
-`viem.ts` is the client-side glue. `core/` (types, errors, bytes, signatures) and `abi/` (layout,
+`viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
 the script artifact's ABI) are shared by every stage; `differential/` holds the
 interpreter-vs-bytecode test slices.
 
@@ -251,6 +251,15 @@ Releases: see [Releasing](#releasing) below.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.
+- **Deployless calls are contract creations** (`deployless.ts`). viem's
+  `deploylessCallViaBytecode` wrapper (398 bytes) deploys `initBytecode`, calls it and RETURNs
+  the script's result as its own deployed code, so EIP-170 (result ≤ 24,576 bytes), EIP-3541 (no
+  leading `0xEF`) and EIP-3860 (wrapper + encoded `initBytecode` + encoded calldata ≤ 49,152
+  bytes) apply to every deployless call and to no state-override one. evs answers with
+  `DEPLOYLESS_RESULT_*` compile diagnostics for what the result shape decides,
+  `deploylessDataSize` for the args side and `explainDeploylessError` for the node's error text;
+  the wrapper size is a constant pinned against the installed viem by `deployless.test.ts`, and
+  `test/integration/deployless-limits.test.ts` pins the three boundaries on anvil.
 
 ## Testing
 

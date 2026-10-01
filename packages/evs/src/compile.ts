@@ -15,7 +15,8 @@
  * stream, and the verifiers always see the final one. With `optimize: false` the pipeline is
  * byte-identical to the unoptimized lowering.
  *
- * Diagnostics from lowering are forwarded to `options.onDiagnostic`; nothing is ever logged.
+ * Diagnostics from lowering, then the deployless result checks (`deployless.ts`), are forwarded
+ * to `options.onDiagnostic`; nothing is ever logged.
  * `explainRevert` decodes the on-chain error set: `Panic(uint256)`
  * (with candidate sites from `sourceMap.sites`), `EvsDecodeError(uint256 site)` (exact site),
  * `EvsInvalidCalldata()`, `Error(string)`, custom selectors, and the empty revert.
@@ -45,6 +46,7 @@ import { SHARED_TAIL_LABEL_NAMES } from './codegen/tails.js';
 import { bytesToBigInt, bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
+import { deploylessResultDiagnostics } from './deployless.js';
 import { eliminateDeadCode } from './ir/dce.js';
 import { walkStmts, type ScriptIr, type SiteId } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
@@ -63,7 +65,7 @@ export interface CompileOptions {
   evmVersion?: EvmVersion; // default 'cancun'
   optimize?: boolean; // default false — enables the built-in optimizer passes (the liveness-based frame allocator + the asm peephole pass `evsPeephole`); output is still fully verified
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity — a user hook over the node stream; with `optimize` it runs AFTER the built-in passes
-  onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION); never logged
+  onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION, DEPLOYLESS_RESULT_PREFIX); never logged
 }
 
 export interface CompiledEvsScript<
@@ -79,7 +81,10 @@ export interface CompiledEvsScript<
   readonly sourceMap: SourceMap;
   readonly ir: ScriptIr; // the recorded IR (same object as script.ir); bytecode is lowered from eliminateDeadCode(ir)
   readonly options: Readonly<Required<CompileOptions>>;
-  toViem(): { abi: ScriptAbi<name, args, ret, errs>; code: Hex }; // deployless (default)
+  // deployless (default): a contract-creation eth_call, so the result must fit 24,576 bytes and
+  // not start with 0xEF, and viem's creation data (args included) must fit 49,152 bytes — see
+  // deploylessDataSize / explainDeploylessError; stateOverride mode has none of these limits.
+  toViem(): { abi: ScriptAbi<name, args, ret, errs>; code: Hex };
   toViem(o: { mode: 'deployless' }): { abi: ScriptAbi<name, args, ret, errs>; code: Hex };
   // NOTE: the stateOverride tuple is mutable (not `readonly`) because viem's `StateOverride`
   // is a mutable `Array` type — a readonly tuple would not spread into `readContract`.
@@ -192,6 +197,9 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     optimize: resolved.optimize,
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
+  for (const diagnostic of deploylessResultDiagnostics(ir.returns)) {
+    resolved.onDiagnostic(diagnostic);
+  }
 
   // built-in passes first (opt-in), then the user hook; `options.peephole` stays the user's own
   const userPeephole = resolved.peephole;

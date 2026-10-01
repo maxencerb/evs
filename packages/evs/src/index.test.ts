@@ -12,6 +12,8 @@ import * as evs from './index.js';
 test('runtime exports are exactly the documented public surface', () => {
   expect(Object.keys(evs).toSorted()).toEqual([
     'DEFAULT_SCRIPT_ADDRESS',
+    'DEPLOYLESS_MAX_DATA_BYTES',
+    'DEPLOYLESS_MAX_RESULT_BYTES',
     'EVS_ERROR_ABI',
     'EvsCompileError',
     'EvsError',
@@ -22,11 +24,13 @@ test('runtime exports are exactly the documented public surface', () => {
     'compile',
     'dce',
     'decodeScriptError',
+    'deploylessDataSize',
     'deserializeIr',
     'disassemble',
     'eliminateDeadCode',
     'evsPeephole',
     'evscript',
+    'explainDeploylessError',
     'interpret',
     'lookupPc',
     'matchScriptError',

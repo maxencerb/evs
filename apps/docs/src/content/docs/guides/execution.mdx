@@ -173,7 +173,8 @@ accepts empty calldata.
 | `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted — but see the multicall note below) |
 | `msg.sender` seen by sub-call targets | the counterfactual script address — not controllable | the script address, or a chosen `sender` in [sender mode](#sender-mode) |
 | Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
-| Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls |
+| Size and shape limits | result ≤ 24,576 B, result must not start with `0xEF`, creation data (args included) ≤ 49,152 B — see [deployless limits](/reference/artifact/#deployless-limits) | none of these — only the node's `eth_call` gas cap |
+| Reach for it when | always, unless you need the column to the right                  | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls, large results, results that start with a hash or full-width integer, large args |
 
 :::caution[`batch.multicall` clients change the state-override caller]
 A client created with `batch: { multicall: … }` (wagmi enables this by default) routes a
@@ -192,8 +193,13 @@ and [sender mode](#sender-mode) (`account` is set) are never batched.
 | QuickNode, publicnode | yes                     | yes (documented / empirically verified)                   |
 | Alchemy, Infura       | yes                     | **not documented** for `eth_call` — probe before relying  |
 
-Deployless works everywhere `eth_call` works, which is why it is the default. Both modes share
-the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts making many calls.
+Deployless works everywhere `eth_call` works, which is why it is the default. It runs the script
+as a contract creation, though, so its result and creation data are bounded by the contract-size
+rules — over 24,576 result bytes, a result whose first byte is `0xEF`, or over 49,152 bytes of
+creation data fails; [deployless limits](/reference/artifact/#deployless-limits) covers the
+compile-time warnings, the `deploylessDataSize()` pre-check and `explainDeploylessError()`. Both
+modes share the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts making
+many calls.
 
 ## Block pinning
 

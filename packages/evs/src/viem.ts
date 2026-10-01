@@ -117,7 +117,9 @@ export const DEFAULT_SCRIPT_ADDRESS: Address = '0xcD360FfAC9818c4396Aa6F4807EBfA
 /**
  * Deployless mode — maximum RPC compatibility: a plain 2-parameter `eth_call` with `to`
  * omitted. Spread the result into `readContract` (`code` must be CREATION bytecode — this is
- * why the input field is named `initBytecode`).
+ * why the input field is named `initBytecode`). The node runs it as a contract creation, so its
+ * limits apply (result ≤ 24,576 bytes and not starting with 0xEF, creation data ≤ 49,152
+ * bytes): see `deployless.ts`.
  */
 export function toViemDeployless<const abi extends Abi>(s: {
   abi: abi;
