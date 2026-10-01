@@ -365,6 +365,16 @@ describe('EIP-170 enforcement', () => {
     // the 25,056-byte data segment (+ INVALID guard) dominates the breakdown
     expect(err.message).toMatch(/data segments 25\d{3}/);
     expect(err.message).not.toMatch(/trampoline/); // no s.simulate → no trampoline bucket
+    // the buckets tile the whole runtime: "dispatcher" starts at pc 0, so it covers the receive
+    // check and the prologue as well as the selector dispatch
+    const size = (label: string): number =>
+      Number(new RegExp(`${label} (\\d+)`).exec(err.message)?.[1] ?? Number.NaN);
+    const total = Number(/is (\d+) bytes/.exec(err.message)?.[1] ?? Number.NaN);
+    const dispatcher = size('dispatcher');
+    const buckets = ['body', 'fns', 'tails', 'data segments'].map(size);
+    expect(dispatcher + buckets.reduce((a, b) => a + b, 0)).toBe(total);
+    // receive (7 bytes: CALLDATASIZE PUSH2 @dispatch JUMPI STOP JUMPDEST) precedes the prologue
+    expect(dispatcher).toBeGreaterThan(7);
   });
 
   test('the simulate trampoline gets its own bucket (not counted as body/fns)', () => {
