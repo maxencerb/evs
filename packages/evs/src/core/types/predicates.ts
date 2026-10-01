@@ -181,9 +181,32 @@ export function isEvsValueType(v: unknown): v is EvsType {
   return isTupleType(v) && tupleComponentsIssue(v.components) === undefined;
 }
 
+/** Why a tuple's member names must be unique — the shared tail of every repeated-name error. */
+export const UNIQUE_MEMBER_NAMES =
+  'member names must be unique within a tuple: viem decodes a named tuple into an object keyed by member name, so one of the two values would be silently lost';
+
+/**
+ * The first member name of one tuple level that repeats an earlier one, with both positions, or
+ * `undefined` when every name is distinct. An unnamed (`''`) member is positional and never
+ * clashes. One level only: callers walk nested tuples themselves.
+ */
+export function repeatedMemberName(
+  names: readonly string[],
+): { readonly name: string; readonly first: number; readonly repeat: number } | undefined {
+  const firstAt = new Map<string, number>();
+  for (const [repeat, name] of names.entries()) {
+    if (name === '') continue;
+    const first = firstAt.get(name);
+    if (first !== undefined) return { name, first, repeat };
+    firstAt.set(name, repeat);
+  }
+  return undefined;
+}
+
 /**
  * Why a tuple descriptor's `components` are not valid members — the first offending member by
- * path (`components[1].components[0] has no string \`name\``) — or `undefined` when they all are.
+ * path (`components[1].components[0] has no string \`name\``, or a member repeating an earlier
+ * member's name within its tuple) — or `undefined` when they all are.
  * The single source of truth for {@link isEvsValueType}'s component check, so an error message
  * built from it names exactly the member the predicate rejected. The per-member rules are
  * {@link readComponent}'s, shared with {@link canonicalizeComponents}.
@@ -192,6 +215,7 @@ export function tupleComponentsIssue(
   components: readonly unknown[],
   path = 'components',
 ): string | undefined {
+  const names: string[] = [];
   for (const [i, c] of components.entries()) {
     const at = `${path}[${i}]`;
     const member = readComponent(c, 'strict');
@@ -200,6 +224,13 @@ export function tupleComponentsIssue(
       const inner = tupleComponentsIssue(member.components, `${at}.components`);
       if (inner !== undefined) return inner;
     }
+    names.push(typeof member.name === 'string' ? member.name : '');
+  }
+  // the canonicalizer's distinct-names rule, so a hand-built descriptor cannot carry a tuple the
+  // `t` constructors would reject
+  const repeated = repeatedMemberName(names);
+  if (repeated !== undefined) {
+    return `${path}[${repeated.repeat}] repeats the member name ${JSON.stringify(repeated.name)} (also ${path}[${repeated.first}]) — ${UNIQUE_MEMBER_NAMES}`;
   }
   return undefined;
 }
@@ -565,28 +596,6 @@ function membersStaticSize(components: TupleType['components']): bigint | null {
  *  type string or tuple tag (also used by `abi/layout`, which measures the size on the layout). */
 export function staticSizeMessage(context: string, type: string, size: bigint | number): string {
   return `${context}: type ${quoteTypeString(type)} has an ABI static size of ${size} bytes — at most 2^32 − 1 bytes are supported`;
-}
-
-/** Why a tuple's member names must be unique — the shared tail of every repeated-name error. */
-export const UNIQUE_MEMBER_NAMES =
-  'member names must be unique within a tuple: viem decodes a named tuple into an object keyed by member name, so one of the two values would be silently lost';
-
-/**
- * The first member name of one tuple level that repeats an earlier one, with both positions, or
- * `undefined` when every name is distinct. An unnamed (`''`) member is positional and never
- * clashes. One level only: callers walk nested tuples themselves.
- */
-export function repeatedMemberName(
-  names: readonly string[],
-): { readonly name: string; readonly first: number; readonly repeat: number } | undefined {
-  const firstAt = new Map<string, number>();
-  for (const [repeat, name] of names.entries()) {
-    if (name === '') continue;
-    const first = firstAt.get(name);
-    if (first !== undefined) return { name, first, repeat };
-    firstAt.set(name, repeat);
-  }
-  return undefined;
 }
 
 /**

@@ -64,7 +64,8 @@ but take a descriptor only in its canonical form (every member carries a string 
 unnamed), the form every `t.*` constructor returns. `s.lit`, `s.let`, `s.newArray`,
 `revertReturns` and the params of a hand-built error in a def's `errors` apply them too, so an
 empty tuple at any level throws while the script records, not at compile (`ERROR_DECL` for an
-error param).
+error param). A descriptor given straight to `s.lit`, `s.let`, `s.newArray` or `revertReturns`
+is also held to the same distinct-names rule.
 
 ```ts
 import { t } from '@maxencerb/evs';

@@ -440,6 +440,84 @@ describe('validateIr — table rules', () => {
         /values\[0\]: .*5 levels deep/,
       );
     });
+
+    test('rejects a member name repeated within a tuple, at any level and in a call ABI', () => {
+      // a hand-built / deserialized IR cannot reintroduce what the builder rejects: viem decodes a
+      // named tuple into a name-keyed object, and interpret() would drop a value
+      const DUP = {
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint256' },
+          { name: 'a', type: 'uint256' },
+        ],
+      } as const;
+      const NESTED_DUP = {
+        type: 'tuple[]',
+        components: [{ name: 'n', type: 'tuple', components: DUP.components }],
+      } as const;
+      const repeat = /components\[1\] repeats the member name "a" \(also components\[0\]\)/;
+      expectInvalid(ir({ values: [vi(DUP)] }), repeat);
+      expectInvalid(
+        ir({ values: [vi(NESTED_DUP)] }),
+        /components\[0\]\.components\[1\] repeats the member name "a"/,
+      );
+      expectInvalid(ir({ cells: [{ type: DUP }] }), repeat);
+      // the review repro: a struct arg echoed back, its second member renamed after serializing
+      const echo = ir({
+        args: [{ name: 'p', type: DUP }],
+        values: [vi(DUP)],
+        returns: [{ name: 'r', type: DUP, value: 0 }],
+      });
+      expectInvalid(deserializeIr(serializeIr(echo)), repeat);
+      // a call's ABI tuple parameter (abiParamToPlain rejects the same at recording)
+      const AB = {
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint256' },
+          { name: 'b', type: 'uint256' },
+        ],
+      } as const;
+      expectInvalid(
+        ir({
+          values: [vi('address'), vi(AB), vi('uint256')],
+          body: [
+            mk({ k: 'env', op: 'caller', out: 0 }),
+            mk({ k: 'tuplenew', inits: [], out: 1 }),
+            mk({
+              k: 'call',
+              target: 0,
+              fnAbi: {
+                name: 'put',
+                selector: '0x6d4ce63c',
+                inputs: [{ name: 'p', ...DUP }],
+                outputs: [{ name: '', type: 'uint256' }],
+              },
+              args: [1],
+              outs: [2],
+              mode: 'strict',
+            }),
+          ],
+        }),
+        /fnAbi\.inputs\[0\] \("p"\): components\[1\] repeats the member name "a" \(also components\[0\]\)/,
+      );
+      // unnamed members are positional and never clash
+      const POSITIONAL = {
+        type: 'tuple',
+        components: [
+          { name: '', type: 'uint256' },
+          { name: '', type: 'uint256' },
+        ],
+      } as const;
+      expect(() =>
+        validateIr(
+          ir({
+            args: [{ name: 'p', type: POSITIONAL }],
+            values: [vi(POSITIONAL)],
+            returns: [{ name: 'r', type: POSITIONAL, value: 0 }],
+          }),
+        ),
+      ).not.toThrow();
+    });
   });
 
   describe('an ABI-static level of MAX_STATIC_SIZE bytes or more (UNSUPPORTED_V0)', () => {

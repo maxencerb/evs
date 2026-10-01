@@ -22,6 +22,7 @@ import {
   isEvsValueType,
   isTupleType,
   canonicalizeTupleType,
+  describeRejectedType,
   elemTypeOf,
   type EvsType,
 } from '../../core/types.js';
@@ -173,7 +174,7 @@ export function assertValueType(type: unknown, what: string): asserts type is Ev
   if (!isEvsValueType(type)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `${what}: type must be a \`t\` type (a type string or a t.struct/t.tuple descriptor), got ${describeHost(type)}`,
+      `${what}: type must be a \`t\` type (a type string or a t.struct/t.tuple descriptor), got ${describeRejectedHost(type)}`,
     );
   }
   assertTupleGates(type, what);
@@ -191,6 +192,12 @@ export function assertValueType(type: unknown, what: string): asserts type is Ev
  */
 export function assertTupleGates(type: EvsType, what: string): void {
   if (isTupleType(type)) canonicalizeTupleType(type, what);
+}
+
+/** {@link describeHost} for a value rejected as a type: a tuple descriptor with a bad member
+ *  (a malformed one, or a repeated member name) is described by that member. */
+export function describeRejectedHost(v: unknown): string {
+  return isTupleType(v) && !isEvsValueType(v) ? describeRejectedType(v) : describeHost(v);
 }
 
 export function describeHost(v: unknown): string {

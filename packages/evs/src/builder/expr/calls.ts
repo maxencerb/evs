@@ -38,6 +38,7 @@ import {
 import {
   unsafeCast,
   describeHost,
+  describeRejectedHost,
   abiInputsOf,
   signatureList,
   isRecordObj,
@@ -476,7 +477,7 @@ export abstract class RecorderCalls extends RecorderControl {
       if (!isEvsValueType(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: expected a type (use the \`t\` namespace — t.uint256, t.string, t.struct(...)), got ${describeHost(ty)}`,
+          `${what}: expected a type (use the \`t\` namespace — t.uint256, t.string, t.struct(...)), got ${describeRejectedHost(ty)}`,
         );
       }
       assertTupleGates(ty, what);

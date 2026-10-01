@@ -775,6 +775,30 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
     }
   });
 
+  test('isEvsValueType rejects a repeated member name at any level; positional members pass', () => {
+    const pair = [
+      { name: 'a', type: 'uint256' },
+      { name: 'a', type: 'address' },
+    ];
+    expect(isEvsValueType({ type: 'tuple', components: pair })).toBe(false);
+    expect(isEvsValueType({ type: 'tuple[]', components: pair })).toBe(false);
+    expect(
+      isEvsValueType({
+        type: 'tuple',
+        components: [{ name: 'p', type: 'tuple', components: pair }],
+      }),
+    ).toBe(false);
+    expect(
+      isEvsValueType({
+        type: 'tuple',
+        components: [
+          { name: '', type: 'uint256' },
+          { name: '', type: 'address' },
+        ],
+      }),
+    ).toBe(true);
+  });
+
   test('fromAbiParameter maps a scalar / tuple parameter to its EvsType', () => {
     expect(t.fromAbiParameter({ name: 'x', type: 'uint256' })).toBe('uint256');
     expect(t.fromAbiParameter({ name: 'xs', type: 'address[]' })).toBe('address[]');
@@ -991,15 +1015,10 @@ describe('tuple descriptors: the same rules at every entry point', () => {
   }
 
   test("isEvsValueType stays structural: the size gates are the canonicalizer's", () => {
-    // an empty tuple, too-deep arrays, oversized members and repeated member names are
-    // well-formed structurally (the IR validator reports an empty tuple in its own words); every
-    // other case is malformed
-    const structural = new Set([
-      'an empty tuple',
-      'an empty nested tuple',
-      'a repeated member name',
-      'a repeated nested member name',
-    ]);
+    // an empty tuple, too-deep arrays and oversized members are well-formed structurally (the IR
+    // validator reports an empty tuple in its own words); every other case, a repeated member
+    // name included, is malformed
+    const structural = new Set(['an empty tuple', 'an empty nested tuple']);
     for (const [label, descriptor, code] of MALFORMED) {
       expect(isEvsValueType(descriptor)).toBe(code === 'UNSUPPORTED_V0' || structural.has(label));
     }

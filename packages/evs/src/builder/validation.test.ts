@@ -25,6 +25,7 @@ import {
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
 import { interpret } from '../ir/interp.js';
+import { deserializeIr, serializeIr } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
@@ -3506,6 +3507,70 @@ describe('checklist: member names are unique within a tuple', () => {
       EvsTypeError,
       'TYPE_MISMATCH',
       UNIQUE,
+    );
+  });
+
+  test('builder methods taking a raw descriptor → TYPE_MISMATCH naming the member', () => {
+    // s.lit / s.let / s.newArray / revertReturns check a descriptor structurally (no canonicalizer)
+    const dup = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint256' },
+        { name: 'a', type: 'uint256' },
+      ],
+    } as const;
+    const dupArr = { ...dup, type: 'tuple[]' } as const;
+    const nested = {
+      type: 'tuple',
+      components: [{ name: 'n', type: 'tuple', components: dup.components }],
+    } as const;
+    const at = /components\[1\] repeats the member name "a" \(also components\[0\]\)/;
+    const quoterAbi = parseAbi(['function q() returns (uint256)']);
+    const cases: readonly [string, (s: AnyBuilder, a: Args) => unknown, RegExp][] = [
+      ['s.lit', (s) => s.lit(dup as never, { a: 5n } as never), at],
+      ['s.lit', (s) => s.lit(dupArr as never, [] as never), at],
+      [
+        's.lit',
+        (s) => s.lit(nested as never, { n: { a: 5n } } as never),
+        /components\[0\]\.components\[1\] repeats/,
+      ],
+      ['s.let', (s) => s.let(dup as never, { a: 5n } as never), at],
+      ['s.newArray', (s) => s.newArray(dup as never, 1n), at],
+      [
+        's.call',
+        (s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'q',
+            revertReturns: [dup],
+          } as never),
+        at,
+      ],
+    ];
+    for (const [verb, body, msg] of cases) {
+      const e = expectEvs(() => rec(body), EvsTypeError, 'TYPE_MISMATCH', msg);
+      expect(e.message).toMatch(UNIQUE);
+      expect(e.message.startsWith(`${verb}(`)).toBe(true);
+    }
+  });
+
+  test('a deserialized IR carrying the tuple fails compile() and interpret()', () => {
+    // the review repro: a struct arg's second member renamed after serializing; interpret()
+    // used to drop the first value and compile() to accept it
+    const script = evscript(
+      { name: 'x', args: [namedArg('p', t.struct({ a: t.uint256, b: t.uint256 }))] },
+      (s, p) => s.return({ r: p }),
+    );
+    const bad = deserializeIr(serializeIr(script.ir).replaceAll('"name":"b"', '"name":"a"'));
+    const chain = {
+      staticcall: () => {
+        throw new Error('unexpected staticcall');
+      },
+    };
+    expect(() => interpret(bad, [[1n, 2n]], chain)).toThrowError(/repeats the member name "a"/);
+    expect(() => compile({ name: 'x', ir: bad, abi: script.abi })).toThrowError(
+      /repeats the member name "a"/,
     );
   });
 });

@@ -20,6 +20,7 @@ import { RecorderCore } from './core.js';
 import { makeTuple, FieldHandle, makeExpr, MutArrayImpl } from './handles.js';
 import {
   describeHost,
+  describeRejectedHost,
   asLiteralIndex,
   assertLayout,
   assertTupleGates,
@@ -37,7 +38,7 @@ export abstract class RecorderComposites extends RecorderCore {
     if (!isTupleType(type) || !isEvsValueType(type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.tuple(): type must be a t.struct/t.tuple descriptor (or readonly AbiParameter[]), got ${describeHost(type)}`,
+        `s.tuple(): type must be a t.struct/t.tuple descriptor (or readonly AbiParameter[]), got ${describeRejectedHost(type)}`,
       );
     }
     if (type.type !== 'tuple') {
@@ -168,13 +169,13 @@ export abstract class RecorderComposites extends RecorderCore {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; assertLayout rejects malformed ones.
       return elem as EvsType;
     }
-    if (isTupleType(elem)) {
+    if (isTupleType(elem) && isEvsValueType(elem)) {
       assertTupleGates(elem, 's.newArray()');
       return elem;
     }
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `s.newArray(): element type must be a t.* type (a word, string/bytes, an array, or a t.struct/t.tuple), got ${describeHost(elem)}`,
+      `s.newArray(): element type must be a t.* type (a word, string/bytes, an array, or a t.struct/t.tuple), got ${describeRejectedHost(elem)}`,
     );
   }
 
