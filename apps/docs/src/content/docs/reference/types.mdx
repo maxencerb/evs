@@ -199,6 +199,48 @@ narrative and a runnable example. Their return types are exported:
 The component-level mirrors `AbiParamToComponent` and `AbiParamsToComponents` are exported too, for
 building your own ABI→type glue.
 
+### ABI parameters as args
+
+An ABI parameter can also be used directly as a declarator, wherever `evscript` args, `s.fn`
+params and `t.error` params are declared. All three sites follow the same rules, at run time and in the types. A scalar
+parameter (`{ name: 'amount', type: 'uint256' }`) has the `namedArg` shape. A struct parameter
+(`{ name: 'p', type: 'tuple', components }`) is a `TupleType` that carries its own name. In both
+cases a non-empty `name` labels the arg, and `name: ''` keeps the positional `arg{i}` name. A
+function's `inputs` therefore work as a script's `args`:
+
+```ts
+import { evscript } from '@maxencerb/evs';
+
+const quoterAbi = [
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'params',
+        type: 'tuple',
+        components: [
+          { name: 'tokenIn', type: 'address' },
+          { name: 'amountIn', type: 'uint256' },
+        ],
+      },
+      { name: 'fee', type: 'uint24' },
+    ],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+// args labeled `params` / `fee`; `params` arrives as a Tuple handle
+const echo = evscript({ name: 'echo', args: quoterAbi[0].inputs }, (s, params, fee) =>
+  s.return({ amountIn: params.amountIn.get(), fee }),
+);
+void echo;
+```
+
+Each tuple member needs a `name` (it may be `''`). For a parameter that has no member names,
+use `t.fromAbiParameter(param)`, which fills them in.
+
 ## Literal coercion: LitOf and IntoExpr
 
 Every builder position typed `IntoExpr` accepts either an `Expr` or a plain host literal:

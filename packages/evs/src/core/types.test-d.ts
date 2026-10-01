@@ -13,6 +13,7 @@ import type {
   IntoExpr,
   IntType,
   LitOf,
+  NormalizeArgs,
   PeelArraySuffix,
   TupleType,
   UintType,
@@ -43,6 +44,36 @@ test('namedArg accepts every EvsType — composite types included (issue #25)', 
   // still rejects non-types
   // @ts-expect-error — a number is not an EvsType
   namedArg('x', 42);
+});
+
+test('ToArgSpec: an ABI parameter is named by its `name` — tuple and scalar alike', () => {
+  type Inputs = readonly [
+    {
+      readonly name: 'p';
+      readonly type: 'tuple';
+      readonly internalType: 'struct Q.P';
+      readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+    },
+    { readonly name: 'amount'; readonly type: 'uint256' },
+    { readonly name: ''; readonly type: 'address' },
+  ];
+  // the tuple spec's type is reduced to `{ type, components }`, as at run time
+  expectTypeOf<NormalizeArgs<Inputs>>().toEqualTypeOf<
+    readonly [
+      ArgSpec<
+        'p',
+        {
+          readonly type: 'tuple';
+          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+        }
+      >,
+      { readonly name: 'amount'; readonly type: 'uint256' },
+      { readonly name: ''; readonly type: 'address' },
+    ]
+  >();
+  // a nameless descriptor (t.struct / t.tuple) stays positional
+  const Pair = t.tuple(t.address, t.uint24);
+  expectTypeOf<NormalizeArgs<typeof Pair>>().toEqualTypeOf<readonly [ArgSpec<'', typeof Pair>]>();
 });
 
 test('t namespace literal types', () => {

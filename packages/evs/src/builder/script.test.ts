@@ -338,6 +338,82 @@ describe('named args (namedArg)', () => {
     expect(incFn?.params.map((p) => p.name)).toEqual(['a']); // named
     expect(() => validateIr(script.ir)).not.toThrow();
   });
+
+  // -- ABI parameters as declarators: a struct parameter is a tuple TYPE that carries its own
+  // name (it was misread as namedArg('p', 'tuple') and threw), a scalar one an ArgSpec value.
+  const quoterAbi = [
+    {
+      type: 'function',
+      name: 'quote',
+      stateMutability: 'view',
+      inputs: [
+        {
+          name: 'p',
+          type: 'tuple',
+          internalType: 'struct Quoter.Params',
+          components: [
+            { name: 'tokenIn', type: 'address', internalType: 'address' },
+            { name: 'amountIn', type: 'uint256', internalType: 'uint256' },
+          ],
+        },
+        { name: 'amount', type: 'uint256', internalType: 'uint256' },
+      ],
+      outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+    },
+  ] as const satisfies Abi;
+  const [structParam] = quoterAbi[0].inputs;
+  const Params = { type: 'tuple', components: structParam.components };
+
+  test("a function's ABI inputs are script args: a struct parameter is a named Tuple arg", () => {
+    const script = evscript({ name: 'qa', args: quoterAbi[0].inputs }, (s, p, amount) =>
+      s.return({ amountIn: p.amountIn.get(), amount }),
+    );
+    // the ABI name labels the arg; the recorded type is the bare `{ type, components }`
+    expect(script.ir.args).toEqual([
+      { name: 'p', type: Params },
+      { name: 'amount', type: 'uint256' },
+    ]);
+    expect(script.ir.args[0]?.type).not.toHaveProperty('name');
+    expect(script.abi[0].inputs).toEqual([
+      { name: 'p', type: 'tuple', components: structParam.components },
+      { name: 'amount', type: 'uint256' },
+    ]);
+    expect(script.ir.values[0]).toMatchObject({ debugName: 'args.p' });
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('a struct ABI parameter is an s.fn param and a t.error param, named by the ABI', () => {
+    const Bad = t.error('Bad', [structParam, t.uint256]);
+    expect(Bad.params).toEqual([
+      { name: 'p', type: Params },
+      { name: '', type: 'uint256' },
+    ]);
+    expect(Bad.abi.inputs).toEqual([
+      { name: 'p', type: 'tuple', components: structParam.components },
+      { name: 'arg1', type: 'uint256' },
+    ]);
+    const script = evscript({ name: 'qf', args: [t.uint256], errors: [Bad] }, (s, x) => {
+      const amountOf = s.fn('amountOf', [structParam], (p) => p.amountIn.get());
+      const p = s.tuple(structParam, {
+        tokenIn: '0x0000000000000000000000000000000000000001',
+        amountIn: x,
+      });
+      return s.return({ amountIn: amountOf(p) });
+    });
+    expect(script.ir.fns[0]?.params).toEqual([{ name: 'p', type: Params, value: 1 }]);
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('an unnamed ABI parameter takes the positional arg{i} name, as in the types', () => {
+    const unnamed = { name: '', type: 'uint256' } as const;
+    const script = evscript({ name: 'qu', args: [t.address, unnamed] }, (s, _who, x) => {
+      const id = s.fn('id', [t.bool, unnamed], (_b, v) => v);
+      return s.return({ x: id(true, x) });
+    });
+    expect(script.ir.args.map((a) => a.name)).toEqual(['arg0', 'arg1']);
+    expect(script.ir.fns[0]?.params.map((p) => p.name)).toEqual(['arg0', 'arg1']);
+    expect(t.error('E', [t.bool, unnamed]).abi.inputs.map((i) => i.name)).toEqual(['arg0', 'arg1']);
+  });
 });
 
 // ---------------------------------------------------------------------------

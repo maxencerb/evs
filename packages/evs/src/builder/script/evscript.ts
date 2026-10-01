@@ -27,13 +27,14 @@ import {
   IDENT_RE,
   isArgSpecValue,
   isEvsValueType,
+  normalizeArgsInput,
   typeToAbiParam,
   type ArgsInput,
   type NormalizeArgs,
 } from '../../core/types.js';
 import type { Expr } from '../../core/types/expr.js';
 import type { ScriptIr, PlainAbiError } from '../../ir/nodes.js';
-import { type RecErrorDecl, assertV0Type, Recorder } from '../expr.js';
+import { type RecErrorDecl, Recorder } from '../expr.js';
 import { type ScriptBuilder, makeBuilder } from './builder.js';
 import type { ReturnValue, IntoMember, Tuple, ScriptReturn } from './handles.js';
 
@@ -263,34 +264,19 @@ export function evscript<
       `evscript: script name must be a non-empty identifier, got ${JSON.stringify(def.name)}`,
     );
   }
-  // `args` is optional (a zero-arg script omits it); a lone declarator (a bare type or a single
-  // `namedArg`) normalizes to a one-element list (issue #9).
-  let declsIn: readonly unknown[];
-  if (def.args === undefined) {
-    declsIn = [];
-  } else if (Array.isArray(def.args)) {
-    declsIn = def.args;
-  } else {
-    declsIn = [def.args];
-  }
   if (typeof body !== 'function') {
     throw new EvsTypeError('TYPE_MISMATCH', `evscript "${def.name}": body must be a callback`);
   }
-  // a `namedArg` declarator carries its user name; a bare type is auto-named `arg{i}` (the
-  // positional fallback — viem still infers args positionally, but the name surfaces as the label).
-  const argSpecs = declsIn.map((d, i): { name: string; type: EvsType } => {
-    if (isArgSpecValue(d)) {
-      const ty: unknown = d.type;
-      if (!isEvsValueType(ty)) {
-        assertV0Type(ty, `evscript "${def.name}" arg "${d.name}"`);
-      }
-      return { name: d.name, type: ty };
-    }
-    if (!isEvsValueType(d)) {
-      assertV0Type(d, `evscript "${def.name}" arg #${i}`); // throws with a precise code
-    }
-    return { name: `arg${i}`, type: d };
-  });
+  // `args` is optional (a zero-arg script omits it) and a lone declarator stands for a one-element
+  // list (issue #9); the normalizer is the one `s.fn` params and `t.error` params share. A
+  // `namedArg` (or a named ABI parameter) carries its user name; a bare type is labeled `arg{i}`
+  // (viem still infers args positionally, but the name surfaces as the label). Bad or duplicate
+  // names stay `ABI_SHAPE` (`buildScriptAbi` re-checks them) but fail here, before the callback.
+  const argSpecs = normalizeArgsInput(def.args, {
+    owner: `evscript "${def.name}"`,
+    noun: 'arg',
+    nameCode: 'ABI_SHAPE',
+  }).map((a) => ({ name: a.label, type: a.type }));
 
   // declared custom errors (issue #15): normalized + validated before recording starts, so a
   // bad declaration fails fast (and s.throw checks against the same decls).

@@ -8,7 +8,13 @@ import type { Abi, AbiParameter } from 'abitype';
 
 import { EvsTypeError } from '../errors.js';
 import { functionsByRef, functionSignature } from '../signature.js';
-import { type ArgsInput, type EvsErrorType, type NormalizeArgs, IDENT_RE } from './args.js';
+import {
+  type ArgsInput,
+  type EvsErrorType,
+  type NormalizeArgs,
+  IDENT_RE,
+  normalizeArgsInput,
+} from './args.js';
 import type {
   TupleArrayOf,
   StructTypeOf,
@@ -25,7 +31,6 @@ import {
   tupleArrayTag,
   MAX_FIXED_LENGTH,
   abiParamToType,
-  isEvsValueType,
   typeToAbiParam,
 } from './predicates.js';
 import type {
@@ -362,11 +367,6 @@ function arraySuffixRT(length: unknown, ctx: string): '[]' | `[${number}]` {
   return `[${n}]`;
 }
 
-/** A non-null, non-array object — narrows `unknown` to a property-indexable record. */
-function isRecordObject(v: unknown): v is Record<string, unknown> {
-  return typeof v === 'object' && v !== null && !Array.isArray(v);
-}
-
 /**
  * `t.fromOutputs(abi, name)` runtime: locate the single function `name` selects — a bare name, or a
  * canonical signature `'get(uint256)'` for an overloaded function (issue #4; there are no args to
@@ -442,16 +442,6 @@ const RESERVED_ERROR_NAMES: ReadonlySet<string> = new Set([
   '_',
 ]);
 
-/**
- * A {@link namedArg}-produced {@link ArgSpec} value: a plain object carrying a string `name` (a bare
- * type is a string; a bare composite type is a {@link TupleType} object, which has no `name`). Used
- * to distinguish a named declarator from a bare one when normalizing `evscript` args / `s.fn` params
- * / `t.error` params.
- */
-export function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
-  return isRecordObject(v) && typeof (v as { name?: unknown }).name === 'string' && 'type' in v;
-}
-
 function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
   if (typeof name !== 'string' || !IDENT_RE.test(name)) {
     throw new EvsTypeError(
@@ -465,65 +455,18 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
       `t.error("${name}"): the name is reserved (Panic/Error are Solidity built-ins; EvsDecodeError/EvsInvalidCalldata belong to the evs runtime; empty/unknown are built-in decode arms; _ is the matchScriptError default arm) — pick another name`,
     );
   }
-  let decls: readonly unknown[];
-  if (paramsIn === undefined) {
-    decls = [];
-  } else if (Array.isArray(paramsIn)) {
-    decls = paramsIn;
-  } else {
-    decls = [paramsIn];
-  }
-  const params = decls.map((d, i): { name: string; type: EvsType } => {
-    const ctx = `t.error("${name}") param #${i}`;
-    if (isArgSpecValue(d)) {
-      if (d.name !== '' && !IDENT_RE.test(d.name)) {
-        throw new EvsTypeError(
-          'ERROR_DECL',
-          `${ctx}: invalid param name ${JSON.stringify(d.name)} (must be a non-empty identifier)`,
-        );
-      }
-      const ty: unknown = d.type;
-      if (typeof ty === 'string') {
-        assertEvsType(ty, `${ctx} ("${d.name}")`);
-        return { name: d.name, type: ty };
-      }
-      if (!isEvsValueType(ty)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `${ctx} ("${d.name}"): expected a type (use the \`t\` namespace), got ${describeTypeInput(ty)}`,
-        );
-      }
-      return { name: d.name, type: ty };
-    }
-    if (typeof d === 'string') {
-      assertEvsType(d, ctx);
-      return { name: '', type: d };
-    }
-    if (isTupleType(d) && isEvsValueType(d)) return { name: '', type: d };
-    throw new EvsTypeError(
-      'TYPE_MISMATCH',
-      `${ctx}: expected a type or namedArg(...), got ${describeTypeInput(d)}`,
-    );
+  const params = normalizeArgsInput(paramsIn, {
+    owner: `t.error("${name}")`,
+    noun: 'param',
+    nameCode: 'ERROR_DECL',
   });
-  // resolved (arg{i}-fallback) input names must be unique — the decode utilities key args by name
-  const seen = new Set<string>();
-  const inputs = params.map((p, i) => {
-    const resolved = p.name === '' ? `arg${i}` : p.name;
-    if (seen.has(resolved)) {
-      throw new EvsTypeError(
-        'ERROR_DECL',
-        `t.error("${name}"): duplicate param name "${resolved}"`,
-      );
-    }
-    seen.add(resolved);
-    return typeToAbiParam(resolved, p.type);
-  });
+  const inputs = params.map((p) => typeToAbiParam(p.label, p.type));
   const abi = Object.freeze({
     type: 'error',
     name,
     inputs: Object.freeze(inputs),
   });
-  const specs = Object.freeze(params.map((p) => Object.freeze(p)));
+  const specs = Object.freeze(params.map((p) => Object.freeze({ name: p.name, type: p.type })));
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the literal type is the overload's authority; the runtime shape is built to match
   return Object.freeze({ kind: 'error', name, params: specs, abi }) as unknown as EvsErrorType;
 }

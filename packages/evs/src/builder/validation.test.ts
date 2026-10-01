@@ -204,6 +204,61 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
     );
   });
 
+  test("a bad declarator name keeps each site's code, and evscript reports it before the callback", () => {
+    // hand-built `{ name, type }` declarators (namedArg itself rejects the name): the three
+    // surfaces share one normalizer, so they classify and check names identically
+    const bad = { name: '1x', type: 'uint256' } as never;
+    let ran = false;
+    expectEvs(
+      () =>
+        evscript({ name: 'd', args: [t.address, bad] }, () => {
+          ran = true;
+          throw new Error('unreachable');
+        }),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /evscript "d" arg #1: invalid arg name "1x"/,
+    );
+    expect(ran).toBe(false);
+    expectEvs(
+      () => rec((s) => s.fn('f', [bad], () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.fn\("f"\) param #0: invalid param name "1x"/,
+    );
+    expectEvs(
+      () => t.error('X', [bad]),
+      EvsTypeError,
+      'ERROR_DECL',
+      /t\.error\("X"\) param #0: invalid param name "1x"/,
+    );
+  });
+
+  test('a tuple ABI parameter with a malformed component is TYPE_MISMATCH at every site', () => {
+    const malformed = {
+      name: 'p',
+      type: 'tuple',
+      components: [{ name: 'x', type: 'uint7' }],
+    } as never;
+    const what = /#0 \("p"\): expected a type/;
+    expectEvs(
+      () =>
+        evscript({ name: 'd', args: [malformed] }, () => {
+          throw new Error('unreachable');
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      what,
+    );
+    expectEvs(
+      () => rec((s) => s.fn('f', malformed, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      what,
+    );
+    expectEvs(() => t.error('X', malformed), EvsTypeError, 'TYPE_MISMATCH', what);
+  });
+
   test('invalid script name', () => {
     expectEvs(
       () =>

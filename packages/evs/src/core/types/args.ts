@@ -3,10 +3,10 @@
  * `evscript` args, `s.fn` params and `t.error` params), and the `t.error` declaration types.
  */
 
-import { EvsTypeError } from '../errors.js';
+import { EvsTypeError, type EvsErrorCode } from '../errors.js';
 import type { TypeToComponent } from './derive.js';
-import { assertEvsType, isEvsValueType, describeTypeInput } from './predicates.js';
-import type { ArgType, EvsType } from './vocabulary.js';
+import { assertEvsType, isEvsValueType, isTupleType, describeTypeInput } from './predicates.js';
+import type { ArgType, EvsType, TupleType } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
 // namedArg() declarator + the `t` type namespace
@@ -54,9 +54,9 @@ export function namedArg<const name extends string, const type extends EvsType>(
 // ---------------------------------------------------------------------------
 // args-input normalization (shared by `evscript` args, `s.fn` params, `t.error` params)
 // ---------------------------------------------------------------------------
-// These lived in builder/script.ts until issue #15; they are pure core/ material (EvsType +
-// ArgSpec only) and `t.error` needs them, so they moved here. script.ts re-exports them
-// verbatim — the builder's public surface is unchanged.
+// The type-level normalization (`NormalizeArgs`) and its runtime mirror (`normalizeArgsInput`)
+// live side by side so the declarator rules cannot drift between the types and the three
+// declaring sites.
 
 /**
  * One top-level arg/param declarator (issue #9): a bare `t.*` type, or a
@@ -72,10 +72,18 @@ export type ArgInput = EvsType | ArgSpec;
  */
 export type ArgsInput = ArgInput | readonly ArgInput[];
 
-/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a bare type
+/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a tuple
+ *  descriptor that carries its own `name` (an ABI parameter such as `abi[0].inputs[0]`) is named
+ *  by it, like a scalar ABI parameter (which already matches `ArgSpec`); any other bare type
  *  becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
- *  downstream (`ResolveArgName` / the recorder). */
-export type ToArgSpec<d> = d extends ArgSpec ? d : d extends EvsType ? ArgSpec<'', d> : never;
+ *  downstream (`ResolveArgName` / {@link normalizeArgsInput}). */
+export type ToArgSpec<d> = d extends ArgSpec
+  ? d
+  : d extends TupleType & { readonly name: infer name extends string }
+    ? ArgSpec<name, { readonly type: d['type']; readonly components: d['components'] }>
+    : d extends EvsType
+      ? ArgSpec<'', d>
+      : never;
 
 /** Normalizes {@link ArgsInput} to the canonical `readonly ArgSpec[]` (lone declarator → one-tuple;
  *  homomorphic over a list so order/positions are preserved). */
@@ -102,6 +110,88 @@ export type ResolveArgName<name extends string, i> = name extends '' ? ArgName<i
 export type ArgsToInputs<args extends readonly ArgSpec[]> = {
   readonly [i in keyof args]: TypeToComponent<ResolveArgName<args[i]['name'], i>, args[i]['type']>;
 };
+
+/**
+ * A {@link namedArg}-shaped {@link ArgSpec} value: a plain object carrying a string `name` and a
+ * `type`. A bare type is a string or a {@link TupleType} object; a tuple descriptor may carry a
+ * `name` of its own (an ABI parameter `{ name, type: 'tuple', components }`), so it is excluded
+ * here and stays a type — an `ArgSpec` over a tuple has an OBJECT `type`, never the tag string.
+ */
+export function isArgSpecValue(v: unknown): v is { readonly name: string; readonly type: unknown } {
+  if (typeof v !== 'object' || v === null || Array.isArray(v) || isTupleType(v)) return false;
+  return typeof (v as { name?: unknown }).name === 'string' && 'type' in v;
+}
+
+/** Where a declarator list is normalized: the message prefix (`evscript "quote"`, `s.fn("f")`,
+ *  `t.error("Bad")`), what one entry is called, and the code for a bad or duplicate name. */
+export interface ArgsSite {
+  readonly owner: string;
+  readonly noun: 'arg' | 'param';
+  readonly nameCode: EvsErrorCode;
+}
+
+/** One normalized declarator: its declared `name` (`''` for a bare type, the sentinel the types
+ *  use too), its `label` (`name`, or the positional `arg{i}` fallback) and its validated type. */
+export interface NormalizedArg {
+  readonly name: string;
+  readonly label: string;
+  readonly type: EvsType;
+}
+
+/**
+ * The runtime mirror of {@link NormalizeArgs}, shared by `evscript` args, `s.fn` params and
+ * `t.error` params so the three surfaces classify declarators identically: `undefined` → none, a
+ * lone declarator → a one-element list; each entry is an {@link ArgSpec} value (its name must be
+ * an identifier, or `''` for the positional fallback) or a bare type — a tuple descriptor that
+ * carries a `name` (an ABI parameter) is named by it and reduced to `{ type, components }`.
+ * Labels must be unique (`site.nameCode`); a type outside the vocabulary is `TYPE_MISMATCH`
+ * (`UNSUPPORTED_V0` for over-deep arrays).
+ */
+export function normalizeArgsInput(input: unknown, site: ArgsSite): NormalizedArg[] {
+  let decls: readonly unknown[];
+  if (input === undefined) decls = [];
+  else if (Array.isArray(input)) decls = input;
+  else decls = [input];
+  const seen = new Set<string>();
+  return decls.map((d, i): NormalizedArg => {
+    let name: string;
+    let type: unknown;
+    if (isArgSpecValue(d)) {
+      ({ name, type } = d);
+    } else if (isTupleType(d) && 'name' in d && typeof d.name === 'string') {
+      name = d.name;
+      type = isEvsValueType(d) ? Object.freeze({ type: d.type, components: d.components }) : d;
+    } else {
+      name = '';
+      type = d;
+    }
+    const at = `${site.owner} ${site.noun} #${i}`;
+    if (name !== '' && !IDENT_RE.test(name)) {
+      throw new EvsTypeError(
+        site.nameCode,
+        `${at}: invalid ${site.noun} name ${JSON.stringify(name)} (must match /^[A-Za-z_]\\w*$/)`,
+      );
+    }
+    const ctx = name === '' ? at : `${at} ("${name}")`;
+    if (typeof type === 'string') {
+      assertEvsType(type, ctx);
+    } else if (!isEvsValueType(type)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${ctx}: expected a type (use the \`t\` namespace) or namedArg(...), got ${describeTypeInput(type)}`,
+      );
+    }
+    const label = name === '' ? `arg${i}` : name;
+    if (seen.has(label)) {
+      throw new EvsTypeError(
+        site.nameCode,
+        `${site.owner}: duplicate ${site.noun} name "${label}"`,
+      );
+    }
+    seen.add(label);
+    return { name, label, type };
+  });
+}
 
 // ---------------------------------------------------------------------------
 // custom error declarations — `t.error` (issue #15)

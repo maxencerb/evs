@@ -4,17 +4,11 @@
  */
 
 import { EvsTypeError, EvsScopeError, EvsInternalError } from '../../core/errors.js';
-import {
-  IDENT_RE,
-  isArgSpecValue,
-  isEvsValueType,
-  type Expr,
-  type EvsType,
-} from '../../core/types.js';
+import { IDENT_RE, normalizeArgsInput, type Expr, type EvsType } from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
 import { RecorderCalls } from './calls.js';
 import { RETURN_BRAND } from './handles.js';
-import { describeHost, assertV0Type, newScope, unsafeCast } from './helpers.js';
+import { describeHost, newScope, unsafeCast } from './helpers.js';
 
 /** The recording engine behind one `evscript` body; the layers it extends are listed on the
  *  `builder/expr.ts` barrel. */
@@ -37,54 +31,16 @@ export class Recorder extends RecorderCalls {
     if (typeof bodyFn !== 'function') {
       throw new EvsTypeError('TYPE_MISMATCH', `s.fn("${name}"): body must be a callback`);
     }
-    // params accept the same shorthand as `evscript` args (issue #9): a bare `t.*` type, a single
-    // `namedArg(...)`, or a `readonly` list mixing named/bare. A lone declarator → a one-element list.
-    let declsIn: readonly unknown[];
-    if (Array.isArray(paramsIn)) {
-      declsIn = paramsIn;
-    } else if (paramsIn === undefined) {
-      declsIn = [];
-    } else {
-      declsIn = [paramsIn];
-    }
-    const seen = new Set<string>();
-    const params = declsIn.map((decl: unknown, i) => {
-      // a `namedArg` result is a `{ name, type }` object; a bare type is a string (a bare composite
-      // type is a TupleType object with no `name`). Detection is the shared `isArgSpecValue` (name +
-      // type present, not an array) so the arg and param surfaces classify declarators identically.
-      // Composite (tuple) params — bare or via `namedArg` — are accepted exactly like
-      // script args: a composite value is a memref pointer word at runtime, the same as a
-      // `string` / `T[]` param, so the caller MSTOREs the pointer into the callee's param slot.
-      let pName: string;
-      let pType: unknown;
-      if (isArgSpecValue(decl)) {
-        pName = decl.name;
-        pType = decl.type;
-        if (!IDENT_RE.test(pName)) {
-          throw new EvsTypeError(
-            'TYPE_MISMATCH',
-            `s.fn("${name}") param #${i}: invalid name ${describeHost(pName)} (must be a non-empty identifier)`,
-          );
-        }
-      } else {
-        // a bare (unnamed) param keeps the positional `arg{i}` fallback name.
-        pName = `arg${i}`;
-        pType = decl;
-      }
-      if (seen.has(pName)) {
-        throw new EvsTypeError(
-          'TYPE_MISMATCH',
-          `s.fn("${name}") param #${i}: duplicate param name "${pName}"`,
-        );
-      }
-      seen.add(pName);
-      // the same type gate as `evscript` args: a structurally valid composite descriptor passes
-      // as-is; anything else must be a supported type string (throws with a precise code).
-      if (!isEvsValueType(pType)) {
-        assertV0Type(pType, `s.fn("${name}") param "${pName}"`);
-      }
-      return { name: pName, type: pType };
-    });
+    // params take the same declarators as `evscript` args (issue #9), through the same normalizer:
+    // a bare `t.*` type (the positional `arg{i}` name), a `namedArg(...)` or a named ABI parameter,
+    // alone or in a `readonly` list. Composite (tuple) params are accepted exactly like script
+    // args: a composite value is a memref pointer word at runtime, the same as a `string` / `T[]`
+    // param, so the caller MSTOREs the pointer into the callee's param slot.
+    const params = normalizeArgsInput(paramsIn, {
+      owner: `s.fn("${name}")`,
+      noun: 'param',
+      nameCode: 'TYPE_MISMATCH',
+    }).map((p) => ({ name: p.label, type: p.type }));
 
     // reserve the FnId, push the isolated stack (scope rule) and record the body once. A failed
     // recording (the body or a result check throws) releases the reservation, so a script that

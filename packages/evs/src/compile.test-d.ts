@@ -15,7 +15,7 @@ import { expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, type EvsScript } from './builder/script.js';
 import { compile, type CompiledEvsScript } from './compile.js';
-import { namedArg, t, type Hex } from './core/types.js';
+import { namedArg, t, type Expr, type Hex } from './core/types.js';
 import {
   decodeScriptError,
   matchScriptError,
@@ -360,4 +360,63 @@ test('matchScriptError: a hand-built error named like a built-in arm keeps that 
       return 1;
     },
   });
+});
+
+// ---------------------------------------------------------------------------
+// ABI parameters as declarators: a struct input carries its ABI name into the arg label, the
+// fn param and the error input — the same rule as a scalar input (an `ArgSpec` already)
+// ---------------------------------------------------------------------------
+
+const quoterAbi = [
+  {
+    type: 'function',
+    name: 'quote',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'p',
+        type: 'tuple',
+        internalType: 'struct Quoter.Params',
+        components: [
+          { name: 'tokenIn', type: 'address', internalType: 'address' },
+          { name: 'amountIn', type: 'uint256', internalType: 'uint256' },
+        ],
+      },
+      { name: 'amount', type: 'uint256', internalType: 'uint256' },
+    ],
+    outputs: [{ name: '', type: 'uint256', internalType: 'uint256' }],
+  },
+] as const satisfies Abi;
+const [structParam] = quoterAbi[0].inputs;
+const ZeroAmountE = t.error('ZeroAmount', structParam);
+
+const quoteScript = evscript(
+  { name: 'quote', args: quoterAbi[0].inputs, errors: [ZeroAmountE] },
+  (s, p, amount) => {
+    expectTypeOf(p.amountIn.get()).toEqualTypeOf<Expr<'uint256'>>();
+    const amountOf = s.fn('amountOf', structParam, (q) => q.amountIn.get());
+    s.if(amount.eq(0n), () => {
+      s.throw(ZeroAmountE, { p });
+    });
+    return s.return({ total: s.add(amountOf(p), amount) });
+  },
+);
+
+test('a struct ABI input is a script arg labeled by its ABI name', () => {
+  type P = ReadContractParameters<typeof quoteScript.abi, 'quote'>;
+  expectTypeOf<P['args']>().toEqualTypeOf<
+    readonly [p: { tokenIn: `0x${string}`; amountIn: bigint }, amount: bigint]
+  >();
+  expectTypeOf(quoteScript.abi[0].inputs[0].name).toEqualTypeOf<'p'>();
+});
+
+test('a struct ABI input is a t.error param named by the ABI, typed by decodeScriptError', () => {
+  expectTypeOf(ZeroAmountE.params[0].name).toEqualTypeOf<'p'>();
+  expectTypeOf(ZeroAmountE.abi.inputs[0].name).toEqualTypeOf<'p'>();
+  const decoded = decodeScriptError(quoteScript, undefined as unknown);
+  if (decoded !== undefined && decoded.name === 'ZeroAmount') {
+    expectTypeOf(decoded.args).toEqualTypeOf<{
+      readonly p: { tokenIn: `0x${string}`; amountIn: bigint };
+    }>();
+  }
 });
