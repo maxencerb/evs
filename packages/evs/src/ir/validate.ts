@@ -880,11 +880,7 @@ class IrValidator {
    * `uint256[2]` → `uint256[2][]`, …). Only a malformed type is rejected.
    */
   private checkElemType(elem: EvsType, what: string): EvsType {
-    if (!isEvsValueType(elem)) {
-      return this.fail(
-        `${what}: array element type is not a valid EvsType, got ${stringifyType(elem)}`,
-      );
-    }
+    // the same well-formedness gate as every declared type (one check, one message)
     this.checkValueType(elem, `${what} element type`);
     // the narrowed #4 gate: the resulting array must stay within MAX_ARRAY_DEPTH (the element
     // already carries up to MAX_ARRAY_DEPTH − 1 suffixes).

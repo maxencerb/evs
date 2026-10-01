@@ -977,7 +977,7 @@ describe('validateIr — select/index/len/array rules', () => {
       }),
       /values\[1\].*nests arrays 5 levels deep/,
     );
-    // a malformed element type is rejected
+    // a malformed element type is rejected once, by the shared declared-type gate (one wording)
     expectInvalid(
       ir({
         values: [vi('uint256'), vi('uint256[]')],
@@ -986,7 +986,29 @@ describe('validateIr — select/index/len/array rules', () => {
           mk({ k: 'arrnew', elem: 'uint256[0]' as WordType, length: 0, out: 1 }),
         ],
       }),
-      /not a valid EvsType/,
+      /body\[1\] \(arrnew\) element type has an unsupported type "uint256\[0\]"/,
+    );
+    // ... and so is a builder-illegal one (a zero-component tuple), before the out-type match
+    expectInvalid(
+      ir({
+        values: [
+          vi('uint256'),
+          vi({
+            type: 'tuple[]',
+            components: [{ name: 'a', type: 'uint256' }],
+          } as unknown as EvsType),
+        ],
+        body: [
+          u256Const(0, 1n),
+          mk({
+            k: 'arrnew',
+            elem: { type: 'tuple', components: [] } as unknown as EvsType,
+            length: 0,
+            out: 1,
+          }),
+        ],
+      }),
+      /body\[1\] \(arrnew\) element type: tuple type carries no components/,
     );
     expectInvalid(
       ir({
