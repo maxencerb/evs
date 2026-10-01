@@ -163,9 +163,32 @@ export function memberName(comp: NamedType, index: number): string {
 }
 
 /**
+ * A raw ABI param/component as a {@link NamedType}, its optional `name` normalized to `''` at
+ * every depth. viem's `parseAbi` omits the key for an unnamed member (`(uint256 a, address)` →
+ * `[{ name: 'a', … }, { type: 'address' }]`); abitype reads an absent name as unnamed, so the
+ * runtime must too — {@link allMembersNamed} and `typesEqual` compare names against `''`. The
+ * recorder reads raw (unvalidated) overload inputs through this; anything that is not a plain
+ * `{ type: string }` param is left for the post-resolution validation to report.
+ */
+export function normalizeAbiParam(p: Readonly<Record<string, unknown>>): NamedType {
+  const name = typeof p['name'] === 'string' ? p['name'] : '';
+  const type = typeof p['type'] === 'string' ? p['type'] : '';
+  const comps: unknown = p['components'];
+  if (!Array.isArray(comps)) return { name, type };
+  return {
+    name,
+    type,
+    components: comps.map((c: unknown) =>
+      isRecordObj(c) ? normalizeAbiParam(c) : { name: '', type: '' },
+    ),
+  };
+}
+
+/**
  * abitype's (and viem's) tuple-literal rule: a tuple's host literal is a record keyed by member
- * name only when EVERY member is named; a single unnamed member makes it a positional array. The
- * interpreter's JS boundary (`ir/interp/coerce.ts`) applies the same rule, and the type-level
+ * name only when EVERY member is named; a single unnamed member makes it a positional array.
+ * `t` holds normalized components (`name: ''` for unnamed): a raw ABI's absent `name` must go
+ * through {@link normalizeAbiParam} first, as abitype reads it as unnamed too. The interpreter's JS boundary (`ir/interp/coerce.ts`) applies the same rule, and the type-level
  * twin is `AllMembersNamed` (core/types/derive.ts).
  */
 export function allMembersNamed(t: TupleType): boolean {

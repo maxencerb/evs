@@ -12,6 +12,7 @@
  * `overloadCases` runs inside a script body.
  */
 import type { Abi } from 'abitype';
+import { parseAbi } from 'viem';
 
 import type { ScriptBuilder } from '../../src/builder/script.js';
 import { t, type Expr } from '../../src/core/types.js';
@@ -143,10 +144,22 @@ export const abis = {
       'uint8',
     ),
   ],
+  // the same sets as viem's `parseAbi` emits them: an unnamed member carries NO `name` key (an
+  // absent name is unnamed, exactly like `''`), at the top level and nested in a named struct
+  mixedTupleParsed: parseAbi([
+    'function f((uint256 a, address) x) view returns (bool)',
+    'function f((address a, uint256) x) view returns (uint8)',
+  ]),
+  nestedMixedParsed: parseAbi([
+    'function f(((uint256 a, address) s) x) view returns (bool)',
+    'function f(((address a, uint256) s) x) view returns (uint8)',
+  ]),
 } as const satisfies Record<string, Abi>;
 
 /** The first overload's mixed tuple `(uint256 a, address)`, as an evs type (for a Tuple handle). */
 const MIXED = t.fromAbiParameter(abis.mixedTuple[0].inputs[0]);
+/** The same tuple from the `parseAbi` set (its unnamed member has no `name` key). */
+const MIXED_PARSED = t.fromAbiParameter(abis.mixedTupleParsed[0].inputs[0]);
 
 export const ALICE = '0x00000000000000000000000000000000000000a1';
 export const HASH = '0x00000000000000000000000000000000000000000000000000000000000000ff';
@@ -537,6 +550,43 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       abi: abis.mixedTuple,
       args: [s.tuple(MIXED, [x, ALICE])],
       expect: 'f((uint256,address))',
+    },
+    // -- the same, from parseAbi (an unnamed member has no `name` key) ---------------------------
+    {
+      name: 'parseAbi: positional [uint256, address] vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTupleParsed,
+      args: [[1n, ALICE]],
+      expect: 'f((uint256,address))',
+    },
+    {
+      name: 'parseAbi: positional [address, uint256] vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTupleParsed,
+      args: [[ALICE, x]],
+      expect: 'f((address,uint256))',
+    },
+    {
+      name: 'parseAbi: {a} record vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTupleParsed,
+      args: [{ a: 1n }],
+      expect: 'none',
+    },
+    {
+      name: 'parseAbi: mixed Tuple handle vs (uint256 a, address) + (address a, uint256)',
+      abi: abis.mixedTupleParsed,
+      args: [s.tuple(MIXED_PARSED, [x, ALICE])],
+      expect: 'f((uint256,address))',
+    },
+    {
+      name: 'parseAbi: {s: [uint256, address]} vs nested (uint256 a, address) + (address a, uint256)',
+      abi: abis.nestedMixedParsed,
+      args: [{ s: [x, ALICE] }],
+      expect: 'f(((uint256,address)))',
+    },
+    {
+      name: 'parseAbi: {s: {a}} vs nested (uint256 a, address) + (address a, uint256)',
+      abi: abis.nestedMixedParsed,
+      args: [{ s: { a: ALICE } }],
+      expect: 'none',
     },
   ] as const;
 }

@@ -1635,6 +1635,16 @@ describe('checklist: tuple literals', () => {
     );
   });
 
+  test('a fully unnamed tuple rejects an index-keyed record (write the array)', () => {
+    const P = t.tuple(t.uint256, t.address);
+    expectEvs(
+      () => recT((s, who) => s.tuple(P, { 0: 1n, 1: who } as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /takes a positional array of its 2 member\(s\) \(\[0\], \[1\]\), not a record/,
+    );
+  });
+
   test('a partly named tuple takes a positional array (abitype/viem rule)', () => {
     // records: the positional literal, a partial one (omitted → zero), and nested in a struct
     const script = evscript({ name: 'mixed', args: [t.address] }, (s, who) => {

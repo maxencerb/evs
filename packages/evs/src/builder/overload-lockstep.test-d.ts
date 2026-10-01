@@ -67,6 +67,14 @@ test('a resolved call is typed from the overload the recorder records', () => {
       args: [[1n, 2n]],
     });
     expectTypeOf(fx).toEqualTypeOf<Expr<'address'>>();
+    // a parseAbi tuple whose unnamed member has no `name` key is positional (the recorder agrees)
+    const pa = s.read({
+      address: target,
+      abi: abis.mixedTupleParsed,
+      functionName: 'f',
+      args: [[1n, ALICE]],
+    });
+    expectTypeOf(pa).toEqualTypeOf<Expr<'bool'>>();
     // finding 8: tuple[N] handles, Expr-bearing literals
     const tf = s.read({
       address: target,
