@@ -120,9 +120,10 @@ export type ArgHandle<t extends EvsType> = t extends TupleType
  * `readonly AbiParameter[]` with no intersection — an intersection breaks abitype's `>6`-element
  * rest-pattern match (it falls back to `readonly unknown[]`, dropping args), so it must stay a clean
  * tuple. Going through viem rather than abitype directly keeps evs on viem's abitype copy (no second
- * one installed, see `core/types.ts`); a viem whose abitype predates named tuples gives the same
- * tuple without labels. The trailing `infer … extends` re-states the array bound viem's result type
- * does not declare, so generic code can still spread the handles.
+ * one installed, see `core/types.ts`); viem passes the named-tuple flag from 2.43.0 (abitype 1.2), so
+ * an older viem in the `>=2.14.1` peer range gives the same tuple without labels. The trailing
+ * `infer … extends` re-states the array bound viem's result type does not declare, so generic code
+ * can still spread the handles.
  */
 export type LabelCarrier<specs extends readonly ArgSpec[]> =
   ContractConstructorArgs<

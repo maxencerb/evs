@@ -81,6 +81,8 @@ test('public-signature helper types are exported by name', () => {
   expectTypeOf<ToViemMode>().toEqualTypeOf<'deployless' | 'stateOverride'>();
 });
 
+// Without a `Register` augmentation two abitype copies agree on `0x${string}`, so this only pins
+// the export; the single-copy guarantee is `abitype.test.ts`'s augmented fixture.
 test("abitype's types come through viem: evs's Address is viem's", () => {
   expectTypeOf<Address>().toEqualTypeOf<ViemAddress>();
 });

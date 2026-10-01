@@ -291,8 +291,11 @@ Releases: see [Releasing](#releasing) below.
   reaches only one of them. A lint rule (`no-restricted-imports` on `abitype` for
   `packages/evs/**`, root `vite.config.ts`) keeps it that way; the one abitype type viem does not
   re-export, `AbiParametersToPrimitiveTypes` (the named-tuple labels behind `LabelCarrier`), goes
-  through viem's `ContractConstructorArgs`. `src/abitype.test.ts` pins the manifest and compiles
-  an app-shaped `Register` augmentation in a program of its own.
+  through viem's `ContractConstructorArgs` (which passes the named-tuple flag from viem 2.43.0:
+  an older viem gives the same body-callback parameter types without the labels).
+  `src/abitype.test.ts` pins the manifest and compiles an app-shaped `Register` augmentation in a
+  program of its own, redirecting `abitype` to viem's copy for the fixture only (a `paths` entry
+  would redirect evs's own imports too and hide a second copy).
 
 ## Testing
 

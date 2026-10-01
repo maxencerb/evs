@@ -87,8 +87,9 @@ export type ReturnSpecToComponents<ret extends Record<string, ReturnValue>> =
     : MapComponents<UnionToTuple<keyof ret>, ret>;
 
 // `ArgName` / `ResolveArgName` / `ArgsToInputs` (the input-labeling machinery) moved to
-// core/types.ts (issue #15 — `t.error` types its ABI inputs with them and core takes no
-// non-abitype imports); re-exported here verbatim so this module's public surface is unchanged.
+// core/types.ts (issue #15 — `t.error` types its ABI inputs with them and core takes no runtime
+// code from viem, only types); re-exported here verbatim so this module's public surface is
+// unchanged.
 export type { ArgName, ArgsToInputs, ResolveArgName } from '../core/types.js';
 
 /** The literal-typed error entries appended to {@link ScriptAbi} for the DECLARED errors
