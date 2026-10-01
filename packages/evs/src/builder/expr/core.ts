@@ -4,7 +4,11 @@
  * `lit`, and cells.
  */
 
-import { encodeLiteralWord, encodeLiteralData } from '../../abi/artifact.js';
+import {
+  canonicalTypeSignature,
+  encodeLiteralWord,
+  encodeLiteralData,
+} from '../../abi/artifact.js';
 import { layoutOfType } from '../../abi/layout.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError } from '../../core/errors.js';
 import {
@@ -475,7 +479,7 @@ export abstract class RecorderCore {
       this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
     }
     const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
-    const arrId = this.newValue(type, `${stringifyType(type)} literal`);
+    const arrId = this.newValue(type, `${canonicalTypeSignature(type)} literal`);
     this.appendStmt({
       k: 'arrnew',
       elem,

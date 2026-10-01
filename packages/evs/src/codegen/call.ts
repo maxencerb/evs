@@ -27,8 +27,10 @@
  *   (`w.returndatacopyAll`).
  * - strict failure → verbatim bubble; decode failure → `plan.dfailLabel` (an `'any'` stub the
  *   program assembler emits — `codegen/tails.ts` `emitDecodeFailStub`).
- * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata to a
- *   fresh allocation and bump the free pointer.
+ * - `rds ≥ 32·nOutputs` guard BEFORE any head read; then snapshot the whole returndata at
+ *   `MLOAD(0x40)`. The free pointer is bumped past it only when an output is a memref
+ *   (`callSiteAllocates`): word-only outputs are copied out at once, so their snapshot stays
+ *   transient and a loop of word reads does not grow memory.
  * - word outputs normalize-don't-revert; dynamic outputs validate in place (2^64 guards,
  *   overflow-free bounds) aliasing the snapshot; array elements normalize eagerly.
  * - try mode: `plan.dfailLabel` IS the zero block, emitted inline here as a *checked* label
@@ -43,5 +45,6 @@
  */
 
 export type { CallSitePlan } from './call/shared.js';
+export { callSiteAllocates } from './call/shared.js';
 export { emitStaticCall } from './call/static-call.js';
 export { emitSimulateCall } from './call/simulate-call.js';

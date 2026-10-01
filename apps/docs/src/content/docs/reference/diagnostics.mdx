@@ -108,28 +108,77 @@ declare const diagnostic: EvsDiagnostic;
 diagnostic.severity; // 'warning' — every diagnostic is a warning; hard failures throw instead
 diagnostic.code; // 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT' | 'DEPLOYLESS_RESULT_PREFIX' | 'DEPLOYLESS_RESULT_SIZE'
 diagnostic.message; // human-readable explanation with concrete guidance
+diagnostic.site; // number | undefined — the statement that raised it (absent on LARGE_FRAME and DEPLOYLESS_RESULT_*)
 ```
+
+`site` is the id of the recorded statement behind a `LOOP_ALLOCATION` or `ENV_FRAME_DEPENDENT`
+warning: the `site` of that statement in `compiled.ir`, with an entry (its kind and a short
+description) in `compiled.sourceMap.sites`. Every recorded statement has its own id, so two
+look-alike statements — the same read written twice in one loop — produce two warnings with the
+same message and different sites.
 
 | Code | Triggers when | Why it matters |
 | --- | --- | --- |
-| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray`, `s.tuple(...)` (struct/tuple flat-block allocation), a sub-call with outputs — `s.read`, `s.call`, `s.simulate` or their `try*` forms (each call snapshots returndata), `s.encode`/`s.encodePacked` and `s.keccak256` over values that need encoding (a fresh bytes memref), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
+| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray` or an array literal, `s.tuple(...)` or a `struct: true` read (a flat-block allocation), an `s.read`/`s.call` (or `try*` form) with a `string`, `bytes`, array or tuple output (the returndata snapshot it aliases or decodes from), any `s.simulate`/`s.trySimulate` (the trampoline payload snapshot), `s.encode`/`s.encodePacked` and `s.keccak256` over values that need encoding (a fresh bytes memref), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates. A read whose outputs are all words (`uint256`, `address`, `bool`, …) allocates nothing and does not warn | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
 | `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
 | `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')` | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/) |
 | `DEPLOYLESS_RESULT_PREFIX` | The result is ABI-static and its first word is a `bytesN`, `uint256` or `int256` (directly or as the first member of a static struct or fixed array); the message names it, e.g. `` `pos.id` (bytes32) `` | Deployless mode deposits the result as contract code, which must not start with `0xEF` (EIP-3541): the call fails whenever that value's first byte is `0xEF` — about 1 time in 256 for a hash. Use `toViem({ mode: 'stateOverride' })`, or return an `address`, `bool`, narrower integer or any dynamic value first. See [deployless limits](/reference/artifact/#deployless-limits) |
 | `DEPLOYLESS_RESULT_SIZE` | The encoded result is always over 24,576 bytes: exactly, for a static result, or with every dynamic part empty | Every deployless call fails (EIP-170 applies to the deposited result); use `toViem({ mode: 'stateOverride' })` or return less |
 
-The `ENV_FRAME_DEPENDENT` warning for the example above reads:
+Each `LOOP_ALLOCATION` message names the builder call that allocates — `s.read(symbol)`,
+`s.read(pair) struct` for a `struct: true` read, `s.keccak256(…) encoded bytes`,
+`s.newArray((uint256,address))` — and says what to do about it:
+
+```ts
+import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbols = evscript({ name: 'symbols', args: [t.array(t.address)] }, (s, tokens) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(tokens, (token) => {
+    // a word output (decimals) allocates nothing; a string output keeps its returndata
+    s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+    const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+    total.set(total.get().add(symbol.length()));
+  });
+  return s.return({ total: total.get() });
+});
+
+const loopWarnings: EvsDiagnostic[] = [];
+const compiled = compile(symbols, {
+  onDiagnostic: (d) => {
+    if (d.code === 'LOOP_ALLOCATION') loopWarnings.push(d);
+  },
+});
+// one warning, for the symbol read; its site resolves in the source map
+const site = compiled.sourceMap.sites.find((x) => x.id === loopWarnings[0]?.site);
+site?.detail; // 'decoding symbol() returndata'
+```
+
+The warning reads:
+
+```txt
+s.read(symbol) (returndata snapshot) allocates memory on every loop iteration; evs never resets the free pointer, so memory grows monotonically for the lifetime of the call and each iteration pays more memory-expansion gas than the last. Hoist it out of the loop when it does not depend on the iteration; for a short, bounded loop the cost is small — filter this warning on its code and site (site ids are positional: re-check the filter after editing the script)
+```
+
+The `ENV_FRAME_DEPENDENT` warning for the first example reads:
 
 ```txt
 s.env('caller') is execution-frame-dependent: in the default deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' }) plus the `account` call parameter
 ```
 
 :::note
-There is no per-site suppression mechanism. Diagnostics are opt-in: if you do not pass
+There is no built-in suppression mechanism. Diagnostics are opt-in: if you do not pass
 `onDiagnostic`, you never see them; to ignore a category, filter on `code` inside your
-callback. `s.env('timestamp')`, `s.env('blocknumber')`, and `s.env('chainid')` are block
-context — identical across both modes — and do not warn. The two `DEPLOYLESS_RESULT_*` warnings
-concern only the default deployless mode; filter them out when you always run state-override.
+callback, and to accept one specific statement (a short loop you have measured), filter on
+`code` and `site` together. A site id is positional — statements are numbered in recording
+order — so it is stable only while the script's statements stay the same: adding or removing a
+statement before the one you filtered shifts its id, and the filter then silences a different
+statement. Re-check such a filter after every edit, or match on the site's `detail` in
+`compiled.sourceMap.sites` instead of a bare number. `s.env('timestamp')`,
+`s.env('blocknumber')`, and `s.env('chainid')` are block context — identical across both modes —
+and do not warn. The two `DEPLOYLESS_RESULT_*` warnings concern only the default deployless
+mode; filter them out when you always run state-override.
 :::
 
 ## Runtime panics

@@ -1,0 +1,7 @@
+---
+"@maxencerb/evs": minor
+---
+
+`s.read` / `s.call` (and their `try*` forms) whose outputs are all words (`uint256`, `address`, `bool`, …) no longer allocate memory. Their returndata is copied straight into the output slots, so a loop of such reads (the multicall pattern) keeps a flat cost per iteration instead of growing memory every time, and no longer raises `LOOP_ALLOCATION`. Bytecode changes for these call sites: each is a few bytes smaller and cheaper. Reads with a `string`, `bytes`, array or tuple output, and every `s.simulate`, still allocate and still warn.
+
+`LOOP_ALLOCATION` and `ENV_FRAME_DEPENDENT` diagnostics now carry `site`, the id of the statement that raised them (its entry is in `compiled.sourceMap.sites`), so two warnings from look-alike statements can be told apart and one statement can be filtered out. `LOOP_ALLOCATION` messages name the builder call that allocates: a `struct: true` read reads `s.read(pair) struct` instead of `s.tuple(…)`, `s.keccak256` over values reads `s.keccak256(…) encoded bytes` instead of `s.encode(…)`, `s.newArray` of a struct quotes the compact type (`s.newArray((uint256,address))`) instead of its JSON, and a call reads `s.read(symbol)` / `s.tryCall(quote)` / …. Each message now also says what to do (hoist the statement, or filter the warning on its code and site, re-checked after edits since site ids are positional). Also flags `s.simulate` sites with no outputs in a loop, which allocate too.

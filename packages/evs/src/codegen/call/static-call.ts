@@ -35,6 +35,7 @@ import {
   pushWordRef,
   pushGasRef,
   emitSnapshotReturndata,
+  callSiteAllocates,
   pushSnapEnd,
   pushSnap,
   pushSnapOffsetBase,
@@ -174,8 +175,14 @@ export function emitStaticCall(
     emitDecodeFailPre(1); // [buf]
 
     // snapshot ENTIRE returndata at buf; tuple/composite outputs additionally need the base in
-    // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata).
-    emitSnapshotReturndata(w, hasTupleOut, { reserveBudgetWord: budgeted }); // [buf]
+    // SNAP_SLOT (they decode through scratch — see emitSnapshotReturndata). Word-only outputs
+    // are copied into their slots right below, so their snapshot stays transient: the free
+    // pointer is not bumped and a loop of such reads does not grow memory. A budgeted decode
+    // keeps its budget word past the snapshot, so it always bumps.
+    emitSnapshotReturndata(w, hasTupleOut, {
+      bump: budgeted || callSiteAllocates(stmt),
+      reserveBudgetWord: budgeted,
+    }); // [buf]
     const pushEnd = (): void => pushSnapEnd(w);
     if (budgeted) emitInitDecodeBudget(w, pushEnd, 0); // [buf]
 

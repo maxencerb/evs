@@ -8,7 +8,12 @@
  * `optimize: true` twin. Runner, callee table and fixture constants: `test/harness/differential.ts`.
  */
 
-import { decodeFunctionResult, encodeAbiParameters, encodeErrorResult } from 'viem';
+import {
+  decodeFunctionResult,
+  encodeAbiParameters,
+  encodeErrorResult,
+  encodeFunctionData,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { Reverter } from '../../test/generated/index.js';
@@ -26,10 +31,13 @@ import {
   erc20ishAbi,
   sel,
   abiEchoMock,
+  fixtureOf,
   type CalleeTable,
 } from '../../test/harness/differential.js';
+import { execRuntime } from '../../test/harness/evm.js';
 import { concatHex, word } from '../../test/harness/fixtures.js';
 import { evscript } from '../builder/script.js';
+import { compile } from '../compile.js';
 import { t, type Hex } from '../core/types.js';
 
 // ---------------------------------------------------------------------------
@@ -299,5 +307,59 @@ describe('tryCall', () => {
       [DEAD]: { kind: 'return', data: encodeAbiParameters([{ type: 'uint256[]' }], [[5n]]) },
     };
     await expectAgreement(tryScript(), [[]], table);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// 10. calls in loops: word-only outputs read a transient snapshot (no memory growth)
+// ---------------------------------------------------------------------------
+
+describe('calls in loops', () => {
+  // `n` reads per call; the marginal gas of the n → n+100 and n+100 → n+200 steps must be
+  // identical when an iteration leaves memory untouched, and grows (quadratic memory expansion)
+  // when every iteration keeps a fresh returndata snapshot.
+  const loopOf = (fn: 'multi' | 'symbol') =>
+    evscript({ name: 'loop', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, () => {
+        if (fn === 'multi') {
+          const [a, b] = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'multi' });
+          const tried = s.tryRead({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
+          acc.set(acc.get().add(a.toUint(t.uint256)).add(b.toUint(t.uint256).mod(7n)));
+          acc.set(acc.get().add(tried.value.toUint(t.uint256)));
+        } else {
+          const sym = s.read({ address: TOKB, abi: erc20ishAbi, functionName: 'symbol' });
+          acc.set(acc.get().add(sym.length()));
+        }
+      });
+      return s.return({ acc: acc.get() });
+    });
+  const table: CalleeTable = {
+    [TOKA]: { kind: 'return', data: concatHex(word(3n), word(5n), word(1n)) },
+    [TOKB]: { kind: 'return', data: encodeAbiParameters([{ type: 'string' }], ['OK']) },
+  };
+  const secondDifference = async (fn: 'multi' | 'symbol'): Promise<bigint> => {
+    const runtime = compile(loopOf(fn)).runtimeBytecode;
+    const gasAt = async (n: bigint): Promise<bigint> => {
+      const data = encodeFunctionData({ abi: loopOf(fn).abi, functionName: 'loop', args: [n] });
+      const res = await execRuntime(runtime, data, fixtureOf(table));
+      expect(res.success, `loop(${n})`).toBe(true);
+      return res.gasUsed;
+    };
+    const [g0, g1, g2] = [await gasAt(10n), await gasAt(110n), await gasAt(210n)];
+    return g2 - g1 - (g1 - g0);
+  };
+
+  test('word-only reads (strict + try) agree with the interpreter', async () => {
+    await expectAgreement(loopOf('multi'), [[0n], [1n], [5n]], table);
+    await expectAgreement(loopOf('symbol'), [[0n], [3n]], table);
+  });
+
+  test('a word-only read costs the same on every iteration: memory does not grow', async () => {
+    expect(await secondDifference('multi')).toBe(0n);
+  });
+
+  test('a memref-output read keeps its snapshot: memory grows every iteration', async () => {
+    expect(await secondDifference('symbol')).toBeGreaterThan(0n);
   });
 });

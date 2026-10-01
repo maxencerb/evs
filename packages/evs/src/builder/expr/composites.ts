@@ -3,6 +3,7 @@
  * tuple field access, and mutable arrays (`s.newArray`, element get / set).
  */
 
+import { canonicalTypeSignature } from '../../abi/artifact.js';
 import { layoutOfType } from '../../abi/layout.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
@@ -13,7 +14,6 @@ import {
   abiParamToType,
   type Expr,
   arrayTypeOf,
-  stringifyType,
 } from '../../core/types.js';
 import type { ValueId } from '../../ir/nodes.js';
 import { RecorderCore } from './core.js';
@@ -131,7 +131,9 @@ export abstract class RecorderComposites extends RecorderCore {
     if (lenLit !== undefined && lenLit >= 1n << 32n) {
       this.certainPanic('s.newArray()', `literal length ${lenLit} is ≥ 2^32`, 0x41);
     }
-    const tag = stringifyType(elemType);
+    // the compact Solidity type name (`(uint256,address)`, not the JSON of a struct type): the
+    // LOOP_ALLOCATION diagnostic quotes this debugName
+    const tag = canonicalTypeSignature(elemType);
     const arrId = this.newValue(arrType, `s.newArray(${tag})`);
     this.appendStmt({
       k: 'arrnew',

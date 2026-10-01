@@ -331,6 +331,155 @@ function chainScript() {
   });
 }
 
+describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
+  const PAIR_ABI = [
+    {
+      type: 'function',
+      name: 'pair',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: 'a', type: 'uint256' },
+        { name: 'b', type: 'uint256' },
+      ],
+    },
+    {
+      type: 'function',
+      name: 'symbol',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: '', type: 'string' }],
+    },
+  ] as const;
+  const TARGET = '0x00000000000000000000000000000000000000aa';
+
+  function loopDiagnostics(script: EvsScript): EvsDiagnostic[] {
+    const diags: EvsDiagnostic[] = [];
+    compile(script, { onDiagnostic: (d) => diags.push(d) });
+    return diags.filter((d) => d.code === 'LOOP_ALLOCATION');
+  }
+  const labelsOf = (diags: readonly EvsDiagnostic[]): (string | undefined)[] =>
+    diags.map((d) => d.message.split(' allocates memory')[0]);
+
+  test('a word-only read in a loop is not flagged (its returndata snapshot is transient)', () => {
+    const script = evscript({ name: 'words', args: [t.array(t.address)] }, (s, xs) => {
+      const acc = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => {
+        const [a, b] = s.read({ address: x, abi: PAIR_ABI, functionName: 'pair' });
+        const tried = s.tryRead({ address: x, abi: PAIR_ABI, functionName: 'pair' });
+        const [c] = tried.value;
+        acc.set(acc.get().add(a).add(b).add(c));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(loopDiagnostics(script)).toEqual([]);
+  });
+
+  test('struct: true names the read, not s.tuple(…)', () => {
+    const script = evscript({ name: 'structs', args: [t.array(t.address)] }, (s, xs) => {
+      const acc = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => {
+        const r = s.read({ address: x, abi: PAIR_ABI, functionName: 'pair', struct: true });
+        acc.set(acc.get().add(r.a.get()));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      's.read(pair) struct (flat-block allocation)',
+    ]);
+  });
+
+  test('s.keccak256 over values names s.keccak256, s.encode names s.encode', () => {
+    const script = evscript({ name: 'hashes', args: [t.array(t.bytes32)] }, (s, xs) => {
+      const acc = s.let(t.bytes32, `0x${'00'.repeat(32)}`);
+      s.forEach(xs, (x) => {
+        acc.set(s.keccak256(x, x));
+        acc.set(s.keccak256(xs));
+        acc.set(s.keccak256(s.encode(x, x)));
+        acc.set(s.keccak256(s.encodePacked(x, x)));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      's.keccak256(…) encoded bytes (fresh bytes memref)',
+      's.keccak256(…) encoded bytes (fresh bytes memref)',
+      's.encode(…) (fresh bytes memref)',
+      's.encodePacked(…) (fresh bytes memref)',
+    ]);
+  });
+
+  test('s.newArray of a struct quotes the compact type name, not its JSON', () => {
+    const P = t.struct({ a: t.uint256, b: t.address });
+    const script = evscript({ name: 'arrs', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, () => {
+        acc.set(acc.get().add(s.newArray(P, 1n).length));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      's.newArray((uint256,address)) (array allocation)',
+    ]);
+  });
+
+  test('look-alike reads get distinct sites that resolve in sourceMap.sites', () => {
+    const script = evscript({ name: 'twice', args: [t.array(t.address)] }, (s, xs) => {
+      const acc = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => {
+        const a = s.read({ address: x, abi: PAIR_ABI, functionName: 'symbol' });
+        const b = s.read({ address: TARGET, abi: PAIR_ABI, functionName: 'symbol' });
+        acc.set(acc.get().add(a.length()).add(b.length()));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    const diags: EvsDiagnostic[] = [];
+    const compiled = compile(script, { onDiagnostic: (d) => diags.push(d) });
+    const loopAllocs = diags.filter((d) => d.code === 'LOOP_ALLOCATION');
+    expect(labelsOf(loopAllocs)).toEqual([
+      's.read(symbol) (returndata snapshot)',
+      's.read(symbol) (returndata snapshot)',
+    ]);
+    const [first, second] = loopAllocs;
+    expect(first?.message).toBe(second?.message);
+    expect(first?.site).not.toBe(second?.site);
+    for (const d of loopAllocs) {
+      expect(compiled.sourceMap.sites.find((site) => site.id === d.site)?.detail).toBe(
+        'decoding symbol() returndata',
+      );
+    }
+  });
+  test('site ids are positional: an earlier statement shifts the id, the detail stays', () => {
+    const build = (extra: boolean) =>
+      evscript({ name: 'shifted', args: [t.array(t.address)] }, (s, xs) => {
+        const acc = s.let(t.uint256, 0n);
+        if (extra) acc.set(acc.get().add(1n)); // one more recorded statement before the loop
+        s.forEach(xs, (x) => {
+          const sym = s.read({ address: x, abi: PAIR_ABI, functionName: 'symbol' });
+          acc.set(acc.get().add(sym.length()));
+        });
+        return s.return({ acc: acc.get() });
+      });
+    const resolve = (script: EvsScript) => {
+      const diags: EvsDiagnostic[] = [];
+      const compiled = compile(script, { onDiagnostic: (d) => diags.push(d) });
+      const d = diags.find((x) => x.code === 'LOOP_ALLOCATION');
+      expect(d?.message).toContain('site ids are positional');
+      return {
+        site: d?.site,
+        detail: compiled.sourceMap.sites.find((x) => x.id === d?.site)?.detail,
+      };
+    };
+    const before = resolve(build(false));
+    const after = resolve(build(true));
+    // deterministic for an unchanged script …
+    expect(resolve(build(false))).toEqual(before);
+    // … but editing earlier code renumbers it: a bare-number filter would go stale
+    expect(after.site).not.toBe(before.site);
+    expect(after.detail).toBe(before.detail);
+    expect(before.detail).toBe('decoding symbol() returndata');
+  });
+});
+
 describe('optimize: the built-in passes — frame allocator (#41) + peephole (#39)', () => {
   test('optimize: true = packed-frame lowering + `evsPeephole`; the default is untouched', () => {
     const plain = compile(sumScript());

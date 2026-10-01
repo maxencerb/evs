@@ -151,7 +151,11 @@ Releases: see [Releasing](#releasing) below.
   `s.tuple` members point at — a zero-filled pointer slot would alias scratch, so memref slots
   are always initialised; `emitZeroValue` in `codegen/memory.ts`), a **static frame from `0x80`**
   with one 32-byte slot per arg / cell / value, and bump allocations after it (returndata
-  snapshots, dynamic values, mutable arrays, the return tuple). Every word in a slot is
+  snapshots, dynamic values, mutable arrays, the return tuple). A `s.read`/`s.call` site whose
+  outputs are all words snapshots its returndata above the free pointer without bumping it (the
+  words are copied into their slots at once); `callSiteAllocates` in `codegen/call/shared.ts`
+  decides this for both the emitter and the `LOOP_ALLOCATION` diagnostic, so the two cannot
+  drift. Every word in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);
   dynamic values and tuples are pointers. Every array — `T[]` and fixed-size `T[N]` alike — is a
   length-prefixed block (`[len][slot…]`, `len === N` for a `T[N]`) of inline words or element
