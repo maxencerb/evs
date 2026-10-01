@@ -770,6 +770,12 @@ describe('deserializeIr rejections', () => {
 
   test('rejects unknown statement kinds and ops', () => {
     reject((r) => (r['body'][0]['k'] = 'frobnicate'), /unknown statement kind/);
+    // the kind table is an own-key lookup: inherited Object.prototype names are not kinds. An
+    // `in` lookup would let them through to decodeStmt's unreachable default, which throws an
+    // EvsInternalError with a different message, so `reject` would fail on both counts.
+    for (const k of ['toString', 'constructor', '__proto__', 'hasOwnProperty']) {
+      reject((r) => (r['body'][0]['k'] = k), /body\[0\]\.k: unknown statement kind/);
+    }
     reject((r) => delete r['body'][0]['k'], /\.k/);
     reject((r) => (r['body'][1]['op'] = 'exp'), /unknown bin op/);
     reject((r) => (r['body'][2]['op'] = 'neg'), /unknown un op/);

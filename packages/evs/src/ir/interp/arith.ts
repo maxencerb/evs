@@ -20,7 +20,7 @@ import {
   fixedLengthOf,
   peelArraySuffix,
 } from '../../core/types.js';
-import type { ModArithOp } from '../nodes.js';
+import type { BinOp, EnvOp, ModArithOp } from '../nodes.js';
 import {
   MASK256,
   panicSignal,
@@ -39,7 +39,7 @@ import {
 // checked arithmetic + word ops
 // ---------------------------------------------------------------------------
 
-export function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint {
+export function binOp(op: BinOp, type: WordType, a: bigint, b: bigint): bigint {
   switch (op) {
     case 'add':
     case 'sub':
@@ -94,8 +94,10 @@ export function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint 
       const r = b >= 256n ? 0n : a >> b;
       return canonWord(type, r);
     }
-    default:
-      throw new EvsInternalError('INTERNAL', `interpret: unknown bin op '${op}'`);
+    default: {
+      const unknown: never = op; // a compile error here means a BinOp has no case
+      throw new EvsInternalError('INTERNAL', `interpret: unknown bin op '${String(unknown)}'`);
+    }
   }
 }
 
@@ -132,8 +134,10 @@ function arith(
       if (b === 0n) throw panicSignal(0x12);
       r = a % b; // bigint remainder follows the dividend's sign — exactly SMOD/MOD
       break;
-    default:
-      throw new EvsInternalError('INTERNAL', `interpret: unknown arith op '${String(op)}'`);
+    default: {
+      const unknown: never = op; // a compile error here means an arith op has no case
+      throw new EvsInternalError('INTERNAL', `interpret: unknown arith op '${String(unknown)}'`);
+    }
   }
   if (r < min || r > max) throw panicSignal(0x11); // Panic 0x11 (overflow/underflow)
   return fromLogical(r);
@@ -177,8 +181,10 @@ export function modArith(op: ModArithOp, a: bigint, b: bigint, n: bigint): bigin
       if (q > MASK256) throw panicSignal(0x11);
       return q;
     }
-    default:
-      throw new EvsInternalError('INTERNAL', `interpret: unknown modarith op '${String(op)}'`);
+    default: {
+      const unknown: never = op; // a compile error here means a ModArithOp has no case
+      throw new EvsInternalError('INTERNAL', `interpret: unknown modarith op '${String(unknown)}'`);
+    }
   }
 }
 
@@ -292,7 +298,7 @@ export function constValue(type: EvsType, data: { kind: 'word' | 'data'; hex: He
   return { kind: 'array', elem, items };
 }
 
-export function envValue(op: string, env: ResolvedEnv): bigint {
+export function envValue(op: EnvOp, env: ResolvedEnv): bigint {
   switch (op) {
     case 'address':
       return env.address;
@@ -304,8 +310,10 @@ export function envValue(op: string, env: ResolvedEnv): bigint {
       return env.blocknumber;
     case 'chainid':
       return env.chainid;
-    default:
-      throw new EvsInternalError('INTERNAL', `interpret: unknown env op '${op}'`);
+    default: {
+      const unknown: never = op; // a compile error here means an EnvOp has no case
+      throw new EvsInternalError('INTERNAL', `interpret: unknown env op '${String(unknown)}'`);
+    }
   }
 }
 

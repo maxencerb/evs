@@ -235,8 +235,32 @@ class Dce {
         if (first !== undefined) for (const v of memrefs) this.union(first, v);
         return;
       }
-      default:
-        return; // fresh allocations (const/arrnew/encode/slice/call outs) and words
+      // fresh allocations (const/arrnew/encode/slice/call outs), words, and statements with no out
+      case 'const':
+      case 'bin':
+      case 'un':
+      case 'modarith':
+      case 'env':
+      case 'account':
+      case 'len':
+      case 'slice':
+      case 'arrnew':
+      case 'encode':
+      case 'keccak256':
+      case 'throw':
+      case 'call':
+      case 'if':
+      case 'while':
+      case 'break':
+      case 'continue':
+        return;
+      default: {
+        const unknown: never = s; // a compile error here means a statement kind has no case
+        throw new EvsInternalError(
+          'INTERNAL',
+          `dce: unknown statement kind '${String((unknown as { k?: unknown }).k)}'`,
+        );
+      }
     }
   }
 
@@ -258,13 +282,6 @@ class Dce {
     walkStmts(fn.body, (s) => {
       if (!pure) return;
       switch (s.k) {
-        case 'call':
-        case 'throw':
-        case 'while':
-        case 'break':
-        case 'continue':
-          pure = false;
-          return;
         case 'fncall':
           if (!this.isPureFn(s.fn)) pure = false;
           return;
@@ -273,6 +290,7 @@ class Dce {
           if (paramRoots.has(this.find(s.k === 'arrset' ? s.arr : s.tuple))) pure = false;
           return;
         default:
+          if (isObservable(s)) pure = false;
           return;
       }
     });
@@ -299,18 +317,7 @@ class Dce {
   }
 
   private isSeed(s: Stmt): boolean {
-    switch (s.k) {
-      case 'call':
-      case 'throw':
-      case 'while':
-      case 'break':
-      case 'continue':
-        return true;
-      case 'fncall':
-        return !this.isPureFn(s.fn);
-      default:
-        return false; // cellnew/cellset follow their cell (markCell), never seed on their own
-    }
+    return s.k === 'fncall' ? !this.isPureFn(s.fn) : isObservable(s);
   }
 
   /** A cell becomes live with its first live `cellget`; every write to it then stays. */
@@ -393,6 +400,7 @@ class Dce {
     return changed ? Object.freeze(out) : stmts;
   }
 
+  /** Re-filters the nested blocks of a kept statement (only `if` and `while` hold any). */
   private rebuildStmt(s: Stmt): Stmt {
     switch (s.k) {
       case 'if': {
@@ -409,6 +417,56 @@ class Dce {
       }
       default:
         return s;
+    }
+  }
+}
+
+/**
+ * Whether `s` is observable on its own, whatever reads its outs: a `call` (gas, state, its
+ * revert), a `throw`, and control flow (a `while` may not terminate; `break` / `continue` steer
+ * it). It seeds liveness and makes a fn impure. `fncall` depends on the callee's purity and
+ * `arrset` / `tupleset` on aliasing, so the callers decide those before asking; `cellnew` /
+ * `cellset` follow their cell (`markCell`) and never seed on their own. Exhaustive on purpose: a
+ * new statement kind must be classified here, or it would be dropped as dead code.
+ */
+function isObservable(s: Stmt): boolean {
+  switch (s.k) {
+    case 'call':
+    case 'throw':
+    case 'while':
+    case 'break':
+    case 'continue':
+      return true;
+    case 'const':
+    case 'bin':
+    case 'un':
+    case 'modarith':
+    case 'env':
+    case 'account':
+    case 'convert':
+    case 'select':
+    case 'index':
+    case 'len':
+    case 'slice':
+    case 'arrnew':
+    case 'arrset':
+    case 'tuplenew':
+    case 'field':
+    case 'tupleset':
+    case 'encode':
+    case 'keccak256':
+    case 'cellnew':
+    case 'cellget':
+    case 'cellset':
+    case 'fncall':
+    case 'if':
+      return false;
+    default: {
+      const unknown: never = s; // a compile error here means a statement kind has no case
+      throw new EvsInternalError(
+        'INTERNAL',
+        `dce: unknown statement kind '${String((unknown as { k?: unknown }).k)}'`,
+      );
     }
   }
 }
