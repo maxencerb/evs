@@ -1,7 +1,8 @@
 /**
- * Type tests — both `toViem()` shapes spread into viem's `readContract` and typecheck
- * under tsc --strict; the generated literal ABI flows through `readContract` inference for
- * the flagship script; omitting both `address` and `code` is a type error.
+ * Type tests — both `toViem()` shapes (and their union, for a run-time mode) spread into
+ * viem's `readContract` and typecheck under tsc --strict; the generated literal ABI flows
+ * through `readContract` inference for the flagship script; omitting both `address` and `code`
+ * is a type error.
  */
 
 import type { Abi, Address } from 'abitype';
@@ -22,6 +23,7 @@ import {
   toCreationBytecode,
   toViemDeployless,
   toViemStateOverride,
+  type ToViemMode,
 } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -152,6 +154,73 @@ test('sender-mode toViem() (issue #36) carries `account` and still spreads into 
   expectTypeOf(out).toEqualTypeOf<ExpectedOut>();
 });
 
+test('toViem({ mode }) with a run-time mode union returns the union of the shapes', async () => {
+  // the mode is only known at run time (a config value, a provider probe)
+  const mode: ToViemMode = Math.random() > 0.5 ? 'stateOverride' : 'deployless';
+  const shape = compiled.toViem({ mode });
+  expectTypeOf(shape).toEqualTypeOf<
+    | { abi: typeof compiled.abi; code: Hex }
+    | {
+        abi: typeof compiled.abi;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+      }
+    | {
+        abi: typeof compiled.abi;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+        account: Address;
+      }
+  >();
+  // the catch-all is the last overload, so ReturnType names the union too
+  expectTypeOf<ReturnType<typeof compiled.toViem>>().toEqualTypeOf(shape);
+  // `address` / `sender` ride along (used only in stateOverride mode), optional-undefined too
+  const maybeSender: Address | undefined = Math.random() > 0.5 ? user : undefined;
+  expectTypeOf(compiled.toViem({ mode, address: pool })).toEqualTypeOf(shape);
+  expectTypeOf(compiled.toViem({ mode, sender: maybeSender })).toEqualTypeOf(shape);
+  // a union of option objects resolves to the same catch-all
+  expectTypeOf(
+    compiled.toViem(mode === 'stateOverride' ? { mode: 'stateOverride' } : { mode: 'deployless' }),
+  ).toEqualTypeOf(shape);
+  // an optional mode (a config field defaulting to deployless) and a `ToViemMode | undefined`
+  // value resolve to the catch-all too: undefined is deployless at run time
+  const cfg: { mode?: ToViemMode; address?: Address; sender?: Address } =
+    Math.random() > 0.5 ? { mode, address: pool } : {};
+  expectTypeOf(compiled.toViem(cfg)).toEqualTypeOf(shape);
+  const maybeMode: ToViemMode | undefined = Math.random() > 0.5 ? mode : undefined;
+  expectTypeOf(compiled.toViem({ mode: maybeMode })).toEqualTypeOf(shape);
+  expectTypeOf(compiled.toViem({ mode: maybeMode, address: pool })).toEqualTypeOf(shape);
+
+  // the union still spreads into readContract with full return inference
+  const out = await client.readContract({
+    ...compiled.toViem({ mode }),
+    functionName: 'poolMeta',
+    args: [pool, user],
+  });
+  expectTypeOf(out).toEqualTypeOf<ExpectedOut>();
+});
+
+test('a literal mode keeps its own overload: the catch-all never widens it', () => {
+  // literal modes still resolve to their precise shapes, not the union
+  expectTypeOf(compiled.toViem({ mode: 'deployless' })).toEqualTypeOf<{
+    abi: typeof compiled.abi;
+    code: Hex;
+  }>();
+  expectTypeOf(compiled.toViem({ mode: 'stateOverride' })).not.toHaveProperty('code');
+  // @ts-expect-error — deployless takes no `address` (the catch-all only accepts the full union)
+  void compiled.toViem({ mode: 'deployless', address: pool });
+  // @ts-expect-error — nor a `sender`
+  void compiled.toViem({ mode: 'deployless', sender: user });
+  // @ts-expect-error — and an unknown mode is still rejected
+  void compiled.toViem({ mode: 'override' });
+  // @ts-expect-error — a literal object with no `mode` key has no overload (call toViem())
+  void compiled.toViem({});
+  // @ts-expect-error — nor does `address` without a mode (it would be silently ignored)
+  void compiled.toViem({ address: pool });
+  // @ts-expect-error — a single literal mode or undefined is not the run-time union
+  void compiled.toViem({ mode: Math.random() > 0.5 ? 'deployless' : undefined, address: pool });
+});
+
 test('omitting both address and code is a type error', () => {
   // @ts-expect-error — readContract needs either `address` (deployed/override) or `code` (deployless)
   void client.readContract({
@@ -180,7 +249,7 @@ test('toViemDeployless preserves the literal abi and yields { abi, code }', () =
   expectTypeOf(shape).toEqualTypeOf<{ abi: typeof compiled.abi; code: Hex }>();
 });
 
-test('toViemStateOverride yields { abi, address, stateOverride: StateOverride }', () => {
+test('toViemStateOverride yields { abi, address, stateOverride: [{ address, code }] }', () => {
   const shape = toViemStateOverride(
     { abi: compiled.abi, runtimeBytecode: '0x60016000f3' },
     { address: '0x1000000000000000000000000000000000000001' },
@@ -188,8 +257,10 @@ test('toViemStateOverride yields { abi, address, stateOverride: StateOverride }'
   expectTypeOf(shape).toEqualTypeOf<{
     abi: typeof compiled.abi;
     address: Address;
-    stateOverride: StateOverride;
+    stateOverride: [{ address: Address; code: Hex }];
   }>();
+  // the one-entry tuple is still viem's StateOverride
+  expectTypeOf(shape.stateOverride).toMatchTypeOf<StateOverride>();
 });
 
 // ---------------------------------------------------------------------------

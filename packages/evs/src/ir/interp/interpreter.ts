@@ -5,7 +5,13 @@
  * The binding invariants are documented on the `ir/interp.ts` barrel.
  */
 
-import { keccak256 as viemKeccak256 } from 'viem';
+import {
+  keccak256 as viemKeccak256,
+  type Abi,
+  type ContractFunctionArgs,
+  type ContractFunctionName,
+  type ContractFunctionReturnType,
+} from 'viem';
 
 import { bytesToHex, hexToBytes, u256ToBytes as wordToBytes } from '../../core/bytes.js';
 import { EvsTypeError, EvsInternalError, EvsCompileError } from '../../core/errors.js';
@@ -93,9 +99,14 @@ export interface MockChain {
   };
 }
 
-export interface InterpResult {
+/**
+ * What `interpret` yields. `values` is the decoded return record: typed from the script's ABI
+ * (exactly what `readContract` infers) when a script is passed, `Record<string, unknown>` for a
+ * bare `ScriptIr`.
+ */
+export interface InterpResult<values = Record<string, unknown>> {
   outcome:
-    | { kind: 'return'; data: Hex; values: Record<string, unknown> } // data = ABI-encoded returndata
+    | { kind: 'return'; data: Hex; values: values } // data = ABI-encoded returndata
     | { kind: 'revert'; data: Hex }; // byte-exact revert payload
   trace?: readonly { stmtPath: readonly number[]; note: string }[];
 }
@@ -114,18 +125,56 @@ export interface InterpEnvOverrides {
 }
 
 /**
- * Runs `ir` against `chain` with `args`. By default it executes `eliminateDeadCode(ir)` — the
- * IR `compile()` lowers — so the outcome is the shipped bytecode's: a checked op, bounds check
- * or narrowing whose result nothing reads is dead code there, and its Panic with it (see
- * `ir/dce.ts`). `opts.dce: false` executes the IR exactly as recorded instead, every revert
- * guard included. `trace` paths index the IR that ran.
+ * The `interpret` options: tracing, the step budget, the `s.env` frame overrides and `dce`.
+ * `dce` defaults to `true`: `interpret` executes `eliminateDeadCode(ir)` — the IR `compile()`
+ * lowers — so the outcome is the shipped bytecode's: a checked op, bounds check or narrowing
+ * whose result nothing reads is dead code there, and its Panic with it (see `ir/dce.ts`).
+ * `dce: false` executes the IR exactly as recorded instead, every revert guard included.
+ * `trace` paths index the IR that ran.
  */
+export interface InterpOptions {
+  trace?: boolean;
+  maxSteps?: number;
+  env?: InterpEnvOverrides;
+  dce?: boolean;
+}
+
+/** The decoded return record of a script ABI — what `readContract` infers for its one function
+ *  — or the untyped record when the ABI is too wide to say (viem infers `unknown` there). */
+export type InterpValues<abi extends Abi> =
+  ContractFunctionReturnType<abi, 'view', ContractFunctionName<abi, 'view'>> extends infer v
+    ? unknown extends v
+      ? Record<string, unknown>
+      : v
+    : never;
+
+/**
+ * Runs a script against `chain` — the evs script itself (an `evscript` result or its compiled
+ * artifact), typed from its literal ABI: `args` is the positional tuple `readContract` takes and
+ * `outcome.values` the record it returns, so a wrong argument shape is a type error. Dead code is
+ * eliminated first, as `compile()` does, unless `opts.dce` is `false` (see `InterpOptions`).
+ */
+export function interpret<const abi extends Abi>(
+  script: { readonly ir: ScriptIr; readonly abi: abi },
+  args: ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>,
+  chain: MockChain,
+  opts?: InterpOptions,
+): InterpResult<InterpValues<abi>>;
+/** Runs a bare `ScriptIr` (e.g. from `deserializeIr`) — `args` and `values` are untyped. */
 export function interpret(
   ir: ScriptIr,
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean },
+  opts?: InterpOptions,
+): InterpResult;
+export function interpret(
+  target: ScriptIr | { readonly ir: ScriptIr },
+  args: readonly unknown[],
+  chain: MockChain,
+  opts?: InterpOptions,
 ): InterpResult {
+  // a script carries its IR under `ir`; a ScriptIr has no such key
+  const ir = typeof target === 'object' && target !== null && 'ir' in target ? target.ir : target;
   validateIr(ir);
   const program = opts?.dce === false ? ir : dceOf(ir);
   const maxSteps = opts?.maxSteps ?? DEFAULT_MAX_STEPS;

@@ -6,7 +6,8 @@
 /**
  * Unit tests — golden runs over hand-built IRs covering every stmt kind; revert paths
  * (Panic codes per width class incl. `int256 −2^255 / −1` and the uint192 MUL wrap-back);
- * decode-fail site ids; tryCall zeroing; maxSteps guard; byte-exact ABI agreement with viem.
+ * decode-fail site ids; tryCall zeroing; maxSteps guard; byte-exact ABI agreement with viem;
+ * the script-typed `interpret(script, …)` overload agrees with `interpret(script.ir, …)`.
  */
 import {
   encodeAbiParameters,
@@ -18,6 +19,8 @@ import {
 import { describe, expect, test } from 'vite-plus/test';
 
 import { canonicalTypeSignature } from '../abi/artifact.js';
+import { evscript } from '../builder/script.js';
+import { compile } from '../compile.js';
 import { EvsCompileError, EvsTypeError } from '../core/errors.js';
 import {
   typeToAbiParam,
@@ -569,6 +572,32 @@ describe('script args', () => {
     });
     expect(() => interpret(arr, [[300n]], deadChain)).toThrowError(/\(uint8\[\]\)\[0\]/);
     expect(() => interpret(arr, ['nope'], deadChain)).toThrowError(/expected an array/);
+  });
+});
+
+describe('interpret(script) — the overload typed from the script', () => {
+  // `t.uint256` is the type string itself (`t` is shadowed by local names in this file)
+  const double = evscript({ name: 'double', args: ['uint256'] }, (s, x) =>
+    s.return({ y: x.mul(2n) }),
+  );
+
+  test('a script, its compiled artifact and its bare IR run the same program', () => {
+    const viaIr = interpret(double.ir, [21n], deadChain);
+    expect(viaIr.outcome).toEqual({ kind: 'return', data: wordHex(42n), values: { y: 42n } });
+    expect(interpret(double, [21n], deadChain)).toEqual(viaIr);
+    expect(interpret(compile(double), [21n], deadChain)).toEqual(viaIr);
+    // checked arithmetic reverts identically through the script form
+    const overflow = interpret(double, [2n ** 255n], deadChain);
+    expect(overflow.outcome.kind).toBe('revert');
+    expect(overflow).toEqual(interpret(double.ir, [2n ** 255n], deadChain));
+  });
+
+  test('host-side misuse still throws EvsTypeError through the script form', () => {
+    // the types reject these; an untyped caller (plain JS) still gets the runtime checks
+    // @ts-expect-error — a string is not a uint256
+    expect(() => interpret(double, ['nope'], deadChain)).toThrowError(EvsTypeError);
+    // @ts-expect-error — wrong arity
+    expect(() => interpret(double, [], deadChain)).toThrowError(/takes 1 argument/);
   });
 });
 

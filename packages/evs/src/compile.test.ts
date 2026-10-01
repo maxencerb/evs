@@ -1,7 +1,7 @@
 /**
  * Unit tests — `compile.ts`: artifact shape, pipeline wiring (options, diagnostics,
  * peephole), EIP-170 rejection with per-region breakdown, sites merge + sourceMap coverage,
- * `toViem()` both modes, `disassemble()` round-trip, `explainRevert` over every revert kind,
+ * `toViem()` both modes (and a run-time mode union), `disassemble()` round-trip, `explainRevert` over every revert kind,
  * and the end-to-end `evscript → compile → harness` smoke.
  */
 
@@ -32,7 +32,7 @@ import {
 import { namedArg, t, type Hex } from './core/types.js';
 import { interpret } from './ir/interp.js';
 import { deserializeIr, serializeIr } from './ir/nodes.js';
-import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
+import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode, type ToViemMode } from './viem.js';
 
 // ---------------------------------------------------------------------------
 // fixtures
@@ -612,6 +612,34 @@ describe('toViem()', () => {
     const badSender = () => compiled.toViem({ mode: 'stateOverride', sender: '0x1234' });
     expect(badSender).toThrowError(EvsTypeError);
     expect(badSender).toThrowError(/`sender` must be a 20-byte 0x address/);
+  });
+
+  test('a run-time mode union (the catch-all overload) dispatches on the value', () => {
+    const compiled = compile(sumScript());
+    const sender = '0x70997970C51812dc3A010C7d01b50e0d17dc79C8' as const;
+    const address = '0x2000000000000000000000000000000000000002' as const;
+    // a mode read from configuration: typed `ToViemMode`, not a literal
+    const fromConfig = (value: string): ToViemMode =>
+      value === 'stateOverride' ? 'stateOverride' : 'deployless';
+    const deployless = fromConfig('deployless');
+    const stateOverride = fromConfig('stateOverride');
+
+    // deployless ignores `address` / `sender`; stateOverride uses them as its own overloads do
+    expect(compiled.toViem({ mode: deployless })).toEqual(compiled.toViem());
+    expect(compiled.toViem({ mode: deployless, address, sender })).toEqual(compiled.toViem());
+    expect(compiled.toViem({ mode: stateOverride, address })).toEqual(
+      compiled.toViem({ mode: 'stateOverride', address }),
+    );
+    expect(compiled.toViem({ mode: stateOverride, sender })).toEqual(
+      compiled.toViem({ mode: 'stateOverride', sender }),
+    );
+    // an unset mode (optional config field) is deployless, `address` / `sender` ignored
+    const unset: { mode?: ToViemMode; address?: typeof address } = { address };
+    expect(compiled.toViem(unset)).toEqual(compiled.toViem());
+    // `sender: undefined` is plain state-override mode, with no `account`
+    expect(compiled.toViem({ mode: stateOverride, sender: undefined })).toEqual(
+      compiled.toViem({ mode: 'stateOverride' }),
+    );
   });
 
   test('stateOverride: a malformed address is rejected up front, with or without sender', () => {

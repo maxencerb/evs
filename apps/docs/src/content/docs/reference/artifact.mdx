@@ -123,7 +123,7 @@ is always the correct form for that mode.
 
 ## `toViem()` — execution shapes
 
-Four overloads, two modes. Every result spreads directly into viem's `readContract`:
+Five overloads, two modes. Every result spreads directly into viem's `readContract`:
 
 | Call | Returns |
 | --- | --- |
@@ -131,6 +131,7 @@ Four overloads, two modes. Every result spreads directly into viem's `readContra
 | `toViem({ mode: 'deployless' })` | same as the no-argument form |
 | `toViem({ mode: 'stateOverride', address? })` | `{ abi, address, stateOverride: [{ address, code: runtimeBytecode }] }` |
 | `toViem({ mode: 'stateOverride', sender, address? })` | `{ abi, address: sender, stateOverride: [{ address: sender, code: runtimeBytecode }], account: sender }` — [sender mode](/guides/execution/#sender-mode): sub-call targets see `msg.sender = sender`; `address`, if given, must equal `sender` |
+| `toViem({ mode, address?, sender? })` with `mode: ToViemMode` (optional, or `ToViemMode \| undefined`) | the union of the shapes above — for a mode chosen at run time; an unset mode is deployless; `address` / `sender` apply only when `mode` is `'stateOverride'` |
 
 ```ts
 import { compile, DEFAULT_SCRIPT_ADDRESS, evscript } from '@maxencerb/evs';
@@ -149,6 +150,37 @@ const overridden = compiled.toViem({ mode: 'stateOverride' });
 const atDefault: boolean = overridden.address === DEFAULT_SCRIPT_ADDRESS; // true
 const installsRuntime: boolean = overridden.stateOverride[0].code === compiled.runtimeBytecode; // true
 ```
+
+When the mode is only known at run time — a config value, or a provider probe, since not every
+provider supports state overrides — type it as the exported `ToViemMode`
+(`'deployless' | 'stateOverride'`) and pass it straight through. The result is the union of the
+shapes, which still spreads into `readContract` with full return inference:
+
+```ts
+import { compile, evscript, t, type ToViemMode } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const double = compile(
+  evscript({ name: 'double', args: [t.uint256] }, (s, x) => s.return({ y: x.mul(2n) })),
+);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+async function run(mode: ToViemMode): Promise<bigint> {
+  const { y } = await client.readContract({
+    ...double.toViem({ mode }),
+    functionName: 'double',
+    args: [21n],
+  });
+  return y;
+}
+```
+
+The mode may also be optional or `ToViemMode | undefined` — a config field left unset to get the
+default — and an unset mode is deployless, as for `toViem()`. A literal mode keeps its own
+overload and precise shape; `{ mode: 'deployless', address }` is still a type error, and so is an
+object with no `mode` key at all (call `toViem()`). Since the catch-all is the last overload,
+`ReturnType<CompiledEvsScript['toViem']>` names that union.
 
 State-override mode accepts an optional `address` (viem's `Address` type) to place the script
 somewhere else; it requires a provider that supports the third `eth_call` parameter. The two
@@ -519,11 +551,13 @@ Stability notes:
 ## Testing without a node
 
 The IR is directly executable by the exported reference interpreter:
-`interpret(ir, args, chain, opts?)` runs a script against a `MockChain` (a
+`interpret(script, args, chain, opts?)` runs a script against a `MockChain` (a
 `staticcall({ to, data })` hook, plus an optional `call({ to, data, kind, gas? })` oracle for the
 `s.call`/`s.simulate` verbs) and returns an `InterpResult` whose returndata and revert
 payloads are bit-for-bit what the compiled bytecode produces: it runs `eliminateDeadCode(ir)`
-like `compile()` unless `opts.dce` is `false`. `InterpEnvOverrides` (the
+like `compile()` unless `opts.dce` is `false`. Passing the script (or this artifact) types `args`
+and the decoded `values` from the literal ABI, exactly like `readContract`; `interpret(ir, …)`
+takes a bare `ScriptIr` (e.g. from `deserializeIr`), untyped. `InterpEnvOverrides` (the
 `opts.env` extension) models frame-dependent `s.env` values per call. See
 [testing scripts](/guides/testing-scripts/) for the full workflow.
 

@@ -58,4 +58,10 @@
  */
 
 export { interpret } from './interp/interpreter.js';
-export type { MockChain, InterpResult, InterpEnvOverrides } from './interp/interpreter.js';
+export type {
+  MockChain,
+  InterpResult,
+  InterpEnvOverrides,
+  InterpOptions,
+  InterpValues,
+} from './interp/interpreter.js';
