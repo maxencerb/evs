@@ -152,15 +152,31 @@ describe('dynamic values', () => {
         return s.return({ x: xs.at(k), out: out.expr() });
       }),
     );
-    await Promise.all(
-      reads.map((script) =>
-        expectAgreement(script, [
-          [[7n, 8n, 9n], 3n],
-          [[7n, 8n, 9n, 10n], 4n],
-          [[], 0n],
-        ]),
+    // n > xs.length in the 2nd row: `set(3n)` succeeds there, so `xs.at(3n)` itself must panic
+    const rows = [
+      [[7n, 8n, 9n], 3n],
+      [[7n, 8n, 9n], 4n],
+      [[7n, 8n, 9n, 10n], 4n],
+      [[], 0n],
+    ];
+    const outcomes = await Promise.all(reads.map((script) => expectAgreement(script, rows)));
+    // k = 3n (index 2): row 1 panics in `set`, row 2 in the read, row 3 reads 10
+    expect(outcomes[2]?.[1]?.data).toBe(panicData(0x32n));
+    expect(outcomes[2]?.[2]?.data).not.toBe(panicData(0x32n));
+    // read-only scripts: every literal's read arm (constant and runtime) on its own
+    const readOnly = [0n, 2n, 3n, ...huge].map((k) =>
+      evscript({ name: 'atOnly', args: [t.array(t.uint256)] }, (s, xs) =>
+        s.return({ x: xs.at(k) }),
       ),
     );
+    const readOutcomes = await Promise.all(
+      readOnly.map((script) =>
+        expectAgreement(script, [[[7n, 8n, 9n]], [[7n, 8n, 9n, 10n]], [[]]]),
+      ),
+    );
+    // out-of-bounds literal reads (k = 3 on a 3-element array, every huge k) panic 0x32
+    expect(readOutcomes[2]?.[0]?.data).toBe(panicData(0x32n));
+    for (const o of readOutcomes.slice(3)) for (const r of o) expect(r.data).toBe(panicData(0x32n));
   });
 
   test('dynamic + word literals (data segments, CODECOPY materialization)', async () => {
