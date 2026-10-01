@@ -219,6 +219,10 @@ controllable; caller-relative reads require state-override mode plus the `accoun
 [execution modes](/guides/execution/).
 :::
 
+`'blocknumber'` is the `NUMBER` opcode, so it reports what the chain defines: on Arbitrum an
+approximate L1 block number, not the L2 block. Read `ArbSys(0x64).arbBlockNumber()` for the L2
+height — see [`s.env` and frame dependence](/guides/execution/#senv-and-frame-dependence).
+
 ## s.add / s.sub / s.mul / s.div / s.mod
 
 ```ts nocheck

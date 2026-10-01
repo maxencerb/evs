@@ -90,8 +90,10 @@ reaches the chain. See [calling contracts](/guides/calls/).
 | Typed results | per call, via viem | via viem `multicall` | end-to-end; the script is its own ABI |
 
 Both execution modes — deployless and state override — are plain `eth_call`s, so historical
-reads via block pinning work and gas is bounded only by the node's call cap; details in
-[execution](/guides/execution/).
+reads via block pinning work (compile for the fork active at the pinned block) and gas is
+bounded by the node's call cap. The default deployless mode runs as a contract creation, which
+adds gas and caps the result at 24,576 bytes; state-override mode has neither. Details in
+[execution](/guides/execution/#deployless-limits).
 
 Next: [install the package](/getting-started/installation/), then run the
 [quick start](/getting-started/quick-start/).

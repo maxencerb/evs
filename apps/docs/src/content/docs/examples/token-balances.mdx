@@ -115,14 +115,22 @@ code, so nothing about the script changes. `res.balances` decodes as
 
 ## Limits for large batches
 
-Batch size never touches the compiled bytecode (the loop is fixed-size code, so the EIP-170
+Batch size never touches the compiled bytecode (the loop is fixed-size code, so the runtime
 size cap is irrelevant here). The real budgets are:
 
+- **The deployless result cap.** The default `toViem()` runs the script as a contract creation,
+  so its result is capped at 24,576 bytes (EIP-170 applies to it). `{ balances: uint256[] }`
+  encodes to `96 + 32 × n` bytes, so a deployless call handles at most **765 tokens**; at 766
+  the node rejects it (`max code size exceeded`, or `CreateContractSizeLimit` on anvil). For
+  larger batches use `toViem({ mode: 'stateOverride' })`, which has no such cap, or split the
+  token list into chunks of at most 765. See
+  [deployless limits](/guides/execution/#deployless-limits).
 - **Gas.** Each iteration costs one `STATICCALL` into the token — the subcalls dominate —
   plus roughly 60 gas of loop bookkeeping per iteration. The ceiling is your node's `eth_call`
   gas cap, not a block limit: anvil defaults to 30M, geth's default cap is 50M. A 50-token
-  batch sits far inside either; thousands of tokens per call are realistic before the cap
-  matters.
+  batch sits far inside either; in state-override mode thousands of tokens per call are
+  realistic before the cap matters. Deployless mode also spends about 200 gas per byte of
+  result (about 6,400 per token) on the creation.
 - **A misbehaving target.** `s.tryRead` forwards all remaining gas by default; if a listed
   address could burn the whole budget, pass the per-call `gas` option to cap it — see
   [calls](/guides/calls/).

@@ -46,7 +46,8 @@ TS callback ──record──▶ IR ──compile──▶ runtime bytecode ─
 - **Typed end to end.** Calls are typed like viem's `readContract`; the script _is_ its own
   literal ABI, so viem infers your arguments and the exact shape of the result.
 - **Nothing to deploy.** Runs deploylessly through the `eth_call` `code` parameter, or through
-  a state override — any standard RPC node, any block, including historical ones.
+  a state override — any standard RPC node, any block, including historical ones (compiled for
+  the fork active at that block).
 - **Three calling verbs.** `s.read` for views, `s.call` for `CALL`-frame functions such as a
   Uniswap quoter, `s.simulate` to dry-run a write and read back its return value.
 - **Solidity-grade semantics.** Checked arithmetic with solc 0.8 panic codes, verbatim revert
@@ -168,6 +169,8 @@ script _is_ its own literal-typed ABI (`poolMeta.abi` exists before compiling).
 ```ts
 // 1. Deployless (the default): `{ abi, code }` — a plain 2-parameter eth_call with `to`
 //    omitted. Maximal portability: works on every provider that implements standard eth_call.
+//    It runs as a contract creation: result ≤ 24,576 B (no leading 0xEF byte), init bytecode
+//    + encoded args ≤ ~48.6 KB, and extra gas. State override has none of these limits.
 await client.readContract({ ...compiled.toViem(), functionName: 'poolMeta', args });
 
 // 2. State override: `{ abi, address, stateOverride }` — eth_call's third parameter.
@@ -190,7 +193,8 @@ await client.readContract({
 
 Prefer `stateOverride` when you want a stable, human-meaningful `address(this)` (default
 `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530`, overridable), a controllable `msg.sender`, or to
-compose with further overrides (balance spoofing etc.). It is supported by geth, anvil,
+compose with further overrides (balance spoofing etc.), or to lift the deployless size limits
+([details](https://evs.maxencerb.com/guides/execution/#deployless-limits)). It is supported by geth, anvil,
 QuickNode and publicnode, but **not documented** for `eth_call` on Alchemy or Infura — which is
 why deployless is the default ([provider matrix](https://evs.maxencerb.com/guides/execution/#provider-support)). The artifact deliberately exposes `runtimeBytecode` / `initBytecode` and never a field
 named `code`: passing runtime bytecode as viem's `code` fails _silently_, and `toViem()` always
