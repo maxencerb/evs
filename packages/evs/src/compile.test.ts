@@ -23,7 +23,12 @@ import { evsPeephole } from './codegen/peephole.js';
 import { lowerProgram } from './codegen/program.js';
 import { compile } from './compile.js';
 import { bytesToHex } from './core/bytes.js';
-import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
+import {
+  EvsCompileError,
+  EvsInternalError,
+  EvsTypeError,
+  type EvsDiagnostic,
+} from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
 import { DEFAULT_SCRIPT_ADDRESS, toCreationBytecode } from './viem.js';
 
@@ -196,6 +201,65 @@ describe('pipeline hooks', () => {
     });
     expect(seenNodes).toBeGreaterThan(0);
     expect(compiled.runtimeBytecode).toBe(compile(sumScript()).runtimeBytecode);
+  });
+
+  test('a hook that injects a bare PUSH1/PUSH32 op node is rejected, not shipped', () => {
+    // field-test repro: `[PUSH1] RETURN` assembled to `60 f3` — the stack verifier accepted it,
+    // the shipped runtime had no RETURN opcode left, and `sum(40, 2)` fell through into the
+    // checked-add Panic tail (PUSH32 was caught only because it swallowed a JUMPDEST)
+    const beforeFirstReturn =
+      (extra: AsmNode) =>
+      (nodes: readonly AsmNode[]): AsmNode[] => {
+        const i = nodes.findIndex((n) => n.k === 'op' && n.op === 'RETURN');
+        return [...nodes.slice(0, i), extra, ...nodes.slice(i)];
+      };
+    for (const op of ['PUSH1', 'PUSH32'] as const) {
+      const err = captureError(
+        () => compile(sumScript(), { peephole: beforeFirstReturn({ k: 'op', op }) }),
+        EvsInternalError,
+      );
+      expect(err.message).toContain(`op node '${op}' is not allowed`);
+    }
+  });
+
+  test('a hook-injected `PUSH1 POP` pair in a loop is rejected (it would grow the real stack)', async () => {
+    // field-test repro: `[PUSH1, POP]` after every MSTORE compiled, but the POP byte became the
+    // immediate, so each iteration left one item behind and sumTo(300) overflowed the stack
+    const sumTo = evscript({ name: 'sumTo', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        acc.set(acc.get().add(i));
+      });
+      return s.return({ total: acc.get() });
+    });
+    const afterEveryMstore =
+      (extra: readonly AsmNode[]) =>
+      (nodes: readonly AsmNode[]): AsmNode[] =>
+        nodes.flatMap((n) => (n.k === 'op' && n.op === 'MSTORE' ? [n, ...extra] : [n]));
+
+    const bare = (): unknown =>
+      compile(sumTo, {
+        peephole: afterEveryMstore([
+          { k: 'op', op: 'PUSH1' },
+          { k: 'op', op: 'POP' },
+        ]),
+      });
+    expect(bare).toThrow(EvsInternalError);
+    expect(bare).toThrow(/PUSH immediates must be push\/pushBytes\/pushLabel nodes/);
+
+    // control: the same intent spelled as a well-formed push node is balanced in the bytes too
+    const wellFormed = compile(sumTo, {
+      peephole: afterEveryMstore([
+        { k: 'push', value: 0x50n },
+        { k: 'op', op: 'POP' },
+      ]),
+    });
+    const calldata = encodeFunctionData({ abi: sumTo.abi, functionName: 'sumTo', args: [300n] });
+    const res = await execRuntime(wellFormed.runtimeBytecode, calldata);
+    expect(res.success).toBe(true);
+    expect(decodeFunctionResult({ abi: sumTo.abi, functionName: 'sumTo', data: res.data })).toEqual(
+      { total: 44_850n },
+    );
   });
 
   test('diagnostics are forwarded to onDiagnostic (LOOP_ALLOCATION), never logged', () => {

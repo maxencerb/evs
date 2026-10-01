@@ -6,6 +6,8 @@
  * - `push 0` lowers to `PUSH0` on shanghai+ and to `PUSH1 00` on paris; all other `push`
  *   values use the minimal-width PUSHn. The assembler owns immediate selection; codegen owns
  *   sequence-level lowering (MCOPY).
+ * - `op` nodes never carry an immediate: a bare `PUSH1`..`PUSH32` op is rejected by both
+ *   `AsmWriter.op` and `assemble()` (the latter also guards `peephole` hook output).
  * - All `data`/`dataLabel` nodes are placed after the last code node, preceded by exactly one
  *   `INVALID` (0xFE) guard byte inserted here; codegen must still place them last in the node
  *   stream (asserted).
@@ -302,6 +304,28 @@ function minimalBytes(value: bigint): Uint8Array {
   return out;
 }
 
+const PUSH1_CODE = 0x60;
+const PUSH32_CODE = 0x7f;
+
+/**
+ * The single byte an `op` node assembles to. The node stream can come from a user `peephole`
+ * hook that never went through {@link AsmWriter.op}, so the immediate rule is re-checked here:
+ * a bare `PUSH1`..`PUSH32` op would emit its opcode with no immediate, the EVM would then read
+ * the following bytes as push data, and the bytecode would no longer match the node stream the
+ * stack verifier simulates. A bare `PUSH0` stays legal: it has no immediate, and
+ * `verifyShapes` gates it by fork.
+ */
+function opNodeCode(op: Mnemonic): number {
+  const info = Object.hasOwn(OPS, op) ? OPS[op] : undefined;
+  if (info === undefined) throw assembleError(`op node has unknown mnemonic '${op}'`);
+  if (info.code >= PUSH1_CODE && info.code <= PUSH32_CODE) {
+    throw assembleError(
+      `op node '${op}' is not allowed — PUSH immediates must be push/pushBytes/pushLabel nodes`,
+    );
+  }
+  return info.code;
+}
+
 interface Fixup {
   patchOffset: number; // offset of the first immediate byte of the PUSH2
   label: LabelId;
@@ -358,7 +382,7 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   for (const node of stream) {
     switch (node.k) {
       case 'op': {
-        emit(Uint8Array.of(OPS[node.op].code), node);
+        emit(Uint8Array.of(opNodeCode(node.op)), node);
         break;
       }
       case 'push': {

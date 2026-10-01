@@ -139,7 +139,9 @@ semantics, never widening the immediate), and stack identities such as `SWAP1 SW
 or `PUSH 0 ADD` are dropped. It never rewrites across a `JUMPDEST`, never touches a label or a
 jump target, keeps every source-map site, and runs **before** the verifiers below, so optimized
 output is checked exactly like unoptimized output. A user `peephole` hook in `CompileOptions`
-runs at the same position, after the built-in pass when both are on. The pass is exported as
+runs at the same position, after the built-in pass when both are on; its output is held to the
+same node contract (a bare `PUSH1`–`PUSH32` op node, which would leave its immediate to the next
+bytes, is rejected at layout). The pass is exported as
 `evsPeephole` (`peephole: evsPeephole` runs only this pass; `optimize: true` also switches
 codegen to the liveness-based frame allocator described in [the memory model](#the-memory-model)).
 
