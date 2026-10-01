@@ -5,7 +5,7 @@
 
 import { EvsTypeError, type EvsErrorCode } from '../errors.js';
 import type { TypeToComponent } from './derive.js';
-import { assertEvsType, isEvsValueType, isTupleType, describeTypeInput } from './predicates.js';
+import { assertEvsType, isEvsValueType, isTupleType, describeRejectedType } from './predicates.js';
 import type { ArgType, EvsType, TupleType } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
@@ -45,7 +45,7 @@ export function namedArg<const name extends string, const type extends EvsType>(
   } else if (!isEvsValueType(type)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `argument "${name}": expected a type (use the \`t\` namespace), got ${describeTypeInput(type)}`,
+      `argument "${name}": expected a type (use the \`t\` namespace), got ${describeRejectedType(type)}`,
     );
   }
   return Object.freeze({ name, type });
@@ -72,15 +72,19 @@ export type ArgInput = EvsType | ArgSpec;
  */
 export type ArgsInput = ArgInput | readonly ArgInput[];
 
-/** One declarator → its normalized {@link ArgSpec}: a {@link namedArg} keeps its spec; a tuple
- *  descriptor that carries its own `name` (an ABI parameter such as `abi[0].inputs[0]`) is named
- *  by it, like a scalar ABI parameter (which already matches `ArgSpec`); any other bare type
- *  becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
- *  downstream (`ResolveArgName` / {@link normalizeArgsInput}). */
-export type ToArgSpec<d> = d extends ArgSpec
-  ? d
-  : d extends TupleType & { readonly name: infer name extends string }
-    ? ArgSpec<name, { readonly type: d['type']; readonly components: d['components'] }>
+/** One declarator → its normalized {@link ArgSpec}: a tuple descriptor that carries its own
+ *  `name` (an ABI parameter such as `abi[0].inputs[0]`) is named by it, like a scalar ABI
+ *  parameter (which already matches `ArgSpec`); a {@link namedArg} keeps its spec; any other bare
+ *  type becomes an unnamed spec (`name: ''`) — the positional `arg{i}` fallback name is applied
+ *  downstream (`ResolveArgName` / {@link normalizeArgsInput}). The tuple arm comes FIRST, as in
+ *  {@link isArgSpecValue}: a struct-array parameter (`{ name, type: 'tuple[]', components }`)
+ *  also matches `ArgSpec`, because `'tuple[]'` fits `ArrayType`'s catch-all pattern, and would
+ *  otherwise be read as a string array of `tuple` (element `never`). A real `ArgSpec` over a
+ *  tuple has an object `type`, so it never matches the tuple arm. */
+export type ToArgSpec<d> = d extends TupleType & { readonly name: infer name extends string }
+  ? ArgSpec<name, { readonly type: d['type']; readonly components: d['components'] }>
+  : d extends ArgSpec
+    ? d
     : d extends EvsType
       ? ArgSpec<'', d>
       : never;
@@ -178,7 +182,7 @@ export function normalizeArgsInput(input: unknown, site: ArgsSite): NormalizedAr
     } else if (!isEvsValueType(type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${ctx}: expected a type (use the \`t\` namespace) or namedArg(...), got ${describeTypeInput(type)}`,
+        `${ctx}: expected a type (use the \`t\` namespace) or namedArg(...), got ${describeRejectedType(type)}`,
       );
     }
     const label = name === '' ? `arg${i}` : name;

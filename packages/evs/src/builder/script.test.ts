@@ -414,6 +414,67 @@ describe('named args (namedArg)', () => {
     expect(script.ir.fns[0]?.params.map((p) => p.name)).toEqual(['arg0', 'arg1']);
     expect(t.error('E', [t.bool, unnamed]).abi.inputs.map((i) => i.name)).toEqual(['arg0', 'arg1']);
   });
+
+  test('a struct-array ABI parameter (tuple[] / tuple[N]) is a named arg too', () => {
+    const batchAbi = [
+      {
+        type: 'function',
+        name: 'batch',
+        stateMutability: 'view',
+        inputs: [
+          {
+            name: 'orders',
+            type: 'tuple[]',
+            internalType: 'struct Book.Order[]',
+            components: [
+              { name: 'token', type: 'address', internalType: 'address' },
+              { name: 'amount', type: 'uint256', internalType: 'uint256' },
+            ],
+          },
+          { name: 'pair', type: 'tuple[2]', components: [{ name: 'x', type: 'uint8' }] },
+        ],
+        outputs: [],
+      },
+    ] as const satisfies Abi;
+    const [orders, pair] = batchAbi[0].inputs;
+    const script = evscript({ name: 'qb', args: batchAbi[0].inputs }, (s, os, ps) =>
+      s.return({ n: os.length(), amount: os.at(0n).amount.get(), x: ps.at(1n).x.get() }),
+    );
+    // labeled by the ABI names; the recorded types are the bare `{ type, components }`
+    expect(script.ir.args).toEqual([
+      { name: 'orders', type: { type: 'tuple[]', components: orders.components } },
+      { name: 'pair', type: { type: 'tuple[2]', components: pair.components } },
+    ]);
+    for (const a of script.ir.args) expect(a.type).not.toHaveProperty('name');
+    expect(script.abi[0].inputs).toEqual([
+      { name: 'orders', type: 'tuple[]', components: orders.components },
+      { name: 'pair', type: 'tuple[2]', components: pair.components },
+    ]);
+    expect(script.ir.returns.map((r) => r.type)).toEqual(['uint256', 'uint256', 'uint8']);
+    expect(() => validateIr(script.ir)).not.toThrow();
+  });
+
+  test('namedArg(param.name, t.fromAbiParameter(param)) keeps the label of a nameless-member struct', () => {
+    const param = {
+      name: 'w',
+      type: 'tuple',
+      components: [{ type: 'address' }, { type: 'uint256' }],
+    } as const;
+    const Bare = t.fromAbiParameter(param); // fills the member names in, drops `w`
+    expect(Bare).toEqual({
+      type: 'tuple',
+      components: [
+        { name: '', type: 'address' },
+        { name: '', type: 'uint256' },
+      ],
+    });
+    const labeled = evscript({ name: 'qw', args: [namedArg(param.name, Bare)] }, (s, w) =>
+      s.return({ w }),
+    );
+    expect(labeled.abi[0].inputs.map((i) => i.name)).toEqual(['w']);
+    const positional = evscript({ name: 'qw', args: [Bare] }, (s, w) => s.return({ w }));
+    expect(positional.abi[0].inputs.map((i) => i.name)).toEqual(['arg0']);
+  });
 });
 
 // ---------------------------------------------------------------------------

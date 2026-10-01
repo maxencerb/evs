@@ -259,6 +259,49 @@ describe('checklist: arg types + script name (args are positional, auto-named)',
     expectEvs(() => t.error('X', malformed), EvsTypeError, 'TYPE_MISMATCH', what);
   });
 
+  test('a tuple declarator with a bad member names that member in the message', () => {
+    // a raw ABI struct parameter whose members carry no `name` (t.fromAbiParameter fills them)
+    const nameless = { name: 'p', type: 'tuple', components: [{ type: 'uint256' }] } as never;
+    const missing =
+      /#0 \("p"\): .*got a tuple descriptor whose components\[0\] has no string `name`/;
+    expectEvs(
+      () =>
+        evscript({ name: 'w', args: [nameless] }, () => {
+          throw new Error('unreachable');
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      missing,
+    );
+    expectEvs(
+      () => rec((s) => s.fn('f', nameless, () => {})),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      missing,
+    );
+    expectEvs(() => t.error('X', nameless), EvsTypeError, 'TYPE_MISMATCH', missing);
+    // nested members are located by path; namedArg reports the same way
+    const nested = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint8' },
+        { name: 'b', type: 'tuple[]', components: [{ name: 'c', type: 'uint7' }] },
+      ],
+    } as never;
+    expectEvs(
+      () => namedArg('q', nested),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /argument "q": .*components\[1\]\.components\[0\] has an invalid type "uint7"/,
+    );
+    expectEvs(
+      () => t.error('Y', [t.bool, nested]),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /param #1: .*components\[1\]\.components\[0\] has an invalid type "uint7"/,
+    );
+  });
+
   test('invalid script name', () => {
     expectEvs(
       () =>

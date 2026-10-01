@@ -420,3 +420,53 @@ test('a struct ABI input is a t.error param named by the ABI, typed by decodeScr
     }>();
   }
 });
+
+test('a struct-array ABI input (tuple[] / tuple[N]) is labeled by its ABI name, typed as an array', () => {
+  const batchAbi = [
+    {
+      type: 'function',
+      name: 'batch',
+      stateMutability: 'view',
+      inputs: [
+        {
+          name: 'orders',
+          type: 'tuple[]',
+          internalType: 'struct Book.Order[]',
+          components: [
+            { name: 'token', type: 'address', internalType: 'address' },
+            { name: 'amount', type: 'uint256', internalType: 'uint256' },
+          ],
+        },
+        { name: 'pair', type: 'tuple[2]', components: [{ name: 'x', type: 'uint8' }] },
+      ],
+      outputs: [],
+    },
+  ] as const satisfies Abi;
+  const batch = evscript({ name: 'batch', args: batchAbi[0].inputs }, (s, orders, pair) => {
+    expectTypeOf(orders.at(0n).amount.get()).toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf(pair.at(1n).x.get()).toEqualTypeOf<Expr<'uint8'>>();
+    return s.return({ n: orders.length() });
+  });
+  // the same args spelled with `t.*` + namedArg: the ABI path infers the identical viem args
+  const spelled = evscript(
+    {
+      name: 'batch',
+      args: [
+        namedArg('orders', t.array(t.struct({ token: t.address, amount: t.uint256 }))),
+        namedArg('pair', t.array(t.struct({ x: t.uint8 }), 2)),
+      ],
+    },
+    (s, orders) => s.return({ n: orders.length() }),
+  );
+  type P = ReadContractParameters<typeof batch.abi, 'batch'>;
+  expectTypeOf<P['args']>().toEqualTypeOf<
+    ReadContractParameters<typeof spelled.abi, 'batch'>['args']
+  >();
+  expectTypeOf<P['args'][0]>().toEqualTypeOf<readonly { token: `0x${string}`; amount: bigint }[]>();
+  expectTypeOf<P['args'][1][1]>().toEqualTypeOf<{ x: number }>();
+  expectTypeOf<P['args'][1]['length']>().toEqualTypeOf<2>();
+  expectTypeOf(batch.abi[0].inputs[0].name).toEqualTypeOf<'orders'>();
+  expectTypeOf(batch.abi[0].inputs[1].name).toEqualTypeOf<'pair'>();
+  // the reduced arg type carries no `name` (as at run time)
+  expectTypeOf(batch.abi[0].inputs[0].type).toEqualTypeOf<'tuple[]'>();
+});

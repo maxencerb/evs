@@ -76,6 +76,36 @@ test('ToArgSpec: an ABI parameter is named by its `name` — tuple and scalar al
   expectTypeOf<NormalizeArgs<typeof Pair>>().toEqualTypeOf<readonly [ArgSpec<'', typeof Pair>]>();
 });
 
+test('ToArgSpec: a struct-array ABI parameter is named too, its type reduced (no `name`)', () => {
+  type Orders = {
+    readonly name: 'orders';
+    readonly type: 'tuple[]';
+    readonly internalType: 'struct B.Order[]';
+    readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+  };
+  expectTypeOf<NormalizeArgs<Orders>>().toEqualTypeOf<
+    readonly [
+      ArgSpec<
+        'orders',
+        {
+          readonly type: 'tuple[]';
+          readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
+        }
+      >,
+    ]
+  >();
+});
+
+test('t.fromAbiParameter drops the parameter name; namedArg(param.name, …) keeps it', () => {
+  const param = { name: 'w', type: 'tuple', components: [{ type: 'address' }] } as const;
+  const Bare = t.fromAbiParameter(param);
+  expectTypeOf<NormalizeArgs<typeof Bare>>().toEqualTypeOf<readonly [ArgSpec<'', typeof Bare>]>();
+  const labeled = namedArg(param.name, Bare);
+  expectTypeOf<NormalizeArgs<typeof labeled>>().toEqualTypeOf<
+    readonly [ArgSpec<'w', typeof Bare>]
+  >();
+});
+
 test('t namespace literal types', () => {
   expectTypeOf(t.uint256).toEqualTypeOf<'uint256'>();
   expectTypeOf(t.bytes32).toEqualTypeOf<'bytes32'>();

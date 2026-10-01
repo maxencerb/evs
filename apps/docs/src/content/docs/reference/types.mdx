@@ -204,7 +204,8 @@ building your own ABI→type glue.
 An ABI parameter can also be used directly as a declarator, wherever `evscript` args, `s.fn`
 params and `t.error` params are declared. All three sites follow the same rules, at run time and in the types. A scalar
 parameter (`{ name: 'amount', type: 'uint256' }`) has the `namedArg` shape. A struct parameter
-(`{ name: 'p', type: 'tuple', components }`) is a `TupleType` that carries its own name. In both
+(`{ name: 'p', type: 'tuple', components }`, or a struct array typed `'tuple[]'` / `'tuple[N]'`)
+is a `TupleType` that carries its own name. In both
 cases a non-empty `name` labels the arg, and `name: ''` keeps the positional `arg{i}` name. A
 function's `inputs` therefore work as a script's `args`:
 
@@ -238,8 +239,12 @@ const echo = evscript({ name: 'echo', args: quoterAbi[0].inputs }, (s, params, f
 void echo;
 ```
 
-Each tuple member needs a `name` (it may be `''`). For a parameter that has no member names,
-use `t.fromAbiParameter(param)`, which fills them in.
+Each tuple member needs a `name` (it may be `''`). A parameter with a nameless member is rejected
+with `TYPE_MISMATCH`, and the message names the first such member (``components[0] has no
+string `name` ``). `t.fromAbiParameter(param)` fills the member names in, but it returns the bare type
+and drops the parameter's own `name`, so wrap it to keep the label:
+`namedArg(param.name, t.fromAbiParameter(param))`. Without the wrapper the arg takes the
+positional `arg{i}` name.
 
 ## Literal coercion: LitOf and IntoExpr
 
