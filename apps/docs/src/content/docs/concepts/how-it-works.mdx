@@ -225,8 +225,8 @@ From there:
 - **Allocation only bumps.** New buffers advance the free pointer and are never freed, so
   allocations inside a loop grow memory monotonically — `compile()` warns with a
   `LOOP_ALLOCATION` diagnostic when an allocating statement sits inside a loop: a sub-call with
-  a `string`/`bytes`/array/tuple output (or any `s.simulate`), `s.newArray`, `s.tuple(…)`/struct
-  construction, `s.encode`/`s.encodePacked` (and `s.keccak256` over values that need encoding),
+  a `string`/`bytes`/array/tuple output (or any `s.simulate`), `s.newArray`, `s.tuple(…)` or a
+  struct literal, `s.encode`/`s.encodePacked` (and `s.keccak256` over values that need encoding),
   a dynamic literal, or a call to an `s.fn` whose body allocates (see
   [`LOOP_ALLOCATION`](/reference/diagnostics/)). A read whose outputs are all words copies them
   into their slots straight from a transient returndata snapshot, so it allocates nothing

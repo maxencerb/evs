@@ -65,7 +65,6 @@ import {
   describeHost,
   memberName,
   allMembersNamed,
-  tupleDebugTag,
   assertValueType,
   assertLayout,
 } from './helpers.js';
@@ -548,7 +547,7 @@ export abstract class RecorderCore {
     }
     // a plain object/array literal → build the tuple from its members (buildTupleNew rejects
     // the remaining handles: Cell, Field, MutArray).
-    return this.buildTupleNew(type, v, what);
+    return this.buildTupleNew(type, v, what, `${canonicalTypeSignature(type)} literal`);
   }
 
   /** The ValueId behind an Expr / Tuple / MutArray handle, after the owner check (handles never
@@ -632,8 +631,16 @@ export abstract class RecorderCore {
    *  positional array; a key that names no member, or an element past the last member, is
    *  rejected. Members are read from OWN properties only. An omitted or literal-zero WORD member
    *  is left to the zero-fill (no MSTORE); an omitted memref member gets its typed zero from
-   *  codegen (`lowerTupleNew`). */
-  protected buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
+   *  codegen (`lowerTupleNew`). `debugName` is the builder origin that `LOOP_ALLOCATION` and
+   *  the source map's site details quote: `s.tuple(<members>)` for an explicit `s.tuple`,
+   *  `<type> literal` for a coerced struct literal (a call arg, `s.lit`, a member, …), as for an
+   *  array literal. */
+  protected buildTupleNew(
+    type: TupleType,
+    init: unknown,
+    what: string,
+    debugName: string,
+  ): ValueId {
     this.assertNotHandle(init, type, what);
     const named = allMembersNamed(type);
     const n = type.components.length;
@@ -700,7 +707,7 @@ export abstract class RecorderCore {
       inits.push({ index, value: valId });
     });
 
-    const out = this.newValue(type, `s.tuple(${tupleDebugTag(type)})`);
+    const out = this.newValue(type, debugName);
     this.appendStmt({ k: 'tuplenew', inits, out });
     return out;
   }

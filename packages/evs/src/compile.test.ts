@@ -462,6 +462,46 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
     ]);
   });
 
+  test('a struct literal names its type, s.tuple names s.tuple', () => {
+    const P = t.struct({ a: t.uint256 });
+    const TAKES_P_ABI = [
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [{ name: 'p', type: 'tuple', components: [{ name: 'a', type: 'uint256' }] }],
+        outputs: [{ name: '', type: 'uint256' }],
+      },
+    ] as const;
+    const script = evscript({ name: 'structLits', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        // an inline struct literal: there is no s.tuple call in the source to point at
+        const r = s.read({
+          address: TARGET,
+          abi: TAKES_P_ABI,
+          functionName: 'f',
+          args: [{ a: 7n }],
+        });
+        const lit = s.lit(P, { a: 1n });
+        const q = s.read({ address: TARGET, abi: TAKES_P_ABI, functionName: 'f', args: [lit] });
+        acc.set(
+          acc
+            .get()
+            .add(r)
+            .add(q)
+            .add(s.tuple(P, { a: i }).a.get()),
+        );
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      '(uint256) literal (flat-block allocation)',
+      '(uint256) literal (flat-block allocation)',
+      's.tuple(a) (flat-block allocation)',
+    ]);
+  });
+
   test('look-alike reads get distinct sites that resolve in sourceMap.sites', () => {
     const script = evscript({ name: 'twice', args: [t.array(t.address)] }, (s, xs) => {
       const acc = s.let(t.uint256, 0n);
