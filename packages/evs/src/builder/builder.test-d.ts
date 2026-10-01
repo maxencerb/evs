@@ -1585,3 +1585,45 @@ test('a struct field named like a Tuple handle member gets no field accessor (th
 test('TUPLE_HANDLE_MEMBERS lists exactly the TupleHandleMember names', () => {
   expectTypeOf<(typeof TUPLE_HANDLE_MEMBERS)[number]>().toEqualTypeOf<TupleHandleMember>();
 });
+
+test('`s.read({ struct: true })` over outputs named like handle members keeps the methods', () => {
+  const multiAbi = [
+    {
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        { name: 'at', type: 'uint256' },
+        { name: 'expr', type: 'address' },
+        { name: '__proto__', type: 'uint8' },
+        { name: 'b', type: 'uint16' },
+      ],
+    },
+  ] as const satisfies Abi;
+  evscript({ name: 'multi', args: [t.address] }, (s, pool) => {
+    const r = s.read({ address: pool, abi: multiAbi, functionName: 'get', struct: true });
+    expectTypeOf<Extract<keyof typeof r, string>>().toEqualTypeOf<'b' | 'at' | 'expr'>();
+    expectTypeOf(r.b).toEqualTypeOf<Field<'uint16'>>();
+    expectTypeOf<(typeof r)['at']>().toBeFunction();
+    expectTypeOf(r.at(0)).toEqualTypeOf<Field<'uint256' | 'address' | 'uint8' | 'uint16'>>();
+    return s.return({ a: r.at(0).get(), b: r.b.get() });
+  });
+});
+
+test('`NoProtoKey`: a literal `__proto__` key is a type error on t.struct / s.return', () => {
+  // @ts-expect-error -- the key would set the prototype (or vanish), never declare a field
+  t.struct({ __proto__: t.uint256, b: t.uint256 });
+  // the guard is a no-op otherwise: inference is unchanged, and a widened record passes
+  const S = t.struct({ a: t.uint256, b: t.address });
+  expectTypeOf<(typeof S)['components'][0]['name']>().toEqualTypeOf<'a'>();
+  expectTypeOf<(typeof S)['components'][1]['type']>().toEqualTypeOf<'address'>();
+  const wide: Record<string, 'uint256'> = { a: t.uint256 };
+  t.struct(wide);
+  evscript({ name: 'r', args: [t.uint256] }, (s, x) => {
+    const ok = s.return({ y: x });
+    expectTypeOf(ok).toEqualTypeOf<ScriptReturn<{ readonly y: Expr<'uint256'> }>>();
+    // @ts-expect-error -- `NoProtoKey`
+    return s.return({ __proto__: x, y: x });
+  });
+});

@@ -38,7 +38,15 @@ export type {
   BitsType,
 } from './types/vocabulary.js';
 export type { exprBrand, Expr, LitOf, TupleLitOf, TupleAsParam, IntoExpr } from './types/expr.js';
-export { IDENT_RE, namedArg, isArgSpecValue, normalizeArgsInput } from './types/args.js';
+export {
+  IDENT_RE,
+  PROTO_RESERVED,
+  identProblem,
+  hasPlainPrototype,
+  namedArg,
+  isArgSpecValue,
+  normalizeArgsInput,
+} from './types/args.js';
 export type {
   ArgSpec,
   ArgInput,
@@ -50,6 +58,7 @@ export type {
   ArgsToInputs,
   EvsErrorAbiEntry,
   EvsErrorType,
+  NoProtoKey,
 } from './types/args.js';
 export type {
   TypeToComponent,

@@ -961,6 +961,44 @@ describe('Tuple: field names that collide with handle members', () => {
     expect(() => validateIr(script.ir)).not.toThrow();
     expect(script.ir.returns.map((r) => r.name)).toEqual(['p', 'c', 'b']);
   });
+
+  test('`s.read({ struct: true })` over outputs named `at` / `expr` / `__proto__`', () => {
+    // `struct: true` builds its own tuple type from the outputs (a separate prototype)
+    const multiAbi = [
+      {
+        type: 'function',
+        name: 'get',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'at', type: 'uint256' },
+          { name: 'expr', type: 'address' },
+          { name: '__proto__', type: 'uint8' },
+          { name: 'b', type: 'uint16' },
+        ],
+      },
+    ] as const satisfies Abi;
+    const script = evscript({ name: 'multi', args: [t.address] }, (s, pool) => {
+      const r = s.read({ address: pool, abi: multiAbi, functionName: 'get', struct: true });
+      expect(typeof r.at).toBe('function');
+      expect(typeof r.expr).toBe('function');
+      const own = Reflect.getPrototypeOf(r) ?? {};
+      expect(Object.getOwnPropertyNames(own)).toEqual(['b']);
+      return s.return({
+        a: r.at(0).get(),
+        e: r.at(1).get(),
+        p: r.at(2).get(),
+        b: r.b.get(),
+      });
+    });
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.returns.map((r) => [r.name, r.type])).toEqual([
+      ['a', 'uint256'],
+      ['e', 'address'],
+      ['p', 'uint8'],
+      ['b', 'uint16'],
+    ]);
+  });
 });
 
 // ---------------------------------------------------------------------------

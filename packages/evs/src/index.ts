@@ -47,6 +47,7 @@ export type {
   IntType,
   LitOf,
   NamedType,
+  NoProtoKey, // t.struct / s.return reject a literal `__proto__` key at the type level
   NumericType,
   PeelArraySuffix, // issue #4: one `[]`/`[N]` suffix peeled off a type string, at any depth
   ResolveArgName,

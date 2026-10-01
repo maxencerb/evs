@@ -783,9 +783,9 @@ const guard = evscript({ name: 'guard', args: [t.uint256], errors: [TooSmall] },
 
 ```ts nocheck
 // each value is an Expr, a Tuple handle, OR a MutArray handle — directly:
-// `NonEmptyReturn<ret>` makes `s.return({})` a type error (see below)
+// `NonEmptyReturn<ret>` makes `s.return({})` a type error, `NoProtoKey<ret>` a `__proto__` key
 return<const ret extends Record<string, Expr | Tuple<TupleType> | MutArray<EvsType>>>(
-  values: ret & NonEmptyReturn<ret>,
+  values: ret & NonEmptyReturn<ret> & NoProtoKey<ret>,
 ): ScriptReturn<ret>;
 ```
 
@@ -795,8 +795,9 @@ not inside an `s.fn` body), and its result must be what the callback returns.
 
 - Record keys become the named components of the single tuple output; viem consumers receive an
   **object**. Keys must be identifiers other than `__proto__` (viem's decoder would drop that
-  key); empty keys are rejected (`ABI_SHAPE`) because an
-  unnamed component silently degrades viem's result to a positional array.
+  key: a literal `__proto__:` key is a type error, and throws `ABI_SHAPE` at recording); empty
+  keys are rejected (`ABI_SHAPE`) because an unnamed component silently degrades viem's result
+  to a positional array.
 - The record must name **at least one** value: `s.return({})` is a type error and throws
   `ABI_SHAPE` at recording. An empty output tuple ABI-encodes to `0x`, which viem rejects as
   "returned no data" (easily mistaken for a missing contract). A guard-only script, one that only
@@ -876,10 +877,15 @@ and `expr`, `then` (so the handle never looks like a promise), the staging traps
 `__defineGetter__` family). The `Tuple` type drops the same names, so `pos.at.get()` on a field
 named `at` is a type error, not a runtime one. This keeps third-party ABIs with such members
 usable; the ABI, the encoding and viem's result object are unaffected. `__proto__` is the one
-name evs rejects: in every name you declare (`t.struct` fields, `namedArg`, `t.error`, `s.return`
-keys) and wherever a third-party struct carrying it would enter the script's own ABI, because
-assigning that key on a JavaScript object (viem's decoded result included) replaces the object's
-prototype instead of storing the value.
+name evs rejects: in every name you declare (`t.struct` fields, `namedArg`, `t.error`, `s.fn`
+params, `s.return` keys) and wherever a third-party struct carrying it would enter the script's
+own ABI, because assigning that key on a JavaScript object (viem's decoded result included)
+replaces the object's prototype instead of storing the value. A computed key (`[key]: …`) or a
+`namedArg` name throws `EvsTypeError` at recording. A literal `{ __proto__: … }` key in a
+`t.struct` spec or an `s.return` record is a **type error**; at runtime JavaScript never makes it a
+key: an object or `null` value replaces the record's prototype, which evs detects and rejects
+(`TYPE_MISMATCH` / `ABI_SHAPE`), while a primitive value such as `t.uint256` is dropped before evs
+sees the record, so only the type check catches that one.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -888,7 +894,9 @@ const Order = t.struct({ at: t.uint64, expr: t.uint256, size: t.uint128 });
 
 const readOrder = evscript({ name: 'readOrder', args: [Order] }, (s, order) => {
   return s.return({
-    at: order.at(0).get(), // Expr<'uint64'>: the `at` FIELD, by position
+    // the `at` FIELD, by position; `at(i)` is not narrowed per index, so the value is typed as
+    // the union of the member types (Expr<'uint64'> | Expr<'uint256'> | Expr<'uint128'>)
+    at: order.at(0).get(),
     size: order.size.get(), // an ordinary field keeps its accessor
     order: order.expr(), // `expr()` is still the method
   });

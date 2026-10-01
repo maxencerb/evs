@@ -18,6 +18,7 @@ import type {
   ArrayElemOf,
   ArgsInput,
   NormalizeArgs,
+  NoProtoKey,
 } from '../../core/types.js';
 import type { Expr } from '../../core/types/expr.js';
 import type { Recorder } from '../expr.js';
@@ -269,8 +270,9 @@ export interface ScriptBuilder<
   // return — accepts an `Expr` OR a `Tuple` handle directly per component (the
   // `.expr()` on a tuple is optional; the bare handle returns the same memref). The record must
   // name at least one value (`NonEmptyReturn`, issue #66): an empty one ABI-encodes to 0x.
+  // A literal `__proto__` key is a type error (`NoProtoKey`): JS never makes it a member.
   return<const ret extends Record<string, ReturnValue>>(
-    values: ret & NonEmptyReturn<ret>,
+    values: ret & NonEmptyReturn<ret> & NoProtoKey<ret>,
   ): ScriptReturn<ret>;
 }
 

@@ -2524,17 +2524,21 @@ describe('checklist: pathological type sizes', () => {
 });
 
 describe('checklist: `__proto__` is not a name', () => {
-  // `{ __proto__: x }` written with a computed key is an own property; assigning it on a plain
-  // object replaces the prototype instead, so every name that becomes an object key rejects it.
+  // `{ [PROTO]: x }` (a computed key) is an own property, so the name check sees it; assigning
+  // `__proto__` on a plain object replaces the prototype instead, so every name that becomes an
+  // object key rejects it. A literal `{ __proto__: x }` key never becomes an entry: the
+  // prototype guard and the `NoProtoKey` type guard cover it (tests below).
   const PROTO = '__proto__';
+  const RESERVED = /`__proto__` is reserved: assigning it on a JavaScript object/;
 
   test('namedArg / t.struct field / s.fn param → TYPE_MISMATCH', () => {
-    expectEvs(() => namedArg(PROTO, t.uint256), EvsTypeError, 'TYPE_MISMATCH', /"__proto__"/);
+    expectEvs(() => namedArg(PROTO, t.uint256), EvsTypeError, 'TYPE_MISMATCH', RESERVED);
     expectEvs(
+      // @ts-expect-error -- `NoProtoKey`: a `__proto__` key is a type error too
       () => t.struct({ [PROTO]: t.uint256, b: t.uint256 }),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /field name "__proto__"/,
+      /field name "__proto__" is rejected — `__proto__` is reserved/,
     );
     expectEvs(
       () =>
@@ -2544,26 +2548,72 @@ describe('checklist: `__proto__` is not a name', () => {
         }),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /s\.fn\("f"\) param #0: invalid name "__proto__"/,
+      /s\.fn\("f"\) param #0: invalid param name "__proto__": `__proto__` is reserved/,
     );
   });
 
   test('t.error name / param → ERROR_DECL', () => {
-    expectEvs(() => t.error(PROTO), EvsTypeError, 'ERROR_DECL', /error name must be/);
+    expectEvs(() => t.error(PROTO), EvsTypeError, 'ERROR_DECL', RESERVED);
     expectEvs(
       () => t.error('E', [{ name: PROTO, type: t.uint256 }] as never),
       EvsTypeError,
       'ERROR_DECL',
-      /invalid param name "__proto__"/,
+      /invalid param name "__proto__": `__proto__` is reserved/,
     );
   });
 
   test('s.return key → ABI_SHAPE (viem would drop it from the result object)', () => {
     expectEvs(
+      // @ts-expect-error -- `NoProtoKey`: a `__proto__` key is a type error too
       () => rec((s, a) => s.return({ [PROTO]: a.x, y: a.x })),
       EvsTypeError,
       'ABI_SHAPE',
-      /invalid return key "__proto__"/,
+      /invalid return key "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  // the usual spelling: a LITERAL key. JS turns it into the prototype (object / null value) or
+  // drops it (a primitive value), so it never reaches `Object.entries`.
+  test('t.struct with a literal `__proto__` key: an object/null value is caught at runtime', () => {
+    const Inner = t.struct({ a: t.uint256 });
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => t.struct({ __proto__: Inner, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /t\.struct\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
+    );
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey` (and `null` is not a type)
+      () => t.struct({ __proto__: null, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /prototype was replaced/,
+    );
+    // a primitive value is dropped by JS before evs sees the record: only the type guard
+    // (`NoProtoKey`, the @ts-expect-error) can reject it
+    // @ts-expect-error -- `NoProtoKey`
+    const dropped = t.struct({ __proto__: t.uint256, b: t.uint256 });
+    expect(dropped).toEqual({ type: 'tuple', components: [{ name: 'b', type: 'uint256' }] });
+    // a widened record type passes the type guard
+    const plain: Record<string, 'uint256'> = { a: t.uint256 };
+    expect(t.struct(plain).components).toEqual([{ name: 'a', type: 'uint256' }]);
+  });
+
+  test('s.return with a literal `__proto__` key → ABI_SHAPE (handle or null value)', () => {
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => rec((s, a) => s.return({ __proto__: a.x, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /s\.return\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
+    );
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => rec((s, a) => s.return({ __proto__: null, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /prototype was replaced/,
     );
   });
 
@@ -2595,7 +2645,43 @@ describe('checklist: `__proto__` is not a name', () => {
         ),
       EvsTypeError,
       'ABI_SHAPE',
-      /return component "r": tuple field #0 has an invalid name "__proto__"/,
+      /return component "r": tuple field #0 has an invalid name "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  test('a name-keyed record never picks up an inherited member (`toString`, …)', () => {
+    // a third-party struct with a `toString` member: an init / throw-args record that omits it
+    // must not read `Object.prototype.toString` (the member is zero / reported missing). The
+    // `as never` casts: an object literal's apparent `toString` method never fits a word member.
+    const S = t.fromOutputs(
+      [
+        {
+          type: 'function',
+          name: 'f',
+          stateMutability: 'view',
+          inputs: [],
+          outputs: [
+            { name: 'toString', type: 'uint256' },
+            { name: 'b', type: 'uint256' },
+          ],
+        },
+      ] as const,
+      'f',
+    );
+    const script = evscript({ name: 'init', args: [t.uint256] }, (s, x) =>
+      s.return({ v: s.tuple(S, { b: x } as never) }),
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const E = t.error('E', [namedArg('toString', t.uint256)]);
+    expectEvs(
+      () =>
+        evscript({ name: 'thr', args: [t.uint256], errors: [E] }, (s, x) => {
+          s.throw(E, {} as never);
+          return s.return({ x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /missing arg "toString" for error "E"/,
     );
   });
 
@@ -2605,7 +2691,7 @@ describe('checklist: `__proto__` is not a name', () => {
     );
     const [arg] = script.ir.args;
     expect(() => validateIr({ ...script.ir, args: [{ ...arg!, name: PROTO }] })).toThrow(
-      /args\[0\] has an invalid name "__proto__"/,
+      /args\[0\] has an invalid name "__proto__": `__proto__` is reserved/,
     );
   });
 });

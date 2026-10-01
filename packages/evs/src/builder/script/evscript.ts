@@ -25,6 +25,7 @@ import {
   type EvsType,
   type TupleType,
   IDENT_RE,
+  identProblem,
   isArgSpecValue,
   isEvsValueType,
   normalizeArgsInput,
@@ -191,7 +192,7 @@ function normalizeErrorDecls(scriptName: string, errorsIn: unknown): readonly Re
     if (!IDENT_RE.test(e.name)) {
       throw new EvsTypeError(
         'ERROR_DECL',
-        `${ctx}: invalid error name ${JSON.stringify(e.name)} (must be a non-empty identifier)`,
+        `${ctx}: invalid error name ${JSON.stringify(e.name)}: ${identProblem(e.name)}`,
       );
     }
     if (seenNames.has(e.name)) {
@@ -261,7 +262,7 @@ export function evscript<
   if (typeof def.name !== 'string' || !IDENT_RE.test(def.name)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `evscript: script name must be a non-empty identifier, got ${JSON.stringify(def.name)}`,
+      `evscript: invalid script name ${JSON.stringify(def.name)}: ${identProblem(def.name)}`,
     );
   }
   if (typeof body !== 'function') {

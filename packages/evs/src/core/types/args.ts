@@ -27,6 +27,48 @@ export interface ArgSpec<name extends string = string, type extends ArgType = Ar
  */
 export const IDENT_RE = /^(?!__proto__$)[A-Za-z_]\w*$/;
 
+/** Why `__proto__` is refused as a name, in the words every rejection message uses. */
+export const PROTO_RESERVED =
+  "`__proto__` is reserved: assigning it on a JavaScript object (viem's decoded result included) replaces the object's prototype instead of storing the value, so the value would be lost";
+
+/**
+ * The plain-language reason `name` fails {@link IDENT_RE}: {@link PROTO_RESERVED} for
+ * `__proto__` (an identifier, just a reserved one), else the identifier rule itself.
+ */
+export function identProblem(name: unknown): string {
+  return name === '__proto__'
+    ? PROTO_RESERVED
+    : 'must be a non-empty identifier matching /^[A-Za-z_]\\w*$/';
+}
+
+/**
+ * Whether a name-keyed record (a `t.struct` spec, an `s.return` record) is a plain object whose
+ * keys `Object.entries` sees in full. A literal `{ __proto__: x }` key never becomes an entry: an
+ * object or `null` value replaces the record's prototype, so the prototype must be a root
+ * prototype (`Object.prototype`, of any realm). A primitive value (`{ __proto__: t.uint256 }`) is
+ * dropped by JavaScript without a trace at runtime; the `NoProtoKey` type guard covers that case.
+ */
+export function hasPlainPrototype(o: object): boolean {
+  const proto: unknown = Object.getPrototypeOf(o);
+  return proto !== null && Object.getPrototypeOf(proto) === null;
+}
+
+/**
+ * Type-level guard for the name-keyed records of `t.struct` and `s.return`: `unknown` (a no-op in
+ * a `rec & …` parameter) unless the record has a literal `__proto__` key; then a required,
+ * self-describing property, so the call fails to typecheck with a message naming the reason. A
+ * `__proto__` key in an object literal is not a member at runtime (it sets the prototype or, for
+ * a primitive value such as `t.uint256`, is dropped), so without this guard the type would carry
+ * a component the runtime never sees. A widened `Record<string, …>` passes.
+ */
+export type NoProtoKey<rec> = string extends keyof rec
+  ? unknown
+  : '__proto__' extends keyof rec
+    ? {
+        readonly '`__proto__` is reserved: an object-literal `__proto__` key sets the prototype instead of declaring a member, so the value would be lost — rename it': never;
+      }
+    : unknown;
+
 /**
  * Names a **top-level** arg/param so the name surfaces in the resulting type (issue #9): in a
  * script's `args`, the viem `args` tuple element is labeled (`[token: …]`); in an `s.fn`'s params,
@@ -44,7 +86,7 @@ export function namedArg<const name extends string, const type extends EvsType>(
   if (!IDENT_RE.test(name)) {
     throw new EvsTypeError(
       'TYPE_MISMATCH',
-      `invalid argument name ${JSON.stringify(name)}: must be a non-empty identifier matching /${IDENT_RE.source}/`,
+      `invalid argument name ${JSON.stringify(name)}: ${identProblem(name)}`,
     );
   }
   if (typeof type === 'string') {
@@ -180,7 +222,7 @@ export function normalizeArgsInput(input: unknown, site: ArgsSite): NormalizedAr
     if (name !== '' && !IDENT_RE.test(name)) {
       throw new EvsTypeError(
         site.nameCode,
-        `${at}: invalid ${site.noun} name ${JSON.stringify(name)} (must match /^[A-Za-z_]\\w*$/)`,
+        `${at}: invalid ${site.noun} name ${JSON.stringify(name)}: ${identProblem(name)}`,
       );
     }
     const ctx = name === '' ? at : `${at} ("${name}")`;

@@ -4,7 +4,15 @@
  */
 
 import { EvsTypeError, EvsScopeError, EvsInternalError } from '../../core/errors.js';
-import { IDENT_RE, normalizeArgsInput, type Expr, type EvsType } from '../../core/types.js';
+import {
+  IDENT_RE,
+  PROTO_RESERVED,
+  hasPlainPrototype,
+  identProblem,
+  normalizeArgsInput,
+  type Expr,
+  type EvsType,
+} from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
 import { RecorderCalls } from './calls.js';
 import { RETURN_BRAND } from './handles.js';
@@ -25,7 +33,7 @@ export class Recorder extends RecorderCalls {
     if (typeof name !== 'string' || !IDENT_RE.test(name)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `s.fn(): name must be a non-empty identifier, got ${describeHost(name)}`,
+        `s.fn(): invalid name ${describeHost(name)}: ${identProblem(name)}`,
       );
     }
     if (typeof bodyFn !== 'function') {
@@ -183,6 +191,14 @@ export class Recorder extends RecorderCalls {
         `s.return(): expected a record of named Exprs, got ${describeHost(values)}`,
       );
     }
+    // a literal `{ __proto__: handle }` key replaced the record's prototype (Object.entries below
+    // would never see it); a primitive value is dropped by JS and caught only by `NoProtoKey`.
+    if (!hasPlainPrototype(values)) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `s.return(): expected a plain object literal of named values, but the record's prototype was replaced — an object-literal \`__proto__\` key does that instead of naming a return value. ${PROTO_RESERVED}`,
+      );
+    }
     // an empty record would emit a zero-component result tuple: it ABI-encodes to 0 bytes, so every
     // read returns 0x and viem throws "returned no data" (easily misread as "no contract here").
     if (Object.keys(values).length === 0) {
@@ -202,7 +218,7 @@ export class Recorder extends RecorderCalls {
       if (!IDENT_RE.test(key)) {
         throw new EvsTypeError(
           'ABI_SHAPE',
-          `s.return(): invalid return key ${JSON.stringify(key)} (must be an identifier)`,
+          `s.return(): invalid return key ${JSON.stringify(key)}: ${identProblem(key)}`,
         );
       }
       // a Tuple / MutArray handle is returnable DIRECTLY (no `.expr()` needed): the bare handle IS
