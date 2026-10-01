@@ -738,6 +738,43 @@ describe('t.fromOutputs / t.fromAbiParameter (ABI → type derivation, issue #5)
     expect(() => t.fromOutputs(overloaded, 'f(uint8)')).toThrow(/no function with signature/);
   });
 
+  test('a repeated member name is rejected, at the top level or nested (TYPE_MISMATCH)', () => {
+    // viem decodes a tuple whose members are all named into a name-keyed object, so the second
+    // `a` would silently overwrite the first; Solidity cannot emit such an ABI, a hand-written
+    // one can
+    const outputsOf = (outputs: readonly unknown[]) =>
+      [{ type: 'function', name: 'get', stateMutability: 'view', inputs: [], outputs }] as never;
+    const pair = [
+      { name: 'a', type: 'uint256' },
+      { name: 'a', type: 'address' },
+    ];
+    const cases: readonly (readonly [() => unknown, RegExp])[] = [
+      [
+        () => t.fromOutputs(outputsOf(pair), 'get'),
+        /^t\.fromOutputs\("get"\) component #1: duplicate member name "a" \(also component #0\)/,
+      ],
+      [
+        () => t.fromOutputs(outputsOf([{ name: 'p', type: 'tuple', components: pair }]), 'get'),
+        /^t\.fromOutputs\("get"\) component #0 component #1: duplicate member name "a"/,
+      ],
+      [
+        () => t.fromAbiParameter({ name: 'p', type: 'tuple', components: pair } as never),
+        /^t\.fromAbiParameter\(\) component #0 component #1: duplicate member name "a"/,
+      ],
+    ];
+    for (const [run, message] of cases) {
+      let caught: unknown;
+      try {
+        run();
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvsTypeError);
+      expect((caught as EvsTypeError).code).toBe('TYPE_MISMATCH');
+      expect((caught as EvsTypeError).message).toMatch(message);
+    }
+  });
+
   test('fromAbiParameter maps a scalar / tuple parameter to its EvsType', () => {
     expect(t.fromAbiParameter({ name: 'x', type: 'uint256' })).toBe('uint256');
     expect(t.fromAbiParameter({ name: 'xs', type: 'address[]' })).toBe('address[]');
@@ -893,6 +930,16 @@ describe('tuple descriptors: the same rules at every entry point', () => {
       wrap({ name: 'x', type: 'uint256[100000000][100]' }),
       'UNSUPPORTED_V0',
     ],
+    [
+      'a repeated member name',
+      { type: 'tuple', components: [U8, { name: 'a', type: 'address' }] },
+      'TYPE_MISMATCH',
+    ],
+    [
+      'a repeated nested member name',
+      wrap({ name: 'x', type: 'tuple', components: [U8, { name: 'a', type: 'address' }] }),
+      'TYPE_MISMATCH',
+    ],
   ];
 
   /** The slice of the builder these probes drive with untyped (malformed) descriptors. */
@@ -944,9 +991,15 @@ describe('tuple descriptors: the same rules at every entry point', () => {
   }
 
   test("isEvsValueType stays structural: the size gates are the canonicalizer's", () => {
-    // an empty tuple, too-deep arrays and oversized members are well-formed structurally (the IR
-    // validator reports an empty tuple in its own words); every other case is malformed
-    const structural = new Set(['an empty tuple', 'an empty nested tuple']);
+    // an empty tuple, too-deep arrays, oversized members and repeated member names are
+    // well-formed structurally (the IR validator reports an empty tuple in its own words); every
+    // other case is malformed
+    const structural = new Set([
+      'an empty tuple',
+      'an empty nested tuple',
+      'a repeated member name',
+      'a repeated nested member name',
+    ]);
     for (const [label, descriptor, code] of MALFORMED) {
       expect(isEvsValueType(descriptor)).toBe(code === 'UNSUPPORTED_V0' || structural.has(label));
     }
@@ -967,6 +1020,29 @@ describe('tuple descriptors: the same rules at every entry point', () => {
     expect(() => namedArg('q', wrap({ name: 'x', type: 'uint256[][][][][]' }) as never)).toThrow(
       /^argument "q" component #0: type "uint256\[\]\[\]\[\]\[\]\[\]" nests arrays 5 levels deep/,
     );
+    const repeated = wrap({
+      name: 'x',
+      type: 'tuple',
+      components: [U8, { name: 'a', type: 'bool' }],
+    });
+    expect(() => t.struct({ s: repeated } as never)).toThrow(
+      /^t\.struct\(\) field "s" component #0 component #1: duplicate member name "a" \(also component #0\) — member names must be unique within a tuple: viem decodes a named tuple into an object keyed by member name/,
+    );
+  });
+
+  test('unnamed members never clash: only a repeated non-empty name is rejected', () => {
+    const positional = {
+      type: 'tuple',
+      components: [
+        { name: '', type: 'uint8' },
+        { name: '', type: 'uint8' },
+        { name: 'a', type: 'bool' },
+      ],
+    } as const;
+    expect(t.tuple(t.uint8, t.uint8).components.map((c) => c.name)).toEqual(['', '']);
+    expect(t.tuple(positional).components[0]).toEqual({ name: '', ...positional });
+    expect(t.fromAbiParameter({ name: 'p', ...positional })).toEqual(positional);
+    expect(namedArg('p', positional).type).toBe(positional);
   });
 
   test('the t constructors canonicalize: names default to "", stray components drop', () => {

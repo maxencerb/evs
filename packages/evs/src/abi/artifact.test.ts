@@ -281,6 +281,46 @@ describe('toPlainAbiFunction', () => {
     expect(err.message).toContain('output');
   });
 
+  test('rejects a repeated member name inside a tuple parameter with ABI_SHAPE', () => {
+    // viem decodes a tuple whose members are all named into a name-keyed object (the second `a`
+    // overwrites the first), and a record literal for it gives both members the same key
+    const pair: readonly AbiParameter[] = [
+      { name: 'a', type: 'uint256' },
+      { name: 'a', type: 'address' },
+    ];
+    const entry = (param: AbiParameter, kind: 'inputs' | 'outputs'): AbiFunction => ({
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: kind === 'inputs' ? [param] : [],
+      outputs: kind === 'outputs' ? [param] : [],
+    });
+    const nested: AbiParameter = {
+      name: 'p',
+      type: 'tuple',
+      components: [{ name: 'inner', type: 'tuple[]', components: pair }],
+    };
+    for (const kind of ['inputs', 'outputs'] as const) {
+      const flat = catchEvs(() =>
+        toPlainAbiFunction(entry({ name: 'p', type: 'tuple', components: pair }, kind)),
+      );
+      expect(flat.code).toBe('ABI_SHAPE');
+      expect(flat.message).toMatch(
+        /^function "get": (input|output) parameter "p": component #1 repeats the member name "a" \(also component #0\) — member names must be unique within a tuple/,
+      );
+      const deep = catchEvs(() => toPlainAbiFunction(entry(nested, kind)));
+      expect(deep.code).toBe('ABI_SHAPE');
+      expect(deep.message).toContain('.components[0] ("inner"): component #1 repeats');
+    }
+    // unnamed members are positional and never clash
+    const positional: AbiParameter = {
+      name: 'p',
+      type: 'tuple',
+      components: [{ type: 'uint256' }, { type: 'uint256' }, { name: '', type: 'address' }],
+    };
+    expect(toPlainAbiFunction(entry(positional, 'outputs')).outputs[0]?.components).toHaveLength(3);
+  });
+
   test('memoized per entry object: one shared result per entry, equal results across copies', () => {
     expect(toPlainAbiFunction(balanceOf)).toBe(toPlainAbiFunction(balanceOf));
     const copy: AbiFunction = { ...balanceOf };
@@ -650,6 +690,52 @@ describe('buildScriptAbi', () => {
     // the identifier rule is the shared identProblem text (core/types/args.ts)
     expect(catchEvs(() => buildScriptAbi('not a name', [], ok)).message).toContain(rule);
     expect(catchEvs(() => buildScriptAbi('s', [u('1a')], ok)).message).toContain(rule);
+  });
+
+  test('a repeated struct member name is ABI_SHAPE in every section (hand-built types)', () => {
+    // the canonicalizer rejects these at every `t` constructor and declarator; buildScriptAbi
+    // re-checks the final ABI so a hand-built (deserialized) type cannot bring one in
+    const pair = [
+      { name: 'a', type: 'uint256' },
+      { name: 'a', type: 'address' },
+    ] as const;
+    const dup = { type: 'tuple', components: pair } as const;
+    const nested = {
+      type: 'tuple',
+      components: [{ name: 'inner', type: 'tuple', components: pair }],
+    } as const;
+    const ok = [{ name: 'ok', type: 'bool' as const }];
+    const cases = [
+      [() => buildScriptAbi('s', [{ name: 'x', type: dup }], ok), 'argument #0 ("x")'],
+      [() => buildScriptAbi('s', [], [{ name: 'r', type: dup }]), 'return component "r"'],
+      [
+        () => buildScriptAbi('s', [], [{ name: 'r', type: nested }]),
+        'return component "r" field "inner"',
+      ],
+      [
+        () =>
+          buildScriptAbi('s', [], ok, [
+            { name: 'E', inputs: [{ name: 'x', type: 'tuple', components: pair }] },
+          ]),
+        'error "E" input #0 ("x")',
+      ],
+    ] as const;
+    for (const [run, where] of cases) {
+      const e = catchEvs(run);
+      expect(e.code).toBe('ABI_SHAPE');
+      expect(e.message).toContain(
+        `${where}: tuple field #1 repeats the name "a" (also field #0) — member names must be unique within a tuple`,
+      );
+    }
+    // positional members (`name: ''`) never clash
+    const positional = {
+      type: 'tuple',
+      components: [
+        { name: '', type: 'uint256' },
+        { name: '', type: 'uint256' },
+      ],
+    } as const;
+    expect(() => buildScriptAbi('s', [], [{ name: 'r', type: positional }])).not.toThrow();
   });
 
   test('arg names: user names (namedArg) surface as input labels; duplicates rejected (issue #9)', () => {

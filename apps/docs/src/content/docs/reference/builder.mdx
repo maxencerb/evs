@@ -573,8 +573,8 @@ elides their type arguments). The `address` can itself be an
   into **one named [`Tuple` handle](#tuple)** in ABI declaration order (e.g. `s.read({ …,
   functionName: 'slot0', struct: true }).sqrtPriceX96.get()`), so it unifies with a `t.struct` /
   [`t.fromOutputs(abi, name)`](/guides/values-and-types/#deriving-types-from-an-abi) in the same
-  order. **Every output must be named**, else `EvsTypeError` at recording; a non-literal `boolean`
-  widens the result to the union of both shapes. `s.tryRead` takes `struct` too. See
+  order. **Every output must be named, each name once**, else `EvsTypeError` at recording; a
+  non-literal `boolean` widens the result to the union of both shapes. `s.tryRead` takes `struct` too. See
   [calls — decoding multiple outputs into a struct](/guides/calls/#decoding-multiple-outputs-into-a-struct).
 - Callee reverts bubble **verbatim** (Error/Panic/custom alike).
 - Structurally malformed returndata reverts `EvsDecodeError(site)`; `explainRevert` maps the

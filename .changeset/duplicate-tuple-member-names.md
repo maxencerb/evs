@@ -1,0 +1,5 @@
+---
+'@maxencerb/evs': patch
+---
+
+A tuple whose members repeat a name is now rejected instead of silently losing a value. viem decodes a tuple whose members are all named into an object keyed by member name, so with two members named `a` the later one overwrote the earlier one in the decoded result. A struct literal for such a type also gave both members the same key, and the `Tuple` handle's `.a` accessor read only one of them. Solidity and Vyper cannot emit such an ABI, but a hand-written one could reach the script's ABI through `t.fromOutputs`, `t.fromAbiParameter`, a raw descriptor given to `t.struct`/`t.tuple`/`t.array`/`namedArg`/`s.tuple`, or a third-party ABI passed to `s.read`/`s.call`. These now throw at the call site, naming the member by its path: the `t` constructors and declarators throw `TYPE_MISMATCH`; an `s.read`/`s.call` ABI entry with a repeated member name inside a tuple parameter, or `s.read({ struct: true })` over outputs that share a name, throws `ABI_SHAPE`. Unnamed members are positional and never clash, so `t.tuple(t.uint8, t.uint8)` and positional ABI tuples are unaffected.

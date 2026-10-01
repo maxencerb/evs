@@ -51,9 +51,11 @@ viem infers directly.
 
 A hand-written tuple descriptor (or a raw `AbiParameter[]`) given to `t.array`, `t.struct`,
 `t.tuple`, `t.fromOutputs` or `t.fromAbiParameter` is checked member by member, at every nesting
-level: a tuple needs at least one member, every member type must be in the vocabulary, and a
+level: a tuple needs at least one member, every member type must be in the vocabulary, a
 `tuple…` member needs a well-formed tag (`tuple`, `tuple[]`, `tuple[2]`, …) and its own
-`components`. A violation throws `TYPE_MISMATCH`, naming the member by its path
+`components`, and no two named members of one tuple may share a name (viem decodes a named tuple
+into an object keyed by member name, so one value would be lost; unnamed members are positional
+and never clash). A violation throws `TYPE_MISMATCH`, naming the member by its path
 (`t.struct() field "pos" component #1: …`); arrays nested more than four levels deep, or a static
 size of 2^32 bytes or more, throw `UNSUPPORTED_V0`. The result is a frozen canonical copy: a
 member without a `name` gets `name: ''`, and `components` on a non-tuple member is dropped.

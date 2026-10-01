@@ -20,6 +20,8 @@ import {
   elemTypeOf,
   fixedLengthOf,
   isNumeric,
+  repeatedMemberName,
+  UNIQUE_MEMBER_NAMES,
   type TupleType,
 } from '../../core/types.js';
 import type { ValueId, PlainAbiParam, PlainAbiFunction } from '../../ir/nodes.js';
@@ -486,8 +488,9 @@ export abstract class RecorderCalls extends RecorderControl {
 
   /** `s.read({ …, struct: true })` (issue #5 ask #2): compose ONE Tuple from a call's outputs by
    *  emitting a `tuplenew` over the already-decoded output ValueIds. Requires every output to be
-   *  named (an unnamed member would degrade viem's object inference to a positional array). The
-   *  struct type is in ABI declaration order, so it round-trips with `t.fromOutputs(abi, name)`. */
+   *  named (an unnamed member would degrade viem's object inference to a positional array) and
+   *  the names to be distinct (viem's decoded object keeps one value per name). The struct type
+   *  is in ABI declaration order, so it round-trips with `t.fromOutputs(abi, name)`. */
   private buildSubcallStruct(
     outputs: readonly PlainAbiParam[],
     outIds: readonly ValueId[],
@@ -508,6 +511,13 @@ export abstract class RecorderCalls extends RecorderControl {
         );
       }
     });
+    const repeated = repeatedMemberName(outputs.map((o) => o.name));
+    if (repeated !== undefined) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `${callerName}({ struct: true }): output #${repeated.repeat} of "${fname}" repeats the name ${JSON.stringify(repeated.name)} (also output #${repeated.first}) — ${UNIQUE_MEMBER_NAMES}; use the default positional result instead`,
+      );
+    }
     const structType: TupleType = Object.freeze({ type: 'tuple', components: outputs });
     const inits = outIds.map((id, i) => ({ index: i, value: id }));
     const structId = this.newValue(structType, `${callerName}(${fname}) struct`);
