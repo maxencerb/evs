@@ -69,7 +69,13 @@ export type {
 export { deserializeIr, serializeIr } from './ir/nodes.js';
 export type { ScriptIr, SiteId } from './ir/nodes.js'; // SiteId: RevertExplanation / SourceMap site ids
 export { interpret } from './ir/interp.js';
-export type { InterpEnvOverrides, InterpResult, MockChain } from './ir/interp.js';
+export type {
+  InterpEnvOverrides,
+  InterpOptions, // interpret()'s opts: trace, maxSteps, env
+  InterpResult,
+  InterpValues, // the decoded return record interpret(script, …) types from the script's ABI
+  MockChain,
+} from './ir/interp.js';
 export { dce, eliminateDeadCode } from './ir/dce.js'; // issue #40: the pass compile() runs, for tools
 
 // abi
@@ -178,4 +184,5 @@ export type {
   ErrorArgsOf, // issue #15: one error entry's decoded args record
   HandlerResult, // the return type of matchScriptError
   ScriptErrorHandlers, // issue #15: the matchScriptError handler record (declared + `_`)
+  ToViemMode, // 'deployless' | 'stateOverride' — a run-time mode for toViem()'s catch-all overload
 } from './viem.js';

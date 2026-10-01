@@ -3,8 +3,9 @@
  * deep imports). Pins the helper types a public declaration mentions — `ScriptAbi['inputs']`,
  * the `EvsFn`/`ArgHandles` label default, the `s.forEach`/`.at` tuple-array bound,
  * `ReturnSpecToComponents`, `RevertExplanation`/`SourceMap` site ids, `AsmNode['op']`,
- * `Disassembly['lines']` — so dropping one from `index.ts` fails here. The IR node types behind
- * `ScriptIr` are deliberately not exported (the IR schema is not a stable API). Typecheck only.
+ * `Disassembly['lines']`, `ToViemMode`, `InterpOptions` / `InterpValues` — so dropping one
+ * from `index.ts` fails here. The IR node types behind `ScriptIr` are deliberately not exported
+ * (the IR schema is not a stable API). Typecheck only.
  */
 import { expectTypeOf, test } from 'vite-plus/test';
 
@@ -15,12 +16,15 @@ import type {
   ArgsToInputs,
   DisasmLine,
   Disassembly,
+  InterpOptions,
+  InterpValues,
   LabelCarrier,
   Mnemonic,
   ResolveArgName,
   SignatureName,
   SiteId,
   ToArgSpec,
+  ToViemMode,
   TupleArrayTag,
   TypeOfReturn,
   Expr,
@@ -50,4 +54,27 @@ test('public-signature helper types are exported by name', () => {
   expectTypeOf<ToArgSpec<'uint256'>['type']>().toEqualTypeOf<'uint256'>();
   expectTypeOf<ArgsToInputs<readonly []>>().toEqualTypeOf<readonly []>();
   expectTypeOf<LabelCarrier<readonly []>>().toEqualTypeOf<readonly []>();
+  // interpret()'s options and the values type of its script overload
+  expectTypeOf<InterpOptions['maxSteps']>().toEqualTypeOf<number | undefined>();
+  expectTypeOf<
+    InterpValues<
+      readonly [
+        {
+          readonly type: 'function';
+          readonly name: 'f';
+          readonly stateMutability: 'view';
+          readonly inputs: readonly [];
+          readonly outputs: readonly [
+            {
+              readonly name: 'result';
+              readonly type: 'tuple';
+              readonly components: readonly [{ readonly name: 'y'; readonly type: 'uint256' }];
+            },
+          ];
+        },
+      ]
+    >
+  >().toEqualTypeOf<{ y: bigint }>();
+  // the run-time mode accepted by toViem()'s catch-all overload
+  expectTypeOf<ToViemMode>().toEqualTypeOf<'deployless' | 'stateOverride'>();
 });

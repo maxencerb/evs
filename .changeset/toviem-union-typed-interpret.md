@@ -1,0 +1,5 @@
+---
+'@maxencerb/evs': minor
+---
+
+`toViem({ mode })` now accepts a mode chosen at run time: a `mode` typed as the new exported `ToViemMode` (`'deployless' | 'stateOverride'`) resolves to a catch-all overload that returns the union of the shapes, which still spreads into `readContract` with full return inference (it used to fail with "No overload matches this call"). `address` / `sender` ride along and apply only in state-override mode; literal modes keep their precise overloads. `interpret()` gains an overload typed from the script: `interpret(script, args, chain)` (an `evscript()` result or its compiled artifact) types `args` as the tuple `readContract` takes and `outcome.values` as the record it returns, so a wrong argument shape is a compile error. `interpret(ir, …)` on a bare `ScriptIr` is unchanged, `InterpResult` takes an optional values type parameter (default `Record<string, unknown>`), and the new `InterpOptions` (the `opts` object) and `InterpValues<abi>` (the typed values record) are exported.

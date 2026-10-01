@@ -199,7 +199,9 @@ rules — over 24,576 result bytes, a result whose first byte is `0xEF`, or over
 creation data fails; [deployless limits](/reference/artifact/#deployless-limits) covers the
 compile-time warnings, the `deploylessDataSize()` pre-check and `explainDeploylessError()`. Both
 modes share the node's `eth_call` gas cap (geth default 50M) — the ceiling for scripts making
-many calls.
+many calls. To pick the mode per provider at run time, type it as `ToViemMode` and call
+`toViem({ mode })`: the result is the union of both shapes and still spreads into
+`readContract` (see [the artifact reference](/reference/artifact/#toviem--execution-shapes)).
 
 ## Block pinning
 

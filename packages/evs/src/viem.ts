@@ -23,7 +23,6 @@
  */
 
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'abitype';
-import type { StateOverride } from 'viem';
 
 import {
   canonicalTypeSignature,
@@ -404,11 +403,30 @@ export function matchScriptError<
   return result as HandlerResult<handlers>;
 }
 
-/** The state-override execution shape: `{ abi, address, stateOverride }`. */
+/**
+ * The two execution modes `toViem()` takes. Exported so a mode chosen at run time (a config
+ * value, a provider probe) can be typed once and passed straight through: `toViem({ mode })`
+ * with a `ToViemMode`-typed `mode` resolves to the catch-all overload and returns the union of
+ * the shapes.
+ */
+export type ToViemMode = 'deployless' | 'stateOverride';
+
+/** The options object of `toViem()`'s implementation (the union of every overload's input). */
+export interface ToViemOptions {
+  mode?: ToViemMode | undefined;
+  address?: Address | undefined;
+  sender?: Address | undefined;
+}
+
+/**
+ * The state-override execution shape: `{ abi, address, stateOverride }`. The one-entry tuple is
+ * mutable (not `readonly`) because viem's `StateOverride` is a mutable `Array` type — a
+ * readonly tuple would not spread into `readContract`.
+ */
 interface ViemStateOverrideShape<abi extends Abi> {
   abi: abi;
   address: Address;
-  stateOverride: StateOverride;
+  stateOverride: [{ address: Address; code: Hex }];
 }
 
 /** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
@@ -443,7 +461,11 @@ export function toViemStateOverride<const abi extends Abi>(
 ): ViemStateOverrideShape<abi>;
 export function toViemStateOverride<const abi extends Abi>(
   s: { abi: abi; runtimeBytecode: Hex },
-  opts?: { address?: Address; sender?: Address | undefined },
+  opts?: { address?: Address | undefined; sender?: Address | undefined },
+): ViemStateOverrideShape<abi> | ViemSenderShape<abi>;
+export function toViemStateOverride<const abi extends Abi>(
+  s: { abi: abi; runtimeBytecode: Hex },
+  opts?: { address?: Address | undefined; sender?: Address | undefined },
 ): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
   const sender = opts?.sender;
   if (opts?.address !== undefined && !isAddressLike(opts.address)) {

@@ -55,6 +55,8 @@ import {
   toCreationBytecode,
   toViemDeployless,
   toViemStateOverride,
+  type ToViemMode,
+  type ToViemOptions,
 } from './viem.js';
 
 // ---------------------------------------------------------------------------
@@ -102,6 +104,29 @@ export interface CompiledEvsScript<
     stateOverride: [{ address: Address; code: Hex }];
     account: Address;
   };
+  // catch-all for a mode chosen at run time (`mode: ToViemMode`): the union of the shapes above.
+  // `address` / `sender` apply only when the mode turns out to be 'stateOverride' (deployless
+  // ignores them). The intersection is `never` unless `m` is the whole union, which keeps a
+  // literal mode on its own overload: e.g. `{ mode: 'deployless', address }` stays a type error.
+  toViem<m extends ToViemMode>(
+    o: {
+      mode: m;
+      address?: Address | undefined;
+      sender?: Address | undefined;
+    } & ([ToViemMode] extends [m] ? unknown : never),
+  ):
+    | { abi: ScriptAbi<name, args, ret, errs>; code: Hex }
+    | {
+        abi: ScriptAbi<name, args, ret, errs>;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+      }
+    | {
+        abi: ScriptAbi<name, args, ret, errs>;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+        account: Address;
+      };
   disassemble(): Disassembly; // .format() → listing with labels, jump targets and notes
   explainRevert(data: Hex): RevertExplanation;
 }
@@ -234,51 +259,12 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   const initBytecode = toCreationBytecode(runtimeBytecode, resolved.evmVersion);
   const abi = script.abi;
 
-  function toViem(): { abi: typeof abi; code: Hex };
-  function toViem(o: { mode: 'deployless' }): { abi: typeof abi; code: Hex };
-  function toViem(o: { mode: 'stateOverride'; address?: Address }): {
-    abi: typeof abi;
-    address: Address;
-    stateOverride: [{ address: Address; code: Hex }];
-  };
-  function toViem(o: { mode: 'stateOverride'; sender: Address; address?: Address }): {
-    abi: typeof abi;
-    address: Address;
-    stateOverride: [{ address: Address; code: Hex }];
-    account: Address;
-  };
-  function toViem(o?: {
-    mode?: 'deployless' | 'stateOverride';
-    address?: Address;
-    sender?: Address;
-  }):
-    | { abi: typeof abi; code: Hex }
-    | { abi: typeof abi; address: Address; stateOverride: [{ address: Address; code: Hex }] }
-    | {
-        abi: typeof abi;
-        address: Address;
-        stateOverride: [{ address: Address; code: Hex }];
-        account: Address;
-      } {
-    if (o?.mode === 'stateOverride') {
-      // toViemStateOverride owns the address default and the shape checks (`address` and
-      // `sender` must be 20-byte 0x addresses, and agree when both are given); the tuple is rebuilt here because its shape types `stateOverride` as
-      // viem's wide StateOverride.
-      const at = o.address === undefined ? {} : { address: o.address };
-      if (o.sender === undefined) {
-        const { address } = toViemStateOverride({ abi, runtimeBytecode }, at);
-        return { abi, address, stateOverride: [{ address, code: runtimeBytecode }] };
-      }
-      const shape = toViemStateOverride({ abi, runtimeBytecode }, { ...at, sender: o.sender });
-      return {
-        abi,
-        address: shape.address,
-        stateOverride: [{ address: shape.address, code: runtimeBytecode }],
-        account: shape.account,
-      };
-    }
-    return toViemDeployless({ abi, initBytecode });
-  }
+  // one implementation behind every `toViem` overload: the mode picks the shape, and
+  // toViemStateOverride owns the address default and the `address` / `sender` checks
+  const toViem = (o?: ToViemOptions) =>
+    o?.mode === 'stateOverride'
+      ? toViemStateOverride({ abi, runtimeBytecode }, o)
+      : toViemDeployless({ abi, initBytecode });
 
   const artifact: CompiledEvsScript = {
     abi,
@@ -287,7 +273,9 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     sourceMap,
     ir,
     options: resolved,
-    toViem,
+    // the overloads narrow the implementation's union return per input shape
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+    toViem: toViem as CompiledEvsScript['toViem'],
     disassemble: (): Disassembly => disassemble(runtimeBytecode, sourceMap),
     explainRevert: (data: Hex): RevertExplanation => explainRevert(data, ir, sourceMap),
   };

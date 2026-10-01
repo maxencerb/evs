@@ -20,14 +20,23 @@ overflows while computing an unused value returns, under `interpret()` and on-ch
 ## The signature
 
 ```ts
-import type { InterpEnvOverrides, InterpResult, MockChain, ScriptIr } from '@maxencerb/evs';
+import type { InterpOptions, InterpResult, InterpValues, MockChain, ScriptIr } from '@maxencerb/evs';
+import type { Abi, ContractFunctionArgs, ContractFunctionName } from 'viem';
 
+declare function interpret<const abi extends Abi>(
+  script: { readonly ir: ScriptIr; readonly abi: abi }, // evscript() result or compiled artifact
+  args: ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>, // readContract's args
+  chain: MockChain,
+  opts?: InterpOptions,
+): InterpResult<InterpValues<abi>>; // values: what readContract returns for this script
 declare function interpret(
-  ir: ScriptIr,
+  ir: ScriptIr, // a bare IR, e.g. from deserializeIr
   args: readonly unknown[],
   chain: MockChain,
-  opts?: { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean },
-): InterpResult;
+  opts?: InterpOptions,
+): InterpResult; // values: Record<string, unknown>
+
+// InterpOptions = { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean }
 
 interface MockChainShape {
   // the one required method — every s.read/s.tryRead (and, when `call` is omitted, every
@@ -44,8 +53,14 @@ interface MockChainShape {
 }
 ```
 
-- `ir` — the script's IR, straight off the script: `interpret(myScript.ir, …)`. It is
-  validated on entry, so garbage IR fails loudly instead of producing garbage results.
+- `script` — the script itself (`interpret(myScript, …)`), or its compiled artifact. Both
+  sides are then typed from the script's literal ABI with the same viem types `readContract`
+  uses: `args` is the positional tuple `readContract` takes, so a wrong argument shape is a
+  compile error, and `outcome.values` is the record `readContract` returns.
+- `ir` — a bare `ScriptIr` instead (one loaded with `deserializeIr`, say): `args` is then
+  `readonly unknown[]` and `outcome.values` a `Record<string, unknown>`, checked at run time
+  only. Either way the IR is validated on entry, so garbage IR fails loudly instead of
+  producing garbage results.
 - `args` — the script's arguments as plain JS values (same conventions as viem; table below).
 - `chain` — your mock: every `s.read`/`s.tryRead` the script executes arrives as one
   `staticcall` request with the target address and the exact ABI-encoded calldata the
@@ -100,11 +115,13 @@ const chain: MockChain = {
   },
 };
 
-const result = interpret(tokenInfo.ir, [USDC], chain);
+const result = interpret(tokenInfo, [USDC], chain);
 
 if (result.outcome.kind !== 'return') throw new Error('expected a return');
-if (result.outcome.values['symbol'] !== 'USDC') throw new Error('wrong symbol');
-if (result.outcome.values['decimals'] !== 6) throw new Error('wrong decimals');
+// typed like readContract's result: symbol is a string, decimals (uint8) a number
+const { symbol, decimals } = result.outcome.values;
+if (symbol !== 'USDC') throw new Error('wrong symbol');
+if (decimals !== 6) throw new Error('wrong decimals');
 ```
 
 :::note
@@ -114,7 +131,8 @@ word the script holds), so normalize before comparing — `USDC.toLowerCase()` a
 
 ## Arguments in, values out
 
-`args` accepts the same JS shapes viem uses; a wrong shape or out-of-range value throws
+`args` accepts the same JS shapes viem uses. When you pass the script, a wrong shape is a type
+error; at run time (and always for a bare IR) a wrong shape or out-of-range value throws
 `EvsTypeError` immediately — a bug in your test, never a chain outcome.
 
 | Script arg type        | Accepted JS values                                  |
@@ -155,7 +173,7 @@ const noCalls: MockChain = {
   },
 };
 
-const result = interpret(ratio.ir, [1n, 0n], noCalls);
+const result = interpret(ratio, [1n, 0n], noCalls);
 if (result.outcome.kind !== 'revert') throw new Error('expected a revert');
 
 // Same bytes the compiled script reverts with: Panic(0x12), division by zero.
@@ -226,10 +244,10 @@ const noCalls: MockChain = {
 };
 
 const env: InterpEnvOverrides = { timestamp: 1_750_000_000n, chainid: 8453n };
-const result = interpret(stamp.ir, [], noCalls, { env });
+const result = interpret(stamp, [], noCalls, { env });
 
 if (result.outcome.kind !== 'return') throw new Error('expected a return');
-if (result.outcome.values['at'] !== 1_750_000_000n) throw new Error('wrong timestamp');
+if (result.outcome.values.at !== 1_750_000_000n) throw new Error('wrong timestamp');
 ```
 
 :::caution
@@ -290,6 +308,7 @@ const noCalls: MockChain = {
   },
 };
 
+// a bare IR carries no ABI, so this call is untyped: args unknown[], values a plain record
 const result = interpret(restored, [21n], noCalls);
 if (result.outcome.kind !== 'return' || result.outcome.values['y'] !== 42n) {
   throw new Error('round trip failed');
@@ -310,7 +329,7 @@ import { chain, tokenInfo, USDC } from './fixtures.js';
 
 describe('tokenInfo', () => {
   test('returns symbol and decimals', () => {
-    const result = interpret(tokenInfo.ir, [USDC], chain);
+    const result = interpret(tokenInfo, [USDC], chain);
     expect(result.outcome).toMatchObject({
       kind: 'return',
       values: { symbol: 'USDC', decimals: 6 },
