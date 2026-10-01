@@ -228,7 +228,15 @@ Releases: see [Releasing](#releasing) below.
   precomputed integer-root bound on the base + `EXP`, and the general case is solc's
   square-and-multiply loop on the magnitude (≤ 7 iterations; a signed base is split into sign
   and magnitude, the bound is `2^(N−1)` for a negative result). `addmod` / `mulmod` share
-  `div` / `mod`'s zero guard and its elision for a folded nonzero constant.
+  `div` / `mod`'s zero guard and its elision for a folded nonzero constant. A folded constant
+  operand also selects cheaper exact templates for unsigned `mul` (`x > ⌊max / c⌋`, the
+  256-bit bound computed as `PUSH c PUSH0 NOT DIV` when that is shorter than its immediate)
+  and `int256` `add` / `sub` (only the sign case the constant allows), and a folded array index
+  below 2^32 becomes a constant bound and offset. Binary templates load the right operand first
+  (`[a, b]`, left on top); the commutative ones and the comparisons (flipping `LT` ↔ `GT`) load
+  the left one first when the previous statement just stored it (`justStored` in
+  `codegen/lower/context.ts`), so the peephole's store-then-reload rewrite fuses method chains.
+  `select` is branch-free (`b ^ ((a ^ b) · cond)`).
 - **Wrapping arithmetic and `mulDiv`** are explicit per-operation opt-ins next to the checked
   ops, never a mode: `wrappingAdd` / `wrappingSub` / `wrappingMul` record their own `bin` ops
   (`wrapadd` / `wrapsub` / `wrapmul`: the bare opcode, plus a mask or `SIGNEXTEND` below 256

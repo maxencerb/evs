@@ -645,11 +645,10 @@ describe('EIP-170 enforcement', () => {
   const balanceOfAbi = parseAbi(['function balanceOf(address) view returns (uint256)']);
 
   test('unrolled reads past 64 KiB → COMPILE_LIMIT, not an internal PUSH2-reach error', () => {
-    const reads = evscript(
-      { name: 'reads', args: [t.address, t.array(t.address)] },
-      (s, owner, tokens) => {
+    const readsScript = (n: number) =>
+      evscript({ name: 'reads', args: [t.address, t.array(t.address)] }, (s, owner, tokens) => {
         const total = s.let(t.uint256, 0n);
-        for (let i = 0; i < 420; i++) {
+        for (let i = 0; i < n; i++) {
           const bal = s.read({
             address: tokens.at(BigInt(i % 4)),
             abi: balanceOfAbi,
@@ -659,12 +658,19 @@ describe('EIP-170 enforcement', () => {
           s.if(bal.gt(BigInt(i)), () => total.set(total.get().add(bal)));
         }
         return s.return({ total: total.get() });
-      },
-    );
-    const err = captureError(() => compile(reads), EvsCompileError);
+      });
+    const sizeOf = (e: EvsCompileError) => Number(/is (\d+) bytes/.exec(e.message)?.[1]);
+    // Grow the unrolled loop until the program clears 0xffff, so codegen size wins never drop
+    // the fixture back under the PUSH2 reach (every size here is past EIP-170 → COMPILE_LIMIT).
+    let n = 420;
+    let err = captureError(() => compile(readsScript(n)), EvsCompileError);
+    while (sizeOf(err) <= 0xffff && n < 420 * 16) {
+      n *= 2;
+      err = captureError(() => compile(readsScript(n)), EvsCompileError);
+    }
     expect(err.code).toBe('COMPILE_LIMIT');
     expect(err.message).toMatch(/^runtime bytecode is (\d+) bytes — exceeds the EIP-170 limit/);
-    expect(Number(/is (\d+) bytes/.exec(err.message)?.[1])).toBeGreaterThan(0xffff);
+    expect(sizeOf(err)).toBeGreaterThan(0xffff);
     expect(err.message).toMatch(/dispatcher \d+, body \d+, fns \d+, tails \d+, data segments \d+/);
   });
 

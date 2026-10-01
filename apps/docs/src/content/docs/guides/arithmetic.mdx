@@ -42,6 +42,8 @@ Right-hand operands accept literals via [`IntoExpr` coercion](/guides/values-and
 
 Checks run at the operand type's width, not at 256 bits: a `uint64` addition overflows at 2^64. The signed-division edge case is handled explicitly — the EVM's `SDIV` silently wraps `−2^255 / −1`, but evs (like solc) reverts with `Panic(0x11)`.
 
+A literal operand makes a check cheaper, never different. An unsigned `x.mul(1000n)` is one comparison of `x` against `⌊max / 1000⌋` before the multiply instead of the general overflow test, an `int256` `x.add(k)` / `x.sub(k)` checks only the overflow direction the literal's sign allows, and a nonzero literal divisor drops the division-by-zero check.
+
 Panics surface as standard `Panic(uint256)` reverts, which viem decodes natively; `explainRevert` explains the code and lists the candidate sites in your script that can raise that panic. See [errors and debugging](/guides/errors-and-debugging/).
 
 The `wrapping…` methods never revert: see [wrapping arithmetic](#wrapping-arithmetic).

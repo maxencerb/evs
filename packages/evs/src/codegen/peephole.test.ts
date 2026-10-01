@@ -6,6 +6,7 @@
  * opcode against the EVM itself.
  */
 
+import { encodeFunctionData } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
@@ -123,7 +124,55 @@ describe('rewrite 1 — PUSH s MSTORE PUSH s MLOAD → DUP1 PUSH s MSTORE', () =
     ]);
     expect(() => assemble(out, { evmVersion: 'cancun' })).not.toThrow();
   });
+
+  test('fuses every link of a method chain (the lowering reloads a just-stored operand first)', async () => {
+    // each op takes the previous result as its LEFT operand; the lowering loads that operand
+    // first, so every intermediate store is immediately reloaded and becomes a DUP1
+    const script = evscript({ name: 'chain', args: [t.uint256, t.uint256] }, (s, x, y) => {
+      const r = x.add(y).mul(y).bitXor(x).bitOr(y).lt(y);
+      return s.return({ r });
+    });
+    const lowered = lowerProgram(script.ir, { evmVersion: 'cancun', optimize: true }).nodes;
+    const out = evsPeephole(lowered);
+    // the add, mul, bitXor and bitOr results each feed the next op as its left operand
+    expect(storeReloads(lowered, 'unfused')).toBeGreaterThanOrEqual(4);
+    expect(storeReloads(out, 'unfused')).toBe(0);
+    expect(storeReloads(out, 'fused')).toBeGreaterThanOrEqual(4);
+    // and the fused program computes the same result
+    const { bytecode } = assemble(lowered, { evmVersion: 'cancun' });
+    const fused = assemble(out, { evmVersion: 'cancun' }).bytecode;
+    const calldata = encodeFunctionData({ abi: script.abi, functionName: 'chain', args: [3n, 5n] });
+    const [before, after] = await Promise.all([
+      execRuntime(bytesToHex(bytecode), calldata),
+      execRuntime(bytesToHex(fused), calldata),
+    ]);
+    expect(after).toMatchObject({ success: true, data: before.data });
+    expect(fused.length).toBeLessThan(bytecode.length);
+  });
 });
+
+/** `PUSH s MSTORE PUSH s MLOAD` windows over one slot (`fused`: `DUP1 PUSH s MSTORE` ones). */
+function storeReloads(nodes: readonly AsmNode[], shape: 'unfused' | 'fused'): number {
+  let count = 0;
+  for (let i = 0; i < nodes.length; i++) {
+    const [a, b, c, d] = nodes.slice(i, i + 4);
+    if (shape === 'fused') {
+      if (a?.k === 'op' && a.op === 'DUP1' && b?.k === 'push' && c?.k === 'op' && c.op === 'MSTORE')
+        count++;
+    } else if (
+      a?.k === 'push' &&
+      b?.k === 'op' &&
+      b.op === 'MSTORE' &&
+      c?.k === 'push' &&
+      c.value === a.value &&
+      d?.k === 'op' &&
+      d.op === 'MLOAD'
+    ) {
+      count++;
+    }
+  }
+  return count;
+}
 
 // ---------------------------------------------------------------------------
 // rewrite 2 — reload-of-reload

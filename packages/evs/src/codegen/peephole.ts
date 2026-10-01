@@ -203,8 +203,9 @@ function matchAt(nodes: readonly AsmNode[], i: number): Match | null {
 }
 
 /**
- * Rewrite 1 — store-then-reload of the same slot (the dominant `storeOut` → `loadOperand`
- * sequence between consecutive statement templates):
+ * Rewrite 1 — store-then-reload of the same slot (a `storeOut` followed by the next statement
+ * template's first `loadOperand` of that value; the commutative and comparison templates load a
+ * just-stored operand first so that method chains like `x.add(y).mul(z)` produce this shape):
  *
  *   before: [v, …] PUSH s → [s, v, …] MSTORE → [ …]   PUSH s → [s, …] MLOAD → [v, …]
  *   after:  [v, …] DUP1   → [v, v, …] PUSH s → [s, v, v, …] MSTORE → [v, …]
