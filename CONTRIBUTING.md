@@ -229,6 +229,16 @@ Releases: see [Releasing](#releasing) below.
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
   maps revert payloads back to the site (kind, detail and site id) that produced them.
+- **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
+  panic site the exact `panicCodes` its template can raise, mirroring the elisions in
+  `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …);
+  `explainRevert` lists a panic's candidates from `panicCodes`, never from the `detail` text.
+  `codegen/sites.test.ts` compiles one checked op per script and compares the claimed codes with
+  the panic tails the bytecode references, so a lowering change that adds or drops a check must
+  update `classifySite` too. And `explainRevert` and `decodeScriptError` share one byte-level
+  classifier (`abi/revert.ts`; `abi/revert.test.ts` feeds one payload corpus to both). Payloads
+  only a callee can produce (empty, `Error(string)`, foreign selectors) are attributed to the
+  strict, non-`revertReturns` call sites — the only ones that bubble.
 - **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
   `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
   exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`

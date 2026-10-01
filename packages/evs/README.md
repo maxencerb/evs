@@ -56,7 +56,9 @@ TS callback ──record──▶ IR ──compile──▶ runtime bytecode ─
   and real solc output.
 - **Debuggable.** Build-time errors throw from inside your callback, so the stack trace points
   at your line; `disassemble()` annotates the bytecode with labels and notes, and
-  `explainRevert()` maps a revert payload back to the site that produced it.
+  `explainRevert()` maps a revert payload back to the script: the exact site of a decode
+  failure, the candidate sites that can raise a panic, or the call sites a callee revert
+  bubbled through.
 
 ## Install
 
@@ -326,7 +328,7 @@ compiled.runtimeBytecode; // what runs (state-override mode); EIP-170 size enfor
 compiled.initBytecode; // wrapped for deployless mode — what toViem() passes as `code`
 compiled.abi; // literal-typed: the script fn + EvsInvalidCalldata + EvsDecodeError
 console.log(compiled.disassemble().format()); // annotated listing: labels, jump targets, notes
-compiled.explainRevert(revertData).message; // Panic codes & decode sites → the script's sites
+compiled.explainRevert(revertData).message; // decode site, panic candidates, bubbling call sites
 ```
 
 `evmVersion` lowers PUSH0/MCOPY usage for pre-Shanghai/pre-Cancun chains. The compiler verifies

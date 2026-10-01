@@ -25,7 +25,7 @@ import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
 import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
-import { walkStmts, type FnId, type ScriptIr, type SiteId, type Stmt } from '../ir/nodes.js';
+import { walkStmts, type FnId, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
@@ -37,6 +37,7 @@ import {
   SIMULATE_TRAMPOLINE_SELECTOR,
   SIMULATE_TRAMPOLINE_SELECTOR_NUM,
 } from './simulate.js';
+import { collectSites } from './sites.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
 // ---------------------------------------------------------------------------
@@ -217,7 +218,7 @@ export function lowerProgram(
   return {
     nodes,
     frameEnd: frame.frameEnd,
-    sites: collectSites(ir, state.fnQueue),
+    sites: collectSites(ctx, state.fnQueue),
     labelNames: collectLabelNames(nodes),
     diagnostics: collectDiagnostics(ir, frame, state.fnQueue),
   };
@@ -235,69 +236,6 @@ function collectLabelNames(nodes: readonly AsmNode[]): ReadonlyMap<LabelId, stri
     }
   }
   return names;
-}
-
-// ---------------------------------------------------------------------------
-// sites — the SiteId table behind explainRevert / EvsDecodeError
-// ---------------------------------------------------------------------------
-
-function collectSites(ir: ScriptIr, emittedFns: readonly FnId[]): SourceMap['sites'] {
-  const sites: { id: SiteId; kind: 'panic' | 'decode' | 'call' | 'stmt'; detail: string }[] = [];
-  const seen = new Set<SiteId>();
-  const add = (s: Stmt): void => {
-    if (seen.has(s.site)) return;
-    seen.add(s.site);
-    const [kind, detail] = classifySite(s);
-    sites.push({ id: s.site, kind, detail });
-  };
-  walkStmts(ir.body, add);
-  for (const f of emittedFns) {
-    const fn = ir.fns[f];
-    if (fn !== undefined) walkStmts(fn.body, add);
-  }
-  return sites;
-}
-
-function classifySite(s: Stmt): ['panic' | 'decode' | 'call' | 'stmt', string] {
-  switch (s.k) {
-    case 'call': {
-      // explainRevert detail (issue #1): the STATICCALL (static) detail is kept verbatim; the new
-      // CALL kinds prefix their verb so a simulate/call site is distinguishable in the message.
-      const isStatic = s.kind === undefined || s.kind === 'static';
-      const prefix = isStatic ? '' : `${s.kind} `;
-      // revertReturns (issue #35): the strict site decodes the REVERT payload, and a normal return
-      // lands on the same decode-fail stub — name the source so explainRevert reads right.
-      const source = s.revertReturns === undefined ? 'returndata' : 'revert data';
-      return s.mode === 'strict'
-        ? ['decode', `decoding ${prefix}${s.fnAbi.name}() ${source}`]
-        : ['call', `try ${prefix}${s.fnAbi.name}()`];
-    }
-    case 'bin':
-      switch (s.op) {
-        case 'add':
-        case 'sub':
-        case 'mul':
-          return ['panic', `checked ${s.op} — Panic 0x11`];
-        case 'div':
-        case 'mod':
-          return ['panic', `checked ${s.op} — Panic 0x12/0x11`];
-        case 'pow':
-          return ['panic', 'checked pow — Panic 0x11'];
-        default:
-          return ['stmt', `bin ${s.op}`];
-      }
-    case 'modarith':
-      return ['panic', `${s.op} — Panic 0x12`];
-    case 'index':
-    case 'arrset':
-      return ['panic', `array ${s.k === 'index' ? 'index' : 'write'} — Panic 0x32`];
-    case 'arrnew':
-      return ['panic', `array allocation — Panic 0x41`];
-    case 'convert':
-      return ['panic', 'checked conversion — Panic 0x11'];
-    default:
-      return ['stmt', s.k];
-  }
 }
 
 // ---------------------------------------------------------------------------

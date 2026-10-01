@@ -15,7 +15,7 @@ import {
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
-import { ATTACKER_RETURNERS } from '../test/harness/fixtures.js';
+import { ATTACKER_RETURNERS, returner, reverter, word } from '../test/harness/fixtures.js';
 import { assemble, type AsmNode } from './asm/assembler.js';
 import { lookupPc, siteById } from './asm/sourcemap.js';
 import { evscript, type EvsScript } from './builder/script.js';
@@ -56,6 +56,16 @@ const erc20Abi = [
 ] as const;
 
 const TOKEN = '0xa000000000000000000000000000000000000001' as const;
+const PANICKER = '0xa000000000000000000000000000000000000002' as const;
+const BARE_REVERTER = '0xa000000000000000000000000000000000000003' as const;
+
+const PANICKER_ABI = parseAbi(['function f() view returns (uint256)']);
+const SUPPLY_ABI = parseAbi([
+  'function decimals() view returns (uint8)',
+  'function totalSupply() view returns (uint256)',
+]);
+const QUOTER_ABI = parseAbi(['function quote()']);
+const PANIC_11 = encodeErrorResult({ abi: PANIC_ABI, errorName: 'Panic', args: [0x11n] });
 
 function sumScript() {
   return evscript({ name: 'sum', args: [t.uint256, t.uint256] }, (s, a, b) =>
@@ -642,14 +652,137 @@ describe('explainRevert', () => {
     expect(explained.raw).toBe(res.data);
   });
 
-  test('panic with no matching site: bubbled-from-callee wording, empty candidates', () => {
-    const compiled = compile(sumScript());
+  test('panic with no matching site: bubbled through the strict call sites, empty candidates', () => {
     const assertPanic = encodeErrorResult({ abi: PANIC_ABI, errorName: 'Panic', args: [0x01n] });
-    const explained = compiled.explainRevert(assertPanic);
+    const withRead = compile(symbolScript()).explainRevert(assertPanic);
+    expect(withRead.kind).toBe('panic');
+    expect(withRead.panicCode).toBe(0x01n);
+    expect(withRead.candidateSites).toEqual([]);
+    expect(withRead.message).toMatch(
+      /no site in this script can raise Panic\(0x01\), so it was bubbled verbatim from a callee through the strict call site: decoding symbol\(\) returndata \(site \d+\)/,
+    );
+    // no strict call site either: nothing in this artifact can produce the payload
+    const pure = compile(sumScript()).explainRevert(assertPanic);
+    expect(pure.candidateSites).toEqual([]);
+    expect(pure.message).toMatch(/did not come from this artifact/);
+  });
+
+  test('panic bubbled from a callee: mod and free conversions are never Panic(0x11) candidates', async () => {
+    // field-test PoC: SMOD and widening / reinterpreting conversions cannot raise 0x11, so a
+    // callee's Panic(0x11) bubbled through the strict read must not be pinned on them
+    const script = evscript(
+      { name: 'm', args: [t.address, t.int256, t.int256, t.uint8, t.bytes32] },
+      (s, target, a, d, b, h) => {
+        const r = s.read({ address: target, abi: PANICKER_ABI, functionName: 'f' });
+        return s.return({
+          r,
+          m: a.mod(7n), // SMOD by a nonzero literal: no check at all
+          md: a.mod(d), // SMOD by a runtime divisor: Panic 0x12 only
+          w: b.toUint(t.uint256), // free widening
+          wi: b.toInt(t.int16), // free: uint8 fits int16's sign bit
+          u: h.asUint256(), // free reinterpret
+        });
+      },
+    );
+    const compiled = compile(script);
+    const calldata = encodeFunctionData({
+      abi: compiled.abi,
+      functionName: 'm',
+      args: [PANICKER, 10n, 3n, 200, `0x${'ab'.repeat(32)}`],
+    });
+    const res = await execRuntime(compiled.runtimeBytecode, calldata, {
+      contracts: { [PANICKER]: reverter(PANIC_11) },
+    });
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(PANIC_11); // bubbled byte-exactly
+    const explained = compiled.explainRevert(res.data);
     expect(explained.kind).toBe('panic');
-    expect(explained.panicCode).toBe(0x01n);
     expect(explained.candidateSites).toEqual([]);
-    expect(explained.message).toMatch(/bubbled verbatim from a callee/);
+    expect(explained.message).toMatch(
+      /bubbled verbatim from a callee through the strict call site: decoding f\(\) returndata/,
+    );
+    // the runtime-divisor mod IS a Panic(0x12) candidate, and only that one
+    const divZero = compiled.explainRevert(
+      encodeErrorResult({ abi: PANIC_ABI, errorName: 'Panic', args: [0x12n] }),
+    );
+    expect(divZero.candidateSites?.map((c) => c.detail)).toEqual([
+      'checked mod args.arg1 % args.arg2 (int256) — Panic 0x12',
+    ]);
+  });
+
+  test('panic: same-kind candidates are told apart by their operands', async () => {
+    // field-test PoC: two bounds-checked reads used to share one detail string
+    const script = evscript(
+      { name: 'two', args: [t.array(t.uint256), t.array(t.uint256)] },
+      (s, a, b) => s.return({ x: a.at(0n), y: b.at(1n) }),
+    );
+    const compiled = compile(script);
+    const calldata = encodeFunctionData({
+      abi: compiled.abi,
+      functionName: 'two',
+      args: [[1n], [2n]], // b has no index 1
+    });
+    const res = await execRuntime(compiled.runtimeBytecode, calldata);
+    expect(res.success).toBe(false);
+    const explained = compiled.explainRevert(res.data);
+    expect(explained.panicCode).toBe(0x32n);
+    expect(explained.candidateSites?.map((c) => c.detail)).toEqual([
+      'array index args.arg0[0] — Panic 0x32',
+      'array index args.arg1[1] — Panic 0x32',
+    ]);
+  });
+
+  test('empty: the strict call sites are the candidates; try and revertReturns sites never bubble', async () => {
+    // field-test PoC: a callee's bare revert() bubbles as `0x` and used to get no candidates
+    const script = evscript({ name: 'probe', args: [t.address, t.address] }, (s, a, b) => {
+      const x = s.read({ address: a, abi: SUPPLY_ABI, functionName: 'decimals' });
+      const y = s.read({ address: b, abi: SUPPLY_ABI, functionName: 'totalSupply' });
+      const z = s.tryRead({ address: b, abi: SUPPLY_ABI, functionName: 'totalSupply' });
+      const q = s.call({
+        address: a,
+        abi: QUOTER_ABI,
+        functionName: 'quote',
+        args: [],
+        revertReturns: [t.uint256],
+      });
+      return s.return({ x, y, ok: z.success, q });
+    });
+    const compiled = compile(script);
+    const strictReads = compiled.sourceMap.sites
+      .filter((site) => site.detail.endsWith('() returndata'))
+      .map((site) => ({ id: site.id, detail: site.detail }));
+    expect(strictReads.map((site) => site.detail)).toEqual([
+      'decoding decimals() returndata',
+      'decoding totalSupply() returndata',
+    ]);
+
+    const calldata = encodeFunctionData({
+      abi: compiled.abi,
+      functionName: 'probe',
+      args: [TOKEN, BARE_REVERTER],
+    });
+    const res = await execRuntime(compiled.runtimeBytecode, calldata, {
+      contracts: { [TOKEN]: returner(word(6n)), [BARE_REVERTER]: '0x60006000fd' },
+    });
+    expect(res.success).toBe(false);
+    expect(res.data).toBe('0x');
+    const explained = compiled.explainRevert(res.data);
+    expect(explained.kind).toBe('empty');
+    expect(explained.candidateSites).toEqual(strictReads);
+    expect(explained.message).toMatch(/through one of the 2 strict call sites/);
+    // the same sites for any other payload only a callee can produce
+    expect(compiled.explainRevert('0xdeadbeef').candidateSites).toEqual(strictReads);
+    const reason = encodeErrorResult({ abi: ERROR_ABI, errorName: 'Error', args: ['nope'] });
+    expect(compiled.explainRevert(reason).candidateSites).toEqual(strictReads);
+  });
+
+  test('empty: names the fork-gated opcodes the runtime uses, per evmVersion', () => {
+    const cancun = compile(symbolScript()).explainRevert('0x').message;
+    expect(cancun).toMatch(/PUSH0 \(shanghai\)/);
+    expect(cancun).toMatch(/recompile with an older evmVersion/);
+    const paris = compile(symbolScript(), { evmVersion: 'paris' }).explainRevert('0x').message;
+    expect(paris).not.toMatch(/PUSH0|MCOPY|evmVersion/);
+    expect(paris).toMatch(/out of gas/);
   });
 
   test('evs-decode: site id maps to the recorded call site, end to end', async () => {
@@ -760,6 +893,24 @@ describe('explainRevert', () => {
     const explained = compiled.explainRevert(payload);
     expect(explained.kind).toBe('error-string');
     expect(explained.message).toContain('"boom"');
+    // a script without strict calls cannot bubble one
+    expect(explained.candidateSites).toEqual([]);
+    expect(explained.message).toMatch(/did not come from this artifact/);
+  });
+
+  test('evs-decode: only the exact 36-byte payload the compiler emits is attributed', () => {
+    const compiled = compile(symbolScript());
+    const site = compiled.sourceMap.sites.find((s) => s.kind === 'decode');
+    const payload = encodeErrorResult({
+      abi: [{ type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] }],
+      errorName: 'EvsDecodeError',
+      args: [BigInt(site?.id ?? 0)],
+    });
+    expect(compiled.explainRevert(payload).site?.id).toBe(site?.id);
+    const padded = compiled.explainRevert(`${payload}${'00'.repeat(32)}`);
+    expect(padded.kind).toBe('evs-decode');
+    expect(padded.site).toBeUndefined();
+    expect(padded.message).toMatch(/68 bytes, not the 36 this compiler emits/);
   });
 
   test('custom: unknown selector named in the message', () => {

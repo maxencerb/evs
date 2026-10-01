@@ -272,8 +272,9 @@ try {
 }
 ```
 
-The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` and
-`candidateSites` for panics and `site` for decode errors. The kinds:
+The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` for panics,
+`site` for decode errors and `candidateSites` wherever several sites could be the origin. The
+kinds:
 
 | `kind`                   | Payload                          | Source attribution                                                                  |
 | ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
@@ -281,17 +282,28 @@ The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` a
 | `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode (id + detail)          |
 | `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
 | `'script-error'`         | a DECLARED custom error          | `errorName` + `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
-| `'error-string'`         | `Error(string)`                  | none — bubbled verbatim from a callee                                                 |
-| `'custom'`               | any other selector               | none — decode it against the callee's ABI                                             |
-| `'empty'`                | zero-length returndata           | none — a bare `revert()`/`require(false)` bubbled, or the frame failed without reason |
+| `'error-string'`         | `Error(string)`                  | `candidateSites` — the strict call sites a callee revert can bubble through           |
+| `'custom'`               | any other selector               | `candidateSites` as above — decode the payload against the callee's ABI               |
+| `'empty'`                | zero-length returndata           | `candidateSites` as above, or the frame failed without reason (see below)            |
 
 :::caution[Attribution is a hint when the script makes sub-calls]
-Panics share one revert tail, so panic attribution is a list of *candidates*, not proof. And
+Panics share one revert tail, so panic attribution is a list of *candidates*, not proof — but
+only sites that can actually raise that code are listed (a `mod` or a widening conversion is
+never an overflow candidate), and each names its operands (`array index args.prices[0]`), so
+same-kind sites stay distinguishable. When no site of the script can raise the code, the panic
+came from a callee, and the message names the strict call sites (`s.read`, `s.call`,
+`s.simulate`; never `try*`) it can have been bubbled through. And
 since callee reverts bubble byte-exactly, an adversarial callee can revert with the evs
 selectors verbatim — for scripts that perform sub-calls, `explainRevert` appends a hedge noting
 that the payload may have originated off-script. Scripts without sub-calls cannot bubble
 anything, so their attributions are authoritative.
 :::
+
+An empty payload has one more origin: the frame failing without data — out of gas, or an
+opcode the node does not support at that block. The default `cancun` target uses `PUSH0` and
+`MCOPY`, which are invalid before Shanghai and Cancun, so a historical read (or a chain that has
+not activated those forks) fails this way; the message names the fork-gated opcodes the runtime
+uses, and recompiling with an older `evmVersion` (`'paris'` runs everywhere) fixes it.
 
 ## `disassemble()` — read the bytecode
 
@@ -339,8 +351,9 @@ The first lines of the real listing for this `echo(uint256)` script (cancun targ
 
 The artifact's `sourceMap` is the data behind both tools: `segments` cover every emitted pc
 range (with a short note on what the code does), `sites` give each panic/decode/call site an
-id, a kind, and a human-readable detail (this is what `explainRevert` resolves
-`EvsDecodeError(site)` against), and `labels` name the pcs of internal jump targets.
+id, a kind, a human-readable detail naming its operands, and — on panic sites — the
+`panicCodes` it can raise (this is what `explainRevert` resolves `EvsDecodeError(site)` and
+panic candidates against), and `labels` name the pcs of internal jump targets.
 `lookupPc(map, pc)` binary-searches the segments — handy for decorating an execution trace from
 a node or a fork tool with what each pc range belongs to.
 

@@ -25,19 +25,12 @@
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'abitype';
 import type { StateOverride } from 'viem';
 
-import {
-  canonicalTypeSignature,
-  decodeErrorArgsRecord,
-  describePanic,
-  ERROR_STRING_SELECTOR,
-  PANIC_SELECTOR,
-  selectorOf,
-} from './abi/artifact.js';
+import { describePanic } from './abi/artifact.js';
+import { classifyRevert, errorTableOf } from './abi/revert.js';
 import type { EvmVersion } from './asm/ops.js';
-import { bytesToBigInt, bytesToHex, HEX_BYTES_RE, hexToBytes, isHexString } from './core/bytes.js';
+import { HEX_BYTES_RE, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
-import { abiParamToType, type Hex } from './core/types.js';
-import type { PlainAbiParam } from './ir/nodes.js';
+import type { Hex } from './core/types.js';
 
 // ---------------------------------------------------------------------------
 // init wrapper (the fixed 10-byte builder)
@@ -180,30 +173,6 @@ export type DecodedScriptError<abi extends Abi | readonly unknown[] = Abi> =
   | DecodedAbiError<abi>
   | DecodedBuiltinError;
 
-const ERROR_STRING_INPUTS: readonly PlainAbiParam[] = [{ name: 'reason', type: 'string' }];
-
-/** One (untrusted) ABI parameter → a `PlainAbiParam` (`name` defaulted to '', recursive over
- *  `components`). A malformed entry degrades to an empty type string, which simply never
- *  matches a selector downstream — decode helpers never throw on foreign ABI shapes. */
-function toPlainParam(p: unknown): PlainAbiParam {
-  if (typeof p !== 'object' || p === null) return { name: '', type: '' };
-  const o = p as { name?: unknown; type?: unknown; components?: unknown };
-  const name = typeof o.name === 'string' ? o.name : '';
-  const type = typeof o.type === 'string' ? o.type : '';
-  if (Array.isArray(o.components)) {
-    const comps: readonly unknown[] = o.components;
-    return { name, type, components: comps.map(toPlainParam) };
-  }
-  return { name, type };
-}
-
-/** An ABI error entry's inputs, normalized to `PlainAbiParam`s. */
-function plainInputsOf(entry: { inputs?: unknown }): readonly PlainAbiParam[] {
-  if (!Array.isArray(entry.inputs)) return [];
-  const inputs: readonly unknown[] = entry.inputs;
-  return inputs.map(toPlainParam);
-}
-
 /**
  * Pulls the raw revert payload out of `input`: a `0x…` string is taken verbatim (raw revert
  * bytes); an error tree is walked down its `cause` chain for the revert carrier
@@ -275,40 +244,26 @@ export function decodeScriptError<const abi extends Abi | readonly unknown[]>(
   return decodeRevertData(script.abi, raw) as DecodedScriptError<abi>;
 }
 
+/** The `decodeScriptError` presentation of the shared classifier (`abi/revert.ts`). */
 function decodeRevertData(abi: Abi | readonly unknown[], raw: Hex): DecodedScriptError {
-  const bytes = hexToBytes(raw);
-  if (bytes.length === 0) return { name: 'empty', raw: '0x' };
-  if (bytes.length < 4) return { name: 'unknown', selector: raw, raw };
-  const selector = bytesToHex(bytes.subarray(0, 4));
-  const payload: Hex = `0x${raw.slice(2 + 8)}`;
-
-  if (selector === PANIC_SELECTOR && bytes.length === 36) {
-    const code = bytesToBigInt(bytes, 4);
-    return { name: 'Panic', code, meaning: describePanic(code).meaning, raw };
+  const c = classifyRevert(raw, errorTableOf(abi));
+  switch (c.kind) {
+    case 'empty':
+      return { name: 'empty', raw: '0x' };
+    case 'short':
+      return { name: 'unknown', selector: raw, raw };
+    case 'panic':
+      return { name: 'Panic', code: c.code, meaning: describePanic(c.code).meaning, raw };
+    case 'error-string':
+      return { name: 'Error', reason: c.reason, raw };
+    case 'abi-error':
+      // a recognized selector whose payload does not decode never lies about its args
+      return c.args === null
+        ? { name: 'unknown', selector: c.selector, raw }
+        : { name: c.entry.name, args: c.args, raw };
+    default: // 'unknown'
+      return { name: 'unknown', selector: c.selector, raw };
   }
-  if (selector === ERROR_STRING_SELECTOR) {
-    const decoded = decodeErrorArgsRecord(ERROR_STRING_INPUTS, payload);
-    if (decoded !== null && typeof decoded['reason'] === 'string') {
-      return { name: 'Error', reason: decoded['reason'], raw };
-    }
-  }
-  if (Array.isArray(abi)) {
-    for (const entry of abi as readonly unknown[]) {
-      if (typeof entry !== 'object' || entry === null) continue;
-      const e = entry as { type?: unknown; name?: unknown; inputs?: unknown };
-      if (e.type !== 'error' || typeof e.name !== 'string') continue;
-      const inputs = plainInputsOf(e);
-      const entrySelector = selectorOf(
-        e.name,
-        inputs.map((p) => canonicalTypeSignature(abiParamToType(p))),
-      );
-      if (entrySelector !== selector) continue;
-      const args = decodeErrorArgsRecord(inputs, payload);
-      if (args === null) break; // recognized selector, malformed payload → 'unknown'
-      return { name: e.name, args, raw };
-    }
-  }
-  return { name: 'unknown', selector, raw };
 }
 
 /** The error names `matchScriptError` REQUIRES a handler for: every script-ABI error except
