@@ -26,16 +26,16 @@ A module too large for one file is a **barrel plus a same-named folder**: `build
 re-exports `builder/expr/*.ts`, and so on. Importers (and tests) keep using the barrel path; each
 file in the folder opens with a header saying what it holds, and the barrel's header lists them.
 
-| Barrel              | Folder contents                                                                                                                        |
-| ------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
-| `builder/expr.ts`   | `handles`, `helpers`, and `Recorder` as a chain of layers: `core` → `composites` → `encode` → `ops` → `control` → `calls` → `recorder` |
-| `builder/script.ts` | `evscript`, `handles` (handle types), `calls` (call-verb and overload types), `builder` (`ScriptBuilder` + facade)                     |
-| `core/types.ts`     | `vocabulary`, `expr` (the `Expr` type), `args`, `derive` (type-level ABI derivations), `namespace` (`t`), `predicates`                 |
-| `ir/nodes.ts`       | `schema` (node inventory + op vocabularies), `json` ((de)serialization), `walk` (def/use tables, traversal)                            |
-| `ir/interp.ts`      | `interpreter` (public API + executor), `values`, `arith`, `encode`, `decode`, `coerce` (the JS boundary)                               |
-| `codegen/lower.ts`  | `context`, `statements` (dispatch, fns, calls, control flow), `values`, `arith`, `pow`, `composites`                                   |
-| `codegen/abi.ts`    | `shared`, `encode`, `encode-bytes`, `decode` (tuples + both array-codec paths), `dispatch` (calldata / return)                         |
-| `codegen/call.ts`   | `shared`, `calldata`, `static-call`, `simulate-call`                                                                                   |
+| Barrel              | Folder contents                                                                                                                                         |
+| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `builder/expr.ts`   | `handles`, `helpers`, and `Recorder` as a chain of layers: `core` → `composites` → `encode` → `ops` → `control` → `calls` → `recorder`                  |
+| `builder/script.ts` | `evscript`, `handles` (handle types), `calls` (call-verb and overload types), `builder` (`ScriptBuilder` + facade)                                      |
+| `core/types.ts`     | `vocabulary`, `expr` (the `Expr` type), `args`, `derive` (type-level ABI derivations), `namespace` (`t`), `predicates`                                  |
+| `ir/nodes.ts`       | `schema` (node inventory + op vocabularies), `json` ((de)serialization), `walk` (def/use tables, traversal)                                             |
+| `ir/interp.ts`      | `interpreter` (public API + executor), `values`, `arith`, `encode`, `decode`, `coerce` (the JS boundary)                                                |
+| `codegen/lower.ts`  | `context`, `statements` (dispatch, fns, calls, control flow), `values`, `arith`, `pow`, `muldiv` (FullMath `mulDiv` / `mulDivRoundingUp`), `composites` |
+| `codegen/abi.ts`    | `shared`, `encode`, `encode-bytes`, `decode` (tuples + both array-codec paths), `dispatch` (calldata / return)                                          |
+| `codegen/call.ts`   | `shared`, `calldata`, `static-call`, `simulate-call`                                                                                                    |
 
 Cross-module cycles are a lint error (`import/no-cycle`; type-only imports are exempt), so code
 that recurses into itself stays in one file (the decoder's two array paths, the statement
