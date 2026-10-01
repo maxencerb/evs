@@ -165,6 +165,68 @@ and the `ENV_FRAME_DEPENDENT` warning.
 Exported as a constant (type `Address`). It is the last 20 bytes of `keccak256("evs.script")` —
 an address with no code, storage, or balance on any major chain, so overriding it is safe.
 
+### Deployless limits
+
+A deployless call has no `to`, so the node runs it as a contract creation: viem's 398-byte
+wrapper contract deploys `initBytecode`, calls it, and returns the script's result as its own
+deployed code. Three contract-creation rules therefore apply in deployless mode, and none of them
+applies in state-override mode:
+
+| Limit | Rule | Fails when |
+| --- | --- | --- |
+| `DEPLOYLESS_MAX_RESULT_BYTES` = 24,576 | EIP-170 (code size) | The ABI-encoded result is larger. A `uint256[]` result takes `96 + 32·n` bytes, so 765 elements fit and 766 do not |
+| no leading `0xEF` | EIP-3541 | The result's first byte is `0xEF`. Only a result whose first returned value is a static `bytesN`, `uint256` or `int256` (directly or as the first member of a static struct or fixed array) can start with it; a hash fails about 1 time in 256 |
+| `DEPLOYLESS_MAX_DATA_BYTES` = 49,152 | EIP-3860 (initcode size) | viem's creation data is larger: the wrapper, `initBytecode` and the ABI-encoded call **including its args** |
+
+`compile()` reports the result-shape cases it can see through `onDiagnostic`:
+`DEPLOYLESS_RESULT_PREFIX` and `DEPLOYLESS_RESULT_SIZE` (see
+[diagnostics](/reference/diagnostics/)). The args
+side depends on each call, so measure it with `deploylessDataSize(compiled, calldata)`, which does
+the arithmetic without sending anything:
+
+```ts
+import {
+  compile,
+  DEPLOYLESS_MAX_DATA_BYTES,
+  deploylessDataSize,
+  evscript,
+  explainDeploylessError,
+  t,
+} from '@maxencerb/evs';
+import { createPublicClient, encodeFunctionData, http, type Address } from 'viem';
+
+const script = evscript({ name: 'count', args: [t.array(t.address)] }, (s, list) => {
+  return s.return({ n: list.length() });
+});
+const compiled = compile(script);
+const client = createPublicClient({ transport: http('https://eth.example.com') });
+
+declare const tokens: Address[];
+const calldata = encodeFunctionData({ abi: compiled.abi, functionName: 'count', args: [tokens] });
+const mode =
+  deploylessDataSize(compiled, calldata) <= DEPLOYLESS_MAX_DATA_BYTES
+    ? compiled.toViem()
+    : compiled.toViem({ mode: 'stateOverride' });
+
+try {
+  await client.readContract({ ...mode, functionName: 'count', args: [tokens] });
+} catch (error) {
+  const limit = explainDeploylessError(error);
+  if (limit === undefined) throw error; // not a deployless creation limit
+  limit.kind; // 'result-starts-with-ef' | 'result-too-large' | 'data-too-large'
+  limit.message; // what happened, and that toViem({ mode: 'stateOverride' }) avoids it
+  limit.nodeMessage; // the node's own text, e.g. 'max code size exceeded: code size 24608 limit 24576'
+}
+```
+
+The node rejects these calls with an error viem often shows only as "Missing or invalid
+parameters" or "Transaction creation failed". `explainDeploylessError` searches the caught error's
+`cause` chain for the node's text — `max code size exceeded`, `invalid code: must not begin with
+0xef` and `max initcode size exceeded` (geth and its derivatives), `CreateContractSizeLimit`,
+`CreateContractStartingWithEF` and `CreateInitCodeSizeLimit` (revm, anvil) — and returns
+`undefined` for anything else. `size` holds the rejected size when the node reports it (geth does)
+and `limit` the exceeded cap.
+
 ## `EVS_ERROR_ABI`
 
 The two evs-owned error entries, exported as a standalone `as const` ABI and appended verbatim

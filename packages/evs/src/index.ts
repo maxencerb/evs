@@ -164,6 +164,13 @@ export type {
   CompileOptions,
   RevertExplanation,
 } from './compile.js';
+export {
+  DEPLOYLESS_MAX_DATA_BYTES, // EIP-3860 cap on viem's deployless creation data (args included)
+  DEPLOYLESS_MAX_RESULT_BYTES, // EIP-170 cap on a deployless result
+  deploylessDataSize,
+  explainDeploylessError, // node creation errors (0xEF result, size caps) → an explanation
+} from './deployless.js';
+export type { DeploylessLimitExplanation } from './deployless.js';
 export { decodeScriptError, DEFAULT_SCRIPT_ADDRESS, matchScriptError } from './viem.js';
 export type {
   DecodedBuiltinError, // issue #15: the Panic/Error/unknown/empty decode arms
