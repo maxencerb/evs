@@ -5,7 +5,7 @@
  * `Panic(uint256)` codes the site can raise.
  *
  * `panicCodes` mirrors the templates in `lower/` (`lowerCheckedArith`, `lowerDivMod`, `lowerPow`,
- * `lowerModArith`, `lowerConvert`, `lowerIndex` / `lowerArrset`, `lowerArrnew`): a site claims a
+ * `lowerModArith`, `lowerMulDiv`, `lowerConvert`, `lowerIndex` / `lowerArrset`, `lowerArrnew`): a site claims a
  * code iff its template can reach that panic tail at run time. A check the lowering elides (a
  * folded nonzero divisor, a folded base of 0 / ±1, a free widening, …) is never claimed, and
  * neither is the allocation check of a folded length below the cap, which can never fire. A
@@ -92,7 +92,11 @@ function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site
     }
     case 'modarith': {
       const what = `${s.op}(${op(s.a)}, ${op(s.b)}, ${op(s.n)})`;
-      return checked(what, zeroDivisorPossible(ctx, s.n) ? [DIV_ZERO] : []);
+      // lowerModArith / lowerMulDiv: the zero check unless the modulus / denominator is a folded
+      // nonzero constant; muldiv/muldivup also overflow (0x11) when the quotient exceeds uint256
+      const codes = zeroDivisorPossible(ctx, s.n) ? [DIV_ZERO] : [];
+      if (s.op === 'muldiv' || s.op === 'muldivup') codes.push(OVERFLOW);
+      return checked(what, codes);
     }
     case 'index':
       return checked(`array index ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);

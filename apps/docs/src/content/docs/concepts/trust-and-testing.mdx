@@ -85,7 +85,11 @@ The integration suite drives the deployed reference contract and the equivalent 
 with the same seeded boundary corpus — `0`, `1`, `max-1`, `max`, `min`, `-1`, the uint192
 wrap-back case `2**191 * (2**65 + 1)`, `int256: -2**255 / -1`, `intN: minN / -1` — on anvil,
 and asserts identical success values and **byte-identical** `Panic(code)` revert payloads.
-The reference contracts also carry their own forge test suite, which runs in CI.
+Two more reference contracts cover the rest of the arithmetic surface the same way:
+`EvsMathReference.sol` for `pow`, `addmod` / `mulmod` and the signed shifts, and
+`EvsFullMathReference.sol` for the wrapping methods (solc `unchecked` blocks) and
+`mulDiv` / `mulDivRoundingUp` (the FullMath algorithm). The reference contracts also carry
+their own forge test suite, which runs in CI.
 
 ## Verified on every compile, not just in CI
 

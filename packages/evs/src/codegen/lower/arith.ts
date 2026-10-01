@@ -1,6 +1,7 @@
 /**
  * `codegen/lower/arith.ts` — the `bin` templates (checked arithmetic with solc ≥0.8 semantics,
- * comparisons, logic, bits, shifts) and `addmod` / `mulmod`.
+ * wrapping arithmetic, comparisons, logic, bits, shifts) and `addmod` / `mulmod` (`mulDiv` lives
+ * in `muldiv.ts`).
  */
 
 import type { AsmWriter } from '../../asm/assembler.js';
@@ -23,6 +24,7 @@ import {
   MINUS_ONE_WORD,
   asWordType,
 } from './context.js';
+import { lowerMulDiv } from './muldiv.js';
 import { lowerPow } from './pow.js';
 
 // ---------------------------------------------------------------------------
@@ -44,6 +46,19 @@ export function lowerBin(w: AsmWriter, s: Extract<Stmt, { k: 'bin' }>, ctx: Lowe
     case 'pow':
       lowerPow(w, s, ctx, type);
       return;
+    case 'wrapadd':
+    case 'wrapsub':
+    case 'wrapmul': {
+      // solc `unchecked`: the bare opcode wraps modulo 2^256; a narrower width keeps its low N
+      // bits (mask / SIGNEXTEND), which is the true result modulo 2^N for canonical operands
+      const wt = asWordType(type);
+      loadOperand(w, ctx, s.b, meta(`wrapping ${s.op.slice(4)} ${fmtType(type)}`));
+      loadOperand(w, ctx, s.a); // [a, b]
+      w.op(s.op === 'wrapadd' ? 'ADD' : s.op === 'wrapsub' ? 'SUB' : 'MUL'); // [r mod 2^256]
+      if (wordNeedsNormalize(wt)) emitNormalizeWord(w, wt);
+      storeOut(w, ctx, s.out);
+      return;
+    }
     case 'lt':
     case 'gt':
     case 'lte':
@@ -340,6 +355,10 @@ export function lowerModArith(
   s: Extract<Stmt, { k: 'modarith' }>,
   ctx: LowerCtx,
 ): void {
+  if (s.op === 'muldiv' || s.op === 'muldivup') {
+    lowerMulDiv(w, s, ctx);
+    return;
+  }
   const modulus = foldedConst(ctx, s.n);
   loadOperand(w, ctx, s.n, meta(`${s.op} uint256`)); // [n]
   if (modulus === undefined || modulus === 0n) {

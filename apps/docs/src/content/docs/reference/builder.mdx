@@ -263,6 +263,30 @@ a zero modulus reverts Panic `0x12`. Any operand may be a literal; all-literal c
 recording (a literal zero modulus there is `CERTAIN_PANIC`). See
 [arithmetic](/guides/arithmetic/#exponentiation).
 
+## s.mulDiv / s.mulDivRoundingUp
+
+```ts nocheck
+mulDiv(a: IntoExpr<'uint256'>, b: IntoExpr<'uint256'>, denominator: IntoExpr<'uint256'>): Expr<'uint256'>; // likewise mulDivRoundingUp
+```
+
+Mirrors of the `Expr` methods: `⌊a · b / d⌋` / `⌈a · b / d⌉` over a 512-bit intermediate
+(FullMath), so the product never overflows on its own. A zero denominator reverts Panic `0x12`
+and a quotient past uint256 reverts Panic `0x11` (OpenZeppelin `Math.mulDiv`'s codes). Any
+operand may be a literal; all-literal calls fold at recording, and a certain Panic there is
+`CERTAIN_PANIC`. See [arithmetic](/guides/arithmetic/#muldiv-full-precision-multiply-then-divide).
+
+## s.wrappingAdd / s.wrappingSub / s.wrappingMul
+
+```ts nocheck
+wrappingAdd<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // likewise wrappingSub/wrappingMul
+```
+
+Mirrors of the wrapping `Expr` methods, Solidity's `a + b` inside an `unchecked` block: the
+result modulo 2^N of `t`, never a Panic (`s.wrappingSub(0n, x)` is two's complement negation).
+Operand rules are the checked ops' (at least one `Expr`, one type); a fold over literal-valued
+operands wraps too, where the checked op would be `CERTAIN_PANIC`. See
+[arithmetic](/guides/arithmetic/#wrapping-arithmetic).
+
 ## s.lt / s.gt / s.lte / s.gte / s.eq / s.neq
 
 ```ts nocheck

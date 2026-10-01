@@ -1,6 +1,7 @@
 /**
  * `ir/interp/arith.ts` — checked arithmetic and word ops over canonical words (exact bigint math
- * plus a range check, the solc Panic codes), conversions, and the const / env / zero values.
+ * plus a range check, the solc Panic codes), wrapping arithmetic, `mulDiv`, conversions, and the
+ * const / env / zero values.
  */
 
 import { hexToBytes } from '../../core/bytes.js';
@@ -47,6 +48,12 @@ export function binOp(op: string, type: WordType, a: bigint, b: bigint): bigint 
       return arith(op, type, a, b);
     case 'pow':
       return checkedPow(type, a, b);
+    case 'wrapadd': // solc `unchecked`: the low N bits of the true result, re-canonicalized
+      return canonWord(type, (a + b) & MASK256);
+    case 'wrapsub':
+      return canonWord(type, (a - b) & MASK256);
+    case 'wrapmul':
+      return canonWord(type, (a * b) & MASK256);
     case 'lt':
       return logical(type, a) < logical(type, b) ? 1n : 0n;
     case 'gt':
@@ -150,10 +157,28 @@ function checkedPow(type: WordType, aw: bigint, e: bigint): bigint {
   return fromLogical(r);
 }
 
-/** `addmod` / `mulmod` (issue #10): full-precision `(a op b) % n` over uint256, Panic 0x12 on n == 0. */
+/**
+ * The full-precision ternary ops over uint256, Panic 0x12 on `n == 0`: `addmod` / `mulmod`
+ * (issue #10) are `(a op b) % n`; `muldiv` / `muldivup` the floor / ceiling of `a·b / n`, Panic
+ * 0x11 when that quotient does not fit uint256 (OpenZeppelin `Math.mulDiv`'s codes).
+ */
 export function modArith(op: ModArithOp, a: bigint, b: bigint, n: bigint): bigint {
   if (n === 0n) throw panicSignal(0x12);
-  return (op === 'addmod' ? a + b : a * b) % n;
+  switch (op) {
+    case 'addmod':
+      return (a + b) % n;
+    case 'mulmod':
+      return (a * b) % n;
+    case 'muldiv':
+    case 'muldivup': {
+      const p = a * b;
+      const q = op === 'muldiv' || p % n === 0n ? p / n : p / n + 1n;
+      if (q > MASK256) throw panicSignal(0x11);
+      return q;
+    }
+    default:
+      throw new EvsInternalError('INTERNAL', `interpret: unknown modarith op '${String(op)}'`);
+  }
 }
 
 export function numericRange(type: WordType): readonly [bigint, bigint] {

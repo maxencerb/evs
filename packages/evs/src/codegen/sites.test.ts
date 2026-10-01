@@ -179,6 +179,21 @@ const CASES: readonly LockstepCase[] = [
     ),
     codes: [],
   },
+  // mulDiv / mulDivRoundingUp — the quotient can always overflow uint256
+  {
+    name: 'mulDiv by runtime denominator',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) =>
+      s.return({ r: s.mulDiv(a, b, d) }),
+    ),
+    codes: [0x12, 0x11],
+  },
+  {
+    name: 'mulDivRoundingUp by 7',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, a, b) =>
+      s.return({ r: s.mulDivRoundingUp(a, b, 7n) }),
+    ),
+    codes: [0x11],
+  },
   // arrays
   {
     name: 'index',

@@ -19,6 +19,7 @@ import { fileURLToPath } from 'node:url';
 
 const CONTRACTS = [
   'Composite',
+  'EvsFullMathReference',
   'EvsMathReference',
   'EvsReference',
   'Malformed',

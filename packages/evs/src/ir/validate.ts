@@ -374,11 +374,16 @@ class IrValidator {
         this.checkBin(s, path);
         return;
       case 'modarith': {
-        // addmod / mulmod (issue #10): uint256 only, like Solidity's builtins
+        // addmod / mulmod (issue #10) and muldiv / muldivup: uint256 only, like Solidity's
+        // builtins and FullMath
         const what = `${path} (modarith ${s.op})`;
         this.use(s.a, 'uint256', what);
         this.use(s.b, 'uint256', what);
-        this.use(s.n, 'uint256', `${what} modulus`);
+        this.use(
+          s.n,
+          'uint256',
+          `${what} ${s.op.startsWith('muldiv') ? 'denominator' : 'modulus'}`,
+        );
         this.define(s.out, 'uint256', what);
         return;
       }
@@ -682,7 +687,10 @@ class IrValidator {
       case 'sub':
       case 'mul':
       case 'div':
-      case 'mod': {
+      case 'mod':
+      case 'wrapadd':
+      case 'wrapsub':
+      case 'wrapmul': {
         const ta = this.use(s.a, null, what);
         if (!isNumeric(ta)) {
           this.fail(`${what}: operands must be numeric (uintN/intN), got '${stringifyType(ta)}'`);

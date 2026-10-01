@@ -200,6 +200,18 @@ const BYTE_STABLE: readonly Case[] = [
         s.return({ u: u.pow(1n << 128n), i: i.pow((1n << 256n) - 1n) }),
       ),
   },
+  {
+    name: 'wrapping add / sub / mul (bare opcode, mask, SIGNEXTEND) + mulDiv / mulDivRoundingUp',
+    script: () =>
+      evscript({ name: 'wrapmuldiv', args: [t.uint256, t.uint8, t.int64] }, (s, x, u, i) => {
+        const w = x.wrappingMul(x).wrappingSub(1n); // uint256: the bare opcodes
+        const m = u.wrappingAdd(200n); // uint8: masked
+        const n = s.wrappingMul(i, -3n); // int64: SIGNEXTEND
+        const q = w.mulDiv(x, 1n << 96n); // literal denominator: zero guard elided
+        const c = s.mulDivRoundingUp(q, x, w); // runtime denominator + the rounding increment
+        return s.return({ m, n, c });
+      }),
+  },
 ];
 
 const Position = t.struct({ nonce: t.uint96, operator: t.address, liquidity: t.uint128 });

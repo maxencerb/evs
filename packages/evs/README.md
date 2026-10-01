@@ -318,10 +318,12 @@ cap (for `s.simulate` it bounds the inner target call), and simulate sites nest 
 
 ### Checked arithmetic
 
-All arithmetic is checked with solc ≥ 0.8 semantics: standard `Panic(code)` reverts — `0x11`
-overflow, `0x12` division by zero, `0x32` array out-of-bounds, `0x41` over-allocation.
+Arithmetic is checked by default with solc ≥ 0.8 semantics: standard `Panic(code)` reverts —
+`0x11` overflow, `0x12` division by zero, `0x32` array out-of-bounds, `0x41` over-allocation.
 Narrowing conversions (`x.toUint('uint8')`) are range-checked; widening is free. Operations
 whose literal operands make a panic certain are caught while recording, at the exact line.
+Wrapping math (Solidity's `unchecked`) is an explicit opt-in per operation (`a.wrappingSub(b)`),
+and `a.mulDiv(b, d)` computes `a · b / d` over a 512-bit intermediate (FullMath).
 
 ### Compiling and the artifact
 

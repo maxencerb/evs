@@ -229,6 +229,15 @@ Releases: see [Releasing](#releasing) below.
   square-and-multiply loop on the magnitude (≤ 7 iterations; a signed base is split into sign
   and magnitude, the bound is `2^(N−1)` for a negative result). `addmod` / `mulmod` share
   `div` / `mod`'s zero guard and its elision for a folded nonzero constant.
+- **Wrapping arithmetic and `mulDiv`** are explicit per-operation opt-ins next to the checked
+  ops, never a mode: `wrappingAdd` / `wrappingSub` / `wrappingMul` record their own `bin` ops
+  (`wrapadd` / `wrapsub` / `wrapmul`: the bare opcode, plus a mask or `SIGNEXTEND` below 256
+  bits — solc's `unchecked`), so a plain `add` keeps its meaning wherever it is recorded.
+  `mulDiv` / `mulDivRoundingUp` are the `muldiv` / `muldivup` ops of the ternary `modarith`
+  node (uint256 operands, like `addmod` / `mulmod`), lowered in `codegen/lower/muldiv.ts` to the
+  FullMath sequence (a one-word `DIV` fast path when the product's high word is zero) with
+  OpenZeppelin `Math.mulDiv`'s Panic codes (0x12 zero denominator, 0x11 quotient overflow);
+  `EvsFullMathReference` is their solc oracle.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
@@ -315,9 +324,10 @@ Three tiers, all run by CI (`ci.yml`):
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
-  arithmetic vs the solc 0.8.30 `EvsReference` contract and `pow` / `addmod` / `mulmod` /
-  signed shifts vs `EvsMathReference` (both codegen'd from `packages/contracts`, whose own
-  forge tests run in CI's contracts step); an env-gated
+  arithmetic vs the solc 0.8.30 `EvsReference` contract, `pow` / `addmod` / `mulmod` /
+  signed shifts vs `EvsMathReference` and wrapping arithmetic / `mulDiv` vs
+  `EvsFullMathReference` (all codegen'd from `packages/contracts`, whose own forge tests run in
+  CI's contracts step); an env-gated
   mainnet-fork suite (`ANVIL_FORK_URL`, an empty value counts as unset and skips it) covers
   the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 

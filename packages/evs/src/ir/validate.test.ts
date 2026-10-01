@@ -760,6 +760,41 @@ describe('validateIr — bin/un/env op table', () => {
     );
   });
 
+  test('wrapping ops take numeric operands of one type; muldiv is uint256-only', () => {
+    expectInvalid(
+      ir({
+        values: [vi('bool'), vi('bool')],
+        body: [
+          mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(1n) }, type: 'bool' }),
+          mk({ k: 'bin', op: 'wrapadd', a: 0, b: 0, out: 1 }),
+        ],
+      }),
+      /bin wrapadd\): operands must be numeric/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint8'), vi('uint256'), vi('uint8')],
+        body: [
+          mk({ k: 'const', out: 0, data: { kind: 'word', hex: wordHex(2n) }, type: 'uint8' }),
+          u256Const(1, 2n),
+          mk({ k: 'bin', op: 'wrapmul', a: 0, b: 1, out: 2 }),
+        ],
+      }),
+      /bin wrapmul\).*expected 'uint8'/,
+    );
+    expectInvalid(
+      ir({
+        values: [vi('uint256'), vi('uint128'), vi('uint256')],
+        body: [
+          u256Const(0, 7n),
+          mk({ k: 'const', out: 1, data: { kind: 'word', hex: wordHex(1n) }, type: 'uint128' }),
+          mk({ k: 'modarith', op: 'muldiv', a: 0, b: 0, n: 1, out: 2 }),
+        ],
+      }),
+      /modarith muldiv\) denominator.*expected 'uint256'/,
+    );
+  });
+
   test('rejects unknown ValueIds and forward references', () => {
     expectInvalid(
       ir({

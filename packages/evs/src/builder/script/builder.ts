@@ -154,7 +154,7 @@ export interface ScriptBuilder<
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>;
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
 
-  // ops (free-function mirrors of the Expr methods; same checked semantics)
+  // ops (free-function mirrors of the Expr methods; same semantics — checked unless `wrapping…`)
   add<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // ≥1 operand an Expr
   sub<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   mul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
@@ -176,6 +176,22 @@ export interface ScriptBuilder<
     b: IntoExpr<'uint256'>,
     modulus: IntoExpr<'uint256'>,
   ): Expr<'uint256'>;
+  // FullMath ⌊a · b / d⌋ / ⌈a · b / d⌉ over uint256 (512-bit intermediate); Panic 0x12 on d == 0,
+  // Panic 0x11 when the quotient overflows
+  mulDiv(
+    a: IntoExpr<'uint256'>,
+    b: IntoExpr<'uint256'>,
+    denominator: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  mulDivRoundingUp(
+    a: IntoExpr<'uint256'>,
+    b: IntoExpr<'uint256'>,
+    denominator: IntoExpr<'uint256'>,
+  ): Expr<'uint256'>;
+  // wrapping (solc `unchecked`) add / sub / mul: modulo 2^N of t, never a Panic
+  wrappingAdd<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  wrappingSub<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  wrappingMul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
   lt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   gt<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
   lte<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
@@ -305,6 +321,12 @@ export function makeBuilder(r: Recorder): ScriptBuilder {
     pow: (a: unknown, e: unknown) => r.bin('pow', a, e, 's.pow()'),
     addmod: (a: unknown, b: unknown, n: unknown) => r.modArithOp('addmod', a, b, n, 's.addmod()'),
     mulmod: (a: unknown, b: unknown, n: unknown) => r.modArithOp('mulmod', a, b, n, 's.mulmod()'),
+    mulDiv: (a: unknown, b: unknown, d: unknown) => r.modArithOp('muldiv', a, b, d, 's.mulDiv()'),
+    mulDivRoundingUp: (a: unknown, b: unknown, d: unknown) =>
+      r.modArithOp('muldivup', a, b, d, 's.mulDivRoundingUp()'),
+    wrappingAdd: (a: unknown, b: unknown) => r.bin('wrapadd', a, b, 's.wrappingAdd()'),
+    wrappingSub: (a: unknown, b: unknown) => r.bin('wrapsub', a, b, 's.wrappingSub()'),
+    wrappingMul: (a: unknown, b: unknown) => r.bin('wrapmul', a, b, 's.wrappingMul()'),
     lt: (a: unknown, b: unknown) => r.bin('lt', a, b, 's.lt()'),
     gt: (a: unknown, b: unknown) => r.bin('gt', a, b, 's.gt()'),
     lte: (a: unknown, b: unknown) => r.bin('lte', a, b, 's.lte()'),
