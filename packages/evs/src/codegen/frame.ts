@@ -404,12 +404,19 @@ function linearScan(ranges: ReadonlyMap<ValueId, LiveRange>): {
     ([va, ra], [vb, rb]) => ra.start - rb.start || va - vb,
   );
   const ordinals = new Map<ValueId, number>();
-  const releaseOf: number[] = []; // per ordinal, while its slot is occupied
-  const occupied = new OrdinalHeap((o) => releaseOf[o] ?? 0);
+  const releaseOf: number[] = []; // per ordinal, set before the ordinal enters `occupied`
+  /** Release position of an occupied ordinal. A missing entry is a broken invariant: a silent
+   *  default would free a slot that is still live, so it throws instead. */
+  const releaseAt = (o: number): number => {
+    const release = releaseOf[o];
+    if (release === undefined) throw internal(`linearScan: slot ordinal ${o} has no release`);
+    return release;
+  };
+  const occupied = new OrdinalHeap(releaseAt);
   const free = new OrdinalHeap((o) => o);
   let size = 0;
   for (const [v, r] of order) {
-    for (let o = occupied.peek(); o !== undefined && (releaseOf[o] ?? 0) <= r.start;) {
+    for (let o = occupied.peek(); o !== undefined && releaseAt(o) <= r.start;) {
       occupied.pop();
       free.push(o);
       o = occupied.peek();

@@ -930,6 +930,108 @@ describe('layoutFrames — liveness allocator: nested and spanned regions', () =
   });
 });
 
+/**
+ * A body value read across the back-edge, inside an outer loop — rejected by `validateIr`
+ * (def-before-use), so it reaches `layoutFrames` only as a hand-built IR. `frame.ts` keeps
+ * the branch defensively; this pins which loop it widens to: the innermost one holding both
+ * the earliest read and the definition.
+ *   pos 0  cellnew c ← n               pos 8          v5 = v4 < n
+ *   pos 1  while OUTER                 pos 9      cond v5
+ *   pos 2    header: cellget c → v1    pos 10     body: env → v6  (read at pos 6, next turn)
+ *   pos 3            v2 = v1 < n       pos 11           v7 = v3 + v3
+ *   pos 4    cond v2                   pos 12           cellset c ← v7
+ *   pos 5    body: while INNER         pos 13   env → v8 (unread)
+ *   pos 6      header: v3 = v6 + n     pos 14 cellget c → v9 (returned)
+ *   pos 7              cellget c → v4
+ */
+function backEdgeIr(): ScriptIr {
+  const innerLoop = st({
+    k: 'while',
+    header: [
+      st({ k: 'bin', op: 'add', a: 6, b: 0, out: 3 }),
+      st({ k: 'cellget', cell: 0, out: 4 }),
+      st({ k: 'bin', op: 'lt', a: 4, b: 0, out: 5 }),
+    ],
+    cond: 5,
+    body: [
+      st({ k: 'env', op: 'timestamp', out: 6 }),
+      st({ k: 'bin', op: 'add', a: 3, b: 3, out: 7 }),
+      st({ k: 'cellset', cell: 0, value: 7 }),
+    ],
+  });
+  return {
+    irVersion: 1,
+    name: 'backEdge',
+    args: [{ name: 'n', type: 'uint256' }],
+    values: [
+      { type: 'uint256' }, // 0: arg n
+      { type: 'uint256' }, // 1: outer header cellget
+      { type: 'bool' }, // 2: outer cond
+      { type: 'uint256' }, // 3: inner header v6 + n (reads v6 before its definition)
+      { type: 'uint256' }, // 4: inner header cellget
+      { type: 'bool' }, // 5: inner cond
+      { type: 'uint256' }, // 6: inner body env (read across the back-edge)
+      { type: 'uint256' }, // 7: v3 + v3
+      { type: 'uint256' }, // 8: outer body env after the inner loop
+      { type: 'uint256' }, // 9: cellget after the loops (returned)
+    ],
+    cells: [{ type: 'uint256' }],
+    fns: [],
+    body: [
+      st({ k: 'cellnew', cell: 0, init: 0 }),
+      st({
+        k: 'while',
+        header: [
+          st({ k: 'cellget', cell: 0, out: 1 }),
+          st({ k: 'bin', op: 'lt', a: 1, b: 0, out: 2 }),
+        ],
+        cond: 2,
+        body: [innerLoop, st({ k: 'env', op: 'chainid', out: 8 })],
+      }),
+      st({ k: 'cellget', cell: 0, out: 9 }),
+    ],
+    returns: [{ name: 'r', type: 'uint256', value: 9 }],
+  };
+}
+
+describe('layoutFrames — liveness allocator: reads before the definition (defensive)', () => {
+  test('the fixture is one validateIr rejects (def-before-use)', () => {
+    expect(() => validateIr(backEdgeIr())).toThrow(/ValueId 6 is used before it is defined/);
+  });
+
+  test('LOCK: a back-edge read keeps the value live for exactly the innermost loop', () => {
+    const frame = layoutFrames(backEdgeIr(), OPT);
+    const v6 = frame.slotOfValue(6);
+    expect(v6).toBe(0xc0); // after arg (0x80) and cell (0xa0)
+    // never shared inside the inner loop — not even with the header value that reads it
+    for (const v of [3, 4, 5, 7]) expect(frame.slotOfValue(v), `inner value ${v}`).not.toBe(v6);
+    // not widened to the outer loop: the outer header values before the inner loop and the
+    // outer body value after it both take its slot
+    expect(frame.slotOfValue(1), 'outer header, before the inner loop').toBe(v6);
+    expect(frame.slotOfValue(2), 'outer cond, before the inner loop').toBe(v6);
+    expect(frame.slotOfValue(8), 'outer body, after the inner loop').toBe(v6);
+    expect(frame.frameEnd).toBe(0x120); // arg + cell + 3 pool slots
+  });
+
+  test('a read before the definition outside any loop is an internal error', () => {
+    const ir: ScriptIr = {
+      irVersion: 1,
+      name: 'noLoop',
+      args: [{ name: 'n', type: 'uint256' }],
+      values: [{ type: 'uint256' }, { type: 'uint256' }, { type: 'uint256' }],
+      cells: [],
+      fns: [],
+      body: [
+        st({ k: 'bin', op: 'add', a: 2, b: 0, out: 1 }),
+        st({ k: 'env', op: 'timestamp', out: 2 }),
+      ],
+      returns: [{ name: 'r', type: 'uint256', value: 1 }],
+    };
+    expect(() => layoutFrames(ir, OPT)).toThrow(EvsInternalError);
+    expect(() => layoutFrames(ir, OPT)).toThrow(/read before its definition outside any loop/);
+  });
+});
+
 // ---------------------------------------------------------------------------
 // liveness allocator — seeded differential against a reference model
 // ---------------------------------------------------------------------------
