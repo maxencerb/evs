@@ -571,6 +571,57 @@ describe('if liveness', () => {
     expect(kinds(check(x).body)).toEqual(['un', 'if', 'while', 'break']);
   });
 
+  // The builder and deserializeIr always create fresh statement objects, but validateIr accepts
+  // a hand-built IR that places one object in several branches: every `if` holding it stays.
+  test('a statement object shared by two ifs keeps both ifs', () => {
+    // values: 0 a  1 cond1  2 cond2
+    const th = mk({ k: 'throw', error: 0, args: [] });
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('bool'), vi('bool')],
+      errors: [{ name: 'Shared', selector: '0x11223344', inputs: [] }],
+      body: [
+        mk({ k: 'un', op: 'iszero', a: 0, out: 1 }),
+        mk({ k: 'if', cond: 1, then: [th], else: [] }),
+        mk({ k: 'un', op: 'iszero', a: 1, out: 2 }),
+        mk({ k: 'if', cond: 2, then: [th], else: [] }),
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    const out = check(x);
+    expect(out).toBe(x);
+    expect(kinds(out.body)).toEqual(['un', 'if', 'throw', 'un', 'if', 'throw']);
+    // a = 0 reverts in the first if; a != 0 reverts in the second (cond2 = !cond1)
+    for (const a of [0n, 5n]) {
+      expect(interpret(out, [a], NO_CHAIN).outcome.kind).toBe('revert');
+    }
+  });
+
+  test('a statement object shared by an if and a nested if keeps every enclosing if', () => {
+    // values: 0 a  1 cond1  2 cond2  3 dead
+    const th = mk({ k: 'throw', error: 0, args: [] });
+    const x = ir({
+      args: [{ name: 'a', type: 'uint256' }],
+      values: [vi('uint256'), vi('bool'), vi('bool'), vi('uint256')],
+      errors: [{ name: 'Shared', selector: '0x11223344', inputs: [] }],
+      body: [
+        mk({ k: 'un', op: 'iszero', a: 0, out: 1 }),
+        mk({
+          k: 'if',
+          cond: 1,
+          then: [constU(3, 1n)], // dead
+          else: [
+            mk({ k: 'un', op: 'iszero', a: 1, out: 2 }),
+            mk({ k: 'if', cond: 2, then: [th], else: [] }),
+          ],
+        }),
+        mk({ k: 'if', cond: 1, then: [th], else: [] }),
+      ],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    expect(kinds(check(x).body)).toEqual(['un', 'if', 'un', 'if', 'throw', 'if', 'throw']);
+  });
+
   // The pass reaches branch contents only through `then`/`else`, so counting those reads bounds
   // its work: a constant per `if` (index, mutation bucketing, seeding, rebuild), however the
   // ifs are arranged. A per-round re-scan of every not-yet-live `if` grows with the depth of

@@ -20,11 +20,12 @@
  *          statement live, and every `arrset`/`tupleset` that mutates memory the value may
  *          alias (see aliasing); an `if` is live iff any statement in either branch is live
  *          (then its condition is live) — each statement records its innermost enclosing `if`
- *          (looking through `while` blocks, whose `while` is always live), so marking a
- *          statement climbs to that `if` once; everything else — `const`, `bin`, `un`,
- *          `modarith`, `env`, `account`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`,
- *          `arrset`, `tuplenew`, `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and
- *          `fncall` to a pure fn — is pure and dropped when nothing live depends on it.
+ *          (looking through `while` blocks, whose `while` is always live; a statement object a
+ *          hand-built IR places in several `if`s records each of them), so marking a statement
+ *          climbs to that `if` once; everything else — `const`, `bin`, `un`, `modarith`, `env`,
+ *          `account`, `convert`, `select`, `index`, `len`, `slice`, `arrnew`, `arrset`,
+ *          `tuplenew`, `field`, `tupleset`, `encode`, `keccak256`, `cellget`, and `fncall` to a
+ *          pure fn — is pure and dropped when nothing live depends on it.
  *   cells  a cell is live iff a LIVE `cellget` of it exists anywhere (a `cellget` nobody reads
  *          is dead like any other pure statement; no per-position reasoning beyond that — loop
  *          back-edges make it a real dataflow problem for no payoff): its `cellnew` and every
@@ -107,8 +108,13 @@ class Dce {
   private readonly liveValues = new Set<ValueId>();
   private readonly pureMemo = new Map<FnId, boolean>();
   private readonly visitingFns = new Set<FnId>();
-  /** innermost `if` around each statement nested in one (a `while`'s blocks are transparent) */
-  private readonly enclosingIf = new Map<Stmt, IfStmt>();
+  /**
+   * innermost `if` around each statement nested in one (a `while`'s blocks are transparent).
+   * Builder and `deserializeIr` IR never shares a statement object between two places, but a
+   * hand-built IR may (`validateIr` accepts it): such a statement records every distinct owner,
+   * so marking it live keeps each `if` that holds it.
+   */
+  private readonly enclosingIf = new Map<Stmt, IfStmt | IfStmt[]>();
   /** the top-level statement lists: the main body, then every fn body */
   private readonly regions: readonly (readonly Stmt[])[];
 
@@ -145,7 +151,7 @@ class Dce {
   /** Defs, cell writes, alias unions and enclosing `if`s of a block (recursive). */
   private indexBlock(stmts: readonly Stmt[], owner: IfStmt | undefined): void {
     for (const s of stmts) {
-      if (owner !== undefined) this.enclosingIf.set(s, owner);
+      if (owner !== undefined) this.addOwner(s, owner);
       for (const out of stmtDefs(s)) this.defOf.set(out, s);
       if (s.k === 'cellnew' || s.k === 'cellset') {
         const bucket = this.cellWritesOf.get(s.cell);
@@ -161,6 +167,14 @@ class Dce {
         this.indexBlock(s.body, owner);
       }
     }
+  }
+
+  private addOwner(s: Stmt, owner: IfStmt): void {
+    const prev = this.enclosingIf.get(s);
+    if (prev === undefined) this.enclosingIf.set(s, owner);
+    else if (Array.isArray(prev)) {
+      if (!prev.includes(owner)) prev.push(owner);
+    } else if (prev !== owner) this.enclosingIf.set(s, [prev, owner]);
   }
 
   private isMemref(v: ValueId): boolean {
@@ -337,14 +351,15 @@ class Dce {
     }
   }
 
-  /** A live statement makes its reads live, and its enclosing `if` (which climbs further). */
+  /** A live statement makes its reads live, and its enclosing `if`s (which climb further). */
   private markStmt(s: Stmt): void {
     if (this.liveStmts.has(s)) return;
     this.liveStmts.add(s);
     if (s.k === 'cellget') this.markCell(s.cell);
     for (const v of stmtReads(s)) this.markValue(v);
     const owner = this.enclosingIf.get(s);
-    if (owner !== undefined) this.markStmt(owner);
+    if (Array.isArray(owner)) for (const o of owner) this.markStmt(o);
+    else if (owner !== undefined) this.markStmt(owner);
   }
 
   // -------------------------------------------------------------------------
