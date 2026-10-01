@@ -32,6 +32,7 @@ import {
   elemTypeOf,
   fixedLengthOf,
   IDENT_RE,
+  identProblem,
   isArrayValueType,
   isBitsOperand,
   isEvsType,
@@ -138,7 +139,9 @@ class IrValidator {
     const argNames = new Set<string>();
     ir.args.forEach((a, i) => {
       if (!IDENT_RE.test(a.name)) {
-        this.fail(`args[${i}] has an invalid name ${JSON.stringify(a.name)}`);
+        this.fail(
+          `args[${i}] has an invalid name ${JSON.stringify(a.name)}: ${identProblem(a.name)}`,
+        );
       }
       if (argNames.has(a.name)) this.fail(`duplicate arg name "${a.name}"`);
       argNames.add(a.name);
@@ -166,7 +169,9 @@ class IrValidator {
     const errorNames = new Set<string>();
     (ir.errors ?? []).forEach((e, i) => {
       if (!IDENT_RE.test(e.name)) {
-        this.fail(`errors[${i}] has an invalid name ${JSON.stringify(e.name)}`);
+        this.fail(
+          `errors[${i}] has an invalid name ${JSON.stringify(e.name)}: ${identProblem(e.name)}`,
+        );
       }
       if (errorNames.has(e.name)) this.fail(`duplicate error name "${e.name}"`);
       errorNames.add(e.name);
@@ -179,7 +184,7 @@ class IrValidator {
       e.inputs.forEach((p, j) => {
         if (!IDENT_RE.test(p.name)) {
           this.fail(
-            `errors[${i}] ("${e.name}") input #${j} has an invalid name ${JSON.stringify(p.name)}`,
+            `errors[${i}] ("${e.name}") input #${j} has an invalid name ${JSON.stringify(p.name)}: ${identProblem(p.name)}`,
           );
         }
         if (inputNames.has(p.name)) {

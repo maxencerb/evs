@@ -248,6 +248,19 @@ Releases: see [Releasing](#releasing) below.
   (`packages/evs/test/harness/overload-matrix.ts`), which `overload-lockstep.test-d.ts` and
   `overload-lockstep.test.ts` assert on the types and the recorder respectively. A `functionName`
   containing `(` is a canonical signature (`core/signature.ts`) and skips resolution.
+- **Tuple handles** (`builder/expr/handles.ts`) carry no own properties: named fields are getters
+  on one prototype per component list (a `WeakMap` keyed on `components`, which survives the
+  descriptor rebuilds of array elements and members), whose prototype is `TupleHandle`'s.
+  A field whose name is a handle member gets no getter (the member wins; `.at(i)` reads it). The
+  names live twice — the runtime `TUPLE_HANDLE_MEMBERS` and the `TupleHandleMember` type that
+  `Tuple<C>` filters on (`builder/script/handles.ts`) — and a type test keeps them equal, while a
+  unit test fails if a new handle method or trap is missing from the list. `__proto__` is not an
+  identifier at all (`IDENT_RE`, rejection text from `identProblem`), and evs-built name-keyed
+  records use `Object.fromEntries`. A literal `{ __proto__: … }` key never reaches
+  `Object.entries`, so `t.struct` / `s.return` also reject a record whose prototype is not a root
+  prototype (`hasPlainPrototype`) and type the record with `NoProtoKey` (the only guard for a
+  primitive value, which JS drops). User records keyed by member name (`s.tuple` init, `s.throw`
+  args, overload `argFits`) are read with `Object.hasOwn`, never through the prototype.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.

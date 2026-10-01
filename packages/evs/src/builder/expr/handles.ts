@@ -13,6 +13,7 @@ import {
   installStagingTraps,
 } from '../../core/types.js';
 import type { ValueId, CellId } from '../../ir/nodes.js';
+import type { TupleHandleMember } from '../script/handles.js';
 import { unsafeCast, type Scope } from './helpers.js';
 import type { Recorder } from './recorder.js';
 
@@ -259,26 +260,44 @@ function arrInternalsOf(h: object): ArrInternals {
 // ---------------------------------------------------------------------------
 
 /**
+ * The names a struct field cannot take as a {@link TupleHandle} accessor: the handle's own
+ * methods (`at`, `expr`), the staging traps (`valueOf`, `toString`, `toJSON`), every
+ * `Object.prototype` member (`constructor`, `__proto__`, `hasOwnProperty`, …) and `then` (a
+ * `then` accessor would make the handle a thenable that `await` silently unwraps). The handle
+ * member wins: a field with one of these names gets no accessor and is reached through `.at(i)`.
+ * Third-party ABIs keep working that way, and the `Tuple<C>` type drops the same names from its
+ * field record ({@link TupleHandleMember}, kept equal to this list by a type test).
+ */
+export const TUPLE_HANDLE_MEMBERS = Object.freeze([
+  'at',
+  'expr',
+  'then',
+  'valueOf',
+  'toString',
+  'toLocaleString',
+  'toJSON',
+  'constructor',
+  'hasOwnProperty',
+  'isPrototypeOf',
+  'propertyIsEnumerable',
+  '__proto__',
+  '__defineGetter__',
+  '__defineSetter__',
+  '__lookupGetter__',
+  '__lookupSetter__',
+] as const satisfies readonly TupleHandleMember[]);
+
+const TUPLE_HANDLE_MEMBER_SET: ReadonlySet<string> = new Set(TUPLE_HANDLE_MEMBERS);
+
+/**
  * A tuple/struct memref handle. It is the pointer to the flat `[w0…w_{n-1}]` block (reference
- * semantics — aliasing the handle shares the block). Named struct fields are installed as own
- * accessor properties; positional members go through `.at(i)`; `.expr()` yields the raw memref.
- * Staging traps are installed (like `Expr`) so a stray coercion explodes with a useful message.
+ * semantics — aliasing the handle shares the block). Named struct fields are accessors on a
+ * prototype shared per component list ({@link tupleProtoOf}); positional members go through
+ * `.at(i)`; `.expr()` yields the raw memref. Staging traps are installed (like `Expr`) so a stray
+ * coercion explodes with a useful message. Instances are created by {@link makeTuple}, never
+ * with `new`.
  */
 class TupleHandle {
-  constructor(owner: Recorder, id: ValueId, tt: TupleType) {
-    TUPLE_INTERNALS.set(this, { owner, id, tt });
-    // expose each NAMED component as an own accessor → a fresh Field handle on read.
-    const fieldProps: PropertyDescriptorMap = {};
-    tt.components.forEach((comp, index) => {
-      if (comp.name === '') return; // positional members are reached via .at(i)
-      fieldProps[comp.name] = {
-        enumerable: true,
-        get: () => owner.makeField(id, index, abiParamToType(comp)),
-      };
-    });
-    Object.defineProperties(this, fieldProps);
-  }
-
   at(i: unknown): FieldHandle {
     const t = tupleInternalsOf(this);
     return t.owner.tupleAt(t.id, t.tt, i, 'Tuple.at()');
@@ -311,8 +330,42 @@ function tupleInternalsOf(h: object): TupleInternals {
   return i;
 }
 
+/** One prototype per component list, shared by every handle of that shape. Keyed on
+ *  `components` (not the descriptor): an array element's or a member's descriptor is rebuilt per
+ *  access around the same frozen component list. */
+const TUPLE_PROTOS = new WeakMap<TupleType['components'], object>();
+
+/**
+ * The prototype of a {@link TupleHandle} over `tt`: `TupleHandle.prototype` plus one enumerable
+ * getter per named component (a fresh Field handle on each read; the member type is computed
+ * once here). Positional members and names in {@link TUPLE_HANDLE_MEMBERS} get no accessor. The
+ * descriptor map has a null prototype so a component named `__proto__` is an ordinary key rather
+ * than the map's prototype.
+ */
+function tupleProtoOf(tt: TupleType): object {
+  const cached = TUPLE_PROTOS.get(tt.components);
+  if (cached !== undefined) return cached;
+  const fieldProps: PropertyDescriptorMap = Object.create(null);
+  tt.components.forEach((comp, index) => {
+    if (comp.name === '' || TUPLE_HANDLE_MEMBER_SET.has(comp.name)) return; // reached via .at(i)
+    const memberType = abiParamToType(comp);
+    fieldProps[comp.name] = {
+      enumerable: true,
+      get(this: object): object {
+        const t = tupleInternalsOf(this);
+        return t.owner.makeField(t.id, index, memberType);
+      },
+    };
+  });
+  const proto: object = Object.create(TupleHandle.prototype, fieldProps);
+  TUPLE_PROTOS.set(tt.components, proto);
+  return proto;
+}
+
 export function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {
-  return new TupleHandle(owner, id, tt);
+  const handle: object = Object.create(tupleProtoOf(tt));
+  TUPLE_INTERNALS.set(handle, { owner, id, tt });
+  return handle;
 }
 
 /**

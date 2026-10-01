@@ -326,6 +326,36 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
     expect(handle(declaredEmpty)).toBe('declared empty 42');
   });
 
+  test('hand-built ABI: a `__proto__` error input stays an own key; an inherited name is no handler', () => {
+    // t.error rejects `__proto__`; a hand-built ABI still gets through, and the decoded record
+    // must keep the member instead of having its prototype replaced
+    const handBuilt = {
+      abi: [
+        {
+          type: 'error',
+          name: 'Bad',
+          inputs: [
+            { name: '__proto__', type: 'uint256' },
+            { name: 'b', type: 'uint256' },
+          ],
+        },
+        { type: 'error', name: 'toString', inputs: [{ name: 'code', type: 'uint256' }] },
+      ],
+    } as const;
+    const bad = encodeErrorResult({ abi: handBuilt.abi, errorName: 'Bad', args: [42n, 7n] });
+    const decoded = decodeScriptError(handBuilt, bad);
+    const args: object = decoded !== undefined && 'args' in decoded ? decoded.args : {};
+    expect(Object.keys(args)).toEqual(['__proto__', 'b']);
+    expect(Object.getOwnPropertyDescriptor(args, '__proto__')?.value).toBe(42n);
+    expect(Object.getPrototypeOf(args)).toBe(Object.prototype);
+    // a table without an own `toString` handler (cast past the exhaustive type) falls to `_`
+    // instead of calling Object.prototype.toString
+    const toStr = encodeErrorResult({ abi: handBuilt.abi, errorName: 'toString', args: [1n] });
+    const handlers = { _: (other: { name: string }) => `default: ${other.name}` };
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the omitted handler IS the test
+    expect(matchScriptError(handBuilt, toStr, handlers as never)).toBe('default: toString');
+  });
+
   test('matchScriptError rethrows when the input carries no revert data', () => {
     const original = new Error('socket hang up');
     expect(() =>

@@ -2514,3 +2514,34 @@ describe('call — revertReturns (issue #35)', () => {
     expect(retOf(interpret(strictRR, [TOKEN, 100n], chain))).toEqual({ n: 150n });
   });
 });
+
+describe('JS projection of struct members', () => {
+  test('a `__proto__` member stays an own key of the projected object (hand-built IR)', () => {
+    // the builder rejects the name; an IR loaded from elsewhere still projects it as an own key
+    // instead of replacing the object's prototype
+    const components = [
+      { name: '__proto__', type: 'uint256' },
+      { name: 'b', type: 'uint256' },
+    ] as const;
+    const tt = { type: 'tuple', components } as const;
+    const script = ir({
+      name: 'proto',
+      args: [{ name: 'p', type: tt }],
+      values: [vi(tt)],
+      returns: [{ name: 'whole', type: tt, value: 0 }],
+    });
+    const arg = Object.fromEntries([
+      ['__proto__', 5n],
+      ['b', 6n],
+    ]);
+    const res = interpret(script, [arg], deadChain);
+    expect(res.outcome.kind).toBe('return');
+    const whole: unknown = res.outcome.kind === 'return' ? res.outcome.values.whole : undefined;
+    const record = typeof whole === 'object' && whole !== null ? whole : {};
+    expect(Reflect.getPrototypeOf(record)).toBe(Object.prototype);
+    expect(Object.entries(record)).toEqual([
+      ['__proto__', 5n],
+      ['b', 6n],
+    ]);
+  });
+});

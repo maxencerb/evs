@@ -22,6 +22,8 @@ import {
   assertArrayDepth,
   bitsOf,
   IDENT_RE,
+  identProblem,
+  PROTO_RESERVED,
   isSigned,
   isTupleTag,
   isWordType,
@@ -152,7 +154,9 @@ function assertStructFieldNames(type: EvsType, where: string): void {
     if (c.name !== '' && !IDENT_RE.test(c.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
-        `${where}: tuple field #${i} has an invalid name ${JSON.stringify(c.name)} (every named struct field must be a non-empty identifier or viem degrades the result to a positional array)`,
+        c.name === '__proto__'
+          ? `${where}: tuple field #${i} has an invalid name "__proto__": ${PROTO_RESERVED}`
+          : `${where}: tuple field #${i} has an invalid name ${JSON.stringify(c.name)} (every named struct field must be a non-empty identifier or viem degrades the result to a positional array)`,
       );
     }
     if (c.components !== undefined) {
@@ -195,7 +199,7 @@ export function buildScriptAbi(
   if (!IDENT_RE.test(name)) {
     throw new EvsTypeError(
       'ABI_SHAPE',
-      `buildScriptAbi: invalid script name ${JSON.stringify(name)} (must match /^[A-Za-z_]\\w*$/)`,
+      `buildScriptAbi: invalid script name ${JSON.stringify(name)}: ${identProblem(name)}`,
     );
   }
   const seenArgs = new Set<string>();
@@ -203,7 +207,7 @@ export function buildScriptAbi(
     if (!IDENT_RE.test(a.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
-        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        `buildScriptAbi: argument #${i} has an invalid name ${JSON.stringify(a.name)}: ${identProblem(a.name)}`,
       );
     }
     if (seenArgs.has(a.name)) {
@@ -232,7 +236,9 @@ export function buildScriptAbi(
     if (!IDENT_RE.test(r.name)) {
       throw new EvsTypeError(
         'ABI_SHAPE',
-        `buildScriptAbi: return component #${i} has an invalid name ${JSON.stringify(r.name)} (every component must be a non-empty identifier or viem degrades the result object to a positional array)`,
+        r.name === '__proto__'
+          ? `buildScriptAbi: return component #${i} has an invalid name "__proto__": ${PROTO_RESERVED}`
+          : `buildScriptAbi: return component #${i} has an invalid name ${JSON.stringify(r.name)} (every component must be a non-empty identifier or viem degrades the result object to a positional array)`,
       );
     }
     if (seenReturns.has(r.name)) {
@@ -263,7 +269,7 @@ export function buildScriptAbi(
     if (!IDENT_RE.test(e.name)) {
       throw new EvsTypeError(
         'ERROR_DECL',
-        `buildScriptAbi: invalid error name ${JSON.stringify(e.name)} (must match /^[A-Za-z_]\\w*$/)`,
+        `buildScriptAbi: invalid error name ${JSON.stringify(e.name)}: ${identProblem(e.name)}`,
       );
     }
     if (RESERVED_ERROR_NAMES.has(e.name)) {
@@ -363,11 +369,11 @@ export function decodeErrorArgsRecord(
   } catch {
     return null;
   }
-  const record: Record<string, unknown> = {};
-  inputs.forEach((p, i) => {
-    record[p.name === '' ? `arg${i}` : p.name] = decoded[i];
-  });
-  return Object.freeze(record);
+  // Object.fromEntries defines OWN keys: an input named `__proto__` (a hand-built ABI) stays a
+  // member instead of replacing the record's prototype.
+  return Object.freeze(
+    Object.fromEntries(inputs.map((p, i) => [p.name === '' ? `arg${i}` : p.name, decoded[i]])),
+  );
 }
 
 /**

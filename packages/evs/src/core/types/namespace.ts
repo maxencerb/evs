@@ -11,8 +11,12 @@ import { functionsByRef, functionSignature } from '../signature.js';
 import {
   type ArgsInput,
   type EvsErrorType,
+  type NoProtoKey,
   type NormalizeArgs,
   IDENT_RE,
+  PROTO_RESERVED,
+  hasPlainPrototype,
+  identProblem,
   normalizeArgsInput,
 } from './args.js';
 import type {
@@ -50,7 +54,10 @@ type TypeNamespace = { readonly [k in WordType | DynType]: k } & {
   array<const e extends StringType, const n extends number>(elem: e, length: n): `${e}[${n}]`;
   array<const e extends TupleType>(elem: e): TupleArrayOf<e>;
   array<const e extends TupleType, const n extends number>(elem: e, length: n): TupleArrayOf<e, n>;
-  struct<const spec extends Record<string, EvsType>>(spec: spec): StructTypeOf<spec>;
+  // `NoProtoKey`: a literal `__proto__` key is a type error (JS never makes it a member).
+  struct<const spec extends Record<string, EvsType>>(
+    spec: spec & NoProtoKey<spec>,
+  ): StructTypeOf<spec>;
   tuple<const items extends readonly EvsType[]>(...items: items): TupleTypeOf<items>;
   // declare a custom error (issue #15): params take the same shorthand as `evscript` args /
   // `s.fn` params — a bare `t.*` type, a single `namedArg(...)`, or a `readonly` list mixing
@@ -274,6 +281,12 @@ function structTypeRT(spec: unknown): TupleType {
       `t.struct(): expected a record of { field: type }, got ${describeTypeInput(spec)}`,
     );
   }
+  if (!hasPlainPrototype(spec)) {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `t.struct(): expected a plain object literal of { field: type }, but the record's prototype was replaced — an object-literal \`__proto__\` key does that instead of declaring a field. ${PROTO_RESERVED}`,
+    );
+  }
   const entries = Object.entries(spec);
   if (entries.length === 0) {
     throw new EvsTypeError('TYPE_MISMATCH', `t.struct(): a struct must have at least one field`);
@@ -282,7 +295,9 @@ function structTypeRT(spec: unknown): TupleType {
     if (!IDENT_RE.test(name)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `t.struct(): field name ${JSON.stringify(name)} must be a non-empty identifier (an empty/odd name would collapse the struct to a positional array on the viem side)`,
+        name === '__proto__'
+          ? `t.struct(): field name "__proto__" is rejected — ${PROTO_RESERVED}`
+          : `t.struct(): field name ${JSON.stringify(name)} must be a non-empty identifier matching /^[A-Za-z_]\\w*$/ (an empty/odd name would collapse the struct to a positional array on the viem side)`,
       );
     }
     return toComponentRT(name, ty, `t.struct() field "${name}"`);
@@ -446,7 +461,7 @@ function errorTypeRT(name: unknown, paramsIn: unknown): EvsErrorType {
   if (typeof name !== 'string' || !IDENT_RE.test(name)) {
     throw new EvsTypeError(
       'ERROR_DECL',
-      `t.error(): error name must be a non-empty identifier, got ${describeTypeInput(name)}`,
+      `t.error(): invalid error name ${describeTypeInput(name)}: ${identProblem(name)}`,
     );
   }
   if (RESERVED_ERROR_NAMES.has(name)) {

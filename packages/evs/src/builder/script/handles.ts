@@ -130,16 +130,41 @@ export interface Field<t extends EvsType> {
 }
 
 /**
+ * The struct field names that collide with a {@link Tuple} handle member: its methods (`at`,
+ * `expr`), the staging traps (`valueOf`, `toString`, `toJSON`), the `Object.prototype` members
+ * and `then`. The handle member wins: such a field has no named accessor (at runtime or in the
+ * type) and is read through `.at(i)`. Mirrors the runtime `TUPLE_HANDLE_MEMBERS`.
+ */
+export type TupleHandleMember =
+  | 'at'
+  | 'expr'
+  | 'then'
+  | 'valueOf'
+  | 'toString'
+  | 'toLocaleString'
+  | 'toJSON'
+  | 'constructor'
+  | 'hasOwnProperty'
+  | 'isPrototypeOf'
+  | 'propertyIsEnumerable'
+  | '__proto__'
+  | '__defineGetter__'
+  | '__defineSetter__'
+  | '__lookupGetter__'
+  | '__lookupSetter__';
+
+/**
  * A tuple / struct memref handle. For each NAMED component, a property keyed by the
- * component name yields a {@link Field} over that member; `at(i)` is the positional accessor; and
- * `expr()` is the raw memref {@link Expr} (for returning the tuple or passing it as a call arg).
- * Typed via abitype over `C['components']`. Reference semantics: the handle is the pointer, so a
- * later `field.set()` is visible through every alias.
+ * component name yields a {@link Field} over that member — except a name in
+ * {@link TupleHandleMember}, which stays the handle's own member and is read through `at(i)`;
+ * `at(i)` is the positional accessor; and `expr()` is the raw memref {@link Expr} (for returning
+ * the tuple or passing it as a call arg). Typed via abitype over `C['components']`. Reference
+ * semantics: the handle is the pointer, so a later `field.set()` is visible through every alias.
  */
 export type Tuple<C extends TupleType> = {
-  readonly [c in C['components'][number] as c['name'] extends '' ? never : c['name']]: Field<
-    ComponentToType<c>
-  >;
+  readonly [
+    c in C['components'][number] as c['name'] extends '' | TupleHandleMember ? never : c['name']
+  ]: Field<ComponentToType<c>>;
 } & {
   at(i: number): Field<ComponentToType<C['components'][number]>>;
   expr(): Expr<C>;

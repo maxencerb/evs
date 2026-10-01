@@ -10,6 +10,7 @@ import { namedArg, t, type Expr } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
 import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
+import { TUPLE_HANDLE_MEMBERS } from './expr/handles.js';
 import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
 
 const erc20Abi = [
@@ -854,6 +855,149 @@ describe('Tuple (s.tuple + field get/set)', () => {
     ).toThrow(
       /Tuple \(#\d+ ← s\.tuple\(liquidity, owner\)\) belongs to script "donor".*cannot be used in script "thief"/s,
     );
+  });
+});
+
+describe('Tuple: field names that collide with handle members', () => {
+  // `expr` / `at` are the handle's methods, `toJSON` a staging trap, `then` would make the handle
+  // a thenable; the handle member wins and the field is read through `.at(i)`.
+  const Clash = t.struct({
+    expr: t.uint256,
+    at: t.address,
+    toJSON: t.uint8,
+    // oxlint-disable-next-line unicorn/no-thenable -- a struct FIELD named `then` is the case under test
+    then: t.bool,
+    value: t.uint16,
+  });
+  const protoAbi = [
+    {
+      type: 'function',
+      name: 'get',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [
+        {
+          name: '',
+          type: 'tuple',
+          components: [
+            { name: '__proto__', type: 'uint256' },
+            { name: 'constructor', type: 'uint256' },
+            { name: 'b', type: 'uint256' },
+          ],
+        },
+      ],
+    },
+  ] as const satisfies Abi;
+
+  test('at() / expr() stay the methods; the colliding fields are read by position', () => {
+    let seen: Tuple<typeof Clash> | undefined;
+    const script = evscript({ name: 'clash', args: [Clash] }, (s, h) => {
+      seen = h;
+      h.at(4).set(7n);
+      return s.return({
+        e: h.at(0).get(),
+        a: h.at(1).get(),
+        j: h.at(2).get(),
+        th: h.at(3).get(),
+        v: h.value.get(),
+        whole: h.expr(),
+      });
+    });
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.returns.map((r) => [r.name, r.type])).toEqual([
+      ['e', 'uint256'],
+      ['a', 'address'],
+      ['j', 'uint8'],
+      ['th', 'bool'],
+      ['v', 'uint16'],
+      ['whole', Clash],
+    ]);
+    const h = seen!;
+    expect(typeof h.at).toBe('function');
+    expect(typeof h.expr).toBe('function');
+    // no `then` accessor: the handle is not a thenable
+    expect('then' in h).toBe(false);
+  });
+
+  test('every handle member is in TUPLE_HANDLE_MEMBERS (a new method must be added there)', () => {
+    const protos: object[] = [];
+    evscript({ name: 'members', args: [Clash] }, (s, h) => {
+      const own = Reflect.getPrototypeOf(h); // the per-type prototype (field accessors)
+      if (own !== null) protos.push(own);
+      return s.return({ v: h.value.get() });
+    });
+    const reserved = new Set<string>(TUPLE_HANDLE_MEMBERS);
+    // TupleHandle.prototype (methods + staging traps), then Object.prototype
+    for (
+      let p = Reflect.getPrototypeOf(protos[0] ?? {});
+      p !== null;
+      p = Reflect.getPrototypeOf(p)
+    ) {
+      for (const name of Object.getOwnPropertyNames(p)) {
+        expect(reserved.has(name), `"${name}" is a Tuple handle member`).toBe(true);
+      }
+    }
+  });
+
+  test('handles of one shape share a prototype; each field read is a fresh Field', () => {
+    evscript({ name: 'shared', args: [Clash, Clash, t.array(Clash)] }, (s, a, b, arr) => {
+      expect(Reflect.getPrototypeOf(a) === Reflect.getPrototypeOf(b)).toBe(true);
+      // array elements get a fresh descriptor per access around the same component list
+      const [x, y] = [arr.at(0), arr.at(1)];
+      expect(Reflect.getPrototypeOf(x) === Reflect.getPrototypeOf(y)).toBe(true);
+      expect(Object.keys(a)).toEqual([]); // the accessors live on the shared prototype
+      expect(a.value).not.toBe(a.value);
+      return s.return({ x: a.value.get(), y: y.value.get() });
+    });
+  });
+
+  test('a third-party `__proto__` / `constructor` member keeps the handle intact (.at(i))', () => {
+    const script = evscript({ name: 'proto', args: [t.address] }, (s, pool) => {
+      const r = s.read({ address: pool, abi: protoAbi, functionName: 'get' });
+      expect(typeof r.at).toBe('function');
+      expect(Object.hasOwn(Reflect.getPrototypeOf(r) ?? {}, '__proto__')).toBe(false);
+      return s.return({ p: r.at(0).get(), c: r.at(1).get(), b: r.b.get() });
+    });
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.returns.map((r) => r.name)).toEqual(['p', 'c', 'b']);
+  });
+
+  test('`s.read({ struct: true })` over outputs named `at` / `expr` / `__proto__`', () => {
+    // `struct: true` builds its own tuple type from the outputs (a separate prototype)
+    const multiAbi = [
+      {
+        type: 'function',
+        name: 'get',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'at', type: 'uint256' },
+          { name: 'expr', type: 'address' },
+          { name: '__proto__', type: 'uint8' },
+          { name: 'b', type: 'uint16' },
+        ],
+      },
+    ] as const satisfies Abi;
+    const script = evscript({ name: 'multi', args: [t.address] }, (s, pool) => {
+      const r = s.read({ address: pool, abi: multiAbi, functionName: 'get', struct: true });
+      expect(typeof r.at).toBe('function');
+      expect(typeof r.expr).toBe('function');
+      const own = Reflect.getPrototypeOf(r) ?? {};
+      expect(Object.getOwnPropertyNames(own)).toEqual(['b']);
+      return s.return({
+        a: r.at(0).get(),
+        e: r.at(1).get(),
+        p: r.at(2).get(),
+        b: r.b.get(),
+      });
+    });
+    expect(() => validateIr(script.ir)).not.toThrow();
+    expect(script.ir.returns.map((r) => [r.name, r.type])).toEqual([
+      ['a', 'uint256'],
+      ['e', 'address'],
+      ['p', 'uint8'],
+      ['b', 'uint16'],
+    ]);
   });
 });
 

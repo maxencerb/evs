@@ -24,6 +24,7 @@ import {
   type EvsErrorCode,
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
+import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
 const erc20Abi = [
@@ -1776,6 +1777,36 @@ describe('staging traps', () => {
     );
   });
 
+  test('a Tuple whose struct has toJSON / toString / valueOf FIELDS still trips the traps', () => {
+    // the handle member wins over the field (the field is read through .at(i))
+    const Traps = t.struct({ toJSON: t.uint8, toString: t.uint8, valueOf: t.uint8 });
+    const misuse =
+      (body: (h: never) => void): (() => unknown) =>
+      () =>
+        evscript({ name: 'traps', args: [Traps] }, (s, h) => {
+          body(h as never);
+          return s.return({ x: h.at(0).get() });
+        });
+    expectEvs(
+      misuse((h) => JSON.stringify(h)),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /toJSON/,
+    );
+    expectEvs(
+      misuse((h) => void `${h}`),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /staged handle/,
+    );
+    expectEvs(
+      misuse((h) => void (h + 1)),
+      EvsStagingError,
+      'STAGING_MISUSE',
+      /staged handle/,
+    );
+  });
+
   test('node inspect (console.log) is NON-throwing and shows type/id/name', () => {
     rec((s, a) => {
       const printed = inspect(a.x);
@@ -2489,5 +2520,178 @@ describe('checklist: pathological type sizes', () => {
       return s.return({ ok: r.success } as never);
     });
     expectEvs(() => compile(script), EvsTypeError, 'UNSUPPORTED_V0', /ABI static size/);
+  });
+});
+
+describe('checklist: `__proto__` is not a name', () => {
+  // `{ [PROTO]: x }` (a computed key) is an own property, so the name check sees it; assigning
+  // `__proto__` on a plain object replaces the prototype instead, so every name that becomes an
+  // object key rejects it. A literal `{ __proto__: x }` key never becomes an entry: the
+  // prototype guard and the `NoProtoKey` type guard cover it (tests below).
+  const PROTO = '__proto__';
+  const RESERVED = /`__proto__` is reserved: assigning it on a JavaScript object/;
+
+  test('namedArg / t.struct field / s.fn param → TYPE_MISMATCH', () => {
+    expectEvs(() => namedArg(PROTO, t.uint256), EvsTypeError, 'TYPE_MISMATCH', RESERVED);
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`: a `__proto__` key is a type error too
+      () => t.struct({ [PROTO]: t.uint256, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /field name "__proto__" is rejected — `__proto__` is reserved/,
+    );
+    expectEvs(
+      () =>
+        rec((s, a) => {
+          s.fn('f', [{ name: PROTO, type: t.uint256 }] as never, (p: Expr<'uint256'>) => p);
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /s\.fn\("f"\) param #0: invalid param name "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  test('t.error name / param → ERROR_DECL', () => {
+    expectEvs(() => t.error(PROTO), EvsTypeError, 'ERROR_DECL', RESERVED);
+    expectEvs(
+      () => t.error('E', [{ name: PROTO, type: t.uint256 }] as never),
+      EvsTypeError,
+      'ERROR_DECL',
+      /invalid param name "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  test('s.return key → ABI_SHAPE (viem would drop it from the result object)', () => {
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`: a `__proto__` key is a type error too
+      () => rec((s, a) => s.return({ [PROTO]: a.x, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /invalid return key "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  // the usual spelling: a LITERAL key. JS turns it into the prototype (object / null value) or
+  // drops it (a primitive value), so it never reaches `Object.entries`.
+  test('t.struct with a literal `__proto__` key: an object/null value is caught at runtime', () => {
+    const Inner = t.struct({ a: t.uint256 });
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => t.struct({ __proto__: Inner, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /t\.struct\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
+    );
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey` (and `null` is not a type)
+      () => t.struct({ __proto__: null, b: t.uint256 }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /prototype was replaced/,
+    );
+    // a primitive value is dropped by JS before evs sees the record: only the type guard
+    // (`NoProtoKey`, the @ts-expect-error) can reject it
+    // @ts-expect-error -- `NoProtoKey`
+    const dropped = t.struct({ __proto__: t.uint256, b: t.uint256 });
+    expect(dropped).toEqual({ type: 'tuple', components: [{ name: 'b', type: 'uint256' }] });
+    // a widened record type passes the type guard
+    const plain: Record<string, 'uint256'> = { a: t.uint256 };
+    expect(t.struct(plain).components).toEqual([{ name: 'a', type: 'uint256' }]);
+  });
+
+  test('s.return with a literal `__proto__` key → ABI_SHAPE (handle or null value)', () => {
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => rec((s, a) => s.return({ __proto__: a.x, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /s\.return\(\): expected a plain object literal.*prototype was replaced.*`__proto__` is reserved/,
+    );
+    expectEvs(
+      // @ts-expect-error -- `NoProtoKey`
+      () => rec((s, a) => s.return({ __proto__: null, y: a.x })),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /prototype was replaced/,
+    );
+  });
+
+  test('a third-party struct with a `__proto__` member cannot enter the script ABI', () => {
+    const protoAbi = [
+      {
+        type: 'function',
+        name: 'get',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          {
+            name: '',
+            type: 'tuple',
+            components: [
+              { name: '__proto__', type: 'uint256' },
+              { name: 'b', type: 'uint256' },
+            ],
+          },
+        ],
+      },
+    ] as const satisfies Abi;
+    // reading it is fine (`.at(0)`), returning the whole struct is not: viem's decoder would
+    // silently drop the member from the result
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.return({ r: s.read({ address: a.who, abi: protoAbi, functionName: 'get' }) }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /return component "r": tuple field #0 has an invalid name "__proto__": `__proto__` is reserved/,
+    );
+  });
+
+  test('a name-keyed record never picks up an inherited member (`toString`, …)', () => {
+    // a third-party struct with a `toString` member: an init / throw-args record that omits it
+    // must not read `Object.prototype.toString` (the member is zero / reported missing). The
+    // `as never` casts: an object literal's apparent `toString` method never fits a word member.
+    const S = t.fromOutputs(
+      [
+        {
+          type: 'function',
+          name: 'f',
+          stateMutability: 'view',
+          inputs: [],
+          outputs: [
+            { name: 'toString', type: 'uint256' },
+            { name: 'b', type: 'uint256' },
+          ],
+        },
+      ] as const,
+      'f',
+    );
+    const script = evscript({ name: 'init', args: [t.uint256] }, (s, x) =>
+      s.return({ v: s.tuple(S, { b: x } as never) }),
+    );
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const E = t.error('E', [namedArg('toString', t.uint256)]);
+    expectEvs(
+      () =>
+        evscript({ name: 'thr', args: [t.uint256], errors: [E] }, (s, x) => {
+          s.throw(E, {} as never);
+          return s.return({ x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /missing arg "toString" for error "E"/,
+    );
+  });
+
+  test('validateIr rejects a deserialized arg named `__proto__`', () => {
+    const script = evscript({ name: 'ok', args: [namedArg('x', t.uint256)] }, (s, x) =>
+      s.return({ x }),
+    );
+    const [arg] = script.ir.args;
+    expect(() => validateIr({ ...script.ir, args: [{ ...arg!, name: PROTO }] })).toThrow(
+      /args\[0\] has an invalid name "__proto__": `__proto__` is reserved/,
+    );
   });
 });
