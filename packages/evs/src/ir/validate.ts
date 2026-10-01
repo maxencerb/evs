@@ -3,7 +3,8 @@
  *
  * Re-checks the builder's invariants so deserialized IR cannot reach codegen in a shape the
  * builder never records (`deserializeIr → validateIr` is the trust boundary): every type in the
- * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels), operand
+ * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels, no ABI-static
+ * level of `MAX_STATIC_SIZE` bytes or more), operand
  * types per the op table, def-before-use under the scope rule (a `while` header dominates its
  * body; `if`/`else` branches are isolated; `fn` bodies see params only), unknown ids, single
  * static assignment of every ValueId, cell creation/typing/scoping, `break`/`continue` only
@@ -20,7 +21,10 @@
  * `args` entries carry no explicit ValueId and no "load arg" statement kind exists.
  *
  * All failures throw `EvsInternalError` (compiler-produced IR is supposed to be valid — a
- * failure here means a bug in whichever producer built the IR).
+ * failure here means a bug in whichever producer built the IR), except the `MAX_STATIC_SIZE`
+ * gate: the builder records a raw-ABI tuple param whose members each fit but whose total does
+ * not, so that gate throws the `EvsTypeError` (`UNSUPPORTED_V0`) of the `t` constructors and
+ * `abi/layout`.
  */
 
 import { EvsInternalError } from '../core/errors.js';
@@ -28,6 +32,7 @@ import {
   abiParamToType,
   arrayDepthOf,
   arrayTypeOf,
+  assertStaticSize,
   bitsOf,
   elemTypeOf,
   fixedLengthOf,
@@ -1038,9 +1043,11 @@ class IrValidator {
   }
 
   /**
-   * A type the builder can record: well-formed, no zero-component tuple at any nesting level,
-   * and no type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays. Applied
-   * to every type the IR declares (value/cell tables, args, fn signatures, returns, ABI params).
+   * A type the builder can record: well-formed, no zero-component tuple at any nesting level, no
+   * type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays, and no ABI-static
+   * level of {@link MAX_STATIC_SIZE} bytes or more. Applied to every type the IR declares
+   * (value/cell tables, args, fn signatures, returns, ABI params); a statement's result type is
+   * covered through the value table, which `define` checks it against.
    */
   private checkValueType(type: EvsType, what: string): void {
     if (!isEvsValueType(type)) {
@@ -1061,6 +1068,7 @@ class IrValidator {
       p.components.forEach((c, j) =>
         this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`),
       );
+      this.checkStaticSize(p, what);
       return;
     }
     if (p.components !== undefined) {
@@ -1070,6 +1078,16 @@ class IrValidator {
       this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
     this.checkArrayDepth(p.type, what);
+    this.checkStaticSize(p, what);
+  }
+
+  /**
+   * The `MAX_STATIC_SIZE` gate the `t` constructors and `abi/layout` share, on a param whose
+   * shape (and every member's) is already checked. A tuple is measured after its members, which
+   * are gated on their own: a tuple with a dynamic member has no static size of its own.
+   */
+  private checkStaticSize(p: PlainAbiParam, what: string): void {
+    assertStaticSize(abiParamToType(p), `ScriptIr "${this.ir.name}" ${what}`);
   }
 
   /** The array-depth ceiling the builder, `abi/layout` and the decoders share. */

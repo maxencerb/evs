@@ -24,6 +24,7 @@ import {
   type EvsErrorCode,
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
+import { interpret } from '../ir/interp.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
@@ -2849,6 +2850,44 @@ describe('checklist: pathological type sizes', () => {
       return s.return({ ok: r.success } as never);
     });
     expectEvs(() => compile(script), EvsTypeError, 'UNSUPPORTED_V0', /ABI static size/);
+    // interpret() runs the same validateIr gate (before, it ran the script)
+    expectEvs(
+      () =>
+        interpret(script.ir, ['0x0000000000000000000000000000000000000001'], {
+          staticcall: () => ({ success: true, data: '0x' }),
+        }),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      /"tuple\[100000000\]" has an ABI static size of 320000000000 bytes/,
+    );
+  });
+
+  test('an array of a too-large static element → UNSUPPORTED_V0 at recording', () => {
+    // the array is ABI-dynamic, but each element inlines 2^37 bytes (abi/layout's level-by-level
+    // gate); before, only compile() rejected it
+    const huge = 'uint256[65536][65536][]';
+    const size = /type "uint256\[65536\]\[65536\]" has an ABI static size of 137438953472 bytes/;
+    expectEvs(
+      () => t.fromAbiParameter({ name: '', type: huge } as never),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      size,
+    );
+    expectEvs(
+      () =>
+        evscript({ name: 'q', args: [t.address, huge as never] }, (s: AnyBuilder, a: unknown) =>
+          s.return({ a } as never),
+        ),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      size,
+    );
+    expectEvs(
+      () => rec((s, a) => s.tryRead({ address: a.who, abi: getterAbi(huge), functionName: 'get' })),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      size,
+    );
   });
 });
 

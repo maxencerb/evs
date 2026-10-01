@@ -492,14 +492,23 @@ export function staticSizeOf(type: EvsType): bigint | null {
 }
 
 /**
- * Throws `UNSUPPORTED_V0` when `type` is ABI-static and its static size exceeds
- * {@link MAX_STATIC_SIZE} (2^32 bytes or more). Callers pass a type already within
+ * Throws `UNSUPPORTED_V0` when an ABI-static level of `type` exceeds {@link MAX_STATIC_SIZE}
+ * (2^32 bytes or more): the type itself when it is static, else the element type of its
+ * outermost static array level — `uint256[65536][65536][]` is ABI-dynamic, but each of its
+ * elements inlines 2^37 bytes, which `abi/layout` rejects level by level. Inner levels of a static
+ * level are no larger (every fixed length is at least 1). Tuple members are not measured here:
+ * the callers gate each member on its own. Callers pass a well-formed type already within
  * {@link MAX_ARRAY_DEPTH}.
  */
 export function assertStaticSize(type: EvsType, context: string): void {
-  const size = staticSizeOf(type);
+  let level = type;
+  let size = staticSizeOf(level);
+  while (size === null && isArrayValueType(level)) {
+    level = elemTypeOf(level);
+    size = staticSizeOf(level);
+  }
   if (size !== null && size > BigInt(MAX_STATIC_SIZE)) {
-    const tag = typeof type === 'string' ? type : type.type;
+    const tag = typeof level === 'string' ? level : level.type;
     throw new EvsTypeError('UNSUPPORTED_V0', staticSizeMessage(context, tag, size));
   }
 }

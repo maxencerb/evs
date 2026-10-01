@@ -461,6 +461,9 @@ describe('pathological type sizes', () => {
       () => t.array(t.array(t.uint256, 100_000_000), 100_000_000),
       () => namedArg('x', 'uint256[100000000][100000000]' as never),
       () => t.fromAbiParameter({ name: '', type: 'uint256[100000000][100000000]' } as never),
+      // ABI-dynamic, but each element inlines 3.2e17 bytes (abi/layout gates level by level)
+      () => t.fromAbiParameter({ name: '', type: 'uint256[100000000][100000000][]' } as never),
+      () => namedArg('x', 'uint256[100000000][100000000][]' as never),
       () => t.struct({ a: half, b: half }),
       () => t.tuple(half, half),
       () => t.array(t.struct({ a: t.array(t.uint256, 1000) }), 1_000_000),

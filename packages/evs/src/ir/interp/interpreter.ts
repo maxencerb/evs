@@ -213,10 +213,11 @@ export function interpret(
 }
 
 /**
- * `eliminateDeadCode(ir)` per IR object. Its `if` fixpoint is superlinear in nesting depth, and
- * a test that loops `interpret()` over many arg sets would otherwise pay it on every call. Only
- * frozen IRs are cached: a recorded or deserialized IR is deep-frozen, so the result cannot go
- * stale; a hand-built, mutable IR is re-analyzed on every call.
+ * `eliminateDeadCode(ir)` per IR object. The pass is linear in the IR's size but walks and
+ * rebuilds the whole tree and its alias tables, and a test that loops `interpret()` over many arg
+ * sets would otherwise repeat it on every call. Only frozen IRs are cached: a recorded or
+ * deserialized IR is deep-frozen, so the result cannot go stale; a hand-built, mutable IR is
+ * re-analyzed on every call.
  */
 const dceCache = new WeakMap<ScriptIr, ScriptIr>();
 

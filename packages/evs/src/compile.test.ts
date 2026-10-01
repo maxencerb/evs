@@ -1364,6 +1364,58 @@ describe('compile — IR validation wiring', () => {
       /tuplenew\): out value must be a plain tuple type/,
     );
   });
+
+  test('a call output past MAX_STATIC_SIZE is UNSUPPORTED_V0 from both entry points', () => {
+    // before: validateIr accepted it, interpret() reverted with EvsDecodeError(1) while compile()
+    // threw from layoutOf; now validateIr rejects it for both, with the t constructors' error
+    const huge = 'uint256[65536][65536]'; // 2^37 bytes
+    const ir = deserializeIr(
+      JSON.stringify({
+        irVersion: 1,
+        name: 'big',
+        args: [],
+        cells: [],
+        fns: [],
+        values: [{ type: 'address' }, { type: huge }],
+        body: [
+          {
+            site: 0,
+            k: 'const',
+            out: 0,
+            type: 'address',
+            data: { kind: 'word', hex: `0x${'1'.padStart(64, '0')}` },
+          },
+          {
+            site: 1,
+            k: 'call',
+            target: 0,
+            fnAbi: {
+              name: 'f',
+              selector: '0x12345678',
+              inputs: [],
+              outputs: [{ name: '', type: huge }],
+            },
+            args: [],
+            outs: [1],
+            mode: 'strict',
+          },
+        ],
+        returns: [{ name: 'x', type: huge, value: 1 }],
+      }),
+    );
+    const message =
+      'ScriptIr "big" values[1]: type "uint256[65536][65536]" has an ABI static size of 137438953472 bytes — at most 2^32 − 1 bytes are supported';
+    const abi = sumScript().abi; // any artifact ABI: validation runs before the ABI is used
+    for (const run of [
+      () => compile({ name: 'big', abi, ir }),
+      () => interpret(ir, [], noChain),
+      () => lowerProgram(ir, { evmVersion: 'cancun' }),
+    ]) {
+      const err = captureError(run, EvsTypeError);
+      expect(err.code).toBe('UNSUPPORTED_V0');
+      expect(err.message).toBe(message);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
