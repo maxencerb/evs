@@ -183,7 +183,8 @@ hard type errors where viem is also permissive:
   the output count, so the result is typed as every shape it can take at run time:
   `Expr | Tuple | readonly (Expr | Tuple)[] | undefined` — `undefined` for no output, a single
   handle for one, a readonly array for several. Cast it to the shape the function has (or declare
-  the ABI `as const`) before use; `struct: true` is always one `Tuple`.
+  the ABI `as const`) before use; `struct: true` is always one `Tuple`. See
+  [widened ABIs](#widened-abis) below.
 - **Overloaded names** resolve by the `args` — see
   [overloaded functions](#overloaded-functions) below.
 - **Every array shape up to four levels deep** is supported in arguments and outputs —
@@ -193,6 +194,35 @@ hard type errors where viem is also permissive:
   [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs). A deeper
   array (`uint256[][][][][]`) throws `EvsTypeError` (`UNSUPPORTED_V0`) at recording and a
   malformed type (`uint256[0]`, `tuple[0]`) `TYPE_MISMATCH`/`ABI_SHAPE`, naming the parameter.
+
+### Widened ABIs
+
+The result of a call on a widened ABI is exported as `WideSubcallResult`. It is neither iterable nor
+numeric, so narrow it with a cast to the shape the function really has: a bare `Expr` is not enough
+for arithmetic or `toUint`/`toInt`, which need a numeric type.
+
+```ts
+import { evscript, t, type Expr } from '@maxencerb/evs';
+import type { Abi } from 'viem';
+
+declare const poolAbi: Abi; // e.g. imported from a JSON artifact
+declare const tokenAbi: Abi;
+
+const widePool = evscript({ name: 'widePool', args: [t.address, t.address] }, (s, pool, token) => {
+  // slot0 has three outputs: a readonly array at run time
+  const [sqrtPriceX96, tick] = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' }) as readonly [
+    Expr<'uint160'>,
+    Expr<'int24'>,
+    Expr<'bool'>,
+  ];
+  // decimals has one output: the handle itself
+  const decimals = s.read({ address: token, abi: tokenAbi, functionName: 'decimals' }) as Expr<'uint8'>;
+  return s.return({ sqrtPriceX96, tick, decimals: decimals.toUint(t.uint256) });
+});
+```
+
+Nothing checks the cast against the ABI, so it must match the function's real outputs. Declaring
+the ABI `as const` gives exact types with no cast.
 
 ## Overloaded functions
 

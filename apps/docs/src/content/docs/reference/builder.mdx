@@ -481,9 +481,11 @@ elides their type arguments). The `address` can itself be an
   site id back to the failing read.
 - Dirty high bits in word outputs are normalized, not reverted.
 - A non-`as const` ABI degrades gracefully: `functionName: string`, untyped args, and outputs
-  typed `Expr | Tuple | readonly (Expr | Tuple)[] | undefined` — never a hard type error. At run
-  time the shape follows the real output count (none → `undefined`, one → a single handle,
-  several → a readonly array), so cast to the shape the function has before use.
+  typed `WideSubcallResult` (exported: `Expr | Tuple | readonly (Expr | Tuple)[] | undefined`) —
+  never a hard type error. At run time the shape follows the real output count (none →
+  `undefined`, one → a single handle, several → a readonly array), so cast to the shape the
+  function has before use: `as Expr<'uint8'>` for one output,
+  `as readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>]` to destructure several.
 - With an `as const` ABI, `functionName` accepts only the names (and canonical signatures) in the
   verb's mutability bucket — none at all when the ABI has no function there.
 - An overloaded name is resolved by the `args`' types (`ResolveOverload`), and the result is typed

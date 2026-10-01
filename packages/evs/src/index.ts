@@ -149,6 +149,7 @@ export type {
   UnwrapSingle, // the single-output unwrap of every read/call verb result
   ViewMutability, // issue #1: 'pure' | 'view'  — the s.read / s.tryRead mutability bucket
   WriteMutability, // issue #1: 'nonpayable' | 'payable' — the s.call / s.simulate bucket
+  WideSubcallResult, // the s.read / s.call / s.simulate result on a widened (non-`as const`) ABI
   WriteVerb, // issue #1: the s.simulate / s.trySimulate verb types (CALL); the base of CallVerb
 } from './builder/script.js';
 

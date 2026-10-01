@@ -21,6 +21,7 @@ import {
   type ScriptReturn,
   type SubcallFunctionName,
   type Tuple,
+  type WideSubcallResult,
 } from './script.js';
 
 // ---------------------------------------------------------------------------
@@ -559,6 +560,31 @@ test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
     return s.return({ ok: s.lit(t.bool, true) });
   });
 });
+
+/* oxlint-disable typescript/no-unsafe-type-assertion -- the narrowing casts are the documented
+ * migration for a widened-ABI result under test here */
+test('WideSubcallResult is the exported widened result, narrowed by a cast', () => {
+  expectTypeOf<WideSubcallResult>().toEqualTypeOf<WideResult>();
+  const wideAbi: Abi = [];
+  evscript({ name: 'wideCast', args: [t.address] }, (s, target) => {
+    const slot0 = s.read({ address: target, abi: wideAbi, functionName: 'slot0' });
+    // @ts-expect-error — not iterable until narrowed (it may be one handle or undefined)
+    const [bad] = slot0;
+    void bad;
+    // the documented migration: cast to the outputs the function has, then destructure
+    const [price, tick] = slot0 as readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'bool'>];
+    expectTypeOf(price).toEqualTypeOf<Expr<'uint160'>>();
+    expectTypeOf(tick).toEqualTypeOf<Expr<'int24'>>();
+
+    const dec = s.read({ address: target, abi: wideAbi, functionName: 'decimals' });
+    // @ts-expect-error — a bare Expr is not numeric: toUint needs a numeric receiver
+    (dec as Expr).toUint(t.uint256);
+    // the documented migration: cast to the concrete output type
+    expectTypeOf((dec as Expr<'uint8'>).toUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+    return s.return({ price, tick });
+  });
+});
+/* oxlint-enable typescript/no-unsafe-type-assertion */
 
 // ---------------------------------------------------------------------------
 // cells, arrays, env, control flow

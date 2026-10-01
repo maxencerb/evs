@@ -11,9 +11,11 @@ import type {
   Expr,
   FixedLengthOf,
   IntoExpr,
+  IntType,
   LitOf,
   PeelArraySuffix,
   TupleType,
+  UintType,
 } from './types.js';
 
 const takeU8 = (_x: IntoExpr<'uint8'>): void => undefined;
@@ -182,6 +184,18 @@ test('toUint/toInt take a numeric receiver only (the recorder rejects any other 
   b32.toInt(t.int256);
   // @ts-expect-error — string is not numeric
   str.toInt(t.int8);
+
+  // a bare Expr or a mixed union is not known to be numeric (like add/lt); a numeric union is
+  const bare = {} as Expr;
+  const mixed = {} as Expr<'uint8' | 'address'>;
+  const numeric = {} as Expr<UintType | IntType>;
+  // @ts-expect-error — Expr<EvsType> is not numeric
+  bare.toUint(t.uint256);
+  // @ts-expect-error — the union includes address
+  mixed.toInt(t.int256);
+  expectTypeOf(numeric.toUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+  const generic = <u extends UintType>(x: Expr<u>) => x.toInt(t.int256);
+  expectTypeOf(generic(u256)).toEqualTypeOf<Expr<'int256'>>();
 });
 
 // ---------------------------------------------------------------------------

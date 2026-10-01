@@ -432,7 +432,11 @@ export type SubcallInputs<
  * (`Expr` or `Tuple`), several → a frozen array of handles — and the types cannot know that count.
  * Declare the ABI `as const` for exact types, or cast to the shape the function is known to have.
  */
-type WideSubcallResult = Expr | Tuple<TupleType> | readonly (Expr | Tuple<TupleType>)[] | undefined;
+export type WideSubcallResult =
+  | Expr
+  | Tuple<TupleType>
+  | readonly (Expr | Tuple<TupleType>)[]
+  | undefined;
 
 /** The positional output handles of the function `name` selects; for an overloaded name, of the
  *  overload `args` resolves to ({@link ResolveOverload}). Without a resolved entry (a widened
