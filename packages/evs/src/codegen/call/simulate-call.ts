@@ -97,9 +97,8 @@ export function emitSimulateCall(
   // outputs whose decode can charge the decode-work budget get a budget word after the snapshot
   const budgeted = needsDecodeBudget(outputs);
   const budget: DecodeBudget = budgeted ? 'once' : 'off';
-  const emitDecodeFailPre = makeDecodeFail(w, plan, tryMode, 'sim');
-  const emitDecodeFail =
-    restore === null ? emitDecodeFailPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
+  const failPre = makeDecodeFail(w, plan, tryMode, 'sim');
+  const fail = restore === null ? failPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
 
   // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
@@ -194,7 +193,7 @@ export function emitSimulateCall(
   w.push(64);
   w.op('RETURNDATASIZE');
   w.op('LT'); // [rds < 64]
-  emitDecodeFailPre(0); // []
+  failPre(0); // []
 
   // snapshot the whole returndata (the trampoline revert payload) at buf; SNAP_SLOT = buf
   w.push(FREE_PTR);
@@ -207,7 +206,7 @@ export function emitSimulateCall(
   w.push(SIMULATE_MAGIC, { note: 'simulate magic' });
   w.op('EQ');
   w.op('ISZERO'); // [word0 != MAGIC, buf]
-  emitDecodeFail(1); // [buf]
+  fail(1); // [buf]
 
   // innerSuccess = MLOAD(buf+32); 0 → the target reverted
   const decodeOk = w.newLabel(`sim_ok_${siteId}`);
@@ -243,7 +242,7 @@ export function emitSimulateCall(
     w.op('SUB'); // [rds−64, buf]
     w.push(minSize, { note: `staticMinSize ${minSize}` });
     w.op('GT'); // [minSize > rds−64, buf]
-    emitDecodeFail(1); // [buf]
+    fail(1); // [buf]
 
     // decode the outputs as one tuple from [SNAP+64, SNAP+rds) into a flat block, then scatter.
     const pushBase: PushBase = () => {
@@ -260,7 +259,7 @@ export function emitSimulateCall(
       () => `the outputs of ${fnAbi.name} (site ${siteId})`,
       // the outputs block itself: its narrow word-array members are top-level outputs (uncharged)
       () =>
-        emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, emitDecodeFail, 1, {
+        emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, fail, 1, {
           budget,
           evmVersion: opts.evmVersion,
           outputsBlock: true,

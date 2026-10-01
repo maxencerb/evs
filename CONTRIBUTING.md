@@ -165,7 +165,10 @@ Releases: see [Releasing](#releasing) below.
   words are copied into their slots at once); `callSiteAllocates` in `codegen/call/shared.ts`
   decides this for both the emitter and the `LOOP_ALLOCATION` diagnostic, so the two cannot
   drift. Args that need encode frames (`callArgEncodeFrames`, same file) reserve them by bumping
-  the free pointer, so the diagnostic flags those sites too, whatever their outputs. Memory above the free pointer is dirty (calldata images, rolled-back and transient
+  the free pointer, and the recursive calldata encoder (any tuple, fixed-size or
+  composite-element array input) stages its data-literal args in a block it allocates the same
+  way (`callArgStaging` in `codegen/call/calldata.ts`, nonzero size → a bump), so the diagnostic
+  flags those sites too, whatever their outputs (the emitter reads both helpers too). Memory above the free pointer is dirty (calldata images, rolled-back and transient
   snapshots): the construction templates (`s.newArray`, `s.tuple`, typed zero values, dynamic
   literals) allocate through `emitAlloc` (`codegen/memory.ts`), which zero-fills a block only
   when one of its words would be read before it is written — a word slot left to its zero value;
@@ -238,7 +241,9 @@ Releases: see [Releasing](#releasing) below.
   every block's memory is within a type-fixed factor of its charge (decode memory stays linear).
   That is also why the fixed-word path has no charge site of its own (a static `T[N]` never
   charges; `emitDecodeArrayToMem` takes it only when `arrayDecodeCharge` is `null`), and why a
-  tuple frame (two words per framed dynamic tuple) needs none either. The remaining budget lives in the word at the source end (`buf + rds`,
+  tuple frame (two words per framed dynamic tuple) needs none either: it is allocated between the
+  sub-tuple's head bound and its charge, so a failing charge leaves at most those 64 uncharged
+  bytes, which a try verb rolls back with the rest of its decode. The remaining budget lives in the word at the source end (`buf + rds`,
   unaligned; the snapshot's free-pointer bump reserves it), initialised by
   `emitInitDecodeBudget` only at sites whose output types can charge (`needsDecodeBudget`), so
   other shapes keep their bytes; running out is the ordinary decode failure. A well-formed
@@ -394,7 +399,13 @@ Three tiers, all run by CI (`ci.yml`):
   the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need
-vitest); test files import from `vite-plus/test`.
+vitest); test files import from `vite-plus/test`. The integration project's global setup
+(`test/global-setup.ts`) keeps a prool `Pool` of anvils keyed on `VITEST_POOL_ID` behind a small
+registry (`GET /<poolId>` → that worker's anvil URL, started on first use); each worker then
+talks to its anvil directly over keep-alive connections. Not through prool's proxy `Server`: it
+closes the connection after every request on both hops, and the resulting TIME_WAIT churn
+(~17,000 loopback sockets per run) reset fresh connections at connect, failing whole files on an
+unretried `eth_sendRawTransaction` (`connect ECONNRESET`).
 
 ## Releasing
 

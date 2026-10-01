@@ -64,10 +64,11 @@ export interface EncodeOpts {
 }
 
 /**
- * Scratch slot the array decoder ({@link emitDecodeArrayToMem}) keeps its per-element SOURCE base
- * in, read back by the recursive element decoders so the base is stack-depth-independent across
- * their internal churn. It is scratch `0x20` — free during *decode* (see the ownership table in
- * `codegen/memory.ts`). Its meaning depends on the decoder path that owns the innermost loop:
+ * Scratch slot the array decoder (`emitDecodeArrayToMem` in `decode.ts`) keeps its per-element
+ * SOURCE base in, read back by the recursive element decoders so the base is
+ * stack-depth-independent across their internal churn. It is scratch `0x20` — free during
+ * *decode* (see the ownership table in `codegen/memory.ts`). Its meaning depends on the decoder
+ * path that owns the innermost loop:
  *
  * - the STACK fast path (the shapes that fit the template budget, see
  *   {@link isStackDecodedArray}) stores the element base itself here (`ELEM_BASE`) and keeps
@@ -155,9 +156,9 @@ export function fmtType(t: EvsType): string {
  * RECURSIVE codec: a tuple, or any array other than a dynamic word-element `T[]` (composite
  * elements `tuple[]`/`T[][]`/`string[]`, and every fixed-size `T[N]`). In both directions:
  *
- * - decode: it decodes through the recursive memory decoders ({@link emitDecodeArrayToMem} and
- *   the tuple decoder), which read their source from a memory snapshot of the calldata or the
- *   returndata, not from calldata / returndata directly;
+ * - decode: it decodes through the recursive memory decoders (`emitDecodeArrayToMem` and
+ *   `emitDecodeTupleToMem` in `decode.ts`), which read their source from a memory snapshot of
+ *   the calldata or the returndata, not from calldata / returndata directly;
  * - encode: a call whose args hold one is built by the recursive head/tail encoder, not the
  *   const-folding calldata template.
  *
@@ -180,7 +181,7 @@ export function isRecursiveArray(l: TypeLayout): boolean {
  * `string`/`bytes`, a tuple, or a dynamic word-element array (`T[]`, `string[]`/`bytes[]`,
  * `tuple[]`, `T[][]`). Every other array (any fixed-size `T[N]`, and nesting deeper than that —
  * `uint256[][][]`, `string[][]`, `tuple[][]`, `T[N][]`, …) takes the heap-frame path. The choice
- * is per array level and static (made at codegen time, see {@link emitDecodeArrayToMem}); the two
+ * is per array level and static (made at codegen time, see `emitDecodeArrayToMem`); the two
  * paths nest in either order (see {@link ELEM_BASE}), so a heap-frame level's elements still take
  * the fast path when they qualify (`uint256[][][]` = one heap level over a stack-decoded
  * `uint256[][]`).

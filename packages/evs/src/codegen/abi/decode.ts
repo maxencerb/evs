@@ -104,8 +104,9 @@ export interface DecodeRegion {
  *
  * A static value inlines at `base + headOffset`. A dynamic one's head word is an offset relative
  * to the region base; it is bounded (`off ≤ 2^64−1`, and its first block must lie inside the
- * source — a tuple's whole head, as the interpreter's `decodeBlock` guard reads every head word
- * unchecked; an array's length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
+ * source — a tuple's whole head, since the tuple decoder ({@link emitDecodeTupleToMem}) reads
+ * every head word unchecked (the bound mirrors the interpreter's `decodeBlock` guard); an array's
+ * length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
  * before the decoder reads it, then re-derived inside the decoder's base thunk
  * (`base + MLOAD(base + headOffset)`), so nothing rides the stack through the recursion. `opts` is
  * threaded to the decoder unchanged. The decode runs inside {@link emitWithinStackBudget}, `what`
@@ -176,8 +177,9 @@ export function emitDecodeFromRegion(
 // source end, `MLOAD(pushEnd())` — an unaligned word just past the payload, which the caller
 // reserves when it bumps the free pointer past the snapshot and initialises with
 // {@link emitInitDecodeBudget}. Each charged block (`arrayDecodeCharge` / `tupleDecodeCharge`)
-// subtracts its charge BEFORE it is allocated; running out takes the decode-failure path. Script
-// args (the caller's own calldata) decode unbudgeted.
+// subtracts its charge BEFORE it is allocated; running out takes the decode-failure path. The one
+// allocation that can precede a charge is a sub-tuple's two-word TUPLE FRAME, which is uncharged
+// (see {@link emitDecodeTupleToMem}). Script args (the caller's own calldata) decode unbudgeted.
 
 /**
  * How a decoder charges the decode-work budget: `'off'` (unbudgeted: script args, or outputs that
@@ -319,7 +321,12 @@ function emitChargeArrayBlock(
  * frame for a single level, and so does a sub-tuple whose base is read fewer than 3 times
  * ({@link framesTuple}), where the frame would cost more than the re-derivations it saves. A
  * framed sub-tuple decodes through this same function, so it is charged exactly like an unframed
- * one (the frame itself is two words per framed tuple, a type-fixed overhead).
+ * one (the frame itself is two words per framed tuple, a type-fixed overhead, never charged). The
+ * frame is written, and the free pointer bumped past it, after the sub-tuple's head bound and
+ * BEFORE the recursive call charges the sub-tuple: so its flat block is still charged before it
+ * is allocated, but a failing charge leaves at most that 64-byte frame allocated uncharged —
+ * bounded scratch that the strict path reverts over and a try verb's epilogue rolls back with the
+ * rest of its decode.
  */
 export function emitDecodeTupleToMem(
   w: AsmWriter,
@@ -336,7 +343,8 @@ export function emitDecodeTupleToMem(
   const offs = headOffsets(components);
   const n = components.length;
 
-  // a re-decodable dynamic tuple charges its head size before it allocates anything
+  // a re-decodable dynamic tuple charges its head size before it allocates its flat block (a
+  // framed sub-tuple's 64-byte frame is already allocated by now: see the TSDoc above)
   if (budget !== 'off') {
     const layouts = components.map((c) => layoutOfType(abiParamToType(c)));
     const self = {
@@ -429,7 +437,8 @@ export function emitDecodeTupleToMem(
       // dynamic inner tuple below a derived base, read often enough to repay a frame: bound its
       // whole head (ptr + headBytes ≤ end, the interpreter's `decodeBlock` guard), then hand ptr
       // to a tuple frame so its members read it back in O(1) instead of re-deriving it through
-      // every enclosing offset word.
+      // every enclosing offset word. The frame (64 B, uncharged) is allocated before the
+      // recursive call charges the sub-tuple — see the TSDoc above.
       w.op('DUP1');
       w.push(minBlockBytes(layout));
       w.op('ADD'); // [ptr+min, ptr, flat, …]
@@ -562,7 +571,7 @@ function emitStoreFlatSlot(w: AsmWriter, j: number): void {
  * taken only when `arrayDecodeCharge` has none for it — always, today; a rule that ever charged
  * one would send it down the heap path rather than skip the charge.
  */
-export function emitDecodeArrayToMem(
+function emitDecodeArrayToMem(
   w: AsmWriter,
   layout: ArrayLayout,
   pushBase: PushBase,

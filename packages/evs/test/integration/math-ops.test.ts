@@ -223,8 +223,8 @@ describe('pow / addmod / mulmod / signed shifts: evs vs solc 0.8.30 (EvsMathRefe
     const compiled = script.compile();
     const overrideParams = compiled.toViem({ mode: 'stateOverride' });
 
-    // bounded concurrency: the runtime-pow corpora are a few hundred rows, and flooding the
-    // shared prool proxy with them all at once starves the other workers' anvils
+    // bounded concurrency: the runtime-pow corpora are a few hundred rows, and sending them all at
+    // once opens one connection per in-flight request to this worker's anvil
     const call = async (args: readonly bigint[]) => {
       const [solc, evs] = await Promise.all([
         rawCall({

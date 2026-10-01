@@ -150,7 +150,9 @@ function decodeDynamic(
 ): Value | null {
   if (isPlainTuple(type)) {
     // a dynamic tuple's block starts at ptr; its offsets are relative to ptr. Its head must fit
-    // (the compiled decoder bounds it before it charges, and charges before it allocates)
+    // (the compiled decoder bounds it before it charges, and charges before it allocates the
+    // tuple's block; a framed sub-tuple's two-word frame, uncharged scratch, is allocated between
+    // the bound and the charge — invisible here, since the interpreter keeps no frames)
     if (BigInt(end - ptr) < BigInt(abiHeadBytes(type.components))) return null;
     const layout = layoutOfType(type);
     if (layout.kind !== 'tuple') throw new EvsInternalError('INTERNAL', 'interpret: tuple layout');
