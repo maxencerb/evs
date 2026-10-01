@@ -276,7 +276,8 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     // the overloads narrow the implementation's union return per input shape
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
     toViem: toViem as CompiledEvsScript['toViem'],
-    disassemble: (): Disassembly => disassemble(runtimeBytecode, sourceMap),
+    // the assembler's bytes, not `runtimeBytecode`: no hex round trip (disassemble never writes)
+    disassemble: (): Disassembly => disassemble(assembled.bytecode, sourceMap),
     explainRevert: (data: Hex): RevertExplanation =>
       explainRevert(data, {
         ir,

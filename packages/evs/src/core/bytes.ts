@@ -26,10 +26,16 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
+/** The two lowercase hex digits of every byte value, indexed by the byte. */
+const HEX_PAIRS: readonly string[] = Array.from({ length: 256 }, (_, b) =>
+  b.toString(16).padStart(2, '0'),
+);
+
 export function bytesToHex(bytes: Uint8Array, start = 0, end = bytes.length): Hex {
+  // string concatenation (ropes) beats an array join here; one table lookup per byte
   let s = '';
   for (let i = start; i < end; i++) {
-    s += (bytes[i] ?? 0).toString(16).padStart(2, '0');
+    s += HEX_PAIRS[bytes[i] ?? 0];
   }
   return `0x${s}`;
 }

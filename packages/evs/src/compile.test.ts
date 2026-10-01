@@ -531,10 +531,13 @@ describe('sourceMap + disassemble', () => {
     const codeLen = (compiled.runtimeBytecode.length - 2) / 2;
     let covered = 0;
     let lastEnd = 0;
+    let lastNote: string | undefined | null = null;
     for (const seg of sourceMap.segments) {
       expect(seg.pc).toBe(lastEnd); // sorted + gap-free
+      expect(seg.note).not.toBe(lastNote); // maximal same-note runs: neighbours always differ
       covered += seg.len;
       lastEnd = seg.pc + seg.len;
+      lastNote = seg.note;
     }
     expect(covered).toBe(codeLen);
     expect(sourceMap.labels.some((l) => l.name === 'main')).toBe(true);

@@ -43,6 +43,13 @@ describe('hexToBytes / bytesToHex', () => {
     expect(bytesToHex(hexToBytes('0xdeadbeef'))).toBe('0xdeadbeef');
   });
 
+  test('bytesToHex encodes every byte value as two lowercase hex digits', () => {
+    const all = Uint8Array.from({ length: 256 }, (_, i) => i);
+    const expected = [...all].map((b) => b.toString(16).padStart(2, '0')).join('');
+    expect(bytesToHex(all)).toBe(`0x${expected}`);
+    expect(hexToBytes(bytesToHex(all))).toEqual(all);
+  });
+
   test('bytesToHex slices [start, end) and reads past the end as zero bytes', () => {
     const bytes = new Uint8Array([0xaa, 0xbb, 0xcc]);
     expect(bytesToHex(bytes, 1, 3)).toBe('0xbbcc');

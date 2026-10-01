@@ -13,6 +13,8 @@
  *   stream (asserted).
  * - An allocated label that is never placed is fine as long as no `pushLabel` names it (only
  *   fixups resolve labels); `AsmWriter.isReferenced` lets emitters skip unreferenced regions.
+ * - Layout writes every node into one growable buffer, and the source map's segments are
+ *   maximal runs of consecutive bytes sharing a note (a JUMPDEST's note is `@<label name>`).
  * - `verify: true` (default) runs the three passes from `asm/verify.ts`; failures are
  *   `EvsInternalError`s.
  */
@@ -73,6 +75,11 @@ export class AsmWriter {
   #names = new Map<LabelId, string>();
   /** Every label a `pushLabel` node has named so far — the only way a node references a label. */
   #referenced = new Set<LabelId>();
+  /**
+   * `#referenced` in insertion order (each label once, when first referenced): append-only, so a
+   * {@link checkpoint} is its length and {@link rollback} un-references by truncating it.
+   */
+  #referencedLog: LabelId[] = [];
 
   newLabel(name?: string): LabelId {
     const id = this.#nextLabel;
@@ -115,7 +122,10 @@ export class AsmWriter {
   }
 
   pushLabel(label: LabelId, meta?: NodeMeta): void {
-    this.#referenced.add(label);
+    if (!this.#referenced.has(label)) {
+      this.#referenced.add(label);
+      this.#referencedLog.push(label);
+    }
     this.#nodes.push({ k: 'pushLabel', label, ...metaProps(meta) });
   }
 
@@ -189,25 +199,31 @@ export class AsmWriter {
 
   /**
    * @internal Speculative emission (the array decoder's budget-driven path choice): a
-   * checkpoint of the writer state — node count, label counter/names, referenced labels — that
+   * checkpoint of the writer state — node count, label counter, referenced labels — that
    * {@link rollback} restores exactly, so code emitted and then discarded leaves no trace (no
-   * label ids consumed, no shared tail marked referenced).
+   * label ids consumed, no shared tail marked referenced). O(1): every piece of that state only
+   * grows between a checkpoint and its rollback, so three lengths are enough to undo it.
    */
   checkpoint(): WriterCheckpoint {
     return {
       nodes: this.#nodes.length,
       nextLabel: this.#nextLabel,
-      names: new Map(this.#names),
-      referenced: new Set(this.#referenced),
+      referenced: this.#referencedLog.length,
     };
   }
 
   /** @internal Discards everything emitted since `cp` (see {@link checkpoint}). */
   rollback(cp: WriterCheckpoint): void {
     this.#nodes.length = cp.nodes;
+    // label names are only ever set for a fresh id, so the ids allocated since `cp` are the
+    // only names to drop
+    for (let id = cp.nextLabel; id < this.#nextLabel; id++) this.#names.delete(id);
     this.#nextLabel = cp.nextLabel;
-    this.#names = new Map(cp.names);
-    this.#referenced = new Set(cp.referenced);
+    for (let k = cp.referenced; k < this.#referencedLog.length; k++) {
+      const label = this.#referencedLog[k];
+      if (label !== undefined) this.#referenced.delete(label);
+    }
+    this.#referencedLog.length = cp.referenced;
   }
 
   /**
@@ -257,12 +273,14 @@ export class AsmWriter {
   }
 }
 
-/** @internal An {@link AsmWriter.checkpoint} snapshot. */
+/**
+ * @internal An {@link AsmWriter.checkpoint} snapshot: the lengths of the writer's append-only
+ * state (nodes, label ids, first references), valid until an earlier checkpoint is rolled back.
+ */
 export interface WriterCheckpoint {
   readonly nodes: number;
   readonly nextLabel: number;
-  readonly names: ReadonlyMap<LabelId, string>;
-  readonly referenced: ReadonlySet<LabelId>;
+  readonly referenced: number;
 }
 
 // ---------------------------------------------------------------------------
@@ -293,19 +311,63 @@ function assembleError(message: string): EvsInternalError {
   return new EvsInternalError('INTERNAL', `assemble: ${message}`);
 }
 
-/** Minimal big-endian byte encoding of a non-zero value. */
-function minimalBytes(value: bigint): Uint8Array {
-  let hex = value.toString(16);
-  if (hex.length % 2 === 1) hex = `0${hex}`;
-  const out = new Uint8Array(hex.length / 2);
-  for (let i = 0; i < out.length; i++) {
-    out[i] = Number.parseInt(hex.slice(2 * i, 2 * i + 2), 16);
-  }
-  return out;
-}
+const PUSH1 = 0x60;
+const PUSH2 = 0x61;
+const PUSH32 = 0x7f;
 
-const PUSH1_CODE = 0x60;
-const PUSH32_CODE = 0x7f;
+/**
+ * The layout pass's output buffer: one byte array that doubles when full, written in place (no
+ * per-node arrays to allocate and concatenate). Every node has a fixed width, so the final
+ * length is known once the stream is laid out; {@link CodeBuffer.finish} trims to it.
+ */
+class CodeBuffer {
+  #bytes: Uint8Array;
+  /** Bytes written so far — the pc of the next byte. */
+  pc = 0;
+
+  constructor(capacity: number) {
+    this.#bytes = new Uint8Array(Math.max(64, capacity));
+  }
+
+  #reserve(n: number): void {
+    if (this.pc + n <= this.#bytes.length) return;
+    let capacity = this.#bytes.length * 2;
+    while (capacity < this.pc + n) capacity *= 2;
+    const grown = new Uint8Array(capacity);
+    grown.set(this.#bytes.subarray(0, this.pc));
+    this.#bytes = grown;
+  }
+
+  byte(b: number): void {
+    this.#reserve(1);
+    this.#bytes[this.pc++] = b;
+  }
+
+  bytes(src: Uint8Array): void {
+    this.#reserve(src.length);
+    this.#bytes.set(src, this.pc);
+    this.pc += src.length;
+  }
+
+  /** `PUSH<w>` + the minimal big-endian encoding of a non-zero `value` (`w` = its byte width). */
+  minimalPush(value: bigint): void {
+    let width = 0;
+    for (let x = value; x > 0n; x >>= 8n) width += 1;
+    this.#reserve(1 + width);
+    this.#bytes[this.pc++] = PUSH1 + width - 1;
+    let x = value;
+    for (let i = this.pc + width - 1; i >= this.pc; i--) {
+      this.#bytes[i] = Number(x & 0xffn);
+      x >>= 8n;
+    }
+    this.pc += width;
+  }
+
+  /** A copy of the bytes written, at their exact length. */
+  finish(): Uint8Array {
+    return this.#bytes.slice(0, this.pc);
+  }
+}
 
 /**
  * The single byte an `op` node assembles to. The node stream can come from a user `peephole`
@@ -318,7 +380,7 @@ const PUSH32_CODE = 0x7f;
 function opNodeCode(op: Mnemonic): number {
   const info = Object.hasOwn(OPS, op) ? OPS[op] : undefined;
   if (info === undefined) throw assembleError(`op node has unknown mnemonic '${op}'`);
-  if (info.code >= PUSH1_CODE && info.code <= PUSH32_CODE) {
+  if (info.code >= PUSH1 && info.code <= PUSH32) {
     throw assembleError(
       `op node '${op}' is not allowed — PUSH immediates must be push/pushBytes/pushLabel nodes`,
     );
@@ -349,22 +411,25 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   }
 
   // single layout pass — every node has a fixed width (pushLabel is always PUSH2+2).
-  const chunks: Uint8Array[] = [];
+  const code = new CodeBuffer(stream.length * 2);
   const segments: { pc: number; len: number; note?: string }[] = [];
   const labels: { pc: number; name: string }[] = [];
   const labelPcs = new Map<LabelId, number>();
   const codeLabels = new Set<LabelId>();
   const fixups: Fixup[] = [];
-  let pc = 0;
   let dataStart = -1; // pc of the INVALID guard byte; -1 = no data segment
 
-  const emit = (bytes: Uint8Array, meta?: { note?: string }): void => {
-    if (bytes.length === 0) return;
-    chunks.push(bytes);
-    const seg: { pc: number; len: number; note?: string } = { pc, len: bytes.length };
-    if (meta?.note !== undefined) seg.note = meta.note;
-    segments.push(seg);
-    pc += bytes.length;
+  // Records the bytes written since `start` under `note`. Segments are maximal same-note runs:
+  // a node whose note matches the previous segment's extends it (`lookupPc` answers the same).
+  const mark = (start: number, note: string | undefined): void => {
+    const len = code.pc - start;
+    if (len === 0) return;
+    const last = segments.at(-1);
+    if (last !== undefined && last.note === note) {
+      last.len += len;
+      return;
+    }
+    segments.push(note === undefined ? { pc: start, len } : { pc: start, len, note });
   };
 
   const defineLabel = (
@@ -380,9 +445,11 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
   };
 
   for (const node of stream) {
+    const start = code.pc;
     switch (node.k) {
       case 'op': {
-        emit(Uint8Array.of(opNodeCode(node.op)), node);
+        code.byte(opNodeCode(node.op));
+        mark(start, node.note);
         break;
       }
       case 'push': {
@@ -391,62 +458,65 @@ export function assemble(nodes: readonly AsmNode[], opts: AssembleOptions): Asse
         }
         if (node.value === 0n) {
           // PUSH0 (shanghai+) | PUSH1 00 (paris)
-          emit(
-            opts.evmVersion === 'paris' ? Uint8Array.of(0x60, 0x00) : Uint8Array.of(OPS.PUSH0.code),
-            node,
-          );
+          if (opts.evmVersion === 'paris') {
+            code.byte(PUSH1);
+            code.byte(0x00);
+          } else {
+            code.byte(OPS.PUSH0.code);
+          }
         } else {
-          const imm = minimalBytes(node.value);
-          emit(Uint8Array.of(0x60 + imm.length - 1, ...imm), node);
+          code.minimalPush(node.value);
         }
+        mark(start, node.note);
         break;
       }
       case 'pushBytes': {
         if (node.bytes.length < 1 || node.bytes.length > 32) {
           throw assembleError(`pushBytes length must be 1..32, got ${node.bytes.length}`);
         }
-        emit(Uint8Array.of(0x60 + node.bytes.length - 1, ...node.bytes), node);
+        code.byte(PUSH1 + node.bytes.length - 1);
+        code.bytes(node.bytes);
+        mark(start, node.note);
         break;
       }
       case 'pushLabel': {
-        fixups.push({ patchOffset: pc + 1, label: node.label });
-        emit(Uint8Array.of(0x61, 0x00, 0x00), node);
+        fixups.push({ patchOffset: start + 1, label: node.label });
+        code.byte(PUSH2);
+        code.byte(0x00);
+        code.byte(0x00);
+        mark(start, node.note);
         break;
       }
       case 'label': {
-        defineLabel(node.label, pc, node.name, 'code');
-        emit(
-          Uint8Array.of(OPS.JUMPDEST.code),
-          node.name === undefined ? {} : { note: `@${node.name}` },
-        );
+        defineLabel(node.label, start, node.name, 'code');
+        code.byte(OPS.JUMPDEST.code);
+        mark(start, node.name === undefined ? undefined : `@${node.name}`);
         break;
       }
       case 'dataLabel':
       case 'data': {
         if (dataStart === -1) {
-          dataStart = pc;
-          emit(Uint8Array.of(OPS.INVALID.code), { note: 'data segment guard' });
+          dataStart = start;
+          code.byte(OPS.INVALID.code);
+          mark(start, 'data segment guard');
         }
         if (node.k === 'dataLabel') {
-          defineLabel(node.label, pc, node.name, 'data');
+          defineLabel(node.label, code.pc, node.name, 'data');
         } else {
-          emit(node.bytes.slice(), node.note === undefined ? {} : { note: node.note });
+          const at = code.pc;
+          code.bytes(node.bytes);
+          mark(at, node.note);
         }
         break;
       }
     }
   }
 
-  const totalLen = pc;
+  const totalLen = code.pc;
   if (dataStart === -1) dataStart = totalLen;
   opts.onLayout?.(totalLen, labelPcs);
 
-  const bytecode = new Uint8Array(totalLen);
-  let off = 0;
-  for (const chunk of chunks) {
-    bytecode.set(chunk, off);
-    off += chunk.length;
-  }
+  const bytecode = code.finish();
 
   // patch fixups big-endian
   const jumpTargets = new Set<number>();
