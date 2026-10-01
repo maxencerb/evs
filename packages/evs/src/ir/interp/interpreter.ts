@@ -5,9 +5,9 @@
  * The binding invariants are documented on the `ir/interp.ts` barrel.
  */
 
-import type { Abi } from 'abitype';
 import {
   keccak256 as viemKeccak256,
+  type Abi,
   type ContractFunctionArgs,
   type ContractFunctionName,
   type ContractFunctionReturnType,
