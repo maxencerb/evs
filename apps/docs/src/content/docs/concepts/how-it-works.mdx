@@ -226,7 +226,8 @@ From there:
   construction, `s.encode`/`s.encodePacked` (and `s.keccak256` over values that need encoding),
   a dynamic literal, or a call to an `s.fn` whose body allocates (see
   [`LOOP_ALLOCATION`](/reference/diagnostics/)). A read whose outputs are all words copies them
-  into their slots straight from a transient returndata snapshot, so it allocates nothing.
+  into their slots straight from a transient returndata snapshot, so it allocates nothing
+  (unless its arguments need encoder state, below).
 - **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
   transiently without bumping, and a failed `try*` decode rolls the free pointer back over its
   returndata copy. So the return encoder zero-pads dynamic tails explicitly, and a fresh
@@ -237,7 +238,8 @@ From there:
   arrays, a literal) skip the fill.
   (Arguments holding fixed-size arrays, arrays of structs, strings or arrays, or structs nested
   three or more dynamic levels deep need a few words of encoder state, reserved just below the
-  calldata: such a call advances the free pointer by those words.)
+  calldata: such a call advances the free pointer by those words, and warns with
+  `LOOP_ALLOCATION` inside a loop.)
 
 ## What evs deliberately does not do (yet)
 

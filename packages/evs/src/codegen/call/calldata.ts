@@ -29,6 +29,7 @@ import {
   CONST_SEGMENT_INLINE_MAX,
   emitPushWordChunk,
   emitSelectorWord,
+  callArgEncodeFrames,
   TAIL_CURSOR,
   literalWordValue,
 } from './shared.js';
@@ -343,10 +344,7 @@ function emitCalldataBuildTuples(
   // down below a root — the arg itself or an array element; 0 when no arg needs one, and then no
   // bump at all). `pushFrameSlot` then resolves each frame relative to `MLOAD(0x40)`, exactly as in
   // the return encoder.
-  const frames = inputs.reduce(
-    (n, p) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(p)))),
-    0,
-  );
+  const frames = callArgEncodeFrames(plan.stmt);
 
   // -- data-literal staging layout (compile-time): each data-literal arg gets a padded image at a
   //    cumulative offset within the staging block.

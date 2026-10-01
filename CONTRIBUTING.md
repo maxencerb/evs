@@ -164,7 +164,8 @@ Releases: see [Releasing](#releasing) below.
   outputs are all words snapshots its returndata above the free pointer without bumping it (the
   words are copied into their slots at once); `callSiteAllocates` in `codegen/call/shared.ts`
   decides this for both the emitter and the `LOOP_ALLOCATION` diagnostic, so the two cannot
-  drift. Memory above the free pointer is dirty (calldata images, rolled-back and transient
+  drift. Args that need encode frames (`callArgEncodeFrames`, same file) reserve them by bumping
+  the free pointer, so the diagnostic flags those sites too, whatever their outputs. Memory above the free pointer is dirty (calldata images, rolled-back and transient
   snapshots): the construction templates (`s.newArray`, `s.tuple`, typed zero values, dynamic
   literals) allocate through `emitAlloc` (`codegen/memory.ts`), which zero-fills a block only
   when one of its words would be read before it is written — a word slot left to its zero value;

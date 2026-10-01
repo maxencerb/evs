@@ -10,7 +10,7 @@ import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
 import { abiParamToType, stringifyType, type Hex } from '../../core/types.js';
 import { callOutputs, type Stmt, type ConstData, type SiteId } from '../../ir/nodes.js';
-import { type SlotRef, emitCeil32, emitWithinStackBudget } from '../abi.js';
+import { type SlotRef, emitCeil32, emitWithinStackBudget, encodeFramesOf } from '../abi.js';
 import { SCRATCH_0, FREE_PTR, emitZeroValue } from '../memory.js';
 
 // ---------------------------------------------------------------------------
@@ -189,6 +189,20 @@ export function pushGasRef(w: AsmWriter, gasRef: CallSitePlan['gasRef'], what: s
 export function callSiteAllocates(stmt: Extract<Stmt, { k: 'call' }>): boolean {
   if (stmt.kind === 'simulate') return true;
   return callOutputs(stmt).some((p) => layoutOfType(abiParamToType(p)).kind !== 'word');
+}
+
+/**
+ * How many encode frames a call site's ARGS need (`encodeFramesOf`, max over the inputs): args
+ * holding fixed-size arrays, arrays of structs / strings / arrays, or dynamic structs nested three
+ * or more levels deep. The calldata builder reserves that many frames by bumping the free pointer
+ * once (`reserveEncodeFrames`), so a site with any allocates even when its outputs are words — the
+ * `LOOP_ALLOCATION` diagnostic reads it here too. 0 → no bump.
+ */
+export function callArgEncodeFrames(stmt: Extract<Stmt, { k: 'call' }>): number {
+  return stmt.fnAbi.inputs.reduce(
+    (n, p) => Math.max(n, encodeFramesOf(layoutOfType(abiParamToType(p)))),
+    0,
+  );
 }
 
 /**

@@ -1139,6 +1139,40 @@ describe('diagnostics', () => {
     ]);
   });
 
+  test('LOOP_ALLOCATION: word-output calls whose args reserve encode frames are flagged', () => {
+    const b = new IrB('framed', [
+      ['n', 'uint256'],
+      ['names', 'string[]'],
+      ['ids', 'uint256[]'],
+    ]);
+    const zero = b.word('uint256', 0n);
+    const i = b.cell('uint256', zero);
+    const target = b.word('address', BigInt(TARGET));
+    let framedSite = -1;
+    b.while(
+      () => b.bin('lt', b.cellGet(i), 0),
+      () => {
+        // a string[] arg is encoded through an array loop whose frame is reserved by bumping the
+        // free pointer, so the site grows memory even though its only output is a word
+        framedSite = b.call({
+          target,
+          abi: fnAbi('count', ['string[]'], ['uint256']),
+          args: [1],
+        }).site; // flagged
+        // a word-element array arg needs no frame → not flagged
+        b.call({ target, abi: fnAbi('sum', ['uint256[]'], ['uint256']), args: [2] });
+        b.cellSet(i, b.bin('add', b.cellGet(i), b.word('uint256', 1n)));
+      },
+    );
+    b.ret('n', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const loopAllocs = diagnostics.filter((d) => d.code === 'LOOP_ALLOCATION');
+    expect(loopAllocs.map((d) => d.message.split(' allocates memory')[0])).toEqual([
+      's.read(count) (call-arg encode frames)',
+    ]);
+    expect(loopAllocs[0]?.site).toBe(framedSite);
+  });
+
   test('no LOOP_ALLOCATION outside loops', () => {
     const b = new IrB('flat', [['n', 'uint256']]);
     b.arrnew('uint256', 0);
