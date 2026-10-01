@@ -997,6 +997,75 @@ describe('env overrides (opts.env — frame-dependent caller/address modeling)',
 });
 
 // ---------------------------------------------------------------------------
+// account reads (MockChain.account)
+// ---------------------------------------------------------------------------
+
+describe('account reads (MockChain.account)', () => {
+  const acctScript = ir({
+    name: 'acct',
+    args: [{ name: 'who', type: 'address' }],
+    values: [vi('address', 'who'), vi('uint256'), vi('uint256'), vi('bytes32')],
+    body: [
+      mk({ k: 'account', op: 'balance', a: 0, out: 1 }),
+      mk({ k: 'account', op: 'codesize', a: 0, out: 2 }),
+      mk({ k: 'account', op: 'codehash', a: 0, out: 3 }),
+    ],
+    returns: [
+      { name: 'bal', type: 'uint256', value: 1 },
+      { name: 'size', type: 'uint256', value: 2 },
+      { name: 'hash', type: 'bytes32', value: 3 },
+    ],
+  });
+  const WHO = '0x00000000000000000000000000000000000000aa';
+  const ZERO_HASH = wordHex(0n);
+  const run = (account: MockChain['account']) =>
+    retOf(interpret(acctScript, [WHO], { ...deadChain, ...(account ? { account } : {}) }));
+
+  test('without the oracle every account is nonexistent: 0 balance, no code, zero hash', () => {
+    expect(run(undefined)).toEqual({ bal: 0n, size: 0n, hash: ZERO_HASH });
+  });
+
+  test('the oracle is asked with the lowercase address', () => {
+    const asked: string[] = [];
+    run((address) => {
+      asked.push(address);
+      return undefined;
+    });
+    expect(asked).toEqual([WHO, WHO, WHO]);
+  });
+
+  test('a contract: balance, code length, keccak256(code)', () => {
+    expect(run(() => ({ balance: 7n, code: '0x600160005260206000f3' }))).toEqual({
+      bal: 7n,
+      size: 10n,
+      hash: keccak256('0x600160005260206000f3'),
+    });
+  });
+
+  test('EXTCODEHASH: keccak256(0x) for an existing code-less account, zero for an empty one', () => {
+    const EMPTY_CODE_HASH = keccak256('0x');
+    expect(run(() => ({ balance: 1n })).hash).toBe(EMPTY_CODE_HASH); // funded EOA
+    expect(run(() => ({ nonce: 3n })).hash).toBe(EMPTY_CODE_HASH); // used EOA, 0 wei
+    expect(run(() => ({})).hash).toBe(ZERO_HASH); // empty (EIP-161) = nonexistent
+    expect(run(() => ({ balance: 0n, code: '0x', nonce: 0n })).hash).toBe(ZERO_HASH);
+  });
+
+  test('malformed oracle replies throw EvsTypeError (host-side, never a chain outcome)', () => {
+    // oxlint-disable typescript/no-unsafe-type-assertion -- deliberately malformed mock replies
+    const bad = [
+      () => ({ balance: -1n }),
+      () => ({ balance: 1n << 256n }),
+      () => ({ balance: 1 as unknown as bigint }),
+      () => ({ nonce: 1n << 64n }),
+      () => ({ code: '0x123' as Hex }),
+      () => 'nope' as unknown as undefined,
+    ];
+    // oxlint-enable typescript/no-unsafe-type-assertion
+    for (const account of bad) expect(() => run(account)).toThrowError(EvsTypeError);
+  });
+});
+
+// ---------------------------------------------------------------------------
 // select / index / len / arrnew / arrset / cells
 // ---------------------------------------------------------------------------
 

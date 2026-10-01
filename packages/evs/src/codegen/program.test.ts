@@ -142,6 +142,12 @@ class IrB {
     return out;
   }
 
+  account(op: 'balance' | 'codesize' | 'codehash', a: ValueId): ValueId {
+    const out = this.val(op === 'codehash' ? 'bytes32' : 'uint256');
+    this.emit({ k: 'account', op, a, out });
+    return out;
+  }
+
   index(arr: ValueId, i: ValueId): ValueId {
     const t = this.typeOf(arr);
     const elem = typeof t === 'string' && t.endsWith('[]') ? t.slice(0, -2) : '';
@@ -1226,6 +1232,50 @@ describe('diagnostics', () => {
       evmVersion: 'cancun',
     }).diagnostics;
     expect(blockDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+
+  test("ENV_FRAME_DEPENDENT: the script's own balance is flagged; its code and other balances are not", () => {
+    const b = new IrB('mine', [['who', 'address']]);
+    const self = b.env('address');
+    b.account('balance', self);
+    b.account('codesize', self);
+    b.account('codehash', self);
+    b.account('balance', 0);
+    b.ret('who', 0);
+    const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    // one for s.env('address') itself, one for the self balance
+    expect(envDiags).toHaveLength(2);
+    const selfBalance = envDiags.filter((d) => d.message.includes("s.balance(s.env('address'))"));
+    expect(selfBalance).toHaveLength(1);
+    expect(selfBalance[0]?.message).toContain('deployless');
+    expect(selfBalance[0]?.message).toContain('stateOverride');
+    // per-statement: the self-balance warning carries its own site, apart from the env read's
+    expect(selfBalance[0]?.site).toBeTypeOf('number');
+    expect(new Set(envDiags.map((d) => d.site)).size).toBe(2);
+
+    const other = new IrB('theirs', [['who', 'address']]);
+    other.account('balance', 0);
+    other.account('codehash', 0);
+    other.ret('who', 0);
+    const otherDiags = lowerProgram(other.build(), { evmVersion: 'cancun' }).diagnostics;
+    expect(otherDiags.filter((d) => d.code === 'ENV_FRAME_DEPENDENT')).toHaveLength(0);
+  });
+
+  test('account reads lower to BALANCE / EXTCODESIZE / EXTCODEHASH; the self balance to SELFBALANCE', () => {
+    const b = new IrB('ops', [['who', 'address']]);
+    b.account('balance', b.env('address'));
+    b.account('balance', 0);
+    b.account('codesize', 0);
+    b.account('codehash', 0);
+    b.ret('who', 0);
+    const { nodes } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const ops = nodes.flatMap((n) =>
+      n.k === 'op' && ['BALANCE', 'SELFBALANCE', 'EXTCODESIZE', 'EXTCODEHASH'].includes(n.op)
+        ? [n.op]
+        : [],
+    );
+    expect(ops).toEqual(['SELFBALANCE', 'BALANCE', 'EXTCODESIZE', 'EXTCODEHASH']);
   });
 
   test('ENV_FRAME_DEPENDENT: flagged inside emitted fn bodies, not in dropped fns', () => {

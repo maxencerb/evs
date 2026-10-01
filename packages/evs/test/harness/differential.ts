@@ -9,9 +9,9 @@
  * BYTE-FOR-BYTE with `execRuntime(compile(script).runtimeBytecode, calldata, fixture)` on
  * both returndata and revert payloads (Panic codes, EvsDecodeError site ids, bubbled callee
  * reverts, tryCall zeroing). The mock chain and the harness fixtures are generated from the
- * same callee table so both sides see identical callee behavior; the `Reverter` case uses
- * the REAL solc artifact on the EVM side against independently ABI-encoded payloads on the
- * interpreter side.
+ * same callee table (plus an optional balance table) so both sides see identical callee behavior
+ * and account state; the `Reverter` case uses the REAL solc artifact on the EVM side against
+ * independently ABI-encoded payloads on the interpreter side.
  */
 
 import {
@@ -47,9 +47,24 @@ export type CalleeBehavior =
   | { kind: 'bytecode'; runtime: Hex; respond: (calldata: Hex) => { success: boolean; data: Hex } };
 /** Keys MUST be lowercase 0x addresses (the interpreter reports `to` lowercased). */
 export type CalleeTable = Readonly<Record<string, CalleeBehavior>>;
+/** wei balances by lowercase 0x address — fed to both legs like the callee table. */
+export type BalanceTable = Readonly<Record<string, bigint>>;
 
-export function chainOf(table: CalleeTable): MockChain {
+export function chainOf(table: CalleeTable, balances: BalanceTable = {}): MockChain {
+  // the account oracle answers with the same runtimes the EVM leg plants (and the balances)
+  const runtimes = fixtureOf(table).contracts ?? {};
   return {
+    account(address) {
+      const key = address.toLowerCase();
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- table keys are addresses
+      const code = runtimes[key as Address];
+      const balance = balances[key];
+      if (code === undefined && balance === undefined) return undefined;
+      return {
+        ...(code === undefined ? {} : { code }),
+        ...(balance === undefined ? {} : { balance }),
+      };
+    },
     staticcall({ to, data }) {
       const entry = table[to.toLowerCase()];
       // unmocked account: a real STATICCALL to code-less address SUCCEEDS with empty returndata
@@ -74,7 +89,7 @@ export function chainOf(table: CalleeTable): MockChain {
   };
 }
 
-export function fixtureOf(table: CalleeTable): EvmFixture {
+export function fixtureOf(table: CalleeTable, balances: BalanceTable = {}): EvmFixture {
   const contracts: Record<Address, Hex> = {};
   const runtimeOf = (entry: CalleeBehavior): Hex => {
     switch (entry.kind) {
@@ -94,7 +109,7 @@ export function fixtureOf(table: CalleeTable): EvmFixture {
     // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- table keys are addresses
     contracts[address as Address] = runtimeOf(entry);
   }
-  return { contracts };
+  return { contracts, balances };
 }
 
 /** Selector-routing mock runtime, assembled with the project's own (verified) assembler. */
@@ -165,6 +180,8 @@ export interface AgreementOptions {
    * caller pins the payload. Every other arg set keeps the full recorded-vs-shipped check.
    */
   readonly deadRevertGuards?: readonly number[];
+  /** wei balances fed to both legs (keys: lowercase 0x addresses); default none. */
+  readonly balances?: BalanceTable;
 }
 
 /**
@@ -203,8 +220,9 @@ export async function expectAgreement(
   const frameEndOf = (optimize: boolean): number =>
     lowerProgram(script.ir, { evmVersion, optimize }).frameEnd;
   expect(frameEndOf(true), `${twinLabel}: frame`).toBeLessThanOrEqual(frameEndOf(false));
-  const fixture = fixtureOf(table);
-  const chain = chainOf(table);
+  const balances = options.balances ?? {};
+  const fixture = fixtureOf(table, balances);
+  const chain = chainOf(table, balances);
   const outcomes: Outcome[] = [];
   const divergent = new Set(options.deadRevertGuards ?? []);
   for (const [index, args] of argSets.entries()) {

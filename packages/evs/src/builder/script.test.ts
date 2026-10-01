@@ -8,7 +8,7 @@ import { describe, expect, test } from 'vite-plus/test';
 import { EvsError } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
-import { serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
+import { deserializeIr, serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { TUPLE_HANDLE_MEMBERS } from './expr/handles.js';
 import { evscript, type LoopCtl, type ScriptBuilder, type Tuple } from './script.js';
@@ -651,6 +651,51 @@ describe('env', () => {
       bn: 'uint256',
       chain: 'uint256',
     });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// account reads
+// ---------------------------------------------------------------------------
+
+describe('account reads (s.balance / s.codeSize / s.codeHash)', () => {
+  const script = evscript({ name: 'acct', args: [t.address] }, (s, who) =>
+    s.return({
+      bal: s.balance(who),
+      size: s.codeSize('0x000000000000000000000000000000000000dEaD'),
+      hash: s.codeHash(who),
+    }),
+  );
+
+  test('records one account stmt per read; uint256 balance / size, bytes32 hash', () => {
+    expect(() => validateIr(script.ir)).not.toThrow();
+    const reads = allStmts(script.ir).filter((s) => s.k === 'account');
+    expect(reads.map((s) => s.k === 'account' && s.op)).toEqual([
+      'balance',
+      'codesize',
+      'codehash',
+    ]);
+    // the literal address is materialized as an address const operand
+    const size = reads[1];
+    expect(size?.k === 'account' && script.ir.values[size.a]?.type).toBe('address');
+    const types = Object.fromEntries(script.ir.returns.map((r) => [r.name, r.type]));
+    expect(types).toEqual({ bal: 'uint256', size: 'uint256', hash: 'bytes32' });
+  });
+
+  test('round-trips through serialize / deserialize', () => {
+    expect(serializeIr(deserializeIr(serializeIr(script.ir)))).toBe(serializeIr(script.ir));
+  });
+
+  test('rejects a non-address operand at record time', () => {
+    expect(() =>
+      evscript({ name: 'bad', args: [t.uint256] }, (s, n) =>
+        // @ts-expect-error — the operand must be an address (the runtime guard is pinned here)
+        s.return({ b: s.balance(n) }),
+      ),
+    ).toThrowError(/s\.balance\(\) account/);
+    expect(() =>
+      evscript({ name: 'bad2', args: [] }, (s) => s.return({ b: s.codeHash('0x1234') })),
+    ).toThrowError(/exactly 20 bytes/);
   });
 });
 

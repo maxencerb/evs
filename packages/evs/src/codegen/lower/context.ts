@@ -48,6 +48,8 @@ export const STMT_BASELINE = 0;
 export interface LowerInternals {
   /** every `const` stmt's payload, keyed by its out ValueId (call-site literal folding). */
   consts: ReadonlyMap<ValueId, ConstData>;
+  /** every value an `env address` stmt defines (the script's own address → SELFBALANCE). */
+  selfAddresses: ReadonlySet<ValueId>;
   /** strict-call decode-fail stubs the program assembler must emit after the body. */
   dfailStubs: { label: LabelId; site: SiteId }[];
   /** fn entry labels, allocated on first `fncall` — uncalled fns never enter the map. */
@@ -63,14 +65,16 @@ export function lowerInternals(ctx: LowerCtx): LowerInternals {
   let state = INTERNALS.get(ctx);
   if (state === undefined) {
     const consts = new Map<ValueId, ConstData>();
+    const selfAddresses = new Set<ValueId>();
     const scan = (stmts: readonly Stmt[]): void => {
       walkStmts(stmts, (s) => {
         if (s.k === 'const') consts.set(s.out, s.data);
+        else if (s.k === 'env' && s.op === 'address') selfAddresses.add(s.out);
       });
     };
     scan(ctx.ir.body);
     for (const fn of ctx.ir.fns) scan(fn.body);
-    state = { consts, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
+    state = { consts, selfAddresses, dfailStubs: [], fnEntries: new Map(), fnQueue: [] };
     INTERNALS.set(ctx, state);
   }
   return state;

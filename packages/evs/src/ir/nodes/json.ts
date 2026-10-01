@@ -22,6 +22,7 @@ import {
   isUnOp,
   isModArithOp,
   isEnvOp,
+  isAccountOp,
 } from './schema.js';
 
 // ---------------------------------------------------------------------------
@@ -346,6 +347,11 @@ function decodeStmt(v: unknown, path: string): Stmt {
       const op = asString(o['op'], `${path}.op`);
       if (!isEnvOp(op)) fail(`${path}.op`, `unknown env op ${describe(op)}`);
       return { site, k, op, out: asId(o['out'], `${path}.out`) };
+    }
+    case 'account': {
+      const op = asString(o['op'], `${path}.op`);
+      if (!isAccountOp(op)) fail(`${path}.op`, `unknown account op ${describe(op)}`);
+      return { site, k, op, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     }
     case 'convert':
       return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };

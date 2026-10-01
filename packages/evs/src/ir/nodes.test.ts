@@ -266,6 +266,19 @@ const CORPUS: readonly [string, ScriptIr][] = [
     }),
   ],
   [
+    'account reads (balance / codesize / codehash)',
+    ir({
+      args: [{ name: 'who', type: 'address' }],
+      values: [vi('address', 'who'), vi('uint256'), vi('uint256'), vi('bytes32')],
+      body: [
+        mk({ k: 'account', op: 'balance', a: 0, out: 1 }),
+        mk({ k: 'account', op: 'codesize', a: 0, out: 2 }),
+        mk({ k: 'account', op: 'codehash', a: 0, out: 3 }),
+      ],
+      returns: [{ name: 'h', type: 'bytes32', value: 3 }],
+    }),
+  ],
+  [
     'encode + keccak256 (issue #17)',
     ir({
       args: [{ name: 'x', type: 'uint256' }],
@@ -521,6 +534,7 @@ function genStmt(g: Gen, depth: number): Stmt {
     'bin',
     'un',
     'env',
+    'account',
     'convert',
     'select',
     'index',
@@ -566,6 +580,11 @@ function genStmt(g: Gen, depth: number): Stmt {
           op: g.pick(['address', 'caller', 'timestamp', 'blocknumber', 'chainid'] as const),
           out: id(),
         },
+        site,
+      );
+    case 'account':
+      return mk(
+        { k, op: g.pick(['balance', 'codesize', 'codehash'] as const), a: id(), out: id() },
         site,
       );
     case 'convert':
@@ -755,6 +774,14 @@ describe('deserializeIr rejections', () => {
     reject((r) => (r['body'][1]['op'] = 'exp'), /unknown bin op/);
     reject((r) => (r['body'][2]['op'] = 'neg'), /unknown un op/);
     reject((r) => (r['body'][3]['op'] = 'basefee'), /unknown env op/);
+    reject(
+      (r) => (r['body'][3] = { site: 4, k: 'account', op: 'storage', a: 0, out: 6 }),
+      /unknown account op/,
+    );
+    reject(
+      (r) => (r['body'][3] = { site: 4, k: 'account', op: 'balance', out: 6 }),
+      /body\[3\]\.a/,
+    );
     reject(
       (r) => (r['body'][1] = { site: 2, k: 'modarith', op: 'expmod', a: 0, b: 3, n: 3, out: 4 }),
       /unknown modarith op/,

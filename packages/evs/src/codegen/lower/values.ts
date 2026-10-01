@@ -1,6 +1,6 @@
 /**
  * `codegen/lower/values.ts` — the word-valued statement templates: `const` (folded PUSH operands
- * or CODECOPY'd data literals), `un`, `env` and `convert`.
+ * or CODECOPY'd data literals), `un`, `env`, `account` and `convert`.
  */
 
 import type { AsmWriter } from '../../asm/assembler.js';
@@ -17,6 +17,7 @@ import {
   internal,
   typeOf,
   loadOperand,
+  lowerInternals,
   asWordType,
   numClass,
   emitFixpointCheck,
@@ -110,6 +111,41 @@ export function lowerEnv(w: AsmWriter, s: Extract<Stmt, { k: 'env' }>, ctx: Lowe
     }
   }
   storeOut(w, ctx, s.out);
+}
+
+/**
+ * account: BALANCE / EXTCODESIZE / EXTCODEHASH of the address operand (a canonical address word,
+ * so the opcodes see it unchanged). The script's own balance — an operand an `s.env('address')`
+ * statement defines — is SELFBALANCE: the same value for 5 gas instead of the slot load plus a
+ * warm BALANCE (100).
+ */
+export function lowerAccount(
+  w: AsmWriter,
+  s: Extract<Stmt, { k: 'account' }>,
+  ctx: LowerCtx,
+): void {
+  if (s.op === 'balance' && lowerInternals(ctx).selfAddresses.has(s.a)) {
+    w.op('SELFBALANCE', meta('account balance (self)'));
+    storeOut(w, ctx, s.out);
+    return;
+  }
+  loadOperand(w, ctx, s.a, meta(`account ${s.op}`)); // [addr]
+  switch (s.op) {
+    case 'balance':
+      w.op('BALANCE');
+      break;
+    case 'codesize':
+      w.op('EXTCODESIZE');
+      break;
+    case 'codehash':
+      w.op('EXTCODEHASH');
+      break;
+    default: {
+      const op = String((s as { op: unknown }).op);
+      throw internal(`unknown account op '${op}' survived validateIr`);
+    }
+  }
+  storeOut(w, ctx, s.out); // []
 }
 
 /**

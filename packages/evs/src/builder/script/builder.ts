@@ -154,6 +154,12 @@ export interface ScriptBuilder<
   tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>;
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
+  // account state of any address (Solidity's `a.balance` / `a.code.length` / `a.codehash`):
+  // BALANCE in wei, EXTCODESIZE, and EXTCODEHASH (zero for an account that does not exist).
+  // s.balance(s.env('address')) is the script's own balance (SELFBALANCE, frame-dependent).
+  balance(account: IntoExpr<'address'>): Expr<'uint256'>;
+  codeSize(account: IntoExpr<'address'>): Expr<'uint256'>;
+  codeHash(account: IntoExpr<'address'>): Expr<'bytes32'>;
 
   // ops (free-function mirrors of the Expr methods; same semantics — checked unless `wrapping…`)
   add<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // ≥1 operand an Expr
@@ -314,6 +320,9 @@ export function makeBuilder(r: Recorder): ScriptBuilder {
     newArray: (elem: unknown, length: unknown, opts?: unknown) => r.newArray(elem, length, opts),
     tuple: (type: unknown, init?: unknown) => r.tuple(type, init),
     env: (kind: unknown) => r.env(kind),
+    balance: (account: unknown) => r.accountOp('balance', account, 's.balance()'),
+    codeSize: (account: unknown) => r.accountOp('codesize', account, 's.codeSize()'),
+    codeHash: (account: unknown) => r.accountOp('codehash', account, 's.codeHash()'),
 
     add: (a: unknown, b: unknown) => r.bin('add', a, b, 's.add()'),
     sub: (a: unknown, b: unknown) => r.bin('sub', a, b, 's.sub()'),

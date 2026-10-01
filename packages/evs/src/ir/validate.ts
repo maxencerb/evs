@@ -56,6 +56,7 @@ import {
 } from '../core/types.js';
 import {
   callOutputs,
+  isAccountOp,
   type CellId,
   type FnId,
   type PlainAbiFunction,
@@ -416,6 +417,13 @@ class IrValidator {
         const what = `${path} (env ${s.op})`;
         const outType: EvsType = s.op === 'address' || s.op === 'caller' ? 'address' : 'uint256';
         this.define(s.out, outType, what);
+        return;
+      }
+      case 'account': {
+        const what = `${path} (account ${s.op})`;
+        if (!isAccountOp(s.op)) this.fail(`${what}: unknown account op`);
+        this.use(s.a, 'address', what);
+        this.define(s.out, s.op === 'codehash' ? 'bytes32' : 'uint256', what);
         return;
       }
       case 'convert': {

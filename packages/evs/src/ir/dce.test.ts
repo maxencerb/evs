@@ -119,7 +119,7 @@ function check(x: ScriptIr): ScriptIr {
 describe('pure statements with dead results are dropped', () => {
   test('every pure kind — only the return chain survives, statement objects reused', () => {
     // values: 0 a(arg uint256) 1 b(arg address) 2 arr(arg uint256[]) 3 pts(arg tuple[])
-    //         4 live sum   5..18 dead outs
+    //         4 live sum   5..21 dead outs
     const x = ir({
       name: 'pure',
       args: [
@@ -149,6 +149,8 @@ describe('pure statements with dead results are dropped', () => {
         vi('bytes32'), // 17 keccak256
         vi('uint256'), // 18 cellget
         vi('bool'), // 19 select cond
+        vi('uint256'), // 20 account balance
+        vi('bytes32'), // 21 account codehash
       ],
       cells: [vi('uint256')],
       body: [
@@ -157,6 +159,8 @@ describe('pure statements with dead results are dropped', () => {
         mk({ k: 'bin', op: 'mul', a: 0, b: 5, out: 6 }),
         mk({ k: 'un', op: 'iszero', a: 0, out: 7 }),
         mk({ k: 'env', op: 'caller', out: 8 }),
+        mk({ k: 'account', op: 'balance', a: 8, out: 20 }),
+        mk({ k: 'account', op: 'codehash', a: 1, out: 21 }),
         mk({ k: 'convert', a: 0, out: 9 }),
         mk({ k: 'un', op: 'iszero', a: 0, out: 19 }),
         mk({ k: 'select', cond: 19, a: 0, b: 5, out: 10 }),
