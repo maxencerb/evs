@@ -31,13 +31,7 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callSiteAllocates } from './call.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
-import {
-  emitFnSubroutines,
-  lowerInternals,
-  lowerStmts,
-  selfAddressValues,
-  type LowerCtx,
-} from './lower.js';
+import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
@@ -97,15 +91,7 @@ export function lowerProgram(
     return label;
   };
 
-  const ctx: LowerCtx = {
-    ir,
-    frame,
-    tails,
-    opts: evm,
-    loop: null,
-    dataSeg,
-  };
-  const state = lowerInternals(ctx);
+  const ctx = createLowerCtx({ ir, frame, tails, opts: evm, dataSeg });
 
   // -- receive: empty calldata succeeds with no output, whatever the value ------------------
   // A script has no function a bare call could mean, but a target paying ETH back to its caller
@@ -213,7 +199,7 @@ export function lowerProgram(
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   // Shared tails are emitted only when referenced, so they must come after every region that
   // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
-  for (const stub of state.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
+  for (const stub of ctx.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
   emitSharedTails(w, tails);
 
   // -- data segments LAST (the assembler plants the INVALID guard) -------------------------
@@ -226,9 +212,9 @@ export function lowerProgram(
   return {
     nodes,
     frameEnd: frame.frameEnd,
-    sites: collectSites(ctx, state.fnQueue),
+    sites: collectSites(ctx, ctx.fnQueue),
     labelNames: collectLabelNames(nodes),
-    diagnostics: collectDiagnostics(ir, frame, state.fnQueue),
+    diagnostics: collectDiagnostics(ir, frame, ctx.fnQueue),
   };
 }
 

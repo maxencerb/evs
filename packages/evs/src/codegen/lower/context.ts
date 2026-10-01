@@ -1,6 +1,6 @@
 /**
- * `codegen/lower/context.ts` — what every statement template shares: the `LowerCtx` contract,
- * the module-internal channel shared with `program.ts`, and the operand / slot / constant /
+ * `codegen/lower/context.ts` — what every statement template shares: the `LowerCtx` contract
+ * (built once per lowering by `createLowerCtx`), and the operand / slot / constant /
  * range-check helpers.
  */
 
@@ -25,37 +25,40 @@ import { FREE_PTR } from '../memory.js';
 // contract
 // ---------------------------------------------------------------------------
 
-export interface LowerCtx {
-  ir: ScriptIr;
-  frame: FrameLayout;
-  tails: SharedTails;
-  opts: { evmVersion: EvmVersion };
-  loop: { breakTo: LabelId; continueTo: LabelId } | null;
-  dataSeg: (bytes: Uint8Array) => LabelId;
+/** Where `break` / `continue` jump inside the innermost enclosing `while`. */
+export interface LoopTargets {
+  breakTo: LabelId;
+  continueTo: LabelId;
 }
 
 /**
- * Operand-stack height at every statement boundary — also inside fn bodies, which spill their
- * return address on entry (see the fncall convention in the module header).
+ * The state one lowering pass threads through every template. The first block is fixed for the
+ * whole pass (`createLowerCtx` derives `consts` from the IR); the second changes while the body
+ * and the fn subroutines are lowered, and `lowerProgram` reads `dfailStubs` / `fnQueue` back
+ * afterwards.
  */
-export const STMT_BASELINE = 0;
+export interface LowerCtx {
+  readonly ir: ScriptIr;
+  readonly frame: FrameLayout;
+  readonly tails: SharedTails;
+  readonly opts: { evmVersion: EvmVersion };
+  readonly dataSeg: (bytes: Uint8Array) => LabelId;
+  /** Every `const` stmt's payload, keyed by its out ValueId (operand and call-site literal
+   *  folding). */
+  readonly consts: ReadonlyMap<ValueId, ConstData>;
+  /** Every value an `env address` stmt defines (the script's own address → SELFBALANCE); see
+   *  {@link selfAddressValues}. */
+  readonly selfAddresses: ReadonlySet<ValueId>;
 
-// ---------------------------------------------------------------------------
-// module-internal channel shared with program.ts (keyed by the ctx object)
-// ---------------------------------------------------------------------------
-
-/** @internal */
-export interface LowerInternals {
-  /** every `const` stmt's payload, keyed by its out ValueId (call-site literal folding). */
-  consts: ReadonlyMap<ValueId, ConstData>;
-  /** every value an `env address` stmt defines (the script's own address → SELFBALANCE). */
-  selfAddresses: ReadonlySet<ValueId>;
-  /** strict-call decode-fail stubs the program assembler must emit after the body. */
-  dfailStubs: { label: LabelId; site: SiteId }[];
-  /** fn entry labels, allocated on first `fncall` — uncalled fns never enter the map. */
-  fnEntries: Map<FnId, LabelId>;
-  /** fn emission worklist in discovery order (grows while subroutines are emitted). */
-  fnQueue: FnId[];
+  /** The innermost enclosing loop, `null` outside one (and at the top of every fn body). Set
+   *  through `withLoop` only. */
+  loop: LoopTargets | null;
+  /** Strict-call decode-fail stubs the program assembler must emit after the body. */
+  readonly dfailStubs: { label: LabelId; site: SiteId }[];
+  /** Fn entry labels, allocated on first `fncall` — uncalled fns never enter the map. */
+  readonly fnEntries: Map<FnId, LabelId>;
+  /** Fn emission worklist in discovery order (grows while subroutines are emitted). */
+  readonly fnQueue: FnId[];
   /**
    * The last `storeOut`: the value stored and the writer mark right after its MSTORE. A load
    * order hint only (see {@link justStored}); it never affects what a template computes.
@@ -64,11 +67,12 @@ export interface LowerInternals {
 }
 
 /**
- * @internal Every value an `env address` statement defines, in the body and in every fn body
- * (values are single-assignment, so a ValueId is the script's own address wherever it is read).
- * The ONE definition of "the script's own address": `s.balance` of these values lowers to
- * SELFBALANCE (`values.ts`) and gets the self-balance ENV_FRAME_DEPENDENT note (`program.ts`
- * `collectDiagnostics`) — both read this set, so the note and the opcode cannot drift apart.
+ * Every value an `env address` statement defines, in the body and in every fn body (values are
+ * single-assignment, so a ValueId is the script's own address wherever it is read). The ONE
+ * definition of "the script's own address": `s.balance` of these values lowers to SELFBALANCE
+ * (`values.ts`, through `LowerCtx.selfAddresses`) and gets the self-balance ENV_FRAME_DEPENDENT
+ * note (`program.ts` `collectDiagnostics`) — both read this set, so the note and the opcode
+ * cannot drift apart.
  */
 export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
   const out = new Set<ValueId>();
@@ -80,31 +84,47 @@ export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
   return out;
 }
 
-const INTERNALS = new WeakMap<LowerCtx, LowerInternals>();
-
-/** @internal Lazily-created per-lowering state (program.ts reads it after the body pass). */
-export function lowerInternals(ctx: LowerCtx): LowerInternals {
-  let state = INTERNALS.get(ctx);
-  if (state === undefined) {
-    const consts = new Map<ValueId, ConstData>();
-    const scan = (s: Stmt): void => {
+/** Builds the context for one lowering pass: scans the IR for its consts and self-address
+ *  values, empty worklists. */
+export function createLowerCtx(
+  input: Pick<LowerCtx, 'ir' | 'frame' | 'tails' | 'opts' | 'dataSeg'>,
+): LowerCtx {
+  const consts = new Map<ValueId, ConstData>();
+  const scan = (stmts: readonly Stmt[]): void => {
+    walkStmts(stmts, (s) => {
       if (s.k === 'const') consts.set(s.out, s.data);
-    };
-    walkStmts(ctx.ir.body, scan);
-    for (const fn of ctx.ir.fns) walkStmts(fn.body, scan);
-    const selfAddresses = selfAddressValues(ctx.ir);
-    state = {
-      consts,
-      selfAddresses,
-      dfailStubs: [],
-      fnEntries: new Map(),
-      fnQueue: [],
-      lastStore: null,
-    };
-    INTERNALS.set(ctx, state);
-  }
-  return state;
+    });
+  };
+  scan(input.ir.body);
+  for (const fn of input.ir.fns) scan(fn.body);
+  return {
+    ...input,
+    consts,
+    selfAddresses: selfAddressValues(input.ir),
+    loop: null,
+    dfailStubs: [],
+    fnEntries: new Map(),
+    fnQueue: [],
+    lastStore: null,
+  };
 }
+
+/** Runs `body` with `ctx.loop` set to `loop` (`null` for a fn body), then restores it. */
+export function withLoop(ctx: LowerCtx, loop: LoopTargets | null, body: () => void): void {
+  const saved = ctx.loop;
+  ctx.loop = loop;
+  try {
+    body();
+  } finally {
+    ctx.loop = saved;
+  }
+}
+
+/**
+ * Operand-stack height at every statement boundary — also inside fn bodies, which spill their
+ * return address on entry (see the fncall convention in the module header).
+ */
+export const STMT_BASELINE = 0;
 
 // ---------------------------------------------------------------------------
 // shared helpers
@@ -143,7 +163,7 @@ export function wordConstValue(data: ConstData, what: string): bigint {
 export function loadOperand(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   const slot = ctx.frame.slotOfValue(v);
   if (slot === null) {
-    const data = lowerInternals(ctx).consts.get(v);
+    const data = ctx.consts.get(v);
     if (data === undefined) throw internal(`ValueId ${v} folded but its const stmt is missing`);
     w.push(wordConstValue(data, `ValueId ${v}`), m);
     return;
@@ -158,7 +178,7 @@ export function loadOperand(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMet
  */
 export function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
   if (ctx.frame.slotOfValue(v) !== null) return undefined;
-  const data = lowerInternals(ctx).consts.get(v);
+  const data = ctx.consts.get(v);
   return data !== undefined && data.kind === 'word' ? BigInt(data.hex) : undefined;
 }
 
@@ -166,7 +186,7 @@ export function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
 export function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   w.push(requireSlot(ctx, v, 'storeOut'), m);
   w.op('MSTORE');
-  lowerInternals(ctx).lastStore = { value: v, mark: w.mark() };
+  ctx.lastStore = { value: v, mark: w.mark() };
 }
 
 /**
@@ -176,7 +196,7 @@ export function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta):
  * order; it is a hint, so a stale answer only costs that fusion.
  */
 export function justStored(w: AsmWriter, ctx: LowerCtx, v: ValueId): boolean {
-  const last = lowerInternals(ctx).lastStore;
+  const last = ctx.lastStore;
   return last !== null && last.value === v && last.mark === w.mark();
 }
 

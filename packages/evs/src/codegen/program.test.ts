@@ -47,8 +47,8 @@ import type {
   Stmt,
   ValueId,
 } from '../ir/nodes.js';
-import type { FrameLayout } from './frame.js';
-import { lowerInternals, lowerStmts, selfAddressValues, type LowerCtx } from './lower.js';
+import type { FnRegion, FrameLayout } from './frame.js';
+import { createLowerCtx, lowerStmts, selfAddressValues } from './lower.js';
 import { lowerProgram } from './program.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
@@ -373,7 +373,7 @@ function fragmentListing(spec: FragmentSpec): string {
       if (slot === undefined) throw new Error(`fragment: no slot pinned for cell ${c}`);
       return slot;
     },
-    fnRegion(): { params: readonly number[]; results: readonly number[] } {
+    fnRegion(): FnRegion {
       throw new Error('fragment: no fns');
     },
     frameEnd: maxSlot + 32,
@@ -389,22 +389,21 @@ function fragmentListing(spec: FragmentSpec): string {
     returns: [],
   };
   const segments: { label: LabelId; bytes: Uint8Array }[] = [];
-  const ctx: LowerCtx = {
+  const ctx = createLowerCtx({
     ir,
     frame,
     tails,
     opts: { evmVersion },
-    loop: null,
     dataSeg: (bytes) => {
       const label = w.newLabel(`data_${segments.length}`);
       segments.push({ label, bytes });
       return label;
     },
-  };
+  });
   spec.pre?.(w);
   lowerStmts(w, spec.body, ctx);
   w.op('STOP');
-  for (const stub of lowerInternals(ctx).dfailStubs) {
+  for (const stub of ctx.dfailStubs) {
     emitDecodeFailStub(w, stub.label, stub.site, tails);
   }
   emitSharedTails(w, tails);
