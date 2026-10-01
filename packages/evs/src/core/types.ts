@@ -60,6 +60,7 @@ export type {
   AbiParamsToComponents,
   AbiParamToEvsType,
   FromAbiOutputs,
+  UnionToTuple,
 } from './types/derive.js';
 export { t, isArgSpecValue } from './types/namespace.js';
 export {

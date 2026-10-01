@@ -213,3 +213,28 @@ test('buildScriptAbi returns Abi, and a ScriptAbi value satisfies it', () => {
   const asAbi: Abi = phantom; // assignability, not just matching
   expectTypeOf(asAbi).toEqualTypeOf<Abi>();
 });
+
+// ---------------------------------------------------------------------------
+// wide return records — `UnionToTuple` must stay within the instantiation depth
+// ---------------------------------------------------------------------------
+
+type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
+/** 150 return keys: `k00`…`k99` and `k100`…`k149`. */
+type WideKey = `k${Digit}${Digit}` | `k1${'0' | '1' | '2' | '3' | '4'}${Digit}`;
+
+test('a 150-key return record keeps an exact readContract result (no depth overflow)', () => {
+  // the former `[...UnionToTuple<rest>, last]` spelling hit TS2589 from ~45 keys under viem's
+  // inference and degraded the result to `unknown`; the tail-recursive form has no such limit
+  type WideAbi = ScriptAbi<
+    'wide',
+    readonly [ArgSpec<'', 'uint256'>],
+    { [k in WideKey]: Expr<'uint256'> }
+  >;
+  expectTypeOf<
+    ReturnSpecToComponents<{ [k in WideKey]: Expr<'uint256'> }>['length']
+  >().toEqualTypeOf<150>();
+  expectTypeOf<WideAbi[0]['outputs'][0]['components']['length']>().toEqualTypeOf<150>();
+  expectTypeOf<ReadContractReturnType<WideAbi, 'wide', readonly [bigint]>>().toEqualTypeOf<{
+    [k in WideKey]: bigint;
+  }>();
+});

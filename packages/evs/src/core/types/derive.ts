@@ -15,6 +15,7 @@ import type { EvsType, TupleType } from './vocabulary.js';
 // compiles to a single NAMED ABI `tuple` which abitype infers as an ORDER-INSENSITIVE object;
 // runtime encode order is `Object.keys()` insertion order (the only source of truth). Positional
 // `t.tuple(...)` and script args use ordered declarators and never touch `UnionToTuple`.
+// `abi/artifact.ts` orders a script's return record with the same type.
 type UnionToIntersection<u> = (u extends unknown ? (k: u) => void : never) extends (
   k: infer i,
 ) => void
@@ -22,7 +23,10 @@ type UnionToIntersection<u> = (u extends unknown ? (k: u) => void : never) exten
   : never;
 type LastOf<u> =
   UnionToIntersection<u extends unknown ? () => u : never> extends () => infer r ? r : never;
-type UnionToTuple<u, acc extends readonly unknown[] = []> = [u] extends [never]
+/** A union → a tuple of its members (in TS-internal-id order, see above). The accumulator keeps
+ *  the recursion in tail position, so TypeScript evaluates it as a loop: a 300-member union fits,
+ *  where the `[...UnionToTuple<rest>, last]` spelling exceeds the instantiation depth past ~45. */
+export type UnionToTuple<u, acc extends readonly unknown[] = []> = [u] extends [never]
   ? acc
   : UnionToTuple<Exclude<u, LastOf<u>>, [LastOf<u>, ...acc]>;
 

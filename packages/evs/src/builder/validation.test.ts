@@ -481,11 +481,21 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
   });
 
   test('conversion source must be numeric', () => {
+    // the receiver constraint rejects these at compile time too; the recorder is the backstop
+    // for untyped callers
     expectEvs(
-      () => rec((s, a) => (a.who as Expr<never>).toUint(t.uint256)),
+      // @ts-expect-error — an address receiver is not numeric
+      () => rec((s, a) => a.who.toUint(t.uint256)),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /source must be numeric/,
+      /\.toUint\(\): cannot convert from 'address' — the source must be numeric/,
+    );
+    expectEvs(
+      // @ts-expect-error — a bool receiver is not numeric
+      () => rec((s, a) => a.flag.toInt(t.int8)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      /\.toInt\(\): cannot convert from 'bool' — the source must be numeric/,
     );
   });
 

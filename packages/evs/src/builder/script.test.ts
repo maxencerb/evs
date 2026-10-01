@@ -1335,6 +1335,27 @@ describe('s.call / s.tryCall', () => {
     expect(() => validateIr(script2.ir)).not.toThrow();
   });
 
+  test('a widened ABI unwraps by the real output count: none, one handle, an array (the type is the union)', () => {
+    const wideAbi: Abi = [...erc20Abi, ...poolAbi];
+    const script2 = evscript({ name: 'widecall', args: [t.address] }, (s, pool) => {
+      const nothing = s.read({ address: pool, abi: wideAbi, functionName: 'poke' });
+      expect(nothing).toBeUndefined();
+      const dec = s.read({ address: pool, abi: wideAbi, functionName: 'decimals' });
+      expect(Array.isArray(dec)).toBe(false);
+      expect(dec).toHaveProperty('type', 'uint8');
+      const slot0 = s.read({ address: pool, abi: wideAbi, functionName: 'slot0' });
+      expect(Array.isArray(slot0)).toBe(true);
+      expect(Object.isFrozen(slot0)).toBe(true);
+      expect(slot0).toHaveLength(3);
+      expect(slot0).toHaveProperty([1, 'type'], 'int24');
+      const tried = s.tryRead({ address: pool, abi: wideAbi, functionName: 'decimals' });
+      expect(Array.isArray(tried.value)).toBe(false);
+      expect(tried.value).toHaveProperty('type', 'uint8');
+      return s.return({ ok: s.lit(t.bool, true) });
+    });
+    expect(() => validateIr(script2.ir)).not.toThrow();
+  });
+
   test('output handles carry debugNames for inspectability', () => {
     const symId = script.ir.returns.find((r) => r.name === 'symbol')?.value ?? -1;
     expect(script.ir.values[symId]?.debugName).toBe('s.read(symbol)');
