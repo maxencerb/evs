@@ -2,7 +2,7 @@
  * Unit tests — shared tails (`codegen/tails.ts`): panic tail payloads byte-exact per solc's
  * `Panic(uint256)` encoding, the `EvsInvalidCalldata()` / `EvsDecodeError(site)` reverts, and
  * the pre-cancun `@memcpy` subroutine driven through `emitMemCopy`, and tail elision (only
- * referenced tails are emitted — issue #73).
+ * referenced tails are emitted — issue #73), including the rounding-specialized `@muldiv`.
  *
  * Everything assembles with full verification (jumpdests, stack heights, shapes) and runs on
  * the in-process EVM harness (test/harness/evm.ts).
@@ -276,6 +276,43 @@ describe('tail elision (issue #73)', () => {
       .nodes()
       .flatMap((n) => (n.k === 'label' && n.name !== undefined ? [n.name] : []));
     expect(names).toEqual(['panic_bounds', 'panic']);
+  });
+
+  test('@muldiv is emitted only with a rounding, in that rounding, before @panic_overflow', () => {
+    const tailNames = (rounding: 'floor' | 'up' | 'mixed' | null) => {
+      const w = new AsmWriter();
+      const tails = createSharedTails(w, { evmVersion: 'cancun' });
+      w.pushLabel(tails.mulDiv);
+      w.op('JUMP');
+      expect(emitSharedTails(w, tails, rounding)).toBe(tails.mulDiv);
+      return w.nodes().flatMap((n) => (n.k === 'label' && n.name !== undefined ? [n.name] : []));
+    };
+    // only the mixed subroutine tests a rounding flag (its exit label)
+    expect(tailNames('floor')).toEqual([
+      'muldiv',
+      'muldiv_full',
+      'muldiv_done',
+      'panic_overflow',
+      'panic',
+    ]);
+    expect(tailNames('up')).toEqual([
+      'muldiv',
+      'muldiv_full',
+      'muldiv_done',
+      'panic_overflow',
+      'panic',
+    ]);
+    expect(tailNames('mixed')).toEqual([
+      'muldiv',
+      'muldiv_full',
+      'muldiv_done',
+      'muldiv_exit',
+      'panic_overflow',
+      'panic',
+    ]);
+    // the sites' calling convention depends on the rounding: a referenced @muldiv without one
+    // is a lowering bug, not a default
+    expect(() => tailNames(null)).toThrow(/@muldiv is referenced but no rounding was given/);
   });
 
   for (const optimize of [false, true]) {

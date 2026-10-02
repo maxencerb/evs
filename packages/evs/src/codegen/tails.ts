@@ -22,9 +22,10 @@
  *   @badcd:          4-byte-payload variant — revert(0, 4) of sel(EvsInvalidCalldata())
  *   @memcpy:         checked subroutine (entry height 4: [ret, dst, src, len]); copies
  *                    ceil32(len) bytes word-wise, returns via dynamic JUMP.
- *   @muldiv:         checked subroutine (entry height 5: [a, b, d, up, ret]); the FullMath
- *                    `mulDiv` / `mulDivRoundingUp` body every site calls (`lower/muldiv.ts`),
- *                    returns [q] via dynamic JUMP.
+ *   @muldiv:         checked subroutine (entry height 4: [a, b, d, ret], or 5: [a, b, d, up,
+ *                    ret] when the program mixes roundings); the FullMath `mulDiv` /
+ *                    `mulDivRoundingUp` body every site calls (`lower/muldiv.ts`), returns [q]
+ *                    via dynamic JUMP.
  *
  * The three selector reverts are one emitter, {@link emitSelectorRevert}, which a zero-arg
  * `s.throw` (`codegen/lower/composites.ts`) reuses inline.
@@ -38,9 +39,11 @@ import {
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import { forkAtLeast, OPS, type EvmVersion } from '../asm/ops.js';
 import { selectorBytes } from '../core/bytes.js';
+import { EvsInternalError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
 import type { SharedTails } from './abi.js';
+import type { MulDivRounding } from './lower/context.js';
 import { emitMulDivSubroutine } from './lower/muldiv.js';
 
 // ---------------------------------------------------------------------------
@@ -138,11 +141,12 @@ export function emitDecodeFailStub(
 }
 
 /**
- * Emits the shared tail bodies that something references: the `@muldiv` subroutine, each
- * panic stub (and the `@panic` core, only when at least one stub is emitted), `@decode_revert`
- * (`EvsDecodeError(uint256 site)` — site pushed by the per-site stub), `@badcd`
- * (`EvsInvalidCalldata()`), and the `@memcpy` subroutine when `tails.memcpy` is non-null. A tail no `pushLabel` has named is
- * dead code and is left out (its allocated label stays unplaced, which the assembler accepts).
+ * Emits the shared tail bodies that something references: the `@muldiv` subroutine (in the
+ * program's `mulDivRounding`, `LowerCtx.mulDivShare`), each panic stub (and the `@panic` core,
+ * only when at least one stub is emitted), `@decode_revert` (`EvsDecodeError(uint256 site)` —
+ * site pushed by the per-site stub), `@badcd` (`EvsInvalidCalldata()`), and the `@memcpy`
+ * subroutine when `tails.memcpy` is non-null. A tail no `pushLabel` has named is dead code and
+ * is left out (its allocated label stays unplaced, which the assembler accepts).
  *
  * Must be emitted after all code that can reference or fall through into a tail — i.e. last
  * among the code regions (before data segments only), since reference tracking only sees
@@ -155,7 +159,11 @@ export function emitDecodeFailStub(
  * Returns the label of the first tail it placed (`null` when nothing is referenced), so the
  * caller can report where the tails region starts.
  */
-export function emitSharedTails(w: AsmWriter, tails: SharedTails): LabelId | null {
+export function emitSharedTails(
+  w: AsmWriter,
+  tails: SharedTails,
+  mulDivRounding: MulDivRounding | null = null,
+): LabelId | null {
   let first: LabelId | null = null;
   const open = (label: LabelId): void => {
     first ??= label;
@@ -163,8 +171,14 @@ export function emitSharedTails(w: AsmWriter, tails: SharedTails): LabelId | nul
 
   // -- @muldiv FullMath subroutine (first: it references @panic_overflow) -----------
   if (w.isReferenced(tails.mulDiv)) {
+    if (mulDivRounding === null) {
+      throw new EvsInternalError(
+        'INTERNAL',
+        'codegen/tails: emitSharedTails: @muldiv is referenced but no rounding was given — pass LowerCtx.mulDivShare',
+      );
+    }
     open(tails.mulDiv);
-    emitMulDivSubroutine(w, tails.mulDiv, tails);
+    emitMulDivSubroutine(w, tails.mulDiv, tails, mulDivRounding);
   }
 
   // -- panic stubs + core ------------------------------------------------------

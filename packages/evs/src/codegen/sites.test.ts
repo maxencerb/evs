@@ -268,6 +268,13 @@ const CASES: readonly LockstepCase[] = [
     ),
     codes: [0x11, 0x12],
   },
+  {
+    name: 'mulDivRoundingUp twice (shared @muldiv, rounding up only)',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) =>
+      s.return({ q: s.mulDivRoundingUp(a, b, 3n), r: s.mulDivRoundingUp(b, a, d) }),
+    ),
+    codes: [0x11, 0x12],
+  },
   // arrays
   {
     name: 'index',

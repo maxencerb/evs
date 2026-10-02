@@ -270,49 +270,91 @@ describe('mulDiv / mulDivRoundingUp', () => {
     expect(subroutines(uncalled)).toBe(0);
   });
 
-  test('several sites (floor and rounding up, in a fn and a loop) agree with the reference', async () => {
-    const script = evscript(
-      { name: 'many', args: [t.uint256, t.uint256, t.uint256] },
-      (s, a, b, d) => {
-        const half = s.fn('half', [t.uint256, t.uint256], (x, y) => s.mulDivRoundingUp(x, y, 2n));
-        const acc = s.let(t.uint256, 0n);
-        s.for({ type: t.uint256, from: 0n, until: 3n }, (i) => {
-          acc.set(acc.get().wrappingAdd(a.mulDiv(b, d.add(i))));
+  test('the subroutine is specialized to the rounding the sites use', () => {
+    /** Two sites on distinct operands, each rounding as `ups` says. */
+    const pair = (ups: readonly [boolean, boolean]) =>
+      evscript({ name: 'pair', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) => {
+        const [x, y] = ups.map((up, i) => {
+          const bi = b.add(BigInt(i));
+          return up ? a.mulDivRoundingUp(bi, d) : a.mulDiv(bi, d);
         });
-        return s.return({
-          floor: a.mulDiv(b, d),
-          up: s.mulDivRoundingUp(a, b, d),
-          lit: b.mulDiv(a, 1n << 96n),
-          fn: half(a, b),
-          loop: acc.get(),
-        });
-      },
-    );
-    const inputs = triples.filter(([, , d]) => d < MAX256 - 4n);
-    for (const evmVersion of EVM_VERSIONS) {
-      // oxlint-disable-next-line no-await-in-loop -- per-fork labels stay deterministic
-      const outcomes = await expectAgreement(script, inputs, {}, evmVersion);
-      const expected = inputs.map(([a, b, d]) => {
-        // in evaluation order: the loop runs first (it is recorded first), then the return tuple
-        const steps = [
-          ...[0n, 1n, 2n].map((i) => reference(a, b, d + i, false)),
-          reference(a, b, d, false),
-          reference(a, b, d, true),
-          reference(b, a, 1n << 96n, false),
-          reference(a, b, 2n, true),
-        ];
-        const failed = steps.find((r) => r.kind === 'revert');
-        if (failed !== undefined) return failed;
-        const [l0, l1, l2, ...outs] = steps.map((r) => BigInt(r.data));
-        const loop = ((l0 ?? 0n) + (l1 ?? 0n) + (l2 ?? 0n)) & MAX256;
-        return {
-          kind: 'return',
-          data: `0x${[...outs, loop].map((v) => word(v).slice(2)).join('')}`,
-        };
+        return s.return({ x: x!, y: y! });
       });
-      expect(outcomes).toEqual(expected);
+    for (const optimize of [false, true]) {
+      const build = (ups: readonly [boolean, boolean]) => {
+        const compiled = compile(pair(ups), { optimize });
+        const labels = compiled.sourceMap.labels.map((l) => l.name);
+        return {
+          size: (compiled.runtimeBytecode.length - 2) / 2,
+          shared: labels.filter((name) => name === 'muldiv').length,
+          // the rounding-flag test: only a subroutine that serves both roundings has one
+          flagged: labels.includes('muldiv_exit'),
+        };
+      };
+      const floor = build([false, false]);
+      const up = build([true, true]);
+      const mixed = build([false, true]);
+      expect([floor.shared, up.shared, mixed.shared]).toEqual([1, 1, 1]);
+      expect([floor.flagged, up.flagged, mixed.flagged]).toEqual([false, false, true]);
+      // floor-only carries no round-up code; neither uniform program pushes or tests a flag
+      expect(floor.size).toBeLessThan(up.size);
+      expect(up.size).toBeLessThan(mixed.size);
     }
   });
+
+  for (const rounding of ['floor', 'up', 'mixed'] as const) {
+    test(`several ${rounding} sites (in a fn and a loop) agree with the reference`, async () => {
+      // site i rounds up as `rounding` says (`mixed` alternates, from a floor site); the sites
+      // are, in evaluation order, the loop body's (evaluated three times), then the tuple's
+      const ups = [0, 1, 2, 3, 4].map((i) =>
+        rounding === 'mixed' ? i % 2 === 1 : rounding === 'up',
+      );
+      const up = (i: number): boolean => ups[i] === true;
+      const script = evscript(
+        { name: 'many', args: [t.uint256, t.uint256, t.uint256] },
+        (s, a, b, d) => {
+          type Arg = Parameters<typeof s.mulDiv>[0];
+          const md = (x: Arg, y: Arg, n: Arg, i: number) =>
+            up(i) ? s.mulDivRoundingUp(x, y, n) : s.mulDiv(x, y, n);
+          const half = s.fn('half', [t.uint256, t.uint256], (x, y) => md(x, y, 2n, 4));
+          const acc = s.let(t.uint256, 0n);
+          s.for({ type: t.uint256, from: 0n, until: 3n }, (i) => {
+            acc.set(acc.get().wrappingAdd(md(a, b, d.add(i), 0)));
+          });
+          return s.return({
+            x: md(a, b, d, 1),
+            y: md(a, b, d, 2),
+            lit: md(b, a, 1n << 96n, 3),
+            fn: half(a, b),
+            loop: acc.get(),
+          });
+        },
+      );
+      const inputs = triples.filter(([, , d]) => d < MAX256 - 4n);
+      for (const evmVersion of EVM_VERSIONS) {
+        // oxlint-disable-next-line no-await-in-loop -- per-fork labels stay deterministic
+        const outcomes = await expectAgreement(script, inputs, {}, evmVersion);
+        const expected = inputs.map(([a, b, d]) => {
+          const steps = [
+            ...[0n, 1n, 2n].map((i) => reference(a, b, d + i, up(0))),
+            reference(a, b, d, up(1)),
+            reference(a, b, d, up(2)),
+            reference(b, a, 1n << 96n, up(3)),
+            reference(a, b, 2n, up(4)),
+          ];
+          const failed = steps.find((r) => r.kind === 'revert');
+          if (failed !== undefined) return failed;
+          const [l0, l1, l2, ...outs] = steps.map((r) => BigInt(r.data));
+          const loop = ((l0 ?? 0n) + (l1 ?? 0n) + (l2 ?? 0n)) & MAX256;
+          return {
+            kind: 'return',
+            data: `0x${[...outs, loop].map((v) => word(v).slice(2)).join('')}`,
+          };
+        });
+        expect(outcomes).toEqual(expected);
+      }
+    });
+  }
 
   test('explainRevert: a Panic raised in the shared subroutine names the sites that call it', async () => {
     const script = evscript(

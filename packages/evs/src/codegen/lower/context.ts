@@ -48,9 +48,10 @@ export interface LowerCtx {
   /** Every value an `env address` stmt defines (the script's own address → SELFBALANCE); see
    *  {@link selfAddressValues}. */
   readonly selfAddresses: ReadonlySet<ValueId>;
-  /** Whether `mulDiv` sites call the shared `@muldiv` subroutine (two or more reachable sites)
-   *  rather than inlining it (one); see `lowerMulDiv`. */
-  readonly shareMulDiv: boolean;
+  /** How `mulDiv` sites are lowered: `null` inlines the body (one reachable site), otherwise
+   *  every site calls the shared `@muldiv` subroutine, specialized to the rounding the sites
+   *  use; see `lowerMulDiv`. */
+  readonly mulDivShare: MulDivRounding | null;
 
   /** The innermost enclosing loop, `null` outside one (and at the top of every fn body). Set
    *  through `withLoop` only. */
@@ -69,15 +70,25 @@ export interface LowerCtx {
 }
 
 /**
- * The `mulDiv` / `mulDivRoundingUp` statements the program emits: the main body's and those of
- * the fns it can call (transitively) — an uncalled fn is never emitted, so its sites must not
- * tip a one-site program into the shared subroutine.
+ * The rounding the shared `@muldiv` subroutine implements: `floor` when every site is a
+ * `mulDiv`, `up` when every site is a `mulDivRoundingUp` (neither carries a rounding flag nor
+ * the other mode's code), `mixed` when both occur (each site pushes a flag the subroutine tests).
  */
-function countMulDivSites(ir: ScriptIr): number {
-  let sites = 0;
+export type MulDivRounding = 'floor' | 'up' | 'mixed';
+
+/**
+ * How the program lowers its `mulDiv` / `mulDivRoundingUp` statements, from the sites it emits:
+ * the main body's and those of the fns it can call (transitively) — an uncalled fn is never
+ * emitted, so its sites must neither tip a one-site program into the shared subroutine nor
+ * change its rounding. `null` (fewer than two sites) inlines the body.
+ */
+function mulDivShareOf(ir: ScriptIr): MulDivRounding | null {
+  let floor = 0;
+  let up = 0;
   const reached = new Set<FnId>();
   const visit = (s: Stmt): void => {
-    if (s.k === 'modarith' && (s.op === 'muldiv' || s.op === 'muldivup')) sites += 1;
+    if (s.k === 'modarith' && s.op === 'muldiv') floor += 1;
+    if (s.k === 'modarith' && s.op === 'muldivup') up += 1;
     if (s.k === 'fncall' && !reached.has(s.fn)) {
       reached.add(s.fn);
       const fn = ir.fns[s.fn];
@@ -85,7 +96,8 @@ function countMulDivSites(ir: ScriptIr): number {
     }
   };
   walkStmts(ir.body, visit);
-  return sites;
+  if (floor + up < 2) return null;
+  return up === 0 ? 'floor' : floor === 0 ? 'up' : 'mixed';
 }
 
 /**
@@ -123,7 +135,7 @@ export function createLowerCtx(
     ...input,
     consts,
     selfAddresses: selfAddressValues(input.ir),
-    shareMulDiv: countMulDivSites(input.ir) >= 2,
+    mulDivShare: mulDivShareOf(input.ir),
     loop: null,
     dfailStubs: [],
     fnEntries: new Map(),

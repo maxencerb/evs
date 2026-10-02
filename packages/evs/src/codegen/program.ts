@@ -226,7 +226,7 @@ export function lowerProgram(
   // Shared tails are emitted only when referenced, so they must come after every region that
   // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
   for (const stub of ctx.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
-  const firstTail = emitSharedTails(w, tails);
+  const firstTail = emitSharedTails(w, tails, ctx.mulDivShare);
 
   // -- data segments LAST (the assembler plants the INVALID guard) -------------------------
   for (const seg of segments) {

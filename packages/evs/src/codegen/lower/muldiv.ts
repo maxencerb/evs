@@ -1,7 +1,8 @@
 /**
  * `codegen/lower/muldiv.ts` — `mulDiv` / `mulDivRoundingUp`: `a·b / d` over a 512-bit
  * intermediate (the FullMath sequence). A program with one site inlines it; with two or more,
- * every site calls the shared `@muldiv` subroutine, emitted once among the shared tails.
+ * every site calls the shared `@muldiv` subroutine, emitted once among the shared tails and
+ * specialized to the rounding the program's sites use.
  */
 
 import type { AsmWriter, LabelId } from '../../asm/assembler.js';
@@ -9,6 +10,7 @@ import type { Stmt } from '../../ir/nodes.js';
 import type { SharedTails } from '../abi.js';
 import {
   type LowerCtx,
+  type MulDivRounding,
   foldedConst,
   loadOperand,
   meta,
@@ -19,9 +21,6 @@ import {
 /** Newton steps after the 4-bit seed: each doubles the correct low bits (8, 16, …, 256). */
 const NEWTON_STEPS = 6;
 
-/** `@muldiv`'s entry height: `[a, b, d, up, ret]` over an empty statement-boundary stack. */
-const MULDIV_ENTRY_HEIGHT = 5;
-
 /**
  * `⌊a·b / d⌋` (`muldiv`) or `⌈a·b / d⌉` (`muldivup`) at full precision, with OpenZeppelin
  * `Math.mulDiv`'s Panic codes: 0x12 when `d == 0` (dropped for a folded nonzero denominator,
@@ -29,16 +28,17 @@ const MULDIV_ENTRY_HEIGHT = 5;
  * bigint quotient is the oracle.
  *
  * The zero guard always stays at the site (so it is elided per site); the FullMath body is
- * either inlined or called (`LowerCtx.shareMulDiv`):
+ * either inlined or called (`LowerCtx.mulDivShare`):
  *
  * - one site in the program — inlined, as the body is needed once anyway: the call sequence
- *   would only add ~36 bytes and ~54 gas;
- * - two or more — each site pushes its return label and the rounding flag under the operands
- *   and calls `@muldiv` ({@link emitMulDivSubroutine}): ~10 bytes per site instead of ~110, for
- *   ~54 gas per evaluation. The `p1 == 0` fast path runs inside the subroutine as well: keeping
- *   it at the site would repeat the 512-bit product (~35 bytes) per site to save ~40 gas per
- *   evaluation, which deployless code-size gas (~200 per byte) only repays for a site evaluated
- *   ~175 times per call.
+ *   would only add ~12 bytes and ~30 gas;
+ * - two or more — each site pushes its return label under the operands and calls `@muldiv`
+ *   ({@link emitMulDivSubroutine}): ~8 bytes per site instead of ~110, ~36 gas per call. The
+ *   subroutine is specialized to the program's rounding, so a program whose sites all round
+ *   the same way carries only that mode's code and pushes no flag; one that mixes them also
+ *   pushes the rounding flag and tests it in the subroutine (~10 bytes, ~61 gas per call). The
+ *   `p1 == 0` fast path runs inside the subroutine as well: keeping it at the site repeats the
+ *   512-bit product per site (the measurement is in CONTRIBUTING.md's `mulDiv` design note).
  */
 export function lowerMulDiv(
   w: AsmWriter,
@@ -46,10 +46,11 @@ export function lowerMulDiv(
   ctx: LowerCtx,
 ): void {
   const up = s.op === 'muldivup';
-  const ret = ctx.shareMulDiv ? w.newLabel(`muldiv_ret_${s.site}`) : null;
+  const shared = ctx.mulDivShare;
+  const ret = shared === null ? null : w.newLabel(`muldiv_ret_${s.site}`);
   if (ret !== null) {
     w.pushLabel(ret, meta(`${s.op} uint256`)); // [ret]
-    w.push(up ? 1 : 0, meta(up ? 'round up' : 'round down')); // [up, ret]
+    if (shared === 'mixed') w.push(up ? 1 : 0, meta(up ? 'round up' : 'round down')); // [up, ret]
   }
   const denominator = foldedConst(ctx, s.n);
   loadOperand(w, ctx, s.n, ret === null ? meta(`${s.op} uint256`) : undefined); // [d, …]
@@ -64,7 +65,7 @@ export function lowerMulDiv(
 
   if (ret !== null) {
     w.pushLabel(ctx.tails.mulDiv);
-    w.op('JUMP', { note: 'call @muldiv' }); // [a, b, d, up, ret]
+    w.op('JUMP', { note: 'call @muldiv' }); // [a, b, d, (up,) ret]
     w.label(ret, STMT_BASELINE + 1); // [q]
     storeOut(w, ctx, s.out);
     return;
@@ -78,23 +79,36 @@ export function lowerMulDiv(
 }
 
 /**
- * The shared `@muldiv` subroutine (`ctx.shareMulDiv` programs). Entry (checked, absolute height
- * 5): `[a, b, d, up, ret]` — `lowerMulDiv` pushes the return label and the rounding flag (1 for
- * `mulDivRoundingUp`) onto the empty statement-boundary stack, then the operands, with `d`
- * already checked nonzero. Returns `[q]` via dynamic JUMP; its only panic is 0x11.
+ * The shared `@muldiv` subroutine (programs whose `LowerCtx.mulDivShare` is set), in that
+ * rounding. Entry (checked, absolute height): `[a, b, d, ret]` (4) for a `floor` or `up`
+ * program, `[a, b, d, up, ret]` (5) for a `mixed` one — `lowerMulDiv` pushes the return label
+ * (then the rounding flag, 1 for `mulDivRoundingUp`, when mixed) onto the empty
+ * statement-boundary stack, then the operands, with `d` already checked nonzero. Returns `[q]`
+ * via dynamic JUMP; its only panic is 0x11. A `floor` program carries no round-up code.
  */
-export function emitMulDivSubroutine(w: AsmWriter, entry: LabelId, tails: SharedTails): void {
-  const exit = w.newLabel('muldiv_exit');
-  w.label(entry, MULDIV_ENTRY_HEIGHT); // [a, b, d, up, ret]
-  emitQuotient(w, tails.panicOverflow, { below: 2, suffix: '' }); // [q, a, b, d, up, ret]
-  w.op('DUP5');
-  w.op('ISZERO');
-  w.pushLabel(exit);
-  w.op('JUMPI'); // [q, a, b, d, up, ret]   rounding down: q is the result
-  emitRoundUp(w, tails.panicOverflow);
-  w.label(exit, MULDIV_ENTRY_HEIGHT + 1); // [q, a, b, d, up, ret]
-  w.op('SWAP4'); // [up, a, b, d, q, ret]
-  w.op('POP');
+export function emitMulDivSubroutine(
+  w: AsmWriter,
+  entry: LabelId,
+  tails: SharedTails,
+  rounding: MulDivRounding,
+): void {
+  const flag = rounding === 'mixed' ? 1 : 0; // the rounding flag's word under the operands
+  w.label(entry, 4 + flag); // [a, b, d, (up,) ret]
+  emitQuotient(w, tails.panicOverflow, { below: 1 + flag, suffix: '' }); // [q, a, b, d, (up,) ret]
+  if (rounding === 'mixed') {
+    const exit = w.newLabel('muldiv_exit');
+    w.op('DUP5');
+    w.op('ISZERO');
+    w.pushLabel(exit);
+    w.op('JUMPI'); // [q, a, b, d, up, ret]   rounding down: q is the result
+    emitRoundUp(w, tails.panicOverflow);
+    w.label(exit, 6); // [q, a, b, d, up, ret]
+    w.op('SWAP4'); // [up, a, b, d, q, ret]
+    w.op('POP');
+  } else {
+    if (rounding === 'up') emitRoundUp(w, tails.panicOverflow);
+    w.op('SWAP3'); // [d, a, b, q, ret]
+  }
   w.op('POP');
   w.op('POP');
   w.op('POP'); // [q, ret]
