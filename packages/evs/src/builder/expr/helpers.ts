@@ -20,6 +20,8 @@ import {
   type TupleType,
   isMemrefType,
   isEvsValueType,
+  isTupleType,
+  canonicalizeTupleType,
   elemTypeOf,
   type EvsType,
 } from '../../core/types.js';
@@ -160,8 +162,8 @@ export function assertLayout(type: TupleType | string, what: string): void {
 /**
  * Validates any value type for the builder surface (`s.lit`, `s.let`): a type string through
  * {@link assertV0Type} (same codes and messages), or a `t.struct` / `t.tuple` / tuple-array
- * descriptor — structurally valid, then classified by its layout (an array nested deeper than
- * `MAX_ARRAY_DEPTH` → `UNSUPPORTED_V0`).
+ * descriptor — structurally valid, through the canonicalizer's gates ({@link assertTupleGates}),
+ * then classified by its layout (an array nested deeper than `MAX_ARRAY_DEPTH` → `UNSUPPORTED_V0`).
  */
 export function assertValueType(type: unknown, what: string): asserts type is EvsType {
   if (typeof type === 'string') {
@@ -174,7 +176,21 @@ export function assertValueType(type: unknown, what: string): asserts type is Ev
       `${what}: type must be a \`t\` type (a type string or a t.struct/t.tuple descriptor), got ${describeHost(type)}`,
     );
   }
+  assertTupleGates(type, what);
   assertLayout(type, what);
+}
+
+/**
+ * The size gates of the one tuple canonicalizer (`canonicalizeTupleType`) for a descriptor the
+ * builder records as given: at least one component at every level, the array depth, and the
+ * static size of every tuple member — the enclosing type's size measures nothing once it is
+ * ABI-dynamic, and the layout classifier does not look for empty tuples. They throw
+ * `TYPE_MISMATCH` / `UNSUPPORTED_V0` under `what` while the script records, not as an internal
+ * error from the IR validator at compile. A type string carries no tuple, so it passes; the
+ * canonical copy is discarded (the recorded type stays the caller's object).
+ */
+export function assertTupleGates(type: EvsType, what: string): void {
+  if (isTupleType(type)) canonicalizeTupleType(type, what);
 }
 
 export function describeHost(v: unknown): string {

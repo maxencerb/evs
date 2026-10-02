@@ -8,7 +8,6 @@ import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
 import {
   isTupleType,
   isEvsValueType,
-  canonicalizeTupleType,
   type EvsType,
   type TupleType,
   abiParamToType,
@@ -19,7 +18,7 @@ import {
 import type { ValueId } from '../../ir/nodes.js';
 import { RecorderCore } from './core.js';
 import { makeTuple, FieldHandle, makeExpr, MutArrayImpl } from './handles.js';
-import { describeHost, asLiteralIndex, assertLayout } from './helpers.js';
+import { describeHost, asLiteralIndex, assertLayout, assertTupleGates } from './helpers.js';
 
 /** Tuples, fields and mutable arrays (a `Recorder` layer). */
 export abstract class RecorderComposites extends RecorderCore {
@@ -43,7 +42,7 @@ export abstract class RecorderComposites extends RecorderCore {
     }
     // the size gates every other tuple entry point applies (at least one component at every
     // level, the array depth, the static size), so they fail here and not in the IR validator
-    canonicalizeTupleType(type, 's.tuple()');
+    assertTupleGates(type, 's.tuple()');
     const id = this.buildTupleNew(type, init, 's.tuple()');
     return makeTuple(this.self, id, type);
   }
@@ -152,9 +151,10 @@ export abstract class RecorderComposites extends RecorderCore {
   }
 
   /** Validate an `s.newArray` element type: any value type — a word, `string`/`bytes`, a tuple
-   *  descriptor (plain or a tuple array), or any array (dynamic/fixed). The exact classification
-   *  (malformed → TYPE_MISMATCH, nested deeper than MAX_ARRAY_DEPTH → UNSUPPORTED_V0) is delegated
-   *  to the layout of the resulting array type (`assertLayout`). */
+   *  descriptor (plain or a tuple array), or any array (dynamic/fixed). A tuple descriptor passes
+   *  the canonicalizer's gates (`assertTupleGates`); the rest of the classification (malformed →
+   *  TYPE_MISMATCH, nested deeper than MAX_ARRAY_DEPTH → UNSUPPORTED_V0) is delegated to the
+   *  layout of the resulting array type (`assertLayout`). */
   private newArrayElemType(elem: unknown): EvsType {
     if (typeof elem === 'string') {
       // a non-StringType string still produces a string we can tag; the layout check on the
@@ -162,7 +162,10 @@ export abstract class RecorderComposites extends RecorderCore {
       // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- arbitrary string element; assertLayout rejects malformed ones.
       return elem as EvsType;
     }
-    if (isTupleType(elem)) return elem;
+    if (isTupleType(elem)) {
+      assertTupleGates(elem, 's.newArray()');
+      return elem;
+    }
     throw new EvsTypeError(
       'TYPE_MISMATCH',
       `s.newArray(): element type must be a t.* type (a word, string/bytes, an array, or a t.struct/t.tuple), got ${describeHost(elem)}`,
