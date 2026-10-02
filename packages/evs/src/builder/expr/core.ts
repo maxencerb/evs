@@ -49,6 +49,8 @@ import {
   TUPLE_INTERNALS,
   FIELD_INTERNALS,
   isStagedHandle,
+  copiedHandle,
+  describeCopiedHandle,
   CellImpl,
 } from './handles.js';
 import {
@@ -241,6 +243,30 @@ export abstract class RecorderCore {
     return id;
   }
 
+  /**
+   * Runs `fn` (a validation that records through the usual coercions) and then undoes everything
+   * it recorded: the statements appended to the current block, the values it defined, the consts
+   * it interned and the sites it used. Errors still propagate. Nothing it records may outlive it
+   * (its ValueIds are gone), and it records into the current block only (it opens no scope).
+   */
+  protected withRollback<T>(fn: () => T): T {
+    const scope = this.top();
+    const stmts = scope.stmts.length;
+    const consts = scope.consts.size;
+    const values = this.values.length;
+    const site = this.nextSite;
+    try {
+      return fn();
+    } finally {
+      scope.stmts.length = stmts;
+      for (const key of [...scope.consts.keys()].slice(consts)) scope.consts.delete(key);
+      for (let id = values; id < this.values.length; id++) this.litValues.delete(id);
+      this.values.length = values;
+      this.valueScopes.length = values;
+      this.nextSite = site;
+    }
+  }
+
   protected pushScope(kind: ScopeKind): Scope {
     const s = newScope(kind);
     this.stack.push(s);
@@ -283,9 +309,11 @@ export abstract class RecorderCore {
           `${what}: a Field is not an Expr — read a snapshot with .get()`,
         );
       }
+      // an Expr of another evs copy: a word-type tag AND the handle methods (a struct literal
+      // with a member named `type` has no methods, so it stays a raw literal)
       if (!Array.isArray(v)) {
-        const tag = (v as { type?: unknown }).type;
-        if (typeof tag === 'string' && isWordType(tag)) {
+        const { type: tag, eq } = v as { type?: unknown; eq?: unknown };
+        if (typeof tag === 'string' && isWordType(tag) && typeof eq === 'function') {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
             `${what}: value looks like an Expr handle but was not created by this copy of evs (forged object, or a duplicate @maxencerb/evs install)`,
@@ -556,8 +584,11 @@ export abstract class RecorderCore {
 
   /** Rejects a staged handle where a tuple LITERAL is read (`s.tuple` init, a tuple slot whose
    *  value is not a same-typed Tuple/Expr): its properties are not members, so reading it as a
-   *  record would silently build an all-zero tuple. */
-  private assertNotHandle(v: unknown, what: string): void {
+   *  record would silently build an all-zero tuple. A spread / `Object.assign` copy of a handle
+   *  ({@link copiedHandle}) holds only the members written next to the spread, so it is rejected
+   *  when it leaves one of `type`'s members out (that member would be zero-filled); a copy that
+   *  names every member loses nothing and is read like any record. */
+  private assertNotHandle(v: unknown, type: TupleType, what: string): void {
     if (typeof v !== 'object' || v === null) return;
     const fail = (hint: string): never => {
       throw new EvsTypeError('TYPE_MISMATCH', `${what}: ${hint}`);
@@ -570,6 +601,17 @@ export abstract class RecorderCore {
         'init must be a literal of members, not a handle — pass the handle itself where the tuple is expected',
       );
     }
+    const src = copiedHandle(v);
+    if (src === undefined) return;
+    const positional = Array.isArray(v);
+    const missing = type.components
+      .map((c, i) => (positional ? String(i) : c.name))
+      .filter((key) => !Object.hasOwn(v, key));
+    if (missing.length === 0) return;
+    const { kind } = describeCopiedHandle(src);
+    fail(
+      `init is a spread/Object.assign copy of ${kind} handle, which copies none of its members — ${missing.map((m) => JSON.stringify(m)).join(', ')} would be zero-filled. Name every member, reading each one with .get() (e.g. { a: x, b: p.b.get() })`,
+    );
   }
 
   /** The ValueId of a position that takes a recorded value but no literal (`s.return`, an `s.fn`
@@ -592,7 +634,7 @@ export abstract class RecorderCore {
    *  is left to the zero-fill (no MSTORE); an omitted memref member gets its typed zero from
    *  codegen (`lowerTupleNew`). */
   protected buildTupleNew(type: TupleType, init: unknown, what: string): ValueId {
-    this.assertNotHandle(init, what);
+    this.assertNotHandle(init, type, what);
     const named = allMembersNamed(type);
     const n = type.components.length;
     let lookup: (comp: NamedType, index: number) => unknown;

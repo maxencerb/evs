@@ -74,3 +74,13 @@ test('a fully named struct takes a record', () => {
     return s.return({ p });
   });
 });
+
+test('a spread Tuple handle is no init (its members are Field handles, not values)', () => {
+  evscript({ name: 'spread', args: [Pair, t.uint24] }, (s, p, fee) => {
+    // @ts-expect-error — `token` would be a Field; the runtime copy holds no member at all
+    s.tuple(Pair, { ...p, fee });
+    const v = s.tuple(Pair, { token: p.token.get(), fee });
+    expectTypeOf(v).toEqualTypeOf<Tuple<typeof Pair>>();
+    return s.return({ v });
+  });
+});

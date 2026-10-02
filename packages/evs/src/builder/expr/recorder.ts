@@ -7,16 +7,23 @@ import { EvsTypeError, EvsScopeError, EvsInternalError } from '../../core/errors
 import {
   IDENT_RE,
   PROTO_RESERVED,
-  hasPlainPrototype,
+  nonRootPrototype,
   identProblem,
   normalizeArgsInput,
+  isTupleType,
   type Expr,
   type EvsType,
 } from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
 import { RecorderCalls } from './calls.js';
-import { RETURN_BRAND, isStagedHandle } from './handles.js';
-import { describeHost, newScope, unsafeCast } from './helpers.js';
+import {
+  CELL_INTERNALS,
+  RETURN_BRAND,
+  copiedHandle,
+  describeCopiedHandle,
+  isStagedHandle,
+} from './handles.js';
+import { allMembersNamed, describeHost, newScope, unsafeCast } from './helpers.js';
 
 /** A plain (non-array) object that is not a staged handle: the literal of a struct. */
 function isStructLiteral(x: unknown): x is object {
@@ -222,12 +229,33 @@ export class Recorder extends RecorderCalls {
       );
     }
     // a literal `{ __proto__: handle }` key replaced the record's prototype (Object.entries below
-    // would never see it); a primitive value is dropped by JS and caught only by `NoProtoKey`.
-    if (!hasPlainPrototype(values)) {
+    // would never see it); a primitive value is dropped by JS and caught only by `NoProtoKey`. Any
+    // other prototype (`Object.create(null)`, a class instance) lost nothing: its own keys are read.
+    const proto = nonRootPrototype(values);
+    if (proto !== null && (isStagedHandle(proto) || CELL_INTERNALS.has(proto))) {
       throw new EvsTypeError(
         'ABI_SHAPE',
         `s.return(): expected a plain object literal of named values, but the record's prototype was replaced — an object-literal \`__proto__\` key does that instead of naming a return value. ${PROTO_RESERVED}`,
       );
+    }
+    // a spread / Object.assign copy of a handle holds none of its members (they live on the
+    // handle's prototype): reject it unless the record names every member itself
+    const src = copiedHandle(values);
+    if (src !== undefined) {
+      const { kind, type } = describeCopiedHandle(src);
+      const members =
+        type !== undefined && isTupleType(type) && allMembersNamed(type)
+          ? type.components.map((c) => c.name)
+          : undefined;
+      const missing = members?.filter((m) => !Object.hasOwn(values, m));
+      if (missing === undefined || missing.length > 0) {
+        const lost =
+          missing === undefined ? '' : ` (${missing.map((m) => JSON.stringify(m)).join(', ')})`;
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `s.return(): the record is a spread/Object.assign copy of ${kind} handle, which copies none of its members${lost} — name each value (e.g. { a: p.a.get() }), or return the handle itself under one key`,
+        );
+      }
     }
     // an empty record would emit a zero-component result tuple: it ABI-encodes to 0 bytes, so every
     // read returns 0x and viem throws "returned no data" (easily misread as "no contract here").
