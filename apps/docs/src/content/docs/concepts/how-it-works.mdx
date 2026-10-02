@@ -121,6 +121,10 @@ function parameter/result — see the memory model below), then emits, as one no
 - the **call emitters** for every sub-call verb (`s.read`, `s.call`, `s.simulate` and their
   `try*` forms), the **ABI encoders** (`s.encode`, `s.encodePacked`) and the return-tuple
   encoder;
+- the **shared codec subroutines** (`@enc_<k>` / `@dec_<k>`): when the same struct or
+  composite array is encoded or decoded at several sites (or the same `s.simulate` outputs are
+  decoded twice), its encoder or decoder is emitted once and each site calls it — only when
+  that makes the program smaller, and never inside a loop where the call would cost gas;
 - the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
   `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback — each emitted
   only when some code jumps to it;
@@ -184,7 +188,8 @@ report"), never silently ships bad bytecode.
 ## Stage 7: the EIP-170 size check
 
 Runtime bytecode is capped at 24,576 bytes (EIP-170). Exceeding it throws `EvsCompileError`
-with a per-region size breakdown (dispatcher, body, functions, shared tails, data segments) so you can see
+with a per-region size breakdown (dispatcher, body, functions, shared tails, data segments, plus
+the simulate trampoline and the shared codec subroutines when present) so you can see
 what to trim. The check runs from the assembler's layout pass, before label fixups are patched
 and before the verifiers, so every oversized script gets this error however large it is — even
 one that host-side loops unrolled past 64 KiB. The artifact that comes out the other side — `runtimeBytecode`, the deployless
@@ -200,7 +205,7 @@ Scripts use Solidity's memory layout verbatim:
 | `0x00`–`0x3f`    | scratch — revert-payload assembly and intra-template temporaries only                   |
 | `0x40`–`0x5f`    | free-memory pointer                                                                     |
 | `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`try*` failure values point here) |
-| `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result (packed by liveness with `optimize: true`) |
+| `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result (packed by liveness with `optimize: true`), then, only when a codec subroutine is shared, up to three codec register words (its return address, base and source pointer), so `frameEnd` and the free pointer start after them |
 | `frameEnd`…      | bump allocations: returndata snapshots of memref outputs, dynamic values, mutable arrays, the return tuple |
 
 The very first instructions of every script store `frameEnd` into the free pointer at `0x40`.

@@ -9,6 +9,11 @@
  * | `0x60` | zero slot — never written, so it reads as the empty memref `[len = 0]`   |
  * | `0x80` | start of the static frame (`codegen/frame.ts`)                           |
  *
+ * A program that shares a codec subroutine (`codegen/codecs.ts`) appends up to three words right
+ * after the static frame — the codec registers `RET` (a body's return address), `BASE` and
+ * `SRC` (its spilled operands) — and starts the free pointer past them. They are reserved only
+ * when something is shared, so every other program keeps its frame end.
+ *
  * The two scratch words are never live across a statement boundary. Each emitter aliases them
  * under a role name, and the phases that share a word never overlap:
  * - `0x00`: the running tail cursor of the return encoder / calldata templates

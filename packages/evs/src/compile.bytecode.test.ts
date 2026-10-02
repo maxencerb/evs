@@ -17,10 +17,15 @@
 import type { Abi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
+import { plannerAgainstReference } from '../test/harness/codec-plan.js';
+import { assemble } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
+import { evsPeephole } from './codegen/peephole.js';
+import { lowerProgram } from './codegen/program.js';
 import { compile, type CompiledEvsScript } from './compile.js';
 import { namedArg, t, type Hex } from './core/types.js';
+import { eliminateDeadCode } from './ir/dce.js';
 import type { ScriptIr } from './ir/nodes.js';
 
 const erc20Abi = [
@@ -457,6 +462,32 @@ describe('optimized twin (optimize: true) is byte-stable (issue #39)', () => {
       const optimized = bytesOf(c, true);
       expect(optimized.length).toBeLessThanOrEqual(plain.length);
       expect(optimized).toMatchSnapshot();
+    });
+  }
+});
+
+describe('codec sharing never grows a program, and its planner shortcuts decide alike (issue #95)', () => {
+  for (const c of [...BYTE_STABLE, ...CUSTOM_ERRORS, ...ARRAY_DECODE]) {
+    // oxlint-disable-next-line vitest/valid-title -- parametrized over the case table
+    test(c.name, () => {
+      const evmVersion = c.evmVersion ?? 'cancun';
+      for (const optimize of [false, true]) {
+        const script = c.script();
+        // the same program with every codec inlined (codegen/codecs.ts off)
+        const lowered = lowerProgram(eliminateDeadCode(script.ir), {
+          evmVersion,
+          optimize,
+          shareCodecs: false,
+        });
+        const inline = assemble(lowered.nodes, {
+          evmVersion,
+          ...(optimize ? { peephole: evsPeephole } : {}),
+        }).bytecode;
+        expect((bytesOf(c, optimize).length - 2) / 2).toBeLessThanOrEqual(inline.length);
+        // the planner's compile-time shortcuts take the exhaustive planner's decisions
+        const { fast, reference } = plannerAgainstReference(script.ir, evmVersion, optimize);
+        expect(fast).toEqual(reference);
+      }
     });
   }
 });

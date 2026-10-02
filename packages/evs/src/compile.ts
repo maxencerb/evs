@@ -33,8 +33,9 @@ import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
+import { CodecPlanDrift } from './codegen/codecs.js';
 import { evsPeephole } from './codegen/peephole.js';
-import { lowerProgram, type ProgramRegions } from './codegen/program.js';
+import { lowerProgram, type LowerResult, type ProgramRegions } from './codegen/program.js';
 import { bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
@@ -215,7 +216,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   // result nothing observable reads) → lowerProgram, which re-validates the DCE output as a
   // self-check of the pass. The artifact keeps exposing the recorded `script.ir` unchanged.
   validateIr(ir);
-  const lowered = lowerProgram(eliminateDeadCode(ir), {
+  const lowered = lowerWithCodecFallback(eliminateDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     optimize: resolved.optimize,
   });
@@ -288,6 +289,23 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   return Object.freeze(artifact);
 }
 
+/**
+ * `lowerProgram`, falling back to the inline lowering when the codec-sharing census and the
+ * emitters disagree (`CodecPlanDrift`, `codegen/codecs.ts`): such a drift only ever costs the
+ * saving, never a failed compile. Every other error propagates.
+ */
+function lowerWithCodecFallback(
+  ir: ScriptIr,
+  opts: { evmVersion: EvmVersion; optimize: boolean },
+): LowerResult {
+  try {
+    return lowerProgram(ir, opts);
+  } catch (error) {
+    if (!(error instanceof CodecPlanDrift)) throw error;
+    return lowerProgram(ir, { ...opts, shareCodecs: false });
+  }
+}
+
 // ---------------------------------------------------------------------------
 // EIP-170 per-region breakdown
 // ---------------------------------------------------------------------------
@@ -303,18 +321,21 @@ function eip170Message(
 
   // program order: receive+prologue+dispatcher (pc 0 up to @main, reported as "dispatcher") ·
   // @main(arg decode + body + return encode) ·
-  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
-  // tails · INVALID guard + data segments
+  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @enc_<k> / @dec_<k> shared
+  // codec bodies (only when some codec is shared) · @dfail_* stubs + shared tails · INVALID
+  // guard + data segments
   const mainPc = pcOf(regions.main) ?? 0;
   const fnPc = pcOf(regions.fns);
   const trampolinePc = pcOf(regions.trampoline);
+  const codecPc = pcOf(regions.codecs);
   const tailPc = pcOf(regions.tails);
   const firstDataPc = pcOf(regions.data);
   const dataPc = firstDataPc === undefined ? undefined : firstDataPc - 1; // INVALID guard byte
 
   const dataStart = dataPc ?? total;
   const tailEnd = dataStart;
-  const trampolineEnd = tailPc ?? tailEnd;
+  const codecEnd = tailPc ?? tailEnd;
+  const trampolineEnd = codecPc ?? codecEnd;
   const fnEnd = trampolinePc ?? trampolineEnd;
   const bodyEnd = fnPc ?? fnEnd;
 
@@ -323,13 +344,14 @@ function eip170Message(
   const fns = fnPc === undefined ? 0 : Math.max(fnEnd - fnPc, 0);
   const trampoline =
     trampolinePc === undefined ? '' : `trampoline ${Math.max(trampolineEnd - trampolinePc, 0)}, `;
+  const codecs = codecPc === undefined ? '' : `codecs ${Math.max(codecEnd - codecPc, 0)}, `;
   const tails = tailPc === undefined ? 0 : Math.max(tailEnd - tailPc, 0);
   const data = Math.max(total - dataStart, 0);
 
   return (
     `runtime bytecode is ${total} bytes — exceeds the EIP-170 limit of ${EIP170_LIMIT} by ` +
     `${total - EIP170_LIMIT} bytes (dispatcher ${dispatcher}, body ${body}, fns ${fns}, ` +
-    `${trampoline}tails ${tails}, data segments ${data}); split the script or move large ` +
+    `${trampoline}${codecs}tails ${tails}, data segments ${data}); split the script or move large ` +
     `literals off-chain`
   );
 }

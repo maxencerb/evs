@@ -3,10 +3,10 @@
  * self-call into the trampoline (issue #1), decoding the whole tuple then scattering it.
  */
 
-import { headBytes, layoutOfType } from '../../abi/layout.js';
+import { headBytes, isDynamic, layoutOfType, type TypeLayout } from '../../abi/layout.js';
 import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { abiParamToType } from '../../core/types.js';
+import { abiParamToType, type NamedType } from '../../core/types.js';
 import {
   type SharedTails,
   emitCeil32,
@@ -17,8 +17,10 @@ import {
   emitWithinStackBudget,
   needsDecodeBudget,
   emitInitDecodeBudget,
-  type DecodeBudget,
+  type DecodeFail,
+  type DecodeOptions,
 } from '../abi.js';
+import { codecKey, type CodecUnit } from '../codec-keys.js';
 import { SCRATCH_1, FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   SIMULATE_TRAMPOLINE_SELECTOR,
@@ -96,7 +98,7 @@ export function emitSimulateCall(
       : null;
   // outputs whose decode can exhaust the decode-work budget get a budget word after the snapshot
   const budgeted = needsDecodeBudget(outputs);
-  const budget: DecodeBudget = budgeted ? 'once' : 'off';
+  const budget: 'off' | 'once' = budgeted ? 'once' : 'off';
   const failPre = makeDecodeFail(w, plan, tryMode, 'sim');
   const fail = restore === null ? failPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
 
@@ -245,26 +247,17 @@ export function emitSimulateCall(
     fail(1); // [buf]
 
     // decode the outputs as one tuple from [SNAP+64, SNAP+rds) into a flat block, then scatter.
-    const pushBase: PushBase = () => {
-      pushSnap(w);
-      w.push(64);
-      w.op('ADD'); // [buf+64]
-    };
-    const pushEnd = (): void => pushSnapEnd(w);
     // the budget covers the carried returndata only (rds − 64), like a plain call's returndata
-    if (budgeted) emitInitDecodeBudget(w, pushEnd, 64); // [buf]
-    emitWithinStackBudget(
-      w,
-      1,
-      () => `the outputs of ${fnAbi.name} (site ${siteId})`,
-      // the outputs block itself: its narrow word-array members are top-level outputs (uncharged)
-      () =>
-        emitDecodeTupleToMem(w, outputs, pushBase, pushEnd, fail, 1, {
-          budget,
-          evmVersion: opts.evmVersion,
-          outputsBlock: true,
-        }),
-    ); // [flat, buf]
+    if (budgeted) emitInitDecodeBudget(w, () => pushSnapEnd(w), 64); // [buf]
+    // the program may share this decoder (`codegen/codecs.ts`): the call then routes a failure
+    // through this site's own `fail`
+    const what = (): string => `the outputs of ${fnAbi.name} (site ${siteId})`;
+    const shared =
+      tails.codecs !== null &&
+      tails.codecs.decode(w, codecKey(simOutputsUnit(outputs, budget)), fail, `decode ${what()}`);
+    if (!shared) {
+      emitDecodeSimulateOutputs(w, outputs, fail, { budget, evmVersion: opts.evmVersion }, what);
+    } // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
       if (ref === undefined) throw internal(`simulate missing out ref #${j}`);
@@ -283,4 +276,50 @@ export function emitSimulateCall(
 
   // -- 6. try mode: success flag, zero block (checked — rejoins), join ------------------------
   if (tryMode) emitTryEpilogue(w, plan, 'sim', restore);
+}
+
+/**
+ * @internal The codec unit of a simulate site's whole outputs list under the site's decode
+ * budget: what keys its shared decoder, for this emitter and for the planner's census
+ * (`codegen/codecs.ts`) alike.
+ */
+export function simOutputsUnit(
+  outputs: readonly NamedType[],
+  budget: 'off' | 'once',
+): Extract<CodecUnit, { region: 'sim' }> {
+  return { dir: 'dec', region: 'sim', layout: outputsLayout(outputs), budget };
+}
+
+/** The layout of a simulate site's whole outputs list, decoded as one tuple. */
+export function outputsLayout(
+  outputs: readonly NamedType[],
+): Extract<TypeLayout, { kind: 'tuple' }> {
+  const components = outputs.map((p) => layoutOfType(abiParamToType(p)));
+  return { kind: 'tuple', abi: 'tuple', components, dynamic: components.some(isDynamic) };
+}
+
+/**
+ * @internal Shared with `codegen/codecs.ts` (a shared decoder body is this unit). Decodes a
+ * simulate site's outputs as one tuple from the carried returndata `[snap+64, snap+rds)`,
+ * `[buf] → [flat, buf]`, inside `emitWithinStackBudget` (`what` names the outputs). The outputs
+ * block itself is the tuple, so its narrow word-array members are top-level outputs (uncharged).
+ */
+export function emitDecodeSimulateOutputs(
+  w: AsmWriter,
+  outputs: readonly NamedType[],
+  fail: DecodeFail,
+  opts: DecodeOptions,
+  what: () => string,
+): void {
+  const pushBase: PushBase = () => {
+    pushSnap(w);
+    w.push(64);
+    w.op('ADD'); // [buf+64]
+  };
+  emitWithinStackBudget(w, 1, what, () =>
+    emitDecodeTupleToMem(w, outputs, pushBase, () => pushSnapEnd(w), fail, 1, {
+      ...opts,
+      outputsBlock: true,
+    }),
+  );
 }

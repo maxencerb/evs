@@ -84,8 +84,10 @@ protocol applies it in deployless mode, where viem's wrapper deploys the script 
 state-override mode installs the code without a deployment. `compile()` enforces the cap for
 every artifact, so one artifact runs in either mode: exceeding the cap throws
 `EvsCompileError` with code `'COMPILE_LIMIT'`, and the message breaks the size down by region —
-dispatcher, body, fns, tails, data segments — ending with the advice to "split the script or
-move large literals off-chain".
+dispatcher, body, fns, tails, data segments, plus a `trampoline` bucket when the script has an
+`s.simulate` site and a `codecs` bucket when it shares codec subroutines (a struct or array
+encoded or decoded at several sites) — ending with the advice to "split the script or move large
+literals off-chain".
 
 Practical levers when you hit it:
 

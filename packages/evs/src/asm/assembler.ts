@@ -24,6 +24,7 @@
 
 import { EvsInternalError } from '../core/errors.js';
 import {
+  encodedPushWidth,
   forkAtLeast,
   isTerminator,
   OPS,
@@ -287,6 +288,40 @@ export interface WriterCheckpoint {
   readonly nodes: number;
   readonly nextLabel: number;
   readonly referenced: number;
+}
+
+/**
+ * @internal The byte length `nodes` assemble to on `evmVersion`, from the same fixed widths the
+ * layout pass uses (an op 1, a `push` its {@link encodedPushWidth}, a `pushBytes` 1 + its length,
+ * a `pushLabel` 3, a code label 1 for its JUMPDEST, a data label 0, a data node its length). It
+ * ignores the INVALID guard the assembler plants before the data region, so it measures code
+ * fragments, which is what the codec-sharing cost model (`codegen/codecs.ts`) asks of it.
+ */
+export function codeSize(nodes: readonly AsmNode[], evmVersion: EvmVersion): number {
+  let size = 0;
+  for (const node of nodes) {
+    switch (node.k) {
+      case 'op':
+      case 'label':
+        size += 1;
+        break;
+      case 'push':
+        size += encodedPushWidth(node.value, evmVersion);
+        break;
+      case 'pushBytes':
+        size += 1 + node.bytes.length;
+        break;
+      case 'pushLabel':
+        size += 3;
+        break;
+      case 'dataLabel':
+        break;
+      case 'data':
+        size += node.bytes.length;
+        break;
+    }
+  }
+  return size;
 }
 
 // ---------------------------------------------------------------------------
