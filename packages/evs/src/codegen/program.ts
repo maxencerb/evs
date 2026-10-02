@@ -123,7 +123,10 @@ export function lowerProgram(
       : planCodecs(ir, {
           evmVersion: opts.evmVersion,
           optimize,
-          frameEnd: optimize ? layoutFrames(ir, { optimize: false }).frameEnd : frame.frameEnd,
+          frameEnd: frame.frameEnd,
+          ...(optimize
+            ? { measureFrameEnd: () => layoutFrames(ir, { optimize: false }).frameEnd }
+            : {}),
         });
   // the codec registers sit right after the static frame (none when nothing is shared)
   const frameEnd = frame.frameEnd + 32 * plan.words;

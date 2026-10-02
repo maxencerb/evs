@@ -166,23 +166,31 @@ const SHARE_MIN_PER_USE = 8;
  * - a dynamic tuple encoder (its base is the tail cursor): ~15 gas per base read, so from
  *   {@link CHEAP_ENCODE_READS} reads (`subTupleBaseReads`);
  * - the decoder of a dynamic tuple output (its block base, cached in the `BASE` register): ~8 gas
- *   per read, so from {@link CHEAP_DECODE_READS} reads (`blockBaseReads`).
+ *   per read at head offset 0, so from {@link CHEAP_DECODE_READS} reads (`blockBaseReads`); an
+ *   output at a nonzero head offset re-adds it at every inline read (`PUSH ho ADD`, ~14 gas per
+ *   read), so from {@link CHEAP_DECODE_READS_AT_OFFSET}.
  *
  * Measured on the in-process EVM (`(uint64 ×k, string)`: −15 gas per encoder call and −8 per
- * decoder call for each extra word). Every other unit costs a few dozen gas per call: it never
- * shares inside a loop, and only when it saves {@link SHARE_MIN_PER_USE} bytes per use.
+ * decoder call for each extra word, −14 behind a leading `uint256` output). Every other unit
+ * costs a few dozen gas per call: it never shares inside a loop, and only when it saves
+ * {@link SHARE_MIN_PER_USE} bytes per use.
  */
 function isCheap(unit: CodecUnit): boolean {
   const l = unit.layout;
   if (l.kind !== 'tuple' || !l.dynamic) return false;
   if (unit.dir === 'enc') return subTupleBaseReads(l, 1) >= CHEAP_ENCODE_READS;
-  return unit.region === 'ret' && blockBaseReads(l) >= CHEAP_DECODE_READS;
+  if (unit.region !== 'ret') return false;
+  const reads = unit.headOffset === 0 ? CHEAP_DECODE_READS : CHEAP_DECODE_READS_AT_OFFSET;
+  return blockBaseReads(l) >= reads;
 }
 
 /** The base reads that repay a dynamic tuple encoder call (see {@link isCheap}). */
 const CHEAP_ENCODE_READS = 5;
-/** The block-base reads that repay a dynamic tuple decoder call (see {@link isCheap}). */
+/** The block-base reads that repay a dynamic tuple decoder call at head offset 0 (see
+ *  {@link isCheap}). */
 const CHEAP_DECODE_READS = 9;
+/** The block-base reads that repay a dynamic tuple decoder call at a nonzero head offset. */
+const CHEAP_DECODE_READS_AT_OFFSET = 5;
 
 /**
  * Decides which codec uses of `ir` share a body. Per key (one body), over the uses the census
@@ -196,24 +204,31 @@ const CHEAP_DECODE_READS = 9;
  * Sizes are measured on the real emitters (dry runs in a scratch writer). An encoder use reads
  * its operands at the cheapest cost a site can have: the real inline code reads them at least as
  * often as the call does, so the real saving is at least the measured one. The registers are
- * measured at `frameEnd`, the default allocator's frame end (the larger one), so both allocators
- * take the same decisions. A key whose dry run fails to compile (a type too deep for the stack)
- * stays inline, and its site reports the error as it always did.
+ * measured at `measureFrameEnd()`, the default allocator's frame end (the larger one), so both
+ * allocators take the same decisions. The prologue's frame-end push, which grows by the register
+ * words, is charged from the program's own `frameEnd`: one byte to every key whose words would
+ * widen it (conservative: the push grows once). A key whose dry run fails to compile (a type too
+ * deep for the stack) stays inline, and its site reports the error as it always did.
  */
 export function planCodecs(
   ir: ScriptIr,
-  opts: { readonly evmVersion: EvmVersion; readonly frameEnd: number; readonly optimize: boolean },
+  opts: {
+    readonly evmVersion: EvmVersion;
+    readonly optimize: boolean;
+    /** The program's static frame end (what its prologue pushes without registers). */
+    readonly frameEnd: number;
+    /** The default allocator's frame end (≥ `frameEnd`), when `optimize` packs the frame. */
+    readonly measureFrameEnd?: () => number;
+  },
 ): CodecPlan {
-  const regs = codecRegisters(opts.frameEnd);
-  // a wider register push than the frame end's (charged to every key: conservative)
-  const widen =
-    encodedPushWidth(BigInt(regs.src), opts.evmVersion) >
-    encodedPushWidth(BigInt(opts.frameEnd), opts.evmVersion)
-      ? 1
-      : 0;
+  const regs = codecRegisters(opts.measureFrameEnd?.() ?? opts.frameEnd);
+  const pushWidth = (n: number): number => encodedPushWidth(BigInt(n), opts.evmVersion);
   const keys = new Map<string, PlannedKey>();
   let words = 0;
   for (const [key, use] of census(ir)) {
+    // the prologue pushes `frameEnd + 32·words`: a wider push than the inline program's costs 1
+    const widen =
+      pushWidth(opts.frameEnd + 32 * registerWords(use.unit)) > pushWidth(opts.frameEnd) ? 1 : 0;
     const cheap = isCheap(use.unit);
     const groups = [...use.groups].filter(([, g]) => cheap || !g.hot);
     const n = groups.reduce((sum, [, g]) => sum + g.count, 0);

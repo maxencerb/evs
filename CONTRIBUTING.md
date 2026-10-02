@@ -363,10 +363,12 @@ Releases: see [Releasing](#releasing) below.
   ≥ `SHARE_MIN_SAVING` (16) bytes, ≥ `SHARE_MIN_PER_USE` (8) per use for a key whose calls cost
   gas, and, under `optimize`, a positive saving after the peephole. A use inside a loop shares
   only for a cheap key (`isCheap`: a dynamic tuple encoder with ≥ 5 base reads, or the decoder of
-  a dynamic tuple output with ≥ 9; each read saves ~15 / ~8 gas against ~60 gas of call
-  overhead, measured on `(uint64 ×k, string)`). A key whose dry run throws stays inline, so a
-  too-deep type reports its own site's `UNSUPPORTED_V0`. The registers are measured at the
-  default allocator's frame end, so `optimize` decides alike. A program where nothing pays is
+  a dynamic tuple output with ≥ 9, ≥ 5 at a nonzero head offset; each read saves ~15 / ~8 gas,
+  ~14 behind a head offset that the inline read re-adds, against ~60 gas of call overhead,
+  measured on `(uint64 ×k, string)`). A key whose dry run throws stays inline, so a too-deep
+  type reports its own site's `UNSUPPORTED_V0`. The registers are measured at the default
+  allocator's frame end, so `optimize` decides alike; the prologue's frame-end push, which the
+  register words can widen by a byte, is charged from the program's own frame end. A program where nothing pays is
   byte-identical to the inline lowering. **Drift**: the hook counts the calls each statement
   makes and checks each decoder body's `canFail` against the plan; a mismatch is a
   `CodecPlanDrift`, which `compile()` turns into a second lowering with sharing off (only ever a

@@ -260,6 +260,29 @@ describe('census and cost model', () => {
     expect(planOf(script).keys.has(keyOf(S2))).toBe(false);
   });
 
+  test('across the PUSH1 / PUSH2 frame-end boundary a shared program is never larger', () => {
+    // the prologue pushes `frameEnd + 32·words`: padding the frame walks it over 0x100
+    let crossed = 0;
+    for (let pad = 0; pad <= 6; pad++) {
+      const script = evscript(
+        { name: 'pad', args: [W8, ...Array.from({ length: pad }, () => t.uint256)] },
+        (s: any, x: any) => s.return({ a: x, b: x }),
+      );
+      for (const optimize of [false, true]) {
+        const lowered = lowerProgram(irOf(script), { evmVersion: 'cancun', optimize });
+        const inlineEnd = lowerProgram(irOf(script), {
+          evmVersion: 'cancun',
+          optimize,
+          shareCodecs: false,
+        }).frameEnd;
+        if (inlineEnd < 0x100 && lowered.frameEnd >= 0x100) crossed += 1;
+        const { shared, inline } = sizes(script, 'cancun', optimize);
+        expect(shared, `pad ${pad}, optimize ${optimize}`).toBeLessThanOrEqual(inline);
+      }
+    }
+    expect(crossed).toBeGreaterThan(0); // some case pays the wider push
+  });
+
   test('a costly key shares only outside loops; a cheap one shares inside them too', () => {
     const loopy = (name: string, ty: any, fn: string, cold: number) =>
       evscript({ name, args: [t.address, ty] }, (s: any, a: any, x: any) => {
@@ -1126,6 +1149,82 @@ describe('gas of shared calls (in-process EVM)', () => {
         "uint64×6 + string": "enc -998",
         "uint64×7 + string": "enc+dec -1495",
         "uint64×9 + string": "enc+dec -2491",
+      }
+    `);
+  });
+
+  test('a decoder behind a leading output repays its call from fewer base reads', async () => {
+    // `echo2(uint256, T) returns (uint256, T)`: T sits at head offset 32, so every inline read of
+    // its block base re-adds the offset — the shared body's cached base pays off from 5 reads
+    const shares: Record<string, string> = {};
+    for (const k of [1, 3, 4, 6]) {
+      const spec: Record<string, EvsType> = {};
+      const components: { name: string; type: string }[] = [];
+      const value: Record<string, unknown> = {};
+      for (let i = 0; i < k; i++) {
+        spec[`a${i}`] = t.uint64;
+        components.push({ name: `a${i}`, type: 'uint64' });
+        value[`a${i}`] = BigInt(i + 1);
+      }
+      spec['s'] = t.string;
+      components.push({ name: 's', type: 'string' });
+      value['s'] = 'hello';
+      const ty = t.struct(spec as never) as EvsType;
+      const params = [
+        { name: 'n', type: 'uint256' },
+        { name: 'x', type: 'tuple', components },
+      ];
+      const echoAbi = [
+        {
+          type: 'function',
+          name: 'echo2',
+          stateMutability: 'view',
+          inputs: params,
+          outputs: params,
+        },
+      ];
+      // one read in a 20-iteration loop, one outside; only the struct output is a codec unit
+      const script = evscript(
+        { name: 'loop2', args: [t.address, ty as never] },
+        (s: any, a: any, x: any) => {
+          const acc = s.let(ty, x);
+          s.for({ type: t.uint256, from: 0n, until: 20n }, () => {
+            const [, out] = s.read({
+              address: a,
+              abi: echoAbi,
+              functionName: 'echo2',
+              args: [7n, acc.get()],
+            });
+            acc.set(out);
+          });
+          const [n, last] = s.read({
+            address: a,
+            abi: echoAbi,
+            functionName: 'echo2',
+            args: [7n, acc.get()],
+          });
+          return s.return({ n, last });
+        },
+      );
+      const hot = new Set<number>();
+      walkEmittedStmts(irOf(script), (st, isHot) => {
+        if (isHot && st.k === 'call') hot.add(st.site);
+      });
+      const loopShared = [...planOf(script).keys.values()].filter((key) =>
+        [...key.groups.keys()].some((site) => hot.has(site)),
+      );
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      const delta = await gasDelta(script, [ECHO_ARGS, value]);
+      shares[`uint64×${k} + string`] =
+        `${loopShared.map((key) => key.unit.dir).join('+') || 'inline'} ${delta}`;
+      expect(loopShared.length === 0 || delta <= 0, `k=${k}: ${delta} gas`).toBe(true);
+    }
+    expect(shares).toMatchInlineSnapshot(`
+      {
+        "uint64×1 + string": "inline 45",
+        "uint64×3 + string": "dec -163",
+        "uint64×4 + string": "enc+dec -1419",
+        "uint64×6 + string": "enc+dec -2930",
       }
     `);
   });
