@@ -408,7 +408,7 @@ describe('string ↔ bytes and bytesN → string', () => {
     const min = gas.reduce((m, g) => (g < m ? g : m));
     const max = gas.reduce((m, g) => (g > m ? g : m));
     // 0.3.0 scanned down from byte 32 one byte per iteration: ~67 gas per trailing zero byte,
-    // 2,248 gas for an all-zero word. The branch-free trailing-zero count is flat.
+    // 2,269 gas for an all-zero word. The branch-free trailing-zero count is flat.
     expect(max - min, `asString gas ${min}..${max}`).toBe(0n);
   });
 
