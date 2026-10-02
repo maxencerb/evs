@@ -956,6 +956,38 @@ describe('explainRevert', () => {
     ]);
   });
 
+  test('panic: a constant operand that removes the overflow check removes the candidate', async () => {
+    // release review: #120's constant templates emit no check for x · 1, x · 0 and int256 x ± 0,
+    // so those sites can never raise Panic(0x11) and must not be blamed for a bubbled one
+    const script = evscript({ name: 'm', args: [t.address, t.int256] }, (s, target, y) => {
+      const r = s.read({ address: target, abi: PANICKER_ABI, functionName: 'f' });
+      return s.return({ a: r.mul(1n), b: r.mul(0n), c: y.add(0n), d: y.sub(0n) });
+    });
+    const compiled = compile(script);
+    expect(compiled.runtimeBytecode).not.toContain('4e487b71'); // no Panic selector at all
+    const calldata = encodeFunctionData({
+      abi: compiled.abi,
+      functionName: 'm',
+      args: [PANICKER, 1n],
+    });
+    const res = await execRuntime(compiled.runtimeBytecode, calldata, {
+      contracts: { [PANICKER]: reverter(PANIC_11) },
+    });
+    expect(res.data).toBe(PANIC_11);
+    const explained = compiled.explainRevert(res.data);
+    expect(explained.candidateSites).toEqual([]);
+    expect(explained.message).toMatch(
+      /no site in this script can raise Panic\(0x11\), so it was bubbled verbatim from a callee through the strict call site: decoding f\(\) returndata/,
+    );
+    // with no call site either, the payload did not come from this artifact
+    const pure = compile(
+      evscript({ name: 'p', args: [t.uint256] }, (s, x) => s.return({ r: x.mul(1n) })),
+    ).explainRevert(PANIC_11);
+    expect(pure.candidateSites).toEqual([]);
+    expect(pure.message).toMatch(/no site in this script can raise Panic\(0x11\)/);
+    expect(pure.message).toMatch(/did not come from this artifact/);
+  });
+
   test('panic: same-kind candidates are told apart by their operands', async () => {
     // field-test PoC: two bounds-checked reads used to share one detail string
     const script = evscript(

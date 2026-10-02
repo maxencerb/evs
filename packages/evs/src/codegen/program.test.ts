@@ -189,6 +189,7 @@ class IrB {
     mode?: 'strict' | 'try';
     kind?: 'call' | 'simulate';
     gas?: ValueId;
+    value?: ValueId;
   }): { outs: readonly ValueId[]; success: ValueId | null; site: number } {
     const mode = o.mode ?? 'strict';
     const outs = o.abi.outputs.map((p) => {
@@ -207,6 +208,7 @@ class IrB {
       ...(o.kind === undefined ? {} : { kind: o.kind }),
       ...(success === null ? {} : { successOut: success }),
       ...(o.gas === undefined ? {} : { gas: o.gas }),
+      ...(o.value === undefined ? {} : { value: o.value }),
     });
     return { outs, success, site };
   }
@@ -1420,6 +1422,32 @@ describe('diagnostics', () => {
     expect(selfBalanceOps).toHaveLength(2);
     expect(selfBalanceNotes).toHaveLength(selfBalanceOps.length);
     expect(nodes.filter((n) => n.k === 'op' && n.op === 'BALANCE')).toHaveLength(1);
+  });
+
+  test('ENV_FRAME_DEPENDENT: a call value is paid from the script balance (not a literal 0)', () => {
+    const b = new IrB('payer', [['wei', 'uint256']]);
+    const target = b.word('address', BigInt(TARGET));
+    const deposit = { ...fnAbi('deposit', [], ['uint256']), stateMutability: 'payable' } as const;
+    const strict = b.call({ target, abi: deposit, kind: 'call', value: 0 }).site;
+    const tried = b.call({ target, abi: deposit, kind: 'simulate', mode: 'try', value: 0 }).site;
+    const literal = b.call({ target, abi: deposit, kind: 'call', value: b.word('uint256', 5n) });
+    b.call({ target, abi: deposit, kind: 'call', value: b.word('uint256', 0n) }); // sends nothing
+    b.call({ target, abi: deposit, kind: 'call' }); // no value at all
+    b.ret('wei', 0);
+    const { diagnostics, sites } = lowerProgram(b.build(), { evmVersion: 'cancun' });
+    const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
+    expect(envDiags.map((d) => d.site)).toEqual([strict, tried, literal.site]);
+    expect(envDiags[0]?.message).toMatch(
+      /^s\.call\(deposit\) sends a `value`, paid from the script's own balance/,
+    );
+    expect(envDiags[0]?.message).toMatch(
+      /deployless.*fails before the target runs and the site reverts/,
+    );
+    expect(envDiags[0]?.message).toContain("toViem({ mode: 'stateOverride' })");
+    expect(envDiags[1]?.message).toMatch(/^s\.trySimulate\(deposit\) .* reports success = false/);
+    // the site table marks exactly the same sites
+    const paying = sites.filter((site) => site.sendsValue === true).map((site) => site.id);
+    expect(paying).toEqual([strict, tried, literal.site]);
   });
 
   test('ENV_FRAME_DEPENDENT: flagged inside emitted fn bodies, not in dropped fns', () => {

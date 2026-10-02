@@ -8,10 +8,16 @@
  * here byte-for-byte.
  */
 
-import { type Abi, decodeFunctionResult, encodeAbiParameters, encodeFunctionData } from 'viem';
+import {
+  type Abi,
+  decodeFunctionResult,
+  encodeAbiParameters,
+  encodeErrorResult,
+  encodeFunctionData,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
-import { execRuntime, SCRIPT_ADDRESS } from '../../test/harness/evm.js';
+import { execRuntime, execRuntimeDeployless, SCRIPT_ADDRESS } from '../../test/harness/evm.js';
 import { returner, reverter, RUNTIME_SPIN, word } from '../../test/harness/fixtures.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
@@ -612,13 +618,113 @@ describe('call value (payable targets)', () => {
       );
     const fixture = { contracts: { [TARGET]: RUNTIME_CALLVALUE } };
     const viaCall = strict('call');
-    const callRes = await execRuntime(viaCall.runtimeBytecode, calldata, fixture);
-    expect(callRes).toMatchObject({ success: false, data: '0x' });
-    // the simulate hop itself carries the value, so it fails before the trampoline runs
     const viaSim = strict('simulate');
-    const simRes = await execRuntime(viaSim.runtimeBytecode, calldata, fixture);
-    expect(simRes.success).toBe(false);
-    expect(viaSim.explainRevert(simRes.data).kind).toBe('evs-decode');
+    // the script's own frame holds no ETH, and neither does the deployless counterfactual one
+    for (const deployless of [false, true]) {
+      const run = (compiled: typeof viaCall) =>
+        deployless
+          ? execRuntimeDeployless(compiled.initBytecode, calldata, fixture)
+          : execRuntime(compiled.runtimeBytecode, calldata, fixture);
+      // oxlint-disable-next-line no-await-in-loop -- two sequential runs, one per frame
+      const [callRes, simRes] = await Promise.all([run(viaCall), run(viaSim)]);
+      expect(callRes).toMatchObject({ success: false, data: '0x' });
+      // the explanation names the unpaid value, not only a callee's bare revert
+      const call = viaCall.explainRevert(callRes.data);
+      expect(call.kind).toBe('empty');
+      expect(call.message).toMatch(
+        /the script's balance was below the `value` sent by decoding call submit\(\) returndata \(site \d+\), so that CALL failed before the target ran/,
+      );
+      expect(call.message).toMatch(/deployless mode cannot fund it/);
+      // the simulate hop itself carries the value, so it fails before the trampoline runs
+      expect(simRes.success).toBe(false);
+      const sim = viaSim.explainRevert(simRes.data);
+      expect(sim.kind).toBe('evs-decode');
+      expect(sim.message).toMatch(
+        /^decoding simulate submit\(\) returndata failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
+      );
+    }
+  });
+
+  test('an unfunded value is an EvsDecodeError cause only where it can be one', async () => {
+    // a plain strict s.call bubbles the unfunded CALL as an empty revert (above), so its
+    // EvsDecodeError is a genuine returndata decode failure: no unpaid-value cause there
+    const decodeError = (site: number) =>
+      encodeErrorResult({
+        abi: [
+          { type: 'error', name: 'EvsDecodeError', inputs: [{ name: 'site', type: 'uint256' }] },
+        ],
+        errorName: 'EvsDecodeError',
+        args: [BigInt(site)],
+      });
+    const viaCall = compile(
+      evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, value) =>
+        s.return({
+          shares: s.call({
+            address: target,
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: [target],
+            value,
+          }),
+        }),
+      ),
+    );
+    const callSite = viaCall.sourceMap.sites.find((site) => site.sendsValue === true);
+    expect(callSite?.kind).toBe('decode');
+    const call = viaCall.explainRevert(decodeError(callSite?.id ?? -1));
+    expect(call.kind).toBe('evs-decode');
+    expect(call.site?.id).toBe(callSite?.id);
+    expect(call.message).not.toMatch(/balance|`value`/);
+    // a revertReturns site decodes the (empty) revert data of the failed CALL, so an unfunded
+    // script reaches its decode-fail stub: the explanation names the unpaid value
+    const viaRevert = compile(
+      evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, target, value) =>
+        s.return({
+          quoted: s.call({
+            address: target,
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: [target],
+            value,
+            revertReturns: [t.uint256],
+          }),
+        }),
+      ),
+    );
+    for (const deployless of [false, true]) {
+      // oxlint-disable-next-line no-await-in-loop -- two sequential runs, one per frame
+      const res = await (deployless
+        ? execRuntimeDeployless(viaRevert.initBytecode, calldata, {
+            contracts: { [TARGET]: RUNTIME_CALLVALUE },
+          })
+        : execRuntime(viaRevert.runtimeBytecode, calldata, {
+            contracts: { [TARGET]: RUNTIME_CALLVALUE },
+          }));
+      expect(res.success).toBe(false);
+      const explained = viaRevert.explainRevert(res.data);
+      expect(explained.kind).toBe('evs-decode');
+      expect(explained.message).toMatch(
+        /^decoding call submit\(\) revert data failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
+      );
+    }
+  });
+
+  test('a literal value of 0 sends nothing: no unfunded-value explanation', () => {
+    const free = compile(
+      evscript({ name: 'pay', args: [t.address] }, (s, target) =>
+        s.return({
+          shares: s.call({
+            address: target,
+            abi: PAYABLE_ABI,
+            functionName: 'submit',
+            args: [target],
+            value: 0n,
+          }),
+        }),
+      ),
+    );
+    expect(free.sourceMap.sites.some((site) => site.sendsValue === true)).toBe(false);
+    expect(free.explainRevert('0x').message).not.toMatch(/balance|`value`/);
   });
 
   test('try verbs contain an unfunded value: success=false, zero value, the script continues', async () => {

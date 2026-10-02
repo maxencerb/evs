@@ -1,18 +1,20 @@
 /**
  * `codegen/sites.ts` — the SiteId table behind `explainRevert` / `EvsDecodeError`: one entry per
  * emitted statement (main body + the fns that were actually emitted), with its kind, a
- * human-readable detail that names the operands, and — on panic sites — the exact
- * `Panic(uint256)` codes the site can raise.
+ * human-readable detail that names the operands, on panic sites the exact `Panic(uint256)`
+ * codes the site can raise, and on `s.call` / `s.simulate` sites (and their `try*` forms) whether
+ * the CALL sends a `value`.
  *
  * `panicCodes` mirrors the templates in `lower/` (`lowerCheckedArith`, `lowerDivMod`, `lowerPow`,
  * `lowerModArith`, `lowerMulDiv`, `lowerConvert`, `lowerIndex` (arrays and `byteAt`) / `lowerArrset`,
- * `lowerSlice`, `lowerArrnew`): a site claims a
- * code iff its template can reach that panic tail at run time. A check the lowering elides (a
- * folded nonzero divisor, a folded base of 0 / ±1, a free widening, …) is never claimed, and
- * neither is the allocation check of a folded length below the cap, which can never fire. A
- * statement with no reachable panic is a `'stmt'` site. `sites.test.ts` pins every rule against
- * the panic tails the compiled bytecode actually references, so a lowering change that adds or
- * drops a check fails there until this table follows.
+ * `lowerSlice`, `lowerArrnew`): a site claims a code iff its template can reach that panic tail at
+ * run time. A check the lowering elides (a folded nonzero divisor, a folded base of 0 / ±1, a
+ * folded multiplier of 0 / 1, a free widening, …) is never claimed, and neither is the
+ * allocation check of a folded length below the cap, which can never fire. Checked add / sub /
+ * mul ask the lowering itself (`checkedArithCanOverflow`, the predicate `lowerCheckedArith` picks
+ * its template with). A statement with no reachable panic is a `'stmt'` site. `sites.test.ts`
+ * pins every rule against the panic tails the compiled bytecode actually references, so a
+ * lowering change that adds or drops a check fails there until this table follows.
  *
  * Operands are named by what the user can see: a literal by its value, a recorded value by its
  * debug name (`args.x`, `s.read(token0)`, `s.newArray(uint256)`, …) and anything else by `#id`,
@@ -25,7 +27,15 @@ import type { SourceMap } from '../asm/sourcemap.js';
 import { isBytesN, isNumeric, isSigned, type EvsType } from '../core/types.js';
 import { walkStmts, type FnId, type Stmt, type ValueId } from '../ir/nodes.js';
 import { fmtType } from './abi.js';
-import { foldedConst, MINUS_ONE_WORD, MIN_I256, numClass, typeOf, type LowerCtx } from './lower.js';
+import {
+  checkedArithCanOverflow,
+  foldedConst,
+  MINUS_ONE_WORD,
+  MIN_I256,
+  numClass,
+  typeOf,
+  type LowerCtx,
+} from './lower.js';
 
 type Site = SourceMap['sites'][number];
 type SiteKind = Site['kind'];
@@ -79,9 +89,13 @@ function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site
       // revertReturns (issue #35): the strict site decodes the REVERT payload, and a normal return
       // lands on the same decode-fail stub — name the source so explainRevert reads right.
       const source = s.revertReturns === undefined ? 'returndata' : 'revert data';
-      return s.mode === 'strict'
-        ? site('decode', `decoding ${prefix}${s.fnAbi.name}() ${source}`)
-        : site('call', `try ${prefix}${s.fnAbi.name}()`);
+      const callSite =
+        s.mode === 'strict'
+          ? site('decode', `decoding ${prefix}${s.fnAbi.name}() ${source}`)
+          : site('call', `try ${prefix}${s.fnAbi.name}()`);
+      // call value (#132): paid from the script's own balance, so an unfunded script fails this
+      // CALL before the target runs — explainRevert names that cause for these sites
+      return sendsValue(ctx, s) ? { ...callSite, sendsValue: true } : callSite;
     }
     case 'bin': {
       const sym = BIN_SYMBOLS[s.op];
@@ -150,8 +164,10 @@ function binPanicCodes(ctx: LowerCtx, s: Extract<Stmt, { k: 'bin' }>, type: EvsT
     case 'add':
     case 'sub':
     case 'mul':
-      // lowerCheckedArith: every width and signedness carries an overflow check
-      return [OVERFLOW];
+      // lowerCheckedArith: every width and signedness carries an overflow check, except the
+      // constant templates that cannot overflow (unsigned x · 0 / x · 1, int256 x ± 0) — the
+      // lowering's own predicate, so the two cannot drift
+      return checkedArithCanOverflow(ctx, s, type) ? [OVERFLOW] : [];
     case 'div':
     case 'mod': {
       // lowerDivMod: the zero check unless the divisor is a folded nonzero constant; the
@@ -178,6 +194,11 @@ function binPanicCodes(ctx: LowerCtx, s: Extract<Stmt, { k: 'bin' }>, type: EvsT
     default:
       return [];
   }
+}
+
+/** Whether a call site sends wei: a `value` operand that is not a folded 0. */
+function sendsValue(ctx: LowerCtx, s: Extract<Stmt, { k: 'call' }>): boolean {
+  return s.value !== undefined && foldedConst(ctx, s.value) !== 0n;
 }
 
 /** The zero-divisor / zero-modulus check is elided only for a folded nonzero constant. */

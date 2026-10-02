@@ -39,7 +39,7 @@ interface LockstepCase {
 }
 
 const CASES: readonly LockstepCase[] = [
-  // add / sub / mul — always checked
+  // add / sub / mul — checked unless a folded operand makes overflow impossible
   {
     name: 'add uint256',
     script: evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, a, b) =>
@@ -63,6 +63,65 @@ const CASES: readonly LockstepCase[] = [
     name: 'mul int64',
     script: evscript({ name: 'f', args: [t.int64, t.int64] }, (s, a, b) =>
       s.return({ r: a.mul(b) }),
+    ),
+    codes: [0x11],
+  },
+  // a folded operand selects a constant template (lowerCheckedArith): unsigned x·0 / x·1 and
+  // int256 x ± 0 carry no check, so they are plain statements
+  {
+    name: 'mul uint256 by 1',
+    script: evscript({ name: 'f', args: [t.uint256] }, (s, a) => s.return({ r: a.mul(1n) })),
+    codes: [],
+  },
+  {
+    name: 'mul uint8 by 0',
+    script: evscript({ name: 'f', args: [t.uint8] }, (s, a) => s.return({ r: a.mul(0n) })),
+    codes: [],
+  },
+  {
+    name: 'literal 1 mul uint256',
+    script: evscript({ name: 'f', args: [t.uint256] }, (s, a) =>
+      s.return({ r: s.lit(t.uint256, 1n).mul(a) }),
+    ),
+    codes: [],
+  },
+  {
+    name: 'add int256 + 0',
+    script: evscript({ name: 'f', args: [t.int256] }, (s, a) => s.return({ r: a.add(0n) })),
+    codes: [],
+  },
+  {
+    name: 'literal 0 add int256',
+    script: evscript({ name: 'f', args: [t.int256] }, (s, a) =>
+      s.return({ r: s.lit(t.int256, 0n).add(a) }),
+    ),
+    codes: [],
+  },
+  {
+    name: 'sub int256 - 0',
+    script: evscript({ name: 'f', args: [t.int256] }, (s, a) => s.return({ r: a.sub(0n) })),
+    codes: [],
+  },
+  // … and every other constant still reaches the overflow tail
+  {
+    name: 'mul uint256 by 2',
+    script: evscript({ name: 'f', args: [t.uint256] }, (s, a) => s.return({ r: a.mul(2n) })),
+    codes: [0x11],
+  },
+  {
+    name: 'add uint256 + 0 (general template)',
+    script: evscript({ name: 'f', args: [t.uint256] }, (s, a) => s.return({ r: a.add(0n) })),
+    codes: [0x11],
+  },
+  {
+    name: 'add int8 + 0 (general template)',
+    script: evscript({ name: 'f', args: [t.int8] }, (s, a) => s.return({ r: a.add(0n) })),
+    codes: [0x11],
+  },
+  {
+    name: 'literal 0 sub int256 (0 - min overflows)',
+    script: evscript({ name: 'f', args: [t.int256] }, (s, a) =>
+      s.return({ r: s.lit(t.int256, 0n).sub(a) }),
     ),
     codes: [0x11],
   },
@@ -301,6 +360,37 @@ describe('panicCodes lockstep with the lowering', () => {
       expect(sorted(referencedPanics(sourceMap.labels))).toEqual(
         sorted([...c.codes, ...(c.unreachable ?? [])]),
       );
+    }
+  });
+});
+
+describe('constant-operand add / sub / mul: the claim follows the emitted check', () => {
+  // every width class lowerCheckedArith distinguishes (sub-word ≤ 128, 128 < N < 256, 256)
+  const TYPES = [t.uint8, t.uint128, t.uint136, t.uint256, t.int8, t.int128, t.int136, t.int256];
+  const OPS = ['add', 'sub', 'mul'] as const;
+
+  test.each(TYPES)('%s', (width) => {
+    // one static type for the whole sweep: every width has the same arithmetic surface, and the
+    // recorder and the lowering only ever see the run-time type name
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+    const type = width as typeof t.uint256;
+    const constants = type.startsWith('int') ? [0n, 1n, 2n, -1n, -2n] : [0n, 1n, 2n, 255n];
+    for (const op of OPS) {
+      for (const c of constants) {
+        for (const side of ['right', 'left'] as const) {
+          const script = evscript({ name: 'f', args: [type] }, (s, x) => {
+            const k = s.lit(type, c);
+            const [a, b] = side === 'right' ? [x, k] : [k, x];
+            return s.return({ r: op === 'add' ? a.add(b) : op === 'sub' ? a.sub(b) : a.mul(b) });
+          });
+          for (const optimize of [false, true]) {
+            const { sourceMap } = script.compile({ optimize });
+            const claims = sourceMap.sites.some((s) => s.panicCodes?.includes(0x11) === true);
+            const checks = referencedPanics(sourceMap.labels).includes(0x11);
+            expect(claims, `${type} ${side} ${op} ${c} (optimize: ${optimize})`).toBe(checks);
+          }
+        }
+      }
     }
   });
 });
