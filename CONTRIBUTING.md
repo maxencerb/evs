@@ -372,6 +372,9 @@ Releases: see [Releasing](#releasing) below.
   bytes) apply to every deployless call and to no state-override one. evs answers with
   `DEPLOYLESS_RESULT_*` compile diagnostics for what the result shape decides,
   `deploylessDataSize` for the args side and `explainDeploylessError` for the node's error text;
+  a leading `uint256`/`int256` warns only when `ir/magnitude.ts` (a flow-insensitive bit-width
+  bound over the whole IR, with addition chains capped at +64 bits by gas) cannot keep it below
+  `0xEF·2^248` / above `-2^252`;
   the wrapper size is a constant pinned against the installed viem by `deployless.test.ts`, and
   `test/integration/deployless-limits.test.ts` pins the three boundaries on anvil.
 - **No dependencies, abitype through viem.** The library's `dependencies` are empty: `viem` is

@@ -220,7 +220,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     optimize: resolved.optimize,
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
-  for (const diagnostic of deploylessResultDiagnostics(ir.returns)) {
+  for (const diagnostic of deploylessResultDiagnostics(ir)) {
     resolved.onDiagnostic(diagnostic);
   }
 

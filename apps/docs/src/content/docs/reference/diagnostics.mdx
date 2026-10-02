@@ -109,12 +109,13 @@ declare const diagnostic: EvsDiagnostic;
 diagnostic.severity; // 'warning' — every diagnostic is a warning; hard failures throw instead
 diagnostic.code; // 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT' | 'DEPLOYLESS_RESULT_PREFIX' | 'DEPLOYLESS_RESULT_SIZE'
 diagnostic.message; // human-readable explanation with concrete guidance
-diagnostic.site; // number | undefined — the statement that raised it (absent on LARGE_FRAME and DEPLOYLESS_RESULT_*)
+diagnostic.site; // number | undefined — the statement that raised it (absent on LARGE_FRAME and DEPLOYLESS_RESULT_SIZE)
 ```
 
 `site` is the id of the recorded statement behind a `LOOP_ALLOCATION` or `ENV_FRAME_DEPENDENT`
-warning: the `site` of that statement in `compiled.ir`, with an entry (its kind and a short
-description) in `compiled.sourceMap.sites`. Every recorded statement has its own id, so two
+warning, and behind a `DEPLOYLESS_RESULT_PREFIX` one the statement that computes the first
+returned value (absent when that value is a script argument): the `site` of that statement in
+`compiled.ir`, with an entry (its kind and a short description) in `compiled.sourceMap.sites`. Every recorded statement has its own id, so two
 look-alike statements — the same read written twice in one loop — produce two warnings with the
 same message and different sites.
 
@@ -123,7 +124,7 @@ same message and different sites.
 | `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray` or an array literal, `s.tuple(...)`, a struct literal or a `struct: true` read (a flat-block allocation), an `s.read`/`s.call` (or `try*` form) with a `string`, `bytes`, array or tuple output (the returndata snapshot it aliases or decodes from), any `s.simulate`/`s.trySimulate` (the trampoline payload snapshot), `s.encode`/`s.encodePacked` and `s.keccak256` over values that need encoding (a fresh bytes memref), a `.slice(…)` copy or a `.asString()` of a `bytesN` (a fresh string), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates. A read whose outputs are all words (`uint256`, `address`, `bool`, …) allocates nothing and does not warn, unless encoding its arguments advances the free pointer: an argument that needs encoder state (a fixed-size array, an array of structs, strings, bytes or arrays, or a struct nested three or more dynamic levels deep) has it reserved there, and when any argument is a struct, a fixed-size array or an array of structs, strings, bytes or arrays, every literal `string` or `bytes` argument and every all-literal word-array argument (inline or `s.lit`, wherever it was recorded) is copied into a block allocated there | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
 | `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
 | `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')`, reads its own balance with `s.balance(s.env('address'))` (one more warning), or sends a `value` (not a literal 0) with `s.call` / `s.simulate` or their `try*` forms (one warning per call site) | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/). A `value` is paid from the script's own balance, which deployless mode cannot fund: there the `CALL` always fails before the target runs. Use `toViem({ mode: 'stateOverride' })` with a `balance` in the script's override entry, or sender mode — see [sending ETH](/guides/calls/#sending-eth-value) |
-| `DEPLOYLESS_RESULT_PREFIX` | The result is ABI-static and its first word is a `bytesN`, `uint256` or `int256` (directly or as the first member of a static struct or fixed array); the message names it, e.g. `` `pos.id` (bytes32) `` | Deployless mode deposits the result as contract code, which must not start with `0xEF` (EIP-3541): the call fails whenever that value's first byte is `0xEF` — about 1 time in 256 for a hash. Use `toViem({ mode: 'stateOverride' })`, or return an `address`, `bool`, narrower integer or any dynamic value first. See [deployless limits](/reference/artifact/#deployless-limits) |
+| `DEPLOYLESS_RESULT_PREFIX` | The result is ABI-static and its first word (directly or as the first member of a static struct or fixed array) is a `bytesN`, or a `uint256`/`int256` that evs cannot bound away from the values that start with `0xEF` (see [which integers warn](#which-integers-warn)); the message names it, e.g. `` `pos.id` (bytes32) ``, and `site` is the statement that computes the first returned value | Deployless mode deposits the result as contract code, which must not start with `0xEF` (EIP-3541): the call fails whenever that value's first byte is `0xEF` — about 1 time in 256 for a hash. Use `toViem({ mode: 'stateOverride' })`, or return an `address`, `bool`, narrower integer or any dynamic value first. For an amount or a count that warns anyway (a call output, say), acknowledge the warning by its `site`. See [deployless limits](/reference/artifact/#deployless-limits) |
 | `DEPLOYLESS_RESULT_SIZE` | The encoded result is always over 24,576 bytes: exactly, for a static result, or with every dynamic part empty | Every deployless call fails (EIP-170 applies to the deposited result); use `toViem({ mode: 'stateOverride' })` or return less |
 
 Each `LOOP_ALLOCATION` message names the builder call that allocates — `s.read(symbol)`,
@@ -169,6 +170,57 @@ The `ENV_FRAME_DEPENDENT` warning for the first example reads:
 
 ```txt
 s.env('caller') is execution-frame-dependent: in the default deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' }) plus the `account` call parameter
+```
+
+### Which integers warn
+
+A `uint256` starts with byte `0xEF` only from `0xEF·2^248` (about 1.08·10^77), and an `int256`
+only below `-2^252` (about -7.2·10^75), so amounts and counts never do. `DEPLOYLESS_RESULT_PREFIX`
+therefore always warns for a leading `bytesN`, but for a leading `uint256` or `int256` only when
+evs cannot bound the value away from that range. It bounds the value's bit width over the
+whole script, loops and `s.fn` calls included:
+
+- **A returned literal** is decided by its first byte: it warns only when that byte is `0xEF`,
+  and then every deployless call fails.
+- **Bounded, no warning**: `s.env('chainid')`, `s.env('blocknumber')` and
+  `s.env('timestamp')` (64 bits), `.length()` (64 bits), `s.balance` (128 bits) and
+  `s.codeSize` (32 bits); a narrower integer widened with `toUint`/`toInt`; checked
+  arithmetic over bounded values (`mul` and `mulDiv` add the operands' bits; `div` or `shr`
+  by a literal, `mod`, `addmod` and `mulmod` shrink them; `shr` by any amount keeps them);
+  `bitAnd`, `bitOr` and `bitXor` on unsigned values (bounded by their operands); `select`
+  over bounded branches. An addition chain, such as a loop counter or a running sum, adds at
+  most 64 bits, because the gas of one call cannot run 2^64 additions.
+- **Unbounded, warns**: a script argument, a call output, an array element or a struct
+  member other than the first, and a fixed array or struct whose first member is written
+  with one of these; a `bytesN` reinterpreted as an integer (`s.keccak256(…).asUint()`);
+  `bitNot`, a bit operation on signed values, a wrapping op that can wrap, `shl` by a
+  runtime amount, `pow` by a runtime exponent; anything computed from these, and a value
+  that doubles in a loop.
+
+The warning on a value evs cannot bound carries the `site` of the statement that computes it.
+When that value is an amount or a count, which never gets that large, accept that one site:
+
+```ts
+import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const total = evscript(
+  { name: 'total', args: [t.address, t.array(t.address)] },
+  (s, token, holders) => {
+    const sum = s.let(t.uint256, 0n);
+    s.forEach(holders, (holder) => {
+      const balance = s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
+      sum.set(sum.get().add(balance));
+    });
+    return s.return({ sum: sum.get(), holders: holders.length() });
+  },
+);
+
+const warnings: EvsDiagnostic[] = [];
+const compiled = compile(total, { onDiagnostic: (d) => warnings.push(d) });
+const prefix = warnings.find((d) => d.code === 'DEPLOYLESS_RESULT_PREFIX');
+// the site of `sum.get()`: a sum of balances is an amount, so this one warning is safe to accept
+compiled.sourceMap.sites.find((x) => x.id === prefix?.site)?.detail; // 'cellget'
 ```
 
 :::note

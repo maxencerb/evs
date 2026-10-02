@@ -31,12 +31,18 @@ import {
   deploylessDataSize,
   explainDeploylessError,
 } from './deployless.js';
+import { stmtDefs, walkStmts, type ScriptIr } from './ir/nodes.js';
 
-function diagnosticsOf(script: Parameters<typeof compile>[0]): EvsDiagnostic[] {
+type Script = Parameters<typeof compile>[0];
+
+function diagnosticsOf(script: Script): EvsDiagnostic[] {
   const diags: EvsDiagnostic[] = [];
   compile(script, { onDiagnostic: (d) => diags.push(d) });
   return diags;
 }
+
+const Stats = t.struct({ n: t.uint256, owner: t.address });
+const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
 
 const codesOf = (script: Parameters<typeof compile>[0]): string[] =>
   diagnosticsOf(script)
@@ -87,19 +93,343 @@ describe('limits and deploylessDataSize', () => {
 });
 
 describe('DEPLOYLESS_RESULT_PREFIX', () => {
+  const ERC20 = parseAbi(['function balanceOf(address) view returns (uint256)']);
+  const prefixOf = (script: Script): EvsDiagnostic[] =>
+    diagnosticsOf(script).filter((d) => d.code === 'DEPLOYLESS_RESULT_PREFIX');
+  /** The site of the statement that defines the script's first returned value. */
+  const firstReturnSite = (script: { readonly ir: ScriptIr }): number | undefined => {
+    const value = script.ir.returns[0]?.value;
+    let site: number | undefined;
+    walkStmts(script.ir.body, (s) => {
+      if (value !== undefined && stmtDefs(s).includes(value)) site ??= s.site;
+    });
+    return site;
+  };
+
   test.each([
     ['bytes32', t.bytes32],
     ['bytes4', t.bytes4],
-    ['uint256', t.uint256],
-    ['int256', t.int256],
-  ] as const)('a leading static %s can start with 0xEF', (name, type) => {
-    const script = evscript({ name: 'echo', args: [type] }, (s, x) => s.return({ x }));
-    const diags = diagnosticsOf(script).filter((d) => d.code === 'DEPLOYLESS_RESULT_PREFIX');
+  ] as const)(
+    'a leading static %s always warns: a hash starts with 0xEF 1 time in 256',
+    (name, type) => {
+      const script = evscript({ name: 'echo', args: [type] }, (s, x) => s.return({ x }));
+      const diags = prefixOf(script);
+      expect(diags).toHaveLength(1);
+      expect(diags[0]?.severity).toBe('warning');
+      expect(diags[0]?.message).toContain(`\`x\` (${name})`);
+      expect(diags[0]?.message).toContain(
+        `a ${name} such as a hash starts with 0xEF 1 time in 256`,
+      );
+      expect(diags[0]?.message).toContain("toViem({ mode: 'stateOverride' })");
+      expect(diags[0]?.site).toBeUndefined(); // an argument has no defining statement
+    },
+  );
+
+  test('a hash warns with the site of the statement that computes it', () => {
+    const script = evscript({ name: 'h', args: [t.bytes] }, (s, b) =>
+      s.return({ h: s.keccak256(b) }),
+    );
+    const diags = prefixOf(script);
     expect(diags).toHaveLength(1);
-    expect(diags[0]?.severity).toBe('warning');
+    expect(diags[0]?.site).toBe(firstReturnSite(script));
+    expect(diags[0]?.site).toBeTypeOf('number');
+  });
+
+  test.each([
+    ['uint256', t.uint256, 'a uint256 starts with 0xEF only from 0xEF·2^248 (about 1.08e77)'],
+    ['int256', t.int256, 'an int256 starts with 0xEF only below -2^252 (about -7.2e75)'],
+  ] as const)('a script argument of type %s warns: evs cannot bound it', (name, type, range) => {
+    const script = evscript({ name: 'echo', args: [type] }, (s, x) => s.return({ x }));
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
     expect(diags[0]?.message).toContain(`\`x\` (${name})`);
-    expect(diags[0]?.message).toContain('0xEF');
-    expect(diags[0]?.message).toContain("toViem({ mode: 'stateOverride' })");
+    expect(diags[0]?.message).toContain(range);
+    expect(diags[0]?.message).not.toContain('1 time in 256');
+    expect(diags[0]?.message).toContain(`evs cannot bound \`x\``);
+    expect(diags[0]?.message).toContain('(it is a script argument)');
+    expect(diags[0]?.site).toBeUndefined();
+  });
+
+  // values whose magnitude evs bounds below 0xEF·2^248 (uint256) / above -2^252 (int256)
+  test.each<[string, () => Script]>([
+    [
+      'a small literal',
+      () => evscript({ name: 'a', args: [] }, (s) => s.return({ x: s.lit(t.uint256, 1n) })),
+    ],
+    [
+      'the block number',
+      () => evscript({ name: 'a', args: [] }, (s) => s.return({ n: s.env('blocknumber') })),
+    ],
+    [
+      'the chain id and a timestamp',
+      () =>
+        evscript({ name: 'a', args: [] }, (s) =>
+          s.return({ id: s.env('chainid'), ts: s.env('timestamp') }),
+        ),
+    ],
+    [
+      'an array length',
+      () =>
+        evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) =>
+          s.return({ n: xs.length() }),
+        ),
+    ],
+    [
+      'a bytes length',
+      () => evscript({ name: 'a', args: [t.bytes] }, (s, b) => s.return({ n: b.length() })),
+    ],
+    [
+      'a widened uint8',
+      () =>
+        evscript({ name: 'a', args: [t.uint8] }, (s, x) => s.return({ x: x.toUint(t.uint256) })),
+    ],
+    [
+      'a balance and a code size',
+      () =>
+        evscript({ name: 'a', args: [t.address] }, (s, who) =>
+          s.return({ wei: s.balance(who), size: s.codeSize(who) }),
+        ),
+    ],
+    [
+      'a loop counter',
+      () =>
+        evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) => {
+          const n = s.let(t.uint256, 0n);
+          s.forEach(xs, (x) =>
+            s.if(s.neq(x, s.lit(t.address, ZERO_ADDRESS)), () => n.set(n.get().add(1n))),
+          );
+          return s.return({ n: n.get() });
+        }),
+    ],
+    [
+      'a running sum of widened uint128 values',
+      () =>
+        evscript({ name: 'a', args: [t.array(t.uint128)] }, (s, xs) => {
+          const total = s.let(t.uint256, 0n);
+          s.forEach(xs, (x) => total.set(total.get().add(x.toUint(t.uint256))));
+          return s.return({ total: total.get() });
+        }),
+    ],
+    [
+      'a call output divided by 2',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) =>
+          s.return({
+            half: s
+              .read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] })
+              .div(2n),
+          }),
+        ),
+    ],
+    [
+      'a signed value reduced by a literal modulus',
+      () =>
+        evscript({ name: 'a', args: [t.uint256] }, (s, n) =>
+          s.return({ ppm: s.sub(0n, n.mod(1_000_000n).toInt(t.int256)) }),
+        ),
+    ],
+    [
+      'an s.fn result over a narrow argument',
+      () =>
+        evscript({ name: 'a', args: [t.uint64] }, (s, x) => {
+          const next = s.fn('next', t.uint64, (v) => v.toUint(t.uint256).add(1n));
+          return s.return({ next: next(x) });
+        }),
+    ],
+    [
+      'a struct literal led by a length',
+      () =>
+        evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) =>
+          s.return({ stats: s.tuple(Stats, { n: xs.length(), owner: s.env('caller') }) }),
+        ),
+    ],
+  ])('%s: no warning', (_name, build) => {
+    expect(prefixOf(build())).toEqual([]);
+  });
+
+  // values that can reach that range, with the site of the first returned value
+  test.each<[string, () => Script]>([
+    [
+      'a call output',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) =>
+          s.return({
+            balance: s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+          }),
+        ),
+    ],
+    [
+      'a running sum of call outputs',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.array(t.address)] }, (s, token, holders) => {
+          const total = s.let(t.uint256, 0n);
+          s.forEach(holders, (h) =>
+            total.set(
+              total
+                .get()
+                .add(s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [h] })),
+            ),
+          );
+          return s.return({ total: total.get() });
+        }),
+    ],
+    [
+      'a hash reinterpreted as a uint256',
+      () =>
+        evscript({ name: 'a', args: [t.address] }, (s, who) =>
+          s.return({ id: s.keccak256(who).asUint() }),
+        ),
+    ],
+    [
+      'a bitNot',
+      () => evscript({ name: 'a', args: [] }, (s) => s.return({ x: s.bitNot(s.env('chainid')) })),
+    ],
+    [
+      'a shift by a runtime amount',
+      () =>
+        evscript({ name: 'a', args: [t.uint8] }, (s, k) =>
+          s.return({ x: s.shl(s.lit(t.uint256, 1n), k.toUint(t.uint256)) }),
+        ),
+    ],
+    [
+      'a wrapping subtraction',
+      () =>
+        evscript({ name: 'a', args: [] }, (s) =>
+          s.return({ x: s.wrappingSub(s.env('timestamp'), 1n) }),
+        ),
+    ],
+    [
+      'a value doubled in a loop',
+      () =>
+        evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) => {
+          const x = s.let(t.uint256, 1n);
+          s.forEach(xs, () => x.set(x.get().add(x.get())));
+          return s.return({ x: x.get() });
+        }),
+    ],
+    [
+      'a widened uint128 squared',
+      () =>
+        evscript({ name: 'a', args: [t.uint128] }, (s, p) => {
+          const wide = p.toUint(t.uint256);
+          return s.return({ sq: wide.mul(wide) });
+        }),
+    ],
+    [
+      'a negated call output as an int256',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) =>
+          s.return({
+            pnl: s.sub(
+              0n,
+              s
+                .read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] })
+                .div(2n)
+                .toInt(t.int256),
+            ),
+          }),
+        ),
+    ],
+    [
+      'a struct whose leading member is overwritten with a call output',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) => {
+          const stats = s.tuple(Stats, { n: 0n, owner: who });
+          stats.n.set(
+            s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+          );
+          return s.return({ stats });
+        }),
+    ],
+    [
+      'a struct member other than the first',
+      () =>
+        evscript({ name: 'a', args: [] }, (s) => {
+          const pair = s.tuple(t.struct({ n: t.uint256, id: t.uint256 }), { n: 1n, id: 2n });
+          return s.return({ id: pair.id.get() });
+        }),
+    ],
+    [
+      'a fixed array whose element 0 is set to a call output',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) => {
+          const xs = s.newArray(t.uint256, 2, { fixed: true });
+          xs.set(
+            0n,
+            s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+          );
+          return s.return({ xs: xs.expr() });
+        }),
+    ],
+    [
+      'a select with a call output in its second branch',
+      () =>
+        evscript({ name: 'a', args: [t.bool, t.address, t.address] }, (s, flag, token, who) =>
+          s.return({
+            x: s.select(
+              flag,
+              s.lit(t.uint256, 1n),
+              s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+            ),
+          }),
+        ),
+    ],
+    [
+      'a mulDiv of two call outputs by 1',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) => {
+          const bal = s.read({
+            address: token,
+            abi: ERC20,
+            functionName: 'balanceOf',
+            args: [who],
+          });
+          return s.return({ x: s.mulDiv(bal, bal, 1n) });
+        }),
+    ],
+  ])('%s: warns', (_name, build) => {
+    const script = build();
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]?.site).toBe(firstReturnSite(script));
+    expect(diags[0]?.site).toBeTypeOf('number');
+    expect(diags[0]?.message).toContain(
+      '(it may come from a script argument, a call output, a hash or bit pattern, or arithmetic ' +
+        'that can grow that large, such as a value that doubles in a loop)',
+    );
+    expect(diags[0]?.message).toContain('acknowledge this warning by its site');
+  });
+
+  // a returned literal is decided by its first byte: 0xEF fails every call, anything else none
+  const literalScript = (type: 'uint256' | 'int256', value: bigint) =>
+    evscript({ name: 'a', args: [] }, (s) =>
+      s.return({ x: type === 'uint256' ? s.lit(t.uint256, value) : s.lit(t.int256, value) }),
+    );
+
+  test.each<[string, 'uint256' | 'int256', bigint]>([
+    ['uint256 0xEF·2^248', 'uint256', 0xefn << 248n],
+    ['uint256 0xF0·2^248 − 1', 'uint256', (0xf0n << 248n) - 1n],
+    ['int256 −17·2^248', 'int256', -(17n << 248n)],
+    ['int256 −2^252 − 1', 'int256', -(1n << 252n) - 1n],
+  ])('a returned %s literal starts with 0xEF: warns that every call fails', (_n, type, value) => {
+    const script = literalScript(type, value);
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]?.site).toBe(firstReturnSite(script));
+    expect(diags[0]?.message).toContain(
+      '`x` is a literal whose first byte is 0xEF, so every deployless call fails; use ' +
+        "toViem({ mode: 'stateOverride' })",
+    );
+    expect(diags[0]?.message).not.toContain('acknowledge');
+  });
+
+  test.each<[string, 'uint256' | 'int256', bigint]>([
+    ['uint256 2^255 (first byte 0x80)', 'uint256', 1n << 255n],
+    ['uint256 0xF0·2^248', 'uint256', 0xf0n << 248n],
+    ['int256 −2^252', 'int256', -(1n << 252n)],
+    ['int256 −17·2^248 − 1', 'int256', -(17n << 248n) - 1n],
+  ])('a returned %s literal does not start with 0xEF: no warning', (_n, type, value) => {
+    expect(prefixOf(literalScript(type, value))).toEqual([]);
   });
 
   test.each([

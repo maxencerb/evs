@@ -78,7 +78,8 @@ export interface EvsDiagnostic {
      *  `toViem()` deployless (default) and stateOverride modes. */
     | 'ENV_FRAME_DEPENDENT'
     /** The ABI-static result can start with `0xEF`, which the deployless mode rejects (it
-     *  deposits the result as contract code; see `deployless.ts`). */
+     *  deposits the result as contract code; see `deployless.ts`): its first word is a
+     *  `bytesN`, or a `uint256`/`int256` evs cannot bound away from `0xEF·2^248`/`-2^252`. */
     | 'DEPLOYLESS_RESULT_PREFIX'
     /** The encoded result is always over 24,576 bytes, past the deployless mode's EIP-170 cap. */
     | 'DEPLOYLESS_RESULT_SIZE';
@@ -88,8 +89,9 @@ export interface EvsDiagnostic {
    * not import the IR): the `site` of that statement in `compiled.ir` and its entry in
    * `compiled.sourceMap.sites` (one per recorded statement, so two warnings raised by look-alike
    * statements still differ in `site`). Set by the per-statement codes (`LOOP_ALLOCATION`,
-   * `ENV_FRAME_DEPENDENT`); absent on whole-program ones (`LARGE_FRAME`,
-   * `DEPLOYLESS_RESULT_PREFIX`, `DEPLOYLESS_RESULT_SIZE`).
+   * `ENV_FRAME_DEPENDENT`) and by `DEPLOYLESS_RESULT_PREFIX` (the statement that defines the
+   * first returned value — absent when that value is a script argument); absent on
+   * whole-program ones (`LARGE_FRAME`, `DEPLOYLESS_RESULT_SIZE`).
    */
   site?: number;
 }
