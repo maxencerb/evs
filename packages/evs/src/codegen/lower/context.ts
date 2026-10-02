@@ -85,9 +85,11 @@ export type MulDivRounding = 'floor' | 'up' | 'mixed';
  * How the program lowers its `mulDiv` / `mulDivRoundingUp` statements, from the sites it emits:
  * the main body's and those of the fns it can call (transitively) — an uncalled fn is never
  * emitted, so its sites must neither tip a one-site program into the shared subroutine nor
- * change its rounding. `null` (fewer than two sites) inlines the body.
+ * change its rounding. `null` (fewer than two sites) inlines the body. `recorded` counts the sites
+ * of the whole IR (uncalled fns included): below two, no walk is needed.
  */
-function mulDivShareOf(ir: ScriptIr): MulDivRounding | null {
+function mulDivShareOf(ir: ScriptIr, recorded: number): MulDivRounding | null {
+  if (recorded < 2) return null;
   let floor = 0;
   let up = 0;
   walkEmittedStmts(ir, (s) => {
@@ -107,6 +109,11 @@ function mulDivShareOf(ir: ScriptIr): MulDivRounding | null {
  * of a hot fn is hot). The call graph is acyclic; the seen-sets keep the walk finite anyway.
  */
 export function walkEmittedStmts(ir: ScriptIr, visit: (s: Stmt, hot: boolean) => void): void {
+  // no fn to reach (the common case): the body alone, in one pass
+  if (ir.fns.length === 0) {
+    walkWithLoops(ir.body, false, visit);
+    return;
+  }
   const reached: FnId[] = [];
   const seen = new Set<FnId>();
   const edges: { from: FnId | null; to: FnId; inLoop: boolean }[] = [];
@@ -183,8 +190,10 @@ export function createLowerCtx(
 ): LowerCtx {
   const consts = new Map<ValueId, ConstData>();
   const literalUses = new Map<string, number>();
+  let mulDivSites = 0;
   const scan = (stmts: readonly Stmt[]): void => {
     walkStmts(stmts, (s) => {
+      if (s.k === 'modarith' && (s.op === 'muldiv' || s.op === 'muldivup')) mulDivSites += 1;
       if (s.k !== 'const') return;
       consts.set(s.out, s.data);
       if (s.data.kind === 'word' || !HEX_BYTES_RE.test(s.data.hex)) return; // lowerConst rejects
@@ -199,7 +208,7 @@ export function createLowerCtx(
     consts,
     literalUses,
     selfAddresses: selfAddressValues(input.ir),
-    mulDivShare: mulDivShareOf(input.ir),
+    mulDivShare: mulDivShareOf(input.ir, mulDivSites),
     loop: null,
     dfailStubs: [],
     fnEntries: new Map(),

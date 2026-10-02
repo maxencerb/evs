@@ -259,16 +259,23 @@ function emitDecodeOutputs(
       // disturbs them. The program may share this decoder (`codegen/codecs.ts`): the call then
       // routes a failure through this site's own `fail`. A per-site setting added to this
       // decode must also join its unit (`retOutputUnit`).
-      const key = codecKey(retOutputUnit(layout, headOffset, budget));
-      const what = `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`;
-      if (ctx.codecs?.decode(w, key, fail, `decode ${what}`) !== true) {
+      const what = (): string => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`;
+      const shared =
+        ctx.codecs !== null &&
+        ctx.codecs.decode(
+          w,
+          codecKey(retOutputUnit(layout, headOffset, budget)),
+          fail,
+          `decode ${what()}`,
+        );
+      if (!shared) {
         emitDecodeReturnOutput(
           w,
           type,
           headOffset,
           fail,
           { budget, evmVersion: ctx.evmVersion },
-          () => what,
+          what,
         );
       } // [block, buf]
       w.push(ref.slot);

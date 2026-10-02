@@ -251,16 +251,12 @@ export function emitSimulateCall(
     if (budgeted) emitInitDecodeBudget(w, () => pushSnapEnd(w), 64); // [buf]
     // the program may share this decoder (`codegen/codecs.ts`): the call then routes a failure
     // through this site's own `fail`
-    const what = `the outputs of ${fnAbi.name} (site ${siteId})`;
-    const key = codecKey(simOutputsUnit(outputs, budget));
-    if (tails.codecs?.decode(w, key, fail, `decode ${what}`) !== true) {
-      emitDecodeSimulateOutputs(
-        w,
-        outputs,
-        fail,
-        { budget, evmVersion: opts.evmVersion },
-        () => what,
-      );
+    const what = (): string => `the outputs of ${fnAbi.name} (site ${siteId})`;
+    const shared =
+      tails.codecs !== null &&
+      tails.codecs.decode(w, codecKey(simOutputsUnit(outputs, budget)), fail, `decode ${what()}`);
+    if (!shared) {
+      emitDecodeSimulateOutputs(w, outputs, fail, { budget, evmVersion: opts.evmVersion }, what);
     } // [flat, buf]
     outputs.forEach((out, j) => {
       const ref = plan.outRefs[j];
