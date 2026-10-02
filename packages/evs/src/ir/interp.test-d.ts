@@ -1,7 +1,7 @@
 /**
  * Type tests — `interpret()` typed from the script: passing the script (or its compiled
  * artifact) types `args` as the positional tuple `readContract` takes and `outcome.values` as
- * the record it returns; a bare `ScriptIr` keeps the untyped signature. Typecheck only.
+ * the record it returns; a bare `ScriptIr` keeps untyped args and values. Typecheck only.
  */
 
 import type { ReadContractReturnType } from 'viem';
@@ -77,7 +77,46 @@ test('a zero-arg script takes [] and the compiled artifact types the same way', 
   interpret(compiled, ['nope'], chain);
 });
 
-test('a bare ScriptIr (or a wide script type) keeps the untyped signature', () => {
+test('a wrong argument or chain is reported where it is, not as a ScriptIr shape error', () => {
+  // Each `@ts-expect-error` sits on the line of the bad value, so these fail if the error moves
+  // back to the whole call — where an overloaded `interpret` put it, naming the script "missing
+  // the following properties from type 'ScriptIr'" instead of the value (e.g. "Type 'string' is
+  // not assignable to type 'bigint'"). The result keeps the script's types all the same.
+  const result = interpret(
+    double,
+    [
+      // @ts-expect-error — a string for the uint256
+      'nope',
+    ],
+    chain,
+  );
+  expectTypeOf(result).toEqualTypeOf<InterpResult<{ y: bigint }>>();
+  interpret(
+    mixed,
+    [
+      '0x0000000000000000000000000000000000000001',
+      7,
+      // @ts-expect-error — the struct arg is missing its `live` member
+      { amount: 5n },
+      [1n],
+    ],
+    chain,
+  );
+  interpret(
+    double,
+    // @ts-expect-error — a missing argument flags the args tuple
+    [],
+    chain,
+  );
+  interpret(
+    double,
+    [21n],
+    // @ts-expect-error — a chain without `staticcall` flags the chain
+    {},
+  );
+});
+
+test('a bare ScriptIr (or a wide script type) keeps untyped args and values', () => {
   expectTypeOf(interpret(double.ir, ['anything'], chain)).toEqualTypeOf<InterpResult>();
   expectTypeOf(interpret(ir, [1n, 'x'], chain)).toEqualTypeOf<InterpResult>();
 
