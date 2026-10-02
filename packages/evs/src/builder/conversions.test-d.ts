@@ -12,6 +12,7 @@ import {
   t,
   type BytesNOfUint,
   type conversionHint,
+  type ConversionHint,
   type Expr,
   type IntType,
   type NumericReceiver,
@@ -97,8 +98,15 @@ test('toUint / toInt on a non-numeric receiver: the type error names the as* con
     readonly [conversionHint]: ".toInt(): cannot convert from 'bytes4' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .toInt(…))";
   }>();
   expectTypeOf<NumericReceiver<'bool', 'toUint'>>().toEqualTypeOf<{
-    readonly [conversionHint]: '.toUint(): the source must be numeric (uintN/intN)';
+    readonly [conversionHint]: ".toUint(): cannot convert from 'bool' — the source must be numeric (uintN/intN)";
   }>();
+  expectTypeOf<NumericReceiver<'uint8[]', 'toInt'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".toInt(): cannot convert from 'uint8[]' — the source must be numeric (uintN/intN)";
+  }>();
+  // a tuple's runtime text names its JSON descriptor, which the message leaves out
+  expectTypeOf<
+    ConversionHint<{ readonly type: 'tuple'; readonly components: readonly [] }, 'toUint'>
+  >().toEqualTypeOf<'.toUint(): the source must be numeric (uintN/intN)'>();
   // a numeric receiver is itself
   expectTypeOf<NumericReceiver<'uint64', 'toUint'>>().toEqualTypeOf<Expr<'uint64'>>();
   expectTypeOf<NumericReceiver<UintType | IntType, 'toInt'>>().toEqualTypeOf<

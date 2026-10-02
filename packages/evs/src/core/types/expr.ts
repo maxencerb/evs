@@ -168,7 +168,9 @@ export type NumericReceiver<t extends EvsType, method extends 'toUint' | 'toInt'
 
 /**
  * The message of a non-numeric `toUint` / `toInt` receiver: the recording-time TYPE_MISMATCH's
- * text, the same-width `as*` conversion to use first included for an address or a bytesN.
+ * text (`ops.ts`, pinned against it by `conversions.test.ts`), the same-width `as*` conversion
+ * to use first included for an address or a bytesN. A tuple receiver's runtime text names its
+ * JSON descriptor, which a type cannot spell, so its message leaves the source type out.
  */
 export type ConversionHint<t extends EvsType, method extends 'toUint' | 'toInt'> = [t] extends [
   'address',
@@ -176,7 +178,9 @@ export type ConversionHint<t extends EvsType, method extends 'toUint' | 'toInt'>
   ? `.${method}(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .${method}(…))`
   : [t] extends [BytesNType]
     ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .${method}(…))`
-    : `.${method}(): the source must be numeric (uintN/intN)`;
+    : [t] extends [string]
+      ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN)`
+      : `.${method}(): the source must be numeric (uintN/intN)`;
 
 export type LitOf<t extends EvsType> = t extends NumericType
   ? bigint | number
