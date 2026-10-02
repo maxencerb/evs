@@ -1,0 +1,5 @@
+---
+"@maxencerb/evs": patch
+---
+
+An all-zero or mostly-zero literal (one whose memory image is at least half zero words, such as `s.lit(t.array(t.uint256, 800), zeros)` or an empty `bytes`) can now be a zero-filled allocation plus one store per nonzero word instead of a bytecode data segment that spent 32 bytes on every zero word. A zero `uint256[800]` used to fail with `COMPILE_LIMIT` (25,867 bytes of runtime); it now compiles to 237 bytes, and a zero `uint256[64]` shrinks from 2,314 to 235 bytes. An all-zero literal always takes this form. A sparse one takes it only when it is the smaller code for the whole script: one data segment serves every use of the same literal, so a sparse table recorded in many `s.if` bodies keeps its shared segment. The zero-fill costs the same gas per word as the `CODECOPY` it replaces (+8 gas for an all-zero literal), and each nonzero word of a sparse literal adds about 17 gas for its store, paid every time the literal is materialized (every iteration inside an `s.for` body). `s.newArray(elem, n, { fixed: true })` is the mutable spelling of the same zero array; `s.let` still requires an init.

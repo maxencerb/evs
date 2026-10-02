@@ -1048,6 +1048,61 @@ describe('data segments', () => {
     );
   });
 
+  // Zero words cost 32 bytes each in a data segment but nothing in a zero-filled allocation, so
+  // a literal image at least half zero words is a zero-fill plus one MSTORE per nonzero word.
+  const dataLabelsOf = (ir: ScriptIr): (string | undefined)[] =>
+    compileIr(ir).lowered.nodes.flatMap((n) => (n.k === 'dataLabel' ? [n.name] : []));
+  const zeros = (n: number): Hex => concatHex(...Array.from({ length: n }, () => word(0n)));
+
+  test('an all-zero literal image is a zero-filled allocation, not a data segment', async () => {
+    const b = new IrB('zeroLits');
+    const xs = b.data('uint256[]', concatHex(word(64n), zeros(64)));
+    const empty = b.data('bytes', zeros(1)); // `0x`: the image is its zero length word alone
+    const nul = b.data('bytes', concatHex(word(3n), zeros(1))); // three NUL bytes
+    b.ret('xs', xs);
+    b.ret('empty', empty);
+    b.ret('nul', nul);
+    const ir = b.build();
+    expect(dataLabelsOf(ir)).toEqual([]);
+    // the 64 zero words alone would be a 2,080-byte data segment
+    expect(compileIr(ir).runtime.length / 2 - 1).toBeLessThan(400);
+    const res = await run(ir);
+    expect(res.success).toBe(true);
+    expect(res.data).toBe(
+      tupleHex(
+        [
+          { name: 'xs', type: 'uint256[]' },
+          { name: 'empty', type: 'bytes' },
+          { name: 'nul', type: 'bytes' },
+        ],
+        { xs: Array.from({ length: 64 }, () => 0n), empty: '0x', nul: '0x000000' },
+      ),
+    );
+  });
+
+  test('a mostly-zero literal image stores only its nonzero words over the zero-fill', async () => {
+    const b = new IrB('sparseLits');
+    const values = Array.from({ length: 16 }, (_, i) => (i === 3 ? MASK256 : i === 10 ? 7n : 0n));
+    const sparse = b.data('uint256[]', concatHex(word(16n), ...values.map((v) => word(v))));
+    // fewer zero words than nonzero ones (the length word counts): it stays a data segment
+    const dense = b.data('uint256[]', concatHex(word(3n), word(0n), word(5n), word(6n)));
+    b.ret('sparse', sparse);
+    b.ret('dense', dense);
+    const ir = b.build();
+    expect(dataLabelsOf(ir)).toEqual(['data_0']);
+    const res = await run(ir);
+    expect(res.success).toBe(true);
+    expect(res.data).toBe(
+      tupleHex(
+        [
+          { name: 'sparse', type: 'uint256[]' },
+          { name: 'dense', type: 'uint256[]' },
+        ],
+        { sparse: values, dense: [0n, 5n, 6n] },
+      ),
+    );
+  });
+
   test('data nodes are last in the node stream (assemble plants the INVALID guard)', () => {
     const b = new IrB('lit');
     b.ret('s', b.data('string', concatHex(word(2n), `0x${'6869'.padEnd(64, '0')}`)));

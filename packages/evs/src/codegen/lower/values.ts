@@ -1,16 +1,18 @@
 /**
- * `codegen/lower/values.ts` — the word-valued statement templates: `const` (folded PUSH operands
- * or CODECOPY'd data literals), `un`, `env`, `account` and `convert`.
+ * `codegen/lower/values.ts` — the word-valued statement templates: `const` (folded PUSH operands,
+ * CODECOPY'd data literals, or zero-filled mostly-zero ones), `un`, `env`, `account` and `convert`.
  */
 
 import type { AsmWriter } from '../../asm/assembler.js';
-import { padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
+import { bytesToBigInt, padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
 import { bitsOf, isBytesN, isSigned } from '../../core/types.js';
 import type { Stmt } from '../../ir/nodes.js';
 import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
+import { emitPushWordChunk } from '../call/shared.js';
 import { emitAlloc } from '../memory.js';
 import {
   type LowerCtx,
+  literalImageKey,
   wordConstValue,
   meta,
   storeOut,
@@ -26,7 +28,8 @@ import {
 } from './context.js';
 
 // ---------------------------------------------------------------------------
-// const — word consts fold to PUSH operands; data consts materialize via CODECOPY
+// const — word consts fold to PUSH operands; data consts materialize via CODECOPY, or a
+// zero-fill when mostly zero
 // ---------------------------------------------------------------------------
 
 export function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: LowerCtx): void {
@@ -39,22 +42,104 @@ export function lowerConst(w: AsmWriter, s: Extract<Stmt, { k: 'const' }>, ctx: 
     w.op('MSTORE');
     return;
   }
-  // dynamic literal: data segment + CODECOPY into a fresh allocation.
-  // The image is the memref `[len:32][payload…]`, zero-padded to a word boundary so the
-  // trailing partial word lands clean (memory above the free pointer is not zero) — the CODECOPY
-  // writes every byte of the block, so the allocation needs no zero-fill.
+  // dynamic literal: a fresh allocation holding the memref image `[len:32][payload…]`,
+  // zero-padded to a word boundary so the trailing partial word lands clean (memory above the
+  // free pointer is not zero).
   const bytes = literalBytes(s.data.hex, `const #${s.out}`);
   const padded = padWordAligned(bytes);
-  const label = ctx.dataSeg(padded);
-  emitAlloc(w, padded.length, {
-    zeroFill: false,
-    note: `literal ${fmtType(s.type)} (${bytes.length}B)`,
-  }); // [ptr]
-  w.push(padded.length); // [size, ptr]
-  w.pushLabel(label); // [src, size, ptr]
-  w.op('DUP3'); // [ptr, src, size, ptr]
-  w.op('CODECOPY'); // [ptr]
+  const note = `literal ${fmtType(s.type)} (${bytes.length}B)`;
+  const nonzero = nonzeroWords(padded);
+  const uses = ctx.literalUses.get(literalImageKey(padded)) ?? 1;
+  if (prefersZeroFill(padded.length, nonzero, uses)) {
+    emitSparseImage(w, padded.length, nonzero, note); // [ptr]
+  } else {
+    // data segment + CODECOPY: the copy writes every byte of the block, so no zero-fill
+    const label = ctx.dataSeg(padded);
+    emitAlloc(w, padded.length, { zeroFill: false, note }); // [ptr]
+    w.push(padded.length); // [size, ptr]
+    w.pushLabel(label); // [src, size, ptr]
+    w.op('DUP3'); // [ptr, src, size, ptr]
+    w.op('CODECOPY'); // [ptr]
+  }
   storeOut(w, ctx, s.out); // []
+}
+
+interface ImageWord {
+  readonly offset: number;
+  readonly chunk: Uint8Array;
+}
+
+/** The nonzero 32-byte words of a word-aligned image, with their byte offsets. */
+function nonzeroWords(image: Uint8Array): ImageWord[] {
+  const words: ImageWord[] = [];
+  for (let offset = 0; offset < image.length; offset += 32) {
+    const chunk = image.subarray(offset, offset + 32);
+    if (chunk.some((b) => b !== 0)) words.push({ offset, chunk });
+  }
+  return words;
+}
+
+/**
+ * Whether a literal image of `size` bytes, recorded by `uses` `const` stmts, is the zero-fill form
+ * ({@link emitSparseImage}) rather than a data segment. Two conditions:
+ *
+ * - At least half of its words are zero. A nonzero word's store costs about 17 gas against the
+ *   3 gas per word of the CODECOPY, so a dense literal stays a segment even where its stores
+ *   would be fewer bytes (a literal inside an `s.for` body is re-materialized every iteration).
+ * - The zero-fill form is the smaller code over the whole program. The data segment is
+ *   deduplicated by content, so `uses` const stmts sharing one image (the same literal recorded
+ *   in sibling `s.if` bodies, or in loop bodies a JS loop unrolls) pay for its bytes once plus a
+ *   CODECOPY each, while the zero-fill form repeats every store at every use. Per use, the
+ *   zero-fill's `CALLDATASIZE` is 2 bytes under the CODECOPY's `PUSH2 label`, and the allocation
+ *   and size push are common to both, so the zero-fill wins exactly when
+ *   `uses × (stores − 2) < size`. An all-zero image (no stores) always takes it.
+ */
+function prefersZeroFill(size: number, nonzero: readonly ImageWord[], uses: number): boolean {
+  if (2 * nonzero.length > size / 32) return false;
+  let stores = 0;
+  for (const word of nonzero) stores += storeBytes(word);
+  return uses * (stores - 2) < size;
+}
+
+/** Code bytes of one nonzero word's store in {@link emitSparseImage}: the word push
+ *  ({@link emitPushWordChunk}), `DUP2`, the offset `PUSHn off ADD` (absent at offset 0), and
+ *  `MSTORE`. */
+function storeBytes({ offset, chunk }: ImageWord): number {
+  let tz = 0;
+  while (tz < 31 && chunk[31 - tz] === 0) tz += 1;
+  const value = pushBytes(bytesToBigInt(chunk, 0, chunk.length) >> BigInt(8 * tz));
+  const push = tz === 0 ? value : value + pushBytes(BigInt(8 * tz)) + 1; // PUSHn v PUSH1 s SHL
+  return push + 1 + (offset === 0 ? 0 : pushBytes(BigInt(offset)) + 1) + 1;
+}
+
+/** Code bytes of a minimal-width `PUSHn` of a nonzero `v` (opcode + immediate). */
+function pushBytes(v: bigint): number {
+  return 1 + Math.ceil(v.toString(16).length / 2);
+}
+
+/**
+ * `[…] → [ptr, …]`: a literal image as a zero-filled allocation plus one MSTORE per nonzero word,
+ * instead of a data segment that spends 32 bytes of code on each zero word (an all-zero
+ * `uint256[N]`, an empty `bytes`, a mostly-zero table — {@link prefersZeroFill} decides). The
+ * zero-fill (CALLDATACOPY) costs the same gas per word as the CODECOPY it replaces; each store adds
+ * about 17 gas.
+ */
+function emitSparseImage(
+  w: AsmWriter,
+  size: number,
+  nonzero: readonly ImageWord[],
+  note: string,
+): void {
+  emitAlloc(w, size, { zeroFill: true, note }); // [ptr]
+  for (const { offset, chunk } of nonzero) {
+    emitPushWordChunk(w, chunk); // [v, ptr]
+    w.op('DUP2'); // [ptr, v, ptr]
+    if (offset !== 0) {
+      w.push(offset);
+      w.op('ADD'); // [ptr + offset, v, ptr]
+    }
+    w.op('MSTORE'); // [ptr]
+  }
 }
 
 function literalBytes(hex: string, what: string): Uint8Array {

@@ -38,7 +38,11 @@ lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
 The explicit literal constructor, for when coercion via `IntoExpr` cannot infer the type you
 want. Literals are validated at recording time against [the coercion rules](/reference/types/).
 Word literals canonicalize into the bytecode as constants; dynamic literals (`string`, `bytes`,
-literal arrays) become bytecode data segments materialized by `CODECOPY` on first use. A
+literal arrays) become bytecode data segments materialized by `CODECOPY` on first use, except
+an all-zero literal (an all-zero `uint256[N]`, `0x`), which is a zero-filled allocation and
+costs no data segment. A sparse literal (at least half zero words) is zero-filled plus one store
+per nonzero word when that is the smaller code (each store costs about 17 gas per
+materialization, so hoist a sparse literal out of a hot `s.for` body). A
 `t.struct` / `t.tuple` literal and a composite-array literal (`tuple[]`, `T[][]`, `string[]`) are
 built at record time into a fresh block, exactly as when they are passed to a call or returned.
 
@@ -62,7 +66,9 @@ let<t extends EvsType>(init: Expr<t>): Cell<t>;
 
 Declares a mutable cell — the only mutable binding in a script, and the way values escape
 `s.if` branches and loop bodies. The one-argument overload requires an `Expr` (the cell type is
-inferred); to seed a cell with a literal, use the two-argument overload. The type can be any value
+inferred); to seed a cell with a literal, use the two-argument overload. There is no
+init-less form: a zero array cell is `s.let(t.array(t.uint256, n), zeros)` (a zero literal is a
+zero-fill, see [s.lit](#slit)) or `s.let(s.newArray(t.uint256, n, { fixed: true }).expr())`. The type can be any value
 type, a `t.struct` / `t.tuple` / `tuple[]` included (`s.let(Pos, { liquidity: 0n, owner })`); a
 composite cell holds a pointer, so `.set` rebinds it to another value. A `Cell` is **not** an
 `Expr`: reads are always an explicit `.get()`, so "snapshot vs current value" is visible at
