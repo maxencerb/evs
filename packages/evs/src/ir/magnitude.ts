@@ -11,6 +11,8 @@
  * is defined once, so its bound is the join of what its defining statement can produce; cells
  * join their init and every `set`, fn params join their call sites' args, and loops need no
  * special case (the fixpoint runs until nothing grows; bits are capped at the type's width).
+ * It is a worklist: every statement runs once, then again only when a slot it read grew, and a
+ * slot grows at most about 2·256 times, so the cost is linear in the IR (times that height).
  *
  *   sources   a word literal: its own bit length; `s.env('chainid' | 'blocknumber' |
  *             'timestamp')`, lengths: 64 bits; `s.balance`: 128; `s.codeSize`: 32 — what nodes
@@ -18,8 +20,12 @@
  *             see into is the full width of its type: script args, call outputs, array elements,
  *             members other than the leading one, `bytesN` reinterpreted as an integer.
  *   ops       checked arithmetic grows the bound as the result can (`mul`: the operands' bits
- *             added; `div` by a literal, `shr` by a literal, `mod`, `bitAnd`: shrink it); a
- *             wrapping op, `bitNot`, a signed bitwise op or a shift by a non-literal amount is
+ *             added, `mulDiv` too; `div` by a literal, `shr` by a literal, `mod`, `addmod` /
+ *             `mulmod`: shrink it; `shr` by any amount keeps it); `select` joins its branches;
+ *             unsigned `bitAnd` takes the smaller operand bound, `bitOr` and
+ *             `bitXor` the larger; an unsigned `shl` by a literal adds that many bits. A
+ *             wrapping op that can wrap, `bitNot`, a signed bitwise op or `shl`, an `shl` by a
+ *             non-literal amount and a `pow` by a non-literal exponent (of a base above 1) are
  *             the full width. Numeric conversions keep the bound (narrowing is checked).
  *   sums      addition gets one rule, so that counters and running sums stay bounded in a
  *             loop: a chain of additions over operands below `2^b` is below `n·2^b` after `n`
@@ -66,31 +72,44 @@ export function magnitudeBits(ir: ScriptIr): (value: ValueId) => number {
   return (value) => analysis.effective(value);
 }
 
+/** A state slot: a value (`v`), a cell (`c`), or the leading-member writes into a type (`w`). */
+type Key = `v${number}` | `c${number}` | `w${string}`;
+
 class MagnitudeAnalysis {
-  private readonly values = new Map<ValueId, Bound>();
-  private readonly cells = new Map<CellId, Bound>();
-  /** leading-member writes, by the canonical signature of the tuple/array type written into */
-  private readonly writes = new Map<string, Bound>();
+  private readonly bounds = new Map<Key, Bound>();
   /** word literals, read by the ops whose bound depends on a literal operand */
   private readonly literals = new Map<ValueId, bigint>();
-  private changed = false;
+  /** every statement, fn bodies included, in program order */
+  private readonly stmts: Stmt[] = [];
+  /** the statements whose visit read each slot: re-run when that slot grows */
+  private readonly readers = new Map<Key, Set<number>>();
+  private readonly queue: number[] = [];
+  private readonly queued: boolean[] = [];
+  /** the statement being visited, or -1 outside a visit */
+  private current = -1;
 
   constructor(private readonly ir: ScriptIr) {
     const collect = (s: Stmt): void => {
+      this.stmts.push(s);
       if (s.k === 'const' && s.data.kind === 'word') this.literals.set(s.out, BigInt(s.data.hex));
     };
     walkStmts(ir.body, collect);
     for (const fn of ir.fns) walkStmts(fn.body, collect);
   }
 
+  /** A worklist fixpoint: each statement runs once, then again only when a slot it read grew. */
   run(): void {
     this.ir.args.forEach((_, i) => this.define(i, FULL));
-    const visit = (s: Stmt): void => this.visit(s);
-    do {
-      this.changed = false;
-      walkStmts(this.ir.body, visit);
-      for (const fn of this.ir.fns) walkStmts(fn.body, visit);
-    } while (this.changed);
+    this.stmts.forEach((_, i) => this.enqueue(i));
+    for (let head = 0; head < this.queue.length; head++) {
+      const index = this.queue[head] ?? -1;
+      const stmt = this.stmts[index];
+      if (stmt === undefined) continue;
+      this.queued[index] = false;
+      this.current = index;
+      this.visit(stmt);
+      this.current = -1;
+    }
   }
 
   /** The value's bound in bits, its sum slack included, capped at its type's width. */
@@ -145,7 +164,7 @@ class MagnitudeAnalysis {
       case 'cellset':
         return this.joinCell(s.cell, this.read(s.value));
       case 'cellget':
-        return this.define(s.out, this.cells.get(s.cell) ?? ZERO);
+        return this.define(s.out, this.slot(`c${s.cell}`));
       case 'fncall': {
         const fn = this.ir.fns[s.fn];
         if (fn === undefined) return;
@@ -221,32 +240,48 @@ class MagnitudeAnalysis {
 
   /** A value's bound: its own, joined with every leading-member write a memref can see. */
   private read(value: ValueId): Bound {
-    let bound = this.values.get(value) ?? ZERO;
+    let bound = this.slot(`v${value}`);
     for (const container of leadingContainers(this.typeOf(value))) {
-      bound = join(bound, this.writes.get(canonicalTypeSignature(container)) ?? ZERO);
+      bound = join(bound, this.slot(`w${canonicalTypeSignature(container)}`));
     }
     return bound;
   }
 
+  /** A slot's bound, noting that the statement being visited depends on it. */
+  private slot(key: Key): Bound {
+    if (this.current >= 0) {
+      const readers = this.readers.get(key);
+      if (readers === undefined) this.readers.set(key, new Set([this.current]));
+      else readers.add(this.current);
+    }
+    return this.bounds.get(key) ?? ZERO;
+  }
+
   private define(value: ValueId, bound: Bound): void {
-    this.grow(this.values, value, bound, widthOf(this.typeOf(value)));
+    this.grow(`v${value}`, bound, widthOf(this.typeOf(value)));
   }
 
   private joinCell(cell: CellId, bound: Bound): void {
-    this.grow(this.cells, cell, bound, widthOf(this.ir.cells[cell]?.type ?? 'uint256'));
+    this.grow(`c${cell}`, bound, widthOf(this.ir.cells[cell]?.type ?? 'uint256'));
   }
 
   private write(container: EvsType, bound: Bound): void {
-    this.grow(this.writes, canonicalTypeSignature(container), bound, widthOf(container));
+    this.grow(`w${canonicalTypeSignature(container)}`, bound, widthOf(container));
   }
 
-  /** Joins `bound` (capped at `width`) into `map[key]`, noting whether anything grew. */
-  private grow<K>(map: Map<K, Bound>, key: K, bound: Bound, width: number): void {
-    const old = map.get(key) ?? ZERO;
+  /** Joins `bound` (capped at `width`) into the slot; when it grows, re-queues its readers. */
+  private grow(key: Key, bound: Bound, width: number): void {
+    const old = this.bounds.get(key) ?? ZERO;
     const next = join(old, { bits: Math.min(bound.bits, width), sum: bound.sum });
     if (next.bits === old.bits && next.sum === old.sum) return;
-    map.set(key, next);
-    this.changed = true;
+    this.bounds.set(key, next);
+    for (const reader of this.readers.get(key) ?? []) this.enqueue(reader);
+  }
+
+  private enqueue(index: number): void {
+    if (this.queued[index] === true) return;
+    this.queued[index] = true;
+    this.queue.push(index);
   }
 
   private capped(bound: Bound, width: number): number {

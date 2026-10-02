@@ -68,6 +68,31 @@ describe('magnitudeBits', () => {
     expect(boundOf(doubling)).toBe(256);
   });
 
+  test('growth reaches a value through a chain of cells written backwards', () => {
+    // each loop pass moves a bound one cell down the chain: the worklist must re-run the
+    // readers of every cell that grows, not stop after one pass over the statements
+    const chain = (grow: (x: Expr<'uint256'>) => Expr<'uint256'>): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) => {
+          const cells = Array.from({ length: 40 }, () => s.let(t.uint256, 1n));
+          const last = cells[cells.length - 1];
+          if (last === undefined) throw new Error('no cells');
+          s.forEach(xs, () => {
+            cells.forEach((cell, i) => {
+              const next = cells[i + 1];
+              if (next !== undefined) cell.set(next.get());
+            });
+            last.set(grow(last.get()));
+          });
+          const first = cells[0];
+          if (first === undefined) throw new Error('no cells');
+          return s.return({ x: first.get() });
+        }),
+      );
+    expect(chain((x) => x.mul(2n))).toBe(256);
+    expect(chain((x) => x.add(1n))).toBe(1 + 64);
+  });
+
   test('mul adds the bounds; div and shr by a literal remove bits; mod takes the smaller', () => {
     const ops = (op: (x: Expr<'uint256'>) => Expr<'uint256'>): number =>
       boundOf(
@@ -80,6 +105,105 @@ describe('magnitudeBits', () => {
     expect(ops((x) => x.shr(8n))).toBe(56);
     expect(ops((x) => x.mod(1000n))).toBe(10);
     expect(ops((x) => x.pow(3n))).toBe(192);
+  });
+
+  test('shr by a runtime amount keeps the bound; shl by one is the full width', () => {
+    const shifted = (op: 'shl' | 'shr'): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.uint64, t.uint8] }, (s, x, k) =>
+          s.return({ r: s[op](x.toUint(t.uint256), k.toUint(t.uint256)) }),
+        ),
+      );
+    expect(shifted('shr')).toBe(64);
+    expect(shifted('shl')).toBe(256);
+  });
+
+  test('pow by a runtime exponent is the full width (a base of 0 or 1 excepted)', () => {
+    expect(
+      boundOf(
+        evscript({ name: 'a', args: [t.uint8, t.uint8] }, (s, x, e) =>
+          s.return({ r: x.toUint(t.uint256).pow(e.toUint(t.uint256)) }),
+        ),
+      ),
+    ).toBe(256);
+    expect(
+      boundOf(
+        evscript({ name: 'a', args: [t.bool, t.uint8] }, (s, b, e) =>
+          s.return({ r: s.select(b, s.lit(t.uint256, 1n), 0n).pow(e.toUint(t.uint256)) }),
+        ),
+      ),
+    ).toBe(1);
+  });
+
+  test('select joins both branches', () => {
+    const picked = (bigFirst: boolean): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.bool, t.uint256] }, (s, flag, big) =>
+          s.return({ r: bigFirst ? s.select(flag, big, 1n) : s.select(flag, 1n, big) }),
+        ),
+      );
+    expect(picked(true)).toBe(256);
+    expect(picked(false)).toBe(256);
+  });
+
+  test('mulDiv is bounded by the product, addmod and mulmod by the modulus', () => {
+    const modArith = (op: (x: Expr<'uint256'>, big: Expr<'uint256'>) => Expr<'uint256'>): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.uint64, t.uint256] }, (s, x, big) =>
+          s.return({ r: op(x.toUint(t.uint256), big) }),
+        ),
+      );
+    expect(modArith((x) => x.mulDiv(x, 1n))).toBe(128);
+    expect(modArith((x) => x.mulDiv(x, x))).toBe(128);
+    expect(modArith((_, big) => big.addmod(big, 1000n))).toBe(10);
+    expect(modArith((_, big) => big.mulmod(big, 1000n))).toBe(10);
+  });
+
+  test('unsigned bit operations are bounded by their operands; signed ones are not', () => {
+    const unsigned = (op: 'bitAnd' | 'bitOr' | 'bitXor'): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.uint8, t.uint64] }, (s, a, b) =>
+          s.return({ r: s[op](a.toUint(t.uint256), b.toUint(t.uint256)) }),
+        ),
+      );
+    expect(unsigned('bitAnd')).toBe(8);
+    expect(unsigned('bitOr')).toBe(64);
+    expect(unsigned('bitXor')).toBe(64);
+    // -1 has a 0-bit magnitude, yet -1 & x is x: a signed bit op is the full width (the typed
+    // API takes uintN/bytesN only, but untyped JS reaches the recorder, and the IR allows intN)
+    const signed = (op: 'bitAnd' | 'bitOr' | 'bitXor'): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.int8] }, (s, x) => {
+          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- untyped caller input
+          const bit = s[op] as unknown as (a: Expr<'int256'>, b: Expr<'int256'>) => Expr<'int256'>;
+          return s.return({ r: bit(s.lit(t.int256, -1n), x.toInt(t.int256)) });
+        }),
+      );
+    expect(signed('bitAnd')).toBe(255);
+    expect(signed('bitOr')).toBe(255);
+    expect(signed('bitXor')).toBe(255);
+  });
+
+  test('a member other than the leading one is the full width, whatever its init', () => {
+    const Pair = t.struct({ a: t.uint256, b: t.uint256 });
+    const script = evscript({ name: 'a', args: [] }, (s) => {
+      const pair = s.tuple(Pair, { a: 1n, b: 2n });
+      return s.return({ b: pair.b.get() });
+    });
+    expect(boundOf(script)).toBe(256);
+  });
+
+  test('a write to any element of a fixed array joins the array bound', () => {
+    const write = (index: bigint): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.uint256] }, (s, big) => {
+          const xs = s.newArray(t.uint256, 2, { fixed: true });
+          xs.set(index, big);
+          return s.return({ xs: xs.expr() });
+        }),
+      );
+    expect(write(0n)).toBe(256);
+    expect(write(1n)).toBe(256); // the index is not tracked: any write may be element 0
   });
 
   test('a write to the leading member of any alias joins the tuple bound', () => {

@@ -281,11 +281,6 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
         ),
     ],
     [
-      'a literal at 0xEF·2^248',
-      () =>
-        evscript({ name: 'a', args: [] }, (s) => s.return({ x: s.lit(t.uint256, 0xefn << 248n) })),
-    ],
-    [
       'a bitNot',
       () => evscript({ name: 'a', args: [] }, (s) => s.return({ x: s.bitNot(s.env('chainid')) })),
     ],
@@ -346,13 +341,95 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
           return s.return({ stats });
         }),
     ],
+    [
+      'a struct member other than the first',
+      () =>
+        evscript({ name: 'a', args: [] }, (s) => {
+          const pair = s.tuple(t.struct({ n: t.uint256, id: t.uint256 }), { n: 1n, id: 2n });
+          return s.return({ id: pair.id.get() });
+        }),
+    ],
+    [
+      'a fixed array whose element 0 is set to a call output',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) => {
+          const xs = s.newArray(t.uint256, 2, { fixed: true });
+          xs.set(
+            0n,
+            s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+          );
+          return s.return({ xs: xs.expr() });
+        }),
+    ],
+    [
+      'a select with a call output in its second branch',
+      () =>
+        evscript({ name: 'a', args: [t.bool, t.address, t.address] }, (s, flag, token, who) =>
+          s.return({
+            x: s.select(
+              flag,
+              s.lit(t.uint256, 1n),
+              s.read({ address: token, abi: ERC20, functionName: 'balanceOf', args: [who] }),
+            ),
+          }),
+        ),
+    ],
+    [
+      'a mulDiv of two call outputs by 1',
+      () =>
+        evscript({ name: 'a', args: [t.address, t.address] }, (s, token, who) => {
+          const bal = s.read({
+            address: token,
+            abi: ERC20,
+            functionName: 'balanceOf',
+            args: [who],
+          });
+          return s.return({ x: s.mulDiv(bal, bal, 1n) });
+        }),
+    ],
   ])('%s: warns', (_name, build) => {
     const script = build();
     const diags = prefixOf(script);
     expect(diags).toHaveLength(1);
     expect(diags[0]?.site).toBe(firstReturnSite(script));
     expect(diags[0]?.site).toBeTypeOf('number');
+    expect(diags[0]?.message).toContain(
+      '(it may come from a script argument, a call output, a hash or bit pattern, or arithmetic ' +
+        'that can grow that large, such as a value that doubles in a loop)',
+    );
     expect(diags[0]?.message).toContain('acknowledge this warning by its site');
+  });
+
+  // a returned literal is decided by its first byte: 0xEF fails every call, anything else none
+  const literalScript = (type: 'uint256' | 'int256', value: bigint) =>
+    evscript({ name: 'a', args: [] }, (s) =>
+      s.return({ x: type === 'uint256' ? s.lit(t.uint256, value) : s.lit(t.int256, value) }),
+    );
+
+  test.each<[string, 'uint256' | 'int256', bigint]>([
+    ['uint256 0xEF·2^248', 'uint256', 0xefn << 248n],
+    ['uint256 0xF0·2^248 − 1', 'uint256', (0xf0n << 248n) - 1n],
+    ['int256 −17·2^248', 'int256', -(17n << 248n)],
+    ['int256 −2^252 − 1', 'int256', -(1n << 252n) - 1n],
+  ])('a returned %s literal starts with 0xEF: warns that every call fails', (_n, type, value) => {
+    const script = literalScript(type, value);
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]?.site).toBe(firstReturnSite(script));
+    expect(diags[0]?.message).toContain(
+      '`x` is a literal whose first byte is 0xEF, so every deployless call fails; use ' +
+        "toViem({ mode: 'stateOverride' })",
+    );
+    expect(diags[0]?.message).not.toContain('acknowledge');
+  });
+
+  test.each<[string, 'uint256' | 'int256', bigint]>([
+    ['uint256 2^255 (first byte 0x80)', 'uint256', 1n << 255n],
+    ['uint256 0xF0·2^248', 'uint256', 0xf0n << 248n],
+    ['int256 −2^252', 'int256', -(1n << 252n)],
+    ['int256 −17·2^248 − 1', 'int256', -(17n << 248n) - 1n],
+  ])('a returned %s literal does not start with 0xEF: no warning', (_n, type, value) => {
+    expect(prefixOf(literalScript(type, value))).toEqual([]);
   });
 
   test.each([

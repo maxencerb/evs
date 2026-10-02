@@ -36,7 +36,7 @@ import {
   type WordType,
 } from './core/types.js';
 import { magnitudeBits } from './ir/magnitude.js';
-import { stmtDefs, walkStmts, type ScriptIr, type SiteId, type ValueId } from './ir/nodes.js';
+import { stmtDefs, walkStmts, type ScriptIr, type Stmt, type ValueId } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
 // limits
@@ -91,8 +91,9 @@ function hexByteLength(value: unknown, what: string): number {
  * are zero- or sign-extended, `address`/`bool` zero-padded). A `bytesN` always warns (a hash
  * starts with `0xEF` 1 time in 256); a `uint256` must be at least `0xEF·2^248` and an `int256`
  * below `-2^252`, so those warn only when `ir/magnitude.ts` cannot bound the value away from
- * that range — an argument, a call output, a hash or bit pattern, not a literal, a length, a
- * counter or a widened narrower integer. The warning carries the site of the statement that
+ * that range — an argument, a call output, a hash or bit pattern, not a length, a counter or a
+ * widened narrower integer; a returned literal warns only when its first byte is `0xEF` (every
+ * call then fails). The warning carries the site of the statement that
  * defines the first returned value (none for a script argument). The size check is exact for a
  * static result and a lower bound (every dynamic part empty) for a dynamic one.
  */
@@ -104,8 +105,9 @@ export function deploylessResultDiagnostics(ir: ScriptIr): EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
 
   const leading = dynamic ? undefined : leadingWord(first.type, first.name);
-  const site = definingSite(ir, first.value);
-  const risk = leading === undefined ? undefined : efRisk(leading, ir, first.value, site);
+  const defining = definingStmt(ir, first.value);
+  const site = defining?.site;
+  const risk = leading === undefined ? undefined : efRisk(leading, ir, first.value, defining);
   if (leading !== undefined && risk !== undefined) {
     diagnostics.push({
       severity: 'warning',
@@ -151,21 +153,25 @@ function leadingWord(type: EvsType, path: string): { type: WordType; path: strin
 }
 
 /**
- * Why the leading word of the returned `value` (defined at `site`, or a script argument) can
+ * Why the leading word of the returned `value` (defined by `defining`, or a script argument) can
  * start with `0xEF`, as the message's middle (ending where the fix starts) — or `undefined`
- * when it cannot. A `uint256` starts with `0xEF`
- * from `0xEF·2^248` (above 2^255) and an `int256` only in `[-17·2^248, -2^252)`, so a magnitude
- * bound of 255 / 252 bits rules it out.
+ * when it cannot. A `uint256` starts with `0xEF` only in `[0xEF·2^248, 0xF0·2^248)` (above
+ * 2^255) and an `int256` only in `[-17·2^248, -2^252)`, so a magnitude bound of 255 / 252 bits
+ * rules it out; a returned literal is decided by its first byte alone.
  */
 function efRisk(
   leading: { type: WordType; path: string },
   ir: ScriptIr,
   value: ValueId,
-  site: SiteId | undefined,
+  defining: Stmt | undefined,
 ): string | undefined {
   const { type, path } = leading;
   if (isBytesN(type)) return `a ${type} such as a hash starts with 0xEF 1 time in 256; `;
   if (type !== 'uint256' && type !== 'int256') return undefined;
+  if (defining?.k === 'const' && defining.data.kind === 'word' && defining.out === value) {
+    if (BigInt(defining.data.hex) >> 248n !== 0xefn) return undefined;
+    return `\`${path}\` is a literal whose first byte is 0xEF, so every deployless call fails; `;
+  }
   const bits = magnitudeBits(ir)(value);
   if (type === 'uint256' ? bits <= 255 : bits <= 252) return undefined;
   const range =
@@ -175,24 +181,25 @@ function efRisk(
       : 'an int256 starts with 0xEF only below -2^252 (about -7.2e75), and evs cannot bound ' +
         `\`${path}\` above that`;
   const origin =
-    site === undefined
+    defining === undefined
       ? 'it is a script argument'
-      : 'it comes from a script argument, a call output, a hash or bit operation, or arithmetic over them';
+      : 'it may come from a script argument, a call output, a hash or bit pattern, or ' +
+        'arithmetic that can grow that large, such as a value that doubles in a loop';
   const acknowledge =
-    site === undefined ? 'ignore this warning' : 'acknowledge this warning by its site';
+    defining === undefined ? 'ignore this warning' : 'acknowledge this warning by its site';
   return (
     `${range} (${origin}); if it is an amount or a count, which never gets that large, ` +
     `${acknowledge}, otherwise `
   );
 }
 
-/** The site of the statement that defines `value`; `undefined` for a script argument. */
-function definingSite(ir: ScriptIr, value: ValueId): SiteId | undefined {
-  let site: SiteId | undefined;
+/** The statement that defines `value`; `undefined` for a script argument. */
+function definingStmt(ir: ScriptIr, value: ValueId): Stmt | undefined {
+  let found: Stmt | undefined;
   walkStmts(ir.body, (s) => {
-    if (site === undefined && stmtDefs(s).includes(value)) site = s.site;
+    if (found === undefined && stmtDefs(s).includes(value)) found = s;
   });
-  return site;
+  return found;
 }
 
 /** Encoded size of one value in a tuple: its inline static bytes, or its offset word plus the

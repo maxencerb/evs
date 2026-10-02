@@ -180,17 +180,22 @@ therefore always warns for a leading `bytesN`, but for a leading `uint256` or `i
 evs cannot bound the value away from that range. It bounds the value's bit width over the
 whole script, loops and `s.fn` calls included:
 
-- **Bounded, no warning**: literals below that range; `s.env('chainid')`,
-  `s.env('blocknumber')` and `s.env('timestamp')` (64 bits), `.length()` (64 bits),
-  `s.balance` (128 bits) and `s.codeSize` (32 bits); a narrower integer widened with
-  `toUint`/`toInt`; checked arithmetic over bounded values (`mul` adds the operands' bits,
-  `div` or `shr` by a literal, `mod` and `bitAnd` shrink them). An addition chain, such as a
-  loop counter or a running sum, adds at most 64 bits, because the gas of one call cannot
-  run 2^64 additions.
+- **A returned literal** is decided by its first byte: it warns only when that byte is `0xEF`,
+  and then every deployless call fails.
+- **Bounded, no warning**: `s.env('chainid')`, `s.env('blocknumber')` and
+  `s.env('timestamp')` (64 bits), `.length()` (64 bits), `s.balance` (128 bits) and
+  `s.codeSize` (32 bits); a narrower integer widened with `toUint`/`toInt`; checked
+  arithmetic over bounded values (`mul` and `mulDiv` add the operands' bits; `div` or `shr`
+  by a literal, `mod`, `addmod` and `mulmod` shrink them; `shr` by any amount keeps them);
+  `bitAnd`, `bitOr` and `bitXor` on unsigned values (bounded by their operands); `select`
+  over bounded branches. An addition chain, such as a loop counter or a running sum, adds at
+  most 64 bits, because the gas of one call cannot run 2^64 additions.
 - **Unbounded, warns**: a script argument, a call output, an array element or a struct
-  member other than the first; a `bytesN` reinterpreted as an integer (`s.keccak256(…).asUint()`);
-  `bitNot`, a wrapping op that can wrap, a shift by a runtime amount; anything computed from
-  these, and a value that doubles in a loop.
+  member other than the first, and a fixed array or struct whose first member is written
+  with one of these; a `bytesN` reinterpreted as an integer (`s.keccak256(…).asUint()`);
+  `bitNot`, a bit operation on signed values, a wrapping op that can wrap, `shl` by a
+  runtime amount, `pow` by a runtime exponent; anything computed from these, and a value
+  that doubles in a loop.
 
 The warning on a value evs cannot bound carries the `site` of the statement that computes it.
 When that value is an amount or a count, which never gets that large, accept that one site:
