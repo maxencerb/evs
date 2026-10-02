@@ -99,9 +99,10 @@ export interface Expr<t extends EvsType = EvsType> {
 
   // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range). toUint/toInt
   // convert between numeric types only: reach a uint from bytes32 through asUint256(), from an
-  // address through asUint160(), from a bytesN through asUint()
-  toUint<const u extends UintType>(this: Expr<t & NumericType>, target: u): Expr<u>;
-  toInt<const i extends IntType>(this: Expr<t & NumericType>, target: i): Expr<i>;
+  // address through asUint160(), from a bytesN through asUint() — on any other receiver the
+  // compile error names that conversion (see {@link NumericReceiver})
+  toUint<const u extends UintType>(this: NumericReceiver<t, 'toUint'>, target: u): Expr<u>;
+  toInt<const i extends IntType>(this: NumericReceiver<t, 'toInt'>, target: i): Expr<i>;
   // checked from uint256/bytes32 (high 96 bits zero); free from uint160 (Solidity's address(u160))
   asAddress(this: Expr<'uint256' | 'bytes32' | 'uint160'>): Expr<'address'>;
   asUint160(this: Expr<'address'>): Expr<'uint160'>; // free (Solidity's uint160(addr))
@@ -130,6 +131,56 @@ export interface Expr<t extends EvsType = EvsType> {
   at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
+
+// ---------------------------------------------------------------------------
+// NumericReceiver — the `this` type of toUint / toInt
+// ---------------------------------------------------------------------------
+
+export declare const conversionHint: unique symbol;
+
+/**
+ * The receiver `toUint` / `toInt` accept: an `Expr` of a numeric type. A non-numeric receiver
+ * is rejected as by `Expr<t & NumericType>`, but against an object type no value has (keyed by
+ * the type-only {@link conversionHint} symbol) whose one property is the
+ * {@link ConversionHint} message, so tsc's error spells out the fix the recording-time
+ * TYPE_MISMATCH gives:
+ *
+ * ```text
+ * The 'this' context of type 'Expr<"address">' is not assignable to method's 'this' of type
+ * '{ readonly [conversionHint]: ".toUint(): cannot convert from 'address' — the source must be
+ * numeric (uintN/intN) — use .asUint160() first (then .toUint(…))"; }'.
+ * ```
+ *
+ * The other member of the non-numeric branch is for a generic `t` (a type parameter bounded by
+ * the numeric types): the checker relates its receiver to both branches of the deferred
+ * conditional, and `Expr<t> & { type: NumericType }` accepts it. For a concrete `t` it accepts
+ * no receiver (its `type` would be both `t` and numeric); for one non-tuple type it even reduces
+ * to `never` (`t & NumericType` is: a disjoint discriminant), leaving the message alone in the
+ * error.
+ */
+export type NumericReceiver<t extends EvsType, method extends 'toUint' | 'toInt'> = [t] extends [
+  NumericType,
+]
+  ? Expr<t>
+  :
+      | (Expr<t> & { readonly type: NumericType })
+      | { readonly [conversionHint]: ConversionHint<t, method> };
+
+/**
+ * The message of a non-numeric `toUint` / `toInt` receiver: the recording-time TYPE_MISMATCH's
+ * text (`ops.ts`, pinned against it by `conversions.test.ts`), the same-width `as*` conversion
+ * to use first included for an address or a bytesN. A tuple receiver's runtime text names its
+ * JSON descriptor, which a type cannot spell, so its message leaves the source type out.
+ */
+export type ConversionHint<t extends EvsType, method extends 'toUint' | 'toInt'> = [t] extends [
+  'address',
+]
+  ? `.${method}(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .${method}(…))`
+  : [t] extends [BytesNType]
+    ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .${method}(…))`
+    : [t] extends [string]
+      ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN)`
+      : `.${method}(): the source must be numeric (uintN/intN)`;
 
 export type LitOf<t extends EvsType> = t extends NumericType
   ? bigint | number

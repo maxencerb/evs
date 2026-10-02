@@ -11,6 +11,10 @@
  * oracle in `test/integration/casts.test.ts`).
  */
 
+import { dirname, join } from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+import ts from 'typescript';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { compile } from '../compile.js';
@@ -26,6 +30,37 @@ function resultType(arg: EvsType, op: (x: never) => unknown): EvsType | undefine
   );
   expect(() => validateIr(script.ir)).not.toThrow();
   return script.ir.returns[0]?.type;
+}
+
+/**
+ * tsc's diagnostics for `source`, a module compiled in memory under `src/` with the package's
+ * own compiler options (each message flattened, its chain on the following lines).
+ */
+function tscErrors(source: string): string[] {
+  const pkgDir = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+  const config = ts.getParsedCommandLineOfConfigFile(join(pkgDir, 'tsconfig.json'), undefined, {
+    ...ts.sys,
+    onUnRecoverableConfigFileDiagnostic: (d) => {
+      throw new Error(ts.flattenDiagnosticMessageText(d.messageText, '\n'));
+    },
+  });
+  if (config === undefined) throw new Error('could not read packages/evs/tsconfig.json');
+  const options: ts.CompilerOptions = { ...config.options, noEmit: true };
+  const fixturePath = ts.sys.resolvePath(join(pkgDir, 'src', '__to-uint-hint.fixture.ts'));
+  const base = ts.createCompilerHost(options);
+  const host: ts.CompilerHost = {
+    ...base,
+    fileExists: (f) => f === fixturePath || base.fileExists(f),
+    readFile: (f) => (f === fixturePath ? source : base.readFile(f)),
+    getSourceFile: (f, lang, ...rest) =>
+      f === fixturePath
+        ? ts.createSourceFile(f, source, lang)
+        : base.getSourceFile(f, lang, ...rest),
+  };
+  const program = ts.createProgram([fixturePath], options, host);
+  return ts
+    .getPreEmitDiagnostics(program, program.getSourceFile(fixturePath))
+    .map((d) => ts.flattenDiagnosticMessageText(d.messageText, '\n'));
 }
 
 function expectTypeError(fn: () => unknown, msg: RegExp): void {
@@ -216,6 +251,52 @@ describe('recording-time rejections', () => {
       /cannot convert from 'bool' — the source must be numeric \(uintN\/intN\)$/,
     );
   });
+
+  test('tsc rejects the same receivers with the recording-time message', () => {
+    const errors = tscErrors(`
+      import { evscript, t } from './index.js';
+      evscript(
+        { name: 'f', args: [t.address, t.bytes4, t.bool, t.string, t.array(t.uint8)] },
+        (s, a, b4, flag, str, arr) => {
+          a.toUint(t.uint160);
+          b4.toInt(t.int64);
+          flag.toUint(t.uint8);
+          str.toInt(t.int8);
+          arr.toUint(t.uint256);
+          return s.return({ ok: flag });
+        },
+      );
+    `);
+    // the error's first line ends on the `this` type, which is the message itself
+    expect(errors.map((e) => e.split('\n')[0])).toEqual([
+      `The 'this' context of type 'Expr<"address">' is not assignable to method's 'this' of type '{ readonly [conversionHint]: ".toUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .toUint(…))"; }'.`,
+      `The 'this' context of type 'Expr<"bytes4">' is not assignable to method's 'this' of type '{ readonly [conversionHint]: ".toInt(): cannot convert from 'bytes4' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .toInt(…))"; }'.`,
+      `The 'this' context of type 'Expr<"bool">' is not assignable to method's 'this' of type '{ readonly [conversionHint]: ".toUint(): cannot convert from 'bool' — the source must be numeric (uintN/intN)"; }'.`,
+      `The 'this' context of type 'Expr<"string">' is not assignable to method's 'this' of type '{ readonly [conversionHint]: ".toInt(): cannot convert from 'string' — the source must be numeric (uintN/intN)"; }'.`,
+      `The 'this' context of type 'Expr<"uint8[]">' is not assignable to method's 'this' of type '{ readonly [conversionHint]: ".toUint(): cannot convert from 'uint8[]' — the source must be numeric (uintN/intN)"; }'.`,
+    ]);
+    // ...and that message is, verbatim, the recording-time TYPE_MISMATCH's
+    const hints = errors.map(
+      (e) => /\[conversionHint\]: "(.*)"; \}'\.$/.exec(e.split('\n')[0] ?? '')?.[1],
+    );
+    const runtime = (
+      [
+        [t.address, (x: Expr<'uint8'>) => x.toUint(t.uint160)],
+        [t.bytes4, (x: Expr<'uint8'>) => x.toInt(t.int64)],
+        [t.bool, (x: Expr<'uint8'>) => x.toUint(t.uint8)],
+        [t.string, (x: Expr<'uint8'>) => x.toInt(t.int8)],
+        [t.array(t.uint8), (x: Expr<'uint8'>) => x.toUint(t.uint256)],
+      ] as const
+    ).map(([arg, op]) => {
+      try {
+        resultType(arg, op);
+      } catch (e) {
+        return (e as EvsTypeError).message;
+      }
+      return undefined;
+    });
+    expect(hints).toEqual(runtime);
+  }, 60_000);
 
   test('byteAt / slice positions are uint256', () => {
     const withIndex = (op: (raw: Expr<'bytes'>, i: Expr<'uint8'>) => unknown) => () =>
