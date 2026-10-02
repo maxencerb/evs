@@ -78,6 +78,8 @@ export interface ProgramRegions {
   readonly fns: LabelId | null;
   /** The simulate trampoline entrypoint (only with an `s.simulate` site). */
   readonly trampoline: LabelId | null;
+  /** The first shared codec body (`@enc_<k>` / `@dec_<k>`, only when the plan shares one). */
+  readonly codecs: LabelId | null;
   /** The first decode-fail stub, else the first shared tail placed. */
   readonly tails: LabelId | null;
   /** The first data segment. */
@@ -273,7 +275,8 @@ export function lowerProgram(
     main,
     fns: firstFn === undefined ? null : (ctx.fnEntries.get(firstFn) ?? null),
     trampoline,
-    tails: firstCodec ?? ctx.dfailStubs[0]?.label ?? firstTail,
+    codecs: firstCodec,
+    tails: ctx.dfailStubs[0]?.label ?? firstTail,
     data: segments[0]?.label ?? null,
   };
   const sites = collectSites(ctx, ctx.fnQueue);

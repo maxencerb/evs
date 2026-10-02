@@ -321,18 +321,21 @@ function eip170Message(
 
   // program order: receive+prologue+dispatcher (pc 0 up to @main, reported as "dispatcher") ·
   // @main(arg decode + body + return encode) ·
-  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @dfail_* stubs + shared
-  // tails · INVALID guard + data segments
+  // @fn_* subroutines · @simulate_trampoline (only with s.simulate) · @enc_<k> / @dec_<k> shared
+  // codec bodies (only when some codec is shared) · @dfail_* stubs + shared tails · INVALID
+  // guard + data segments
   const mainPc = pcOf(regions.main) ?? 0;
   const fnPc = pcOf(regions.fns);
   const trampolinePc = pcOf(regions.trampoline);
+  const codecPc = pcOf(regions.codecs);
   const tailPc = pcOf(regions.tails);
   const firstDataPc = pcOf(regions.data);
   const dataPc = firstDataPc === undefined ? undefined : firstDataPc - 1; // INVALID guard byte
 
   const dataStart = dataPc ?? total;
   const tailEnd = dataStart;
-  const trampolineEnd = tailPc ?? tailEnd;
+  const codecEnd = tailPc ?? tailEnd;
+  const trampolineEnd = codecPc ?? codecEnd;
   const fnEnd = trampolinePc ?? trampolineEnd;
   const bodyEnd = fnPc ?? fnEnd;
 
@@ -341,13 +344,14 @@ function eip170Message(
   const fns = fnPc === undefined ? 0 : Math.max(fnEnd - fnPc, 0);
   const trampoline =
     trampolinePc === undefined ? '' : `trampoline ${Math.max(trampolineEnd - trampolinePc, 0)}, `;
+  const codecs = codecPc === undefined ? '' : `codecs ${Math.max(codecEnd - codecPc, 0)}, `;
   const tails = tailPc === undefined ? 0 : Math.max(tailEnd - tailPc, 0);
   const data = Math.max(total - dataStart, 0);
 
   return (
     `runtime bytecode is ${total} bytes — exceeds the EIP-170 limit of ${EIP170_LIMIT} by ` +
     `${total - EIP170_LIMIT} bytes (dispatcher ${dispatcher}, body ${body}, fns ${fns}, ` +
-    `${trampoline}tails ${tails}, data segments ${data}); split the script or move large ` +
+    `${trampoline}${codecs}tails ${tails}, data segments ${data}); split the script or move large ` +
     `literals off-chain`
   );
 }
