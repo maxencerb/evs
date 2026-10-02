@@ -391,7 +391,9 @@ export function tupleComponents(l: Extract<TypeLayout, { kind: 'tuple' }>): read
   return l.components.map((c) => layoutToNamed(c));
 }
 
-function layoutToNamed(l: TypeLayout): NamedType {
+/** @internal A nameless `NamedType` of the layout `l` (the inverse of `layoutOfType`; shared
+ *  with `codegen/codecs.ts`, whose bodies are built from layouts alone). */
+export function layoutToNamed(l: TypeLayout): NamedType {
   if (l.kind === 'tuple') {
     return { name: '', type: l.abi, components: l.components.map((c) => layoutToNamed(c)) };
   }

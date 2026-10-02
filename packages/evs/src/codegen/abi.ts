@@ -42,6 +42,7 @@ export {
   emitAboveU64,
   emitCeil32,
   emitMemCopy,
+  layoutToNamed,
 } from './abi/shared.js';
 export type { SharedTails, SlotRef, EncodeOpts, CodecHook } from './abi/shared.js';
 export {
@@ -51,8 +52,9 @@ export {
   emitLeafDynTail,
   encodeFramesOf,
   reserveEncodeFrames,
+  emitSharedEncodeBody,
 } from './abi/encode.js';
-export type { PushWord, PushBase } from './abi/encode.js';
+export type { PushWord, PushBase, CodecRegisters } from './abi/encode.js';
 export { emitAbiEncodeToBytes, emitPackedEncodeToBytes } from './abi/encode-bytes.js';
 export type { EncodeSrcItem, EncodeMeta } from './abi/encode-bytes.js';
 export {

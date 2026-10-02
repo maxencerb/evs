@@ -11,10 +11,10 @@ import {
   headBytes,
   type TypeLayout,
 } from '../../abi/layout.js';
-import type { AsmWriter } from '../../asm/assembler.js';
+import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
-import { encodeMemberKind } from '../codec-keys.js';
+import { encodeMemberKind, type EncodeMemberKind } from '../codec-keys.js';
 import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   type CodecHook,
@@ -808,4 +808,134 @@ function emitEncodeArrayElementTail(
     0,
     null,
   );
+}
+
+// ---------------------------------------------------------------------------
+// shared encoder bodies (`codegen/codecs.ts`)
+// ---------------------------------------------------------------------------
+
+/** @internal The static-frame words a shared codec body keeps its parameters in, past the frame
+ *  (`codegen/codecs.ts`): the return address, the DST / block base, the SRC pointer. */
+export interface CodecRegisters {
+  readonly ret: number;
+  readonly base: number;
+  readonly src: number;
+}
+
+/**
+ * @internal The body of a shared encoder (`codegen/codecs.ts`) for a top-level member of `kind`
+ * and `layout`: the same emitters as the inline member, at the same tuple and frame depths, with
+ * the member's source pointer and base read from the codec registers. Every encode runs at
+ * absolute stack height 0 (the statement baseline, which the array loops and the pre-cancun
+ * `@memcpy` convention require), so the call site pushes its operands and the return label over
+ * an empty stack and the body spills them before it encodes:
+ *
+ *   ST  @entry (3): [ret, base, src] → ret, base, src spilled; members read them back
+ *   SA  @entry (3): [ret, base, src] → ret spilled; `emitEncodeArrayInline` takes src then base
+ *                   off the stack (each read exactly once, into its frame)
+ *   DT  @entry (2): [ret, src]       → ret, src spilled; base := the tail cursor (where the
+ *                   call site's head word points), then the head region is reserved
+ *   RA  @entry (2): [ret, src]       → ret spilled; `emitEncodeArrayTail` takes src off the stack
+ *
+ * and returns through `PUSH ret MLOAD JUMP` to the site's return label, checked at 0. The DT base
+ * is read from the cursor instead of re-derived through the parent's head word (what the inline
+ * code does), the same value: only the source read runs between the head write and the call.
+ * `name` labels the entry.
+ */
+export function emitSharedEncodeBody(
+  w: AsmWriter,
+  entry: LabelId,
+  name: string,
+  kind: EncodeMemberKind,
+  layout: TypeLayout,
+  regs: CodecRegisters,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void {
+  const pushReg = (slot: number): void => {
+    w.push(slot);
+    w.op('MLOAD');
+  };
+  const spill = (slot: number, note?: string): void => {
+    w.push(slot);
+    w.op('MSTORE', note === undefined ? undefined : { note });
+  };
+  const evm: EncodeOpts = { evmVersion: opts.evmVersion };
+  const members = (l: TypeLayout): readonly NamedType[] => {
+    if (l.kind !== 'tuple') throw internal(`shared encoder ${name}: ${l.abi} is not a tuple`);
+    return tupleComponents(l);
+  };
+  const array = (l: TypeLayout): Extract<TypeLayout, { kind: 'array' }> => {
+    if (l.kind !== 'array') throw internal(`shared encoder ${name}: ${l.abi} is not an array`);
+    return l;
+  };
+  w.label(entry, kind === 'ST' || kind === 'SA' ? 3 : 2, name);
+  spill(regs.ret, `${name}: spill return address`);
+  switch (kind) {
+    case 'ST': // [base, src]
+      spill(regs.base);
+      spill(regs.src); // []
+      encodeBlock(
+        w,
+        members(layout),
+        (j) => emitTupleMemberWord(w, () => pushReg(regs.src), j),
+        () => pushReg(regs.base),
+        tails,
+        evm,
+        0,
+        null,
+      );
+      break;
+    case 'SA': // [base, src]: src first (SWAP1 brings it up), then base
+      emitEncodeArrayInline(
+        w,
+        array(layout),
+        once(name, () => w.op('SWAP1')),
+        once(name, () => {}),
+        tails,
+        evm,
+      );
+      break;
+    case 'DT': {
+      // [src]
+      spill(regs.src); // []
+      w.push(TAIL_CURSOR);
+      w.op('MLOAD');
+      spill(regs.base); // base := the cursor, BEFORE the head region is reserved
+      const sub = members(layout);
+      emitAdvanceCursor(w, headBytes(sub));
+      encodeBlock(
+        w,
+        sub,
+        (j) => emitTupleMemberWord(w, () => pushReg(regs.src), j),
+        () => pushReg(regs.base),
+        tails,
+        evm,
+        1,
+        null,
+      );
+      break;
+    }
+    case 'RA': // [src]
+      emitEncodeArrayTail(
+        w,
+        array(layout),
+        once(name, () => {}),
+        tails,
+        evm,
+      );
+      break;
+  }
+  pushReg(regs.ret);
+  w.op('JUMP', { note: `${name}: return` }); // dynamic return jump (checked region)
+}
+
+/** A thunk for an operand the call site left on the stack: it may be read exactly once. */
+function once(name: string, emit: () => void): () => void {
+  let used = false;
+  return () => {
+    if (used) throw internal(`shared encoder ${name}: a stack operand was read twice`);
+    used = true;
+    emit();
+  };
 }

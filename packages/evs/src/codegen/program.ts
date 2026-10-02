@@ -39,7 +39,7 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
 import { RETURNS_SITE } from './codec-keys.js';
-import { EMPTY_CODEC_PLAN, planCodecs } from './codecs.js';
+import { CodecShare, codecRegisters, EMPTY_CODEC_PLAN, planCodecs } from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -123,9 +123,10 @@ export function lowerProgram(
         });
   // the codec registers sit right after the static frame (none when nothing is shared)
   const frameEnd = frame.frameEnd + 32 * plan.words;
+  const codecs = plan.keys.size === 0 ? null : new CodecShare(plan, codecRegisters(frame.frameEnd));
   const w = new AsmWriter();
   const evm = { evmVersion: opts.evmVersion };
-  const tails = createSharedTails(w, evm);
+  const tails = createSharedTails(w, { ...evm, codecs });
 
   // -- data segment manager (content-deduplicated; emitted last) ------------------------
   const segments: { label: LabelId; name: string; bytes: Uint8Array }[] = [];
@@ -247,9 +248,14 @@ export function lowerProgram(
   // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
   if (trampoline !== null) emitSimulateTrampoline(w, trampoline);
 
+  // -- shared codec bodies: after every region that holds a codec site, before the tails (a
+  // body references `@memcpy` before cancun) ----------------------------------------------
+  const firstCodec = codecs === null ? null : codecs.emitBodies(w, tails, evm);
+  codecs?.checkDrift();
+
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   // Shared tails are emitted only when referenced, so they must come after every region that
-  // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
+  // can `pushLabel` one (body, fn subroutines, trampoline, codec bodies, dfail stubs — all above).
   for (const stub of ctx.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
   const firstTail = emitSharedTails(w, tails, ctx.mulDivShare);
 
@@ -265,7 +271,7 @@ export function lowerProgram(
     main,
     fns: firstFn === undefined ? null : (ctx.fnEntries.get(firstFn) ?? null),
     trampoline,
-    tails: ctx.dfailStubs[0]?.label ?? firstTail,
+    tails: firstCodec ?? ctx.dfailStubs[0]?.label ?? firstTail,
     data: segments[0]?.label ?? null,
   };
   const sites = collectSites(ctx, ctx.fnQueue);
