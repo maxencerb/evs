@@ -1,5 +1,0 @@
----
-'@maxencerb/evs': minor
----
-
-Detect and explain the contract-creation limits of the default deployless `toViem()` mode. A deployless call runs as a contract creation whose deployed code is the script's result, so it fails when the result starts with byte `0xEF` (EIP-3541), when the result is over 24,576 bytes (EIP-170), or when viem's creation data, args included, is over 49,152 bytes (EIP-3860), and the node's error (often shown by viem as "Missing or invalid parameters") explained none of it. `compile()` now reports `DEPLOYLESS_RESULT_PREFIX` (every returned value is static and the first word is a `bytesN`, `uint256` or `int256`) and `DEPLOYLESS_RESULT_SIZE` (the result is always over 24,576 bytes) through `onDiagnostic`; new exports `DEPLOYLESS_MAX_RESULT_BYTES`, `DEPLOYLESS_MAX_DATA_BYTES` and `deploylessDataSize(compiled, calldata)` let callers pick the mode up front, and `explainDeploylessError(error)` turns the node's creation error into a typed `DeploylessLimitExplanation` (also exported) that points to `toViem({ mode: 'stateOverride' })`. Bytecode is unchanged.
