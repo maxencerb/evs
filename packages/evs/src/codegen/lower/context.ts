@@ -6,6 +6,7 @@
 
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
+import { bytesToHex, HEX_BYTES_RE, hexToBytes, padWordAligned } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
 import { type EvsType, type WordType, isWordType, bitsOf, isSigned } from '../../core/types.js';
 import {
@@ -45,6 +46,10 @@ export interface LowerCtx {
   /** Every `const` stmt's payload, keyed by its out ValueId (operand and call-site literal
    *  folding). */
   readonly consts: ReadonlyMap<ValueId, ConstData>;
+  /** How many `const` stmts record each dynamic literal image, keyed by {@link literalImageKey}
+   *  (body and every fn body): one data segment serves all of them, so `lowerConst` weighs the
+   *  segment once against the per-use stores of the zero-fill form. */
+  readonly literalUses: ReadonlyMap<string, number>;
   /** Every value an `env address` stmt defines (the script's own address → SELFBALANCE); see
    *  {@link selfAddressValues}. */
   readonly selfAddresses: ReadonlySet<ValueId>;
@@ -89,9 +94,14 @@ export function createLowerCtx(
   input: Pick<LowerCtx, 'ir' | 'frame' | 'tails' | 'opts' | 'dataSeg'>,
 ): LowerCtx {
   const consts = new Map<ValueId, ConstData>();
+  const literalUses = new Map<string, number>();
   const scan = (stmts: readonly Stmt[]): void => {
     walkStmts(stmts, (s) => {
-      if (s.k === 'const') consts.set(s.out, s.data);
+      if (s.k !== 'const') return;
+      consts.set(s.out, s.data);
+      if (s.data.kind === 'word' || !HEX_BYTES_RE.test(s.data.hex)) return; // lowerConst rejects
+      const key = literalImageKey(padWordAligned(hexToBytes(s.data.hex)));
+      literalUses.set(key, (literalUses.get(key) ?? 0) + 1);
     });
   };
   scan(input.ir.body);
@@ -99,6 +109,7 @@ export function createLowerCtx(
   return {
     ...input,
     consts,
+    literalUses,
     selfAddresses: selfAddressValues(input.ir),
     loop: null,
     dfailStubs: [],
@@ -106,6 +117,12 @@ export function createLowerCtx(
     fnQueue: [],
     lastStore: null,
   };
+}
+
+/** The {@link LowerCtx.literalUses} key of a word-aligned literal image: its content, the same
+ *  key the program's data-segment manager deduplicates on. */
+export function literalImageKey(image: Uint8Array): string {
+  return bytesToHex(image);
 }
 
 /** Runs `body` with `ctx.loop` set to `loop` (`null` for a fn body), then restores it. */

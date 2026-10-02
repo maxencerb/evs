@@ -39,8 +39,10 @@ The explicit literal constructor, for when coercion via `IntoExpr` cannot infer 
 want. Literals are validated at recording time against [the coercion rules](/reference/types/).
 Word literals canonicalize into the bytecode as constants; dynamic literals (`string`, `bytes`,
 literal arrays) become bytecode data segments materialized by `CODECOPY` on first use, except
-a literal at least half of whose words are zero (an all-zero `uint256[N]`, `0x`), which is a
-zero-filled allocation plus one store per nonzero word and costs no data segment. A
+an all-zero literal (an all-zero `uint256[N]`, `0x`), which is a zero-filled allocation and
+costs no data segment. A sparse literal (at least half zero words) is zero-filled plus one store
+per nonzero word when that is the smaller code (each store costs about 17 gas per
+materialization, so hoist a sparse literal out of a hot `s.for` body). A
 `t.struct` / `t.tuple` literal and a composite-array literal (`tuple[]`, `T[][]`, `string[]`) are
 built at record time into a fresh block, exactly as when they are passed to a call or returned.
 

@@ -855,6 +855,52 @@ describe('EIP-170 enforcement', () => {
       }),
     );
   });
+
+  // One data segment serves every const stmt recording the same image (content-deduplicated),
+  // while the zero-fill form repeats its stores at each one: the same sparse literal recorded in
+  // sibling `s.if` bodies (the builder interns it only along the open scope stack) stays a shared
+  // segment once its repeated stores would outweigh it.
+  test('a sparse literal recorded in many sibling scopes shares one data segment', async () => {
+    const high = (j: number): bigint =>
+      2n ** 255n + BigInt(j) * 0x1234567890abcdef1234567890abcdefn;
+    // 33-word image (length + 32), 16 nonzero words: sparse enough for the zero-fill form
+    const tbl = Array.from({ length: 32 }, (_, j) => (j < 15 ? high(j) : 0n));
+    const zeros = Array.from({ length: 32 }, () => 0n);
+    const script = (k: number, values: readonly bigint[]) =>
+      evscript({ name: 's', args: [t.uint256] }, (s, i) => {
+        const acc = s.let(t.uint256, 0n);
+        for (let j = 0; j < k; j++) {
+          s.if(i.eq(BigInt(j)), () => {
+            acc.set(s.lit(t.array(t.uint256), values).at(i).add(1n));
+          });
+        }
+        return s.return({ out: acc.get() });
+      });
+    const segments = (sc: EvsScript): number =>
+      lowerProgram(sc.ir, { evmVersion: 'cancun' }).nodes.filter((n) => n.k === 'dataLabel').length;
+    const size = (sc: EvsScript): number => (compile(sc).runtimeBytecode.length - 2) / 2;
+    expect(segments(script(1, tbl))).toBe(0); // one use: the stores beat the 1,056-byte segment
+    expect(segments(script(2, tbl))).toBe(1);
+    const thirtyTwo = script(32, tbl);
+    expect(segments(thirtyTwo)).toBe(1);
+    // ~100 bytes per extra use (the branch, the read and a CODECOPY), not ~600 more of stores
+    expect(size(thirtyTwo) - size(script(2, tbl))).toBeLessThan(120 * 30);
+    // an all-zero image has no stores: zero-filled at every use, never a segment
+    expect(segments(script(32, zeros))).toBe(0);
+    const compiled = compile(thirtyTwo);
+    await Promise.all(
+      [3n, 14n, 31n].map(async (i) => {
+        const res = await execRuntime(
+          compiled.runtimeBytecode,
+          encodeFunctionData({ abi: compiled.abi, functionName: 's', args: [i] }),
+        );
+        expect(res.success).toBe(true);
+        expect(
+          decodeFunctionResult({ abi: compiled.abi, functionName: 's', data: res.data }),
+        ).toEqual({ out: (tbl[Number(i)] ?? 0n) + 1n });
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------
