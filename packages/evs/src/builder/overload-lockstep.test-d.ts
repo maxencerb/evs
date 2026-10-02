@@ -121,7 +121,22 @@ test('a resolved call is typed from the overload the recorder records', () => {
       args: [[1n]],
     });
     expectTypeOf(single).toEqualTypeOf<Expr<'bool'>>();
-    return s.return({ m, c, sc, fx, tf, el, ab, a, pair, single });
+    // a struct literal with staged members is accepted by the call and resolves like the recorder
+    const staged = s.read({
+      address: target,
+      abi: abis.structByMemberType,
+      functionName: 'f',
+      args: [{ a: x }],
+    });
+    expectTypeOf(staged).toEqualTypeOf<Expr<'bool'>>();
+    const stagedArr = s.read({
+      address: target,
+      abi: abis.tupleArrByComponent,
+      functionName: 'f',
+      args: [[{ a: s.env('caller') }]],
+    });
+    expectTypeOf(stagedArr).toEqualTypeOf<Expr<'uint8'>>();
+    return s.return({ m, c, sc, fx, tf, el, ab, a, pair, single, staged, stagedArr });
   });
 });
 

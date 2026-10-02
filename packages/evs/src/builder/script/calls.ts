@@ -17,7 +17,7 @@ import type {
   OuterArraySize,
   PeelArraySuffix,
 } from '../../core/types.js';
-import type { AllMembersNamed, UnionToTuple } from '../../core/types/derive.js';
+import type { AbiParamToEvsType, AllMembersNamed, UnionToTuple } from '../../core/types/derive.js';
 import type { Expr, exprBrand } from '../../core/types/expr.js';
 import type { ArgHandle } from './evscript.js';
 import type {
@@ -25,6 +25,8 @@ import type {
   AnyMutArray,
   TupleArrayTag,
   Tuple,
+  StructLiteral,
+  TupleArrayLiteral,
   mutArrayBrand,
   tupleBrand,
 } from './handles.js';
@@ -416,6 +418,11 @@ type ParamToTupleType<p extends AbiParameter> = p extends {
   ? { readonly type: 'tuple'; readonly components: comps }
   : never;
 
+/** An abitype `AbiParameter` for a `tuple…` param → its {@link TupleType} descriptor with the
+ *  member names normalized (a `parseAbi` member with no `name` is unnamed, `''`), the literal
+ *  shapes' input. */
+type ParamToEvsTuple<p extends AbiParameter> = Extract<AbiParamToEvsType<p>, TupleType>;
+
 /** An abitype `AbiParameter` for a tuple-ARRAY member (`'tuple[]'`, `'tuple[2]'`, `'tuple[][]'`,
  *  …) → the matching tuple-array {@link TupleType} descriptor (an array value type whose `.type`
  *  is the param's tag). */
@@ -440,18 +447,25 @@ type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
 
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
 // a struct, a positional array for an unnamed tuple, a `readonly Struct[]` for a `tuple[]`) OR an
-// `Expr`/handle of that type. For a `tuple` param: a `Tuple` handle / `s.tuple(...)` result. For a
-// tuple-array param: an `Expr` of the tuple-array descriptor (a decoded/constructed array handle)
-// or the `readonly Struct[]` literal. `uint256[][]`/`string[]`/`uint256[2]` are `EvsType` strings →
-// `Expr<that>` (or the literal; a fixed-size literal is a tuple of exactly N).
+// `Expr`/handle of that type. For a `tuple` param: a `Tuple` handle / `s.tuple(...)` result, or a
+// struct literal whose members may be staged (`StructLiteral`: `{ tokenId: id, … }`, coerced like
+// an `s.tuple` init with every member given). For a tuple-array param: an `Expr` of the
+// tuple-array descriptor (a decoded/constructed array handle) or an array literal whose elements
+// may be staged (`TupleArrayLiteral`). `uint256[][]`/`string[]`/`uint256[2]` are `EvsType` strings
+// → `Expr<that>` (or the literal; a fixed-size literal is a tuple of exactly N).
 type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
       | AbiParameterToPrimitiveType<p, 'inputs'>
+      | StructLiteral<ParamToEvsTuple<p>>
       | Tuple<ParamToTupleType<p>>
       | AnyTuple // issue #5 ask #3: a cross-order call-decoded Tuple is accepted (runtime-checked)
       | Expr<ParamToTupleType<p>>
   : p['type'] extends TupleArrayTag
-    ? AbiParameterToPrimitiveType<p, 'inputs'> | Expr<ParamToTupleArrayType<p>> | AnyMutArray // issue #5 ask #5: a bare MutArray<tuple> is accepted (runtime-checked)
+    ?
+        | AbiParameterToPrimitiveType<p, 'inputs'>
+        | TupleArrayLiteral<ParamToEvsTuple<p>>
+        | Expr<ParamToTupleArrayType<p>>
+        | AnyMutArray // issue #5 ask #5: a bare MutArray<tuple> is accepted (runtime-checked)
     : p['type'] extends `${string}[${string}`
       ?
           | AbiParameterToPrimitiveType<p, 'inputs'>

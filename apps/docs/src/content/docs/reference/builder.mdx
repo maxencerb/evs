@@ -550,7 +550,7 @@ read<const abi extends Abi | readonly unknown[], name extends SubcallFunctionNam
   readonly address: IntoExpr<'address'>;
   readonly abi: abi;
   readonly functionName: name; // autocomplete union over view/pure function names + canonical signatures ('get(uint256)')
-  readonly args?: args; // per parameter: ABI primitive/Expr; a tuple param: Tuple/s.tuple/literal object; selects the overload
+  readonly args?: args; // per parameter: ABI primitive/Expr; a tuple param: Tuple/s.tuple/object literal (members may be Exprs); selects the overload
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   readonly struct?: boolean; // opt-in: fuse multiple named outputs into ONE named Tuple (ABI order)
 }): SubcallOutputs; // [] → void; [one] → Expr<one> or Tuple<one>; [many] → readonly tuple of Expr|Tuple (or one Tuple with struct:true)
@@ -566,8 +566,8 @@ elides their type arguments). The `address` can itself be an
 - Only `view`/`pure` functions are offered; nonpayable/payable names are TypeScript errors —
   reach for [`s.call`](#scall) or [`s.simulate`](#ssimulate) for those.
 - A `'tuple'` output decodes into a [`Tuple` handle](#tuple) (named/positional field access); a
-  `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
-  object. See [calls — struct arguments and outputs](/guides/calls/#struct-and-array-arguments-and-outputs).
+  `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or an object literal
+  naming every member (each a constant or a runtime `Expr` / `Tuple`). See [calls — struct arguments and outputs](/guides/calls/#struct-and-array-arguments-and-outputs).
 - By default a function's **multiple** outputs decode to the positional `[many]` shape (a
   `readonly` tuple of `Expr | Tuple`, mirroring viem). Passing `struct: true` instead fuses them
   into **one named [`Tuple` handle](#tuple)** in ABI declaration order (e.g. `s.read({ …,
@@ -809,8 +809,9 @@ package-internal helper: `Expr` results come back as fresh `Expr`s, `Tuple` resu
   [`ArgHandle`](/reference/evscript/#evscript) dispatch — a `t.struct`/`t.tuple` param is a
   [`Tuple`](#tuple) handle, a composite array or scalar an `Expr`. The call site accepts an
   `IntoMember` of the param type: an `IntoExpr` for scalars, an array `Expr`/literal/`MutArray`
-  for arrays, and a `Tuple` handle or literal object for a struct (passed by reference — the
-  memref pointer word; members are checked structurally at recording).
+  for arrays, and a `Tuple` handle or object literal (members may be runtime values) for a
+  struct (passed by reference — the memref pointer word; members are checked structurally at
+  recording).
 - Each call of the returned handle records one statement and returns fresh handles — two calls
   never alias.
 - Compiled as a `JUMPDEST` subroutine: code is emitted once regardless of call count; uncalled

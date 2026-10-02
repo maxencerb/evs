@@ -10,8 +10,8 @@ import type {
   TupleType,
   StringType,
   NamedType,
-  LitOf,
   ArrayType,
+  OuterArraySize,
   PeelArraySuffix,
 } from '../../core/types.js';
 import type { AllMembersNamed } from '../../core/types/derive.js';
@@ -93,9 +93,49 @@ export type ComponentToType<c extends NamedType> = c['type'] extends `tuple${str
  * handle of that member type, ANY {@link Tuple} handle (issue #5 ask #3 — the erased
  * {@link tupleBrand} makes a call-decoded `Tuple<C_abi>` assignable into a `t.struct`-typed slot
  * whose `C` is `UnionToTuple`-ordered; the runtime `typesEqual` is the order-sensitive guard), or
- * a host literal.
+ * a {@link StructLiteral} (whose members may themselves be staged).
  */
-export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | LitOf<t>;
+export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | StructLiteral<t>;
+
+/**
+ * A complete literal of the plain `tuple` type `t` whose members may be staged — the value the
+ * recorder coerces wherever a struct is expected (a call arg, a struct member, an array element,
+ * an `s.fn` param, …: `buildTupleNew` takes every member through the same coercion as a top-level
+ * value). By abitype's rule ({@link AllMembersNamed}): a record keyed by member name when every
+ * member is named, else a positional array. Every member is present (unlike {@link TupleInit},
+ * whose omitted members zero-fill), as overload resolution requires (`FitsStruct` /
+ * `Recorder.argFits`), and each accepts its type's {@link IntoMember}: a host literal, an
+ * {@link Expr}, a {@link Tuple} / {@link MutArray} handle, or a nested staged literal. The host
+ * literal (`LitOf`, abitype's primitive type) is one case of it.
+ */
+export type StructLiteral<t extends TupleType> =
+  AllMembersNamed<t['components']> extends true
+    ? { readonly [c in t['components'][number] as c['name']]: IntoMember<ComponentToType<c>> }
+    : PositionalLiteral<t['components']>;
+
+/** The complete positional literal of a tuple with an unnamed member (homomorphic over the
+ *  components tuple: exactly one element per member). */
+type PositionalLiteral<comps extends readonly NamedType[]> = {
+  readonly [i in keyof comps]: IntoMember<ComponentToType<comps[i]>>;
+};
+
+/** A literal of the tuple-ARRAY type `t` whose elements may be staged: a JS array of the
+ *  one-suffix-peeled element's {@link IntoMember} (a {@link StructLiteral} or {@link Tuple} handle
+ *  for a `tuple[]`, a row literal or handle for a `tuple[][]`). A fixed outer `[N]` suffix takes
+ *  exactly N elements (a readonly N-tuple, as abitype's host arm types it), so a wrong-length
+ *  `tuple[N]` literal is a compile error, not only a recording-time `TYPE_MISMATCH`. */
+export type TupleArrayLiteral<t extends TupleType> =
+  OuterArraySize<t['type']> extends `${infer n extends number}`
+    ? FixedLengthLiteral<IntoMember<PeelTupleArray<t>>, n>
+    : readonly IntoMember<PeelTupleArray<t>>[];
+
+/** A readonly tuple of exactly `n` `e`s (tail-recursive; abitype's `Tuple` builds its fixed-array
+ *  host type the same way). */
+type FixedLengthLiteral<
+  e,
+  n extends number,
+  acc extends readonly e[] = readonly [],
+> = acc['length'] extends n ? acc : FixedLengthLiteral<e, n, readonly [e, ...acc]>;
 
 /** What an ARRAY-typed slot accepts: an {@link Expr}/literal of the array type, or a bare
  *  {@link MutArray} handle (issue #5 ask #5 — runtime `typesEqual` enforces the element match,
@@ -104,13 +144,14 @@ export type IntoArray<t extends EvsType> = IntoExpr<t> | AnyMutArray;
 
 /**
  * What `Field.set(v)` / a `s.tuple(...)` init slot / `MutArray.set` accepts for a member of type
- * `t`: a plain `tuple` member → {@link IntoTuple}; a `tuple[]`/`tuple[][]` or string-array member →
+ * `t`: a plain `tuple` member → {@link IntoTuple}; a `tuple[]`/`tuple[][]` member →
+ * {@link IntoArray} or a {@link TupleArrayLiteral} with staged elements; a string-array member →
  * {@link IntoArray} (array Expr/literal/`MutArray`); a scalar member → {@link IntoExpr}.
  */
 export type IntoMember<t extends EvsType> = t extends TupleType
   ? t['type'] extends 'tuple'
     ? IntoTuple<t>
-    : IntoArray<t>
+    : IntoArray<t> | TupleArrayLiteral<t>
   : t extends ArrayType
     ? IntoArray<t>
     : IntoExpr<t>;

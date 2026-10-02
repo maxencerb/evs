@@ -39,6 +39,8 @@ export type {
   IntoTuple,
   IntoArray,
   IntoMember,
+  StructLiteral,
+  TupleArrayLiteral,
   Field,
   Tuple,
   TupleArrayElem,
