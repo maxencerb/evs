@@ -10,32 +10,52 @@
  *   emits the call of a planned use, leaves every other use to its inline emitter, and emits the
  *   bodies once the program's sites are all written.
  *
+ * Two kinds of bodies, each the unchanged inline emitter run at the inline heights:
+ *
+ * - an ENCODER (`emitSharedEncodeBody`, `abi/encode.ts`) serves one top-level composite member of
+ *   an encode block (call args, the return record, `s.encode` / `s.keccak256` / memref `.eq()`,
+ *   `s.throw`): entry `[ret, base, src]` or `[ret, src]`, return label checked at 0;
+ * - a DECODER ({@link emitDecoderBody}) serves one recursive-codec output of an `s.read` /
+ *   `s.call` / `try*` / `revertReturns` site, or a simulate site's whole outputs tuple: entry
+ *   `[ret, buf]`, return `[block, buf]`, or `[0, buf]` when the decode fails, through a funnel of
+ *   POP rungs; the call site then routes the 0 through its OWN failure path (its
+ *   `EvsDecodeError(site)` stub, or its try restore and zero block), so revert data and try
+ *   semantics are those of the inline site.
+ *
  * A program whose plan is empty (nothing pays) builds no `CodecShare`, reserves no register and
  * allocates no label, so it is byte-identical to the inline lowering. Bodies never call bodies:
  * they are emitted with the hook off, which also keeps one register bank enough.
- *
- * Encoder bodies (`emitSharedEncodeBody`, `abi/encode.ts`) serve one top-level composite member
- * of an encode block (call args, the return record, `s.encode` / `s.keccak256` / memref `.eq()`,
- * `s.throw`). CONTRIBUTING.md's "Shared codecs" design note has the conventions and the cost
- * model's numbers.
+ * CONTRIBUTING.md's "Shared codecs" design note has the conventions and the cost model's numbers.
  */
 
-import { layoutOfType, type TypeLayout } from '../abi/layout.js';
+import { isDynamic, layoutOfType, type TypeLayout } from '../abi/layout.js';
 import { AsmWriter, codeSize, type LabelId } from '../asm/assembler.js';
 import { encodedPushWidth, type EvmVersion } from '../asm/ops.js';
+import { MAX_TEMPLATE_DEPTH } from '../asm/verify.js';
 import { EvsCompileError, EvsInternalError } from '../core/errors.js';
 import { abiParamToType, typeToAbiParam, type NamedType } from '../core/types.js';
-import type { ScriptIr } from '../ir/nodes.js';
+import { callOutputs, type ScriptIr } from '../ir/nodes.js';
 import {
+  effectiveDecodeBudget,
   emitEncodeBlock,
   emitSharedEncodeBody,
+  headOffsets,
   layoutToNamed,
+  needsDecodeBudget,
+  tupleComponents,
+  usesRecursiveCodec,
   type CodecHook,
   type CodecRegisters,
+  type DecodeFail,
   type SharedTails,
 } from './abi.js';
 import { usesRecursiveEncoder } from './call/calldata.js';
+import { makeDecodeFail } from './call/shared.js';
+import { outputsLayout, emitDecodeSimulateOutputs } from './call/simulate-call.js';
+import { emitDecodeReturnOutput } from './call/static-call.js';
 import {
+  decRetKey,
+  decSimKey,
   encKey,
   encodeMemberKind,
   isTailMemberKind,
@@ -56,11 +76,11 @@ function internal(message: string): EvsInternalError {
 // ---------------------------------------------------------------------------
 
 /**
- * @internal The census and the emitters disagree on a planned codec (how many calls a statement
- * makes). Never wrong code: emission never shares an unplanned use, and the mismatch is caught
- * before the program is returned. `compile()` catches exactly this class and lowers again with
- * sharing off, so a lowering path the census does not know only costs the saving. Under
- * {@link setCodecPlanStrict} (the test setup) it is an `INTERNAL` error instead.
+ * @internal The census and the emitters disagree on a planned codec: how many calls a statement
+ * makes, or whether a decoder body can fail. Never wrong code: emission never shares an unplanned
+ * use, and the mismatch is caught before the program is returned. `compile()` catches exactly
+ * this class and lowers again with sharing off, so a lowering path the census does not know only
+ * costs the saving. Under {@link setCodecPlanStrict} (the test setup) it is an `INTERNAL` error.
  */
 export class CodecPlanDrift extends Error {
   constructor(message: string) {
@@ -93,12 +113,24 @@ function driftError(message: string): Error {
 // the plan
 // ---------------------------------------------------------------------------
 
-/** What one shared body does. */
-export type CodecUnit = {
-  readonly dir: 'enc';
-  readonly kind: EncodeMemberKind;
-  readonly layout: TypeLayout;
-};
+/** What one shared body does (everything its code depends on: the key is built from it). */
+export type CodecUnit =
+  | { readonly dir: 'enc'; readonly kind: EncodeMemberKind; readonly layout: TypeLayout }
+  | {
+      readonly dir: 'dec';
+      /** One output of a call's returndata, at `headOffset`. */
+      readonly region: 'ret';
+      readonly layout: TypeLayout;
+      readonly headOffset: number;
+      readonly budget: 'off' | 'once';
+    }
+  | {
+      readonly dir: 'dec';
+      /** A simulate site's whole outputs list, decoded as one tuple. */
+      readonly region: 'sim';
+      readonly layout: Extract<TypeLayout, { kind: 'tuple' }>;
+      readonly budget: 'off' | 'once';
+    };
 
 /** One shared key: its body, and the uses that call it. */
 export interface PlannedKey {
@@ -106,6 +138,8 @@ export interface PlannedKey {
   readonly unit: CodecUnit;
   /** Planned calls per statement site id (`RETURNS_SITE` for the return encode). */
   readonly groups: ReadonlyMap<number, number>;
+  /** A decoder body can fail: its call sites then check the returned pointer for 0. */
+  readonly canFail: boolean;
 }
 
 export interface CodecPlan {
@@ -121,13 +155,13 @@ export function codecRegisters(frameEnd: number): CodecRegisters {
   return { ret: frameEnd, base: frameEnd + 32, src: frameEnd + 64 };
 }
 
-/** The register words `keys` need: `RET` for any body, `BASE` and `SRC` for a tuple encoder. */
-function registerWords(keys: ReadonlyMap<string, PlannedKey>): number {
-  let words = 0;
-  for (const { unit } of keys.values()) {
-    words = Math.max(words, unit.kind === 'ST' || unit.kind === 'DT' ? 3 : 1);
-  }
-  return words;
+/**
+ * The register words `unit` needs: `RET` always; `BASE` and `SRC` for a tuple encoder (its spilled
+ * base and source pointer); `BASE` for a decoder of a dynamic output (its cached block base).
+ */
+function registerWords(unit: CodecUnit): number {
+  if (unit.dir === 'enc') return unit.kind === 'ST' || unit.kind === 'DT' ? 3 : 1;
+  return unit.region === 'ret' && isDynamic(unit.layout) ? 2 : 1;
 }
 
 /**
@@ -143,14 +177,16 @@ const SHARE_MIN_SAVING = 16;
 const SHARE_MIN_PER_USE = 8;
 
 /**
- * Whether a shared call of `unit` is expected to cost no more gas than its inline twin. A dynamic
- * tuple encoder reads its base from the tail cursor once, where the inline code re-derives it
- * through the parent's head word at every member access, which repays the call. Every other unit
- * pays a few dozen gas per call (two jumps, the spills and the register reads): it never shares
- * inside a loop, and only when it saves {@link SHARE_MIN_PER_USE} bytes per use.
+ * Whether a shared call of `unit` is expected to cost no more gas than its inline twin. Two
+ * bodies read a base once where the inline code re-derives it through a head word at every
+ * access, which repays the call: a dynamic tuple encoder (its base is the tail cursor) and the
+ * decoder of a dynamic tuple output (its block base, cached in the `BASE` register). Every other
+ * unit pays a few dozen gas per call (two jumps, the spills and the register reads): it never
+ * shares inside a loop, and only when it saves {@link SHARE_MIN_PER_USE} bytes per use.
  */
 function isCheap(unit: CodecUnit): boolean {
-  return unit.kind === 'DT';
+  if (unit.dir === 'enc') return unit.kind === 'DT';
+  return unit.region === 'ret' && unit.layout.kind === 'tuple' && unit.layout.dynamic;
 }
 
 /**
@@ -162,18 +198,17 @@ function isCheap(unit: CodecUnit): boolean {
  *   reach {@link SHARE_MIN_SAVING} (and {@link SHARE_MIN_PER_USE} per use for a key that is not
  *   cheap); under `optimize` the saving measured after the peephole must also stay positive.
  *
- * Sizes are measured on the real emitters (dry runs in a scratch writer), with the cheapest
- * operand reads at the site: the real inline code reads them at least as often as the call does,
- * so the real saving is at least the measured one. The registers are measured at `frameEnd`, the
- * default allocator's frame end (the larger one), so both allocators take the same decisions.
- * A key whose dry run fails to compile (a type too deep for the stack) stays inline, and its site
- * reports the error as it always did.
+ * Sizes are measured on the real emitters (dry runs in a scratch writer). An encoder use reads
+ * its operands at the cheapest cost a site can have: the real inline code reads them at least as
+ * often as the call does, so the real saving is at least the measured one. The registers are
+ * measured at `frameEnd`, the default allocator's frame end (the larger one), so both allocators
+ * take the same decisions. A key whose dry run fails to compile (a type too deep for the stack)
+ * stays inline, and its site reports the error as it always did.
  */
 export function planCodecs(
   ir: ScriptIr,
   opts: { readonly evmVersion: EvmVersion; readonly frameEnd: number; readonly optimize: boolean },
 ): CodecPlan {
-  const found = census(ir);
   const regs = codecRegisters(opts.frameEnd);
   // a wider register push than the frame end's (charged to every key: conservative)
   const widen =
@@ -182,7 +217,8 @@ export function planCodecs(
       ? 1
       : 0;
   const keys = new Map<string, PlannedKey>();
-  for (const [key, use] of found) {
+  let words = 0;
+  for (const [key, use] of census(ir)) {
     const cheap = isCheap(use.unit);
     const groups = [...use.groups].filter(([, g]) => cheap || !g.hot);
     const n = groups.reduce((sum, [, g]) => sum + g.count, 0);
@@ -195,7 +231,10 @@ export function planCodecs(
       throw error;
     }
     const saving = (at: 'pre' | 'post'): number =>
-      groups.reduce((sum, [, g]) => sum + g.count * (sizes.inline[at] - sizes.call[at]), 0) -
+      groups.reduce(
+        (sum, [, g]) => sum + g.count * (sizes.inline[g.mode][at] - sizes.call[g.mode][at]),
+        0,
+      ) -
       sizes.body[at] -
       widen;
     const pre = saving('pre');
@@ -205,9 +244,11 @@ export function planCodecs(
       key,
       unit: use.unit,
       groups: new Map(groups.map(([site, g]) => [site, g.count])),
+      canFail: sizes.canFail,
     });
+    words = Math.max(words, registerWords(use.unit));
   }
-  const plan = keys.size === 0 ? EMPTY_CODEC_PLAN : { keys, words: registerWords(keys) };
+  const plan = keys.size === 0 ? EMPTY_CODEC_PLAN : { keys, words };
   return planTransform === null ? plan : planTransform(plan);
 }
 
@@ -215,8 +256,12 @@ export function planCodecs(
 // census
 // ---------------------------------------------------------------------------
 
+/** How a use's site handles a decode failure (an encoder use is always `'strict'`). */
+type UseMode = 'strict' | 'try';
+
 interface CensusGroup {
   count: number;
+  readonly mode: UseMode;
   readonly hot: boolean;
 }
 
@@ -226,30 +271,38 @@ interface CensusKey {
 }
 
 /**
- * Every codec use the lowering emits, by key then by statement site: the top-level composite
- * members of every encode block — a recursive-encoder call's args (`usesRecursiveEncoder`, the
- * predicate the calldata builder dispatches on), an `s.encode` (`'abi'`) or `s.throw` payload,
- * the return record. It walks exactly the statements `lowerProgram` lowers
- * (`walkEmittedStmts`); a statement the walk visits twice (a site id two statements share,
- * which the IR never records) would make the counts ambiguous, so the census is then empty.
+ * Every codec use the lowering emits, by key then by statement site:
+ *
+ * - the top-level composite members of every encode block — a recursive-encoder call's args
+ *   (`usesRecursiveEncoder`, the predicate the calldata builder dispatches on), an `s.encode`
+ *   (`'abi'`) or `s.throw` payload, the return record;
+ * - every recursive-codec output of an `s.read` / `s.call` site (or its `try*` / `revertReturns`
+ *   form), and every simulate site's outputs list.
+ *
+ * It walks exactly the statements `lowerProgram` lowers (`walkEmittedStmts`), and builds keys
+ * with the emitters' own predicates; the drift check holds it to them. A statement the walk visits
+ * twice (a site id two statements share, which the IR never records) would make the counts
+ * ambiguous, so the census is then empty.
  */
 function census(ir: ScriptIr): Map<string, CensusKey> {
   const keys = new Map<string, CensusKey>();
-  const add = (key: string, unit: CodecUnit, site: number, hot: boolean): void => {
+  const add = (key: string, unit: CodecUnit, site: number, mode: UseMode, hot: boolean): void => {
     let entry = keys.get(key);
     if (entry === undefined) {
       entry = { unit, groups: new Map() };
       keys.set(key, entry);
     }
     const group = entry.groups.get(site);
-    if (group === undefined) entry.groups.set(site, { count: 1, hot });
+    if (group === undefined) entry.groups.set(site, { count: 1, mode, hot });
     else group.count += 1;
   };
   const encodeBlock = (params: readonly NamedType[], site: number, hot: boolean): void => {
     for (const p of params) {
       const layout = layoutOfType(abiParamToType(p));
       const kind = encodeMemberKind(layout);
-      if (kind !== null) add(encKey(kind, layout), { dir: 'enc', kind, layout }, site, hot);
+      if (kind !== null) {
+        add(encKey(kind, layout), { dir: 'enc', kind, layout }, site, 'strict', hot);
+      }
     }
   };
   const valueParam = (v: number): NamedType => {
@@ -262,11 +315,37 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
   walkEmittedStmts(ir, (s, hot) => {
     if (sites.has(s.site)) ambiguous = true;
     sites.add(s.site);
-    if (s.k === 'call') {
-      if (usesRecursiveEncoder(s)) encodeBlock(s.fnAbi.inputs, s.site, hot);
-    } else if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
+    if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
       encodeBlock(s.args.map(valueParam), s.site, hot);
+      return;
     }
+    if (s.k !== 'call') return;
+    if (usesRecursiveEncoder(s)) encodeBlock(s.fnAbi.inputs, s.site, hot);
+    if (s.kind === 'simulate') {
+      const outputs = s.fnAbi.outputs;
+      if (outputs.length === 0) return;
+      const budget = needsDecodeBudget(outputs) ? 'once' : 'off';
+      const layout = outputsLayout(outputs);
+      add(
+        decSimKey(layout, budget),
+        { dir: 'dec', region: 'sim', layout, budget },
+        s.site,
+        s.mode,
+        hot,
+      );
+      return;
+    }
+    const outputs = callOutputs(s);
+    const budget = needsDecodeBudget(outputs) ? 'once' : 'off';
+    const offsets = headOffsets(outputs);
+    outputs.forEach((p, j) => {
+      const layout = layoutOfType(abiParamToType(p));
+      if (!usesRecursiveCodec(layout)) return;
+      const headOffset = offsets[j] ?? 0;
+      const own = effectiveDecodeBudget(layout, budget) === 'off' ? 'off' : 'once';
+      const unit: CodecUnit = { dir: 'dec', region: 'ret', layout, headOffset, budget: own };
+      add(decRetKey(layout, headOffset, own), unit, s.site, s.mode, hot);
+    });
   });
   encodeBlock(
     ir.returns.map((r) => typeToAbiParam(r.name, r.type)),
@@ -287,13 +366,17 @@ interface Sizes {
 }
 
 interface UnitSizes {
-  /** One use, inlined. */
-  readonly inline: Sizes;
-  /** One use, calling the body. */
-  readonly call: Sizes;
+  /** One use, inlined, by the site's failure mode. */
+  readonly inline: Readonly<Record<UseMode, Sizes>>;
+  /** One use, calling the body (and checking its result), by the site's failure mode. */
+  readonly call: Readonly<Record<UseMode, Sizes>>;
   /** The body. */
   readonly body: Sizes;
+  /** Whether the body can fail (a decoder whose funnel has a rung). */
+  readonly canFail: boolean;
 }
+
+type MeasureOpts = { readonly evmVersion: EvmVersion; readonly optimize: boolean };
 
 /**
  * The size of what `emit` writes into a fresh scratch writer (with its own shared tails, the
@@ -301,7 +384,7 @@ interface UnitSizes {
  * so the peephole's height walk sees a well-formed stream; its JUMPDEST is not counted.
  */
 function fragmentSize(
-  opts: { readonly evmVersion: EvmVersion; readonly optimize: boolean },
+  opts: MeasureOpts,
   entryHeight: number,
   emit: (w: AsmWriter, tails: SharedTails) => void,
   codecs: CodecHook | null = null,
@@ -316,44 +399,161 @@ function fragmentSize(
   return { pre, post };
 }
 
+/** A hook planning exactly the use of `key` at site 0: measures the call sequence. */
+function probe(key: string, unit: CodecUnit, canFail: boolean, regs: CodecRegisters): CodecShare {
+  const groups = new Map([[0, 1]]);
+  return new CodecShare({ keys: new Map([[key, { key, unit, groups, canFail }]]), words: 3 }, regs);
+}
+
+/** A site's decode-failure router for `mode`, as `emitStaticCall` builds it (its labels are
+ *  fresh scratch labels: only the sizes matter). */
+function siteFail(w: AsmWriter, mode: UseMode): DecodeFail {
+  const stub = { dfailLabel: w.newLabel(), siteId: 0 };
+  return makeDecodeFail(w, stub, mode === 'try', 'call', w.newLabel());
+}
+
 /** Measures one use of `unit` inline, one call of it, and its body. */
 function measureUnit(
   key: string,
   unit: CodecUnit,
   regs: CodecRegisters,
-  opts: { readonly evmVersion: EvmVersion; readonly optimize: boolean },
+  opts: MeasureOpts,
 ): UnitSizes {
   const evm = { evmVersion: opts.evmVersion };
-  // the use is the lone member of an encode block, read at the cheapest cost a site can have
-  const member: NamedType[] = [layoutToNamed(unit.layout)];
-  const encodeUse = (w: AsmWriter, tails: SharedTails): void => {
-    emitEncodeBlock(
-      w,
-      member,
-      () => {
-        w.push(FRAME_BASE);
-        w.op('MLOAD');
-      },
-      () => {
-        w.push(FREE_PTR);
-        w.op('MLOAD');
-      },
-      tails,
-      evm,
-    );
-  };
-  // the call: the same block with a hook planning this one use
-  const probe = new CodecShare(
-    { keys: new Map([[key, { key, unit, groups: new Map([[0, 1]]) }]]), words: 3 },
-    regs,
-  );
+  if (unit.dir === 'enc') {
+    // the use is the lone member of an encode block, read at the cheapest cost a site can have
+    const member: NamedType[] = [layoutToNamed(unit.layout)];
+    const encodeUse = (w: AsmWriter, tails: SharedTails): void => {
+      emitEncodeBlock(
+        w,
+        member,
+        () => {
+          w.push(FRAME_BASE);
+          w.op('MLOAD');
+        },
+        () => {
+          w.push(FREE_PTR);
+          w.op('MLOAD');
+        },
+        tails,
+        evm,
+      );
+    };
+    const inline = fragmentSize(opts, 0, encodeUse);
+    const call = fragmentSize(opts, 0, encodeUse, probe(key, unit, false, regs));
+    return {
+      inline: { strict: inline, try: inline },
+      call: { strict: call, try: call },
+      body: fragmentSize(opts, 0, (w, tails) =>
+        emitSharedEncodeBody(w, w.newLabel(), 'enc', unit.kind, unit.layout, regs, tails, evm),
+      ),
+      canFail: false,
+    };
+  }
+  let canFail = false;
+  const body = fragmentSize(opts, 0, (w) => {
+    canFail = emitDecoderBody(w, w.newLabel(), 'dec', unit, regs, evm);
+  });
+  const share = probe(key, unit, canFail, regs);
+  const measure = (mode: UseMode): { inline: Sizes; call: Sizes } => ({
+    inline: fragmentSize(opts, 1, (w) => emitDecodeUnitInline(w, unit, siteFail(w, mode), evm)),
+    call: fragmentSize(opts, 1, (w) => share.decode(w, key, siteFail(w, mode), 'decode')),
+  });
+  const strict = measure('strict');
+  const tried = measure('try');
   return {
-    inline: fragmentSize(opts, 0, encodeUse),
-    call: fragmentSize(opts, 0, encodeUse, probe),
-    body: fragmentSize(opts, 0, (w, tails) =>
-      emitSharedEncodeBody(w, w.newLabel(), 'enc', unit.kind, unit.layout, regs, tails, evm),
-    ),
+    inline: { strict: strict.inline, try: tried.inline },
+    call: { strict: strict.call, try: tried.call },
+    body,
+    canFail,
   };
+}
+
+/** The inline code of a decoder unit at its site, `[buf] → [block, buf]`. */
+function emitDecodeUnitInline(
+  w: AsmWriter,
+  unit: Extract<CodecUnit, { dir: 'dec' }>,
+  fail: DecodeFail,
+  opts: { evmVersion: EvmVersion },
+  name = 'measured unit',
+  cacheBlockBase?: number,
+): void {
+  const decodeOpts = { budget: unit.budget, evmVersion: opts.evmVersion };
+  const what = (): string => `shared decoder ${name}`;
+  if (unit.region === 'sim') {
+    emitDecodeSimulateOutputs(w, tupleComponents(unit.layout), fail, decodeOpts, what);
+    return;
+  }
+  const type = abiParamToType(layoutToNamed(unit.layout));
+  emitDecodeReturnOutput(w, type, unit.headOffset, fail, decodeOpts, what, cacheBlockBase);
+}
+
+// ---------------------------------------------------------------------------
+// decoder bodies
+// ---------------------------------------------------------------------------
+
+/**
+ * The body of a shared decoder for `unit`, at `entry` (checked, height 2): `[ret, buf]` →
+ * `[block, buf]` at the call site's return label (checked at 2), or `[0, buf]` when the decode
+ * fails. Returns whether it can fail. The block pointer is never 0 (`emitDecodeFromRegion`), so
+ * the site tells the two apart.
+ *
+ * The return address is spilled to `regs.ret`, so the decode runs at the inline unit's own
+ * entry height (1): the same template budget, the same stack / heap path choices, the same
+ * `UNSUPPORTED_V0` boundary. A dynamic output's block base is cached in `regs.base`
+ * (`DecodeRegion.cacheBlockBase`), one load at each read instead of a re-derivation; its smaller
+ * stack peak may let the body keep a stack fast path its inline twin rolled back to the heap path
+ * (values and revert data are the same on both paths).
+ *
+ * Failure funnel: a failure at absolute height `h` (the `DecodeFail` contract: the height left
+ * once its flag is consumed) jumps to rung `h`, which POPs down to the next rung below it; the
+ * last rung leaves `[buf]`, pushes 0 and returns. The rung labels are allocated up front, before
+ * any speculative fragment (`emitIfWithinBudget` rolls label ids back, so a label allocated
+ * inside one could be handed out again), and only the rungs a kept fragment references are
+ * placed (`isReferenced` forgets the references of a rolled-back fragment). Kept code never
+ * fails above height 14 (`[label, flag, …h]` must fit the 16-item budget), so the rungs cover it.
+ */
+function emitDecoderBody(
+  w: AsmWriter,
+  entry: LabelId,
+  name: string,
+  unit: Extract<CodecUnit, { dir: 'dec' }>,
+  regs: CodecRegisters,
+  opts: { evmVersion: EvmVersion },
+): boolean {
+  const rungs = Array.from({ length: MAX_TEMPLATE_DEPTH }, () => w.newLabel()); // rung h at h−1
+  const failK: DecodeFail = (h) => {
+    // a failure above the template budget only occurs in a speculative fragment that will be
+    // rolled back (or that fails the whole decode with UNSUPPORTED_V0): its PUSH2 alone already
+    // overflows. It names a fresh label that is never placed and never cached.
+    w.pushLabel(rungs[h - 1] ?? w.newLabel());
+    w.op('JUMPI'); // the funnel rung for height h
+  };
+  w.label(entry, 2, name); // [ret, buf]
+  w.push(regs.ret);
+  w.op('MSTORE', { note: `${name}: spill return address` }); // [buf]
+  const cache = unit.region === 'ret' && isDynamic(unit.layout) ? regs.base : undefined;
+  emitDecodeUnitInline(w, unit, failK, opts, name, cache); // [block, buf]
+  emitCodecReturn(w, regs, name);
+  const placed = rungs.flatMap((rung, i) => (w.isReferenced(rung) ? [{ rung, h: i + 1 }] : []));
+  placed.reverse(); // highest first: each rung falls through to the next one down
+  placed.forEach(({ rung, h }, i) => {
+    w.label(rung, h, `${name}_fail_${h}`);
+    const next = placed[i + 1]?.h ?? 1;
+    for (let k = next; k < h; k++) w.op('POP');
+  });
+  if (placed.length === 0) return false;
+  w.push(0, { note: `${name}: decode failed` }); // [0, buf]
+  emitCodecReturn(w, regs, name);
+  return true;
+}
+
+/** `PUSH ret MLOAD JUMP`: a body's return through the spilled address (a dynamic jump, legal in
+ *  a checked region — the `@memcpy` / `@muldiv` / fn-return edge). */
+function emitCodecReturn(w: AsmWriter, regs: CodecRegisters, name: string): void {
+  w.push(regs.ret);
+  w.op('MLOAD');
+  w.op('JUMP', { note: `${name}: return` });
 }
 
 // ---------------------------------------------------------------------------
@@ -393,24 +593,38 @@ export class CodecShare implements CodecHook {
     pushSrc: () => void,
     pushBase: (() => void) | null,
   ): boolean {
-    const body = this.#use(w, encKey(kind, layout));
-    if (body === null) return false;
+    const use = this.#use(w, encKey(kind, layout));
+    if (use === null) return false;
     if ((pushBase === null) !== isTailMemberKind(kind)) {
       throw internal(`a ${kind} member call needs ${pushBase === null ? 'its base' : 'no base'}`);
     }
     pushSrc(); // [src]
     pushBase?.(); // [base, src] (a static member)
-    this.#call(w, body, 0, `encode ${name || 'member'} (shared ${body.name})`); // []
+    this.#call(w, use.body, 0, `encode ${name || 'member'} (shared ${use.body.name})`); // []
     return true;
   }
 
-  decode(): boolean {
-    return false;
+  decode(w: AsmWriter, key: string, fail: DecodeFail, note: string): boolean {
+    const use = this.#use(w, key);
+    if (use === null) return false;
+    this.#call(w, use.body, 2, `${note} (shared ${use.body.name})`); // [block | 0, buf]
+    if (use.planned.canFail) {
+      w.op('DUP1');
+      w.op('ISZERO'); // [block == 0, block, buf]
+      fail(2); // [block, buf]   a failed decode takes the site's own failure path
+    }
+    return true;
   }
 
   /** The body of `key` when the current statement's use of it is planned shared (the use is then
    *  counted), else `null`. */
-  #use(w: AsmWriter, key: string): { readonly entry: LabelId; readonly name: string } | null {
+  #use(
+    w: AsmWriter,
+    key: string,
+  ): {
+    readonly planned: PlannedKey;
+    readonly body: { readonly entry: LabelId; readonly name: string };
+  } | null {
     if (this.#emittingBodies) throw internal(`a codec body asked to call ${key}`);
     const planned = this.#plan.keys.get(key);
     if (planned === undefined || !planned.groups.has(this.#site)) return null;
@@ -423,7 +637,7 @@ export class CodecShare implements CodecHook {
     const counts = this.#emitted.get(key) ?? new Map<number, number>();
     counts.set(this.#site, (counts.get(this.#site) ?? 0) + 1);
     this.#emitted.set(key, counts);
-    return body;
+    return { planned, body };
   }
 
   /** `PUSH2 @ret PUSH2 @entry JUMP @ret:` — the body returns to `@ret`, checked at `retHeight`. */
@@ -445,7 +659,8 @@ export class CodecShare implements CodecHook {
    * Emits the body of every key a site called, in first-call order, with the hook off (bodies
    * never call bodies), and returns the first entry (`null` when no body was called). Call it
    * after every region that holds a site, and before the shared tails (a body references
-   * `@memcpy` before cancun).
+   * `@memcpy` before cancun). A decoder body that can fail where its plan said it cannot (its
+   * sites would then not check for 0), or the reverse, is a drift.
    */
   emitBodies(w: AsmWriter, tails: SharedTails, opts: { evmVersion: EvmVersion }): LabelId | null {
     this.#emittingBodies = true;
@@ -456,16 +671,15 @@ export class CodecShare implements CodecHook {
       if (planned === undefined) throw internal(`body ${body.name} has no planned key`);
       first ??= body.entry;
       const { unit } = planned;
-      emitSharedEncodeBody(
-        w,
-        body.entry,
-        body.name,
-        unit.kind,
-        unit.layout,
-        this.#regs,
-        bodyTails,
-        opts,
-      );
+      if (unit.dir === 'enc') {
+        const { kind, layout } = unit;
+        emitSharedEncodeBody(w, body.entry, body.name, kind, layout, this.#regs, bodyTails, opts);
+        continue;
+      }
+      const canFail = emitDecoderBody(w, body.entry, body.name, unit, this.#regs, opts);
+      if (canFail !== planned.canFail) {
+        throw driftError(`${key}: the body ${canFail ? 'can' : 'cannot'} fail, against its plan`);
+      }
     }
     return first;
   }

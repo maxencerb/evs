@@ -43,6 +43,7 @@ export {
   emitCeil32,
   emitMemCopy,
   layoutToNamed,
+  tupleComponents,
 } from './abi/shared.js';
 export type { SharedTails, SlotRef, EncodeOpts, CodecHook } from './abi/shared.js';
 export {

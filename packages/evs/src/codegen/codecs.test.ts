@@ -5,25 +5,35 @@
  * `src/differential/shared-codecs.test.ts`.
  */
 
+/* oxlint-disable typescript/no-unsafe-type-assertion -- a loose corpus: script types and values are
+   built from tables at run time */
+
 import { parseAbi } from 'viem';
-import { describe, expect, test } from 'vite-plus/test';
+import { describe, expect, test, vi } from 'vite-plus/test';
 
 import type { AnyScript } from '../../test/harness/differential.js';
 import { layoutOfType } from '../abi/layout.js';
-import { assemble, type AsmNode } from '../asm/assembler.js';
+import { assemble, AsmWriter, type AsmNode } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { stackHeights } from '../asm/verify.js';
 import { evscript } from '../builder/script.js';
 import { compile, type CompiledEvsScript } from '../compile.js';
-import { EvsInternalError } from '../core/errors.js';
-import { namedArg, t, type EvsType } from '../core/types.js';
+import { EvsCompileError, EvsInternalError } from '../core/errors.js';
+import { namedArg, t, typeToAbiParam, type EvsType } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
 import type { ScriptIr } from '../ir/nodes.js';
+import { effectiveDecodeBudget } from './abi.js';
+import { emitDecodeReturnOutput } from './call/static-call.js';
 import { decRetKey, encKey, encodeMemberKind, layoutKey, RETURNS_SITE } from './codec-keys.js';
 import { planCodecs, setCodecPlanStrict, setCodecPlanTransform, type CodecPlan } from './codecs.js';
 import { layoutFrames } from './frame.js';
 import { evsPeephole } from './peephole.js';
 import { lowerProgram } from './program.js';
+import { createSharedTails } from './tails.js';
+
+/** The unspied `AsmWriter.prototype.rollback` (the rollback regression test wraps it). */
+// oxlint-disable-next-line typescript/unbound-method -- re-applied to its writer with Reflect.apply
+const rollbackImpl = AsmWriter.prototype.rollback;
 
 const abi = parseAbi([
   'struct W8 { uint64 f0; address f1; int32 f2; uint64 f3; address f4; int32 f5; uint64 f6; address f7; string label; }',
@@ -34,6 +44,36 @@ const abi = parseAbi([
   'function getS3(S3 x) view returns (S3)',
   'function getS2(S2 x) view returns (S2)',
   'function word(uint256 i) view returns (uint256)',
+  'struct N0 { uint64 leaf; string name; }',
+  'struct N1 { uint128 a; string s; uint8[] xs; N0 inner; }',
+  'struct N2 { uint128 a; string s; uint8[] xs; N1 inner; }',
+  'struct N3 { uint128 a; string s; uint8[] xs; N2 inner; }',
+  'struct P { uint64 a; string s; }',
+  'function getNested(N3 x) view returns (N3)',
+  'function getU(uint64[3] x) view returns (uint64[3])',
+  'function getPairs(P[2] x) view returns (P[2])',
+  'function sink(W8 x) view returns (uint256)',
+  'function sinkMany(W8[] x) view returns (uint256)',
+  'function sinkNested(N3 x) view returns (uint256)',
+  'function make(uint256 i) view returns (W8)',
+  'function w8() view returns (W8)',
+  'struct RbE { uint8 c; uint16[][] d; }',
+  'struct Rb { uint8 a; RbE[] b; }',
+  'struct Rb1 { uint8 a; Rb inner; }',
+  'struct Rb2 { uint8 a; Rb1 inner; }',
+  'struct Rb3 { uint8 a; Rb2 inner; }',
+  'struct Rb4 { uint8 a; Rb3 inner; }',
+  'function rb() view returns (Rb)',
+  'function rb4() view returns (Rb4)',
+  'function w8s() view returns (W8[])',
+  'function n3() view returns (N3)',
+  'function makeMany(uint256 i) view returns (W8[])',
+  'function makeNested(uint256 i) view returns (N3)',
+  'function pair() view returns (uint256, W8)',
+  'function trio() view returns (W8, string[], string[])',
+  'function trio2() view returns ((uint64 a, string[] b), string[], string[])',
+  'function solo2() view returns ((uint64 a, string[] b))',
+  'function mut(W8 x) returns (W8)',
 ]);
 
 const W8 = t.struct({
@@ -48,6 +88,17 @@ const W8 = t.struct({
   label: t.string,
 });
 const S3 = t.struct({ a: t.uint64, b: t.address, c: t.int32 });
+const nestedType = (d: number): EvsType =>
+  d === 0
+    ? t.struct({ leaf: t.uint64, name: t.string })
+    : t.struct({
+        a: t.uint128,
+        s: t.string,
+        xs: t.array(t.uint8),
+        inner: nestedType(d - 1) as never,
+      });
+const N3 = nestedType(3);
+const P2 = t.array(t.struct({ a: t.uint64, s: t.string }), 2);
 const S2 = t.struct({ a: t.uint64, b: t.address });
 
 const keyOf = (ty: EvsType): string => {
@@ -201,11 +252,9 @@ describe('census and cost model', () => {
     expect(planOf(chain('w8', W8, 'get', 1)).keys.has(W8_KEY)).toBe(true);
   });
 
-  test('the per-use floor keeps a tiny static struct inline at many uses', () => {
+  test('the per-use floor keeps a tiny static struct encoder inline at many uses', () => {
     const script = chain('s2x8', S2, 'getS2', 7); // 7 call args + the return record
-    expect(planOf(script).keys.size).toBe(0);
-    const { shared, inline } = sizes(script, 'cancun', false);
-    expect(shared).toBe(inline);
+    expect(planOf(script).keys.has(keyOf(S2))).toBe(false);
   });
 
   test('a costly key shares only outside loops; a cheap one shares inside them too', () => {
@@ -265,7 +314,9 @@ describe('emitted bodies', () => {
       ).toBe(frameEnd);
     }
     // an array encoder needs the return-address register only
-    const arr = chain('regsArr', t.array(W8), 'getMany', 2);
+    const arr = evscript({ name: 'regsArr', args: [t.array(W8)] }, (s: any, xs: any) =>
+      s.return({ a: s.encode(xs), b: s.encode(xs) }),
+    );
     const ir = irOf(arr);
     expect(lowerProgram(ir, { evmVersion: 'cancun' }).frameEnd).toBe(
       layoutFrames(ir, { optimize: false }).frameEnd + 32,
@@ -348,5 +399,582 @@ describe('plan drift', () => {
     const twin = assemble(lowered.nodes, { evmVersion: 'cancun' }).bytecode;
     expect((fallback.length - 2) / 2).toBe(twin.length);
     expect(build(script).runtimeBytecode.length).toBeLessThan(fallback.length);
+  });
+});
+
+describe('shared decoders', () => {
+  /** `fns.length` reads `fns[i]()` of the target, the values returned. */
+  const reads = (name: string, fns: readonly string[], verb = 'read') =>
+    evscript({ name, args: [t.address] }, (s: any, a: any) => {
+      const out: Record<string, unknown> = {};
+      fns.forEach((fn, i) => {
+        const r = s[verb]({ address: a, abi, functionName: fn });
+        const v = verb.startsWith('try') ? r.value : r;
+        // a multi-output read is a host array of handles: each one returned on its own
+        if (Array.isArray(v)) v.forEach((x, j) => (out[`v${i}_${j}`] = x));
+        else out[`v${i}`] = v;
+      });
+      return s.return(out);
+    });
+  const decKeys = (plan: CodecPlan): string[] =>
+    [...plan.keys.keys()].filter((k) => k.startsWith('dec|'));
+
+  test('a decoder key carries the head offset and the effective decode budget', () => {
+    // `pair()` puts W8 at head offset 32: a different body from `make()`'s W8 at 0
+    const offsets = decKeys(planOf(reads('offsets', ['pair', 'w8', 'pair', 'w8'])));
+    expect(offsets).toHaveLength(2);
+    expect(offsets.map((k) => k.split('|')[3])).toEqual(['32', '0']);
+    // W8 cannot charge the budget: under `trio()`'s budgeted decode and `w8()`'s unbudgeted
+    // one it is the same code, so one key
+    expect(decKeys(planOf(reads('budgets', ['trio', 'w8', 'trio', 'w8'])))).toContain(
+      decRetKey(layoutOfType(W8), 0, 'off'),
+    );
+    // a struct holding a string[] charges: budgeted and unbudgeted are two bodies
+    const charged = decKeys(planOf(reads('charged', ['trio2', 'solo2', 'trio2', 'solo2'])));
+    expect(charged.filter((k) => k.startsWith('dec|ret|(uint64,string[])'))).toEqual([
+      'dec|ret|(uint64,string[])|0|once',
+      'dec|ret|(uint64,string[])|0|off',
+    ]);
+  });
+
+  test('a type that cannot charge decodes to the same nodes budgeted or not', () => {
+    const strings = t.struct({ a: t.string, b: t.bytes, n: t.uint256 });
+    for (const ty of [W8, S3, strings, 'string[2]', 'uint64[3]'] as const) {
+      const l = layoutOfType(ty);
+      expect(effectiveDecodeBudget(l, 'once'), `${layoutKey(l, false)} cannot charge`).toBe('off');
+      const nodes = (budget: 'off' | 'once'): readonly AsmNode[] => {
+        const w = new AsmWriter();
+        createSharedTails(w, { evmVersion: 'cancun' });
+        const fail = (): void => {
+          w.push(0);
+          w.op('POP');
+          w.op('POP');
+        };
+        emitDecodeReturnOutput(w, ty, 0, fail, { budget, evmVersion: 'cancun' }, () => 'x');
+        return w.nodes();
+      };
+      expect(nodes('once')).toEqual(nodes('off'));
+    }
+  });
+
+  test('a decode too deep for the stack stays inline and reports its own site', () => {
+    const structs = (n: number): EvsType => {
+      let ty: EvsType = t.struct({ a: t.string });
+      for (let i = 0; i < n; i++) ty = t.struct({ x: t.uint8, inner: ty as never });
+      return ty;
+    };
+    const deepAbi = (n: number, mutability: 'view' | 'nonpayable') => [
+      {
+        type: 'function',
+        name: 'g',
+        stateMutability: mutability,
+        inputs: [],
+        outputs: [typeToAbiParam('r', structs(n))],
+      },
+    ];
+    // one level deeper than what fits (decode-bounds: struct^10 reads, struct^9 simulates)
+    for (const [verb, n] of [
+      ['read', 11],
+      ['simulate', 10],
+    ] as const) {
+      const script = evscript({ name: 'deep', args: [t.address] }, (s: any, a: any) => {
+        const fnAbi = deepAbi(n, verb === 'read' ? 'view' : 'nonpayable');
+        const p = s[verb]({ address: a, abi: fnAbi, functionName: 'g' });
+        const q = s[verb]({ address: a, abi: fnAbi, functionName: 'g' });
+        return s.return({ p: p.x.get(), q: q.x.get() });
+      });
+      const error = (() => {
+        try {
+          build(script);
+        } catch (e) {
+          return e;
+        }
+        return null;
+      })();
+      expect(error).toBeInstanceOf(EvsCompileError);
+      expect((error as EvsCompileError).code).toBe('UNSUPPORTED_V0');
+      expect((error as EvsCompileError).message).toMatch(/\(site \d+\) nests structs and arrays/);
+      // and the deepest that fits does share at two sites
+      const fits = evscript({ name: 'fits', args: [t.address] }, (s: any, a: any) => {
+        const fnAbi = deepAbi(n - 1, verb === 'read' ? 'view' : 'nonpayable');
+        const p = s[verb]({ address: a, abi: fnAbi, functionName: 'g' });
+        const q = s[verb]({ address: a, abi: fnAbi, functionName: 'g' });
+        return s.return({ p: p.x.get(), q: q.x.get() });
+      });
+      expect(decKeys(planOf(fits))).toHaveLength(1);
+    }
+  });
+
+  test('regression: a body whose array decode rolls back its fast path assembles', () => {
+    // pre-allocated funnel rungs: a rung allocated inside the rolled-back stack-path fragment
+    // would be handed out again to the heap path's own labels ("label #n is defined twice")
+    const Rb = t.struct({
+      a: t.uint8,
+      b: t.array(t.struct({ c: t.uint8, d: t.array(t.array(t.uint16)) })),
+    });
+    const rbAbi = [
+      {
+        type: 'function',
+        name: 'g',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [typeToAbiParam('', Rb)],
+      },
+    ];
+    const deeper = t.struct({ a: t.uint8, inner: Rb });
+    const deeperAbi = [
+      {
+        type: 'function',
+        name: 'g',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [typeToAbiParam('', deeper)],
+      },
+    ];
+    const rolledBack = vi.spyOn(AsmWriter.prototype, 'rollback');
+    const traceLimit = Error.stackTraceLimit;
+    Error.stackTraceLimit = 200; // the body is deep below the rollback
+    let inBody = 0;
+    rolledBack.mockImplementation(function (this: AsmWriter, cp) {
+      if (/emitDecoderBody/.test(new Error('probe').stack ?? '')) inBody += 1;
+      // the real rollback (the spy replaced it on the prototype)
+      return Reflect.apply(rollbackImpl, this, [cp]);
+    });
+    try {
+      for (const fnAbi of [rbAbi, deeperAbi]) {
+        for (const evmVersion of ['paris', 'cancun'] as const) {
+          for (const optimize of [false, true]) {
+            const script = evscript({ name: 'rb', args: [t.address] }, (s: any, a: any) => {
+              const p = s.read({ address: a, abi: fnAbi, functionName: 'g' });
+              const q = s.tryRead({ address: a, abi: fnAbi, functionName: 'g' });
+              return s.return({ p, ok: q.success, q: q.value });
+            });
+            const labels = build(script, { evmVersion, optimize }).sourceMap.labels.map(
+              (l) => l.name,
+            );
+            expect(labels).toContain('dec_0');
+            // only placed rungs carry a name, each once
+            const rungs = labels.filter((n) => /^dec_0_fail_\d+$/.test(n));
+            expect(new Set(rungs).size).toBe(rungs.length);
+            expect(rungs.length).toBeGreaterThan(0);
+          }
+        }
+      }
+    } finally {
+      rolledBack.mockRestore();
+      Error.stackTraceLimit = traceLimit;
+    }
+    expect(inBody).toBeGreaterThan(0);
+  });
+
+  test('a decoder body returns at height 2 ([block, buf]) and its sites check for 0', () => {
+    const script = reads('heights', ['w8', 'w8', 'w8']);
+    for (const evmVersion of ['paris', 'cancun'] as const) {
+      for (const optimize of [false, true]) {
+        const lowered = lowerProgram(irOf(script), { evmVersion, optimize });
+        const nodes: readonly AsmNode[] = optimize ? evsPeephole(lowered.nodes) : lowered.nodes;
+        const heights = stackHeights(nodes);
+        const returns = nodes.flatMap((n, i) =>
+          n.k === 'op' && n.op === 'JUMP' && n.note === 'dec_0: return' ? [heights[i]] : [],
+        );
+        // [ret, block, buf]: the success return and the funnel's [0, buf] return
+        expect(returns).toEqual([3, 3]);
+      }
+    }
+  });
+
+  test('canFail guard: a plan that disagrees with its body is a drift', () => {
+    const script = reads('canFail', ['w8', 'w8', 'w8']);
+    const flip = (plan: CodecPlan): CodecPlan => ({
+      ...plan,
+      keys: new Map([...plan.keys].map(([key, k]) => [key, { ...k, canFail: !k.canFail }])),
+    });
+    setCodecPlanTransform(flip);
+    try {
+      expect(() => build(script)).toThrow(/plan drift: .*the body can fail, against its plan/);
+      setCodecPlanStrict(false);
+      const fallback = build(script).runtimeBytecode;
+      const lowered = lowerProgram(irOf(script), { evmVersion: 'cancun', shareCodecs: false });
+      expect((fallback.length - 2) / 2).toBe(
+        assemble(lowered.nodes, { evmVersion: 'cancun' }).bytecode.length,
+      );
+    } finally {
+      setCodecPlanStrict(true);
+      setCodecPlanTransform(null);
+    }
+  });
+
+  test('decode paths a shared body takes where its inline twin differs (pinned)', () => {
+    const shapes: Record<string, string> = {
+      W8: 'w8',
+      'W8[]': 'w8s',
+      N3: 'n3',
+      '(uint8,(uint8,uint16[][])[])': 'rb',
+      'the same under 4 struct levels': 'rb4',
+    };
+    const divergent: Record<string, { body: string[]; inline: string[] }> = {};
+    const paths: Record<string, string> = {};
+    const pathsIn = (compiled: CompiledEvsScript, from: string, until: RegExp): string[] => {
+      const labels = compiled.sourceMap.labels.toSorted((x, y) => x.pc - y.pc);
+      const start = labels.findIndex((l) => l.name === from);
+      const end = labels.findIndex((l, i) => i > start && until.test(l.name));
+      return labels
+        .slice(start, end === -1 ? undefined : end)
+        .map((l) => l.name)
+        .filter((n) => n.startsWith('arrdec'));
+    };
+    for (const [label, fn] of Object.entries(shapes)) {
+      const shared = build(reads(`shared_${fn}`, [fn, fn]));
+      const single = build(reads(`single_${fn}`, [fn]));
+      const body = pathsIn(
+        shared,
+        'dec_0',
+        /^(dec_0_fail|dec_[1-9]|enc_|dfail_|decode_revert|badcd)/,
+      );
+      const inline = pathsIn(single, 'main', /^(fn_|dfail_|decode_revert|badcd|panic)/);
+      expect(body.length, `${label}: the body decodes arrays`).toBe(inline.length);
+      if (body.join() !== inline.join()) divergent[label] = { body, inline };
+      paths[label] = body.join(' ');
+    }
+    // every shape takes the same array paths in its body as inline: none diverges today
+    expect(divergent).toEqual({});
+    expect(paths).toMatchInlineSnapshot(`
+      {
+        "(uint8,(uint8,uint16[][])[])": "arrdec arrdec_heap arrdec_heap arrdec_heap_done arrdec_heap_done arrdec_done",
+        "N3": "",
+        "W8": "",
+        "W8[]": "arrdec arrdec_done",
+        "the same under 4 struct levels": "arrdec_heap arrdec_heap arrdec_heap arrdec_heap_done arrdec_heap_done arrdec_heap_done",
+      }
+    `);
+  });
+});
+
+describe('growth for n sites (the issue #95 benchmark)', () => {
+  const T = { W8, 'W8[]': t.array(W8), N3, S3, 'uint64[3]': 'uint64[3]', 'P[2]': P2 } as const;
+  const GETTER: Record<keyof typeof T, string> = {
+    W8: 'get',
+    'W8[]': 'getMany',
+    N3: 'getNested',
+    S3: 'getS3',
+    'uint64[3]': 'getU',
+    'P[2]': 'getPairs',
+  };
+  const NS = [1, 2, 3, 4, 6, 8] as const;
+  const sizeOf = (script: AnyScript, evmVersion: EvmVersion, optimize: boolean): number =>
+    (build(script, { evmVersion, optimize }).runtimeBytecode.length - 2) / 2;
+
+  test('chained reads: bytes per n, never larger than inline, saving grows with n', () => {
+    const table: Record<string, number[]> = {};
+    for (const [label, ty] of Object.entries(T)) {
+      for (const evmVersion of ['cancun', 'paris'] as const) {
+        for (const optimize of [false, true]) {
+          const row = NS.map((n) => {
+            const script = chain(`c${n}`, ty, GETTER[label as keyof typeof T], n);
+            const { shared, inline } = sizes(script, evmVersion, optimize);
+            expect(shared, `${label} n=${n} never larger`).toBeLessThanOrEqual(inline);
+            return { shared, saved: inline - shared };
+          });
+          // the saving grows at every step once something shares
+          const grows = row.every((r, i) => {
+            const prev = row[i - 1];
+            return prev === undefined || prev.saved === 0 || r.saved > prev.saved;
+          });
+          expect(grows, `${label}: the saving grows with n`).toBe(true);
+          table[`${label} ${evmVersion}${optimize ? '+opt' : ''}`] = row.map((r) => r.shared);
+        }
+      }
+    }
+    // per-site ceilings (cancun): main grows ~734 / ~1462 / ~2400 bytes per W8 / W8[] / N3 site
+    const perSite = (key: string): number[] => {
+      const row = table[key] ?? [];
+      return row
+        .slice(2)
+        .map((size, i) => (size - (row[i + 1] ?? 0)) / ((NS[i + 2] ?? 0) - (NS[i + 1] ?? 0)));
+    };
+    for (const step of perSite('W8 cancun')) expect(step).toBeLessThanOrEqual(130);
+    for (const step of perSite('W8[] cancun')) expect(step).toBeLessThanOrEqual(200);
+    for (const step of perSite('N3 cancun')) expect(step).toBeLessThanOrEqual(260);
+    expect(table).toMatchInlineSnapshot(`
+      {
+        "N3 cancun": [
+          3379,
+          3562,
+          3711,
+          3860,
+          4158,
+          4456,
+        ],
+        "N3 cancun+opt": [
+          3373,
+          3551,
+          3698,
+          3845,
+          4139,
+          4433,
+        ],
+        "N3 paris": [
+          3615,
+          3796,
+          3956,
+          4116,
+          4436,
+          4756,
+        ],
+        "N3 paris+opt": [
+          3609,
+          3785,
+          3943,
+          4101,
+          4417,
+          4733,
+        ],
+        "P[2] cancun": [
+          1301,
+          1491,
+          1639,
+          1787,
+          2083,
+          2379,
+        ],
+        "P[2] cancun+opt": [
+          1299,
+          1484,
+          1630,
+          1776,
+          2068,
+          2360,
+        ],
+        "P[2] paris": [
+          1398,
+          1599,
+          1758,
+          1917,
+          2235,
+          2553,
+        ],
+        "P[2] paris+opt": [
+          1396,
+          1592,
+          1749,
+          1906,
+          2220,
+          2534,
+        ],
+        "S3 cancun": [
+          482,
+          640,
+          783,
+          848,
+          1074,
+          1300,
+        ],
+        "S3 cancun+opt": [
+          482,
+          638,
+          777,
+          837,
+          1059,
+          1281,
+        ],
+        "S3 paris": [
+          507,
+          674,
+          826,
+          900,
+          1144,
+          1388,
+        ],
+        "S3 paris+opt": [
+          507,
+          672,
+          820,
+          889,
+          1129,
+          1369,
+        ],
+        "W8 cancun": [
+          1231,
+          1388,
+          1513,
+          1638,
+          1888,
+          2138,
+        ],
+        "W8 cancun+opt": [
+          1230,
+          1383,
+          1506,
+          1629,
+          1875,
+          2121,
+        ],
+        "W8 paris": [
+          1333,
+          1491,
+          1626,
+          1761,
+          2031,
+          2301,
+        ],
+        "W8 paris+opt": [
+          1331,
+          1486,
+          1619,
+          1752,
+          2018,
+          2284,
+        ],
+        "W8[] cancun": [
+          1710,
+          1904,
+          2052,
+          2200,
+          2496,
+          2792,
+        ],
+        "W8[] cancun+opt": [
+          1708,
+          1894,
+          2040,
+          2186,
+          2478,
+          2770,
+        ],
+        "W8[] paris": [
+          1812,
+          2016,
+          2175,
+          2334,
+          2652,
+          2970,
+        ],
+        "W8[] paris+opt": [
+          1810,
+          2006,
+          2163,
+          2320,
+          2634,
+          2948,
+        ],
+        "uint64[3] cancun": [
+          571,
+          730,
+          858,
+          986,
+          1242,
+          1498,
+        ],
+        "uint64[3] cancun+opt": [
+          568,
+          723,
+          849,
+          975,
+          1227,
+          1479,
+        ],
+        "uint64[3] paris": [
+          597,
+          766,
+          903,
+          1040,
+          1314,
+          1588,
+        ],
+        "uint64[3] paris+opt": [
+          593,
+          759,
+          894,
+          1029,
+          1299,
+          1569,
+        ],
+      }
+    `);
+  });
+
+  test('encode-only and decode-only chains', () => {
+    const encodeOnly = (fn: string, ty: EvsType, n: number) =>
+      evscript({ name: 'enc', args: [t.address, ty as never] }, (s: any, a: any, x: any) => {
+        let total = s.let(t.uint256, 0n);
+        for (let i = 0; i < n; i++) {
+          total.set(total.get().add(s.read({ address: a, abi, functionName: fn, args: [x] })));
+        }
+        return s.return({ total: total.get() });
+      });
+    const decodeOnly = (fn: string, n: number) =>
+      evscript({ name: 'dec', args: [t.address] }, (s: any, a: any) => {
+        let last;
+        for (let i = 0; i < n; i++)
+          last = s.read({ address: a, abi, functionName: fn, args: [BigInt(i)] });
+        return s.return({ last });
+      });
+    const table: Record<string, number[]> = {};
+    for (const [label, fn, ty] of [
+      ['W8', 'sink', W8],
+      ['W8[]', 'sinkMany', t.array(W8)],
+      ['N3', 'sinkNested', N3],
+    ] as const) {
+      table[`encode ${label}`] = NS.map((n) => sizeOf(encodeOnly(fn, ty, n), 'cancun', false));
+    }
+    for (const [label, fn] of [
+      ['W8', 'make'],
+      ['W8[]', 'makeMany'],
+      ['N3', 'makeNested'],
+    ] as const) {
+      table[`decode ${label}`] = NS.map((n) => sizeOf(decodeOnly(fn, n), 'cancun', false));
+    }
+    expect(table).toMatchInlineSnapshot(`
+      {
+        "decode N3": [
+          2229,
+          2377,
+          2496,
+          2634,
+          2868,
+          3102,
+        ],
+        "decode W8": [
+          799,
+          931,
+          1036,
+          1152,
+          1358,
+          1564,
+        ],
+        "decode W8[]": [
+          1177,
+          1337,
+          1456,
+          1574,
+          1808,
+          2042,
+        ],
+        "encode N3": [
+          2312,
+          2465,
+          2606,
+          2747,
+          3029,
+          3311,
+        ],
+        "encode W8": [
+          959,
+          1089,
+          1220,
+          1351,
+          1613,
+          1875,
+        ],
+        "encode W8[]": [
+          1237,
+          1395,
+          1535,
+          1675,
+          1955,
+          2235,
+        ],
+      }
+    `);
   });
 });

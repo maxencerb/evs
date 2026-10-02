@@ -7,7 +7,7 @@
 import { headBytes, layoutOfType, type TypeLayout } from '../../abi/layout.js';
 import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
-import { abiParamToType, type NamedType } from '../../core/types.js';
+import { abiParamToType, type EvsType, type NamedType } from '../../core/types.js';
 import { callOutputs } from '../../ir/nodes.js';
 import {
   type SharedTails,
@@ -20,12 +20,16 @@ import {
   emitCopyNormalizeWordArray,
   needsDecodeBudget,
   emitInitDecodeBudget,
+  effectiveDecodeBudget,
+  type CodecHook,
   type DecodeBudget,
   type DecodeFail,
+  type DecodeOptions,
   type DecodeRegion,
   emitDecodeFromRegion,
   emitAboveU64,
 } from '../abi.js';
+import { decRetKey } from '../codec-keys.js';
 import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
 import {
@@ -104,6 +108,7 @@ export function emitStaticCall(
       failPre,
       fail,
       evmVersion: opts.evmVersion,
+      codecs: tails.codecs,
     }); // [buf]
   }
   w.op('POP'); // []
@@ -202,6 +207,7 @@ function emitDecodeOutputs(
     readonly failPre: DecodeFail;
     readonly fail: DecodeFail;
     readonly evmVersion: EvmVersion;
+    readonly codecs: CodecHook | null;
   },
 ): void {
   const { stmt, siteId } = plan;
@@ -228,15 +234,6 @@ function emitDecodeOutputs(
   }); // [buf]
   if (budgeted) emitInitDecodeBudget(w, () => pushSnapEnd(w), 0); // [buf]
 
-  // the returndata region of the snapshot, [buf, buf+rds), with `buf` live beneath the decode
-  const region: DecodeRegion = {
-    pushBase: () => pushSnap(w),
-    pushEnd: () => pushSnapEnd(w),
-    fail,
-    live: 1,
-    arrayOffsetBound: 'returndata',
-  };
-
   outputs.forEach((out, j) => {
     const ref = plan.outRefs[j];
     if (ref === undefined) throw internal(`missing out ref #${j}`);
@@ -260,15 +257,21 @@ function emitDecodeOutputs(
     if (usesRecursiveCodec(layout)) {
       // decode from the snapshot into a fresh flat / `[len][p0…]` pointer block (dynamic members
       // alias the snapshot); base/end are read from scratch so the decoder's free-ptr churn never
-      // disturbs them
-      emitDecodeFromRegion(
-        w,
-        type,
-        headOffset,
-        region,
-        { budget, evmVersion: ctx.evmVersion },
-        () => `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`,
-      ); // [block, buf]
+      // disturbs them. The program may share this decoder (`codegen/codecs.ts`): the call then
+      // routes a failure through this site's own `fail`. A per-site setting added to this
+      // decode must also join its key (`decRetKey`).
+      const key = decRetKey(layout, headOffset, effectiveDecodeBudget(layout, budget));
+      const what = `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`;
+      if (ctx.codecs?.decode(w, key, fail, `decode ${what}`) !== true) {
+        emitDecodeReturnOutput(
+          w,
+          type,
+          headOffset,
+          fail,
+          { budget, evmVersion: ctx.evmVersion },
+          () => what,
+        );
+      } // [block, buf]
       w.push(ref.slot);
       w.op('MSTORE', {
         note: `out #${j} ${layout.kind === 'tuple' ? 'tuple (flat block)' : `${out.type} (pointer block)`}`,
@@ -282,6 +285,33 @@ function emitDecodeOutputs(
       note: `out #${j} ${out.type} (${copied ? 'normalized copy' : 'memref aliases snapshot'})`,
     }); // [buf]
   });
+}
+
+/**
+ * @internal Shared with `codegen/codecs.ts` (a shared decoder body is this unit). Decodes one
+ * recursive-codec output of `type` at `headOffset` in a call's returndata snapshot (the
+ * `[buf, buf+rds)` region, `buf` live beneath), `[buf] → [block, buf]`, through
+ * `emitDecodeFromRegion`; `cacheBlockBase` is the register a shared body caches a dynamic
+ * output's block base in.
+ */
+export function emitDecodeReturnOutput(
+  w: AsmWriter,
+  type: EvsType,
+  headOffset: number,
+  fail: DecodeFail,
+  opts: DecodeOptions,
+  what: () => string,
+  cacheBlockBase?: number,
+): void {
+  const region: DecodeRegion = {
+    pushBase: () => pushSnap(w),
+    pushEnd: () => pushSnapEnd(w),
+    fail,
+    live: 1,
+    arrayOffsetBound: 'returndata',
+    ...(cacheBlockBase === undefined ? {} : { cacheBlockBase }),
+  };
+  emitDecodeFromRegion(w, type, headOffset, region, opts, what);
 }
 
 /**

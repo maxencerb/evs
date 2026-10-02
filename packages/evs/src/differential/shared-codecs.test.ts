@@ -9,7 +9,17 @@
  * lowered with sharing off), and that sharing actually happened.
  */
 
-import { encodeFunctionData, type Hex, parseAbi } from 'viem';
+/* oxlint-disable typescript/no-unsafe-type-assertion -- a loose corpus: script args and values are
+   built from tables at run time */
+
+import {
+  type Abi,
+  type AbiParameter,
+  encodeAbiParameters,
+  encodeFunctionData,
+  type Hex,
+  parseAbi,
+} from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {
@@ -20,6 +30,7 @@ import {
   type CalleeTable,
 } from '../../test/harness/differential.js';
 import { execRuntime } from '../../test/harness/evm.js';
+import { concatHex, word } from '../../test/harness/fixtures.js';
 import { assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { evscript } from '../builder/script.js';
@@ -332,5 +343,371 @@ describe('shared encoders (issue #95)', () => {
       const labels = compile(script, { evmVersion }).sourceMap.labels.map((l) => l.name);
       expect(labels.filter((n) => /^enc_\d+$/.test(n))).toEqual(['enc_0']);
     });
+  }
+});
+
+describe('shared decoders (issue #95)', () => {
+  const W8_COMPONENTS = [
+    { name: 'f0', type: 'uint64' },
+    { name: 'f1', type: 'address' },
+    { name: 'f2', type: 'int32' },
+    { name: 'f3', type: 'uint64' },
+    { name: 'f4', type: 'address' },
+    { name: 'f5', type: 'int32' },
+    { name: 'f6', type: 'uint64' },
+    { name: 'f7', type: 'address' },
+    { name: 'label', type: 'string' },
+  ] as const;
+  const nested = (d: number): AbiParameter =>
+    d === 0
+      ? {
+          name: 'inner',
+          type: 'tuple',
+          components: [
+            { name: 'leaf', type: 'uint64' },
+            { name: 'name', type: 'string' },
+          ],
+        }
+      : {
+          name: 'inner',
+          type: 'tuple',
+          components: [
+            { name: 'a', type: 'uint128' },
+            { name: 's', type: 'string' },
+            { name: 'xs', type: 'uint8[]' },
+            nested(d - 1),
+          ],
+        };
+  const nestedVal = (d: number): unknown =>
+    d === 0
+      ? { leaf: 7n, name: 'leaf-name' }
+      : { a: BigInt(d), s: `level-${d}`, xs: [1, 2, 3].slice(0, d), inner: nestedVal(d - 1) };
+
+  /** A decoded output shape: its well-formed value, and malformed payloads that fail INSIDE the
+   *  decoder (past the site's head-size guard), so inside a shared body. */
+  interface Shape {
+    readonly label: string;
+    readonly output: AbiParameter;
+    readonly value: unknown;
+    readonly malformed: boolean;
+  }
+  const SHAPES: readonly Shape[] = [
+    {
+      label: 'W8',
+      output: { name: '', type: 'tuple', components: W8_COMPONENTS },
+      value: w8(3),
+      malformed: true,
+    },
+    {
+      label: 'W8[]',
+      output: { name: '', type: 'tuple[]', components: W8_COMPONENTS },
+      value: [w8(1), w8(2)],
+      malformed: true,
+    },
+    {
+      label: 'nested d3',
+      output: { ...nested(3), name: '' },
+      value: nestedVal(3),
+      malformed: true,
+    },
+    {
+      label: 'string[2]',
+      output: { name: '', type: 'string[2]' },
+      value: ['a', 'b'.repeat(40)],
+      malformed: true,
+    },
+    {
+      label: '(uint64,string)[2]',
+      output: {
+        name: '',
+        type: 'tuple[2]',
+        components: [
+          { name: 'a', type: 'uint64' },
+          { name: 's', type: 'string' },
+        ],
+      },
+      value: [
+        { a: 1n, s: 'x' },
+        { a: 2n, s: 'y'.repeat(33) },
+      ],
+      malformed: true,
+    },
+    {
+      // the shape whose array decode rolls its stack fast path back to the heap path
+      label: '(uint8,(uint8,uint16[][])[])',
+      output: {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint8' },
+          {
+            name: 'b',
+            type: 'tuple[]',
+            components: [
+              { name: 'c', type: 'uint8' },
+              { name: 'd', type: 'uint16[][]' },
+            ],
+          },
+        ],
+      },
+      value: {
+        a: 1,
+        b: [
+          { c: 2, d: [[1, 2], [3]] },
+          { c: 4, d: [] },
+        ],
+      },
+      malformed: true,
+    },
+    {
+      label: 'static (uint64,address,int32)',
+      output: {
+        name: '',
+        type: 'tuple',
+        components: [
+          { name: 'a', type: 'uint64' },
+          { name: 'b', type: 'address' },
+          { name: 'c', type: 'int32' },
+        ],
+      },
+      value: s3(4),
+      malformed: false,
+    },
+    {
+      label: 'uint64[3]',
+      output: { name: '', type: 'uint64[3]' },
+      value: [1n, 2n, 3n],
+      malformed: false,
+    },
+  ];
+
+  const getterAbi = (output: AbiParameter): Abi => [
+    { type: 'function', name: 'g', stateMutability: 'view', inputs: [], outputs: [output] },
+    { type: 'function', name: 'm', stateMutability: 'nonpayable', inputs: [], outputs: [output] },
+  ];
+  const payloadOf = (shape: Shape): Hex =>
+    encodeAbiParameters([shape.output], [shape.value as never]);
+  /** The first head word (a dynamic output's offset) past the 2^64 − 1 bound. */
+  const hugeOffset = (h: Hex): Hex => `0x${word(1n << 64n).slice(2)}${h.slice(66)}`;
+  /** The last word cut off: a tail the head points at no longer fits. */
+  const truncated = (h: Hex): Hex => `0x${h.slice(2, -64)}`;
+
+  const GOOD = '0xa100000000000000000000000000000000000001';
+  const BAD = '0xa100000000000000000000000000000000000002';
+  const tableOf = (
+    good: Hex,
+    bad: Hex = good,
+    kind: 'return' | 'revert' = 'return',
+  ): CalleeTable => ({
+    [GOOD]: { kind, data: good },
+    [BAD]: { kind, data: bad },
+  });
+
+  /** `f(a1 … an)`: one call of `verbs[i]` to `ai` each, every value (and try flag) returned. */
+  const sitesScript = (name: string, output: AbiParameter, verbs: readonly string[]) =>
+    evscript({ name, args: verbs.map(() => t.address) as never }, (s: any, ...targets: any[]) => {
+      const getter = getterAbi(output);
+      const out: Record<string, unknown> = {};
+      verbs.forEach((verb, i) => {
+        const fn = verb === 'read' || verb === 'tryRead' ? 'g' : 'm';
+        const r = s[verb]({ address: targets[i], abi: getter, functionName: fn });
+        if (verb.startsWith('try')) {
+          out[`ok${i}`] = r.success;
+          out[`v${i}`] = r.value;
+        } else {
+          out[`v${i}`] = r;
+        }
+      });
+      return s.return(out);
+    });
+
+  /** The id of the `k`-th (1-based) strict call site (a `'decode'` site) of `script`. */
+  const decodeSiteId = (script: AnyScript, k: number): number => {
+    const compiled: CompiledEvsScript = compile(script);
+    const ids = compiled.sourceMap.sites.filter((x) => x.kind === 'decode').map((x) => x.id);
+    const id = ids[k - 1];
+    if (id === undefined) throw new Error(`no decode site #${k}`);
+    return id;
+  };
+
+  for (const evmVersion of EVM_VERSIONS) {
+    for (const shape of SHAPES) {
+      test(`${shape.label}: one decoder body across every verb [${evmVersion}]`, async () => {
+        const good = payloadOf(shape);
+        const ret = sitesScript('retVerbs', shape.output, ['read', 'tryRead', 'call', 'tryCall']);
+        expect(
+          await expectShared(ret, [[GOOD, GOOD, GOOD, GOOD]], evmVersion, ['dec_0'], tableOf(good)),
+        ).toBeGreaterThan(0);
+        const sim = sitesScript('simVerbs', shape.output, ['simulate', 'trySimulate', 'simulate']);
+        expect(
+          await expectShared(sim, [[GOOD, GOOD, GOOD]], evmVersion, ['dec_0'], tableOf(good)),
+        ).toBeGreaterThan(0);
+      });
+
+      if (!shape.malformed) continue;
+
+      test(`${shape.label}: a failure at site k of 3 reports site k [${evmVersion}]`, async () => {
+        const good = payloadOf(shape);
+        const script = sitesScript('strict3', shape.output, ['read', 'read', 'read']);
+        for (const bad of [hugeOffset(good), truncated(good)]) {
+          for (const k of [1, 2, 3]) {
+            const args = [GOOD, GOOD, GOOD].map((a, i) => (i === k - 1 ? BAD : a));
+            // oxlint-disable-next-line no-await-in-loop -- sequential by design
+            await expectShared(script, [args], evmVersion, ['dec_0'], tableOf(good, bad));
+            const compiled: CompiledEvsScript = compile(script, { evmVersion });
+            const calldata = encodeFunctionData({
+              abi: compiled.abi,
+              functionName: 'strict3',
+              args,
+            });
+            // oxlint-disable-next-line no-await-in-loop -- see above
+            const out = await execRuntime(
+              compiled.runtimeBytecode,
+              calldata,
+              fixtureOf(tableOf(good, bad)),
+            );
+            const site = decodeSiteId(script, k);
+            expect(out.success).toBe(false);
+            expect(out.data).toBe(`0x20cf27b7${word(BigInt(site)).slice(2)}`);
+            expect(compiled.explainRevert(out.data).site?.id).toBe(site);
+          }
+        }
+      });
+
+      test(`${shape.label}: try sites through a shared decoder roll back and zero [${evmVersion}]`, async () => {
+        const good = payloadOf(shape);
+        const script = sitesScript('mixed', shape.output, ['read', 'tryRead', 'tryRead', 'read']);
+        for (const bad of [hugeOffset(good), truncated(good)]) {
+          // oxlint-disable-next-line no-await-in-loop -- sequential by design
+          const saved = await expectShared(
+            script,
+            [
+              [GOOD, BAD, GOOD, GOOD], // the first try site fails, later sites still decode
+              [GOOD, GOOD, BAD, GOOD],
+              [GOOD, GOOD, GOOD, BAD], // the last strict site reverts with its own id
+            ],
+            evmVersion,
+            ['dec_0'],
+            tableOf(good, bad),
+          );
+          expect(saved).toBeGreaterThan(0);
+        }
+      });
+    }
+
+    test(`revertReturns sites share a decoder [${evmVersion}]`, async () => {
+      const shape = SHAPES[0];
+      if (shape === undefined) throw new Error('no shape');
+      const getter = getterAbi(shape.output);
+      const script = evscript(
+        { name: 'rr', args: [t.address, t.address] },
+        (s: any, a: any, b: any) => {
+          const T = t.struct({
+            f0: t.uint64,
+            f1: t.address,
+            f2: t.int32,
+            f3: t.uint64,
+            f4: t.address,
+            f5: t.int32,
+            f6: t.uint64,
+            f7: t.address,
+            label: t.string,
+          });
+          const p = s.call({ address: a, abi: getter, functionName: 'm', revertReturns: [T] });
+          const q = s.tryCall({ address: b, abi: getter, functionName: 'm', revertReturns: [T] });
+          return s.return({ p, ok: q.success, q: q.value });
+        },
+      );
+      const good = payloadOf(shape);
+      expect(
+        await expectShared(
+          script,
+          [
+            [GOOD, GOOD],
+            [GOOD, BAD],
+          ],
+          evmVersion,
+          ['dec_0'],
+          tableOf(good, truncated(good), 'revert'),
+        ),
+      ).toBeGreaterThan(0);
+    });
+
+    test(`leaf-only trySimulate outputs share their decoder [${evmVersion}]`, async () => {
+      const two: AbiParameter = { name: '', type: 'string' };
+      const getter: Abi = [
+        {
+          type: 'function',
+          name: 'm',
+          stateMutability: 'nonpayable',
+          inputs: [],
+          outputs: [two, { name: '', type: 'string' }],
+        },
+      ];
+      const script = evscript(
+        { name: 'leafSim', args: [t.address, t.address, t.address] },
+        (s: any, a: any, b: any, c: any) => {
+          const out: Record<string, unknown> = {};
+          [a, b, c].forEach((target, i) => {
+            const r = s.trySimulate({ address: target, abi: getter, functionName: 'm' });
+            out[`ok${i}`] = r.success;
+            out[`x${i}`] = r.value[0];
+            out[`y${i}`] = r.value[1];
+          });
+          return s.return(out);
+        },
+      );
+      const good = encodeAbiParameters(
+        [{ type: 'string' }, { type: 'string' }],
+        ['first', 'second '.repeat(9)],
+      );
+      expect(
+        await expectShared(
+          script,
+          [
+            [GOOD, GOOD, GOOD],
+            [GOOD, BAD, GOOD],
+          ],
+          evmVersion,
+          ['dec_0'],
+          tableOf(good, truncated(good)),
+        ),
+      ).toBeGreaterThan(0);
+    });
+
+    test(`the decode-work budget through a shared decoder [${evmVersion}]`, async () => {
+      const U8_NESTED: AbiParameter = { name: '', type: 'uint8[][]' };
+      const getter = getterAbi(U8_NESTED);
+      const rep = (n: number, x: bigint): bigint[] => Array.from({ length: n }, () => x);
+      // N offsets at one inner [L][1 …] block: re-materialized N times, charged N times
+      const overlap = (n: number, l: number): Hex =>
+        concatHex(
+          ...[0x20n, BigInt(n), ...rep(n, BigInt(32 * n)), BigInt(l), ...rep(l, 1n)].map(word),
+        );
+      const script = evscript(
+        { name: 'budget', args: [t.address, t.address, t.address] },
+        (s: any, a: any, b: any, c: any) => {
+          const p = s.read({ address: a, abi: getter, functionName: 'g' });
+          const q = s.tryRead({ address: b, abi: getter, functionName: 'g' });
+          const r = s.read({ address: c, abi: getter, functionName: 'g' });
+          return s.return({ p: p.length(), ok: q.success, q: q.value.length(), r: r.length() });
+        },
+      );
+      // each site spends most of its own budget (two of them would exceed one budget), a bomb
+      // past it fails cleanly at the try site and at a strict one
+      expect(
+        await expectShared(
+          script,
+          [
+            [GOOD, GOOD, GOOD],
+            [GOOD, BAD, GOOD],
+            [GOOD, GOOD, BAD],
+          ],
+          evmVersion,
+          ['dec_0'],
+          tableOf(overlap(70, 70), overlap(600, 600)),
+        ),
+      ).toBeGreaterThan(0);
+    }, 60_000);
   }
 });
