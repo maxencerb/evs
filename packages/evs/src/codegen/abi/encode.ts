@@ -1,7 +1,8 @@
 /**
  * `codegen/abi/encode.ts` — the recursive ABI encoder (head/tail over a flat-pointer SRC tree)
  * and the composite-element array encode, whose loop state lives in the scratch frames reserved
- * below the output buffer.
+ * below the output buffer, plus the body of a shared encoder subroutine (`codegen/codecs.ts`),
+ * which runs these same emitters.
  */
 
 import {
@@ -389,6 +390,26 @@ export function encodeFramesOf(l: TypeLayout): number {
  * every member access costs more.
  */
 const FRAMELESS_TUPLE_LEVELS = 2;
+
+/**
+ * @internal Shared with `codegen/codecs.ts` (the gas class of a shared encoder). How many times
+ * encoding the members of the tuple `l`, `tupleDepth` dynamic tuple levels below its root, reads
+ * `l`'s base (see {@link encodeBlock}): once per word head, per static member's word heads (they
+ * inline at `base + ho`) and per dynamic member's head offset word, plus every read of a
+ * frameless dynamic sub-tuple, whose base is re-derived from this one. A static `T[N]` reads it
+ * once (into its frame). A gas heuristic.
+ */
+export function subTupleBaseReads(
+  l: Extract<TypeLayout, { kind: 'tuple' }>,
+  tupleDepth: number,
+): number {
+  return l.components.reduce((n, c) => {
+    if (c.kind === 'word') return n + 1;
+    if (!isDynamic(c)) return n + (c.kind === 'tuple' ? subTupleBaseReads(c, tupleDepth) : 1);
+    const frameless = c.kind === 'tuple' && tupleDepth < FRAMELESS_TUPLE_LEVELS;
+    return n + 1 + (frameless ? subTupleBaseReads(c, tupleDepth + 1) : 0);
+  }, 0);
+}
 
 /** {@link encodeFramesOf} for `l` encoded in a block `tupleDepth` dynamic tuple levels below its
  *  root (see {@link encodeBlock}). */

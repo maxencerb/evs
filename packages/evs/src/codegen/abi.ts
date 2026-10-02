@@ -54,6 +54,7 @@ export {
   encodeFramesOf,
   reserveEncodeFrames,
   emitSharedEncodeBody,
+  subTupleBaseReads,
 } from './abi/encode.js';
 export type { PushWord, PushBase, CodecRegisters } from './abi/encode.js';
 export { emitAbiEncodeToBytes, emitPackedEncodeToBytes } from './abi/encode-bytes.js';
@@ -64,6 +65,7 @@ export {
   needsDecodeBudget,
   effectiveDecodeBudget,
   emitInitDecodeBudget,
+  blockBaseReads,
 } from './abi/decode.js';
 export type { DecodeFail, DecodeBudget, DecodeOptions, DecodeRegion } from './abi/decode.js';
 export { emitCalldataDecode, emitReturnEncode } from './abi/dispatch.js';

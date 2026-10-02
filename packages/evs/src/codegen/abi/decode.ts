@@ -1191,6 +1191,19 @@ function tupleBaseReads(l: Extract<TypeLayout, { kind: 'tuple' }>): number {
 }
 
 /**
+ * @internal Shared with `codegen/codecs.ts` (the gas class of a shared decoder). How many times
+ * decoding the TOP-LEVEL dynamic tuple `l` reads its block base ({@link emitDecodeFromRegion}'s
+ * base thunk): {@link tupleBaseReads}, except that its own dynamic sub-tuples are never framed
+ * (their parent base is not derived), so each one's reads all go through it. A gas heuristic.
+ */
+export function blockBaseReads(l: Extract<TypeLayout, { kind: 'tuple' }>): number {
+  return l.components.reduce((n, c) => {
+    if (c.kind === 'tuple' && c.dynamic) return n + 2 + tupleBaseReads(c);
+    return n + tupleBaseReads({ ...l, components: [c] });
+  }, 0);
+}
+
+/**
  * @internal Exported for the decoder tests.
  * Whether a dynamic sub-tuple below a derived base gets a tuple frame. Entering and leaving one
  * (two frame words, a free-pointer bump, 64 bytes of memory, the parent restore) costs about what

@@ -8,16 +8,18 @@
 /* oxlint-disable typescript/no-unsafe-type-assertion -- a loose corpus: script types and values are
    built from tables at run time */
 
-import { parseAbi } from 'viem';
+import { encodeFunctionData, parseAbi } from 'viem';
 import { describe, expect, test, vi } from 'vite-plus/test';
 
 import type { AnyScript } from '../../test/harness/differential.js';
+import { execRuntime } from '../../test/harness/evm.js';
 import { layoutOfType } from '../abi/layout.js';
 import { assemble, AsmWriter, type AsmNode } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { stackHeights } from '../asm/verify.js';
 import { evscript } from '../builder/script.js';
 import { compile, type CompiledEvsScript } from '../compile.js';
+import { bytesToHex } from '../core/bytes.js';
 import { EvsCompileError, EvsInternalError } from '../core/errors.js';
 import { namedArg, t, typeToAbiParam, type EvsType } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
@@ -27,6 +29,7 @@ import { emitDecodeReturnOutput } from './call/static-call.js';
 import { decRetKey, encKey, encodeMemberKind, layoutKey, RETURNS_SITE } from './codec-keys.js';
 import { planCodecs, setCodecPlanStrict, setCodecPlanTransform, type CodecPlan } from './codecs.js';
 import { layoutFrames } from './frame.js';
+import { walkEmittedStmts } from './lower.js';
 import { evsPeephole } from './peephole.js';
 import { lowerProgram } from './program.js';
 import { createSharedTails } from './tails.js';
@@ -976,5 +979,180 @@ describe('growth for n sites (the issue #95 benchmark)', () => {
         ],
       }
     `);
+  });
+});
+
+describe('gas of shared calls (in-process EVM)', () => {
+  /** Returns its calldata minus the selector: `f(T) returns (T)` echoes its argument. */
+  const ECHO_ARGS = '0xe000000000000000000000000000000000000095';
+  const fixture = { contracts: { [ECHO_ARGS]: '0x600436038060045f375ff3' } } as const;
+  const w8 = (i: number) => ({
+    f0: BigInt(i),
+    f1: `0x${'0a'.repeat(20)}`,
+    f2: -i,
+    f3: 3n,
+    f4: `0x${'0b'.repeat(20)}`,
+    f5: i,
+    f6: 9n,
+    f7: `0x${'0c'.repeat(20)}`,
+    label: `row ${i}`,
+  });
+  const nestedVal = (d: number): unknown =>
+    d === 0
+      ? { leaf: 7n, name: 'leaf-name' }
+      : { a: BigInt(d), s: `level-${d}`, xs: [1, 2, 3].slice(0, d), inner: nestedVal(d - 1) };
+
+  /** Execution gas of `script` and of its inline twin on `args`; both must return the same bytes. */
+  async function gasDelta(script: AnyScript, args: readonly unknown[]): Promise<number> {
+    const compiled = build(script);
+    const lowered = lowerProgram(irOf(script), { evmVersion: 'cancun', shareCodecs: false });
+    const twin = bytesToHex(assemble(lowered.nodes, { evmVersion: 'cancun' }).bytecode);
+    const calldata = encodeFunctionData({ abi: compiled.abi, functionName: script.name, args });
+    const a = await execRuntime(compiled.runtimeBytecode, calldata, fixture);
+    const b = await execRuntime(twin, calldata, fixture);
+    expect(a.success, `${script.name} succeeds`).toBe(true);
+    expect(a.data).toBe(b.data);
+    return Number(a.gasUsed - b.gasUsed);
+  }
+
+  test('straight-line chains: a few dozen gas per call at most, wide structs cheaper', async () => {
+    const deltas: Record<string, number> = {};
+    for (const [label, ty, fn, value] of [
+      ['W8', W8, 'get', w8(1)],
+      ['W8[]', t.array(W8), 'getMany', [w8(1), w8(2), w8(3)]],
+      ['N3', N3, 'getNested', nestedVal(3)],
+    ] as const) {
+      for (const n of [2, 4]) {
+        // oxlint-disable-next-line no-await-in-loop -- sequential by design
+        const delta = await gasDelta(chain(`gas${n}`, ty, fn, n), [ECHO_ARGS, value]);
+        // n encoder calls (+ the return record) and n decoder calls
+        expect(delta, `${label} n=${n}`).toBeLessThanOrEqual(60 * (2 * n + 1));
+        deltas[`${label} n=${n}`] = delta;
+      }
+    }
+    expect(deltas['W8 n=2']).toBeLessThan(0);
+    expect(deltas['W8 n=4']).toBeLessThan(0);
+    // measured: the wide struct and the nested one are cheaper shared, the struct array pays
+    // ~45 gas per call (its array loops keep their own costs)
+    expect(deltas).toMatchInlineSnapshot(`
+      {
+        "N3 n=2": -267,
+        "N3 n=4": -483,
+        "W8 n=2": -250,
+        "W8 n=4": -433,
+        "W8[] n=2": 203,
+        "W8[] n=4": 362,
+      }
+    `);
+  });
+
+  test('a key that shares inside a loop costs no gas there; the others stay inline', async () => {
+    const shapeOf = (k: number) => {
+      const spec: Record<string, EvsType> = {};
+      const components: { name: string; type: string }[] = [];
+      const value: Record<string, unknown> = {};
+      for (let i = 0; i < k; i++) {
+        spec[`a${i}`] = t.uint64;
+        components.push({ name: `a${i}`, type: 'uint64' });
+        value[`a${i}`] = BigInt(i + 1);
+      }
+      spec['s'] = t.string;
+      components.push({ name: 's', type: 'string' });
+      value['s'] = 'hello';
+      return { ty: t.struct(spec as never) as EvsType, components, value };
+    };
+    const shares: Record<string, string> = {};
+    for (const k of [1, 3, 4, 6, 7, 9]) {
+      const { ty, components, value } = shapeOf(k);
+      const echoAbi = [
+        {
+          type: 'function',
+          name: 'echo',
+          stateMutability: 'view',
+          inputs: [{ name: 'x', type: 'tuple', components }],
+          outputs: [{ name: '', type: 'tuple', components }],
+        },
+      ];
+      // one use in a 20-iteration loop (an arg and an output), one outside
+      const script = evscript(
+        { name: 'loop', args: [t.address, ty as never] },
+        (s: any, a: any, x: any) => {
+          const acc = s.let(ty, x);
+          s.for({ type: t.uint256, from: 0n, until: 20n }, () => {
+            acc.set(s.read({ address: a, abi: echoAbi, functionName: 'echo', args: [acc.get()] }));
+          });
+          const last = s.read({
+            address: a,
+            abi: echoAbi,
+            functionName: 'echo',
+            args: [acc.get()],
+          });
+          return s.return({ last });
+        },
+      );
+      const hot = new Set<number>();
+      walkEmittedStmts(irOf(script), (st, isHot) => {
+        if (isHot && st.k === 'call') hot.add(st.site);
+      });
+      const loopShared = [...planOf(script).keys.values()].filter((key) =>
+        [...key.groups.keys()].some((site) => hot.has(site)),
+      );
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      const delta = await gasDelta(script, [ECHO_ARGS, value]);
+      shares[`uint64×${k} + string`] =
+        `${loopShared.map((key) => key.unit.dir).join('+') || 'inline'} ${delta}`;
+      // a loop use only shares a key whose calls are cheaper than its inline code
+      expect(loopShared.length === 0 || delta <= 0, `k=${k}: ${delta} gas`).toBe(true);
+    }
+    expect(shares).toMatchInlineSnapshot(`
+      {
+        "uint64×1 + string": "inline 69",
+        "uint64×3 + string": "inline 10",
+        "uint64×4 + string": "enc -339",
+        "uint64×6 + string": "enc -998",
+        "uint64×7 + string": "enc+dec -1495",
+        "uint64×9 + string": "enc+dec -2491",
+      }
+    `);
+  });
+
+  test('costly keys used in a loop and once outside keep every use inline', () => {
+    const cases = [
+      ['W8[]', t.array(W8), 'getMany'],
+      ['uint64[3]', 'uint64[3]', 'getU'],
+      ['S3', S3, 'getS3'],
+    ] as const;
+    for (const [label, ty, fn] of cases) {
+      const script = evscript(
+        { name: 'costly', args: [t.address, ty as never] },
+        (s: any, a: any, x: any) => {
+          const acc = s.let(ty, x);
+          s.for({ type: t.uint256, from: 0n, until: 100n }, () => {
+            acc.set(s.read({ address: a, abi, functionName: fn, args: [acc.get()] }));
+            acc.set(s.read({ address: a, abi, functionName: fn, args: [acc.get()] }));
+          });
+          return s.return({ last: acc.get() });
+        },
+      );
+      const shared = lowerProgram(irOf(script), { evmVersion: 'cancun' });
+      const twin = lowerProgram(irOf(script), { evmVersion: 'cancun', shareCodecs: false });
+      expect(shared.nodes, `${label} stays inline`).toEqual(twin.nodes);
+    }
+  });
+
+  test('the register words add a memory term paid once per run, however big the memory', async () => {
+    // the same sharing program, then the same one allocating ~64 KiB at the end
+    const big = (words: number) =>
+      evscript({ name: 'mem', args: [t.address, W8] }, (s: any, a: any, x: any) => {
+        const p = s.read({ address: a, abi, functionName: 'get', args: [x] });
+        const q = s.read({ address: a, abi, functionName: 'get', args: [p] });
+        const pad = s.newArray(t.uint256, BigInt(words));
+        return s.return({ q, n: pad.length });
+      });
+    const small = await gasDelta(big(1), [ECHO_ARGS, w8(2)]);
+    const large = await gasDelta(big(2048), [ECHO_ARGS, w8(2)]);
+    // 3 register words at a peak of w words: 3·3 + (6w + 9)/512 gas — ~24 more at 64 KiB
+    expect(large - small).toBeGreaterThanOrEqual(0);
+    expect(large - small).toBeLessThanOrEqual(30);
   });
 });

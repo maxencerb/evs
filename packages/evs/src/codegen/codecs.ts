@@ -42,6 +42,8 @@ import {
   headOffsets,
   layoutToNamed,
   needsDecodeBudget,
+  subTupleBaseReads,
+  blockBaseReads,
   tupleComponents,
   usesRecursiveCodec,
   type CodecHook,
@@ -177,17 +179,31 @@ const SHARE_MIN_SAVING = 16;
 const SHARE_MIN_PER_USE = 8;
 
 /**
- * Whether a shared call of `unit` is expected to cost no more gas than its inline twin. Two
- * bodies read a base once where the inline code re-derives it through a head word at every
- * access, which repays the call: a dynamic tuple encoder (its base is the tail cursor) and the
- * decoder of a dynamic tuple output (its block base, cached in the `BASE` register). Every other
- * unit pays a few dozen gas per call (two jumps, the spills and the register reads): it never
+ * Whether a shared call of `unit` is expected to cost no more gas than its inline twin. A call
+ * costs ~60 gas (two jumps, the return-address spill and reload, the operand spills, and a
+ * decoder site's 0 check); two bodies repay it by reading a base from a register (6 gas) where
+ * the inline code re-derives it through a head word at every read:
+ *
+ * - a dynamic tuple encoder (its base is the tail cursor): ~15 gas per base read, so from
+ *   {@link CHEAP_ENCODE_READS} reads (`subTupleBaseReads`);
+ * - the decoder of a dynamic tuple output (its block base, cached in the `BASE` register): ~8 gas
+ *   per read, so from {@link CHEAP_DECODE_READS} reads (`blockBaseReads`).
+ *
+ * Measured on the in-process EVM (`(uint64 ×k, string)`: −15 gas per encoder call and −8 per
+ * decoder call for each extra word). Every other unit costs a few dozen gas per call: it never
  * shares inside a loop, and only when it saves {@link SHARE_MIN_PER_USE} bytes per use.
  */
 function isCheap(unit: CodecUnit): boolean {
-  if (unit.dir === 'enc') return unit.kind === 'DT';
-  return unit.region === 'ret' && unit.layout.kind === 'tuple' && unit.layout.dynamic;
+  const l = unit.layout;
+  if (l.kind !== 'tuple' || !l.dynamic) return false;
+  if (unit.dir === 'enc') return subTupleBaseReads(l, 1) >= CHEAP_ENCODE_READS;
+  return unit.region === 'ret' && blockBaseReads(l) >= CHEAP_DECODE_READS;
 }
+
+/** The base reads that repay a dynamic tuple encoder call (see {@link isCheap}). */
+const CHEAP_ENCODE_READS = 5;
+/** The block-base reads that repay a dynamic tuple decoder call (see {@link isCheap}). */
+const CHEAP_DECODE_READS = 9;
 
 /**
  * Decides which codec uses of `ir` share a body. Per key (one body), over the uses the census
