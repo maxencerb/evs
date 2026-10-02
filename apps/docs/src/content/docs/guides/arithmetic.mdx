@@ -117,7 +117,7 @@ const field = evscript({ name: 'field', args: [t.uint256, t.uint256] }, (s, x, y
 
 `a.mulDiv(b, d)` is FullMath's `mulDiv(a, b, d)`: `⌊a · b / d⌋` with the product kept at **512 bits**, so it is exact whenever the quotient itself fits `uint256`, where `a.mul(b).div(d)` reverts as soon as `a · b` passes 2^256. `a.mulDivRoundingUp(b, d)` is the ceiling `⌈a · b / d⌉`. Both are `uint256`-only (value, operand and denominator) and use OpenZeppelin `Math.mulDiv`'s Panic codes: a zero denominator reverts with `Panic(0x12)`, a quotient that does not fit `uint256` with `Panic(0x11)` (for `mulDivRoundingUp`, that includes rounding `2^256 − 1` up). Uniswap's FullMath reverts with empty data in those two cases instead; the results are the same everywhere else.
 
-The lowering is the FullMath sequence, verified against a solc-compiled reference: when `a · b` fits one word it is a single `DIV` (about 150 gas), otherwise the 512-bit path runs (about 480 gas). A nonzero literal denominator drops the zero check, as for `div`.
+The lowering is the FullMath sequence, verified against a solc-compiled reference: when `a · b` fits one word it is a single `DIV` (about 150 gas), otherwise the 512-bit path runs (about 480 gas). A nonzero literal denominator drops the zero check, as for `div`. A script with a single `mulDiv` site inlines the sequence (about 110 bytes); with several, it is emitted once as a shared subroutine that each site calls, for about 8 bytes and 36 gas per call (about 10 bytes and 61 gas when the script mixes `mulDiv` and `mulDivRoundingUp`), so extra sites cost no more code than `a.mul(b).div(d)` does.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

@@ -293,7 +293,19 @@ Releases: see [Releasing](#releasing) below.
   node (uint256 operands, like `addmod` / `mulmod`), lowered in `codegen/lower/muldiv.ts` to the
   FullMath sequence (a one-word `DIV` fast path when the product's high word is zero) with
   OpenZeppelin `Math.mulDiv`'s Panic codes (0x12 zero denominator, 0x11 quotient overflow);
-  `EvsFullMathReference` is their solc oracle.
+  `EvsFullMathReference` is their solc oracle. A program with one site inlines the sequence
+  (~110 bytes); with two or more (counted over the body and the fns it calls) it is emitted
+  once, as the shared `@muldiv` tail subroutine (a checked subroutine, like `@memcpy`), and each
+  site keeps its zero guard and pushes its return label. The subroutine is specialized to the
+  program's rounding: when every site is `mulDiv` (or every site `mulDivRoundingUp`) it carries
+  only that mode (entry `[a, b, d, ret]`, height 4) and a call costs ~8 bytes and ~36 gas; a
+  program mixing both passes a rounding flag (entry `[a, b, d, up, ret]`, height 5) and carries
+  both modes, ~10 bytes and ~61 gas per call. A single site still inlines: a call would add
+  ~12 bytes and ~30 gas. The fast path stays inside the subroutine. Measured on the
+  in-process EVM with floor-only sites (deployless gas = runtime gas + 200 gas per byte of
+  code + the initcode's calldata): keeping the 512-bit product and the `DIV` at the site adds
+  ~35 bytes per site (~7.5k deployless gas) to save ~27 gas per evaluation, so it only repays
+  for a site evaluated ~280 times in one call.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`

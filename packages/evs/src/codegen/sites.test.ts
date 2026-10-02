@@ -253,6 +253,28 @@ const CASES: readonly LockstepCase[] = [
     ),
     codes: [0x11],
   },
+  // two sites call the shared @muldiv subroutine: 0x11 is raised there, 0x12 stays per site
+  {
+    name: 'mulDiv + mulDivRoundingUp by literals (shared @muldiv)',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, a, b) =>
+      s.return({ q: s.mulDiv(a, b, 3n), r: s.mulDivRoundingUp(a, b, 1n << 96n) }),
+    ),
+    codes: [0x11],
+  },
+  {
+    name: 'mulDiv twice, one runtime denominator (shared @muldiv)',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) =>
+      s.return({ q: s.mulDiv(a, b, 3n), r: s.mulDiv(a, b, d) }),
+    ),
+    codes: [0x11, 0x12],
+  },
+  {
+    name: 'mulDivRoundingUp twice (shared @muldiv, rounding up only)',
+    script: evscript({ name: 'f', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) =>
+      s.return({ q: s.mulDivRoundingUp(a, b, 3n), r: s.mulDivRoundingUp(b, a, d) }),
+    ),
+    codes: [0x11, 0x12],
+  },
   // arrays
   {
     name: 'index',

@@ -1,12 +1,12 @@
 /**
  * `codegen/tails.ts` — shared tail emission: the panic tails, the `EvsInvalidCalldata()` /
- * `EvsDecodeError(site)` revert tails, the per-site decode-fail stubs, and the pre-cancun
- * `@memcpy` word-loop subroutine.
+ * `EvsDecodeError(site)` revert tails, the per-site decode-fail stubs, the pre-cancun
+ * `@memcpy` word-loop subroutine and the `@muldiv` FullMath subroutine.
  *
  * NOTE: the `SharedTails` labels `codegen/abi.ts` + `codegen/call.ts` jump to must be *defined*
  * somewhere; this module is the single place that emits the tail bodies (used directly by the
  * unit tests, and by `lowerProgram`, which places panic tails / dfail stubs /
- * `@decode_revert` / `@memcpy` after the program body).
+ * `@decode_revert` / `@memcpy` / `@muldiv` after the program body).
  *
  * Only referenced tails are emitted (`emitSharedTails` checks `AsmWriter.isReferenced`), so a
  * script that cannot divide carries no `@panic_divzero`, one without strict calls no
@@ -22,6 +22,10 @@
  *   @badcd:          4-byte-payload variant — revert(0, 4) of sel(EvsInvalidCalldata())
  *   @memcpy:         checked subroutine (entry height 4: [ret, dst, src, len]); copies
  *                    ceil32(len) bytes word-wise, returns via dynamic JUMP.
+ *   @muldiv:         checked subroutine (entry height 4: [a, b, d, ret], or 5: [a, b, d, up,
+ *                    ret] when the program mixes roundings); the FullMath `mulDiv` /
+ *                    `mulDivRoundingUp` body every site calls (`lower/muldiv.ts`), returns [q]
+ *                    via dynamic JUMP.
  *
  * The three selector reverts are one emitter, {@link emitSelectorRevert}, which a zero-arg
  * `s.throw` (`codegen/lower/composites.ts`) reuses inline.
@@ -35,9 +39,12 @@ import {
 import type { AsmWriter, LabelId } from '../asm/assembler.js';
 import { forkAtLeast, OPS, type EvmVersion } from '../asm/ops.js';
 import { selectorBytes } from '../core/bytes.js';
+import { EvsInternalError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
 import type { SharedTails } from './abi.js';
+import type { MulDivRounding } from './lower/context.js';
+import { emitMulDivSubroutine } from './lower/muldiv.js';
 
 // ---------------------------------------------------------------------------
 // selector reverts
@@ -91,6 +98,7 @@ const TAIL_LABEL = {
   memcpy: 'memcpy',
   memcpyLoop: 'memcpy_loop',
   memcpyDone: 'memcpy_done',
+  mulDiv: 'muldiv',
 } as const;
 
 /**
@@ -108,6 +116,7 @@ export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }
     invalidCalldata: w.newLabel(TAIL_LABEL.invalidCalldata),
     decodeRevert: w.newLabel(TAIL_LABEL.decodeRevert),
     memcpy: forkAtLeast(opts.evmVersion, OPS.MCOPY.since) ? null : w.newLabel(TAIL_LABEL.memcpy),
+    mulDiv: w.newLabel(TAIL_LABEL.mulDiv),
   };
 }
 
@@ -132,27 +141,45 @@ export function emitDecodeFailStub(
 }
 
 /**
- * Emits the shared tail bodies that something references: each panic stub (and the `@panic`
- * core, only when at least one stub is emitted), `@decode_revert` (`EvsDecodeError(uint256
- * site)` — site pushed by the per-site stub), `@badcd` (`EvsInvalidCalldata()`), and the
- * `@memcpy` subroutine when `tails.memcpy` is non-null. A tail no `pushLabel` has named is
- * dead code and is left out (its allocated label stays unplaced, which the assembler accepts).
+ * Emits the shared tail bodies that something references: the `@muldiv` subroutine (in the
+ * program's `mulDivRounding`, `LowerCtx.mulDivShare`), each panic stub (and the `@panic` core,
+ * only when at least one stub is emitted), `@decode_revert` (`EvsDecodeError(uint256 site)` —
+ * site pushed by the per-site stub), `@badcd` (`EvsInvalidCalldata()`), and the `@memcpy`
+ * subroutine when `tails.memcpy` is non-null. A tail no `pushLabel` has named is dead code and
+ * is left out (its allocated label stays unplaced, which the assembler accepts).
  *
  * Must be emitted after all code that can reference or fall through into a tail — i.e. last
  * among the code regions (before data segments only), since reference tracking only sees
- * `pushLabel`s already written. Tails reference only the `@panic` core (from the stubs) and
- * `@memcpy`'s own loop labels, both handled here. Every tail is unreachable by fallthrough:
- * panic/revert tails are `'any'` regions ending in REVERT; `@memcpy` is a checked subroutine
- * entered only by `emitMemCopy` calls.
+ * `pushLabel`s already written. Tails reference only the `@panic` core (from the stubs), the
+ * subroutines' own labels and `@muldiv`'s `@panic_overflow` — which is why `@muldiv` goes
+ * first. Every tail is unreachable by fallthrough: panic/revert tails are `'any'` regions
+ * ending in REVERT; `@muldiv` / `@memcpy` are checked subroutines entered only by their call
+ * sites (`lowerMulDiv`, `emitMemCopy`) and leaving by their return JUMP.
  *
  * Returns the label of the first tail it placed (`null` when nothing is referenced), so the
  * caller can report where the tails region starts.
  */
-export function emitSharedTails(w: AsmWriter, tails: SharedTails): LabelId | null {
+export function emitSharedTails(
+  w: AsmWriter,
+  tails: SharedTails,
+  mulDivRounding: MulDivRounding | null = null,
+): LabelId | null {
   let first: LabelId | null = null;
   const open = (label: LabelId): void => {
     first ??= label;
   };
+
+  // -- @muldiv FullMath subroutine (first: it references @panic_overflow) -----------
+  if (w.isReferenced(tails.mulDiv)) {
+    if (mulDivRounding === null) {
+      throw new EvsInternalError(
+        'INTERNAL',
+        'codegen/tails: emitSharedTails: @muldiv is referenced but no rounding was given — pass LowerCtx.mulDivShare',
+      );
+    }
+    open(tails.mulDiv);
+    emitMulDivSubroutine(w, tails.mulDiv, tails, mulDivRounding);
+  }
 
   // -- panic stubs + core ------------------------------------------------------
   const stubs: readonly [LabelId, number][] = [
