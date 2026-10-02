@@ -869,6 +869,20 @@ describe('overlapping element offsets: decode work stays linear (decode-work bud
       data: overlapNested(600, 600),
       n: 600,
     },
+    // a lone array of aliased elements: N offsets at one string cost N bounds checks, and the
+    // array's own charge never exceeds the payload (compiled unbudgeted, see needsDecodeBudget)
+    {
+      label: 'string[] N=L=600',
+      output: { name: 'r', type: 'string[]' },
+      data: overlapNested(600, 600),
+      n: 600,
+    },
+    {
+      label: 'bytes[] N=L=600',
+      output: { name: 'r', type: 'bytes[]' },
+      data: overlapNested(600, 600),
+      n: 600,
+    },
     // copies / pointer blocks past the budget: a clean decode failure
     { label: 'uint8[][] N=L=600', output: U8_NESTED, data: overlapNested(600, 600), n: null },
     { label: '(uint8[] a)[] N=L=600', output: TUPLES, data: overlapTuples(600, 600), n: null },
@@ -980,6 +994,20 @@ describe('overlapping element offsets: decode work stays linear (decode-work bud
       ],
       [{ name: 'r', type: 'uint256[100][][]' }, [rep(100, 0n).map(() => rep(100, 7n))], 1],
       [{ name: 'r', type: 'string[3][]' }, rep(3000, 0n).map(() => ['', '', '']), 3000],
+      // lone arrays (compiled unbudgeted): their one charge is bounded by the payload itself
+      [{ name: 'r', type: 'string[]' }, rep(9000, 0n).map(() => ''), 9000],
+      [
+        {
+          name: 'r',
+          type: 'tuple[]',
+          components: [
+            { name: 'a', type: 'uint256' },
+            { name: 'b', type: 'address' },
+          ],
+        },
+        rep(5000, 0n).map((_, i) => ({ a: BigInt(i), b: addr(i) })),
+        5000,
+      ],
     ];
     for (const [output, value, n] of cases) {
       for (const verb of VERBS) {

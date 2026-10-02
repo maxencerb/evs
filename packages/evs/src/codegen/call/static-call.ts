@@ -72,8 +72,8 @@ export function emitStaticCall(
   // scratch-resident base/end (the decoders churn the free ptr, so a stack-resident base would
   // drift).
   const hasTupleOut = outputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))));
-  // outputs whose decode can charge the decode-work budget (arrays nested in structs / arrays —
-  // always memory-snapshot shapes) get a budget word right after the snapshot
+  // outputs whose decode can exhaust the decode-work budget (arrays nested in arrays, several
+  // charged arrays — always memory-snapshot shapes) get a budget word right after the snapshot
   const budgeted = needsDecodeBudget(outputs);
   if (budgeted && !hasTupleOut) {
     throw internal(`call to ${fnAbi.name} (site ${siteId}): a budgeted decode without a snapshot`);

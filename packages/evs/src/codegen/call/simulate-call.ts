@@ -94,7 +94,7 @@ export function emitSimulateCall(
     tryMode && outputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))))
       ? w.newLabel(`sim_restore_${siteId}`)
       : null;
-  // outputs whose decode can charge the decode-work budget get a budget word after the snapshot
+  // outputs whose decode can exhaust the decode-work budget get a budget word after the snapshot
   const budgeted = needsDecodeBudget(outputs);
   const budget: DecodeBudget = budgeted ? 'once' : 'off';
   const failPre = makeDecodeFail(w, plan, tryMode, 'sim');

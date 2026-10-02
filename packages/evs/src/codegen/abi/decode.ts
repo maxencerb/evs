@@ -183,9 +183,9 @@ export function emitDecodeFromRegion(
 
 /**
  * How a decoder charges the decode-work budget: `'off'` (unbudgeted: script args, or outputs that
- * can never charge), `'once'` (a call's outputs, outside every ABI-dynamic array) or `'repeated'`
- * (inside an element of an ABI-dynamic array, where overlapping offsets can re-decode a block:
- * dynamic tuples and dynamic `T[N]` are charged too).
+ * can never exhaust it, see {@link needsDecodeBudget}), `'once'` (a call's outputs, outside every
+ * ABI-dynamic array) or `'repeated'` (inside an element of an ABI-dynamic array, where
+ * overlapping offsets can re-decode a block: dynamic tuples and dynamic `T[N]` are charged too).
  */
 export type DecodeBudget = 'off' | 'once' | 'repeated';
 
@@ -206,29 +206,51 @@ function elemBudget(budget: DecodeBudget, l: ArrayLayout): DecodeBudget {
 }
 
 /**
- * @internal Shared with `codegen/call/`. True when decoding `outputs` can charge the decode-work
- * budget at all — some output holds a block {@link mayChargeDecodeBudget} finds. A call site
- * reserves and initialises the budget word only then, so shapes that never charge (words,
- * strings, structs of those, `uint256[]`, …) keep their bytecode.
+ * @internal Shared with `codegen/call/`. True when decoding `outputs` can exhaust the decode-work
+ * budget. A call site reserves, initialises and charges the budget word only then; every other
+ * shape decodes unbudgeted and keeps its bytecode:
+ *
+ * - no charge site at all (words, strings, structs of those, `uint256[]`, …);
+ * - exactly one charge site, and it is charged `'once'` (outside every ABI-dynamic array, so it
+ *   runs at most once): a `string[]`, `bytes[]`, `(uint256,address)[]` or `uint256[][]` output,
+ *   or one such array in a struct output. Proof that this lone charge cannot fail: a `'once'`
+ *   site is always an array block (a tuple is charged only `'repeated'`), charged
+ *   `fixed + perElem·len` right after a bound over the same bytes passed — the body bound
+ *   `base + 32 + perElem·len ≤ end` of a dynamic `T[]` ({@link emitArrayBodyBound}, `perElem`
+ *   being exactly its offset-word or static-element size), or a narrow word-array member's tail
+ *   bound `ptr + 32 + 32·len ≤ end` (`fixed` is 32 in both). Offsets are unsigned, so the block
+ *   starts at or past the payload start and the charge is at most `end − base ≤ payloadBytes`,
+ *   strictly below the initial budget `payloadBytes + DECODE_BUDGET_SLACK`
+ *   ({@link emitInitDecodeBudget}). The budget word, its init and the charge would be dead code.
+ *
+ * Two sites can each charge up to the whole payload (two `string[]` outputs whose offsets share
+ * one tail), and a `'repeated'` site runs once per element offset, so either keeps the budget.
+ * The interpreter charges every site regardless (`ir/interp/decode.ts`); by the same bound its
+ * budget never runs out on an unbudgeted shape, so the two still agree on every payload.
  */
 export function needsDecodeBudget(outputs: readonly NamedType[]): boolean {
-  return outputs.some((p) => mayChargeDecodeBudget(layoutOfType(abiParamToType(p)), true, false));
+  const sites = outputs.flatMap((p) =>
+    decodeChargeSites(layoutOfType(abiParamToType(p)), true, 'once'),
+  );
+  return sites.length > 1 || sites.includes('repeated');
 }
 
-/** Whether decoding a value of layout `l` can charge the budget (`topLevel`: `l` is an output;
- *  `repeated`: inside an ABI-dynamic array's element) — the decoders' charge sites, walked. */
-function mayChargeDecodeBudget(l: TypeLayout, topLevel: boolean, repeated: boolean): boolean {
+/** The decoders' charge sites for a value of layout `l`, walked: one entry per block
+ *  `arrayDecodeCharge` / `tupleDecodeCharge` charges, in the mode it is charged under
+ *  (`topLevel`: `l` is an output; `'repeated'`: inside an ABI-dynamic array's element). */
+function decodeChargeSites(
+  l: TypeLayout,
+  topLevel: boolean,
+  budget: 'once' | 'repeated',
+): ('once' | 'repeated')[] {
+  const repeated = budget === 'repeated';
   if (l.kind === 'tuple') {
-    return (
-      tupleDecodeCharge(l, repeated) !== null ||
-      l.components.some((c) => mayChargeDecodeBudget(c, false, repeated))
-    );
+    const own = tupleDecodeCharge(l, repeated) === null ? [] : [budget];
+    return [...own, ...l.components.flatMap((c) => decodeChargeSites(c, false, budget))];
   }
-  if (l.kind !== 'array') return false;
-  return (
-    arrayDecodeCharge(l, topLevel, repeated) !== null ||
-    mayChargeDecodeBudget(l.elem, false, repeated || isDynamic(l))
-  );
+  if (l.kind !== 'array') return [];
+  const own = arrayDecodeCharge(l, topLevel, repeated) === null ? [] : [budget];
+  return [...own, ...decodeChargeSites(l.elem, false, isDynamic(l) ? 'repeated' : budget)];
 }
 
 /**
