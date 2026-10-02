@@ -1,5 +1,0 @@
----
-'@maxencerb/evs': patch
----
-
-A struct call argument written as an object literal now type-checks with runtime values in it. `args: [{ tokenId: id, recipient, amount0Max: MAX, amount1Max: MAX }]` in `s.read`/`s.call`/`s.simulate` and their `try*` forms failed to compile (TS2769, `Type 'Expr<"uint256">' is not assignable to type 'bigint'`) as soon as a member was an `Expr`, although recording accepted it and sent the same calldata as the `s.tuple(...)` form. Each member of a struct literal now accepts what the recorder coerces: a constant, an `Expr`, a `Tuple` handle or a nested literal. The same holds for the elements of a `tuple[]` argument literal and for a struct member given as a literal (in an `s.tuple` init, `Field.set`, `MutArray.set` or an `s.fn` struct argument). A struct literal still names every member (use `s.tuple` to leave members at zero), a tuple with an unnamed member still takes a positional array, and a fixed `tuple[N]` literal still takes exactly N elements. The shapes are exported as `StructLiteral` and `TupleArrayLiteral`.
