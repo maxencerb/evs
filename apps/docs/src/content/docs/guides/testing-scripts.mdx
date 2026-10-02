@@ -23,18 +23,14 @@ overflows while computing an unused value returns, under `interpret()` and on-ch
 import type { InterpOptions, InterpResult, InterpValues, MockChain, ScriptIr } from '@maxencerb/evs';
 import type { Abi, ContractFunctionArgs, ContractFunctionName } from 'viem';
 
-declare function interpret<const abi extends Abi>(
-  script: { readonly ir: ScriptIr; readonly abi: abi }, // evscript() result or compiled artifact
-  args: ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>, // readContract's args
+declare function interpret<const abi extends Abi = Abi>(
+  // an evscript() result or its compiled artifact — or a bare ScriptIr (e.g. from deserializeIr),
+  // which leaves abi at the wide Abi (untyped args and values)
+  script: ScriptIr | { readonly ir: ScriptIr; readonly abi: abi },
+  args: NoInfer<ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>>, // readContract's args
   chain: MockChain,
   opts?: InterpOptions,
 ): InterpResult<InterpValues<abi>>; // values: what readContract returns for this script
-declare function interpret(
-  ir: ScriptIr, // a bare IR, e.g. from deserializeIr
-  args: readonly unknown[],
-  chain: MockChain,
-  opts?: InterpOptions,
-): InterpResult; // values: Record<string, unknown>
 
 // InterpOptions = { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean }
 
@@ -67,8 +63,8 @@ interface MockChainShape {
 - `script` — the script itself (`interpret(myScript, …)`), or its compiled artifact. Both
   sides are then typed from the script's literal ABI with the same viem types `readContract`
   uses: `args` is the positional tuple `readContract` takes, so a wrong argument shape is a
-  compile error, and `outcome.values` is the record `readContract` returns.
-- `ir` — a bare `ScriptIr` instead (one loaded with `deserializeIr`, say): `args` is then
+  compile error on the offending value, and `outcome.values` is the record `readContract`
+  returns. A bare `ScriptIr` works too (one loaded with `deserializeIr`, say): `args` is then
   `readonly unknown[]` and `outcome.values` a `Record<string, unknown>`, checked at run time
   only. Either way the IR is validated on entry, so garbage IR fails loudly instead of
   producing garbage results.

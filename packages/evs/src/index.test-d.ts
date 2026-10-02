@@ -64,7 +64,7 @@ test('public-signature helper types are exported by name', () => {
   expectTypeOf<ToArgSpec<'uint256'>['type']>().toEqualTypeOf<'uint256'>();
   expectTypeOf<ArgsToInputs<readonly []>>().toEqualTypeOf<readonly []>();
   expectTypeOf<LabelCarrier<readonly []>>().toEqualTypeOf<readonly []>();
-  // interpret()'s options and the values type of its script overload
+  // interpret()'s options and the values type it gives a script
   expectTypeOf<InterpOptions['maxSteps']>().toEqualTypeOf<number | undefined>();
   expectTypeOf<
     InterpValues<

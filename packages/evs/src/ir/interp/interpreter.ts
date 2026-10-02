@@ -173,24 +173,27 @@ export type InterpValues<abi extends Abi> =
     : never;
 
 /**
- * Runs a script against `chain` — the evs script itself (an `evscript` result or its compiled
- * artifact), typed from its literal ABI: `args` is the positional tuple `readContract` takes and
- * `outcome.values` the record it returns, so a wrong argument shape is a type error. Dead code is
- * eliminated first, as `compile()` does, unless `opts.dce` is `false` (see `InterpOptions`).
+ * Runs a script against `chain`. Passed the evs script itself (an `evscript` result or its
+ * compiled artifact), it is typed from the script's literal ABI: `args` is the positional tuple
+ * `readContract` takes and `outcome.values` the record it returns, so a wrong argument shape is a
+ * type error. A bare `ScriptIr` (e.g. from `deserializeIr`) takes untyped `args` and `values`.
+ * Dead code is eliminated first, as `compile()` does, unless `opts.dce` is `false` (see
+ * `InterpOptions`).
+ *
+ * One generic signature, not a script overload plus a bare-IR one: with overloads, a bad argument
+ * or chain is "No overload matches this call", reported against the call and led (under
+ * TypeScript 7, replaced) by the script "missing the following properties from type 'ScriptIr'".
+ * With one signature the error lands on the offending value and names it. The signature is
+ * generic in the ABI (inferred from the script's `abi`, the wide `Abi` for a bare `ScriptIr`), not
+ * in the script: a wrapper generic in its script type then still resolves `args` from the
+ * constraint's ABI, and a union of scripts must agree on one ABI.
  */
-export function interpret<const abi extends Abi>(
-  script: { readonly ir: ScriptIr; readonly abi: abi },
-  args: ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>,
+export function interpret<const abi extends Abi = Abi>(
+  script: ScriptIr | { readonly ir: ScriptIr; readonly abi: abi },
+  args: NoInfer<ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>>,
   chain: MockChain,
   opts?: InterpOptions,
 ): InterpResult<InterpValues<abi>>;
-/** Runs a bare `ScriptIr` (e.g. from `deserializeIr`) — `args` and `values` are untyped. */
-export function interpret(
-  ir: ScriptIr,
-  args: readonly unknown[],
-  chain: MockChain,
-  opts?: InterpOptions,
-): InterpResult;
 export function interpret(
   target: ScriptIr | { readonly ir: ScriptIr },
   args: readonly unknown[],
