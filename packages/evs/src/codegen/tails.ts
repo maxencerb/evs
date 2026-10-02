@@ -42,7 +42,7 @@ import { selectorBytes } from '../core/bytes.js';
 import { EvsInternalError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
-import type { SharedTails } from './abi.js';
+import type { CodecHook, SharedTails } from './abi.js';
 import type { MulDivRounding } from './lower/context.js';
 import { emitMulDivSubroutine } from './lower/muldiv.js';
 
@@ -105,10 +105,15 @@ const TAIL_LABEL = {
  * Allocates every `SharedTails` label on `w` (bodies are emitted only for the referenced ones —
  * see `emitSharedTails`). `memcpy` is `null` on cancun (MCOPY inlines).
  * Call once per program, before any emitter references the tails; emit the bodies with
- * `emitSharedTails` after the last code region (and before any data segments).
+ * `emitSharedTails` after the last code region (and before any data segments). `opts.codecs` is
+ * the codec-sharing hook (`codegen/codecs.ts`), `null` (the default) to inline every codec.
  */
-export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }): SharedTails {
+export function createSharedTails(
+  w: AsmWriter,
+  opts: { evmVersion: EvmVersion; codecs?: CodecHook | null },
+): SharedTails {
   return {
+    codecs: opts.codecs ?? null,
     panicOverflow: w.newLabel(TAIL_LABEL.panicOverflow),
     panicDivZero: w.newLabel(TAIL_LABEL.panicDivZero),
     panicBounds: w.newLabel(TAIL_LABEL.panicBounds),

@@ -43,7 +43,7 @@ export {
   emitCeil32,
   emitMemCopy,
 } from './abi/shared.js';
-export type { SharedTails, SlotRef, EncodeOpts } from './abi/shared.js';
+export type { SharedTails, SlotRef, EncodeOpts, CodecHook } from './abi/shared.js';
 export {
   headOffsets,
   headOffsetAt,
@@ -59,6 +59,7 @@ export {
   emitDecodeTupleToMem,
   emitDecodeFromRegion,
   needsDecodeBudget,
+  effectiveDecodeBudget,
   emitInitDecodeBudget,
 } from './abi/decode.js';
 export type { DecodeFail, DecodeBudget, DecodeOptions, DecodeRegion } from './abi/decode.js';

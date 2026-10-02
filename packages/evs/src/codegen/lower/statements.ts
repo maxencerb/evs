@@ -78,6 +78,8 @@ export function emitFnSubroutines(w: AsmWriter, ctx: LowerCtx): void {
 // ---------------------------------------------------------------------------
 
 function lowerStmt(w: AsmWriter, s: Stmt, ctx: LowerCtx): void {
+  // the codec uses this statement emits are planned per (statement, codec) — `codegen/codecs.ts`
+  ctx.tails.codecs?.enterSite(s.site);
   switch (s.k) {
     case 'const':
       lowerConst(w, s, ctx);

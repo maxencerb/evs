@@ -90,19 +90,72 @@ export type MulDivRounding = 'floor' | 'up' | 'mixed';
 function mulDivShareOf(ir: ScriptIr): MulDivRounding | null {
   let floor = 0;
   let up = 0;
-  const reached = new Set<FnId>();
-  const visit = (s: Stmt): void => {
+  walkEmittedStmts(ir, (s) => {
     if (s.k === 'modarith' && s.op === 'muldiv') floor += 1;
     if (s.k === 'modarith' && s.op === 'muldivup') up += 1;
-    if (s.k === 'fncall' && !reached.has(s.fn)) {
-      reached.add(s.fn);
-      const fn = ir.fns[s.fn];
-      if (fn !== undefined) walkStmts(fn.body, visit);
-    }
-  };
-  walkStmts(ir.body, visit);
+  });
   if (floor + up < 2) return null;
   return up === 0 ? 'floor' : floor === 0 ? 'up' : 'mixed';
+}
+
+/**
+ * @internal Visits every statement the lowering emits, each once: the main body's, then those of
+ * every fn reachable through `fncall` (transitively, in discovery order; a fn called several
+ * times is lowered once, and an uncalled fn is never emitted). `hot` tells whether the statement
+ * can run many times per execution: it sits inside a `while` header (re-executed every iteration)
+ * or body, or in a fn that a hot `fncall` reaches (a fn body is lowered once, so every statement
+ * of a hot fn is hot). The call graph is acyclic; the seen-sets keep the walk finite anyway.
+ */
+export function walkEmittedStmts(ir: ScriptIr, visit: (s: Stmt, hot: boolean) => void): void {
+  const reached: FnId[] = [];
+  const seen = new Set<FnId>();
+  const edges: { from: FnId | null; to: FnId; inLoop: boolean }[] = [];
+  const scan = (stmts: readonly Stmt[], from: FnId | null): void => {
+    walkWithLoops(stmts, false, (s, inLoop) => {
+      if (s.k !== 'fncall') return;
+      edges.push({ from, to: s.fn, inLoop });
+      if (seen.has(s.fn)) return;
+      seen.add(s.fn);
+      reached.push(s.fn);
+      const fn = ir.fns[s.fn];
+      if (fn !== undefined) scan(fn.body, s.fn);
+    });
+  };
+  scan(ir.body, null);
+  // a fn is hot when some hot call reaches it: a fixpoint over the edges (each round adds a fn)
+  const hotFns = new Set<FnId>();
+  for (let changed = true; changed;) {
+    changed = false;
+    for (const e of edges) {
+      if (hotFns.has(e.to) || !(e.inLoop || (e.from !== null && hotFns.has(e.from)))) continue;
+      hotFns.add(e.to);
+      changed = true;
+    }
+  }
+  walkWithLoops(ir.body, false, visit);
+  for (const f of reached) {
+    const fn = ir.fns[f];
+    if (fn !== undefined) walkWithLoops(fn.body, hotFns.has(f), visit);
+  }
+}
+
+/** {@link walkStmts} that also tells whether each statement sits inside a `while` (or `inLoop`
+ *  already holds for the whole list). */
+function walkWithLoops(
+  stmts: readonly Stmt[],
+  inLoop: boolean,
+  visit: (s: Stmt, inLoop: boolean) => void,
+): void {
+  for (const s of stmts) {
+    visit(s, inLoop);
+    if (s.k === 'if') {
+      walkWithLoops(s.then, inLoop, visit);
+      walkWithLoops(s.else, inLoop, visit);
+    } else if (s.k === 'while') {
+      walkWithLoops(s.header, true, visit);
+      walkWithLoops(s.body, true, visit);
+    }
+  }
 }
 
 /**

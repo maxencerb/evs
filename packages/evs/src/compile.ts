@@ -33,8 +33,9 @@ import { disassemble, type Disassembly } from './asm/disasm.js';
 import type { EvmVersion } from './asm/ops.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import type { EvsScript, ReturnValue } from './builder/script.js';
+import { CodecPlanDrift } from './codegen/codecs.js';
 import { evsPeephole } from './codegen/peephole.js';
-import { lowerProgram, type ProgramRegions } from './codegen/program.js';
+import { lowerProgram, type LowerResult, type ProgramRegions } from './codegen/program.js';
 import { bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
@@ -215,7 +216,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   // result nothing observable reads) → lowerProgram, which re-validates the DCE output as a
   // self-check of the pass. The artifact keeps exposing the recorded `script.ir` unchanged.
   validateIr(ir);
-  const lowered = lowerProgram(eliminateDeadCode(ir), {
+  const lowered = lowerWithCodecFallback(eliminateDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     optimize: resolved.optimize,
   });
@@ -286,6 +287,23 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
       }),
   };
   return Object.freeze(artifact);
+}
+
+/**
+ * `lowerProgram`, falling back to the inline lowering when the codec-sharing census and the
+ * emitters disagree (`CodecPlanDrift`, `codegen/codecs.ts`): such a drift only ever costs the
+ * saving, never a failed compile. Every other error propagates.
+ */
+function lowerWithCodecFallback(
+  ir: ScriptIr,
+  opts: { evmVersion: EvmVersion; optimize: boolean },
+): LowerResult {
+  try {
+    return lowerProgram(ir, opts);
+  } catch (error) {
+    if (!(error instanceof CodecPlanDrift)) throw error;
+    return lowerProgram(ir, { ...opts, shareCodecs: false });
+  }
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,8 @@ export default defineConfig({
           // differential corpus was split into slices (src/differential/*.test.ts).
           pool: 'threads',
           isolate: false,
+          // a codec-sharing plan drift is an INTERNAL error in tests (src/codegen/codecs.ts)
+          setupFiles: ['./test/setup/strict-codecs.ts'],
         },
       },
       {
@@ -47,6 +49,7 @@ export default defineConfig({
           include: ['test/integration/**/*.test.ts'],
           environment: 'node',
           globalSetup: ['./test/global-setup.ts'],
+          setupFiles: ['./test/setup/strict-codecs.ts'],
           testTimeout: 30_000,
           hookTimeout: 30_000,
         },

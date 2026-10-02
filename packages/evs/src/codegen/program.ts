@@ -38,6 +38,8 @@ import {
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
+import { RETURNS_SITE } from './codec-keys.js';
+import { EMPTY_CODEC_PLAN, planCodecs } from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -93,12 +95,34 @@ function internal(message: string): EvsInternalError {
 
 export function lowerProgram(
   ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; optimize?: boolean },
+  opts: {
+    evmVersion: EvmVersion;
+    optimize?: boolean;
+    /**
+     * @internal Whether codec uses may share a subroutine (`codegen/codecs.ts`), default `true`.
+     * `compile()` turns it off only to lower again after a `CodecPlanDrift`; tests use it to
+     * build the inline twin of a program.
+     */
+    shareCodecs?: boolean;
+  },
 ): LowerResult {
   validateIr(ir);
   // `optimize` (compile's single optimizer switch) selects the liveness-based frame allocator
   // (issue #41); the default keeps one slot per value so the default bytes never move.
-  const frame = layoutFrames(ir, { optimize: opts.optimize ?? false });
+  const optimize = opts.optimize ?? false;
+  const frame = layoutFrames(ir, { optimize });
+  // shared codec subroutines: measured against the default allocator's frame (the larger one),
+  // so both allocators take the same decisions
+  const plan =
+    opts.shareCodecs === false
+      ? EMPTY_CODEC_PLAN
+      : planCodecs(ir, {
+          evmVersion: opts.evmVersion,
+          optimize,
+          frameEnd: optimize ? layoutFrames(ir, { optimize: false }).frameEnd : frame.frameEnd,
+        });
+  // the codec registers sit right after the static frame (none when nothing is shared)
+  const frameEnd = frame.frameEnd + 32 * plan.words;
   const w = new AsmWriter();
   const evm = { evmVersion: opts.evmVersion };
   const tails = createSharedTails(w, evm);
@@ -134,7 +158,7 @@ export function lowerProgram(
   w.label(dispatch, 0);
 
   // -- prologue: free-pointer init --------------------------------
-  w.push(frame.frameEnd, { note: 'frameEnd' });
+  w.push(frameEnd, { note: 'frameEnd' });
   w.push(FREE_PTR);
   w.op('MSTORE', { note: 'free-ptr init' });
 
@@ -214,6 +238,7 @@ export function lowerProgram(
     }
     return { name: r.name, ref: { slot, type: r.type } };
   });
+  tails.codecs?.enterSite(RETURNS_SITE);
   emitReturnEncode(w, components, tails, evm);
 
   // -- fn subroutines (only fns reached through fncall — uncalled fns dropped) ---------
@@ -246,7 +271,7 @@ export function lowerProgram(
   const sites = collectSites(ctx, ctx.fnQueue);
   return {
     nodes: w.nodes(),
-    frameEnd: frame.frameEnd,
+    frameEnd,
     sites,
     regions,
     diagnostics: [

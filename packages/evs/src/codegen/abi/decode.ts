@@ -235,6 +235,17 @@ export function needsDecodeBudget(outputs: readonly NamedType[]): boolean {
   return sites.length > 1 || sites.includes('repeated');
 }
 
+/**
+ * @internal Shared with `codegen/codecs.ts`. The budget mode one top-level recursive-codec
+ * output of layout `l` is really decoded under when its call decodes under `budget`: `'off'`
+ * when `l` has no charge site at all (its decoder emits the same code either way), else
+ * `budget`. A shared decoder body is keyed on it (`decRetKey`), so `f() returns (T, string[],
+ * string[])` (budgeted) and `g() returns (T)` share T's body when T cannot charge.
+ */
+export function effectiveDecodeBudget(l: TypeLayout, budget: DecodeBudget): DecodeBudget {
+  return decodeChargeSites(l, true, 'once').length > 0 ? budget : 'off';
+}
+
 /** The decoders' charge sites for a value of layout `l`, walked: one entry per block
  *  `arrayDecodeCharge` / `tupleDecodeCharge` charges, in the mode it is charged under
  *  (`topLevel`: `l` is an output; `'repeated'`: inside an ABI-dynamic array's element). */

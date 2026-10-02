@@ -11,6 +11,7 @@ import { forkAtLeast, OPS, type EvmVersion } from '../../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../../asm/verify.js';
 import { EvsCompileError, EvsInternalError } from '../../core/errors.js';
 import type { EvsType, WordType, NamedType } from '../../core/types.js';
+import type { EncodeMemberKind } from '../codec-keys.js';
 import { FREE_PTR, SCRATCH_1 } from '../memory.js';
 
 // ---------------------------------------------------------------------------
@@ -26,6 +27,42 @@ export interface SharedTails {
   decodeRevert: LabelId;
   memcpy: LabelId | null; // null on cancun (MCOPY inline)
   mulDiv: LabelId; // the shared FullMath subroutine (`codegen/lower/muldiv.ts`)
+  /** The codec-sharing hook (`codegen/codecs.ts`), `null` when nothing is shared: every codec
+   *  is then inlined at its site, exactly as without the hook. */
+  codecs: CodecHook | null;
+}
+
+/**
+ * @internal The codec-sharing hook the program lowering hands the ABI emitters through
+ * {@link SharedTails.codecs}, implemented by `CodecShare` in `codegen/codecs.ts` (declared here so
+ * the emitters never import that module). Each method either emits the CALL of a shared codec
+ * body for the use at hand and returns `true`, or returns `false` and leaves the use to its
+ * inline emitter. Only statement-level site code calls it, never a body or a nested encode.
+ */
+export interface CodecHook {
+  /**
+   * One top-level composite member of a top-level encode block, of `kind` and `layout`, entered
+   * at stack height 0. `pushSrc` pushes its source pointer; `pushBase` its DST base
+   * (`parentBase + headOffset`) for a static member, `null` for a dynamic one, whose head offset
+   * word the caller has already written. `name` annotates the call.
+   */
+  encodeMember(
+    w: AsmWriter,
+    kind: EncodeMemberKind,
+    layout: TypeLayout,
+    name: string,
+    pushSrc: () => void,
+    pushBase: (() => void) | null,
+  ): boolean;
+  /**
+   * One decoder unit (a `dec|…` key from `codegen/codec-keys.ts`), entered at `[buf]`; on return
+   * the decoded block pointer sits on top: `[buf] → [block, buf]`. `fail` is the site's own
+   * post-snapshot decode-failure router, which the call routes a body failure through. `note`
+   * annotates the call.
+   */
+  decode(w: AsmWriter, key: string, fail: (liveDepth: number) => void, note: string): boolean;
+  /** The statement whose codec uses are emitted next (`RETURNS_SITE` for the return encode). */
+  enterSite(site: number): void;
 }
 
 /** Absolute memory offset of a frame slot plus the evs type stored there. */

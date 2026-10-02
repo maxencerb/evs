@@ -14,8 +14,10 @@ import {
 import type { AsmWriter } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
+import { encodeMemberKind } from '../codec-keys.js';
 import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
+  type CodecHook,
   type SharedTails,
   type EncodeOpts,
   isRecursiveArray,
@@ -97,7 +99,7 @@ export function emitEncodeBlock(
   tails: SharedTails,
   opts: EncodeOpts,
 ): void {
-  encodeBlock(w, components, pushSrc, pushBase, tails, opts, 0);
+  encodeBlock(w, components, pushSrc, pushBase, tails, opts, 0, tails.codecs);
 }
 
 /**
@@ -118,11 +120,22 @@ function encodeBlock(
   tails: SharedTails,
   opts: EncodeOpts,
   tupleDepth: number,
+  share: CodecHook | null,
 ): void {
   const offs = headOffsets(components);
   components.forEach((comp, i) => {
     const ho = headOffsetAt(offs, i);
     const layout = layoutOfType(abiParamToType(comp));
+    // a top-level composite member may call its shared encoder body instead of inlining it
+    // (`codegen/codecs.ts`); `pushBaseHo` is the DST base of a static member, `null` once a
+    // dynamic member's head offset word is written
+    const callShared = (pushBaseHo: PushBase | null): boolean => {
+      const kind = encodeMemberKind(layout);
+      return (
+        kind !== null &&
+        share?.encodeMember(w, kind, layout, comp.name, () => pushSrc(i), pushBaseHo) === true
+      );
+    };
 
     if (layout.kind === 'word') {
       pushSrc(i); // [word]
@@ -136,6 +149,7 @@ function encodeBlock(
     }
 
     if (layout.kind === 'tuple' && !layout.dynamic) {
+      if (callShared(() => emitOffsetBase(w, pushBase, ho))) return;
       // static inner tuple — inline its head into the parent head at base+ho (no offset word)
       encodeBlock(
         w,
@@ -145,11 +159,13 @@ function encodeBlock(
         tails,
         opts,
         tupleDepth,
+        null,
       );
       return;
     }
 
     if (layout.kind === 'array' && !isDynamic(layout)) {
+      if (callShared(() => emitOffsetBase(w, pushBase, ho))) return;
       // static fixed-size array `T[N]` — its N elements inline into the parent head at base+ho
       // (no offset word, no length word), exactly like a static tuple's members.
       emitEncodeArrayInline(
@@ -176,6 +192,7 @@ function encodeBlock(
       w.op('ADD');
     } // [head, rel]
     w.op('MSTORE', { note: `head ${comp.name || `#${i}`}` }); // []
+    if (callShared(null)) return;
 
     if (layout.kind === 'tuple') {
       // dynamic inner tuple: reserve its head region at the cursor (subBase = the cursor here),
@@ -193,6 +210,7 @@ function encodeBlock(
           tails,
           opts,
           tupleDepth + 1,
+          null,
         );
         return;
       }
@@ -212,6 +230,7 @@ function encodeBlock(
         tails,
         { ...opts, frameDepth: f + 1 },
         tupleDepth + 1,
+        null,
       );
       return;
     }
@@ -735,6 +754,7 @@ function emitEncodeArrayElementStatic(
     tails,
     { ...opts, frameDepth: frameDepth + 1 },
     0,
+    null,
   );
 }
 
@@ -786,5 +806,6 @@ function emitEncodeArrayElementTail(
     tails,
     { ...opts, frameDepth: frameDepth + 1 },
     0,
+    null,
   );
 }
