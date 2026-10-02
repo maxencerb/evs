@@ -827,6 +827,34 @@ describe('EIP-170 enforcement', () => {
   test('a comfortably-sized script compiles', () => {
     expect(() => compile(sumScript())).not.toThrow();
   });
+
+  // An all-zero literal costs no data segment (a zero-filled allocation), so a zero uint256[800]
+  // — 25,632 bytes as a data segment — fits in a few hundred bytes of runtime.
+  test('an all-zero uint256[800] literal compiles to a zero-fill, not a data segment', async () => {
+    const zeros = Array.from({ length: 800 }, () => 0n);
+    const viaLit = evscript({ name: 'z', args: [] }, (s) =>
+      s.return({ out: s.lit(t.array(t.uint256, 800), zeros) }),
+    );
+    const viaLet = evscript({ name: 'l', args: [] }, (s) =>
+      s.return({ out: s.let(t.array(t.uint256, 800), zeros).get() }),
+    );
+    await Promise.all(
+      [viaLit, viaLet].map(async (script) => {
+        const compiled = compile(script);
+        const lowered = lowerProgram(script.ir, { evmVersion: 'cancun' });
+        expect(lowered.nodes.some((n) => n.k === 'data' || n.k === 'dataLabel')).toBe(false);
+        expect((compiled.runtimeBytecode.length - 2) / 2).toBeLessThan(400);
+        const res = await execRuntime(
+          compiled.runtimeBytecode,
+          encodeFunctionData({ abi: compiled.abi, functionName: script.name }),
+        );
+        expect(res.success).toBe(true);
+        expect(
+          decodeFunctionResult({ abi: compiled.abi, functionName: script.name, data: res.data }),
+        ).toEqual({ out: zeros });
+      }),
+    );
+  });
 });
 
 // ---------------------------------------------------------------------------

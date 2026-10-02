@@ -89,8 +89,9 @@ move large literals off-chain".
 
 Practical levers when you hit it:
 
-- **Data segments** hold your dynamic literals (`s.lit` strings, bytes, literal arrays) — large
-  ones are often better passed as script *args* at call time, which costs calldata instead of
+- **Data segments** hold your dynamic literals (`s.lit` strings, bytes, literal arrays; a
+  literal that is at least half zero words is zero-filled at run time instead and takes none) —
+  large ones are often better passed as script *args* at call time, which costs calldata instead of
   bytecode. In deployless mode that calldata still counts toward the creation payload limit
   below, so args beyond roughly 48 KB need state-override mode.
 - **Body** size scales with recorded statements; remember that JS loops unroll at recording

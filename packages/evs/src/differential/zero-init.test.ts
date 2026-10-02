@@ -5,7 +5,9 @@
  * their typed zero on the EVM exactly as in the interpreter's `zeroValue`: an empty
  * string/bytes/`T[]`, and a fresh zeroed block per nested tuple (never pointer `0x00`, the
  * scratch word). Every shape writes scratch (`s.keccak256`) between the allocation and the read,
- * so an aliased scratch pointer would surface as garbage. Runner: `test/harness/differential.ts`.
+ * so an aliased scratch pointer would surface as garbage. Also: all-zero and mostly-zero literals,
+ * lowered as a zero-filled allocation instead of a data segment, read as their value over dirty
+ * memory. Runner: `test/harness/differential.ts`.
  */
 
 import { type Abi, decodeFunctionResult, encodeAbiParameters, getAddress } from 'viem';
@@ -335,5 +337,82 @@ describe.each(EVM_VERSIONS)('composite zero values (issue #71) [%s]', (evmVersio
       words: [0n, 0n, 0n],
       fixed: ['', ''],
     });
+  });
+
+  test('all-zero and mostly-zero literals: zero-filled over dirty memory, not data segments', async () => {
+    const garbageAbi = [
+      {
+        type: 'function',
+        name: 'garbage',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          {
+            name: '',
+            type: 'tuple',
+            components: [
+              { name: 's', type: 'string' },
+              { name: 'b', type: 'bytes' },
+            ],
+          },
+        ],
+      },
+    ] as const satisfies Abi;
+    const zeros40 = Array.from({ length: 40 }, () => 0n);
+    const sparse = Array.from({ length: 24 }, (_, i) =>
+      i === 5 ? 2n ** 255n : i === 17 ? 9n : 0n,
+    );
+    const sparseBytes = `0xab${'00'.repeat(94)}cd` as const; // 96 bytes: two of four words nonzero
+    const script = evscript({ name: 'zeroLits', args: [t.uint256] }, (s, i) => {
+      // the head offset 2^256−1 fails the decode, and the try rolls the free pointer back over
+      // its all-ones returndata snapshot: every literal below lands on dirty memory
+      const r = s.tryRead({ address: DEAD, abi: garbageAbi, functionName: 'garbage' });
+      const fixed = s.lit(t.array(t.uint256, 40), zeros40);
+      const dyn = s.let(t.array(t.uint256), zeros40);
+      const narrow = s.lit(t.array(t.int8), [0n, 0n, 0n, -1n]); // sign-extended −1: one word
+      const table = s.lit(t.array(t.uint256), sparse);
+      const empty = s.lit(t.bytes, '0x');
+      const nul = s.lit(t.bytes, '0x000000');
+      const blank = s.lit(t.string, '');
+      const padded = s.lit(t.bytes, sparseBytes);
+      const dense = s.lit(t.array(t.uint256), [0n, 5n, 6n]); // stays a data segment
+      // a literal inside a loop is re-materialized each iteration on fresh memory
+      const sum = s.let(t.uint256, 0n);
+      s.for({ type: t.uint256, from: 0n, until: 3n }, () => {
+        sum.set(sum.get().add(s.lit(t.array(t.uint256), sparse).at(i)));
+      });
+      return s.return({
+        ok: r.success,
+        at: fixed.at(i),
+        fixed,
+        dyn: dyn.get(),
+        narrow,
+        table,
+        empty,
+        nul,
+        blank,
+        padded,
+        dense,
+        sum: sum.get(),
+      });
+    });
+    const ones = concatHex(...Array.from({ length: 96 }, () => word(-1n)));
+    const table = { [DEAD]: { kind: 'return', data: ones } } as const;
+    const [o, seventeen] = await expectAgreement(script, [[0n], [17n]], table, evmVersion);
+    expect(decode(script, o?.data)).toEqual({
+      ok: false,
+      at: 0n,
+      fixed: zeros40,
+      dyn: zeros40,
+      narrow: [0, 0, 0, -1],
+      table: sparse,
+      empty: '0x',
+      nul: '0x000000',
+      blank: '',
+      padded: sparseBytes,
+      dense: [0n, 5n, 6n],
+      sum: 0n,
+    });
+    expect(decode(script, seventeen?.data)).toMatchObject({ at: 0n, sum: 27n });
   });
 });

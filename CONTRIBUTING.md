@@ -173,7 +173,11 @@ Releases: see [Releasing](#releasing) below.
   snapshots): the construction templates (`s.newArray`, `s.tuple`, typed zero values, dynamic
   literals) allocate through `emitAlloc` (`codegen/memory.ts`), which zero-fills a block only
   when one of its words would be read before it is written — a word slot left to its zero value;
-  memref slots and literal images are always written, so those blocks skip the fill. Every word
+  memref slots and CODECOPY'd literal images are always written, so those blocks skip the fill.
+  A literal image at least half of whose words are zero is not a data segment at all
+  (`lowerConst` in `codegen/lower/values.ts`): it is a zero-filled block plus one MSTORE per
+  nonzero word, always the smaller code, so an all-zero `uint256[N]` costs no bytecode per
+  element. Every word
   in a slot is
   canonical (`uintN` zero-extended, `intN` sign-extended, `bool` ∈ {0,1}, `bytesN` left-aligned);
   dynamic values and tuples are pointers. Every array — `T[]` and fixed-size `T[N]` alike — is a
