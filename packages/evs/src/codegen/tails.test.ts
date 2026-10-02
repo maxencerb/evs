@@ -27,7 +27,10 @@ const word = (v: bigint): Hex => `0x${(v & ((1n << 256n) - 1n)).toString(16).pad
 const concat = (...parts: readonly Hex[]): Hex => `0x${parts.map((p) => p.slice(2)).join('')}`;
 
 /** A runtime that immediately jumps into the chosen shared tail. */
-function tailRuntime(pick: Exclude<keyof SharedTails, 'memcpy'>, evmVersion: EvmVersion): Hex {
+function tailRuntime(
+  pick: Exclude<keyof SharedTails, 'memcpy' | 'mulDiv'>,
+  evmVersion: EvmVersion,
+): Hex {
   const w = new AsmWriter();
   const tails = createSharedTails(w, { evmVersion });
   w.pushLabel(tails[pick]);

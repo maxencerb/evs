@@ -14,9 +14,10 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EVM_VERSIONS, expectAgreement, panicData } from '../../test/harness/differential.js';
+import type { SourceMap } from '../asm/sourcemap.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
-import { t, type NumericType } from '../core/types.js';
+import { t, type Hex, type NumericType } from '../core/types.js';
 
 const MAX256 = (1n << 256n) - 1n;
 
@@ -224,6 +225,116 @@ describe('mulDiv / mulDivRoundingUp', () => {
       expect(elided).toBeLessThan(guarded);
     });
   }
+
+  /** `k` sites on distinct operands (nothing CSEs), summed; `full` picks mulDiv over mul.div. */
+  const sites = (k: number, full: boolean) =>
+    evscript({ name: 'sites', args: [t.uint256, t.uint256, t.uint256] }, (s, a, b, d) => {
+      const acc = s.let(t.uint256, 0n);
+      for (let i = 0; i < k; i++) {
+        const bi = b.add(BigInt(i));
+        acc.set(acc.get().add(full ? a.mulDiv(bi, d) : a.mul(bi).div(d)));
+      }
+      return s.return({ r: acc.get() });
+    });
+
+  /** How many `@muldiv` subroutines the program carries (its entry label, `muldiv`). */
+  const subroutines = (script: { compile: () => { readonly sourceMap: SourceMap } }): number =>
+    script.compile().sourceMap.labels.filter((l) => l.name === 'muldiv').length;
+
+  test('two or more sites call one shared FullMath subroutine: an extra site costs a few bytes', () => {
+    for (const optimize of [false, true]) {
+      const size = (k: number, full: boolean) =>
+        (compile(sites(k, full), { optimize }).runtimeBytecode.length - 2) / 2;
+      // the mulDiv premium over a.mul(b).div(d), per extra site: the call sequence only (it was
+      // the whole ~111-byte FullMath body when every site inlined it)
+      const perSite = (size(5, true) - size(5, false) - (size(2, true) - size(2, false))) / 3;
+      expect(perSite).toBeLessThanOrEqual(0);
+    }
+    expect(subroutines(sites(2, true))).toBe(1);
+    expect(subroutines(sites(5, true))).toBe(1);
+  });
+
+  test('a single site inlines the body: no call overhead when nothing shares it', () => {
+    expect(subroutines(sites(1, true))).toBe(0);
+    // a fn body is one site however many times it is called …
+    const twice = evscript({ name: 'twice', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      const scale = s.fn('scale', [t.uint256, t.uint256], (x, y) => x.mulDiv(y, 1n << 96n));
+      return s.return({ x: scale(a, b), y: scale(b, a) });
+    });
+    expect(subroutines(twice)).toBe(0);
+    // … and a fn the program never calls is never emitted, so its site does not count
+    const uncalled = evscript({ name: 'uncalled', args: [t.uint256, t.uint256] }, (s, a, b) => {
+      s.fn('unused', [t.uint256, t.uint256], (x, y) => x.mulDiv(y, 3n));
+      return s.return({ q: a.mulDiv(b, 7n) });
+    });
+    expect(subroutines(uncalled)).toBe(0);
+  });
+
+  test('several sites (floor and rounding up, in a fn and a loop) agree with the reference', async () => {
+    const script = evscript(
+      { name: 'many', args: [t.uint256, t.uint256, t.uint256] },
+      (s, a, b, d) => {
+        const half = s.fn('half', [t.uint256, t.uint256], (x, y) => s.mulDivRoundingUp(x, y, 2n));
+        const acc = s.let(t.uint256, 0n);
+        s.for({ type: t.uint256, from: 0n, until: 3n }, (i) => {
+          acc.set(acc.get().wrappingAdd(a.mulDiv(b, d.add(i))));
+        });
+        return s.return({
+          floor: a.mulDiv(b, d),
+          up: s.mulDivRoundingUp(a, b, d),
+          lit: b.mulDiv(a, 1n << 96n),
+          fn: half(a, b),
+          loop: acc.get(),
+        });
+      },
+    );
+    const inputs = triples.filter(([, , d]) => d < MAX256 - 4n);
+    for (const evmVersion of EVM_VERSIONS) {
+      // oxlint-disable-next-line no-await-in-loop -- per-fork labels stay deterministic
+      const outcomes = await expectAgreement(script, inputs, {}, evmVersion);
+      const expected = inputs.map(([a, b, d]) => {
+        // in evaluation order: the loop runs first (it is recorded first), then the return tuple
+        const steps = [
+          ...[0n, 1n, 2n].map((i) => reference(a, b, d + i, false)),
+          reference(a, b, d, false),
+          reference(a, b, d, true),
+          reference(b, a, 1n << 96n, false),
+          reference(a, b, 2n, true),
+        ];
+        const failed = steps.find((r) => r.kind === 'revert');
+        if (failed !== undefined) return failed;
+        const [l0, l1, l2, ...outs] = steps.map((r) => BigInt(r.data));
+        const loop = ((l0 ?? 0n) + (l1 ?? 0n) + (l2 ?? 0n)) & MAX256;
+        return {
+          kind: 'return',
+          data: `0x${[...outs, loop].map((v) => word(v).slice(2)).join('')}`,
+        };
+      });
+      expect(outcomes).toEqual(expected);
+    }
+  });
+
+  test('explainRevert: a Panic raised in the shared subroutine names the sites that call it', async () => {
+    const script = evscript(
+      { name: 'two', args: [t.uint256, t.uint256, t.uint256] },
+      (s, a, b, d) => s.return({ q: s.mulDiv(a, b, 3n), r: s.mulDivRoundingUp(a, b, d) }),
+    );
+    const compiled = compile(script);
+    const ids = compiled.sourceMap.sites
+      .filter((site) => site.detail.startsWith('muldiv'))
+      .map((site) => site.id);
+    expect(ids).toHaveLength(2);
+    const [overflow, divZero] = await expectAgreement(script, [
+      [MAX256, MAX256, 1n], // the first site's quotient overflows inside @muldiv
+      [1n, 2n, 0n], // the second site's zero guard
+    ]);
+    const candidates = (data: Hex) =>
+      compiled.explainRevert(data).candidateSites?.map((site) => site.id);
+    expect(overflow?.data).toBe(panicData(0x11n));
+    expect(candidates(panicData(0x11n))).toEqual(ids);
+    expect(divZero?.data).toBe(panicData(0x12n));
+    expect(candidates(panicData(0x12n))).toEqual(ids.slice(1));
+  });
 
   test('all-literal operands fold; a certain Panic is a CERTAIN_PANIC at recording', () => {
     const script = evscript({ name: 'fold', args: [] }, (s) =>

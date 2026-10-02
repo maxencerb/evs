@@ -293,7 +293,12 @@ Releases: see [Releasing](#releasing) below.
   node (uint256 operands, like `addmod` / `mulmod`), lowered in `codegen/lower/muldiv.ts` to the
   FullMath sequence (a one-word `DIV` fast path when the product's high word is zero) with
   OpenZeppelin `Math.mulDiv`'s Panic codes (0x12 zero denominator, 0x11 quotient overflow);
-  `EvsFullMathReference` is their solc oracle.
+  `EvsFullMathReference` is their solc oracle. A program with one site inlines the ~100-byte
+  sequence; with two or more (counted over the body and the fns it calls) it is emitted once, as
+  the shared `@muldiv` tail subroutine (entry `[a, b, d, up, ret]`, checked at height 5, like
+  `@memcpy`), and each site keeps its zero guard and pushes its return label and rounding flag:
+  ~10 bytes and ~55 gas per site. The fast path stays inside the subroutine: inlining it at the
+  site measured ~50 more bytes per site (~10k deployless gas) to save ~40 gas per evaluation.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`

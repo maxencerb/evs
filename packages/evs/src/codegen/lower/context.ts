@@ -48,6 +48,9 @@ export interface LowerCtx {
   /** Every value an `env address` stmt defines (the script's own address → SELFBALANCE); see
    *  {@link selfAddressValues}. */
   readonly selfAddresses: ReadonlySet<ValueId>;
+  /** Whether `mulDiv` sites call the shared `@muldiv` subroutine (two or more reachable sites)
+   *  rather than inlining it (one); see `lowerMulDiv`. */
+  readonly shareMulDiv: boolean;
 
   /** The innermost enclosing loop, `null` outside one (and at the top of every fn body). Set
    *  through `withLoop` only. */
@@ -63,6 +66,26 @@ export interface LowerCtx {
    * order hint only (see {@link justStored}); it never affects what a template computes.
    */
   lastStore: { value: ValueId; mark: number } | null;
+}
+
+/**
+ * The `mulDiv` / `mulDivRoundingUp` statements the program emits: the main body's and those of
+ * the fns it can call (transitively) — an uncalled fn is never emitted, so its sites must not
+ * tip a one-site program into the shared subroutine.
+ */
+function countMulDivSites(ir: ScriptIr): number {
+  let sites = 0;
+  const reached = new Set<FnId>();
+  const visit = (s: Stmt): void => {
+    if (s.k === 'modarith' && (s.op === 'muldiv' || s.op === 'muldivup')) sites += 1;
+    if (s.k === 'fncall' && !reached.has(s.fn)) {
+      reached.add(s.fn);
+      const fn = ir.fns[s.fn];
+      if (fn !== undefined) walkStmts(fn.body, visit);
+    }
+  };
+  walkStmts(ir.body, visit);
+  return sites;
 }
 
 /**
@@ -100,6 +123,7 @@ export function createLowerCtx(
     ...input,
     consts,
     selfAddresses: selfAddressValues(input.ir),
+    shareMulDiv: countMulDivSites(input.ir) >= 2,
     loop: null,
     dfailStubs: [],
     fnEntries: new Map(),

@@ -11,7 +11,8 @@
  * - `arith.ts` — `bin` (checked and wrapping arithmetic, comparisons, logic, bits, shifts) and
  *   `addmod` / `mulmod`;
  * - `pow.ts` — checked exponentiation (issue #10);
- * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence);
+ * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence, inline for a
+ *   single site, else the shared `@muldiv` subroutine);
  * - `composites.ts` — select / index / arrays, string/bytes `byteAt` / `slice`, tuples, and
  *   `s.encode` / `s.keccak256` / `s.throw` payloads.
  *

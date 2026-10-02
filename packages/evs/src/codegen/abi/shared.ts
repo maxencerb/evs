@@ -25,6 +25,7 @@ export interface SharedTails {
   invalidCalldata: LabelId;
   decodeRevert: LabelId;
   memcpy: LabelId | null; // null on cancun (MCOPY inline)
+  mulDiv: LabelId; // the shared FullMath subroutine (`codegen/lower/muldiv.ts`)
 }
 
 /** Absolute memory offset of a frame slot plus the evs type stored there. */

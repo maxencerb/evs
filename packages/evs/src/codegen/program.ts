@@ -10,8 +10,9 @@
  *   @main       arg decode · body statement templates · return encode RETURN
  *   @fn_*       subroutines — uncalled fns dropped
  *   @dfail_*    per-strict-site decode-fail stubs → @decode_revert
- *   tails       @panic_* / @panic / @decode_revert / @badcd (+ @memcpy pre-cancun) — only
- *               the referenced ones, so they must stay the last code region
+ *   tails       @muldiv (2+ mulDiv sites) / @panic_* / @panic / @decode_revert / @badcd
+ *               (+ @memcpy pre-cancun) — only the referenced ones, so they must stay the
+ *               last code region
  *   INVALID     data segments (dataLabel-addressed blobs, content-deduplicated) — LAST
  *
  * tryCall zero blocks are emitted inline at their call sites (they rejoin the program —
