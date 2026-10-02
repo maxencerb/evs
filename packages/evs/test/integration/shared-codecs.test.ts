@@ -8,7 +8,7 @@
  * - `Shapes.echoGrid(Position[][])` chained through 4 sites (one shared array encoder, one shared
  *   nested-array decoder), and `Shapes.echoNames2(string[2])` through 3;
  * - `Composite.positions` (a static struct) and `Composite.getWithBytes` (a dynamic one) read at
- *   3 sites each, strict and try (shared decoders only);
+ *   3 sites each, strict and try (two shared decoders, plus the two return-record encoders);
  * - `Malformed.echoRaw(bytes)` declared to return a struct: a malformed payload at site k of 3
  *   reverts `EvsDecodeError(site k)`, and a decode-work budget bomb at one of two sites fails that
  *   site alone, strict and try.
@@ -152,7 +152,7 @@ describe.each(['stateOverride', 'deployless'] as const)('shared codecs on anvil 
     expect(await run(compiled, [shapes, names])).toEqual({ last: names });
   });
 
-  test('struct getters read at 3 sites, strict and try (shared decoders)', async () => {
+  test('struct getters read at 3 sites, strict and try (shared decoders and return encoders)', async () => {
     const compiled = evscript({ name: 'getters', args: [t.address] }, (s: any, target: any) => {
       const out: Record<string, unknown> = {};
       for (let i = 0; i < 3; i++) {

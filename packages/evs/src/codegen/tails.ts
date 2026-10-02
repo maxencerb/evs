@@ -32,8 +32,11 @@
  * (a body references `@memcpy` before cancun), and only for the codecs a site calls:
  *
  *   @enc_<k>:        a top-level composite member's encoder; entry [ret, base, src] (3, a static
- *                    member) or [ret, src] (2, a dynamic one), the operands spilled to the codec
- *                    registers; returns via dynamic JUMP to the site's label, checked at 0.
+ *                    member) or [ret, src] (2, a dynamic one). The return address is spilled to
+ *                    RET; a tuple member's base / src are spilled to BASE / SRC (a dynamic
+ *                    tuple's BASE is its tail cursor), while an array member's operands stay on
+ *                    the stack for the array encoder. Returns via dynamic JUMP to the site's
+ *                    label, checked at 0.
  *   @dec_<k>:        a call output's decoder; entry [ret, buf] (2), returns [block, buf] — or
  *                    [0, buf] through the @dec_<k>_fail_<h> funnel (POP rungs, allocated up
  *                    front, placed only when referenced) — to the site's label, checked at 2.

@@ -1033,7 +1033,7 @@ describe('gas of shared calls (in-process EVM)', () => {
     expect(deltas['W8 n=2']).toBeLessThan(0);
     expect(deltas['W8 n=4']).toBeLessThan(0);
     // measured: the wide struct and the nested one are cheaper shared, the struct array pays
-    // ~45 gas per call (its array loops keep their own costs)
+    // ~40 gas per call (203 / 5, 362 / 9: its array loops keep their own costs)
     expect(deltas).toMatchInlineSnapshot(`
       {
         "N3 n=2": -267,

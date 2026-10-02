@@ -339,7 +339,9 @@ Releases: see [Releasing](#releasing) below.
   per run at a peak of `w` memory words. **Encoders** run at height 0 (the statement baseline,
   which the array loops and `@memcpy` require): a static member's site pushes
   `[ret, base, src]`, a dynamic one writes its head word then pushes `[ret, src]`; the body
-  spills them and returns to a label checked at 0. A dynamic tuple body reads its base off the
+  spills the return address to `RET`, a tuple body its base and source to `BASE` / `SRC` too (a
+  dynamic tuple's `BASE` is its tail cursor; an array body leaves them on the stack for the array
+  encoder), and returns to a label checked at 0. A dynamic tuple body reads its base off the
   tail cursor where the inline code re-derives it through the head word at every member, so its
   calls are cheaper than the inline code. **Decoders** enter at `[ret, buf]` (2) and spill the
   return address, so the decode runs at the inline unit's own height 1 (same template budget,
