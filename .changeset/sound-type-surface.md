@@ -1,5 +1,5 @@
 ---
-"@maxencerb/evs": patch
+"@maxencerb/evs": minor
 ---
 
 Tighten four places where the types accepted code that fails at recording or typed a result the runtime does not return. Two of them also reject code that worked before; the migration is noted on each.

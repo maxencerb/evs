@@ -190,8 +190,8 @@ emits exactly four panic codes:
 
 | Code | Meaning (solc semantics) | Emitted by |
 | --- | --- | --- |
-| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`pow`; signed `div` (the minimum value divided by −1); range-checked conversions (narrowing `toUint`/`toInt`, `uintN` to an `intM` with M ≤ N, any `intN` to a `uint`, `asAddress` on a `uint256` or `bytes32`) |
-| `0x12` | Division or modulo by zero | `div`/`mod`/`addmod`/`mulmod` with a runtime zero divisor or modulus |
+| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`pow`; signed `div` (the minimum value divided by −1); `mulDiv`/`mulDivRoundingUp` when the quotient exceeds `uint256`; range-checked conversions (narrowing `toUint`/`toInt`, `uintN` to an `intM` with M ≤ N, any `intN` to a `uint`, `asAddress` on a `uint256` or `bytes32`) |
+| `0x12` | Division or modulo by zero | `div`/`mod`/`addmod`/`mulmod`/`mulDiv`/`mulDivRoundingUp` with a runtime zero divisor, modulus or denominator |
 | `0x32` | Array index out of bounds | `Expr.at(i)` on arrays; `MutArray` `get`/`set`; `byteAt(i)` and `slice(start, end)` on `string`/`bytes` |
 | `0x41` | Allocation too large | `s.newArray` with a runtime length of 2^32 or more |
 
@@ -199,7 +199,8 @@ emits exactly four panic codes:
 neither do free conversions: widenings, `uintN` to a wider `intM`, the `asUint256` /
 `asBytes32` reinterprets, `asUint160`, `asAddress` on a `uint160`, and the same-width `asUint` /
 `asBytesN`. Folded literals remove checks too: a division by a nonzero literal has
-no zero check, a signed division by a literal other than −1 cannot overflow, and `pow` with a
+no zero check (for `mulDiv`, a nonzero literal denominator drops the `0x12` check but not the
+`0x11` one), a signed division by a literal other than −1 cannot overflow, and `pow` with a
 literal exponent of 0 or 1 (or a literal base of 0, 1 or −1) is unchecked.
 
 Callee reverts bubble through the script byte-exactly, so any other solc panic code can still

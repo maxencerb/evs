@@ -985,55 +985,39 @@ changes the script's *own* caller (`s.env('caller')`), never what the targets se
 [execution modes](/guides/execution/).
 :::
 
-## Reading what has no verb
+## Native balances and legacy metadata
 
-Some reads have no builder verb of their own; these are the patterns that cover them today.
+Two reads need less than they seem to: an ETH balance needs no contract call at all, and legacy
+`bytes32` metadata needs no client-side decoding step.
 
 ### Native ETH balances
 
-There is no `s.env` kind for an account's ETH balance (the `BALANCE` opcode). Read it through
-[Multicall3](https://www.multicall3.com/)'s `getEthBalance`, a `view` function deployed at the same
-address on most EVM chains, with an ordinary `s.read`:
+An account's ETH balance is not a contract call: [`s.balance(address)`](/reference/builder/#sbalance--scodesize--scodehash)
+reads it with the `BALANCE` opcode, on any chain and with no target contract. In a batch loop:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
 
-const MULTICALL3 = '0xcA11bde05977b3631167028862bE2a173976CA11';
-const multicall3Abi = [
-  {
-    type: 'function',
-    name: 'getEthBalance',
-    stateMutability: 'view',
-    inputs: [{ name: 'addr', type: 'address' }],
-    outputs: [{ name: 'balance', type: 'uint256' }],
-  },
-] as const;
-
 const nativeBalances = evscript({ name: 'nativeBalances', args: [t.array(t.address)] }, (s, wallets) => {
   const balances = s.newArray(t.uint256, wallets.length());
   s.forEach(wallets, (wallet, i) => {
-    balances.set(
-      i,
-      s.read({ address: MULTICALL3, abi: multicall3Abi, functionName: 'getEthBalance', args: [wallet] }),
-    );
+    balances.set(i, s.balance(wallet));
   });
   return s.return({ balances });
 });
 ```
 
-Check that the chain you target has Multicall3 at that address; the call is a plain `STATICCALL`,
-so a missing contract shows up as `EvsDecodeError` (or `success = false` under `s.tryRead`).
-
 ### Legacy `bytes32` metadata
 
 A few early tokens (MKR, SAI) return `bytes32` from `name()` and `symbol()` instead of `string`.
-A script cannot turn a `bytes32` into a `string`, so read both shapes with `s.tryRead` and pick
-on the client. Reading a real `string` through the `string` ABI succeeds; reading a `bytes32`
-through it fails to decode (the word is not a valid offset), so `success` tells the two apart:
+Reading a real `string` through the `string` ABI succeeds; reading a `bytes32` through it fails to
+decode (the word is not a valid offset), so `s.tryRead`'s `success` tells the two apart. When it
+is false, read the same function through a `bytes32` ABI and convert the word in-script with
+`asString()`, which drops its trailing zero padding:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi, hexToString, type Hex } from 'viem';
+import { erc20Abi } from 'viem';
 
 const bytes32MetadataAbi = [
   {
@@ -1047,16 +1031,17 @@ const bytes32MetadataAbi = [
 
 const tokenSymbol = evscript({ name: 'tokenSymbol', args: [t.address] }, (s, token) => {
   const asString = s.tryRead({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  const asBytes32 = s.tryRead({ address: token, abi: bytes32MetadataAbi, functionName: 'symbol' });
-  return s.return({ ok: asString.success, symbol: asString.value, raw: asBytes32.value });
+  const symbol = s.let(t.string, asString.value);
+  s.if(asString.success.not(), () => {
+    const raw = s.tryRead({ address: token, abi: bytes32MetadataAbi, functionName: 'symbol' });
+    symbol.set(raw.value.asString()); // 'MKR' + 29 zero bytes → 'MKR'
+  });
+  return s.return({ symbol: symbol.get() });
 });
-
-// on the client, after readContract({ ...tokenSymbol.compile().toViem(), … })
-function symbolOf(result: { ok: boolean; symbol: string; raw: Hex }): string {
-  // `size: 32` trims the trailing NUL bytes of the padded word
-  return result.ok ? result.symbol : hexToString(result.raw, { size: 32 });
-}
 ```
+
+The `bytes32` read only runs for the tokens whose `string` read failed; see
+[the legacy-symbol pattern](/examples/patterns/#legacy-bytes32-symbol).
 
 ## When to use which
 
