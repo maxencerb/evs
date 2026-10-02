@@ -34,7 +34,7 @@ import { encodedPushWidth, type EvmVersion } from '../asm/ops.js';
 import { MAX_TEMPLATE_DEPTH } from '../asm/verify.js';
 import { EvsCompileError, EvsInternalError } from '../core/errors.js';
 import { abiParamToType, typeToAbiParam, type NamedType } from '../core/types.js';
-import { callOutputs, type ScriptIr } from '../ir/nodes.js';
+import { callOutputs, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import {
   emitEncodeBlock,
   emitSharedEncodeBody,
@@ -209,6 +209,14 @@ const CHEAP_DECODE_READS_AT_OFFSET = 5;
  * words, is charged from the program's own `frameEnd`: one byte to every key whose words would
  * widen it (conservative: the push grows once). A key whose dry run fails to compile (a type too
  * deep for the stack) stays inline, and its site reports the error as it always did.
+ *
+ * Compile time: a program without a codec candidate (`candidates: false`, from the caller's
+ * {@link mayUseCodec} scan) skips the census; a key measures only the failure modes its sites
+ * use, rejects itself once its inline size alone cannot pay even the cheapest call and an empty
+ * body, measures the registers (`measureFrameEnd`) only past that, and runs the peephole on its
+ * fragments only once its pre-peephole saving passes. None of this changes a decision: under
+ * {@link setCodecPlanStrict} every plan is checked against the exhaustive planner, which
+ * measures every fragment of every key with `n ≥ 2`.
  */
 export function planCodecs(
   ir: ScriptIr,
@@ -217,49 +225,136 @@ export function planCodecs(
     readonly optimize: boolean;
     /** The program's static frame end (what its prologue pushes without registers). */
     readonly frameEnd: number;
-    /** The default allocator's frame end (≥ `frameEnd`), when `optimize` packs the frame. */
+    /** The default allocator's frame end (≥ `frameEnd`), when `optimize` packs the frame;
+     *  called at most once, and only when a key gets past its early reject. */
     readonly measureFrameEnd?: () => number;
+    /** `false` when no statement or return {@link mayUseCodec}: the plan is then empty. */
+    readonly candidates?: boolean;
+    /** @internal Tests: measure every fragment of every key (the reference planner). */
+    readonly exhaustive?: boolean;
   },
 ): CodecPlan {
-  const regs = codecRegisters(opts.measureFrameEnd?.() ?? opts.frameEnd);
+  let plan: CodecPlan;
+  if (opts.candidates === false) {
+    // the caller's scan is a superset of the census: in tests, hold it to that
+    if (strictPlan && census(ir).size > 0) {
+      throw internal('a codec use the candidate scan (mayUseCodec) did not see');
+    }
+    plan = EMPTY_CODEC_PLAN;
+  } else {
+    plan = decide(ir, opts, opts.exhaustive === true);
+    if (strictPlan && opts.exhaustive !== true) {
+      const reference = decide(ir, opts, true);
+      if (!samePlan(plan, reference)) {
+        throw internal('the planner decided otherwise than its exhaustive reference');
+      }
+    }
+  }
+  return planTransform === null ? plan : planTransform(plan);
+}
+
+/**
+ * Whether statement `s` (anywhere in `ir`) may make the census count a codec use: an `s.encode` /
+ * `s.throw` payload or a call with an ABI tuple or array arg, output or simulate output. A
+ * superset of the census's predicates (a word array counts too), cheap enough to fold into a scan
+ * the lowering already makes; with {@link returnsMayUseCodec} it gives `planCodecs`' `candidates`.
+ */
+export function mayUseCodec(ir: ScriptIr, s: Stmt): boolean {
+  if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
+    return s.args.some((v) => {
+      const type = ir.values[v]?.type;
+      return type === undefined || typeof type !== 'string' || type.endsWith(']');
+    });
+  }
+  if (s.k !== 'call') return false;
+  if (s.fnAbi.inputs.some(isCompositeParam)) return true;
+  if (s.kind === 'simulate') return s.fnAbi.outputs.length > 0;
+  return callOutputs(s).some(isCompositeParam);
+}
+
+/** Whether the return record may hold a codec use (see {@link mayUseCodec}). */
+export function returnsMayUseCodec(ir: ScriptIr): boolean {
+  return ir.returns.some((r) => typeof r.type !== 'string' || r.type.endsWith(']'));
+}
+
+/** An ABI param that is a tuple or an array (the census's composite candidates, and more). */
+function isCompositeParam(p: { readonly type: string }): boolean {
+  return p.type.startsWith('tuple') || p.type.endsWith(']');
+}
+
+/**
+ * The smallest call a use can make: `PUSH2 @ret PUSH2 @entry JUMP @ret:` (an encoder use also
+ * pushes its operands, a failing decoder's checks its result). With an empty body and no wider
+ * push, it bounds a key's saving from above before its call and body are measured.
+ */
+const MIN_CALL_BYTES = 8;
+
+/** {@link planCodecs}' decisions; `exhaustive` measures everything, in the original order. */
+function decide(
+  ir: ScriptIr,
+  opts: Parameters<typeof planCodecs>[1],
+  exhaustive: boolean,
+): CodecPlan {
+  let regs: CodecRegisters | null = null;
+  const regsOf = (): CodecRegisters =>
+    (regs ??= codecRegisters(opts.measureFrameEnd?.() ?? opts.frameEnd));
   const pushWidth = (n: number): number => encodedPushWidth(BigInt(n), opts.evmVersion);
   const keys = new Map<string, PlannedKey>();
   let words = 0;
   for (const [key, use] of census(ir)) {
-    // the prologue pushes `frameEnd + 32·words`: a wider push than the inline program's costs 1
-    const widen =
-      pushWidth(opts.frameEnd + 32 * registerWords(use.unit)) > pushWidth(opts.frameEnd) ? 1 : 0;
     const cheap = isCheap(use.unit);
     const groups = [...use.groups].filter(([, g]) => cheap || !g.hot);
     const n = groups.reduce((sum, [, g]) => sum + g.count, 0);
     if (n < 2) continue;
-    let sizes: UnitSizes;
+    const rejects = (saving: number): boolean =>
+      saving < SHARE_MIN_SAVING || (!cheap && saving < SHARE_MIN_PER_USE * n);
+    // the prologue pushes `frameEnd + 32·words`: a wider push than the inline program's costs 1
+    const widen =
+      pushWidth(opts.frameEnd + 32 * registerWords(use.unit)) > pushWidth(opts.frameEnd) ? 1 : 0;
+    const m = new KeyMeasure(key, use.unit, opts, regsOf);
+    let canFail: boolean;
     try {
-      sizes = measureUnit(key, use.unit, regs, opts);
+      if (exhaustive) m.measureAll();
+      // the best case: every call the smallest one, an empty body
+      const best = groups.reduce(
+        (sum, [, g]) => sum + g.count * (m.inline(g.mode).pre - MIN_CALL_BYTES),
+        0,
+      );
+      if (!exhaustive && rejects(best)) continue;
+      const saving = (at: 'pre' | 'post'): number =>
+        groups.reduce(
+          (sum, [, g]) => sum + g.count * (m.inline(g.mode)[at] - m.call(g.mode)[at]),
+          0,
+        ) -
+        m.body()[at] -
+        widen;
+      if (rejects(saving('pre'))) continue;
+      if (opts.optimize && saving('post') <= 0) continue;
+      canFail = m.canFail();
     } catch (error) {
       if (error instanceof EvsCompileError) continue;
       throw error;
     }
-    const saving = (at: 'pre' | 'post'): number =>
-      groups.reduce(
-        (sum, [, g]) => sum + g.count * (sizes.inline[g.mode][at] - sizes.call[g.mode][at]),
-        0,
-      ) -
-      sizes.body[at] -
-      widen;
-    const pre = saving('pre');
-    if (pre < SHARE_MIN_SAVING || (!cheap && pre < SHARE_MIN_PER_USE * n)) continue;
-    if (opts.optimize && saving('post') <= 0) continue;
     keys.set(key, {
       key,
       unit: use.unit,
       groups: new Map(groups.map(([site, g]) => [site, g.count])),
-      canFail: sizes.canFail,
+      canFail,
     });
     words = Math.max(words, registerWords(use.unit));
   }
-  const plan = keys.size === 0 ? EMPTY_CODEC_PLAN : { keys, words };
-  return planTransform === null ? plan : planTransform(plan);
+  return keys.size === 0 ? EMPTY_CODEC_PLAN : { keys, words };
+}
+
+/** Whether two plans share the same keys, the same way. */
+function samePlan(a: CodecPlan, b: CodecPlan): boolean {
+  if (a.words !== b.words || a.keys.size !== b.keys.size) return false;
+  for (const [key, k] of a.keys) {
+    const o = b.keys.get(key);
+    if (o === undefined || o.canFail !== k.canFail || o.groups.size !== k.groups.size) return false;
+    for (const [site, count] of k.groups) if (o.groups.get(site) !== count) return false;
+  }
+  return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -320,11 +415,12 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
     if (info === undefined) throw internal(`census: unknown ValueId ${v}`);
     return typeToAbiParam('', info.type);
   };
-  const sites = new Set<number>();
+  const seen: boolean[] = []; // by site id (small non-negative integers)
   let ambiguous = false;
   walkEmittedStmts(ir, (s, hot) => {
-    if (sites.has(s.site)) ambiguous = true;
-    sites.add(s.site);
+    if (seen[s.site] === true) ambiguous = true;
+    seen[s.site] = true;
+    if (!mayUseCodec(ir, s)) return; // a cheap superset: no layout built for a word-only site
     if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
       encodeBlock(s.args.map(valueParam), s.site, hot);
       return;
@@ -351,11 +447,13 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
       use(retOutputUnit(layout, offsets[j] ?? 0, budget), s.site, s.mode, hot);
     });
   });
-  encodeBlock(
-    ir.returns.map((r) => typeToAbiParam(r.name, r.type)),
-    RETURNS_SITE,
-    false,
-  );
+  if (returnsMayUseCodec(ir)) {
+    encodeBlock(
+      ir.returns.map((r) => typeToAbiParam(r.name, r.type)),
+      RETURNS_SITE,
+      false,
+    );
+  }
   return ambiguous ? new Map() : keys;
 }
 
@@ -363,21 +461,11 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
 // measurement (dry runs of the real emitters)
 // ---------------------------------------------------------------------------
 
-/** A fragment's size before and after the peephole (`post` = `pre` without `optimize`). */
+/** A fragment's size before and after the peephole (`post` = `pre` without `optimize`; with it,
+ *  the peephole runs on the first read of `post`). */
 interface Sizes {
   readonly pre: number;
   readonly post: number;
-}
-
-interface UnitSizes {
-  /** One use, inlined, by the site's failure mode. */
-  readonly inline: Readonly<Record<UseMode, Sizes>>;
-  /** One use, calling the body (and checking its result), by the site's failure mode. */
-  readonly call: Readonly<Record<UseMode, Sizes>>;
-  /** The body. */
-  readonly body: Sizes;
-  /** Whether the body can fail (a decoder whose funnel has a rung). */
-  readonly canFail: boolean;
 }
 
 type MeasureOpts = { readonly evmVersion: EvmVersion; readonly optimize: boolean };
@@ -399,8 +487,15 @@ function fragmentSize(
   emit(w, tails);
   const nodes = w.nodes();
   const pre = codeSize(nodes, opts.evmVersion) - 1;
-  const post = opts.optimize ? codeSize(evsPeephole(nodes), opts.evmVersion) - 1 : pre;
-  return { pre, post };
+  if (!opts.optimize) return { pre, post: pre };
+  let post: number | undefined;
+  return {
+    pre,
+    get post(): number {
+      post ??= codeSize(evsPeephole(nodes), opts.evmVersion) - 1;
+      return post;
+    },
+  };
 }
 
 /** A hook planning exactly the use of `key` at site 0: measures the call sequence. */
@@ -416,61 +511,120 @@ function siteFail(w: AsmWriter, mode: UseMode): DecodeFail {
   return makeDecodeFail(w, stub, mode === 'try', 'call', w.newLabel());
 }
 
-/** Measures one use of `unit` inline, one call of it, and its body. */
-function measureUnit(
-  key: string,
-  unit: CodecUnit,
-  regs: CodecRegisters,
-  opts: MeasureOpts,
-): UnitSizes {
-  const evm = { evmVersion: opts.evmVersion };
-  if (unit.dir === 'enc') {
-    // the use is the lone member of an encode block, read at the cheapest cost a site can have
-    const member: NamedType[] = [layoutToNamed(unit.layout)];
-    const encodeUse = (w: AsmWriter, tails: SharedTails): void => {
-      emitEncodeBlock(
-        w,
-        member,
-        () => {
-          w.push(FRAME_BASE);
-          w.op('MLOAD');
-        },
-        () => {
-          w.push(FREE_PTR);
-          w.op('MLOAD');
-        },
-        tails,
-        evm,
-      );
-    };
-    const inline = fragmentSize(opts, 0, encodeUse);
-    const call = fragmentSize(opts, 0, encodeUse, probe(key, unit, false, regs));
-    return {
-      inline: { strict: inline, try: inline },
-      call: { strict: call, try: call },
-      body: fragmentSize(opts, 0, (w, tails) =>
-        emitSharedEncodeBody(w, w.newLabel(), 'enc', unit.kind, unit.layout, regs, tails, evm),
-      ),
-      canFail: false,
-    };
+/**
+ * The dry-run sizes of one key, each fragment measured on first request: one use inlined and one
+ * call of the body by the site's failure mode (an encoder's are the same in both), and the body.
+ * A decoder's call is measured after its body, which tells whether the call checks for a failure.
+ */
+class KeyMeasure {
+  readonly #key: string;
+  readonly #unit: CodecUnit;
+  readonly #opts: MeasureOpts;
+  readonly #regs: () => CodecRegisters;
+  readonly #inline = new Map<UseMode, Sizes>();
+  readonly #call = new Map<UseMode, Sizes>();
+  #body: { readonly sizes: Sizes; readonly canFail: boolean } | null = null;
+
+  constructor(key: string, unit: CodecUnit, opts: MeasureOpts, regs: () => CodecRegisters) {
+    this.#key = key;
+    this.#unit = unit;
+    this.#opts = opts;
+    this.#regs = regs;
   }
-  let canFail = false;
-  const body = fragmentSize(opts, 0, (w) => {
-    canFail = emitDecoderBody(w, w.newLabel(), 'dec', unit, regs, evm);
-  });
-  const share = probe(key, unit, canFail, regs);
-  const measure = (mode: UseMode): { inline: Sizes; call: Sizes } => ({
-    inline: fragmentSize(opts, 1, (w) => emitDecodeUnitInline(w, unit, siteFail(w, mode), evm)),
-    call: fragmentSize(opts, 1, (w) => share.decode(w, key, siteFail(w, mode), 'decode')),
-  });
-  const strict = measure('strict');
-  const tried = measure('try');
-  return {
-    inline: { strict: strict.inline, try: tried.inline },
-    call: { strict: strict.call, try: tried.call },
-    body,
-    canFail,
-  };
+
+  /** Every fragment, in the order the planner first measured them, post sizes included. */
+  measureAll(): void {
+    const all: Sizes[] = [];
+    if (this.#unit.dir === 'dec') all.push(this.body());
+    for (const mode of ['strict', 'try'] as const) all.push(this.inline(mode), this.call(mode));
+    if (this.#unit.dir === 'enc') all.push(this.body());
+    for (const s of all) void s.post;
+  }
+
+  inline(mode: UseMode): Sizes {
+    const unit = this.#unit;
+    // an encoder use is the same in both modes
+    const at = unit.dir === 'enc' ? 'strict' : mode;
+    let sizes = this.#inline.get(at);
+    if (sizes === undefined) {
+      sizes =
+        unit.dir === 'enc'
+          ? fragmentSize(this.#opts, 0, (w, tails) => this.#encodeUse(w, tails))
+          : fragmentSize(this.#opts, 1, (w) =>
+              emitDecodeUnitInline(w, unit, siteFail(w, at), this.#evm()),
+            );
+      this.#inline.set(at, sizes);
+    }
+    return sizes;
+  }
+
+  call(mode: UseMode): Sizes {
+    const unit = this.#unit;
+    const at = unit.dir === 'enc' ? 'strict' : mode;
+    let sizes = this.#call.get(at);
+    if (sizes === undefined) {
+      const share = probe(this.#key, unit, this.canFail(), this.#regs());
+      sizes =
+        unit.dir === 'enc'
+          ? fragmentSize(this.#opts, 0, (w, tails) => this.#encodeUse(w, tails), share)
+          : fragmentSize(this.#opts, 1, (w) =>
+              share.decode(w, this.#key, siteFail(w, at), 'decode'),
+            );
+      this.#call.set(at, sizes);
+    }
+    return sizes;
+  }
+
+  body(): Sizes {
+    return this.#measureBody().sizes;
+  }
+
+  /** Whether the body can fail (a decoder whose funnel has a rung). */
+  canFail(): boolean {
+    return this.#unit.dir === 'dec' && this.#measureBody().canFail;
+  }
+
+  #measureBody(): { readonly sizes: Sizes; readonly canFail: boolean } {
+    if (this.#body !== null) return this.#body;
+    const unit = this.#unit;
+    const regs = this.#regs();
+    const evm = this.#evm();
+    let canFail = false;
+    const sizes =
+      unit.dir === 'enc'
+        ? fragmentSize(this.#opts, 0, (w, tails) =>
+            emitSharedEncodeBody(w, w.newLabel(), 'enc', unit.kind, unit.layout, regs, tails, evm),
+          )
+        : fragmentSize(this.#opts, 0, (w) => {
+            canFail = emitDecoderBody(w, w.newLabel(), 'dec', unit, regs, evm);
+          });
+    this.#body = { sizes, canFail };
+    return this.#body;
+  }
+
+  /** The use as the lone member of an encode block, its operands read at the cheapest cost a
+   *  site can have. */
+  #encodeUse(w: AsmWriter, tails: SharedTails): void {
+    if (this.#unit.dir !== 'enc') throw internal('an encode use of a decoder unit');
+    emitEncodeBlock(
+      w,
+      [layoutToNamed(this.#unit.layout)],
+      () => {
+        w.push(FRAME_BASE);
+        w.op('MLOAD');
+      },
+      () => {
+        w.push(FREE_PTR);
+        w.op('MLOAD');
+      },
+      tails,
+      this.#evm(),
+    );
+  }
+
+  #evm(): { evmVersion: EvmVersion } {
+    return { evmVersion: this.#opts.evmVersion };
+  }
 }
 
 /** The inline code of a decoder unit at its site, `[buf] → [block, buf]`. */

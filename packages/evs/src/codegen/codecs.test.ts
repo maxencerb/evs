@@ -11,6 +11,7 @@
 import { encodeFunctionData, parseAbi } from 'viem';
 import { describe, expect, test, vi } from 'vite-plus/test';
 
+import { plannerAgainstReference } from '../../test/harness/codec-plan.js';
 import type { AnyScript } from '../../test/harness/differential.js';
 import { execRuntime } from '../../test/harness/evm.js';
 import { layoutOfType } from '../abi/layout.js';
@@ -931,6 +932,26 @@ describe('growth for n sites (the issue #95 benchmark)', () => {
         ],
       }
     `);
+  });
+
+  test('the planner shortcuts decide exactly as the exhaustive planner', () => {
+    // (every compile under the strict test setup also checks this; here on the whole table)
+    for (const [label, ty] of Object.entries(T)) {
+      for (const evmVersion of ['cancun', 'shanghai', 'paris'] as const) {
+        for (const optimize of [false, true]) {
+          for (const n of NS) {
+            const script = chain(`c${n}`, ty, GETTER[label as keyof typeof T], n);
+            const { fast, reference } = plannerAgainstReference(script.ir, evmVersion, optimize);
+            expect(fast, `${label} n=${n} ${evmVersion} optimize=${optimize}`).toEqual(reference);
+          }
+        }
+      }
+    }
+    // a program with no tuple or array anywhere skips the census
+    const words = evscript({ name: 'words', args: [t.address] }, (s: any, a: any) =>
+      s.return({ v: s.read({ address: a, abi, functionName: 'word', args: [1n] }) }),
+    );
+    expect(plannerAgainstReference(words.ir, 'cancun', true).candidates).toBe(false);
   });
 
   test('encode-only and decode-only chains', () => {

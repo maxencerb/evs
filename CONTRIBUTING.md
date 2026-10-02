@@ -368,8 +368,18 @@ Releases: see [Releasing](#releasing) below.
   measured on `(uint64 ×k, string)`). A key whose dry run throws stays inline, so a too-deep
   type reports its own site's `UNSUPPORTED_V0`. The registers are measured at the default
   allocator's frame end, so `optimize` decides alike; the prologue's frame-end push, which the
-  register words can widen by a byte, is charged from the program's own frame end. A program where nothing pays is
-  byte-identical to the inline lowering. **Drift**: the hook counts the calls each statement
+  register words can widen by a byte, is charged from the program's own frame end. A program
+  where nothing pays is byte-identical to the inline lowering. **Compile time**: most programs
+  share nothing, so the planner stays off their path. `lowerProgram`'s simulate scan also asks
+  `mayUseCodec` (an ABI tuple or array anywhere: a cheap superset of the census), and without a
+  candidate the census is skipped; the census itself builds layouts only for those statements; a
+  key measures only the failure modes its sites use, rejects itself as soon as its inline size
+  cannot pay even an 8-byte call and an empty body, and only then measures the registers (the
+  default allocator's frame end is laid out lazily) and its call and body; the peephole runs on
+  its fragments only once the pre-peephole saving passes. None of these shortcuts may change a
+  decision: under the strict test setup every plan is also computed by the exhaustive planner
+  (`exhaustive: true`, every fragment of every key measured) and compared, and a program the
+  candidate scan skips must have an empty census. **Drift**: the hook counts the calls each statement
   makes and checks each decoder body's `canFail` against the plan; a mismatch is a
   `CodecPlanDrift`, which `compile()` turns into a second lowering with sharing off (only ever a
   missed saving). Measured on the issue's benchmark (`get(T) returns (T)` chained n times,

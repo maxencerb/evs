@@ -17,6 +17,7 @@
 import type { Abi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
+import { plannerAgainstReference } from '../test/harness/codec-plan.js';
 import { assemble } from './asm/assembler.js';
 import type { EvmVersion } from './asm/ops.js';
 import { evscript } from './builder/script.js';
@@ -465,7 +466,7 @@ describe('optimized twin (optimize: true) is byte-stable (issue #39)', () => {
   }
 });
 
-describe('codec sharing never grows a program (issue #95)', () => {
+describe('codec sharing never grows a program, and its planner shortcuts decide alike (issue #95)', () => {
   for (const c of [...BYTE_STABLE, ...CUSTOM_ERRORS, ...ARRAY_DECODE]) {
     // oxlint-disable-next-line vitest/valid-title -- parametrized over the case table
     test(c.name, () => {
@@ -483,6 +484,9 @@ describe('codec sharing never grows a program (issue #95)', () => {
           ...(optimize ? { peephole: evsPeephole } : {}),
         }).bytecode;
         expect((bytesOf(c, optimize).length - 2) / 2).toBeLessThanOrEqual(inline.length);
+        // the planner's compile-time shortcuts take the exhaustive planner's decisions
+        const { fast, reference } = plannerAgainstReference(script.ir, evmVersion, optimize);
+        expect(fast).toEqual(reference);
       }
     });
   }

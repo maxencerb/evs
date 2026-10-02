@@ -41,7 +41,14 @@ import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
 import { RETURNS_SITE } from './codec-keys.js';
-import { CodecShare, codecRegisters, EMPTY_CODEC_PLAN, planCodecs } from './codecs.js';
+import {
+  CodecShare,
+  codecRegisters,
+  EMPTY_CODEC_PLAN,
+  mayUseCodec,
+  planCodecs,
+  returnsMayUseCodec,
+} from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -115,6 +122,18 @@ export function lowerProgram(
   // (issue #41); the default keeps one slot per value so the default bytes never move.
   const optimize = opts.optimize ?? false;
   const frame = layoutFrames(ir, { optimize });
+
+  // One scan of the body and ALL recorded fns: does any `s.simulate` site exist (the simulate
+  // trampoline below), and may any statement use a shared codec (the planner's early exit)?
+  let hasSimulate = false;
+  let codecCandidates = returnsMayUseCodec(ir);
+  const scan = (s: Stmt): void => {
+    if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
+    if (!codecCandidates && mayUseCodec(ir, s)) codecCandidates = true;
+  };
+  walkStmts(ir.body, scan);
+  for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, scan);
+
   // shared codec subroutines: measured against the default allocator's frame (the larger one),
   // so both allocators take the same decisions
   const plan =
@@ -124,6 +143,7 @@ export function lowerProgram(
           evmVersion: opts.evmVersion,
           optimize,
           frameEnd: frame.frameEnd,
+          candidates: codecCandidates,
           ...(optimize
             ? { measureFrameEnd: () => layoutFrames(ir, { optimize: false }).frameEnd }
             : {}),
@@ -171,16 +191,10 @@ export function lowerProgram(
   w.op('MSTORE', { note: 'free-ptr init' });
 
   // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
-  // bytecode carries a second internal entrypoint reached by a reserved selector. Detect it across
-  // the body and ALL recorded fns (a simulate inside an uncalled, dropped fn just leaves the
-  // trampoline unreachable — a few dozen bytes; unlike the shared tails, which are emitted only
-  // when referenced, the trampoline is not reference-tracked).
-  let hasSimulate = false;
-  const markSimulate = (s: Stmt): void => {
-    if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
-  };
-  walkStmts(ir.body, markSimulate);
-  for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
+  // bytecode carries a second internal entrypoint reached by a reserved selector. Detected across
+  // the body and ALL recorded fns by the scan above (a simulate inside an uncalled, dropped fn
+  // just leaves the trampoline unreachable — a few dozen bytes; unlike the shared tails, which
+  // are emitted only when referenced, the trampoline is not reference-tracked).
   const trampoline = hasSimulate ? w.newLabel(SIMULATE_TRAMPOLINE_LABEL) : null;
 
   // -- dispatcher: size floor, selector match, fallback EvsInvalidCalldata --------
