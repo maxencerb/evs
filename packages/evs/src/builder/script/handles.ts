@@ -11,6 +11,7 @@ import type {
   StringType,
   NamedType,
   ArrayType,
+  OuterArraySize,
   PeelArraySuffix,
 } from '../../core/types.js';
 import type { AllMembersNamed } from '../../core/types/derive.js';
@@ -120,9 +121,21 @@ type PositionalLiteral<comps extends readonly NamedType[]> = {
 
 /** A literal of the tuple-ARRAY type `t` whose elements may be staged: a JS array of the
  *  one-suffix-peeled element's {@link IntoMember} (a {@link StructLiteral} or {@link Tuple} handle
- *  for a `tuple[]`, a row literal or handle for a `tuple[][]`). The exact length of a fixed
- *  `tuple[N]` is checked at recording, as for a word `T[N]` literal (`LitOf`). */
-export type TupleArrayLiteral<t extends TupleType> = readonly IntoMember<PeelTupleArray<t>>[];
+ *  for a `tuple[]`, a row literal or handle for a `tuple[][]`). A fixed outer `[N]` suffix takes
+ *  exactly N elements (a readonly N-tuple, as abitype's host arm types it), so a wrong-length
+ *  `tuple[N]` literal is a compile error, not only a recording-time `TYPE_MISMATCH`. */
+export type TupleArrayLiteral<t extends TupleType> =
+  OuterArraySize<t['type']> extends `${infer n extends number}`
+    ? FixedLengthLiteral<IntoMember<PeelTupleArray<t>>, n>
+    : readonly IntoMember<PeelTupleArray<t>>[];
+
+/** A readonly tuple of exactly `n` `e`s (tail-recursive; abitype's `Tuple` builds its fixed-array
+ *  host type the same way). */
+type FixedLengthLiteral<
+  e,
+  n extends number,
+  acc extends readonly e[] = readonly [],
+> = acc['length'] extends n ? acc : FixedLengthLiteral<e, n, readonly [e, ...acc]>;
 
 /** What an ARRAY-typed slot accepts: an {@link Expr}/literal of the array type, or a bare
  *  {@link MutArray} handle (issue #5 ask #5 — runtime `typesEqual` enforces the element match,

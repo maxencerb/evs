@@ -2536,6 +2536,29 @@ describe('checklist: tuple literals', () => {
         /unknown member "fee"/,
       );
     });
+
+    test('a tuple[N] literal of the wrong length → TYPE_MISMATCH (the types reject it too)', () => {
+      const fixedAbi = [
+        {
+          type: 'function',
+          name: 'pair',
+          stateMutability: 'view',
+          inputs: [{ ...COLLECT, type: 'tuple[2]' }],
+          outputs: [{ name: '', type: 'uint256' }],
+        },
+      ] as const satisfies Abi;
+      const pairOf = (n: number) =>
+        evscript({ name: 'pair', args: [t.uint256, t.address] }, (s, id, who) => {
+          const c = { tokenId: id, recipient: who, amount0Max: 1n, amount1Max: 2n };
+          const args = [Array.from({ length: n }, () => c)] as never;
+          return s.return({
+            v: s.read({ address: who, abi: fixedAbi, functionName: 'pair', args }),
+          });
+        });
+      expect(() => pairOf(2)).not.toThrow();
+      expectEvs(() => pairOf(3), EvsTypeError, 'TYPE_MISMATCH', /tuple\[2\]/);
+      expectEvs(() => pairOf(1), EvsTypeError, 'TYPE_MISMATCH', /tuple\[2\]/);
+    });
   });
 
   test('members are read from own properties only (Object.prototype names zero-fill)', () => {

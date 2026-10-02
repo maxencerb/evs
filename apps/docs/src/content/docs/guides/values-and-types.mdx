@@ -358,7 +358,7 @@ const literals = evscript({ name: 'literals', args: [] }, (s) => {
 });
 ```
 
-**Pass a `tuple[]` to a call.** A `'tuple[]'` argument accepts an array handle (`arr.expr()`) or a plain `readonly Struct[]` literal:
+**Pass a `tuple[]` to a call.** A `'tuple[]'` argument accepts an array handle (`arr.expr()`) or an array literal whose elements are struct literals (runtime members allowed) or `Tuple` handles; a fixed `'tuple[N]'` literal takes exactly N elements:
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';

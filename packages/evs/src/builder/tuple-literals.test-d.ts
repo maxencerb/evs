@@ -251,3 +251,90 @@ test('a staged member is still checked against its member type and the literal s
     return s.return({ ok });
   });
 });
+
+// a fixed `tuple[N]` takes exactly N elements, staged or not (abitype's host arm already did for
+// an all-constant literal; the staged arm keeps that check)
+const PAIR = { ...COLLECT, name: 'pair', type: 'tuple[2]' } as const;
+const PAIR_OF = {
+  name: 'of',
+  type: 'tuple',
+  components: [PAIR, { name: 'n', type: 'uint8' }],
+} as const;
+const PairOf = t.fromAbiParameter(PAIR_OF);
+const pairAbi = [
+  {
+    type: 'function',
+    name: 'pair',
+    stateMutability: 'view',
+    inputs: [PAIR],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'pairOf',
+    stateMutability: 'view',
+    inputs: [PAIR_OF],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'pairs',
+    stateMutability: 'view',
+    inputs: [{ ...PAIR, type: 'tuple[2][]' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+] as const;
+
+test('a tuple[N] literal takes exactly N elements, wherever it appears', () => {
+  evscript({ name: 'pairs', args: [t.uint256, t.address] }, (s, id, who) => {
+    const lit = { tokenId: 1n, recipient: ZERO, amount0Max: 1n, amount1Max: 2n } as const;
+    const staged = { tokenId: id, recipient: who, amount0Max: 1n, amount1Max: 2n } as const;
+    const ok = s.read({ address: who, abi: pairAbi, functionName: 'pair', args: [[lit, staged]] });
+    expectTypeOf(ok).toEqualTypeOf<Expr<'uint256'>>();
+    // @ts-expect-error — three elements for a tuple[2] (constant elements)
+    s.read({ address: who, abi: pairAbi, functionName: 'pair', args: [[lit, lit, lit]] });
+    // @ts-expect-error — one element for a tuple[2]
+    s.read({ address: who, abi: pairAbi, functionName: 'pair', args: [[lit]] });
+    // @ts-expect-error — three elements for a tuple[2] (staged elements)
+    s.read({ address: who, abi: pairAbi, functionName: 'pair', args: [[staged, staged, staged]] });
+    // a nested tuple[2] member of a struct call arg
+    s.read({
+      address: who,
+      abi: pairAbi,
+      functionName: 'pairOf',
+      args: [{ pair: [staged, lit], n: 1 }],
+    });
+    const three = { pair: [staged, lit, lit], n: 1 } as const;
+    // one line: tsc and tsgolint report this error at different positions of the call
+    // @ts-expect-error — the nested tuple[2] member has three elements
+    s.read({ address: who, abi: pairAbi, functionName: 'pairOf', args: [three] });
+    // a tuple[2][] row: the outer [] takes any count, each row exactly two
+    s.read({
+      address: who,
+      abi: pairAbi,
+      functionName: 'pairs',
+      args: [
+        [
+          [lit, staged],
+          [staged, lit],
+          [lit, lit],
+        ],
+      ],
+    });
+    s.read({
+      address: who,
+      abi: pairAbi,
+      functionName: 'pairs',
+      // @ts-expect-error — a tuple[2] row has three elements
+      args: [[[lit, staged, lit]]],
+    });
+    // s.tuple inits and Field.set
+    const of = s.tuple(PairOf, { pair: [staged, lit] });
+    // @ts-expect-error — an s.tuple init's tuple[2] member has three elements
+    s.tuple(PairOf, { pair: [lit, lit, lit] });
+    of.pair.set([lit, s.tuple(t.fromAbiParameter(COLLECT), { tokenId: id })]);
+    // @ts-expect-error — Field.set of a tuple[2] member with one element
+    of.pair.set([lit]);
+    return s.return({ ok, of });
+  });
+});
