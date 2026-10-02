@@ -236,6 +236,24 @@ describe('pipeline hooks', () => {
     }
   });
 
+  test('a hook that turns push values into JS numbers is rejected, not shipped with PUSH0 on paris', () => {
+    // release-review repro: `value: 0` (a number) assembled to a bare PUSH0 on paris (an invalid
+    // opcode before shanghai that no verifier gated) and any other number threw a raw
+    // `TypeError: Cannot mix BigInt and other types`
+    const numberPushes = (nodes: readonly AsmNode[]): AsmNode[] =>
+      nodes.map((n) =>
+        // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
+        n.k === 'push' ? ({ ...n, value: Number(n.value) } as unknown as AsmNode) : n,
+      );
+    for (const evmVersion of ['paris', 'cancun'] as const) {
+      const err = captureError(
+        () => compile(sumScript(), { evmVersion, peephole: numberPushes }),
+        EvsInternalError,
+      );
+      expect(err.message).toContain('push value must be a bigint, got number');
+    }
+  });
+
   test('a hook-injected `PUSH1 POP` pair in a loop is rejected (it would grow the real stack)', async () => {
     // field-test repro: `[PUSH1, POP]` after every MSTORE compiled, but the POP byte became the
     // immediate, so each iteration left one item behind and sumTo(300) overflowed the stack

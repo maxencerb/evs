@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
-import { AsmWriter, assemble, type AsmNode } from './assembler.js';
+import { AsmWriter, assemble, CodeBuffer, type AsmNode } from './assembler.js';
 import { encodedPushWidth, EVM_VERSIONS } from './ops.js';
 import { lookupPc } from './sourcemap.js';
 
@@ -708,6 +708,53 @@ describe('assemble — hooks and verification wiring', () => {
     };
     expect(run).toThrow(EvsInternalError);
     expect(run).toThrow(/unknown mnemonic 'NOPE'/);
+  });
+
+  test('a push node whose value is a JS number is rejected as an EvsInternalError on every fork', () => {
+    // a JavaScript hook is not held to `value: bigint`: a number `0` used to miss the `=== 0n`
+    // branch and assemble to a bare PUSH0 even on paris (which no verifier gates), and any other
+    // number threw a raw `TypeError: Cannot mix BigInt and other types`
+    for (const value of [0, 5, 0x1234]) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- runtime gate under test
+      const injected = { k: 'push', value } as unknown as AsmNode;
+      const prepend = (nodes: readonly AsmNode[]): AsmNode[] => [
+        injected,
+        { k: 'op', op: 'POP' },
+        ...nodes,
+      ];
+      for (const evmVersion of ['paris', 'cancun'] as const) {
+        for (const verify of [true, false]) {
+          const run = (): void => {
+            assemble([{ k: 'op', op: 'STOP' }], { evmVersion, peephole: prepend, verify });
+          };
+          expect(run).toThrow(EvsInternalError);
+          expect(run).toThrow(/push value must be a bigint, got number/);
+        }
+      }
+    }
+    // control: the bigint spelling still lowers to `PUSH1 00` on paris
+    const ok = assemble([{ k: 'op', op: 'STOP' }], {
+      evmVersion: 'paris',
+      peephole: (nodes) => [{ k: 'push', value: 0n }, { k: 'op', op: 'POP' }, ...nodes],
+    });
+    expect(hex(ok.bytecode)).toBe('60005000');
+  });
+
+  test('CodeBuffer.minimalPush refuses zero instead of writing a bare PUSH0', () => {
+    // defence in depth behind assemble()'s bigint + `=== 0n` gates: width 0 would write
+    // `PUSH1_CODE - 1` (0x5f, PUSH0) whatever the fork
+    const zero = new CodeBuffer(0);
+    const run = (): void => {
+      zero.minimalPush(0n);
+    };
+    expect(run).toThrow(EvsInternalError);
+    expect(run).toThrow(/minimalPush needs a non-zero value, got 0/);
+    expect(zero.pc).toBe(0);
+    // control: non-zero values take their minimal width
+    const ok = new CodeBuffer(0);
+    ok.minimalPush(1n);
+    ok.minimalPush(0x1234n);
+    expect(hex(ok.finish())).toBe('6001611234');
   });
 
   test('verification is on by default and catches a stack bug', () => {

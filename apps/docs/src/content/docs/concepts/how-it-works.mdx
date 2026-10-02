@@ -151,7 +151,7 @@ jump target, keeps every source-map site, and runs **before** the verifiers belo
 output is checked exactly like unoptimized output. A user `peephole` hook in `CompileOptions`
 runs at the same position, after the built-in pass when both are on; its output is held to the
 same node contract (a bare `PUSH1`–`PUSH32` op node, which would leave its immediate to the next
-bytes, is rejected at layout). The pass is exported as
+bytes, and a `push` node whose `value` is not a bigint are rejected at layout). The pass is exported as
 `evsPeephole` (`peephole: evsPeephole` runs only this pass; `optimize: true` also switches
 codegen to the liveness-based frame allocator described in [the memory model](#the-memory-model)).
 
