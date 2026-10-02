@@ -393,7 +393,7 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
   ] as const;
   const TARGET = '0x00000000000000000000000000000000000000aa';
 
-  function loopDiagnostics(script: EvsScript): EvsDiagnostic[] {
+  function loopDiagnostics(script: Parameters<typeof compile>[0]): EvsDiagnostic[] {
     const diags: EvsDiagnostic[] = [];
     compile(script, { onDiagnostic: (d) => diags.push(d) });
     return diags.filter((d) => d.code === 'LOOP_ALLOCATION');
@@ -459,6 +459,86 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
     });
     expect(labelsOf(loopDiagnostics(script))).toEqual([
       's.newArray((uint256,address)) (array allocation)',
+    ]);
+  });
+
+  test('a struct literal names its type, s.tuple names s.tuple', () => {
+    const P = t.struct({ a: t.uint256 });
+    const TAKES_P_ABI = [
+      {
+        type: 'function',
+        name: 'f',
+        stateMutability: 'view',
+        inputs: [{ name: 'p', type: 'tuple', components: [{ name: 'a', type: 'uint256' }] }],
+        outputs: [{ name: '', type: 'uint256' }],
+      },
+    ] as const;
+    const script = evscript({ name: 'structLits', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i) => {
+        // an inline struct literal: there is no s.tuple call in the source to point at
+        const r = s.read({
+          address: TARGET,
+          abi: TAKES_P_ABI,
+          functionName: 'f',
+          args: [{ a: 7n }],
+        });
+        const lit = s.lit(P, { a: 1n });
+        const q = s.read({ address: TARGET, abi: TAKES_P_ABI, functionName: 'f', args: [lit] });
+        acc.set(
+          acc
+            .get()
+            .add(r)
+            .add(q)
+            .add(s.tuple(P, { a: i }).a.get()),
+        );
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      '(uint256) literal (flat-block allocation)',
+      '(uint256) literal (flat-block allocation)',
+      's.tuple(a) (flat-block allocation)',
+    ]);
+  });
+
+  test('struct literals nested in s.tuple, s.let, an array literal or a Field.set name their type', () => {
+    const Inner = t.struct({ a: t.uint256 });
+    const Outer = t.struct({ inner: Inner, b: t.uint256 });
+    const Pos = t.tuple(t.uint256, t.uint256);
+    const script = evscript({ name: 'nestedLits', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      const last = s.let(Inner, { a: 0n }); // outside the loop: not flagged
+      s.for({ from: 0n, until: n }, (i) => {
+        const o = s.tuple(Outer, { inner: { a: 1n }, b: i }); // member literal + s.tuple
+        const l = s.let(Inner, { a: 2n });
+        const arr = s.let(t.array(Inner), [{ a: 3n }, { a: 4n }]);
+        o.inner.set({ a: 5n });
+        last.set(l.get());
+        const p = s.tuple(Pos, [i, 6n]); // positional: members are counted
+        const k = s.lit(t.array(t.uint256, 3), [7n, 8n, 9n]); // all-constant word array
+        acc.set(
+          acc
+            .get()
+            .add(o.inner.get().a.get())
+            .add(arr.get().at(0n).a.get())
+            .add(p.at(0).get())
+            .add(k.at(2n)),
+        );
+      });
+      return s.return({ acc: acc.get(), last: last.get() });
+    });
+    expect(labelsOf(loopDiagnostics(script))).toEqual([
+      '(uint256) literal (flat-block allocation)', // Outer.inner
+      's.tuple(inner, b) (flat-block allocation)',
+      '(uint256) literal (flat-block allocation)', // s.let
+      '(uint256)[] literal (array allocation)',
+      '(uint256) literal (flat-block allocation)', // element 0
+      '(uint256) literal (flat-block allocation)', // element 1
+      '(uint256) literal (flat-block allocation)', // o.inner.set
+      's.tuple(2 members) (flat-block allocation)',
+      // an all-constant word array is a data constant, not an allocation recorded at the site
+      'a uint256[3] literal (materialized in memory)',
     ]);
   });
 

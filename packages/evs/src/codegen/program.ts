@@ -271,11 +271,11 @@ function callVerb(s: Extract<Stmt, { k: 'call' }>): string {
  * purpose: a new kind must decide here whether it allocates.
  *
  * `arrnew` / `tuplenew` / `encode` each have several builder origins (`s.newArray` or an array
- * literal; `s.tuple` or a `struct: true` read; `s.encode`, the encode behind `s.keccak256` or
- * memref `.eq()`), and the builder records that origin as the out value's `debugName`; IR built
- * or deserialized without names falls back to the op's generic builder name. `fnAllocates`
- * answers for a `fncall`'s callee (transitively); `consts` is the lowering's const table, which
- * decides which call args are data literals.
+ * literal; `s.tuple`, a struct literal or a `struct: true` read; `s.encode`, the encode behind
+ * `s.keccak256` or memref `.eq()`), and the builder records that origin as the out value's
+ * `debugName`; IR built or deserialized without names falls back to the op's generic builder
+ * name. `fnAllocates` answers for a `fncall`'s callee (transitively); `consts` is the lowering's
+ * const table, which decides which call args are data literals.
  */
 function describeAllocation(
   s: Stmt,

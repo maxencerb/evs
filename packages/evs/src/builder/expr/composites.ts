@@ -18,7 +18,13 @@ import {
 import type { ValueId } from '../../ir/nodes.js';
 import { RecorderCore } from './core.js';
 import { makeTuple, FieldHandle, makeExpr, MutArrayImpl } from './handles.js';
-import { describeHost, asLiteralIndex, assertLayout, assertTupleGates } from './helpers.js';
+import {
+  describeHost,
+  asLiteralIndex,
+  assertLayout,
+  assertTupleGates,
+  tupleDebugTag,
+} from './helpers.js';
 
 /** Tuples, fields and mutable arrays (a `Recorder` layer). */
 export abstract class RecorderComposites extends RecorderCore {
@@ -43,7 +49,7 @@ export abstract class RecorderComposites extends RecorderCore {
     // the size gates every other tuple entry point applies (at least one component at every
     // level, the array depth, the static size), so they fail here and not in the IR validator
     assertTupleGates(type, 's.tuple()');
-    const id = this.buildTupleNew(type, init, 's.tuple()');
+    const id = this.buildTupleNew(type, init, 's.tuple()', `s.tuple(${tupleDebugTag(type)})`);
     return makeTuple(this.self, id, type);
   }
 
