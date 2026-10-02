@@ -90,31 +90,56 @@ function markHandle(h: object): void {
 /**
  * The error for a handle member used without its handle: a method passed on as a callback
  * (`xs.map(x.add)`, `s.if(c, loop.break)`) or stored and called on its own
- * (`const f = x.add; f(y)`) runs with `this` undefined (or bound to some other object). Every
- * handle registers its internals when it is built, so that is the only way the lookups below
- * miss, and they report it as the user's mistake: it names the member (`kind.member`) and shows
- * the arrow to write instead, calling through `receiver` with as many parameters as the method
- * declares. A getter (`.type`, a struct field) is only reached detached through its property
- * descriptor; it gets the same message, worded as a read.
+ * (`const f = x.add; f(y)`) runs with `this` undefined; one invoked on another value
+ * (`x.add.call(cell, 1n)`) runs with that value as `this`. Every handle registers its internals
+ * when it is built, so those are the only ways the lookups below miss, and they report it as the
+ * user's mistake: it names the member (`kind.member`), what it was called on when that was not
+ * nothing, and the arrow to write instead, calling through `receiver` with as many parameters as
+ * the method declares. A getter (`.type`, a struct field) is only reached detached through its
+ * property descriptor; it gets the same message, worded as a read.
  */
 function detachedMemberError(
   kind: string,
   receiver: string,
   proto: object,
   member: string,
+  self: unknown,
 ): EvsTypeError {
   const method: unknown = Object.getOwnPropertyDescriptor(proto, member)?.value;
+  const article = /^[AEIOU]/.test(kind) ? 'an' : 'a';
+  const wrongThis =
+    self === undefined ? undefined : `${describeReceiver(self)}, not on ${article} ${kind}`;
   if (typeof method !== 'function') {
     return new EvsTypeError(
       'TYPE_MISMATCH',
-      `${kind}.${member} was read without its handle — read it on the handle itself: \`${receiver}.${member}\``,
+      `${kind}.${member} was read ${wrongThis === undefined ? 'without its handle' : `on ${wrongThis}`} — read it on the handle itself: \`${receiver}.${member}\``,
     );
   }
   const params = method.length === 1 ? 'v' : ['a', 'b', 'c'].slice(0, method.length).join(', ');
+  const arrow = `\`(${params}) => ${receiver}.${member}(${params})\``;
+  if (wrongThis !== undefined) {
+    return new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${kind}.${member} was called on ${wrongThis}. Call it on the handle itself, through an arrow where a function is expected: ${arrow}`,
+    );
+  }
   return new EvsTypeError(
     'TYPE_MISMATCH',
-    `${kind}.${member} was called without its handle: a method passed on as a callback or stored and called on its own (\`const f = ${receiver}.${member}; f()\`) no longer knows which handle it belongs to. Call it on the handle, through an arrow where a function is expected: \`(${params}) => ${receiver}.${member}(${params})\``,
+    `${kind}.${member} was called without its handle: a method passed on as a callback or stored and called on its own (\`const f = ${receiver}.${member}; f(${params})\`) no longer knows which handle it belongs to. Call it on the handle, through an arrow where a function is expected: ${arrow}`,
   );
+}
+
+/** What a handle method was wrongly called on, for {@link detachedMemberError}. */
+function describeReceiver(self: unknown): string {
+  if (self === null) return 'null';
+  if (typeof self !== 'object' && typeof self !== 'function') return `a ${typeof self}`;
+  if (EXPR_INTERNALS.has(self)) return 'an Expr';
+  if (CELL_INTERNALS.has(self)) return 'a Cell';
+  if (ARR_INTERNALS.has(self)) return 'a MutArray';
+  if (TUPLE_INTERNALS.has(self)) return 'a Tuple';
+  if (FIELD_INTERNALS.has(self)) return 'a Field';
+  if (self instanceof LoopCtlImpl) return 'a LoopCtl';
+  return typeof self === 'function' ? 'a function' : 'an object that is not an evs handle';
 }
 
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
@@ -322,7 +347,7 @@ class ExprHandle {
 
 function internalsOf(h: object, member: string): ExprInternals {
   const i = EXPR_INTERNALS.get(h);
-  if (i === undefined) throw detachedMemberError('Expr', 'x', ExprHandle.prototype, member);
+  if (i === undefined) throw detachedMemberError('Expr', 'x', ExprHandle.prototype, member, h);
   return i;
 }
 
@@ -358,7 +383,7 @@ export class CellImpl {
 
 function cellInternalsOf(h: object, member: string): CellInternals {
   const i = CELL_INTERNALS.get(h);
-  if (i === undefined) throw detachedMemberError('Cell', 'cell', CellImpl.prototype, member);
+  if (i === undefined) throw detachedMemberError('Cell', 'cell', CellImpl.prototype, member, h);
   return i;
 }
 
@@ -390,7 +415,8 @@ export class MutArrayImpl {
 
 function arrInternalsOf(h: object, member: string): ArrInternals {
   const i = ARR_INTERNALS.get(h);
-  if (i === undefined) throw detachedMemberError('MutArray', 'arr', MutArrayImpl.prototype, member);
+  if (i === undefined)
+    throw detachedMemberError('MutArray', 'arr', MutArrayImpl.prototype, member, h);
   return i;
 }
 
@@ -463,7 +489,8 @@ function describeHandle(
 
 function tupleInternalsOf(h: object, member: string): TupleInternals {
   const i = TUPLE_INTERNALS.get(h);
-  if (i === undefined) throw detachedMemberError('Tuple', 'tuple', TupleHandle.prototype, member);
+  if (i === undefined)
+    throw detachedMemberError('Tuple', 'tuple', TupleHandle.prototype, member, h);
   return i;
 }
 
@@ -533,7 +560,8 @@ export class FieldHandle {
 
 function fieldInternalsOf(h: object, member: string): FieldInternals {
   const i = FIELD_INTERNALS.get(h);
-  if (i === undefined) throw detachedMemberError('Field', 'field', FieldHandle.prototype, member);
+  if (i === undefined)
+    throw detachedMemberError('Field', 'field', FieldHandle.prototype, member, h);
   return i;
 }
 
@@ -582,5 +610,5 @@ export class LoopCtlImpl {
 
 function loopCtlOf(h: unknown, member: string): LoopCtlImpl {
   if (h instanceof LoopCtlImpl) return h;
-  throw detachedMemberError('LoopCtl', 'loop', LoopCtlImpl.prototype, member);
+  throw detachedMemberError('LoopCtl', 'loop', LoopCtlImpl.prototype, member, h);
 }

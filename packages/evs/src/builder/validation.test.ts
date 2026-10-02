@@ -2292,7 +2292,59 @@ describe('checklist: a handle method called without its handle', () => {
       `${m} was called without its handle`,
     );
     expect(e.message).toContain(call);
+    // the stored-and-called-bare illustration passes as many arguments as the method takes
+    expect(e.message).toContain(`; f(${call.slice(1, call.indexOf(')'))})\``);
     expect(e.message).not.toMatch(/bug in evs/);
+  });
+
+  // a method invoked on the wrong value has a receiver, just not its own handle: the message
+  // names what it got instead of claiming it had none
+  const wrongThis: [label: string, misuse: (s: AnyBuilder, a: Args) => unknown, msg: string][] = [
+    [
+      'x.add.call(cell, 1n)',
+      (s, a) => Reflect.apply(a.x.add, s.let(t.uint256, 0n), [1n]),
+      'Expr.add was called on a Cell, not on an Expr. Call it on the handle itself, through an arrow where a function is expected: `(v) => x.add(v)`',
+    ],
+    [
+      'x.add.call(tuple, 1n)',
+      (s, a) => Reflect.apply(a.x.add, s.tuple(Pair, { a: 1n }), [1n]),
+      'Expr.add was called on a Tuple, not on an Expr',
+    ],
+    [
+      'cell.set.call(x, 1n)',
+      (s, a) => {
+        Reflect.apply(s.let(t.uint256, 0n).set, a.x, [1n]);
+      },
+      'Cell.set was called on an Expr, not on a Cell',
+    ],
+    [
+      'loop.break.call({})',
+      (s, a) => {
+        const i = s.let(t.uint256, 0n);
+        s.while(
+          () => i.get().lt(a.x),
+          (loop) => {
+            Reflect.apply(loop.break, {}, []);
+            i.set(a.x);
+          },
+        );
+      },
+      'LoopCtl.break was called on an object that is not an evs handle, not on a LoopCtl',
+    ],
+  ];
+
+  test.each(wrongThis)('%s → TYPE_MISMATCH naming the wrong receiver', (_, misuse, msg) => {
+    const e = expectEvs(
+      () =>
+        rec((s, a) => {
+          misuse(s, a);
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      msg,
+    );
+    expect(e.message).not.toMatch(/without its handle|bug in evs/);
   });
 
   test('a getter read off its descriptor (Expr.type, a struct field) is worded as a read', () => {
@@ -2317,6 +2369,18 @@ describe('checklist: a handle method called without its handle', () => {
       EvsTypeError,
       'TYPE_MISMATCH',
       'Tuple.a was read without its handle',
+    );
+    expectEvs(
+      () =>
+        rec((s, a) => {
+          Object.getOwnPropertyDescriptor(Object.getPrototypeOf(a.x), 'type')?.get?.call(
+            s.let(t.uint256, 0n),
+          );
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      'Expr.type was read on a Cell, not on an Expr — read it on the handle itself: `x.type`',
     );
   });
 });
