@@ -316,8 +316,10 @@ The rules, applied identically by the types and at recording:
     name-keyed object for a struct (an array for an unnamed tuple), and an array for an array type,
     whose elements (literals or handles, e.g. `[x, 2n]`) must fit the element type, at any depth. A
     fixed-size `T[N]` takes exactly N elements, so `[1n, 2n, 3n]` fits `uint256[]` but not
-    `uint256[2]`, and `5n` fits `uint256` but not `uint256[2]`. Value ranges and byte lengths are
-    not considered, so `1n` fits both `uint8` and `uint256`.
+    `uint256[2]`, and `5n` fits `uint256` but not `uint256[2]`. A struct literal fits only if every
+    key names a member (an unnamed tuple's array: exactly its length), so `{ a: 1n, b: 2n }` fits
+    `(uint256 a, uint256 b)` but not `(uint256 a)`. Value ranges and byte lengths are not
+    considered, so `1n` fits both `uint8` and `uint256`.
 - **Exactly one** overload must fit. Arguments that fit several are a compile error
   (`'evs: ambiguous overload'`) and, when types are bypassed, an `EvsTypeError` with code
   `ABI_SHAPE` at recording naming the candidates; arguments that fit none are a compile error too

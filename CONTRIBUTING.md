@@ -327,8 +327,10 @@ Releases: see [Releasing](#releasing) below.
   `s.tuple` inits: `allMembersNamed` / `AllMembersNamed`; a member with no `name` key, as
   viem's `parseAbi` emits, is unnamed — the recorder reads raw overload inputs through
   `normalizeAbiParam`); several fits are an ambiguity, none
-  a mismatch (both also compile errors). Extra keys or elements do not affect the fit: the
-  coercion of the chosen overload rejects them. The one intended difference: the types compare a
+  a mismatch (both also compile errors). A struct literal fits only if every key `Object.keys`
+  lists (numeric ones too) names a member (positional: exact length), as the coercion rejects
+  anything more; at the type level an optional extra key, an index signature or a positional
+  literal of statically unknown length (optional elements, a plain `T[]`) is a maybe-fit. The one intended difference: the types compare a
   fully named struct's members by name, not position (a `t.struct`'s order is not visible to them). Any rule
   change goes to both sides plus a case in the shared matrix
   (`packages/evs/test/harness/overload-matrix.ts`), which `overload-lockstep.test-d.ts` and

@@ -17,7 +17,7 @@ import type {
   OuterArraySize,
   PeelArraySuffix,
 } from '../../core/types.js';
-import type { AllMembersNamed } from '../../core/types/derive.js';
+import type { AllMembersNamed, UnionToTuple } from '../../core/types/derive.js';
 import type { Expr, exprBrand } from '../../core/types/expr.js';
 import type { ArgHandle } from './evscript.js';
 import type {
@@ -241,33 +241,69 @@ type AllElemsFit<v extends readonly unknown[], elem extends string, comps> = [
 
 /** A tuple literal, by abitype's rule ({@link AllMembersNamed}): a (non-array) record keyed by
  *  member name when every member is named, else a positional array (a single unnamed member
- *  makes the whole tuple positional); every member present and fitting. Extra keys / elements are
- *  not considered here — the coercion of the resolved overload rejects them. */
+ *  makes the whole tuple positional); every member present and fitting, and nothing more — a key
+ *  that names no member ({@link NoExtraKeys}) or a length other than the tuple's
+ *  ({@link MayHaveLength}) is a misfit, as the coercion rejects it. */
 type FitsStruct<v, comps> = comps extends readonly AbiParameter[]
   ? v extends object
     ? AllMembersNamed<comps> extends true
       ? v extends readonly unknown[]
         ? false
         : [
-              { [i in keyof comps]: NoFit<MemberFits<v, NameOf<comps[i]>, comps[i]>> }[number],
+              | { [i in keyof comps]: NoFit<MemberFits<v, NameOf<comps[i]>, comps[i]>> }[number]
+              | NoFit<NoExtraKeys<v, NameOf<comps[number]>>>,
             ] extends [never]
           ? true
           : false
       : v extends readonly unknown[]
-        ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
-          ? true
+        ? MayHaveLength<v['length'], comps['length']> extends true
+          ? [{ [i in keyof comps]: NoFit<MemberFits<v, i, comps[i]>> }[number]] extends [never]
+            ? true
+            : false
           : false
         : false
     : false
   : false;
 
+/** `true` when every key of the record `v` that the recorder's `Object.keys` lists (a string or
+ *  a numeric one, the latter as its string form) is one of `names`; `false` when another key is
+ *  required. A maybe-fit (`boolean`) when the other keys are all optional, or under an index
+ *  signature (keys unknown statically): the value may carry none of them. */
+type NoExtraKeys<v, names> =
+  ExtraKeys<v, names> extends infer extra extends keyof v
+    ? [extra] extends [never]
+      ? true
+      : string extends extra
+        ? boolean
+        : number extends extra
+          ? boolean
+          : Partial<Pick<v, extra>> extends Pick<v, extra>
+            ? boolean
+            : false
+    : false;
+
+/** The keys of `v` (symbols aside) whose string form is none of `names`. */
+type ExtraKeys<v, names> = {
+  [k in keyof v]-?: k extends symbol ? never : `${k & (string | number)}` extends names ? never : k;
+}[keyof v];
+
+/** Whether an array of length `len` may have the tuple's length `n`: a literal length must be
+ *  `n`, a union of lengths (optional elements) or a plain `number` (`T[]`) need only include it —
+ *  a maybe-fit, as the recorder decides by the runtime length. */
+type MayHaveLength<len, n> = [Extract<len, n> | Extract<n, len>] extends [never] ? false : true;
+
 type NameOf<c> = c extends { readonly name: infer n extends string } ? n : '';
 
-/** The member `key` of the literal `v` is present and fits the component `c`. */
-type MemberFits<v, key, c> = key extends keyof v
-  ? c extends AbiParameter
+/** The member `key` of the literal `v` is present and fits the component `c` (a plain array's
+ *  element, its index unknown statically, stands for every position). */
+type MemberFits<v, key, c> = c extends AbiParameter
+  ? key extends keyof v
     ? FitsArg<v[key], c['type'], ComponentsOf<c>>
-    : false
+    : v extends readonly unknown[]
+      ? number extends v['length']
+        ? FitsArg<v[number], c['type'], ComponentsOf<c>>
+        : false
+      : false
   : false;
 
 /**
@@ -338,10 +374,10 @@ type SameComp<xm, pm> = [xm] extends [never]
     : false;
 
 /** @internal compile-time mirror of the recorder's overload errors: `args` fitting several
- *  overloads turns into a missing-property error naming the fix (the recorder's `ABI_SHAPE`
- *  ambiguity); `args` fitting none of several same-arity overloads, likewise (its
- *  `TYPE_MISMATCH`). */
-type OverloadGuard<
+ *  overloads turns into a missing-property error naming the fix and the candidate signatures (the
+ *  recorder's `ABI_SHAPE` ambiguity); `args` fitting none of several same-arity overloads, likewise
+ *  (its `TYPE_MISMATCH`). */
+export type OverloadGuard<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability,
@@ -350,16 +386,27 @@ type OverloadGuard<
   ResolveOverload<abi, name, mut, args> extends infer picked
     ? true extends IsUnion<picked>
       ? {
-          readonly 'evs: ambiguous overload': 'these args fit several overloads — pass typed values (s.lit(t.uint8, 1)) or name one by signature (functionName: "get(uint8)")';
+          readonly 'evs: ambiguous overload': `these args fit ${SignatureList<picked>} — pass typed values (s.lit(t.uint8, 1)) or name one by signature in functionName`;
         }
       : [picked] extends [never]
-        ? true extends IsUnion<FnOf<abi, name, mut>>
-          ? {
-              readonly 'evs: no overload matches': 'these args fit none of the overloads of this arity — a handle must carry the parameter type exactly (s.lit(t.uint8, 1)), a T[N] literal needs exactly N elements; or name one by signature (functionName: "get(uint8)")';
-            }
+        ? FnOf<abi, name, mut> extends infer fns
+          ? true extends IsUnion<fns>
+            ? {
+                readonly 'evs: no overload matches': `these args fit none of the overloads taking this many arguments (among ${SignatureList<fns>}) — a handle must carry the parameter type exactly (s.lit(t.uint8, 1)), a T[N] literal needs exactly N elements, a struct literal only its members; or name one by signature in functionName`;
+              }
+            : unknown
           : unknown
         : unknown
     : unknown;
+
+/** A union of function entries → their canonical signatures, quoted and comma-separated. */
+type SignatureList<fns> = JoinQuoted<UnionToTuple<AbiFunctionSignature<fns>>>;
+
+type JoinQuoted<sigs> = sigs extends readonly [infer head extends string, ...infer rest]
+  ? rest extends readonly []
+    ? `"${head}"`
+    : `"${head}", ${JoinQuoted<rest>}`
+  : '';
 
 /** An abitype `AbiParameter` for a `'tuple'` member → the matching {@link TupleType} descriptor. */
 type ParamToTupleType<p extends AbiParameter> = p extends {

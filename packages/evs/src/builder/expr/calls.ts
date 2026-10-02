@@ -383,11 +383,12 @@ export abstract class RecorderCalls extends RecorderControl {
    * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
    * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit (a
    * fixed `T[N]` ← exactly N of them); a tuple ← a record keyed by member name when every member
-   * is named, else a positional array (abitype's rule), whose members (own properties) all fit.
-   * `type` must come from {@link normalizeAbiParam} (a `parseAbi` member with no `name` key is
-   * unnamed, and a handle's type compares against `''` names). Extra keys / elements are left to the coercion, which rejects them. The type-level twin is
-   * `FitsArg` (builder/script/calls.ts) — keep the two in lockstep (the overload-lockstep tests
-   * pin every shape on both sides).
+   * is named, else a positional array (abitype's rule), whose members (own properties) all fit —
+   * and nothing more: a key that names no member, or an element past the last member, is a misfit
+   * (the coercion, `buildTupleNew`, rejects it). `type` must come from {@link normalizeAbiParam} (a
+   * `parseAbi` member with no `name` key is unnamed, and a handle's type compares against `''`
+   * names). The type-level twin is `FitsArg` (builder/script/calls.ts) — keep the two in lockstep
+   * (the overload-lockstep tests pin every shape on both sides).
    */
   private argFits(v: unknown, type: EvsType): boolean {
     if (typeof v === 'object' && v !== null) {
@@ -403,6 +404,13 @@ export abstract class RecorderCalls extends RecorderControl {
       if (typeof v !== 'object' || v === null) return false;
       const named = allMembersNamed(type);
       if (Array.isArray(v) === named) return false; // a record iff all named, else an array
+      // no key naming no member, no element past the last one
+      if (named) {
+        const names = new Set(type.components.map((c) => c.name));
+        if (Object.keys(v).some((key) => !names.has(key))) return false;
+      } else if (Array.isArray(v) && v.length !== type.components.length) {
+        return false;
+      }
       return type.components.every((c, i) => {
         const key = named ? c.name : i;
         const member: unknown = Object.hasOwn(v, key) ? Reflect.get(v, key) : undefined;
