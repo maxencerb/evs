@@ -4,7 +4,7 @@
  * installed on the `Expr` / `Tuple` prototypes at module load.
  */
 
-import { EvsInternalError, EvsScopeError } from '../../core/errors.js';
+import { EvsScopeError, EvsTypeError } from '../../core/errors.js';
 import {
   type EvsType,
   type TupleType,
@@ -87,6 +87,36 @@ function markHandle(h: object): void {
   Object.defineProperty(h, HANDLE_COPY_MARK, { value: h, enumerable: true });
 }
 
+/**
+ * The error for a handle member used without its handle: a method passed on as a callback
+ * (`xs.map(x.add)`, `s.if(c, loop.break)`) or stored and called on its own
+ * (`const f = x.add; f(y)`) runs with `this` undefined (or bound to some other object). Every
+ * handle registers its internals when it is built, so that is the only way the lookups below
+ * miss, and they report it as the user's mistake: it names the member (`kind.member`) and shows
+ * the arrow to write instead, calling through `receiver` with as many parameters as the method
+ * declares. A getter (`.type`, a struct field) is only reached detached through its property
+ * descriptor; it gets the same message, worded as a read.
+ */
+function detachedMemberError(
+  kind: string,
+  receiver: string,
+  proto: object,
+  member: string,
+): EvsTypeError {
+  const method: unknown = Object.getOwnPropertyDescriptor(proto, member)?.value;
+  if (typeof method !== 'function') {
+    return new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${kind}.${member} was read without its handle — read it on the handle itself: \`${receiver}.${member}\``,
+    );
+  }
+  const params = method.length === 1 ? 'v' : ['a', 'b', 'c'].slice(0, method.length).join(', ');
+  return new EvsTypeError(
+    'TYPE_MISMATCH',
+    `${kind}.${member} was called without its handle: a method passed on as a callback or stored and called on its own (\`const f = ${receiver}.${member}; f()\`) no longer knows which handle it belongs to. Call it on the handle, through an arrow where a function is expected: \`(${params}) => ${receiver}.${member}(${params})\``,
+  );
+}
+
 /** Runtime brand carried by `s.return(...)` tokens (the public `returnBrand` is type-only). */
 export const RETURN_BRAND: unique symbol = Symbol('evs.scriptReturn');
 
@@ -114,48 +144,54 @@ class ExprHandle {
   }
 
   get type(): EvsType {
-    const i = internalsOf(this);
+    const i = internalsOf(this, 'type');
     return i.owner.typeOfValue(i.id);
   }
 
   add(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('add', this, rhs, '.add()');
+    return internalsOf(this, 'add').owner.bin('add', this, rhs, '.add()');
   }
   sub(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('sub', this, rhs, '.sub()');
+    return internalsOf(this, 'sub').owner.bin('sub', this, rhs, '.sub()');
   }
   mul(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('mul', this, rhs, '.mul()');
+    return internalsOf(this, 'mul').owner.bin('mul', this, rhs, '.mul()');
   }
   div(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('div', this, rhs, '.div()');
+    return internalsOf(this, 'div').owner.bin('div', this, rhs, '.div()');
   }
   mod(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('mod', this, rhs, '.mod()');
+    return internalsOf(this, 'mod').owner.bin('mod', this, rhs, '.mod()');
   }
   pow(exponent: unknown): Expr {
-    return internalsOf(this).owner.bin('pow', this, exponent, '.pow()');
+    return internalsOf(this, 'pow').owner.bin('pow', this, exponent, '.pow()');
   }
   addmod(rhs: unknown, modulus: unknown): Expr {
-    return internalsOf(this).owner.modArithOp('addmod', this, rhs, modulus, '.addmod()');
+    return internalsOf(this, 'addmod').owner.modArithOp('addmod', this, rhs, modulus, '.addmod()');
   }
   mulmod(rhs: unknown, modulus: unknown): Expr {
-    return internalsOf(this).owner.modArithOp('mulmod', this, rhs, modulus, '.mulmod()');
+    return internalsOf(this, 'mulmod').owner.modArithOp('mulmod', this, rhs, modulus, '.mulmod()');
   }
   wrappingAdd(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('wrapadd', this, rhs, '.wrappingAdd()');
+    return internalsOf(this, 'wrappingAdd').owner.bin('wrapadd', this, rhs, '.wrappingAdd()');
   }
   wrappingSub(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('wrapsub', this, rhs, '.wrappingSub()');
+    return internalsOf(this, 'wrappingSub').owner.bin('wrapsub', this, rhs, '.wrappingSub()');
   }
   wrappingMul(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('wrapmul', this, rhs, '.wrappingMul()');
+    return internalsOf(this, 'wrappingMul').owner.bin('wrapmul', this, rhs, '.wrappingMul()');
   }
   mulDiv(rhs: unknown, denominator: unknown): Expr {
-    return internalsOf(this).owner.modArithOp('muldiv', this, rhs, denominator, '.mulDiv()');
+    return internalsOf(this, 'mulDiv').owner.modArithOp(
+      'muldiv',
+      this,
+      rhs,
+      denominator,
+      '.mulDiv()',
+    );
   }
   mulDivRoundingUp(rhs: unknown, denominator: unknown): Expr {
-    return internalsOf(this).owner.modArithOp(
+    return internalsOf(this, 'mulDivRoundingUp').owner.modArithOp(
       'muldivup',
       this,
       rhs,
@@ -164,101 +200,129 @@ class ExprHandle {
     );
   }
   lt(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('lt', this, rhs, '.lt()');
+    return internalsOf(this, 'lt').owner.bin('lt', this, rhs, '.lt()');
   }
   gt(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('gt', this, rhs, '.gt()');
+    return internalsOf(this, 'gt').owner.bin('gt', this, rhs, '.gt()');
   }
   lte(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('lte', this, rhs, '.lte()');
+    return internalsOf(this, 'lte').owner.bin('lte', this, rhs, '.lte()');
   }
   gte(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('gte', this, rhs, '.gte()');
+    return internalsOf(this, 'gte').owner.bin('gte', this, rhs, '.gte()');
   }
   eq(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('eq', this, rhs, '.eq()');
+    return internalsOf(this, 'eq').owner.bin('eq', this, rhs, '.eq()');
   }
   neq(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('neq', this, rhs, '.neq()');
+    return internalsOf(this, 'neq').owner.bin('neq', this, rhs, '.neq()');
   }
   and(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('and', this, rhs, '.and()');
+    return internalsOf(this, 'and').owner.bin('and', this, rhs, '.and()');
   }
   or(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('or', this, rhs, '.or()');
+    return internalsOf(this, 'or').owner.bin('or', this, rhs, '.or()');
   }
   not(): Expr {
-    return internalsOf(this).owner.notOp(this, '.not()');
+    return internalsOf(this, 'not').owner.notOp(this, '.not()');
   }
   bitAnd(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('bitand', this, rhs, '.bitAnd()');
+    return internalsOf(this, 'bitAnd').owner.bin('bitand', this, rhs, '.bitAnd()');
   }
   bitOr(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('bitor', this, rhs, '.bitOr()');
+    return internalsOf(this, 'bitOr').owner.bin('bitor', this, rhs, '.bitOr()');
   }
   bitXor(rhs: unknown): Expr {
-    return internalsOf(this).owner.bin('bitxor', this, rhs, '.bitXor()');
+    return internalsOf(this, 'bitXor').owner.bin('bitxor', this, rhs, '.bitXor()');
   }
   bitNot(): Expr {
-    return internalsOf(this).owner.bitNotOp(this, '.bitNot()');
+    return internalsOf(this, 'bitNot').owner.bitNotOp(this, '.bitNot()');
   }
   shl(bits: unknown): Expr {
-    return internalsOf(this).owner.bin('shl', this, bits, '.shl()');
+    return internalsOf(this, 'shl').owner.bin('shl', this, bits, '.shl()');
   }
   shr(bits: unknown): Expr {
-    return internalsOf(this).owner.bin('shr', this, bits, '.shr()');
+    return internalsOf(this, 'shr').owner.bin('shr', this, bits, '.shr()');
   }
   toUint(target: unknown): Expr {
-    return internalsOf(this).owner.convertOp('toUint', this, target, '.toUint()');
+    return internalsOf(this, 'toUint').owner.convertOp('toUint', this, target, '.toUint()');
   }
   toInt(target: unknown): Expr {
-    return internalsOf(this).owner.convertOp('toInt', this, target, '.toInt()');
+    return internalsOf(this, 'toInt').owner.convertOp('toInt', this, target, '.toInt()');
   }
   asAddress(): Expr {
-    return internalsOf(this).owner.convertOp('asAddress', this, undefined, '.asAddress()');
+    return internalsOf(this, 'asAddress').owner.convertOp(
+      'asAddress',
+      this,
+      undefined,
+      '.asAddress()',
+    );
   }
   asUint160(): Expr {
-    return internalsOf(this).owner.convertOp('asUint160', this, undefined, '.asUint160()');
+    return internalsOf(this, 'asUint160').owner.convertOp(
+      'asUint160',
+      this,
+      undefined,
+      '.asUint160()',
+    );
   }
   asUint256(): Expr {
-    return internalsOf(this).owner.convertOp('asUint256', this, undefined, '.asUint256()');
+    return internalsOf(this, 'asUint256').owner.convertOp(
+      'asUint256',
+      this,
+      undefined,
+      '.asUint256()',
+    );
   }
   asBytes32(): Expr {
-    return internalsOf(this).owner.convertOp('asBytes32', this, undefined, '.asBytes32()');
+    return internalsOf(this, 'asBytes32').owner.convertOp(
+      'asBytes32',
+      this,
+      undefined,
+      '.asBytes32()',
+    );
   }
   asUint(): Expr {
-    return internalsOf(this).owner.convertOp('asUint', this, undefined, '.asUint()');
+    return internalsOf(this, 'asUint').owner.convertOp('asUint', this, undefined, '.asUint()');
   }
   asBytesN(): Expr {
-    return internalsOf(this).owner.convertOp('asBytesN', this, undefined, '.asBytesN()');
+    return internalsOf(this, 'asBytesN').owner.convertOp(
+      'asBytesN',
+      this,
+      undefined,
+      '.asBytesN()',
+    );
   }
   asBytes(): Expr {
-    return internalsOf(this).owner.convertOp('asBytes', this, undefined, '.asBytes()');
+    return internalsOf(this, 'asBytes').owner.convertOp('asBytes', this, undefined, '.asBytes()');
   }
   asString(): Expr {
-    return internalsOf(this).owner.convertOp('asString', this, undefined, '.asString()');
+    return internalsOf(this, 'asString').owner.convertOp(
+      'asString',
+      this,
+      undefined,
+      '.asString()',
+    );
   }
   length(): Expr {
-    return internalsOf(this).owner.lenOp(this, '.length()');
+    return internalsOf(this, 'length').owner.lenOp(this, '.length()');
   }
   byteAt(i: unknown): Expr {
-    return internalsOf(this).owner.byteAtOp(this, i, '.byteAt()');
+    return internalsOf(this, 'byteAt').owner.byteAtOp(this, i, '.byteAt()');
   }
   slice(start: unknown, end?: unknown): Expr {
-    return internalsOf(this).owner.sliceOp(this, start, end, '.slice()');
+    return internalsOf(this, 'slice').owner.sliceOp(this, start, end, '.slice()');
   }
   at(i: unknown): Expr {
     // the runtime handle is element-typed (a composite element yields a `Tuple`/array handle); the
     // public `Expr.at` overloads narrow it per element type, so the cast is sound.
-    return unsafeCast<Expr>(internalsOf(this).owner.atOp(this, i, '.at()'));
+    return unsafeCast<Expr>(internalsOf(this, 'at').owner.atOp(this, i, '.at()'));
   }
 }
 
-function internalsOf(h: object): ExprInternals {
+function internalsOf(h: object, member: string): ExprInternals {
   const i = EXPR_INTERNALS.get(h);
-  if (i === undefined) {
-    throw new EvsInternalError('INTERNAL', 'Expr handle lost its internals');
-  }
+  if (i === undefined) throw detachedMemberError('Expr', 'x', ExprHandle.prototype, member);
   return i;
 }
 
@@ -277,26 +341,24 @@ export class CellImpl {
   }
 
   get type(): EvsType {
-    const i = cellInternalsOf(this);
+    const i = cellInternalsOf(this, 'type');
     return i.owner.typeOfCell(i.id);
   }
 
   get(): Expr {
-    const i = cellInternalsOf(this);
+    const i = cellInternalsOf(this, 'get');
     return i.owner.cellGet(i.id, 'Cell.get()');
   }
 
   set(value: unknown): void {
-    const i = cellInternalsOf(this);
+    const i = cellInternalsOf(this, 'set');
     i.owner.cellSet(i.id, value, 'Cell.set()');
   }
 }
 
-function cellInternalsOf(h: object): CellInternals {
+function cellInternalsOf(h: object, member: string): CellInternals {
   const i = CELL_INTERNALS.get(h);
-  if (i === undefined) {
-    throw new EvsInternalError('INTERNAL', 'Cell handle lost its internals');
-  }
+  if (i === undefined) throw detachedMemberError('Cell', 'cell', CellImpl.prototype, member);
   return i;
 }
 
@@ -311,26 +373,24 @@ export class MutArrayImpl {
   }
 
   set(i: unknown, v: unknown): void {
-    const a = arrInternalsOf(this);
+    const a = arrInternalsOf(this, 'set');
     a.owner.arrSet(a.id, a.elem, i, v, 'MutArray.set()');
   }
 
   get(i: unknown): Expr | object {
-    const a = arrInternalsOf(this);
+    const a = arrInternalsOf(this, 'get');
     return a.owner.arrGet(a.id, a.elem, i, 'MutArray.get()');
   }
 
   expr(): Expr {
-    const a = arrInternalsOf(this);
+    const a = arrInternalsOf(this, 'expr');
     return a.owner.arrExpr(a.id, 'MutArray.expr()');
   }
 }
 
-function arrInternalsOf(h: object): ArrInternals {
+function arrInternalsOf(h: object, member: string): ArrInternals {
   const i = ARR_INTERNALS.get(h);
-  if (i === undefined) {
-    throw new EvsInternalError('INTERNAL', 'MutArray handle lost its internals');
-  }
+  if (i === undefined) throw detachedMemberError('MutArray', 'arr', MutArrayImpl.prototype, member);
   return i;
 }
 
@@ -378,12 +438,12 @@ const TUPLE_HANDLE_MEMBER_SET: ReadonlySet<string> = new Set(TUPLE_HANDLE_MEMBER
  */
 class TupleHandle {
   at(i: unknown): FieldHandle {
-    const t = tupleInternalsOf(this);
+    const t = tupleInternalsOf(this, 'at');
     return t.owner.tupleAt(t.id, t.tt, i, 'Tuple.at()');
   }
 
   expr(): Expr {
-    const t = tupleInternalsOf(this);
+    const t = tupleInternalsOf(this, 'expr');
     return t.owner.tupleExpr(t.id, 'Tuple.expr()');
   }
 }
@@ -401,11 +461,9 @@ function describeHandle(
   return i === undefined ? `${kind}<?>` : i.owner.describeValue(i.id);
 }
 
-function tupleInternalsOf(h: object): TupleInternals {
+function tupleInternalsOf(h: object, member: string): TupleInternals {
   const i = TUPLE_INTERNALS.get(h);
-  if (i === undefined) {
-    throw new EvsInternalError('INTERNAL', 'Tuple handle lost its internals');
-  }
+  if (i === undefined) throw detachedMemberError('Tuple', 'tuple', TupleHandle.prototype, member);
   return i;
 }
 
@@ -431,7 +489,7 @@ function tupleProtoOf(tt: TupleType): object {
     fieldProps[comp.name] = {
       enumerable: true,
       get(this: object): object {
-        const t = tupleInternalsOf(this);
+        const t = tupleInternalsOf(this, comp.name);
         return t.owner.makeField(t.id, index, memberType);
       },
     };
@@ -463,21 +521,19 @@ export class FieldHandle {
   }
 
   get(): Expr | object {
-    const f = fieldInternalsOf(this);
+    const f = fieldInternalsOf(this, 'get');
     return f.owner.fieldGet(f.tuple, f.index, f.type, 'Field.get()');
   }
 
   set(value: unknown): void {
-    const f = fieldInternalsOf(this);
+    const f = fieldInternalsOf(this, 'set');
     f.owner.fieldSet(f.tuple, f.index, f.type, value, 'Field.set()');
   }
 }
 
-function fieldInternalsOf(h: object): FieldInternals {
+function fieldInternalsOf(h: object, member: string): FieldInternals {
   const i = FIELD_INTERNALS.get(h);
-  if (i === undefined) {
-    throw new EvsInternalError('INTERNAL', 'Field handle lost its internals');
-  }
+  if (i === undefined) throw detachedMemberError('Field', 'field', FieldHandle.prototype, member);
   return i;
 }
 
@@ -512,12 +568,19 @@ export class LoopCtlImpl {
   }
 
   break(): void {
-    this.guard('loop.break()');
-    this.emit('break');
+    const loop = loopCtlOf(this, 'break');
+    loop.guard('loop.break()');
+    loop.emit('break');
   }
 
   continue(): void {
-    this.guard('loop.continue()');
-    this.emit('continue');
+    const loop = loopCtlOf(this, 'continue');
+    loop.guard('loop.continue()');
+    loop.emit('continue');
   }
+}
+
+function loopCtlOf(h: unknown, member: string): LoopCtlImpl {
+  if (h instanceof LoopCtlImpl) return h;
+  throw detachedMemberError('LoopCtl', 'loop', LoopCtlImpl.prototype, member);
 }

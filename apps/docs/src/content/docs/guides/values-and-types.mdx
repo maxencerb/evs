@@ -496,6 +496,18 @@ const bad = evscript({ name: 'bad', args: [t.uint256] }, (s, x) => {
 
 `console.log(handle)` is fine — printing is debugging, not misuse, so handles render a non-throwing description instead.
 
+### Methods need their handle
+
+A handle method is an ordinary JS method: it finds its value through `this`. Passed on by itself — as a callback (`xs.map(x.add)`, `s.if(done, loop.break)`) or stored and called bare (`const f = x.add; f(1n)`) — it runs without its handle. TypeScript misses most of these (a callback is never flagged), so evs catches them at recording: the call throws `EvsTypeError` (`TYPE_MISMATCH`) naming the method and the arrow to write instead. This applies to every handle: `Expr`, `Cell`, `MutArray`, tuple and struct handles, and `LoopCtl`. To catch it before running, enable the `typescript/unbound-method` lint rule (type-aware oxlint or typescript-eslint).
+
+```ts nocheck
+[1n, 2n].map(x.add); // EvsTypeError: Expr.add was called without its handle
+[1n, 2n].map((v) => x.add(v)); // fine
+
+s.if(done, loop.break); // EvsTypeError: LoopCtl.break was called without its handle
+s.if(done, () => loop.break()); // fine
+```
+
 ### The one untrappable case: truthiness
 
 `if (x)` never calls a coercion hook, so it cannot throw. This script compiles and records without any error — and it is wrong:

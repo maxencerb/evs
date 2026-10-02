@@ -2181,6 +2181,148 @@ describe('staging traps', () => {
 });
 
 // ---------------------------------------------------------------------------
+// a handle method called without its handle (detached: a callback, or stored and called bare)
+// ---------------------------------------------------------------------------
+
+/* oxlint-disable typescript/unbound-method -- detaching a method from its handle IS the misuse
+ * these tests seed. */
+describe('checklist: a handle method called without its handle', () => {
+  const Pair = t.struct({ a: t.uint256, b: t.address });
+
+  // each case detaches one method and calls it the way user code does; `call` is the arrow the
+  // message must suggest instead
+  const cases: [
+    label: string,
+    misuse: (s: AnyBuilder, a: Args) => unknown,
+    method: string,
+    call: string,
+  ][] = [
+    ['xs.map(x.add)', (_s, a) => [1n, 2n].map(a.x.add), 'Expr.add', '(v) => x.add(v)'],
+    [
+      'const f = flag.not; f()',
+      (_s, a) => {
+        const f = a.flag.not as () => unknown; // TS rejects the bare call; plain JS does not
+        return f();
+      },
+      'Expr.not',
+      '() => x.not()',
+    ],
+    [
+      'const f = x.mulDiv; f(y, d)',
+      (_s, a) => {
+        const f = a.x.mulDiv as (rhs: bigint, d: bigint) => unknown;
+        return f(2n, 3n);
+      },
+      'Expr.mulDiv',
+      '(a, b) => x.mulDiv(a, b)',
+    ],
+    [
+      'xs.forEach(cell.set)',
+      (s) => {
+        [1n].forEach(s.let(t.uint256, 0n).set);
+      },
+      'Cell.set',
+      '(v) => cell.set(v)',
+    ],
+    [
+      'const g = cell.get; g()',
+      (s) => {
+        const g = s.let(t.uint256, 0n).get;
+        return g();
+      },
+      'Cell.get',
+      '() => cell.get()',
+    ],
+    [
+      'is.map(arr.get)',
+      (s) => [0n].map(s.newArray(t.uint256, 1n).get),
+      'MutArray.get',
+      '(v) => arr.get(v)',
+    ],
+    [
+      'const e = arr.expr; e()',
+      (s) => {
+        const e = s.newArray(t.uint256, 1n).expr;
+        return e();
+      },
+      'MutArray.expr',
+      '() => arr.expr()',
+    ],
+    [
+      'is.map(tuple.at)',
+      (s) => [0, 1].map(s.tuple(Pair, { a: 1n }).at),
+      'Tuple.at',
+      '(v) => tuple.at(v)',
+    ],
+    [
+      'const g = tuple.a.get; g()',
+      (s) => {
+        const g = s.tuple(Pair, { a: 1n }).a.get;
+        return g();
+      },
+      'Field.get',
+      '() => field.get()',
+    ],
+    [
+      's.if(flag, loop.break)',
+      (s, a) => {
+        const i = s.let(t.uint256, 0n);
+        s.while(
+          () => i.get().lt(a.x),
+          (loop) => {
+            s.if(a.flag, loop.break);
+            i.set(a.x);
+          },
+        );
+      },
+      'LoopCtl.break',
+      '() => loop.break()',
+    ],
+  ];
+
+  test.each(cases)('%s → TYPE_MISMATCH naming the method, not an evs bug', (_, misuse, m, call) => {
+    const e = expectEvs(
+      () =>
+        rec((s, a) => {
+          misuse(s, a);
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      `${m} was called without its handle`,
+    );
+    expect(e.message).toContain(call);
+    expect(e.message).not.toMatch(/bug in evs/);
+  });
+
+  test('a getter read off its descriptor (Expr.type, a struct field) is worded as a read', () => {
+    const detachedGet = (h: object, key: string): unknown =>
+      Object.getOwnPropertyDescriptor(Object.getPrototypeOf(h), key)?.get?.call(undefined);
+    expectEvs(
+      () =>
+        rec((s, a) => {
+          detachedGet(a.x, 'type');
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      'Expr.type was read without its handle — read it on the handle itself: `x.type`',
+    );
+    expectEvs(
+      () =>
+        rec((s, a) => {
+          detachedGet(s.tuple(Pair, { a: 1n }), 'a');
+          return s.return({ x: a.x });
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      'Tuple.a was read without its handle',
+    );
+  });
+});
+/* oxlint-enable typescript/unbound-method */
+
+// ---------------------------------------------------------------------------
 // tuple literals — unknown keys, staged handles, abitype's naming rule, own properties
 // ---------------------------------------------------------------------------
 
