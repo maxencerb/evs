@@ -84,6 +84,10 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 - **minimumReleaseAge** (pnpm default: one day) refuses too-fresh versions at resolution time;
   pnpm itself writes exact-version `minimumReleaseAgeExclude` entries when a pin is newer, and
   prunes them once the lockfile no longer needs them.
+- **`.pnpmfile.cjs`** (root, not in `pnpm-workspace.yaml`): only a `beforePacking` hook that strips
+  the repository-only fields from the published manifest (see [Releasing](#releasing)). pnpm
+  records its hash as `pnpmfileChecksum` in pnpm-lock.yaml, so re-run `vp install` after editing
+  it, or `--frozen-lockfile` fails (CI, the release job and the docs build).
 - No hoisting workarounds are needed: `wrangler` stays a **root** devDependency only so the
   Cloudflare deploy command (`npx wrangler`, from the repo root) finds it in the root
   `node_modules/.bin` (pnpm links a workspace's binaries into its own `node_modules` only). The
@@ -96,7 +100,7 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 names so `exports` / `main` / `types` are unchanged) and JS source maps. The maps embed the
 TypeScript sources (`sourcesContent`, pinned with `outputOptions.sourcemapExcludeSources: false`)
 so stack traces and debuggers resolve to the original code, which is why `src/` is **not**
-shipped (`files` is `dist` only). There are no declaration maps: go-to-definition lands on the
+shipped (`files` is `dist` and the changelog). There are no declaration maps: go-to-definition lands on the
 `.d.ts`, which keeps the JSDoc. Do not re-add `src` to `files` or turn on `dts.sourcemap` without
 the other — declaration maps carry no sources and would point at missing files. No tsdown compatibility settings are set:
 `deps.resolveDepSubpath` does not matter (every external is imported by its bare name) and
@@ -464,8 +468,12 @@ Versioning is driven by [changesets](https://github.com/changesets/changesets); 
    not on npm yet (`prepublishOnly` rebuilds `dist/`), then creates the `@maxencerb/evs@X.Y.Z`
    tag and reports it through `CHANGESETS_OUTPUT`; the action pushes the tag and creates the
    GitHub release. The committed version is always the last released one. The tarball is
-   `dist/` + README + LICENSE + package.json only (see
-   [Library build](#library-build-vp-pack): sources live inside the `.js.map` files).
+   `dist/` + CHANGELOG + README + LICENSE + package.json only (see
+   [Library build](#library-build-vp-pack): sources live inside the `.js.map` files), and its
+   package.json carries no `scripts`, `devDependencies` or `//` comment fields: the
+   `beforePacking` hook in the root `.pnpmfile.cjs` drops them from the packed manifest (pnpm
+   runs it for `pnpm pack` and `pnpm publish`; the file on disk is untouched). `src/tarball.test.ts`
+   packs the package and checks both.
 
 Why this works without a token or the npm CLI: since pnpm 11, `pnpm publish` is native (it no
 longer shells out to `npm publish`) and implements npm trusted publishing itself — it reads

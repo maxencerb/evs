@@ -86,7 +86,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `vitest@*` → the Vitest `vp` bundles, both required by Vite+ under pnpm), the
   `peerDependencyRules` for the core alias's version, `allowBuilds` (pnpm ≥ 11 fails installs on
   unreviewed dependency build scripts — rule on any new one there) and pnpm's
-  `minimumReleaseAge` excludes. `viem` and `vite-plus` are exact-pinned (type tests depend on
+  `minimumReleaseAge` excludes. The root `.pnpmfile.cjs` strips `scripts` / `devDependencies` from
+  the published manifest (`beforePacking`); its hash is in pnpm-lock.yaml, so `vp install` after
+  editing it. `viem` and `vite-plus` are exact-pinned (type tests depend on
   viem patch behavior; `vite-plus`, the `vite` alias and the `vitest` override move together) —
   bump through `vp migrate`, then re-run `vp install`.
   TypeScript is on 6.x: `@astrojs/check` does not accept 7 yet, and TS 6 no longer

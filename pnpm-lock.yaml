@@ -213,6 +213,8 @@ overrides:
   vite@*: npm:@voidzero-dev/vite-plus-core@1.0.0
   vitest@*: 5.0.1
 
+pnpmfileChecksum: sha256-J5izJE0FzLhlhWERkp1Ghb+Fov/a8vdVoEGrky9nWJU=
+
 importers:
 
   .:

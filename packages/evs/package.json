@@ -9,6 +9,7 @@
     "directory": "packages/evs"
   },
   "files": [
+    "CHANGELOG.md",
     "dist",
     "!dist/**/*.test.*"
   ],
