@@ -44,6 +44,12 @@ const SYMBOLS: readonly Hex[] = [
   `0x${'41'.repeat(32)}`,
   word('4100420000'),
   `0x${'00'.repeat(31)}41`,
+  // the branch-free trailing-zero count: every kept length 0..32 …
+  ...Array.from({ length: 33 }, (_, n) => word('41'.repeat(n))),
+  // … and a lone set bit at every byte, cycling through the bit offsets
+  ...Array.from({ length: 32 }, (_, i) =>
+    word(`${'00'.repeat(i)}${(1 << (i % 8)).toString(16).padStart(2, '0')}`),
+  ),
 ];
 
 interface Pair {

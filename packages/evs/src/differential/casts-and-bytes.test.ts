@@ -16,6 +16,7 @@ import {
   type Abi,
   bytesToHex,
   decodeFunctionResult,
+  encodeFunctionData,
   getAddress,
   hexToBytes,
   hexToString,
@@ -30,7 +31,9 @@ import {
   panicData,
   type AnyScript,
 } from '../../test/harness/differential.js';
+import { execRuntime } from '../../test/harness/evm.js';
 import { evscript } from '../builder/script.js';
+import { compile } from '../compile.js';
 import { namedArg, t } from '../core/types.js';
 import { interpret } from '../ir/interp.js';
 
@@ -280,12 +283,17 @@ describe('string ↔ bytes and bytesN → string', () => {
     stringToHex('déjà', { size: 32 }), // multi-byte UTF-8
   ];
 
-  /** The host-side oracle: drop the trailing zero bytes, decode the rest as UTF-8. */
-  function trimmedString(word: Hex): string {
+  /** The host-side oracle: the byte length up to the last nonzero byte. */
+  function trimmedLength(word: Hex): number {
     const bytes = hexToBytes(word);
     let n = bytes.length;
     while (n > 0 && bytes[n - 1] === 0) n--;
-    return hexToString(bytesToHex(bytes.subarray(0, n)));
+    return n;
+  }
+
+  /** The host-side oracle: drop the trailing zero bytes, decode the rest as UTF-8. */
+  function trimmedString(word: Hex): string {
+    return hexToString(bytesToHex(hexToBytes(word).subarray(0, trimmedLength(word))));
   }
 
   test('bytes32 / bytes4 / bytes1 → string trims the trailing zero bytes', async () => {
@@ -325,6 +333,83 @@ describe('string ↔ bytes and bytesN → string', () => {
         [false, 'USDC', b],
       ]),
     );
+  });
+
+  /** `n` nonzero bytes (cycling through values that set every bit position) then zero padding. */
+  function wordOfLength(
+    n: number,
+    fill = (i: number): number => [0x01, 0x80, 0xff, 0x10][i % 4] ?? 1,
+  ): Hex {
+    const bytes = new Uint8Array(32);
+    for (let i = 0; i < n; i++) bytes[i] = fill(i);
+    return bytesToHex(bytes);
+  }
+
+  /** Every trimmed length 0..32, a lone set bit at every byte and bit offset, embedded zeros. */
+  const EDGE_WORDS: readonly Hex[] = [
+    ...Array.from({ length: 33 }, (_, n) => wordOfLength(n)),
+    ...Array.from({ length: 32 }, (_, i) => {
+      const bytes = new Uint8Array(32);
+      bytes[i] = 1 << (i % 8); // a single set bit, at every byte and every bit offset
+      return bytesToHex(bytes);
+    }),
+    ...[1, 2, 4, 8, 16, 32, 64, 128].map((v) => wordOfLength(32, () => v)), // full, one bit each
+    `0x00${'ff'.repeat(31)}`, // leading zero byte, the rest set
+    `0x${'00ff'.repeat(16)}`, // alternating: the last byte is the last nonzero one
+    `0x${'ff00'.repeat(16)}`, // alternating: one trailing zero byte
+    `0x01${'00'.repeat(30)}01`, // only the two ends set
+    `0x01${'00'.repeat(30)}80`, // … the last one by its top bit
+  ];
+
+  test('bytes32 → string: every trimmed length, bit offset and embedded-zero shape', async () => {
+    const script = evscript({ name: 'edgeSymbol', args: [t.bytes32] }, (s, b) =>
+      s.return({ sym: b.asString(), len: b.asString().length() }),
+    );
+    await expectAgreement(
+      script,
+      EDGE_WORDS.map((b) => [b]),
+    );
+    for (const b of EDGE_WORDS) {
+      expect(decoded(script, [b])).toEqual({
+        sym: trimmedString(b),
+        len: BigInt(trimmedLength(b)),
+      });
+    }
+  });
+
+  test('every bytesN width trims inside its own lane', async () => {
+    for (let n = 1; n <= 32; n++) {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- n ∈ 1..32 names a bytesN key
+      const type = t[`bytes${n}` as 'bytes32'];
+      const script = evscript({ name: `lane${n}`, args: [type] }, (s, b) =>
+        s.return({ sym: b.asString() }),
+      );
+      const rows = [0, 1, n - 1, n]
+        .filter((k, i, all) => k >= 0 && all.indexOf(k) === i)
+        .map((k): [Hex] => [`0x${wordOfLength(k).slice(2, 2 + 2 * n)}`]);
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design: one width at a time
+      await expectAgreement(script, rows);
+    }
+  });
+
+  test('the trim costs the same gas at every trimmed length (no per-byte loop)', async () => {
+    const script = compile(
+      evscript({ name: 'symLen', args: [t.bytes32] }, (s, b) =>
+        s.return({ len: b.asString().length() }),
+      ),
+    );
+    const gasOf = async (b: Hex): Promise<bigint> => {
+      const calldata = encodeFunctionData({ abi: script.abi, functionName: 'symLen', args: [b] });
+      const res = await execRuntime(script.runtimeBytecode, calldata);
+      expect(res.success).toBe(true);
+      return res.gasUsed;
+    };
+    const gas = await Promise.all(EDGE_WORDS.map(gasOf));
+    const min = gas.reduce((m, g) => (g < m ? g : m));
+    const max = gas.reduce((m, g) => (g > m ? g : m));
+    // 0.3.0 scanned down from byte 32 one byte per iteration: ~67 gas per trailing zero byte,
+    // 2,269 gas for an all-zero word. The branch-free trailing-zero count is flat.
+    expect(max - min, `asString gas ${min}..${max}`).toBe(0n);
   });
 
   test('pre-cancun targets agree too', async () => {

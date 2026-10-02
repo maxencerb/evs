@@ -23,7 +23,6 @@ import {
   emitMaxCheck,
   maxUint,
   maxInt,
-  STMT_BASELINE,
 } from './context.js';
 
 // ---------------------------------------------------------------------------
@@ -161,7 +160,7 @@ export function lowerConvert(
   loadOperand(w, ctx, s.a, meta(`convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
 
   if (to === 'string' && isBytesN(from)) {
-    emitWordToString(w, bitsOf(from) / 8, s.site); // [ptr]
+    emitWordToString(w); // [ptr]
     storeOut(w, ctx, s.out);
     return;
   }
@@ -227,34 +226,46 @@ export function lowerConvert(
   storeOut(w, ctx, s.out);
 }
 
+/** `0x0101…01`: bit 0 of every byte. */
+const LOW_BIT_OF_EACH_BYTE = (2n ** 256n - 1n) / 0xffn;
+/** `0x20 1f 1e … 01`: byte `j` (from the left) holds `32 − j`. */
+const KEPT_LENGTH_BY_BYTE = Array.from({ length: 32 }, (_, j) => BigInt(32 - j)).reduce(
+  (acc, b) => (acc << 8n) | b,
+  0n,
+);
+
 /**
- * `[v] → [ptr]`: a fresh string holding the first `size` bytes of the left-aligned `bytesN` word
- * `v` up to its last nonzero byte (`.asString()`). The trimmed length is found by scanning down
- * from `size` with `BYTE` (at most `size` iterations); every byte of `v` past it is zero, so one
- * MSTORE writes the payload together with its zero padding.
+ * `[v] → [ptr]`: a fresh string holding the left-aligned `bytesN` word `v` up to its last nonzero
+ * byte (`.asString()`). `v` is canonical (every byte past N is zero), so the kept length is
+ * `32 − j`, `j` = the word's trailing zero bytes, found branch-free in ~70 gas whatever the word:
+ *
+ * 1. fold each byte onto its low bit (`x |= x >> 4; x |= x >> 2; x |= x >> 1`, masked with
+ *    `0x0101…01`): one flag per nonzero byte, at `256^k` for the k-th byte from the right;
+ * 2. isolate the lowest flag (`f & −f`): `256^j`, or 0 for an all-zero word;
+ * 3. multiply by `0x201f…01` and keep the top byte: shifting the constant left by `j` bytes
+ *    leaves its byte `j` = `32 − j` on top (every byte < 256, so no carry) — and 0 stays 0.
+ *
+ * Every byte of `v` past the kept length is zero, so one MSTORE writes the payload together with
+ * its zero padding.
  */
-function emitWordToString(w: AsmWriter, size: number, site: number): void {
-  const scan = w.newLabel(`trim_${site}`);
-  const done = w.newLabel(`trim_done_${site}`);
-  w.push(size); // [n, v]
-  w.label(scan, STMT_BASELINE + 2);
+function emitWordToString(w: AsmWriter): void {
+  w.op('DUP1'); // [x = v, v]
+  for (const shift of [4, 2, 1]) {
+    w.op('DUP1');
+    w.push(shift);
+    w.op('SHR');
+    w.op('OR'); // [x |= x >> shift, v]
+  }
+  w.push(LOW_BIT_OF_EACH_BYTE);
+  w.op('AND'); // [f, v]                one flag per nonzero byte
   w.op('DUP1');
-  w.op('ISZERO');
-  w.pushLabel(done);
-  w.op('JUMPI'); // [n, v]               n == 0: an all-zero word
-  w.op('DUP2'); // [v, n, v]
-  w.push(1);
-  w.op('DUP3');
-  w.op('SUB'); // [n − 1, v, n, v]
-  w.op('BYTE'); // [v[n − 1], n, v]
-  w.pushLabel(done);
-  w.op('JUMPI'); // [n, v]               the last kept byte is nonzero
-  w.push(1);
-  w.op('SWAP1');
-  w.op('SUB'); // [n − 1, v]
-  w.pushLabel(scan);
-  w.op('JUMP');
-  w.label(done, STMT_BASELINE + 2); // [n, v]
+  w.push(0);
+  w.op('SUB');
+  w.op('AND'); // [f & −f, v]           256^j (0 for an all-zero word)
+  w.push(KEPT_LENGTH_BY_BYTE);
+  w.op('MUL');
+  w.push(248);
+  w.op('SHR'); // [n = 32 − j, v]
   emitAlloc(w, 64, { zeroFill: false }); // [ptr, n, v]
   w.op('SWAP1');
   w.op('DUP2');
