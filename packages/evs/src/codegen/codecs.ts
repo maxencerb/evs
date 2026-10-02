@@ -205,10 +205,13 @@ const CHEAP_DECODE_READS_AT_OFFSET = 5;
  * its operands at the cheapest cost a site can have: the real inline code reads them at least as
  * often as the call does, so the real saving is at least the measured one. The registers are
  * measured at `measureFrameEnd()`, the default allocator's frame end (the larger one), so both
- * allocators take the same decisions. The prologue's frame-end push, which grows by the register
- * words, is charged from the program's own `frameEnd`: one byte to every key whose words would
- * widen it (conservative: the push grows once). A key whose dry run fails to compile (a type too
- * deep for the stack) stays inline, and its site reports the error as it always did.
+ * allocators size calls and bodies alike. The prologue's frame-end push, which grows by the
+ * register words, is charged per allocator, from the program's own `frameEnd`: one byte to every
+ * key whose words would widen it (conservative: the push grows once). With that charge and the
+ * post-peephole check, a key whose saving sits on a threshold can decide differently under
+ * `optimize`; each decision is still safe for its own program. A key whose dry run fails to
+ * compile (a type too deep for the stack) stays inline, and its site reports the error as it
+ * always did.
  *
  * Compile time: a program without a codec candidate (`candidates: false`, from the caller's
  * {@link mayUseCodec} scan) skips the census; a key measures only the failure modes its sites

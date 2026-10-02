@@ -102,7 +102,8 @@ object from the fully-named tuple, and objects are order-insensitive.
 
 - `runtimeBytecode` is the deployed form — what actually executes. Compilation fails with
   `EvsCompileError` (code `COMPILE_LIMIT`) if it exceeds the EIP-170 limit of 24,576 bytes; the
-  message includes a per-region size breakdown (dispatcher, body, fns, tails, data segments).
+  message includes a per-region size breakdown (dispatcher, body, fns, tails, data segments,
+  plus `trampoline` / `codecs` when present).
 - `initBytecode` is `wrapper ++ runtimeBytecode`, where the wrapper is a locked 10-byte init
   stub that CODECOPYs everything after itself and returns it as the deployed code:
 

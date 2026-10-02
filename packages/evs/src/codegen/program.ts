@@ -134,8 +134,9 @@ export function lowerProgram(
   walkStmts(ir.body, scan);
   for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, scan);
 
-  // shared codec subroutines: measured against the default allocator's frame (the larger one),
-  // so both allocators take the same decisions
+  // shared codec subroutines: the registers are measured against the default allocator's frame
+  // (the larger one), so both allocators size calls and bodies alike; the prologue push and the
+  // `optimize` peephole check are per program, so a key on a threshold may decide differently
   const plan =
     opts.shareCodecs === false
       ? EMPTY_CODEC_PLAN

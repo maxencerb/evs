@@ -258,7 +258,7 @@ Failure modes:
 - `EvsCompileError` with code `EVM_VERSION` for an unknown `evmVersion` string.
 - `EvsCompileError` with code `COMPILE_LIMIT` when the runtime bytecode exceeds the EIP-170
   limit of 24,576 bytes; the message includes a per-region size breakdown (dispatcher, body,
-  fns, tails, data segments).
+  fns, tails, data segments, plus `trampoline` / `codecs` when present).
 - `EvsTypeError` when the value passed is not a script object.
 
 ```ts
