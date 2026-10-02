@@ -11,9 +11,14 @@ import { compile } from '../compile.js';
 import {
   t,
   type BytesNOfUint,
+  type conversionHint,
   type Expr,
+  type IntType,
+  type NumericReceiver,
+  type NumericType,
   type OrderedType,
   type UintOfBytesN,
+  type UintType,
 } from '../core/types.js';
 import { evscript } from './script.js';
 
@@ -80,6 +85,53 @@ test('conversion result types and receiver constraints', () => {
       return s.return({ ok: s.lit(t.bool, true) });
     },
   );
+});
+
+test('toUint / toInt on a non-numeric receiver: the type error names the as* conversion', () => {
+  // the `this` type a non-numeric receiver meets is the message itself (tsc prints it in the
+  // error; `conversions.test.ts` pins the printed diagnostic)
+  expectTypeOf<NumericReceiver<'address', 'toUint'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".toUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .toUint(…))";
+  }>();
+  expectTypeOf<NumericReceiver<'bytes4', 'toInt'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".toInt(): cannot convert from 'bytes4' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .toInt(…))";
+  }>();
+  expectTypeOf<NumericReceiver<'bool', 'toUint'>>().toEqualTypeOf<{
+    readonly [conversionHint]: '.toUint(): the source must be numeric (uintN/intN)';
+  }>();
+  // a numeric receiver is itself
+  expectTypeOf<NumericReceiver<'uint64', 'toUint'>>().toEqualTypeOf<Expr<'uint64'>>();
+  expectTypeOf<NumericReceiver<UintType | IntType, 'toInt'>>().toEqualTypeOf<
+    Expr<UintType | IntType>
+  >();
+
+  evscript(
+    { name: 'hints', args: [t.address, t.bytes4, t.bool, t.uint64, t.int24] },
+    (s, a, b4, flag, u64, i24) => {
+      // @ts-expect-error — an address converts through .asUint160() first
+      a.toUint(t.uint160);
+      // @ts-expect-error — a bytesN converts through .asUint() first
+      b4.toInt(t.int64);
+      // @ts-expect-error — bool has no integer counterpart
+      flag.toUint(t.uint8);
+      // the hinted routes, and numeric receivers, still infer their target
+      expectTypeOf(a.asUint160().toUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(b4.asUint().toInt(t.int64)).toEqualTypeOf<Expr<'int64'>>();
+      expectTypeOf(u64.toUint(t.uint8)).toEqualTypeOf<Expr<'uint8'>>();
+      expectTypeOf(i24.toUint('uint256')).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(i24.toInt(t.int256)).toEqualTypeOf<Expr<'int256'>>();
+      return s.return({ ok: flag });
+    },
+  );
+
+  // a generic receiver bounded by the numeric types is accepted; one that admits an address is not
+  const widen = <u extends UintType>(x: Expr<u>) => x.toUint(t.uint256);
+  expectTypeOf(widen).returns.toEqualTypeOf<Expr<'uint256'>>();
+  const signed = <n extends NumericType>(x: Expr<n>) => x.toInt(t.int256);
+  expectTypeOf(signed).returns.toEqualTypeOf<Expr<'int256'>>();
+  // @ts-expect-error — u may be 'address'
+  const loose = <u extends UintType | 'address'>(x: Expr<u>) => x.toUint(t.uint256);
+  void loose;
 });
 
 test('ordering on address and bytesN, methods and free functions', () => {

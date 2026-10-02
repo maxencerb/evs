@@ -42,7 +42,17 @@ export type {
   UintOfBytesN,
   BytesNOfUint,
 } from './types/vocabulary.js';
-export type { exprBrand, Expr, LitOf, TupleLitOf, TupleAsParam, IntoExpr } from './types/expr.js';
+export type {
+  exprBrand,
+  Expr,
+  conversionHint,
+  NumericReceiver,
+  ConversionHint,
+  LitOf,
+  TupleLitOf,
+  TupleAsParam,
+  IntoExpr,
+} from './types/expr.js';
 export {
   IDENT_RE,
   PROTO_RESERVED,
