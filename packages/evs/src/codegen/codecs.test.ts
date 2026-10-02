@@ -403,6 +403,20 @@ describe('plan drift', () => {
     expect((fallback.length - 2) / 2).toBe(twin.length);
     expect(build(script).runtimeBytecode.length).toBeLessThan(fallback.length);
   });
+
+  test('a body using more register words than the plan reserves is an INTERNAL error', () => {
+    // the W8 encoder spills RET, BASE and SRC: one reserved word would let it clobber the heap
+    expect(planOf(script).words).toBe(3);
+    setCodecPlanTransform((plan) => ({ ...plan, words: 1 }));
+    setCodecPlanStrict(false); // not a drift: no fallback either way
+    try {
+      expect(() => build(script)).toThrow(EvsInternalError);
+      expect(() => build(script)).toThrow(/uses 3 register word\(s\), the plan reserves 1/);
+    } finally {
+      setCodecPlanStrict(true);
+      setCodecPlanTransform(null);
+    }
+  });
 });
 
 describe('shared decoders', () => {

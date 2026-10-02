@@ -36,7 +36,6 @@ import { EvsCompileError, EvsInternalError } from '../core/errors.js';
 import { abiParamToType, typeToAbiParam, type NamedType } from '../core/types.js';
 import { callOutputs, type ScriptIr } from '../ir/nodes.js';
 import {
-  effectiveDecodeBudget,
   emitEncodeBlock,
   emitSharedEncodeBody,
   headOffsets,
@@ -53,15 +52,14 @@ import {
 } from './abi.js';
 import { usesRecursiveEncoder } from './call/calldata.js';
 import { makeDecodeFail } from './call/shared.js';
-import { outputsLayout, emitDecodeSimulateOutputs } from './call/simulate-call.js';
-import { emitDecodeReturnOutput } from './call/static-call.js';
+import { emitDecodeSimulateOutputs, simOutputsUnit } from './call/simulate-call.js';
+import { emitDecodeReturnOutput, retOutputUnit } from './call/static-call.js';
 import {
-  decRetKey,
-  decSimKey,
-  encKey,
+  codecKey,
   encodeMemberKind,
   isTailMemberKind,
   RETURNS_SITE,
+  type CodecUnit,
   type EncodeMemberKind,
 } from './codec-keys.js';
 import { walkEmittedStmts } from './lower.js';
@@ -114,25 +112,6 @@ function driftError(message: string): Error {
 // ---------------------------------------------------------------------------
 // the plan
 // ---------------------------------------------------------------------------
-
-/** What one shared body does (everything its code depends on: the key is built from it). */
-export type CodecUnit =
-  | { readonly dir: 'enc'; readonly kind: EncodeMemberKind; readonly layout: TypeLayout }
-  | {
-      readonly dir: 'dec';
-      /** One output of a call's returndata, at `headOffset`. */
-      readonly region: 'ret';
-      readonly layout: TypeLayout;
-      readonly headOffset: number;
-      readonly budget: 'off' | 'once';
-    }
-  | {
-      readonly dir: 'dec';
-      /** A simulate site's whole outputs list, decoded as one tuple. */
-      readonly region: 'sim';
-      readonly layout: Extract<TypeLayout, { kind: 'tuple' }>;
-      readonly budget: 'off' | 'once';
-    };
 
 /** One shared key: its body, and the uses that call it. */
 export interface PlannedKey {
@@ -312,13 +291,13 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
     if (group === undefined) entry.groups.set(site, { count: 1, mode, hot });
     else group.count += 1;
   };
+  const use = (unit: CodecUnit, site: number, mode: UseMode, hot: boolean): void =>
+    add(codecKey(unit), unit, site, mode, hot);
   const encodeBlock = (params: readonly NamedType[], site: number, hot: boolean): void => {
     for (const p of params) {
       const layout = layoutOfType(abiParamToType(p));
       const kind = encodeMemberKind(layout);
-      if (kind !== null) {
-        add(encKey(kind, layout), { dir: 'enc', kind, layout }, site, 'strict', hot);
-      }
+      if (kind !== null) use({ dir: 'enc', kind, layout }, site, 'strict', hot);
     }
   };
   const valueParam = (v: number): NamedType => {
@@ -340,11 +319,8 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
     if (s.kind === 'simulate') {
       const outputs = s.fnAbi.outputs;
       if (outputs.length === 0) return;
-      const budget = needsDecodeBudget(outputs) ? 'once' : 'off';
-      const layout = outputsLayout(outputs);
-      add(
-        decSimKey(layout, budget),
-        { dir: 'dec', region: 'sim', layout, budget },
+      use(
+        simOutputsUnit(outputs, needsDecodeBudget(outputs) ? 'once' : 'off'),
         s.site,
         s.mode,
         hot,
@@ -357,10 +333,7 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
     outputs.forEach((p, j) => {
       const layout = layoutOfType(abiParamToType(p));
       if (!usesRecursiveCodec(layout)) return;
-      const headOffset = offsets[j] ?? 0;
-      const own = effectiveDecodeBudget(layout, budget) === 'off' ? 'off' : 'once';
-      const unit: CodecUnit = { dir: 'dec', region: 'ret', layout, headOffset, budget: own };
-      add(decRetKey(layout, headOffset, own), unit, s.site, s.mode, hot);
+      use(retOutputUnit(layout, offsets[j] ?? 0, budget), s.site, s.mode, hot);
     });
   });
   encodeBlock(
@@ -609,7 +582,7 @@ export class CodecShare implements CodecHook {
     pushSrc: () => void,
     pushBase: (() => void) | null,
   ): boolean {
-    const use = this.#use(w, encKey(kind, layout));
+    const use = this.#use(w, codecKey({ dir: 'enc', kind, layout }));
     if (use === null) return false;
     if ((pushBase === null) !== isTailMemberKind(kind)) {
       throw internal(`a ${kind} member call needs ${pushBase === null ? 'its base' : 'no base'}`);
@@ -676,25 +649,49 @@ export class CodecShare implements CodecHook {
    * never call bodies), and returns the first entry (`null` when no body was called). Call it
    * after every region that holds a site, and before the shared tails (a body references
    * `@memcpy` before cancun). A decoder body that can fail where its plan said it cannot (its
-   * sites would then not check for 0), or the reverse, is a drift.
+   * sites would then not check for 0), or the reverse, is a drift. A body that touches a register
+   * past the plan's reserved words (it would overwrite the heap) is an internal error.
    */
   emitBodies(w: AsmWriter, tails: SharedTails, opts: { evmVersion: EvmVersion }): LabelId | null {
     this.#emittingBodies = true;
     const bodyTails: SharedTails = { ...tails, codecs: null };
+    // the registers, recording the highest word a body asks for
+    let used = 0;
+    const regs = this.#regs;
+    const tracked: CodecRegisters = {
+      get ret() {
+        used = Math.max(used, 1);
+        return regs.ret;
+      },
+      get base() {
+        used = Math.max(used, 2);
+        return regs.base;
+      },
+      get src() {
+        used = Math.max(used, 3);
+        return regs.src;
+      },
+    };
     let first: LabelId | null = null;
     for (const [key, body] of this.#bodies) {
       const planned = this.#plan.keys.get(key);
       if (planned === undefined) throw internal(`body ${body.name} has no planned key`);
       first ??= body.entry;
       const { unit } = planned;
+      used = 0;
       if (unit.dir === 'enc') {
         const { kind, layout } = unit;
-        emitSharedEncodeBody(w, body.entry, body.name, kind, layout, this.#regs, bodyTails, opts);
-        continue;
+        emitSharedEncodeBody(w, body.entry, body.name, kind, layout, tracked, bodyTails, opts);
+      } else {
+        const canFail = emitDecoderBody(w, body.entry, body.name, unit, tracked, opts);
+        if (canFail !== planned.canFail) {
+          throw driftError(`${key}: the body ${canFail ? 'can' : 'cannot'} fail, against its plan`);
+        }
       }
-      const canFail = emitDecoderBody(w, body.entry, body.name, unit, this.#regs, opts);
-      if (canFail !== planned.canFail) {
-        throw driftError(`${key}: the body ${canFail ? 'can' : 'cannot'} fail, against its plan`);
+      if (used > this.#plan.words) {
+        throw internal(
+          `body ${body.name} uses ${used} register word(s), the plan reserves ${this.#plan.words}`,
+        );
       }
     }
     return first;

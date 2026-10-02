@@ -17,11 +17,10 @@ import {
   emitWithinStackBudget,
   needsDecodeBudget,
   emitInitDecodeBudget,
-  type DecodeBudget,
   type DecodeFail,
   type DecodeOptions,
 } from '../abi.js';
-import { decSimKey } from '../codec-keys.js';
+import { codecKey, type CodecUnit } from '../codec-keys.js';
 import { SCRATCH_1, FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
   SIMULATE_TRAMPOLINE_SELECTOR,
@@ -99,7 +98,7 @@ export function emitSimulateCall(
       : null;
   // outputs whose decode can exhaust the decode-work budget get a budget word after the snapshot
   const budgeted = needsDecodeBudget(outputs);
-  const budget: DecodeBudget = budgeted ? 'once' : 'off';
+  const budget: 'off' | 'once' = budgeted ? 'once' : 'off';
   const failPre = makeDecodeFail(w, plan, tryMode, 'sim');
   const fail = restore === null ? failPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
 
@@ -253,7 +252,7 @@ export function emitSimulateCall(
     // the program may share this decoder (`codegen/codecs.ts`): the call then routes a failure
     // through this site's own `fail`
     const what = `the outputs of ${fnAbi.name} (site ${siteId})`;
-    const key = decSimKey(outputsLayout(outputs), budget);
+    const key = codecKey(simOutputsUnit(outputs, budget));
     if (tails.codecs?.decode(w, key, fail, `decode ${what}`) !== true) {
       emitDecodeSimulateOutputs(
         w,
@@ -281,6 +280,18 @@ export function emitSimulateCall(
 
   // -- 6. try mode: success flag, zero block (checked — rejoins), join ------------------------
   if (tryMode) emitTryEpilogue(w, plan, 'sim', restore);
+}
+
+/**
+ * @internal The codec unit of a simulate site's whole outputs list under the site's decode
+ * budget: what keys its shared decoder, for this emitter and for the planner's census
+ * (`codegen/codecs.ts`) alike.
+ */
+export function simOutputsUnit(
+  outputs: readonly NamedType[],
+  budget: 'off' | 'once',
+): Extract<CodecUnit, { region: 'sim' }> {
+  return { dir: 'dec', region: 'sim', layout: outputsLayout(outputs), budget };
 }
 
 /** The layout of a simulate site's whole outputs list, decoded as one tuple. */

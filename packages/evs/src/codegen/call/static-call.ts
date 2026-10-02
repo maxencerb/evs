@@ -22,14 +22,13 @@ import {
   emitInitDecodeBudget,
   effectiveDecodeBudget,
   type CodecHook,
-  type DecodeBudget,
   type DecodeFail,
   type DecodeOptions,
   type DecodeRegion,
   emitDecodeFromRegion,
   emitAboveU64,
 } from '../abi.js';
-import { decRetKey } from '../codec-keys.js';
+import { codecKey, type CodecUnit } from '../codec-keys.js';
 import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import { emitCalldataFor } from './calldata.js';
 import {
@@ -213,7 +212,7 @@ function emitDecodeOutputs(
   const { stmt, siteId } = plan;
   const { fnAbi } = stmt;
   const { hasTupleOut, budgeted, fail } = ctx;
-  const budget: DecodeBudget = budgeted ? 'once' : 'off';
+  const budget: 'off' | 'once' = budgeted ? 'once' : 'off';
   const outOffsets = headOffsets(outputs); // cumulative (static tuple outputs inline)
   const minSize = headBytes(outputs);
 
@@ -259,8 +258,8 @@ function emitDecodeOutputs(
       // alias the snapshot); base/end are read from scratch so the decoder's free-ptr churn never
       // disturbs them. The program may share this decoder (`codegen/codecs.ts`): the call then
       // routes a failure through this site's own `fail`. A per-site setting added to this
-      // decode must also join its key (`decRetKey`).
-      const key = decRetKey(layout, headOffset, effectiveDecodeBudget(layout, budget));
+      // decode must also join its unit (`retOutputUnit`).
+      const key = codecKey(retOutputUnit(layout, headOffset, budget));
       const what = `output #${j} (${out.type}) of ${fnAbi.name} (site ${siteId})`;
       if (ctx.codecs?.decode(w, key, fail, `decode ${what}`) !== true) {
         emitDecodeReturnOutput(
@@ -285,6 +284,20 @@ function emitDecodeOutputs(
       note: `out #${j} ${out.type} (${copied ? 'normalized copy' : 'memref aliases snapshot'})`,
     }); // [buf]
   });
+}
+
+/**
+ * @internal The codec unit of one recursive-codec output of `layout` at `headOffset` in a call's
+ * returndata, at a site decoding under `siteBudget`: what keys its shared decoder, for this
+ * emitter and for the planner's census (`codegen/codecs.ts`) alike.
+ */
+export function retOutputUnit(
+  layout: TypeLayout,
+  headOffset: number,
+  siteBudget: 'off' | 'once',
+): Extract<CodecUnit, { region: 'ret' }> {
+  const budget = effectiveDecodeBudget(layout, siteBudget) === 'off' ? 'off' : 'once';
+  return { dir: 'dec', region: 'ret', layout, headOffset, budget };
 }
 
 /**

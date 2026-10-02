@@ -4,7 +4,10 @@
  *
  * A leaf module (it imports only `abi/layout.ts`), so the emitters that ask the codec hook for a
  * call (`abi/encode.ts`, `call/static-call.ts`, `call/simulate-call.ts`) and the planner that
- * decides what to share can both build keys without an import cycle.
+ * decides what to share can both build keys without an import cycle. Both sides describe a use
+ * as a {@link CodecUnit} (a decoder's through the one builder its emitter module exports,
+ * `retOutputUnit` / `simOutputsUnit`) and key it with {@link codecKey}, so the census cannot
+ * drift from the emitters on a key.
  */
 
 import { isDynamic, type TypeLayout } from '../abi/layout.js';
@@ -20,6 +23,33 @@ import { isDynamic, type TypeLayout } from '../abi/layout.js';
  *   appended at the tail cursor behind an offset word.
  */
 export type EncodeMemberKind = 'ST' | 'SA' | 'DT' | 'RA';
+
+/** What one shared body does: everything its code depends on, which {@link codecKey} encodes. */
+export type CodecUnit =
+  | { readonly dir: 'enc'; readonly kind: EncodeMemberKind; readonly layout: TypeLayout }
+  | {
+      readonly dir: 'dec';
+      /** One output of a call's returndata, at `headOffset`. */
+      readonly region: 'ret';
+      readonly layout: TypeLayout;
+      readonly headOffset: number;
+      /** The output's effective decode budget (`effectiveDecodeBudget` in `abi/decode.ts`). */
+      readonly budget: 'off' | 'once';
+    }
+  | {
+      readonly dir: 'dec';
+      /** A simulate site's whole outputs list, decoded as one tuple. */
+      readonly region: 'sim';
+      readonly layout: Extract<TypeLayout, { kind: 'tuple' }>;
+      readonly budget: 'off' | 'once';
+    };
+
+/** The key of the shared body serving `unit`. */
+export function codecKey(unit: CodecUnit): string {
+  if (unit.dir === 'enc') return encKey(unit.kind, unit.layout);
+  if (unit.region === 'ret') return decRetKey(unit.layout, unit.headOffset, unit.budget);
+  return decSimKey(unit.layout, unit.budget);
+}
 
 /** The site id the program's return encode is counted under (statement site ids are ≥ 0). */
 export const RETURNS_SITE = -1;
