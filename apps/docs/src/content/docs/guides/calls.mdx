@@ -381,8 +381,11 @@ const positionInfo = evscript(
 );
 ```
 
-**A struct argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal
-object** — build it with [`s.tuple`](/reference/builder/#stuple) and pass it in `args`:
+**A struct argument accepts a `Tuple` handle, a `s.tuple(...)` result, or an object literal.**
+The literal names every member, and each member may be a constant or a runtime value (an `Expr`,
+or a `Tuple` handle / nested literal for a struct member); it records the same struct as the
+`s.tuple` form. Reach for [`s.tuple`](/reference/builder/#stuple) to leave members at zero or to
+build the struct once and pass it to several calls:
 
 ```ts
 import { evscript } from '@maxencerb/evs';
@@ -413,7 +416,14 @@ const previewSwap = evscript(
   (s, pool, tokenIn, fee, amountIn) => {
     const params = s.tuple(SwapParams, { tokenIn, fee, amountIn });
     const amountOut = s.read({ address: pool, abi: poolStateAbi, functionName: 'previewSwap', args: [params] });
-    return s.return({ amountOut });
+    // the same call with an object literal: same calldata
+    const sameOut = s.read({
+      address: pool,
+      abi: poolStateAbi,
+      functionName: 'previewSwap',
+      args: [{ tokenIn, fee, amountIn }],
+    });
+    return s.return({ amountOut, sameOut });
   },
 );
 ```
@@ -423,7 +433,8 @@ so a struct can flow straight from calldata into a sub-call.
 
 **Arrays of structs (`tuple[]`) work the same way.** A `'tuple[]'` output is an array handle —
 `.at(i)` returns the i-th element as a `Tuple` you read by field name; a `'tuple[]'` argument
-accepts an array handle (`arr.expr()`) or a plain `readonly Struct[]` literal. One-level nested
+accepts an array handle (`arr.expr()`) or an array literal whose elements are struct literals
+(runtime members allowed) or `Tuple` handles. One-level nested
 arrays (`uint256[][]`) and dynamic-leaf arrays (`string[]`/`bytes[]`) are supported in the same
 positions. See [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string)
 for read/build/pass examples.

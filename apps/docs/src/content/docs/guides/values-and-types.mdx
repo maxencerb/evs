@@ -167,7 +167,7 @@ const mkQuote = evscript({ name: 'mkQuote', args: [t.uint256] }, (s, amount) => 
 
 Recording checks the literal against the type: a key that names no member (a typo such as `amountin`) throws `TYPE_MISMATCH` instead of leaving that member at zero, and so does a record for a positional tuple, an array for a struct, or a `Cell`, `MutArray` or `Field` handle where a tuple is expected (read a cell or a field with `.get()` first).
 
-**Pass a struct to a call.** A `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or a plain literal object:
+**Pass a struct to a call.** A `'tuple'` argument accepts a `Tuple` handle, a `s.tuple(...)` result, or an object literal naming every member, whose members may be constants or runtime values (`args: [{ tokenIn, fee, amountIn }]` records the same struct as the `s.tuple` form below):
 
 ```ts
 import { evscript } from '@maxencerb/evs';

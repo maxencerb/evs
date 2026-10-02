@@ -139,6 +139,7 @@ export type {
   RevertReturnsParams, // issue #35: the s.call / s.tryCall `revertReturns` parameter object
   ScriptBuilder,
   ScriptReturn,
+  StructLiteral, // a complete struct literal whose members may be staged (call args, struct members)
   SubcallFunctionName, // issue #4: what `functionName` accepts — names + canonical signatures
   SubcallInputs, // issue #1: per-verb arg/output/struct helpers, generic over the mutability bucket
   SubcallOutputs,
@@ -157,6 +158,7 @@ export type {
   Tuple,
   TupleArrayElem,
   TupleArrayElemHandle, // issue #12 post-review: the `.at`/`s.forEach` tuple-array element handle
+  TupleArrayLiteral, // a tuple-array literal whose elements may be staged
   TupleArrayTag, // a tuple-array descriptor tag (`'tuple[]'`, `'tuple[2]'`, …): the s.forEach / .at bound
   TupleInit,
   TypeOfReturn, // the type a return value contributes (ReturnSpecToComponents)

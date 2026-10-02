@@ -2346,6 +2346,198 @@ describe('checklist: tuple literals', () => {
     );
   });
 
+  describe('a struct call arg literal with staged members (the 0.3.0 field report)', () => {
+    // an `INonfungiblePositionManager.collect`-shaped param; tuple-literals.test-d.ts pins the
+    // same shapes on the type side
+    const COLLECT = {
+      name: 'params',
+      type: 'tuple',
+      components: [
+        { name: 'tokenId', type: 'uint256' },
+        { name: 'recipient', type: 'address' },
+        { name: 'amount0Max', type: 'uint128' },
+        { name: 'amount1Max', type: 'uint128' },
+      ],
+    } as const;
+    const Collect = t.fromAbiParameter(COLLECT);
+    const collectAbi = [
+      {
+        type: 'function',
+        name: 'collect',
+        stateMutability: 'payable',
+        inputs: [COLLECT],
+        outputs: [{ name: 'amount0', type: 'uint256' }],
+      },
+      {
+        type: 'function',
+        name: 'peekMany',
+        stateMutability: 'view',
+        inputs: [{ ...COLLECT, type: 'tuple[]' }],
+        outputs: [{ name: '', type: 'uint256' }],
+      },
+      {
+        type: 'function',
+        name: 'nested',
+        stateMutability: 'view',
+        inputs: [
+          {
+            name: 'o',
+            type: 'tuple',
+            components: [
+              { ...COLLECT, name: 'inner' },
+              { name: 'm', type: 'tuple', components: Mixed.components },
+            ],
+          },
+        ],
+        outputs: [{ name: '', type: 'bool' }],
+      },
+    ] as const satisfies Abi;
+    const MAX = 2n ** 128n - 1n;
+    const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+
+    type Make = (
+      s: ScriptBuilder,
+      id: Expr<'uint256'>,
+      who: Expr<'address'>,
+    ) => { collect(): unknown; many(): unknown; nested(): unknown };
+
+    /** A script calling each function with the arg `make` builds for it, at the call site. */
+    function scriptOf(make: Make) {
+      return evscript({ name: 'staged', args: [t.uint256, t.address] }, (s, id, who) => {
+        const a = make(s, id, who);
+        const r = s.trySimulate({
+          address: who,
+          abi: collectAbi,
+          functionName: 'collect',
+          args: [a.collect() as never],
+        });
+        const many = s.read({
+          address: who,
+          abi: collectAbi,
+          functionName: 'peekMany',
+          args: [a.many() as never],
+        });
+        const nested = s.read({
+          address: who,
+          abi: collectAbi,
+          functionName: 'nested',
+          args: [a.nested() as never],
+        });
+        return s.return({ ok: r.success, a0: r.value, many, nested });
+      });
+    }
+
+    /** The calldata of every sub-call `make`'s script sends (reference interpreter). */
+    function calldataOf(make: Make): string[] {
+      const seen: string[] = [];
+      const word = `0x${'00'.repeat(31)}01` as const;
+      interpret(scriptOf(make).ir, [42n, ALICE], {
+        staticcall: (req) => {
+          seen.push(req.data);
+          return { success: true, data: word };
+        },
+      });
+      return seen;
+    }
+
+    const viaTuple: Make = (s, id, who) => {
+      const c = () =>
+        s.tuple(Collect, { tokenId: id, recipient: who, amount0Max: MAX, amount1Max: 9n });
+      return {
+        collect: c,
+        many: () => [c(), s.tuple(Collect, { tokenId: 7n, amount0Max: 1n, amount1Max: 2n })],
+        nested: () =>
+          s.tuple(t.struct({ inner: Collect, m: Mixed }), {
+            inner: c(),
+            m: s.tuple(Mixed, [id, who]),
+          }),
+      };
+    };
+    const viaLiteral: Make = (_s, id, who) => {
+      const c = { tokenId: id, recipient: who, amount0Max: MAX, amount1Max: 9n };
+      return {
+        collect: () => c,
+        many: () => [c, { tokenId: 7n, recipient: ZERO_ADDR, amount0Max: 1n, amount1Max: 2n }],
+        nested: () => ({ inner: c, m: [id, who] }),
+      };
+    };
+
+    test('sends the same calldata as the s.tuple form', () => {
+      const literal = calldataOf(viaLiteral);
+      expect(literal).toHaveLength(3);
+      expect(literal).toEqual(calldataOf(viaTuple));
+    });
+
+    test('a struct (and nested struct) literal records exactly the s.tuple form', () => {
+      // both build their tuples at the same program points: byte-identical bytecode (a tuple[]
+      // literal allocates its array before its elements, so only its calldata is compared)
+      const structsOnly =
+        (make: Make): Make =>
+        (s, id, who) => ({ ...make(s, id, who), many: () => s.newArray(Collect, 0n) });
+      expect(compile(scriptOf(structsOnly(viaLiteral))).runtimeBytecode).toBe(
+        compile(scriptOf(structsOnly(viaTuple))).runtimeBytecode,
+      );
+    });
+
+    test('a staged member is coerced to its member type like any value', () => {
+      const literal = (amount0Max: (id: Expr<'uint256'>, who: Expr<'address'>) => unknown) =>
+        scriptOf((_s, id, who) => {
+          const c = {
+            tokenId: id,
+            recipient: who,
+            amount0Max: amount0Max(id, who),
+            amount1Max: 0n,
+          };
+          return { collect: () => c, many: () => [c], nested: () => ({ inner: c, m: [id, who] }) };
+        });
+      // the types reject both (tuple-literals.test-d.ts); so does the recorder
+      expectEvs(
+        () => literal((id) => id),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /member "amount0Max": expected 'uint128', got Expr<'uint256'>/,
+      );
+      expectEvs(
+        () => literal((_id, who) => who),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /member "amount0Max": expected 'uint128', got Expr<'address'>/,
+      );
+      expect(() => literal((id) => id.toUint('uint128'))).not.toThrow();
+    });
+
+    test('a partly named member stays positional, and a key naming no member is rejected', () => {
+      expectEvs(
+        () =>
+          scriptOf((s, id, who) => ({
+            collect: () => s.tuple(Collect, {}),
+            many: () => [],
+            nested: () => ({ inner: s.tuple(Collect, {}), m: { amount: id, who } }),
+          })),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /member "m": a tuple with an unnamed member takes a positional array/,
+      );
+      expectEvs(
+        () =>
+          scriptOf((s, id) => ({
+            collect: () => ({
+              tokenId: id,
+              recipient: ZERO_ADDR,
+              amount0Max: 1n,
+              amount1Max: 1n,
+              fee: id,
+            }),
+            many: () => [],
+            nested: () => ({ inner: s.tuple(Collect, {}), m: [id] }),
+          })),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        /unknown member "fee"/,
+      );
+    });
+  });
+
   test('members are read from own properties only (Object.prototype names zero-fill)', () => {
     const Odd = t.struct({
       toString: t.uint256,

@@ -335,6 +335,18 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       expect: 'f((address)[])',
     },
     {
+      name: 'staged {a: Expr} element vs (uint256)[] + (address)[]',
+      abi: abis.tupleArrByComponent,
+      args: [[{ a: x }]],
+      expect: 'f((uint256)[])',
+    },
+    {
+      name: '{a: address} Tuple element vs (uint256)[] + (address)[]',
+      abi: abis.tupleArrByComponent,
+      args: [[s.tuple(SA, { a: ALICE })]],
+      expect: 'f((address)[])',
+    },
+    {
       name: 'fixed struct MutArray vs (uint256)[] + (address)[]',
       abi: abis.tupleArrByComponent,
       args: [s.newArray(S, 2, { fixed: true })],
@@ -547,6 +559,12 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       args: [{ a: ALICE }],
       expect: 'f((address))',
     },
+    {
+      name: '{a: address Expr} record vs (uint256 a) + (address a)',
+      abi: abis.structByMemberType,
+      args: [{ a: s.env('caller') }],
+      expect: 'f((address))',
+    },
     // -- extra keys / elements (a key naming no member, an element past the last: no fit) -------
     {
       name: '{a, b} record vs (uint256 a) + (uint256 a, uint256 b)',
@@ -645,6 +663,12 @@ export function overloadCases(s: ScriptBuilder, x: Expr<'uint256'>) {
       name: 'parseAbi: {s: [uint256, address]} vs nested (uint256 a, address) + (address a, uint256)',
       abi: abis.nestedMixedParsed,
       args: [{ s: [x, ALICE] }],
+      expect: 'f(((uint256,address)))',
+    },
+    {
+      name: 'parseAbi: {s: mixed Tuple} vs nested (uint256 a, address) + (address a, uint256)',
+      abi: abis.nestedMixedParsed,
+      args: [{ s: s.tuple(MIXED_PARSED, [x, ALICE]) }],
       expect: 'f(((uint256,address)))',
     },
     {

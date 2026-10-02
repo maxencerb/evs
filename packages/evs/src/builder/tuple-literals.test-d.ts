@@ -51,7 +51,7 @@ test('a partly named tuple takes a positional literal everywhere', () => {
     const partial = s.tuple(Mixed, [2n]);
     // @ts-expect-error — a record is not a literal of a partly named tuple
     s.tuple(Mixed, { amount: 1n });
-    // a nested tuple literal holds host values (abitype's primitive type)
+    // a nested tuple literal follows the same rule (its members may be staged, see below)
     const outer = s.tuple(t.struct({ q: Mixed, tag: t.uint8 }), { q: [3n, ALICE], tag: 7 });
     outer.q.set([4n, ALICE]);
     // @ts-expect-error — the member is positional too
@@ -82,5 +82,172 @@ test('a spread Tuple handle is no init (its members are Field handles, not value
     const v = s.tuple(Pair, { token: p.token.get(), fee });
     expectTypeOf(v).toEqualTypeOf<Tuple<typeof Pair>>();
     return s.return({ v });
+  });
+});
+
+// the 0.3.0 field report: an `INonfungiblePositionManager.collect`-shaped struct param
+const COLLECT = {
+  name: 'params',
+  type: 'tuple',
+  components: [
+    { name: 'tokenId', type: 'uint256' },
+    { name: 'recipient', type: 'address' },
+    { name: 'amount0Max', type: 'uint128' },
+    { name: 'amount1Max', type: 'uint128' },
+  ],
+} as const;
+const Collect = t.fromAbiParameter(COLLECT);
+const MAX_U128 = 2n ** 128n - 1n;
+const ZERO = '0x0000000000000000000000000000000000000000';
+const collectAbi = [
+  {
+    type: 'function',
+    name: 'collect',
+    stateMutability: 'payable',
+    inputs: [COLLECT],
+    outputs: [
+      { name: 'amount0', type: 'uint256' },
+      { name: 'amount1', type: 'uint256' },
+    ],
+  },
+  {
+    type: 'function',
+    name: 'peek',
+    stateMutability: 'view',
+    inputs: [COLLECT],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'peekMany',
+    stateMutability: 'view',
+    inputs: [{ ...COLLECT, type: 'tuple[]' }],
+    outputs: [{ name: '', type: 'uint256' }],
+  },
+  {
+    type: 'function',
+    name: 'nested',
+    stateMutability: 'view',
+    inputs: [
+      {
+        name: 'o',
+        type: 'tuple',
+        components: [
+          { ...COLLECT, name: 'inner' },
+          { ...MIXED, name: 'm' },
+          { name: 'n', type: 'uint8' },
+        ],
+      },
+    ],
+    outputs: [{ name: '', type: 'bool' }],
+  },
+] as const;
+
+test('a struct call arg literal may hold staged members, as the recorder coerces it', () => {
+  evscript({ name: 'staged', args: [t.uint256, t.address] }, (s, id, who) => {
+    const args = [{ tokenId: id, recipient: ZERO, amount0Max: MAX_U128, amount1Max: 9n }] as const;
+    // every verb shares the arg typing, and the result is typed from the resolved function
+    const read = s.read({ address: who, abi: collectAbi, functionName: 'peek', args });
+    expectTypeOf(read).toEqualTypeOf<Expr<'uint256'>>();
+    const tried = s.tryRead({ address: who, abi: collectAbi, functionName: 'peek', args });
+    expectTypeOf(tried.value).toEqualTypeOf<Expr<'uint256'>>();
+    const call = s.call({ address: who, abi: collectAbi, functionName: 'collect', args });
+    expectTypeOf(call[0]).toEqualTypeOf<Expr<'uint256'>>();
+    const sim = s.trySimulate({
+      address: who,
+      abi: collectAbi,
+      functionName: 'collect',
+      args: [
+        {
+          tokenId: id,
+          recipient: who,
+          amount0Max: id.mod(MAX_U128).toUint('uint128'),
+          amount1Max: 0,
+        },
+      ],
+    });
+    expectTypeOf(sim.value[0]).toEqualTypeOf<Expr<'uint256'>>();
+    s.simulate({ address: who, abi: collectAbi, functionName: 'collect', args });
+    s.tryCall({ address: who, abi: collectAbi, functionName: 'collect', args });
+    // the literal and the s.tuple form are interchangeable
+    s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peek',
+      args: [s.tuple(Collect, { tokenId: id, amount0Max: MAX_U128, amount1Max: 9n })],
+    });
+    return s.return({ read, call: call[0], sim: sim.value[1] });
+  });
+});
+
+test('staged members reach nested structs, tuple[] elements and positional tuples', () => {
+  evscript({ name: 'deep', args: [t.uint256, t.address] }, (s, id, who) => {
+    const inner = { tokenId: id, recipient: who, amount0Max: 1n, amount1Max: 2n } as const;
+    // a tuple[] literal: each element a staged literal or a Tuple handle
+    const many = s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peekMany',
+      args: [[inner, s.tuple(Collect, { tokenId: 7n })]],
+    });
+    expectTypeOf(many).toEqualTypeOf<Expr<'uint256'>>();
+    // a nested struct (record), a nested partly named tuple (positional), a word member
+    const nested = s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'nested',
+      args: [{ inner, m: [id, who], n: 3 }],
+    });
+    expectTypeOf(nested).toEqualTypeOf<Expr<'bool'>>();
+    // the same nested literal is a valid s.tuple init / Field.set value
+    const outer = s.tuple(t.struct({ q: Mixed, tag: t.uint8 }), { q: [id, who], tag: 7 });
+    outer.q.set([id, ALICE]);
+    s.tuple(t.struct({ c: Collect }), {}).c.set(inner);
+    return s.return({ many, nested, outer });
+  });
+});
+
+test('a staged member is still checked against its member type and the literal shape', () => {
+  evscript({ name: 'checked', args: [t.uint256, t.address, t.uint128] }, (s, id, who, small) => {
+    s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peek',
+      // @ts-expect-error — an Expr<'uint256'> is not a uint128 member (the recorder: TYPE_MISMATCH)
+      args: [{ tokenId: id, recipient: who, amount0Max: id, amount1Max: 9n }],
+    });
+    const ok = s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peek',
+      args: [{ tokenId: id, recipient: who, amount0Max: small, amount1Max: small }],
+    });
+    expectTypeOf(ok).toEqualTypeOf<Expr<'uint256'>>();
+    s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peek',
+      // @ts-expect-error — an address Expr is not a uint256 member
+      args: [{ tokenId: who, recipient: who, amount0Max: 1n, amount1Max: 9n }],
+    });
+    s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peek',
+      // @ts-expect-error — a call arg literal names every member (s.tuple zero-fills omitted ones)
+      args: [{ tokenId: id, recipient: who }],
+    });
+    const [inner, m] = [s.tuple(Collect, {}), { amount: id }];
+    // one line: tsc and tsgolint report this error at different positions of the call
+    // @ts-expect-error — the partly named member stays positional with staged values too
+    s.read({ address: who, abi: collectAbi, functionName: 'nested', args: [{ inner, m, n: 3 }] });
+    s.read({
+      address: who,
+      abi: collectAbi,
+      functionName: 'peekMany',
+      // @ts-expect-error — a tuple[] element is checked like a struct arg
+      args: [[{ tokenId: who, recipient: who, amount0Max: 1n, amount1Max: 2n }]],
+    });
+    return s.return({ ok });
   });
 });

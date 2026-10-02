@@ -331,7 +331,11 @@ Releases: see [Releasing](#releasing) below.
   `s.tuple` inits: `allMembersNamed` / `AllMembersNamed`; a member with no `name` key, as
   viem's `parseAbi` emits, is unnamed — the recorder reads raw overload inputs through
   `normalizeAbiParam`); several fits are an ambiguity, none
-  a mismatch (both also compile errors). A struct literal fits only if every key `Object.keys`
+  a mismatch (both also compile errors). The verbs' `args` type a struct (and each `tuple[]`
+  element) as that same complete literal, `StructLiteral` (`builder/script/handles.ts`): every
+  member present, each a constant, a handle or a nested literal, as the coercion (`buildTupleNew`)
+  takes it; only `s.tuple` inits (`TupleInit`) may omit members in the types (the coercion
+  zero-fills an omitted member anywhere). A struct literal fits only if every key `Object.keys`
   lists (numeric ones too) names a member (positional: exact length), as the coercion rejects
   anything more; at the type level an optional extra key, an index signature or a positional
   literal of statically unknown length (optional elements, a plain `T[]`) is a maybe-fit. The one intended difference: the types compare a
