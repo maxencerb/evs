@@ -10,6 +10,7 @@ import {
   bitsOf,
   elemTypeOf,
   fixedLengthOf,
+  gateStaticLevels,
   installStagingTraps,
   isTupleTag,
   peelArraySuffix,
@@ -26,6 +27,7 @@ import {
   t,
   staticSizeOf,
   typesEqual,
+  wordStaticSize,
   type ArrayType,
   type EvsType,
   type TupleType,
@@ -461,6 +463,9 @@ describe('pathological type sizes', () => {
       () => t.array(t.array(t.uint256, 100_000_000), 100_000_000),
       () => namedArg('x', 'uint256[100000000][100000000]' as never),
       () => t.fromAbiParameter({ name: '', type: 'uint256[100000000][100000000]' } as never),
+      // ABI-dynamic, but each element inlines 3.2e17 bytes (abi/layout gates level by level)
+      () => t.fromAbiParameter({ name: '', type: 'uint256[100000000][100000000][]' } as never),
+      () => namedArg('x', 'uint256[100000000][100000000][]' as never),
       () => t.struct({ a: half, b: half }),
       () => t.tuple(half, half),
       () => t.array(t.struct({ a: t.array(t.uint256, 1000) }), 1_000_000),
@@ -488,6 +493,38 @@ describe('pathological type sizes', () => {
       expect(message).toMatch(/has an ABI static size of \d+ bytes — at most 2\^32 − 1/);
     }
     expect(codeOf(tooBig[1] ?? (() => undefined)).message).toContain('320000000000000000 bytes');
+  });
+
+  test("gateStaticLevels: the whole tag's size from its leaf's, gating the outermost static level", () => {
+    // the bottom-up form validateIr walks a tree with: the caller measures the bare leaf
+    expect(gateStaticLevels('uint256[3][2]', wordStaticSize, 'ctx')).toBe(192n);
+    expect(gateStaticLevels('tuple[2]', () => 64n, 'ctx')).toBe(128n);
+    expect(gateStaticLevels('uint256[2][]', wordStaticSize, 'ctx')).toBeNull();
+    expect(gateStaticLevels('string[2]', wordStaticSize, 'ctx')).toBeNull();
+    expect(gateStaticLevels('tuple[2]', () => null, 'ctx')).toBeNull();
+    // the leaf is called on the bare tag, every suffix peeled
+    const seen: string[] = [];
+    gateStaticLevels(
+      'tuple[][3]',
+      (leaf) => {
+        seen.push(leaf);
+        return 32n;
+      },
+      'ctx',
+    );
+    expect(seen).toEqual(['tuple']);
+    // an ABI-dynamic tag still gates its outermost static level, named in the message
+    const { code, message } = codeOf(() =>
+      gateStaticLevels('uint256[65536][65536][]', wordStaticSize, 'ctx'),
+    );
+    expect(code).toBe('UNSUPPORTED_V0');
+    expect(message).toBe(
+      'ctx: type "uint256[65536][65536]" has an ABI static size of 137438953472 bytes — at most 2^32 − 1 bytes are supported',
+    );
+    expect(codeOf(() => gateStaticLevels('tuple', () => 2n ** 32n, 'ctx')).message).toMatch(
+      /type "tuple" has an ABI static size of 4294967296 bytes/,
+    );
+    expect(gateStaticLevels('tuple', () => 2n ** 32n - 1n, 'ctx')).toBe(2n ** 32n - 1n);
   });
 
   test('an oversized static tuple member of an ABI-dynamic type is rejected too', () => {

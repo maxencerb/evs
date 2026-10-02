@@ -3,12 +3,13 @@
  *
  * Re-checks the builder's invariants so deserialized IR cannot reach codegen in a shape the
  * builder never records (`deserializeIr → validateIr` is the trust boundary): every type in the
- * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels), operand
- * types per the op table, def-before-use under the scope rule (a `while` header dominates its
- * body; `if`/`else` branches are isolated; `fn` bodies see params only), unknown ids, single
- * static assignment of every ValueId, cell creation/typing/scoping, `break`/`continue` only
- * inside a loop body, call-graph acyclicity, return names, fnAbi type validity, `successOut` ⇔
- * try mode, and in-place writes only where the builder emits them (`arrset` on an `arrnew`).
+ * tables and ABIs (no zero-component tuple, at most `MAX_ARRAY_DEPTH` array levels, no ABI-static
+ * level of `MAX_STATIC_SIZE` bytes or more), operand types per the op table, def-before-use under
+ * the scope rule (a `while` header dominates its body; `if`/`else` branches are isolated; `fn`
+ * bodies see params only), unknown ids, single static assignment of every ValueId, cell
+ * creation/typing/scoping, `break`/`continue` only inside a loop body, call-graph acyclicity,
+ * return names, fnAbi type validity, `successOut` ⇔ try mode, and in-place writes only where the
+ * builder emits them (`arrset` on an `arrnew`).
  *
  * One builder rule is deliberately NOT an IR rule: `returns` may be empty. The builder refuses
  * `s.return({})` because viem cannot decode empty returndata, but an empty-returns program is
@@ -20,7 +21,10 @@
  * `args` entries carry no explicit ValueId and no "load arg" statement kind exists.
  *
  * All failures throw `EvsInternalError` (compiler-produced IR is supposed to be valid — a
- * failure here means a bug in whichever producer built the IR).
+ * failure here means a bug in whichever producer built the IR), except the `MAX_STATIC_SIZE`
+ * gate: the builder records a raw-ABI tuple param whose members each fit but whose total does
+ * not, so that gate throws the `EvsTypeError` (`UNSUPPORTED_V0`) of the `t` constructors and
+ * `abi/layout`.
  */
 
 import { EvsInternalError } from '../core/errors.js';
@@ -31,6 +35,7 @@ import {
   bitsOf,
   elemTypeOf,
   fixedLengthOf,
+  gateStaticLevels,
   IDENT_RE,
   identProblem,
   isArrayValueType,
@@ -46,6 +51,7 @@ import {
   isTupleTag,
   isTupleType,
   isWordType,
+  wordStaticSize,
   MAX_ARRAY_DEPTH,
   stringifyType,
   typeToAbiParam,
@@ -1038,9 +1044,11 @@ class IrValidator {
   }
 
   /**
-   * A type the builder can record: well-formed, no zero-component tuple at any nesting level,
-   * and no type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays. Applied
-   * to every type the IR declares (value/cell tables, args, fn signatures, returns, ABI params).
+   * A type the builder can record: well-formed, no zero-component tuple at any nesting level, no
+   * type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays, and no ABI-static
+   * level of {@link MAX_STATIC_SIZE} bytes or more. Applied to every type the IR declares
+   * (value/cell tables, args, fn signatures, returns, ABI params); a statement's result type is
+   * covered through the value table, which `define` checks it against.
    */
   private checkValueType(type: EvsType, what: string): void {
     if (!isEvsValueType(type)) {
@@ -1049,7 +1057,13 @@ class IrValidator {
     this.checkAbiParam(typeToAbiParam('', type), what);
   }
 
-  private checkAbiParam(p: PlainAbiParam, what: string): void {
+  /**
+   * Checks `p` and returns its ABI static size (`null` when it is ABI-dynamic), measured bottom-up:
+   * a tuple's size is its members' sum as each member's own check returned it, so gating every
+   * level stays one linear pass over the param (re-measuring each subtree with `staticSizeOf`
+   * would be quadratic in the tuple nesting depth).
+   */
+  private checkAbiParam(p: PlainAbiParam, what: string): bigint | null {
     if (p.type.startsWith('tuple')) {
       if (!isTupleTag(p.type)) {
         this.fail(`${what}: malformed tuple tag ${JSON.stringify(p.type)}`);
@@ -1058,10 +1072,15 @@ class IrValidator {
       if (p.components === undefined || p.components.length === 0) {
         this.fail(`${what}: tuple type carries no components`);
       }
-      p.components.forEach((c, j) =>
-        this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`),
-      );
-      return;
+      // every member is checked (and gated on its own) before the tuple is measured: a tuple
+      // with a dynamic member has no static size of its own
+      let members: bigint | null = 0n;
+      for (const [j, c] of p.components.entries()) {
+        const member = this.checkAbiParam(c, `${what}.components[${j}] ("${c.name}")`);
+        members = members === null || member === null ? null : members + member;
+      }
+      const sum = members;
+      return gateStaticLevels(p.type, () => sum, this.sizeContext(what));
     }
     if (p.components !== undefined) {
       this.fail(`${what}: non-tuple type '${p.type}' must not carry components`);
@@ -1070,6 +1089,13 @@ class IrValidator {
       this.fail(`${what}: type outside the supported set: ${JSON.stringify(p.type)}`);
     }
     this.checkArrayDepth(p.type, what);
+    return gateStaticLevels(p.type, wordStaticSize, this.sizeContext(what));
+  }
+
+  /** The context of the `MAX_STATIC_SIZE` gate's `UNSUPPORTED_V0`, the one the `t` constructors
+   *  and `abi/layout` share. */
+  private sizeContext(what: string): string {
+    return `ScriptIr "${this.ir.name}" ${what}`;
   }
 
   /** The array-depth ceiling the builder, `abi/layout` and the decoders share. */

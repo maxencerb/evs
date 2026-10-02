@@ -111,6 +111,8 @@ export {
   explainBadTypeString,
   quoteTypeString,
   staticSizeOf,
+  gateStaticLevels,
+  wordStaticSize,
   staticSizeMessage,
   canonicalizeTupleType,
   installStagingTraps,

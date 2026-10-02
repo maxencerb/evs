@@ -7,7 +7,7 @@
  * the IR schema names the if-statement branch field `then`. */
 import { describe, expect, test } from 'vite-plus/test';
 
-import { EvsInternalError } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import type { EvsType, Hex, WordType } from '../core/types.js';
 import { deserializeIr, serializeIr, type ScriptIr, type Stmt, type ValueInfo } from './nodes.js';
 import { validateIr } from './validate.js';
@@ -61,6 +61,19 @@ const strConst = (out: number): Stmt =>
 function expectInvalid(bad: ScriptIr, msg: RegExp): void {
   expect(() => validateIr(bad)).toThrowError(EvsInternalError);
   expect(() => validateIr(bad)).toThrowError(msg);
+}
+
+/** The `MAX_STATIC_SIZE` gate: the user-facing `UNSUPPORTED_V0` the `t` constructors throw. */
+function expectOversized(bad: ScriptIr, msg: RegExp): void {
+  let caught: unknown;
+  try {
+    validateIr(bad);
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(EvsTypeError);
+  expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
+  expect((caught as EvsTypeError).message).toMatch(msg);
 }
 
 // ---------------------------------------------------------------------------
@@ -426,6 +439,163 @@ describe('validateIr — table rules', () => {
         }),
         /values\[0\]: .*5 levels deep/,
       );
+    });
+  });
+
+  describe('an ABI-static level of MAX_STATIC_SIZE bytes or more (UNSUPPORTED_V0)', () => {
+    // A user-facing EvsTypeError, not an invalid-IR error: the builder records a raw-ABI tuple
+    // param whose members each fit but whose total does not (only its layout measured it).
+    // HUGE is 2^37 bytes, two levels deep, each length below 2^32: well-formed, and rejected by
+    // every `t` constructor and by `abi/layout`.
+    const HUGE = 'uint256[65536][65536]';
+    const SIZE = /type "uint256\[65536\]\[65536\]" has an ABI static size of 137438953472 bytes/;
+    const HALF = { name: 'a', type: 'uint256[67108864]' } as const; // 2^31 bytes
+    const fn = { name: 'f', params: [], results: [], body: [], resultValues: [] };
+
+    test('in the value / cell / arg / fn / return tables', () => {
+      expectOversized(ir({ values: [vi(HUGE)] }), /"fixture" values\[0\]: type/);
+      expectOversized(ir({ values: [vi(HUGE)] }), SIZE);
+      expectOversized(ir({ cells: [{ type: HUGE }] }), /cells\[0\]: .*137438953472 bytes/);
+      expectOversized(
+        ir({ args: [{ name: 'a', type: HUGE }], values: [vi('uint256')] }),
+        /args\[0\] \("a"\): .*137438953472 bytes/,
+      );
+      expectOversized(
+        ir({
+          values: [vi('uint256')],
+          fns: [{ ...fn, params: [{ name: 'x', type: HUGE, value: 0 }] }],
+        }),
+        /fns\[0\]\.params\[0\] \("x"\): .*137438953472 bytes/,
+      );
+      expectOversized(
+        ir({ fns: [{ ...fn, results: [{ type: HUGE }], resultValues: [0] }] }),
+        /fns\[0\]\.results\[0\]: .*137438953472 bytes/,
+      );
+      expectOversized(
+        ir({ values: [vi('uint256')], returns: [{ name: 'x', type: HUGE, value: 0 }] }),
+        /returns\[0\] \("x"\): .*137438953472 bytes/,
+      );
+    });
+
+    test('as the element of a dynamic array, a tuple member, or a tuple total', () => {
+      // the array is ABI-dynamic, but each element inlines 2^37 bytes (layoutOf's gate)
+      expectOversized(ir({ values: [vi('uint256[65536][65536][]')] }), SIZE);
+      expectOversized(
+        ir({
+          values: [
+            vi({
+              type: 'tuple',
+              components: [
+                { name: 's', type: 'string' },
+                { name: 'x', type: HUGE },
+              ],
+            }),
+          ],
+        }),
+        /values\[0\]\.components\[1\] \("x"\): type "uint256\[65536\]\[65536\]"/,
+      );
+      // each member fits, the total (2^32 bytes) does not — what a raw ABI can record
+      expectOversized(
+        ir({ values: [vi({ type: 'tuple[]', components: [HALF, { ...HALF, name: 'b' }] })] }),
+        /values\[0\]: type "tuple" has an ABI static size of 4294967296 bytes/,
+      );
+    });
+
+    test('in call ABIs, revertReturns, error inputs and an arrnew element', () => {
+      const big = {
+        name: 'Big',
+        selector: '0x12345678' as const,
+        inputs: [{ name: 'b', type: HUGE }],
+      };
+      expectOversized(ir({ errors: [big] }), /errors\[0\] \("Big"\) input #0: .*137438953472/);
+      const call = (patch: Partial<Extract<Stmt, { k: 'call' }>>): ScriptIr =>
+        ir({
+          values: [vi('address'), vi('uint256')],
+          body: [
+            mk({ k: 'env', op: 'caller', out: 0 }),
+            {
+              ...mk(
+                {
+                  k: 'call',
+                  target: 0,
+                  fnAbi: {
+                    name: 'f',
+                    selector: '0x12345678',
+                    inputs: [],
+                    outputs: [{ name: '', type: 'uint256' }],
+                  },
+                  args: [],
+                  outs: [1],
+                  mode: 'strict',
+                },
+                1,
+              ),
+              ...patch,
+            } as Stmt,
+          ],
+        });
+      const fnAbi = (key: 'inputs' | 'outputs') => ({
+        name: 'f',
+        selector: '0x12345678' as const,
+        inputs: [],
+        outputs: [{ name: '', type: 'uint256' }],
+        [key]: [{ name: 'h', type: HUGE }],
+      });
+      expectOversized(
+        call({ fnAbi: fnAbi('inputs') }),
+        /fnAbi\.inputs\[0\] \("h"\): .*137438953472 bytes/,
+      );
+      expectOversized(call({ fnAbi: fnAbi('outputs') }), /fnAbi\.outputs\[0\] \("h"\)/);
+      expectOversized(
+        call({ kind: 'call', revertReturns: [HUGE] }),
+        /revertReturns\[0\] \(""\): .*137438953472 bytes/,
+      );
+      expectOversized(
+        ir({
+          values: [vi('uint256'), vi('uint256[]')],
+          body: [u256Const(0, 1n), mk({ k: 'arrnew', elem: HUGE, length: 0, out: 1 }, 1)],
+        }),
+        /element type: type "uint256\[65536\]\[65536\]"/,
+      );
+    });
+
+    test('the gate measures a nested tuple bottom-up, in one linear pass', () => {
+      // Every `components` read is counted: a gate that re-measured each tuple's whole subtree
+      // (`staticSizeOf` per level) would read the innermost levels once per enclosing level —
+      // ~depth² reads (~41 000 here) instead of a constant per level (~5).
+      const DEPTH = 200;
+      let reads = 0;
+      const counted = (name: string, components: readonly unknown[]): object => {
+        const o = { name, type: 'tuple' };
+        Object.defineProperty(o, 'components', {
+          enumerable: true,
+          get: () => {
+            reads += 1;
+            return components;
+          },
+        });
+        return o;
+      };
+      let type = counted('', [{ name: 'x', type: 'uint256' }]);
+      for (let d = 1; d < DEPTH; d += 1) {
+        type = counted('', [
+          counted('x', (type as { components: readonly unknown[] }).components),
+          { name: 'y', type: 'uint256' },
+        ]);
+      }
+      reads = 0;
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a hand-built nested tuple
+      expect(() => validateIr(ir({ values: [vi(type as EvsType)] }))).not.toThrow();
+      expect(reads).toBeLessThanOrEqual(16 * DEPTH);
+    });
+
+    test('just below the ceiling is accepted', () => {
+      // 32 · (2^27 − 1) = 2^32 − 32 bytes, alone and as the element of a dynamic array
+      expect(() =>
+        validateIr(ir({ values: [vi('uint256[134217727]'), vi('uint256[134217727][]')] })),
+      ).not.toThrow();
+      // a dynamic element (string) inlines only its offset
+      expect(() => validateIr(ir({ values: [vi('string[100000000][100000000]')] }))).not.toThrow();
     });
   });
 

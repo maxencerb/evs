@@ -481,27 +481,84 @@ export function staticSizeOf(type: EvsType): bigint | null {
     size *= BigInt(peeled.length);
     leaf = peeled.inner;
   }
-  if (typeof type === 'string') return isWordType(leaf) ? 32n * size : null;
+  const members =
+    typeof type === 'string' ? wordStaticSize(leaf) : membersStaticSize(type.components);
+  return members === null ? null : members * size;
+}
+
+/**
+ * Throws `UNSUPPORTED_V0` when an ABI-static level of `type` exceeds {@link MAX_STATIC_SIZE}
+ * (2^32 bytes or more): the type itself when it is static, else the element type of its
+ * outermost static array level — `uint256[65536][65536][]` is ABI-dynamic, but each of its
+ * elements inlines 2^37 bytes, which `abi/layout` rejects level by level. Inner levels of a static
+ * level are no larger (every fixed length is at least 1). Tuple members are not measured here:
+ * the callers gate each member on its own. Callers pass a well-formed type already within
+ * {@link MAX_ARRAY_DEPTH}.
+ */
+export function assertStaticSize(type: EvsType, context: string): void {
+  if (typeof type === 'string') {
+    gateStaticLevels(type, wordStaticSize, context);
+    return;
+  }
+  gateStaticLevels(type.type, () => membersStaticSize(type.components), context);
+}
+
+/**
+ * {@link assertStaticSize} over a type string or tuple tag whose bare leaf (every array suffix
+ * peeled) the caller measures — `leafSize` returns its static size, `null` when it is ABI-dynamic
+ * ({@link wordStaticSize} for a type string, the members' sum for a tuple tag). Returns the
+ * static size of the whole `tag` (`null` when it is ABI-dynamic), so a caller walking a tree
+ * bottom-up (`validateIr`) gates every level in one linear pass instead of re-measuring each
+ * subtree with {@link staticSizeOf}.
+ */
+export function gateStaticLevels(
+  tag: string,
+  leafSize: (leaf: string) => bigint | null,
+  context: string,
+): bigint | null {
+  // each array level, outermost first: its own tag and the length its suffix declares
+  const levels: { tag: string; length: number | null }[] = [];
+  let leaf = tag;
+  for (let peeled = peelArraySuffix(leaf); peeled !== null; peeled = peelArraySuffix(leaf)) {
+    levels.push({ tag: leaf, length: peeled.length });
+    leaf = peeled.inner;
+  }
+  let size = leafSize(leaf);
+  if (size === null) return null;
+  // inside out: the last static level reached is the outermost one (a level is static only when
+  // every level inside it is)
+  let outer = leaf;
+  let whole = true;
+  for (let i = levels.length - 1; i >= 0; i -= 1) {
+    const level = levels[i];
+    if (level === undefined || level.length === null) {
+      whole = false;
+      break;
+    }
+    size *= BigInt(level.length);
+    outer = level.tag;
+  }
+  if (size > BigInt(MAX_STATIC_SIZE)) {
+    throw new EvsTypeError('UNSUPPORTED_V0', staticSizeMessage(context, outer, size));
+  }
+  return whole ? size : null;
+}
+
+/** The static size of a bare (suffix-free) type string: 32 bytes for a word, `null` for
+ *  `string`/`bytes`. */
+export function wordStaticSize(leaf: string): bigint | null {
+  return isWordType(leaf) ? 32n : null;
+}
+
+/** A tuple's member sum, `null` when a member is ABI-dynamic. */
+function membersStaticSize(components: TupleType['components']): bigint | null {
   let members = 0n;
-  for (const c of type.components) {
+  for (const c of components) {
     const member = staticSizeOf(abiParamToType(c));
     if (member === null) return null;
     members += member;
   }
-  return members * size;
-}
-
-/**
- * Throws `UNSUPPORTED_V0` when `type` is ABI-static and its static size exceeds
- * {@link MAX_STATIC_SIZE} (2^32 bytes or more). Callers pass a type already within
- * {@link MAX_ARRAY_DEPTH}.
- */
-export function assertStaticSize(type: EvsType, context: string): void {
-  const size = staticSizeOf(type);
-  if (size !== null && size > BigInt(MAX_STATIC_SIZE)) {
-    const tag = typeof type === 'string' ? type : type.type;
-    throw new EvsTypeError('UNSUPPORTED_V0', staticSizeMessage(context, tag, size));
-  }
+  return members;
 }
 
 /** The shared `UNSUPPORTED_V0` message for a type past {@link MAX_STATIC_SIZE} — `type` is the

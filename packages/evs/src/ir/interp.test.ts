@@ -2256,10 +2256,15 @@ describe('maxSteps + trace', () => {
     expect(() => interpret(small, [TOKEN], failing, { maxSteps: 8 })).toThrowError(
       /exceeded maxSteps = 8 zero-filling 8 array elements/,
     );
-    // 1e16 elements: used to exhaust the host heap; now refused up front
+    // 1e16 elements: used to exhaust the host heap; now refused up front (a string element
+    // keeps the type ABI-dynamic, so no MAX_STATIC_SIZE gate refuses it first)
+    expect(() =>
+      interpret(failedRead('string[100000000][100000000]'), [TOKEN], failing),
+    ).toThrowError(EvsCompileError);
+    // a static one that large never reaches the zero-fill: validateIr refuses its type
     expect(() =>
       interpret(failedRead('uint256[100000000][100000000]'), [TOKEN], failing),
-    ).toThrowError(EvsCompileError);
+    ).toThrowError(/ABI static size of 320000000000000000 bytes/);
     // s.newArray of 2^32 − 1 words (the largest length below the 0x41 guard) likewise
     const bigNew = ir({
       name: 'bignew',
