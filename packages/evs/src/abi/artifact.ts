@@ -31,6 +31,8 @@ import {
   IDENT_RE,
   identProblem,
   PROTO_RESERVED,
+  repeatedMemberName,
+  UNIQUE_MEMBER_NAMES,
   isSigned,
   isTupleTag,
   isWordType,
@@ -163,13 +165,21 @@ function validateAbiType(type: TupleType | string, where: string): void {
 
 /**
  * A tuple type's struct fields must carry non-empty identifier names (an empty/odd name collapses
- * viem's object inference to a positional array). Positional `t.tuple`
- * members (`name: ''`) are fine. Recurses through nested tuple components. `t.struct` already
- * enforces this at construction; `buildScriptAbi` re-checks so a hand-built (deserialized) type
- * cannot smuggle a degenerate struct through.
+ * viem's object inference to a positional array), unique within their tuple (viem's decoded
+ * object would keep one value per name). Positional `t.tuple` members (`name: ''`) are fine.
+ * Recurses through nested tuple components. `t.struct` and the canonicalizer already enforce
+ * this at construction; `buildScriptAbi` re-checks so a hand-built (deserialized) type cannot
+ * smuggle a degenerate struct through.
  */
 function assertStructFieldNames(type: EvsType, where: string): void {
   if (typeof type === 'string') return;
+  const repeated = repeatedMemberName(type.components.map((c) => c.name));
+  if (repeated !== undefined) {
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `${where}: tuple field #${repeated.repeat} repeats the name ${JSON.stringify(repeated.name)} (also field #${repeated.first}) — ${UNIQUE_MEMBER_NAMES}`,
+    );
+  }
   type.components.forEach((c, i) => {
     if (c.name !== '' && !IDENT_RE.test(c.name)) {
       throw new EvsTypeError(
@@ -455,6 +465,15 @@ function abiParamToPlain(p: AbiParameter, where: string): PlainAbiParam {
     const components = 'components' in p ? p.components : undefined;
     if (components === undefined || components.length === 0) {
       throw new EvsTypeError('ABI_SHAPE', `${where}: tuple type carries no \`components\``);
+    }
+    // a repeated member name loses a value in viem's name-keyed decode, and a record literal
+    // for the tuple gives both members one key
+    const repeated = repeatedMemberName(components.map((c) => c.name ?? ''));
+    if (repeated !== undefined) {
+      throw new EvsTypeError(
+        'ABI_SHAPE',
+        `${where}: component #${repeated.repeat} repeats the member name ${JSON.stringify(repeated.name)} (also component #${repeated.first}) — ${UNIQUE_MEMBER_NAMES}`,
+      );
     }
     // recurse: each component validates its own (leaf or nested-tuple) type.
     return Object.freeze({

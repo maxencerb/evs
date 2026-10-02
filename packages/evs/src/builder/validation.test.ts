@@ -12,7 +12,7 @@
  */
 import { inspect } from 'node:util';
 
-import type { Abi } from 'viem';
+import { parseAbi, type Abi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { compile } from '../compile.js';
@@ -25,6 +25,7 @@ import {
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
 import { interpret } from '../ir/interp.js';
+import { deserializeIr, serializeIr } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
@@ -3430,5 +3431,146 @@ describe('checklist: a struct literal with a `type` member is not a forged handl
       });
     });
     expect(() => validateIr(script.ir)).not.toThrow();
+  });
+});
+
+describe('checklist: member names are unique within a tuple', () => {
+  // viem decodes a tuple whose members are all named into an object keyed by name, so a repeated
+  // name keeps only the last member's value; a struct literal gives both members one key, and a
+  // Tuple handle's `.a` accessor reads only one of them. Solidity cannot emit such an ABI.
+  const UNIQUE = /member names must be unique within a tuple/;
+
+  test('s.read over an output struct with a repeated member name → ABI_SHAPE', () => {
+    // the release-review repro: compile() succeeded and viem's decode dropped the uint256
+    const abi = parseAbi(['function get() view returns ((uint256 a, address a) p)']);
+    for (const struct of [false, true]) {
+      expectEvs(
+        () =>
+          rec((s, a) =>
+            s.return({ p: s.read({ address: a.who, abi, functionName: 'get', struct } as never) }),
+          ),
+        EvsTypeError,
+        'ABI_SHAPE',
+        /function "get": output parameter "p": component #1 repeats the member name "a" \(also component #0\)/,
+      );
+    }
+  });
+
+  test('s.read({ struct: true }) over outputs sharing a name → ABI_SHAPE', () => {
+    const abi = parseAbi(['function get() view returns (uint256 a, address a)']);
+    // the default positional result has no names to clash
+    expect(() =>
+      rec((s, a) => {
+        const [x, y] = s.read({ address: a.who, abi, functionName: 'get' });
+        return s.return({ x, y });
+      }),
+    ).not.toThrow();
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.return({ p: s.read({ address: a.who, abi, functionName: 'get', struct: true }) }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      /s\.read\(\{ struct: true \}\): output #1 of "get" repeats the name "a" \(also output #0\)/,
+    );
+  });
+
+  test('a tuple-typed call input with a repeated member name → ABI_SHAPE', () => {
+    const abi = parseAbi(['function put((uint256 a, uint256 a) p) view returns (uint256)']);
+    expectEvs(
+      () =>
+        rec((s, a) =>
+          s.return({
+            r: s.read({ address: a.who, abi, functionName: 'put', args: [{ a: a.x }] } as never),
+          }),
+        ),
+      EvsTypeError,
+      'ABI_SHAPE',
+      UNIQUE,
+    );
+  });
+
+  test('declarators and t constructors → TYPE_MISMATCH', () => {
+    const dup = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint256' },
+        { name: 'a', type: 'address' },
+      ],
+    } as const;
+    expectEvs(() => namedArg('p', dup), EvsTypeError, 'TYPE_MISMATCH', UNIQUE);
+    expectEvs(() => t.struct({ p: dup }), EvsTypeError, 'TYPE_MISMATCH', UNIQUE);
+    expectEvs(() => t.error('E', [namedArg('p', dup)]), EvsTypeError, 'TYPE_MISMATCH', UNIQUE);
+    expectEvs(
+      () => rec((s) => s.return({ p: s.tuple(dup as never) })),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      UNIQUE,
+    );
+  });
+
+  test('builder methods taking a raw descriptor → TYPE_MISMATCH naming the member', () => {
+    // s.lit / s.let / s.newArray / revertReturns check a descriptor structurally (no canonicalizer)
+    const dup = {
+      type: 'tuple',
+      components: [
+        { name: 'a', type: 'uint256' },
+        { name: 'a', type: 'uint256' },
+      ],
+    } as const;
+    const dupArr = { ...dup, type: 'tuple[]' } as const;
+    const nested = {
+      type: 'tuple',
+      components: [{ name: 'n', type: 'tuple', components: dup.components }],
+    } as const;
+    const at = /components\[1\] repeats the member name "a" \(also components\[0\]\)/;
+    const quoterAbi = parseAbi(['function q() returns (uint256)']);
+    const cases: readonly [string, (s: AnyBuilder, a: Args) => unknown, RegExp][] = [
+      ['s.lit', (s) => s.lit(dup as never, { a: 5n } as never), at],
+      ['s.lit', (s) => s.lit(dupArr as never, [] as never), at],
+      [
+        's.lit',
+        (s) => s.lit(nested as never, { n: { a: 5n } } as never),
+        /components\[0\]\.components\[1\] repeats/,
+      ],
+      ['s.let', (s) => s.let(dup as never, { a: 5n } as never), at],
+      ['s.newArray', (s) => s.newArray(dup as never, 1n), at],
+      [
+        's.call',
+        (s, a) =>
+          s.call({
+            address: a.who,
+            abi: quoterAbi,
+            functionName: 'q',
+            revertReturns: [dup],
+          } as never),
+        at,
+      ],
+    ];
+    for (const [verb, body, msg] of cases) {
+      const e = expectEvs(() => rec(body), EvsTypeError, 'TYPE_MISMATCH', msg);
+      expect(e.message).toMatch(UNIQUE);
+      expect(e.message.startsWith(`${verb}(`)).toBe(true);
+    }
+  });
+
+  test('a deserialized IR carrying the tuple fails compile() and interpret()', () => {
+    // the review repro: a struct arg's second member renamed after serializing; interpret()
+    // used to drop the first value and compile() to accept it
+    const script = evscript(
+      { name: 'x', args: [namedArg('p', t.struct({ a: t.uint256, b: t.uint256 }))] },
+      (s, p) => s.return({ r: p }),
+    );
+    const bad = deserializeIr(serializeIr(script.ir).replaceAll('"name":"b"', '"name":"a"'));
+    const chain = {
+      staticcall: () => {
+        throw new Error('unexpected staticcall');
+      },
+    };
+    expect(() => interpret(bad, [[1n, 2n]], chain)).toThrowError(/repeats the member name "a"/);
+    expect(() => compile({ name: 'x', ir: bad, abi: script.abi })).toThrowError(
+      /repeats the member name "a"/,
+    );
   });
 });

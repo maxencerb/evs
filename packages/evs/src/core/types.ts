@@ -115,5 +115,8 @@ export {
   wordStaticSize,
   staticSizeMessage,
   canonicalizeTupleType,
+  describeRejectedType,
+  repeatedMemberName,
+  UNIQUE_MEMBER_NAMES,
   installStagingTraps,
 } from './types/predicates.js';

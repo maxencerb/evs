@@ -43,6 +43,7 @@ import {
   isBytesN,
   isStringType,
   isEvsValueType,
+  describeRejectedType,
   isLengthType,
   isNumeric,
   isOrdered,
@@ -53,6 +54,7 @@ import {
   isWordType,
   wordStaticSize,
   MAX_ARRAY_DEPTH,
+  repeatedMemberName,
   stringifyType,
   typeToAbiParam,
   typesEqual,
@@ -1045,14 +1047,16 @@ class IrValidator {
 
   /**
    * A type the builder can record: well-formed, no zero-component tuple at any nesting level, no
-   * type string or tuple tag nested deeper than {@link MAX_ARRAY_DEPTH} arrays, and no ABI-static
-   * level of {@link MAX_STATIC_SIZE} bytes or more. Applied to every type the IR declares
-   * (value/cell tables, args, fn signatures, returns, ABI params); a statement's result type is
-   * covered through the value table, which `define` checks it against.
+   * member name repeated within a tuple, no type string or tuple tag nested deeper than
+   * {@link MAX_ARRAY_DEPTH} arrays, and no ABI-static level of {@link MAX_STATIC_SIZE} bytes or
+   * more. Applied to every type the IR declares (value/cell tables, args, fn signatures, returns,
+   * ABI params); a statement's result type is covered through the value table, which `define`
+   * checks it against.
    */
   private checkValueType(type: EvsType, what: string): void {
     if (!isEvsValueType(type)) {
-      this.fail(`${what} has an unsupported type ${JSON.stringify(type)}`);
+      const issue = isTupleType(type) ? ` (${describeRejectedType(type)})` : '';
+      this.fail(`${what} has an unsupported type ${JSON.stringify(type)}${issue}`);
     }
     this.checkAbiParam(typeToAbiParam('', type), what);
   }
@@ -1071,6 +1075,14 @@ class IrValidator {
       this.checkArrayDepth(p.type, what);
       if (p.components === undefined || p.components.length === 0) {
         this.fail(`${what}: tuple type carries no components`);
+      }
+      // the builder's distinct-names rule (viem decodes a named tuple into an object keyed by
+      // member name): a hand-built or deserialized IR must not reintroduce a repeat
+      const repeated = repeatedMemberName(p.components.map((c) => c.name));
+      if (repeated !== undefined) {
+        this.fail(
+          `${what}: components[${repeated.repeat}] repeats the member name ${JSON.stringify(repeated.name)} (also components[${repeated.first}])`,
+        );
       }
       // every member is checked (and gated on its own) before the tuple is measured: a tuple
       // with a dynamic member has no static size of its own

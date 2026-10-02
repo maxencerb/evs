@@ -86,7 +86,7 @@ Spread only the keys evs takes (`const { address, abi } = usdc`).
 | `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
 | `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the target call — see [capping a target's gas](#capping-a-targets-gas); by default all available gas is forwarded |
 | `value`        | `IntoExpr<'uint256'>` (optional, **`payable` functions under `s.call` / `s.simulate` and their `try*` forms**) | Wei sent with the call (`msg.value`), paid from the script's own balance — see [sending ETH](#sending-eth-value); default 0 |
-| `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named — see [below](#decoding-multiple-outputs-into-a-struct) |
+| `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named, each name once — see [below](#decoding-multiple-outputs-into-a-struct) |
 | `revertReturns` | `readonly EvsType[]` (optional, **`s.call` / `s.tryCall` only**) | The output types carried by the target's **revert data** (the QuoterV1 pattern); replaces the ABI outputs as the decode schema — see [decoding revert data](#decoding-revert-data-as-the-result-revertreturns) |
 
 Every `s.read` sub-call executes as a `STATICCALL`, so the callee runs in a read-only frame: even a
@@ -174,8 +174,10 @@ const poolPrice = evscript({ name: 'poolPrice', args: [t.address] }, (s, pool) =
 });
 ```
 
-Every output must be **named** — an unnamed output throws `EvsTypeError` at recording (an unnamed
-component would silently degrade viem's result to a positional array). Because the struct is in ABI
+Every output must be **named**, and no two outputs may share a name — an unnamed output throws
+`EvsTypeError` at recording (an unnamed component would silently degrade viem's result to a
+positional array), and a repeated name throws `EvsTypeError` with code `ABI_SHAPE` (viem's decoded
+object keeps one value per name, so the other would be lost). Because the struct is in ABI
 order, it unifies with a `t.struct` declared in the same order and with
 [`t.fromOutputs(abi, name)`](/guides/values-and-types/#deriving-types-from-an-abi). `s.tryRead({ …,
 struct: true })` mirrors this on its `.value` (and so do `s.call`/`s.simulate` and their `try*`
