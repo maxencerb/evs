@@ -172,14 +172,6 @@ export type InterpValues<abi extends Abi> =
       : v
     : never;
 
-/** What `interpret` runs: an evs script (an `evscript` result or its compiled artifact) or a bare
- *  `ScriptIr` (e.g. from `deserializeIr`). */
-type InterpTarget = ScriptIr | { readonly ir: ScriptIr; readonly abi: Abi };
-
-/** The ABI `interpret` types a target by: a script's literal ABI, or the wide `Abi` for a bare
- *  `ScriptIr` — viem then types the args as `readonly unknown[]` and the values as untyped. */
-type TargetAbi<target> = target extends { readonly abi: infer abi extends Abi } ? abi : Abi;
-
 /**
  * Runs a script against `chain`. Passed the evs script itself (an `evscript` result or its
  * compiled artifact), it is typed from the script's literal ABI: `args` is the positional tuple
@@ -191,18 +183,19 @@ type TargetAbi<target> = target extends { readonly abi: infer abi extends Abi } 
  * One generic signature, not a script overload plus a bare-IR one: with overloads, a bad argument
  * or chain is "No overload matches this call", reported against the call and led (under
  * TypeScript 7, replaced) by the script "missing the following properties from type 'ScriptIr'".
- * With one signature the error lands on the offending value and names it.
+ * With one signature the error lands on the offending value and names it. The signature is
+ * generic in the ABI (inferred from the script's `abi`, the wide `Abi` for a bare `ScriptIr`), not
+ * in the script: a wrapper generic in its script type then still resolves `args` from the
+ * constraint's ABI, and a union of scripts must agree on one ABI.
  */
-export function interpret<const target extends InterpTarget>(
-  script: target,
-  args: NoInfer<
-    ContractFunctionArgs<TargetAbi<target>, 'view', ContractFunctionName<TargetAbi<target>, 'view'>>
-  >,
+export function interpret<const abi extends Abi = Abi>(
+  script: ScriptIr | { readonly ir: ScriptIr; readonly abi: abi },
+  args: NoInfer<ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>>,
   chain: MockChain,
   opts?: InterpOptions,
-): InterpResult<InterpValues<TargetAbi<target>>>;
+): InterpResult<InterpValues<abi>>;
 export function interpret(
-  target: InterpTarget,
+  target: ScriptIr | { readonly ir: ScriptIr },
   args: readonly unknown[],
   chain: MockChain,
   opts?: InterpOptions,

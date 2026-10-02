@@ -23,19 +23,14 @@ overflows while computing an unused value returns, under `interpret()` and on-ch
 import type { InterpOptions, InterpResult, InterpValues, MockChain, ScriptIr } from '@maxencerb/evs';
 import type { Abi, ContractFunctionArgs, ContractFunctionName } from 'viem';
 
-// script: an evscript() result or its compiled artifact — or a bare ScriptIr (e.g. from deserializeIr)
-type Target = ScriptIr | { readonly ir: ScriptIr; readonly abi: Abi };
-// the script's literal ABI, or the wide Abi for a bare ScriptIr (untyped args and values)
-type TargetAbi<target> = target extends { readonly abi: infer abi extends Abi } ? abi : Abi;
-
-declare function interpret<const target extends Target>(
-  script: target,
-  args: NoInfer<
-    ContractFunctionArgs<TargetAbi<target>, 'view', ContractFunctionName<TargetAbi<target>, 'view'>>
-  >, // readContract's args
+declare function interpret<const abi extends Abi = Abi>(
+  // an evscript() result or its compiled artifact — or a bare ScriptIr (e.g. from deserializeIr),
+  // which leaves abi at the wide Abi (untyped args and values)
+  script: ScriptIr | { readonly ir: ScriptIr; readonly abi: abi },
+  args: NoInfer<ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>>, // readContract's args
   chain: MockChain,
   opts?: InterpOptions,
-): InterpResult<InterpValues<TargetAbi<target>>>; // values: what readContract returns for this script
+): InterpResult<InterpValues<abi>>; // values: what readContract returns for this script
 
 // InterpOptions = { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean }
 

@@ -4,11 +4,11 @@
  * the record it returns; a bare `ScriptIr` keeps untyped args and values. Typecheck only.
  */
 
-import type { ReadContractReturnType } from 'viem';
+import type { Abi, ContractFunctionArgs, ContractFunctionName, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { evscript, type EvsScript } from '../builder/script.js';
-import { compile } from '../compile.js';
+import { compile, type CompiledEvsScript } from '../compile.js';
 import { t, type Hex } from '../core/types.js';
 import { interpret, type InterpResult, type MockChain } from './interp.js';
 import type { ScriptIr } from './nodes.js';
@@ -124,4 +124,49 @@ test('a bare ScriptIr (or a wide script type) keeps untyped args and values', ()
   if (fromWide.outcome.kind === 'return') {
     expectTypeOf(fromWide.outcome.values).toEqualTypeOf<Record<string, unknown>>();
   }
+});
+
+test('a wrapper generic in its script type or ABI still compiles (as on 0.3.0)', () => {
+  // `args` resolves from the constraint's ABI (wide `Abi` → `readonly unknown[]`), not from an
+  // unresolvable conditional on the type parameter. The script type parameters are the point.
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- a generic wrapper is the case under test
+  function runScript<S extends EvsScript>(s: S, args: readonly unknown[]) {
+    return interpret(s, args, chain);
+  }
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- a generic wrapper is the case under test
+  function runShape<S extends { readonly ir: ScriptIr; readonly abi: Abi }>(
+    s: S,
+    args: readonly unknown[],
+  ) {
+    return interpret(s, args, chain);
+  }
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- a generic wrapper is the case under test
+  function runLiteral<S extends EvsScript>(s: S) {
+    return interpret(s, [1n], chain);
+  }
+  // oxlint-disable-next-line typescript/no-unnecessary-type-parameters -- a generic wrapper is the case under test
+  function runCompiled<S extends CompiledEvsScript>(s: S, args: readonly unknown[]) {
+    return interpret(s, args, chain);
+  }
+  function runAbi<const abi extends Abi>(
+    s: { readonly ir: ScriptIr; readonly abi: abi },
+    args: ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>,
+  ) {
+    return interpret(s, args, chain);
+  }
+  expectTypeOf(runScript(double, [21n])).toEqualTypeOf<InterpResult>();
+  expectTypeOf(runShape(double, [21n])).toEqualTypeOf<InterpResult>();
+  expectTypeOf(runLiteral(double)).toEqualTypeOf<InterpResult>();
+  expectTypeOf(runCompiled(compile(double), [21n])).toEqualTypeOf<InterpResult>();
+  expectTypeOf(runAbi(double, [21n])).toEqualTypeOf<InterpResult<{ y: bigint }>>();
+});
+
+test('a union of scripts with different ABIs is rejected, not checked against either', () => {
+  const either = Math.random() > 0.5 ? double : noArgs;
+  // @ts-expect-error — `[]` fits `noArgs` but not `double`; the union must agree on one ABI
+  interpret(either, [], chain);
+  // @ts-expect-error — and `[21n]` fits `double` but not `noArgs`
+  interpret(either, [21n], chain);
+  // each member on its own is still typed from its ABI
+  expectTypeOf(interpret(noArgs, [], chain)).toEqualTypeOf<InterpResult<{ ts: bigint }>>();
 });
