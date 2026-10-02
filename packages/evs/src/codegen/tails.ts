@@ -27,6 +27,17 @@
  *                    `mulDivRoundingUp` body every site calls (`lower/muldiv.ts`), returns [q]
  *                    via dynamic JUMP.
  *
+ * The shared codec bodies follow the same checked-subroutine convention but are emitted by
+ * `CodecShare.emitBodies` (`codegen/codecs.ts`), just before the dfail stubs and these tails
+ * (a body references `@memcpy` before cancun), and only for the codecs a site calls:
+ *
+ *   @enc_<k>:        a top-level composite member's encoder; entry [ret, base, src] (3, a static
+ *                    member) or [ret, src] (2, a dynamic one), the operands spilled to the codec
+ *                    registers; returns via dynamic JUMP to the site's label, checked at 0.
+ *   @dec_<k>:        a call output's decoder; entry [ret, buf] (2), returns [block, buf] — or
+ *                    [0, buf] through the @dec_<k>_fail_<h> funnel (POP rungs, allocated up
+ *                    front, placed only when referenced) — to the site's label, checked at 2.
+ *
  * The three selector reverts are one emitter, {@link emitSelectorRevert}, which a zero-arg
  * `s.throw` (`codegen/lower/composites.ts`) reuses inline.
  */

@@ -5,10 +5,12 @@
  * Program layout:
  *
  *   receive     cds == 0 → STOP (accept ETH and bare calls); else → @dispatch
- *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE
+ *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE   (frameEnd past the codec registers, if any)
  *   dispatch    cds < 4 → @badcd; selector mismatch → @badcd; else → @main
  *   @main       arg decode · body statement templates · return encode RETURN
  *   @fn_*       subroutines — uncalled fns dropped
+ *   codecs      @enc_<k> / @dec_<k> shared codec bodies (`codegen/codecs.ts`) — only those a
+ *               site calls; none when the plan shares nothing
  *   @dfail_*    per-strict-site decode-fail stubs → @decode_revert
  *   tails       @muldiv (2+ mulDiv sites) / @panic_* / @panic / @decode_revert / @badcd
  *               (+ @memcpy pre-cancun) — only the referenced ones, so they must stay the
