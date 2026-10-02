@@ -211,7 +211,7 @@ applies in state-override mode:
 | Limit | Rule | Fails when |
 | --- | --- | --- |
 | `DEPLOYLESS_MAX_RESULT_BYTES` = 24,576 | EIP-170 (code size) | The ABI-encoded result is larger. A `uint256[]` result takes `96 + 32·n` bytes, so 765 elements fit and 766 do not |
-| no leading `0xEF` | EIP-3541 | The result's first byte is `0xEF`. Only a result whose first returned value is a static `bytesN`, `uint256` or `int256` (directly or as the first member of a static struct or fixed array) can start with it; a hash fails about 1 time in 256 |
+| no leading `0xEF` | EIP-3541 | The result's first byte is `0xEF`. Only a result whose first returned value is a static `bytesN`, `uint256` or `int256` (directly or as the first member of a static struct or fixed array) can start with it: a hash fails about 1 time in 256, while a `uint256` needs at least `0xEF·2^248` and an `int256` must be below `-2^252`, which amounts and counts never reach |
 | `DEPLOYLESS_MAX_DATA_BYTES` = 49,152 | EIP-3860 (initcode size) | viem's creation data is larger: the wrapper, `initBytecode` and the ABI-encoded call **including its args** |
 
 `compile()` reports the result-shape cases it can see through `onDiagnostic`:

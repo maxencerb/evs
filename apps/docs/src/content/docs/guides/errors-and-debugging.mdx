@@ -89,9 +89,10 @@ script's own balance, `s.balance(s.env('address'))` — covered in
 [executing scripts](/guides/execution/)), and `DEPLOYLESS_RESULT_PREFIX` /
 `DEPLOYLESS_RESULT_SIZE` (a result shape that can break deployless mode — see
 [deployless limits](/reference/artifact/#deployless-limits)). The `echo` script above raises
-`DEPLOYLESS_RESULT_PREFIX`: its result starts with a `uint256`, which may begin with `0xEF`.
-`site` identifies the statement that raised a per-statement warning (see
-[diagnostics](/reference/diagnostics/)).
+`DEPLOYLESS_RESULT_PREFIX`: its result starts with a `uint256` argument, which evs cannot bound
+below `0xEF·2^248`, so it may begin with `0xEF`. `site` identifies the statement that raised a
+per-statement warning, or for `DEPLOYLESS_RESULT_PREFIX` the one that computes the first
+returned value (see [diagnostics](/reference/diagnostics/)).
 
 ## Runtime reverts
 

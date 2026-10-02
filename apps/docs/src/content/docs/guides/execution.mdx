@@ -235,8 +235,10 @@ the [artifact reference](/reference/artifact/#deployless-limits):
 
 - **At compile time**, `compile()` warns through `onDiagnostic` about the result shapes that
   decide a limit on their own: `DEPLOYLESS_RESULT_PREFIX` for a static result whose first
-  value is a `bytesN`, `uint256` or `int256`, and `DEPLOYLESS_RESULT_SIZE` for a result that is
-  always over 24,576 bytes.
+  value is a `bytesN`, or a `uint256`/`int256` that evs cannot bound away from the values that
+  start with `0xEF` (a hash or an id, a call output, an argument — not a length, a counter or
+  `s.env('blocknumber')`; see [which integers warn](/reference/diagnostics/#which-integers-warn)),
+  and `DEPLOYLESS_RESULT_SIZE` for a result that is always over 24,576 bytes.
 - **Before the call**, `deploylessDataSize(compiled, calldata)` computes the payload size
   above, to compare with `DEPLOYLESS_MAX_DATA_BYTES` and pick the mode per call.
 - **After a failure**, `explainDeploylessError(error)` recognizes the node's creation error and
@@ -260,8 +262,10 @@ its own work in deployless mode.
   the payload cap falls).
 - **For `0xEF`, reorder the result.** Only the first byte of the encoded result matters. A
   first value that is a `bytes32`/`bytesN` (a hash starts with `0xEF` about once in 256
-  calls), a `uint256` near the top of its range, or a large negative `int256` (around
-  -2<sup>252</sup>) can trip it — the `DEPLOYLESS_RESULT_PREFIX` warning names that value. Put
+  calls), a `uint256` near the top of its range (from `0xEF·2^248`, so a hash or an id
+  reinterpreted as an integer, never an amount), or a large negative `int256` (around
+  -2<sup>252</sup>) can trip it — the `DEPLOYLESS_RESULT_PREFIX` warning names that value and
+  the statement that computes it. Put
   a zero-padded value first — an `address`, a `bool`, a `uintN` below 256 bits — or return any
   dynamic value (`string`, `bytes`, an array), which makes the encoding start with an offset
   word.

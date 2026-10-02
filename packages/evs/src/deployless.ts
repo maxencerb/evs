@@ -12,7 +12,8 @@
  *   {@link DEPLOYLESS_MAX_DATA_BYTES} — so the script's ARGS count against it;
  * - EIP-170: the returndata, deposited as code, must fit {@link DEPLOYLESS_MAX_RESULT_BYTES};
  * - EIP-3541: deposited code must not start with byte `0xEF` — so a result whose first byte is
- *   `0xEF` fails (a static result whose first word is a `bytesN`, `uint256` or `int256`).
+ *   `0xEF` fails (a static result whose first word is a `bytesN`, or a `uint256`/`int256` as
+ *   large as a hash).
  *
  * This module holds the three answers evs gives: compile-time diagnostics for what the result
  * shape already decides (`deploylessResultDiagnostics`, forwarded by `compile()`), a pure size
@@ -28,12 +29,14 @@ import {
   abiParamToType,
   elemTypeOf,
   isArrayValueType,
+  isBytesN,
   isWordType,
   type EvsType,
   type Hex,
   type WordType,
 } from './core/types.js';
-import type { ScriptIr } from './ir/nodes.js';
+import { magnitudeBits } from './ir/magnitude.js';
+import { stmtDefs, walkStmts, type ScriptIr, type SiteId, type ValueId } from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
 // limits
@@ -85,27 +88,35 @@ function hexByteLength(value: unknown, what: string): number {
  * result is ONE tuple of the returned values: when any value is dynamic the encoding starts
  * with its offset word (`0x20`, never `0xEF`); when all are static the first leaf is inlined at
  * byte 0, and only a `bytesN`, `uint256` or `int256` word can start with `0xEF` (narrower ints
- * are zero- or sign-extended, `address`/`bool` zero-padded). The size check is exact for a
+ * are zero- or sign-extended, `address`/`bool` zero-padded). A `bytesN` always warns (a hash
+ * starts with `0xEF` 1 time in 256); a `uint256` must be at least `0xEF·2^248` and an `int256`
+ * below `-2^252`, so those warn only when `ir/magnitude.ts` cannot bound the value away from
+ * that range — an argument, a call output, a hash or bit pattern, not a literal, a length, a
+ * counter or a widened narrower integer. The warning carries the site of the statement that
+ * defines the first returned value (none for a script argument). The size check is exact for a
  * static result and a lower bound (every dynamic part empty) for a dynamic one.
  */
-export function deploylessResultDiagnostics(returns: ScriptIr['returns']): EvsDiagnostic[] {
-  const first = returns[0];
+export function deploylessResultDiagnostics(ir: ScriptIr): EvsDiagnostic[] {
+  const first = ir.returns[0];
   if (first === undefined) return [];
-  const layouts = returns.map((r) => layoutOfType(r.type));
+  const layouts = ir.returns.map((r) => layoutOfType(r.type));
   const dynamic = layouts.some(isDynamic);
   const diagnostics: EvsDiagnostic[] = [];
 
   const leading = dynamic ? undefined : leadingWord(first.type, first.name);
-  if (leading !== undefined && mayStartWithEf(leading.type)) {
+  const site = definingSite(ir, first.value);
+  const risk = leading === undefined ? undefined : efRisk(leading, ir, first.value, site);
+  if (leading !== undefined && risk !== undefined) {
     diagnostics.push({
       severity: 'warning',
       code: 'DEPLOYLESS_RESULT_PREFIX',
       message:
-        `the result starts with \`${leading.path}\` (${leading.type}) at byte 0: in the default ` +
-        `deployless toViem() mode the result is deposited as contract code, which the node ` +
-        `rejects when its first byte is 0xEF (EIP-3541) — a ${leading.type} value starting with ` +
-        `0xEF (a hash 1 time in 256) fails the call; use toViem({ mode: 'stateOverride' }), or ` +
-        `return an address, bool or narrower integer first, or any dynamic value`,
+        `the result starts with \`${leading.path}\` (${leading.type}) at byte 0, and in the ` +
+        `default deployless toViem() mode the node rejects a result whose first byte is 0xEF ` +
+        `(EIP-3541: the result is deposited as contract code) — ${risk}use ` +
+        `toViem({ mode: 'stateOverride' }), or return an address, bool or narrower integer ` +
+        `first, or any dynamic value`,
+      ...(site === undefined ? {} : { site }),
     });
   }
 
@@ -139,8 +150,49 @@ function leadingWord(type: EvsType, path: string): { type: WordType; path: strin
   return isArrayValueType(type) ? leadingWord(elemTypeOf(type), `${path}[0]`) : undefined;
 }
 
-function mayStartWithEf(type: WordType): boolean {
-  return type === 'uint256' || type === 'int256' || type.startsWith('bytes');
+/**
+ * Why the leading word of the returned `value` (defined at `site`, or a script argument) can
+ * start with `0xEF`, as the message's middle (ending where the fix starts) — or `undefined`
+ * when it cannot. A `uint256` starts with `0xEF`
+ * from `0xEF·2^248` (above 2^255) and an `int256` only in `[-17·2^248, -2^252)`, so a magnitude
+ * bound of 255 / 252 bits rules it out.
+ */
+function efRisk(
+  leading: { type: WordType; path: string },
+  ir: ScriptIr,
+  value: ValueId,
+  site: SiteId | undefined,
+): string | undefined {
+  const { type, path } = leading;
+  if (isBytesN(type)) return `a ${type} such as a hash starts with 0xEF 1 time in 256; `;
+  if (type !== 'uint256' && type !== 'int256') return undefined;
+  const bits = magnitudeBits(ir)(value);
+  if (type === 'uint256' ? bits <= 255 : bits <= 252) return undefined;
+  const range =
+    type === 'uint256'
+      ? 'a uint256 starts with 0xEF only from 0xEF·2^248 (about 1.08e77), and evs cannot bound ' +
+        `\`${path}\` below that`
+      : 'an int256 starts with 0xEF only below -2^252 (about -7.2e75), and evs cannot bound ' +
+        `\`${path}\` above that`;
+  const origin =
+    site === undefined
+      ? 'it is a script argument'
+      : 'it comes from a script argument, a call output, a hash or bit operation, or arithmetic over them';
+  const acknowledge =
+    site === undefined ? 'ignore this warning' : 'acknowledge this warning by its site';
+  return (
+    `${range} (${origin}); if it is an amount or a count, which never gets that large, ` +
+    `${acknowledge}, otherwise `
+  );
+}
+
+/** The site of the statement that defines `value`; `undefined` for a script argument. */
+function definingSite(ir: ScriptIr, value: ValueId): SiteId | undefined {
+  let site: SiteId | undefined;
+  walkStmts(ir.body, (s) => {
+    if (site === undefined && stmtDefs(s).includes(value)) site = s.site;
+  });
+  return site;
 }
 
 /** Encoded size of one value in a tuple: its inline static bytes, or its offset word plus the
