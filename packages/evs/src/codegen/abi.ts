@@ -42,8 +42,10 @@ export {
   emitAboveU64,
   emitCeil32,
   emitMemCopy,
+  layoutToNamed,
+  tupleComponents,
 } from './abi/shared.js';
-export type { SharedTails, SlotRef, EncodeOpts } from './abi/shared.js';
+export type { SharedTails, SlotRef, EncodeOpts, CodecHook } from './abi/shared.js';
 export {
   headOffsets,
   headOffsetAt,
@@ -51,15 +53,19 @@ export {
   emitLeafDynTail,
   encodeFramesOf,
   reserveEncodeFrames,
+  emitSharedEncodeBody,
+  subTupleBaseReads,
 } from './abi/encode.js';
-export type { PushWord, PushBase } from './abi/encode.js';
+export type { PushWord, PushBase, CodecRegisters } from './abi/encode.js';
 export { emitAbiEncodeToBytes, emitPackedEncodeToBytes } from './abi/encode-bytes.js';
 export type { EncodeSrcItem, EncodeMeta } from './abi/encode-bytes.js';
 export {
   emitDecodeTupleToMem,
   emitDecodeFromRegion,
   needsDecodeBudget,
+  effectiveDecodeBudget,
   emitInitDecodeBudget,
+  blockBaseReads,
 } from './abi/decode.js';
 export type { DecodeFail, DecodeBudget, DecodeOptions, DecodeRegion } from './abi/decode.js';
 export { emitCalldataDecode, emitReturnEncode } from './abi/dispatch.js';

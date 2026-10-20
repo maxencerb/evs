@@ -27,6 +27,20 @@
  *                    `mulDivRoundingUp` body every site calls (`lower/muldiv.ts`), returns [q]
  *                    via dynamic JUMP.
  *
+ * The shared codec bodies follow the same checked-subroutine convention but are emitted by
+ * `CodecShare.emitBodies` (`codegen/codecs.ts`), just before the dfail stubs and these tails
+ * (a body references `@memcpy` before cancun), and only for the codecs a site calls:
+ *
+ *   @enc_<k>:        a top-level composite member's encoder; entry [ret, base, src] (3, a static
+ *                    member) or [ret, src] (2, a dynamic one). The return address is spilled to
+ *                    RET; a tuple member's base / src are spilled to BASE / SRC (a dynamic
+ *                    tuple's BASE is its tail cursor), while an array member's operands stay on
+ *                    the stack for the array encoder. Returns via dynamic JUMP to the site's
+ *                    label, checked at 0.
+ *   @dec_<k>:        a call output's decoder; entry [ret, buf] (2), returns [block, buf] — or
+ *                    [0, buf] through the @dec_<k>_fail_<h> funnel (POP rungs, allocated up
+ *                    front, placed only when referenced) — to the site's label, checked at 2.
+ *
  * The three selector reverts are one emitter, {@link emitSelectorRevert}, which a zero-arg
  * `s.throw` (`codegen/lower/composites.ts`) reuses inline.
  */
@@ -42,7 +56,7 @@ import { selectorBytes } from '../core/bytes.js';
 import { EvsInternalError } from '../core/errors.js';
 import type { Hex } from '../core/types.js';
 import type { SiteId } from '../ir/nodes.js';
-import type { SharedTails } from './abi.js';
+import type { CodecHook, SharedTails } from './abi.js';
 import type { MulDivRounding } from './lower/context.js';
 import { emitMulDivSubroutine } from './lower/muldiv.js';
 
@@ -105,10 +119,15 @@ const TAIL_LABEL = {
  * Allocates every `SharedTails` label on `w` (bodies are emitted only for the referenced ones —
  * see `emitSharedTails`). `memcpy` is `null` on cancun (MCOPY inlines).
  * Call once per program, before any emitter references the tails; emit the bodies with
- * `emitSharedTails` after the last code region (and before any data segments).
+ * `emitSharedTails` after the last code region (and before any data segments). `opts.codecs` is
+ * the codec-sharing hook (`codegen/codecs.ts`), `null` (the default) to inline every codec.
  */
-export function createSharedTails(w: AsmWriter, opts: { evmVersion: EvmVersion }): SharedTails {
+export function createSharedTails(
+  w: AsmWriter,
+  opts: { evmVersion: EvmVersion; codecs?: CodecHook | null },
+): SharedTails {
   return {
+    codecs: opts.codecs ?? null,
     panicOverflow: w.newLabel(TAIL_LABEL.panicOverflow),
     panicDivZero: w.newLabel(TAIL_LABEL.panicDivZero),
     panicBounds: w.newLabel(TAIL_LABEL.panicBounds),

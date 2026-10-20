@@ -95,6 +95,14 @@ export interface DecodeRegion {
    * the `'end'` way in both regions.
    */
   readonly arrayOffsetBound: 'end' | 'returndata';
+  /**
+   * A memory word that caches a DYNAMIC value's block base (`base + off`), stored once after the
+   * offset bound, so the decoder's base thunk is one load instead of a re-derivation through the
+   * head word at every read. Only a shared decoder body sets it (`codegen/codecs.ts`, its `BASE`
+   * register, which nothing else writes while the body runs); inline sites leave it unset and
+   * keep their bytes.
+   */
+  readonly cacheBlockBase?: number;
 }
 
 /**
@@ -108,9 +116,14 @@ export interface DecodeRegion {
  * every head word unchecked (the bound mirrors the interpreter's `decodeBlock` guard); an array's
  * length or first offset word, see {@link DecodeRegion.arrayOffsetBound})
  * before the decoder reads it, then re-derived inside the decoder's base thunk
- * (`base + MLOAD(base + headOffset)`), so nothing rides the stack through the recursion. `opts` is
+ * (`base + MLOAD(base + headOffset)`, or one load of {@link DecodeRegion.cacheBlockBase}), so
+ * nothing rides the stack through the recursion. `opts` is
  * threaded to the decoder unchanged. The decode runs inside {@link emitWithinStackBudget}, `what`
  * naming the value in its error.
+ *
+ * The pushed block is always a fresh allocation at the free pointer, which never drops below the
+ * static frame's end (above `0x80`), so it is never 0: a shared decoder body
+ * (`codegen/codecs.ts`) returns 0 for a failed decode, and its call sites rely on that.
  */
 export function emitDecodeFromRegion(
   w: AsmWriter,
@@ -124,7 +137,7 @@ export function emitDecodeFromRegion(
   if (!usesRecursiveCodec(l)) {
     throw internal(`emitDecodeFromRegion: ${l.abi} does not decode through the recursive codec`);
   }
-  const { live, fail } = region;
+  const { live, fail, cacheBlockBase: cache } = region;
   let pushBlockBase: PushBase;
   if (isDynamic(l)) {
     region.pushBase();
@@ -143,17 +156,35 @@ export function emitDecodeFromRegion(
       w.op('RETURNDATASIZE');
       w.op('LT'); // [rds < off+32, off, …live]
       fail(live + 1); // [off, …live]
-      w.op('POP'); // […live]   (the base is re-derived inside the thunk)
+      if (cache === undefined) {
+        w.op('POP'); // […live]   (the base is re-derived inside the thunk)
+      } else {
+        region.pushBase();
+        w.op('ADD'); // [blockPtr = base + off, …live]
+        w.push(cache);
+        w.op('MSTORE'); // […live]
+      }
     } else {
       region.pushBase();
       w.op('ADD'); // [blockPtr, …live]
+      if (cache !== undefined) {
+        w.op('DUP1');
+        w.push(cache);
+        w.op('MSTORE'); // [blockPtr, …live]
+      }
       w.push(minBlockBytes(l));
       w.op('ADD'); // [blockPtr+min, …live]
       region.pushEnd();
       w.op('LT'); // [end < blockPtr+min, …live]
       fail(live); // […live]
     }
-    pushBlockBase = () => emitSubTupleBase(w, region.pushBase, headOffset);
+    pushBlockBase =
+      cache === undefined
+        ? () => emitSubTupleBase(w, region.pushBase, headOffset)
+        : () => {
+            w.push(cache);
+            w.op('MLOAD'); // [blockPtr]
+          };
   } else {
     pushBlockBase = () => emitOffsetBase(w, region.pushBase, headOffset);
   }
@@ -233,6 +264,17 @@ export function needsDecodeBudget(outputs: readonly NamedType[]): boolean {
     decodeChargeSites(layoutOfType(abiParamToType(p)), true, 'once'),
   );
   return sites.length > 1 || sites.includes('repeated');
+}
+
+/**
+ * @internal Shared with `codegen/codecs.ts`. The budget mode one top-level recursive-codec
+ * output of layout `l` is really decoded under when its call decodes under `budget`: `'off'`
+ * when `l` has no charge site at all (its decoder emits the same code either way), else
+ * `budget`. A shared decoder body is keyed on it (`decRetKey`), so `f() returns (T, string[],
+ * string[])` (budgeted) and `g() returns (T)` share T's body when T cannot charge.
+ */
+export function effectiveDecodeBudget(l: TypeLayout, budget: DecodeBudget): DecodeBudget {
+  return decodeChargeSites(l, true, 'once').length > 0 ? budget : 'off';
 }
 
 /** The decoders' charge sites for a value of layout `l`, walked: one entry per block
@@ -1145,6 +1187,19 @@ function tupleBaseReads(l: Extract<TypeLayout, { kind: 'tuple' }>): number {
       return n + 2 + (own >= TFRAME_MIN_READS ? 0 : own);
     }
     return n + 2 + (isRecursiveArray(c) ? 2 : 0);
+  }, 0);
+}
+
+/**
+ * @internal Shared with `codegen/codecs.ts` (the gas class of a shared decoder). How many times
+ * decoding the TOP-LEVEL dynamic tuple `l` reads its block base ({@link emitDecodeFromRegion}'s
+ * base thunk): {@link tupleBaseReads}, except that its own dynamic sub-tuples are never framed
+ * (their parent base is not derived), so each one's reads all go through it. A gas heuristic.
+ */
+export function blockBaseReads(l: Extract<TypeLayout, { kind: 'tuple' }>): number {
+  return l.components.reduce((n, c) => {
+    if (c.kind === 'tuple' && c.dynamic) return n + 2 + tupleBaseReads(c);
+    return n + tupleBaseReads({ ...l, components: [c] });
   }, 0);
 }
 

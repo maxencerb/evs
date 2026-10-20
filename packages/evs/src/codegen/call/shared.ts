@@ -165,7 +165,7 @@ export function assertSitePlan(
  */
 export function makeDecodeFail(
   w: AsmWriter,
-  plan: CallSitePlan,
+  plan: Pick<CallSitePlan, 'dfailLabel' | 'siteId'>,
   tryMode: boolean,
   labelPrefix: string,
   tryTarget: LabelId = plan.dfailLabel,

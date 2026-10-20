@@ -1,7 +1,8 @@
 /**
  * `codegen/abi/encode.ts` — the recursive ABI encoder (head/tail over a flat-pointer SRC tree)
  * and the composite-element array encode, whose loop state lives in the scratch frames reserved
- * below the output buffer.
+ * below the output buffer, plus the body of a shared encoder subroutine (`codegen/codecs.ts`),
+ * which runs these same emitters.
  */
 
 import {
@@ -11,11 +12,13 @@ import {
   headBytes,
   type TypeLayout,
 } from '../../abi/layout.js';
-import type { AsmWriter } from '../../asm/assembler.js';
+import type { AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { type NamedType, abiParamToType } from '../../core/types.js';
+import { encodeMemberKind, type EncodeMemberKind } from '../codec-keys.js';
 import { FREE_PTR, TAIL_CURSOR } from '../memory.js';
 import {
+  type CodecHook,
   type SharedTails,
   type EncodeOpts,
   isRecursiveArray,
@@ -97,7 +100,7 @@ export function emitEncodeBlock(
   tails: SharedTails,
   opts: EncodeOpts,
 ): void {
-  encodeBlock(w, components, pushSrc, pushBase, tails, opts, 0);
+  encodeBlock(w, components, pushSrc, pushBase, tails, opts, 0, tails.codecs);
 }
 
 /**
@@ -118,11 +121,22 @@ function encodeBlock(
   tails: SharedTails,
   opts: EncodeOpts,
   tupleDepth: number,
+  share: CodecHook | null,
 ): void {
   const offs = headOffsets(components);
   components.forEach((comp, i) => {
     const ho = headOffsetAt(offs, i);
     const layout = layoutOfType(abiParamToType(comp));
+    // a top-level composite member may call its shared encoder body instead of inlining it
+    // (`codegen/codecs.ts`); `pushBaseHo` is the DST base of a static member, `null` once a
+    // dynamic member's head offset word is written
+    const callShared = (pushBaseHo: PushBase | null): boolean => {
+      const kind = encodeMemberKind(layout);
+      return (
+        kind !== null &&
+        share?.encodeMember(w, kind, layout, comp.name, () => pushSrc(i), pushBaseHo) === true
+      );
+    };
 
     if (layout.kind === 'word') {
       pushSrc(i); // [word]
@@ -136,6 +150,7 @@ function encodeBlock(
     }
 
     if (layout.kind === 'tuple' && !layout.dynamic) {
+      if (callShared(() => emitOffsetBase(w, pushBase, ho))) return;
       // static inner tuple — inline its head into the parent head at base+ho (no offset word)
       encodeBlock(
         w,
@@ -145,11 +160,13 @@ function encodeBlock(
         tails,
         opts,
         tupleDepth,
+        null,
       );
       return;
     }
 
     if (layout.kind === 'array' && !isDynamic(layout)) {
+      if (callShared(() => emitOffsetBase(w, pushBase, ho))) return;
       // static fixed-size array `T[N]` — its N elements inline into the parent head at base+ho
       // (no offset word, no length word), exactly like a static tuple's members.
       emitEncodeArrayInline(
@@ -176,6 +193,7 @@ function encodeBlock(
       w.op('ADD');
     } // [head, rel]
     w.op('MSTORE', { note: `head ${comp.name || `#${i}`}` }); // []
+    if (callShared(null)) return;
 
     if (layout.kind === 'tuple') {
       // dynamic inner tuple: reserve its head region at the cursor (subBase = the cursor here),
@@ -193,6 +211,7 @@ function encodeBlock(
           tails,
           opts,
           tupleDepth + 1,
+          null,
         );
         return;
       }
@@ -212,6 +231,7 @@ function encodeBlock(
         tails,
         { ...opts, frameDepth: f + 1 },
         tupleDepth + 1,
+        null,
       );
       return;
     }
@@ -370,6 +390,26 @@ export function encodeFramesOf(l: TypeLayout): number {
  * every member access costs more.
  */
 const FRAMELESS_TUPLE_LEVELS = 2;
+
+/**
+ * @internal Shared with `codegen/codecs.ts` (the gas class of a shared encoder). How many times
+ * encoding the members of the tuple `l`, `tupleDepth` dynamic tuple levels below its root, reads
+ * `l`'s base (see {@link encodeBlock}): once per word head, per static member's word heads (they
+ * inline at `base + ho`) and per dynamic member's head offset word, plus every read of a
+ * frameless dynamic sub-tuple, whose base is re-derived from this one. A static `T[N]` reads it
+ * once (into its frame). A gas heuristic.
+ */
+export function subTupleBaseReads(
+  l: Extract<TypeLayout, { kind: 'tuple' }>,
+  tupleDepth: number,
+): number {
+  return l.components.reduce((n, c) => {
+    if (c.kind === 'word') return n + 1;
+    if (!isDynamic(c)) return n + (c.kind === 'tuple' ? subTupleBaseReads(c, tupleDepth) : 1);
+    const frameless = c.kind === 'tuple' && tupleDepth < FRAMELESS_TUPLE_LEVELS;
+    return n + 1 + (frameless ? subTupleBaseReads(c, tupleDepth + 1) : 0);
+  }, 0);
+}
 
 /** {@link encodeFramesOf} for `l` encoded in a block `tupleDepth` dynamic tuple levels below its
  *  root (see {@link encodeBlock}). */
@@ -735,6 +775,7 @@ function emitEncodeArrayElementStatic(
     tails,
     { ...opts, frameDepth: frameDepth + 1 },
     0,
+    null,
   );
 }
 
@@ -786,5 +827,136 @@ function emitEncodeArrayElementTail(
     tails,
     { ...opts, frameDepth: frameDepth + 1 },
     0,
+    null,
   );
+}
+
+// ---------------------------------------------------------------------------
+// shared encoder bodies (`codegen/codecs.ts`)
+// ---------------------------------------------------------------------------
+
+/** @internal The static-frame words a shared codec body keeps its parameters in, past the frame
+ *  (`codegen/codecs.ts`): the return address, the DST / block base, the SRC pointer. */
+export interface CodecRegisters {
+  readonly ret: number;
+  readonly base: number;
+  readonly src: number;
+}
+
+/**
+ * @internal The body of a shared encoder (`codegen/codecs.ts`) for a top-level member of `kind`
+ * and `layout`: the same emitters as the inline member, at the same tuple and frame depths, with
+ * the member's source pointer and base read from the codec registers. Every encode runs at
+ * absolute stack height 0 (the statement baseline, which the array loops and the pre-cancun
+ * `@memcpy` convention require), so the call site pushes its operands and the return label over
+ * an empty stack and the body spills them before it encodes:
+ *
+ *   ST  @entry (3): [ret, base, src] → ret, base, src spilled; members read them back
+ *   SA  @entry (3): [ret, base, src] → ret spilled; `emitEncodeArrayInline` takes src then base
+ *                   off the stack (each read exactly once, into its frame)
+ *   DT  @entry (2): [ret, src]       → ret, src spilled; base := the tail cursor (where the
+ *                   call site's head word points), then the head region is reserved
+ *   RA  @entry (2): [ret, src]       → ret spilled; `emitEncodeArrayTail` takes src off the stack
+ *
+ * and returns through `PUSH ret MLOAD JUMP` to the site's return label, checked at 0. The DT base
+ * is read from the cursor instead of re-derived through the parent's head word (what the inline
+ * code does), the same value: only the source read runs between the head write and the call.
+ * `name` labels the entry.
+ */
+export function emitSharedEncodeBody(
+  w: AsmWriter,
+  entry: LabelId,
+  name: string,
+  kind: EncodeMemberKind,
+  layout: TypeLayout,
+  regs: CodecRegisters,
+  tails: SharedTails,
+  opts: { evmVersion: EvmVersion },
+): void {
+  const pushReg = (slot: number): void => {
+    w.push(slot);
+    w.op('MLOAD');
+  };
+  const spill = (slot: number, note?: string): void => {
+    w.push(slot);
+    w.op('MSTORE', note === undefined ? undefined : { note });
+  };
+  const evm: EncodeOpts = { evmVersion: opts.evmVersion };
+  const members = (l: TypeLayout): readonly NamedType[] => {
+    if (l.kind !== 'tuple') throw internal(`shared encoder ${name}: ${l.abi} is not a tuple`);
+    return tupleComponents(l);
+  };
+  const array = (l: TypeLayout): Extract<TypeLayout, { kind: 'array' }> => {
+    if (l.kind !== 'array') throw internal(`shared encoder ${name}: ${l.abi} is not an array`);
+    return l;
+  };
+  w.label(entry, kind === 'ST' || kind === 'SA' ? 3 : 2, name);
+  spill(regs.ret, `${name}: spill return address`);
+  switch (kind) {
+    case 'ST': // [base, src]
+      spill(regs.base);
+      spill(regs.src); // []
+      encodeBlock(
+        w,
+        members(layout),
+        (j) => emitTupleMemberWord(w, () => pushReg(regs.src), j),
+        () => pushReg(regs.base),
+        tails,
+        evm,
+        0,
+        null,
+      );
+      break;
+    case 'SA': // [base, src]: src first (SWAP1 brings it up), then base
+      emitEncodeArrayInline(
+        w,
+        array(layout),
+        once(name, () => w.op('SWAP1')),
+        once(name, () => {}),
+        tails,
+        evm,
+      );
+      break;
+    case 'DT': {
+      // [src]
+      spill(regs.src); // []
+      w.push(TAIL_CURSOR);
+      w.op('MLOAD');
+      spill(regs.base); // base := the cursor, BEFORE the head region is reserved
+      const sub = members(layout);
+      emitAdvanceCursor(w, headBytes(sub));
+      encodeBlock(
+        w,
+        sub,
+        (j) => emitTupleMemberWord(w, () => pushReg(regs.src), j),
+        () => pushReg(regs.base),
+        tails,
+        evm,
+        1,
+        null,
+      );
+      break;
+    }
+    case 'RA': // [src]
+      emitEncodeArrayTail(
+        w,
+        array(layout),
+        once(name, () => {}),
+        tails,
+        evm,
+      );
+      break;
+  }
+  pushReg(regs.ret);
+  w.op('JUMP', { note: `${name}: return` }); // dynamic return jump (checked region)
+}
+
+/** A thunk for an operand the call site left on the stack: it may be read exactly once. */
+function once(name: string, emit: () => void): () => void {
+  let used = false;
+  return () => {
+    if (used) throw internal(`shared encoder ${name}: a stack operand was read twice`);
+    used = true;
+    emit();
+  };
 }

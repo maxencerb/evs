@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsInternalError } from '../core/errors.js';
-import { AsmWriter, assemble, CodeBuffer, type AsmNode } from './assembler.js';
+import { AsmWriter, assemble, CodeBuffer, codeSize, type AsmNode } from './assembler.js';
 import { encodedPushWidth, EVM_VERSIONS } from './ops.js';
 import { lookupPc } from './sourcemap.js';
 
@@ -317,6 +317,30 @@ describe('assemble — push lowering', () => {
           encodedPushWidth(value, evmVersion),
         );
       }
+    }
+  });
+
+  test('codeSize (the codec cost model) matches the assembled length on every fork', () => {
+    const w = new AsmWriter();
+    const loop = w.newLabel('loop');
+    const blob = w.newLabel('blob');
+    w.label(loop, 0);
+    w.push(0);
+    w.push(0x1234);
+    w.pushBytes(Uint8Array.of(0, 1, 2));
+    w.op('POP');
+    w.op('POP');
+    w.op('POP');
+    w.pushLabel(blob);
+    w.op('POP');
+    w.pushLabel(loop);
+    w.op('JUMP');
+    w.dataLabel(blob);
+    w.data(Uint8Array.of(9, 9, 9, 9));
+    for (const evmVersion of EVM_VERSIONS) {
+      const { bytecode } = assemble(w.nodes(), { evmVersion });
+      // the assembler's INVALID guard before the data region is not part of codeSize
+      expect(codeSize(w.nodes(), evmVersion) + 1, `on ${evmVersion}`).toBe(bytecode.length);
     }
   });
 

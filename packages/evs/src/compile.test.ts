@@ -710,6 +710,7 @@ describe('EIP-170 enforcement', () => {
     // the 25,056-byte data segment (+ INVALID guard) dominates the breakdown
     expect(err.message).toMatch(/data segments 25\d{3}/);
     expect(err.message).not.toMatch(/trampoline/); // no s.simulate → no trampoline bucket
+    expect(err.message).not.toMatch(/codecs/); // nothing shared → no codecs bucket
     // the buckets tile the whole runtime: "dispatcher" starts at pc 0, so it covers the receive
     // check and the prologue as well as the selector dispatch
     const size = (label: string): number =>
@@ -822,6 +823,46 @@ describe('EIP-170 enforcement', () => {
       // INVALID guard + the blob's ABI image (length word, 3,000 bytes padded to 3,008)
       expect(buckets.at(-1)).toBe(1 + 32 + 3_008);
     }
+  });
+
+  test('shared codec bodies get their own bucket (not counted as tails)', () => {
+    const structAbi = parseAbi([
+      'struct W { uint64 a; address b; int32 c; uint64 d; address e; int32 f; string g; }',
+      'function get(W x) view returns (W)',
+    ]);
+    const W = t.struct({
+      a: t.uint64,
+      b: t.address,
+      c: t.int32,
+      d: t.uint64,
+      e: t.address,
+      f: t.int32,
+      g: t.string,
+    });
+    // three chained reads share the struct's encoder and decoder; the blob overflows EIP-170
+    const big = evscript({ name: 'bigCodecs', args: [t.address, W] }, (s, a, x) => {
+      const r1 = s.read({ address: a, abi: structAbi, functionName: 'get', args: [x] });
+      const r2 = s.read({ address: a, abi: structAbi, functionName: 'get', args: [r1] });
+      const last = s.read({ address: a, abi: structAbi, functionName: 'get', args: [r2] });
+      const blob = s.lit(t.bytes, `0x${'ab'.repeat(25_000)}`);
+      return s.return({ last, blob });
+    });
+    const err = captureError(() => compile(big), EvsCompileError);
+    expect(err.code).toBe('COMPILE_LIMIT');
+    const m =
+      /is (\d+) bytes .*\(dispatcher (\d+), body (\d+), fns (\d+), codecs (\d+), tails (\d+), data segments (\d+)\)/.exec(
+        err.message,
+      );
+    expect(m, `breakdown: ${err.message}`).not.toBeNull();
+    const [total = 0, dispatcher = 0, body = 0, fns = 0, codecs = 0, tails = 0, data = 0] = (
+      m ?? []
+    )
+      .slice(1)
+      .map(Number);
+    expect(dispatcher + body + fns + codecs + tails + data).toBe(total);
+    // the bodies are hundreds of bytes; the tails stay the revert stubs and shared tails
+    expect(codecs).toBeGreaterThan(tails);
+    expect(fns).toBe(0);
   });
 
   test('a comfortably-sized script compiles', () => {

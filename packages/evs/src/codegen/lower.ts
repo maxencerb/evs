@@ -50,6 +50,7 @@ export {
   numClass,
   selfAddressValues,
   typeOf,
+  walkEmittedStmts,
 } from './lower/context.js';
 export type { LowerCtx } from './lower/context.js';
 export { checkedArithCanOverflow } from './lower/arith.js';

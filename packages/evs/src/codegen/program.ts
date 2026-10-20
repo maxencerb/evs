@@ -5,10 +5,12 @@
  * Program layout:
  *
  *   receive     cds == 0 → STOP (accept ETH and bare calls); else → @dispatch
- *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE
+ *   prologue    PUSH frameEnd PUSH1 0x40 MSTORE   (frameEnd past the codec registers, if any)
  *   dispatch    cds < 4 → @badcd; selector mismatch → @badcd; else → @main
  *   @main       arg decode · body statement templates · return encode RETURN
  *   @fn_*       subroutines — uncalled fns dropped
+ *   codecs      @enc_<k> / @dec_<k> shared codec bodies (`codegen/codecs.ts`) — only those a
+ *               site calls; none when the plan shares nothing
  *   @dfail_*    per-strict-site decode-fail stubs → @decode_revert
  *   tails       @muldiv (2+ mulDiv sites) / @panic_* / @panic / @decode_revert / @badcd
  *               (+ @memcpy pre-cancun) — only the referenced ones, so they must stay the
@@ -38,6 +40,15 @@ import {
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
+import { RETURNS_SITE } from './codec-keys.js';
+import {
+  CodecShare,
+  codecRegisters,
+  EMPTY_CODEC_PLAN,
+  mayUseCodec,
+  planCodecs,
+  returnsMayUseCodec,
+} from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
@@ -74,6 +85,8 @@ export interface ProgramRegions {
   readonly fns: LabelId | null;
   /** The simulate trampoline entrypoint (only with an `s.simulate` site). */
   readonly trampoline: LabelId | null;
+  /** The first shared codec body (`@enc_<k>` / `@dec_<k>`, only when the plan shares one). */
+  readonly codecs: LabelId | null;
   /** The first decode-fail stub, else the first shared tail placed. */
   readonly tails: LabelId | null;
   /** The first data segment. */
@@ -93,15 +106,55 @@ function internal(message: string): EvsInternalError {
 
 export function lowerProgram(
   ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; optimize?: boolean },
+  opts: {
+    evmVersion: EvmVersion;
+    optimize?: boolean;
+    /**
+     * @internal Whether codec uses may share a subroutine (`codegen/codecs.ts`), default `true`.
+     * `compile()` turns it off only to lower again after a `CodecPlanDrift`; tests use it to
+     * build the inline twin of a program.
+     */
+    shareCodecs?: boolean;
+  },
 ): LowerResult {
   validateIr(ir);
   // `optimize` (compile's single optimizer switch) selects the liveness-based frame allocator
   // (issue #41); the default keeps one slot per value so the default bytes never move.
-  const frame = layoutFrames(ir, { optimize: opts.optimize ?? false });
+  const optimize = opts.optimize ?? false;
+  const frame = layoutFrames(ir, { optimize });
+
+  // One scan of the body and ALL recorded fns: does any `s.simulate` site exist (the simulate
+  // trampoline below), and may any statement use a shared codec (the planner's early exit)?
+  let hasSimulate = false;
+  let codecCandidates = returnsMayUseCodec(ir);
+  const scan = (s: Stmt): void => {
+    if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
+    if (!codecCandidates && mayUseCodec(ir, s)) codecCandidates = true;
+  };
+  walkStmts(ir.body, scan);
+  for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, scan);
+
+  // shared codec subroutines: the registers are measured against the default allocator's frame
+  // (the larger one), so both allocators size calls and bodies alike; the prologue push and the
+  // `optimize` peephole check are per program, so a key on a threshold may decide differently
+  const plan =
+    opts.shareCodecs === false
+      ? EMPTY_CODEC_PLAN
+      : planCodecs(ir, {
+          evmVersion: opts.evmVersion,
+          optimize,
+          frameEnd: frame.frameEnd,
+          candidates: codecCandidates,
+          ...(optimize
+            ? { measureFrameEnd: () => layoutFrames(ir, { optimize: false }).frameEnd }
+            : {}),
+        });
+  // the codec registers sit right after the static frame (none when nothing is shared)
+  const frameEnd = frame.frameEnd + 32 * plan.words;
+  const codecs = plan.keys.size === 0 ? null : new CodecShare(plan, codecRegisters(frame.frameEnd));
   const w = new AsmWriter();
   const evm = { evmVersion: opts.evmVersion };
-  const tails = createSharedTails(w, evm);
+  const tails = createSharedTails(w, { ...evm, codecs });
 
   // -- data segment manager (content-deduplicated; emitted last) ------------------------
   const segments: { label: LabelId; name: string; bytes: Uint8Array }[] = [];
@@ -134,21 +187,15 @@ export function lowerProgram(
   w.label(dispatch, 0);
 
   // -- prologue: free-pointer init --------------------------------
-  w.push(frame.frameEnd, { note: 'frameEnd' });
+  w.push(frameEnd, { note: 'frameEnd' });
   w.push(FREE_PTR);
   w.op('MSTORE', { note: 'free-ptr init' });
 
   // -- simulate trampoline (issue #1): if any `s.simulate` site exists anywhere in the IR, the
-  // bytecode carries a second internal entrypoint reached by a reserved selector. Detect it across
-  // the body and ALL recorded fns (a simulate inside an uncalled, dropped fn just leaves the
-  // trampoline unreachable — a few dozen bytes; unlike the shared tails, which are emitted only
-  // when referenced, the trampoline is not reference-tracked).
-  let hasSimulate = false;
-  const markSimulate = (s: Stmt): void => {
-    if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
-  };
-  walkStmts(ir.body, markSimulate);
-  for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, markSimulate);
+  // bytecode carries a second internal entrypoint reached by a reserved selector. Detected across
+  // the body and ALL recorded fns by the scan above (a simulate inside an uncalled, dropped fn
+  // just leaves the trampoline unreachable — a few dozen bytes; unlike the shared tails, which
+  // are emitted only when referenced, the trampoline is not reference-tracked).
   const trampoline = hasSimulate ? w.newLabel(SIMULATE_TRAMPOLINE_LABEL) : null;
 
   // -- dispatcher: size floor, selector match, fallback EvsInvalidCalldata --------
@@ -214,6 +261,7 @@ export function lowerProgram(
     }
     return { name: r.name, ref: { slot, type: r.type } };
   });
+  tails.codecs?.enterSite(RETURNS_SITE);
   emitReturnEncode(w, components, tails, evm);
 
   // -- fn subroutines (only fns reached through fncall — uncalled fns dropped) ---------
@@ -222,9 +270,14 @@ export function lowerProgram(
   // -- simulate trampoline entrypoint (issue #1) — a self-contained REVERT-terminated region ----
   if (trampoline !== null) emitSimulateTrampoline(w, trampoline);
 
+  // -- shared codec bodies: after every region that holds a codec site, before the tails (a
+  // body references `@memcpy` before cancun) ----------------------------------------------
+  const firstCodec = codecs === null ? null : codecs.emitBodies(w, tails, evm);
+  codecs?.checkDrift();
+
   // -- per-site decode-fail stubs (strict calls) + shared tails ----------------
   // Shared tails are emitted only when referenced, so they must come after every region that
-  // can `pushLabel` one (body, fn subroutines, trampoline, dfail stubs — all above).
+  // can `pushLabel` one (body, fn subroutines, trampoline, codec bodies, dfail stubs — all above).
   for (const stub of ctx.dfailStubs) emitDecodeFailStub(w, stub.label, stub.site, tails);
   const firstTail = emitSharedTails(w, tails, ctx.mulDivShare);
 
@@ -240,13 +293,14 @@ export function lowerProgram(
     main,
     fns: firstFn === undefined ? null : (ctx.fnEntries.get(firstFn) ?? null),
     trampoline,
+    codecs: firstCodec,
     tails: ctx.dfailStubs[0]?.label ?? firstTail,
     data: segments[0]?.label ?? null,
   };
   const sites = collectSites(ctx, ctx.fnQueue);
   return {
     nodes: w.nodes(),
-    frameEnd: frame.frameEnd,
+    frameEnd,
     sites,
     regions,
     diagnostics: [

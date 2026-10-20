@@ -314,9 +314,10 @@ const STAGING_SLOT = SCRATCH_1;
 /**
  * Whether a call site's calldata goes through the recursive encoder ({@link
  * emitCalldataBuildTuples}): some input is a tuple, `tuple[]`/`T[][]`/`string[]`/`bytes[]` or
- * any `T[N]` ({@link usesRecursiveCodec}). Otherwise the calldata template builds it.
+ * any `T[N]` ({@link usesRecursiveCodec}). Otherwise the calldata template builds it. Shared with
+ * `codegen/codecs.ts`, whose census counts the encoder members of exactly these sites.
  */
-function usesRecursiveEncoder(stmt: Extract<Stmt, { k: 'call' }>): boolean {
+export function usesRecursiveEncoder(stmt: Extract<Stmt, { k: 'call' }>): boolean {
   return stmt.fnAbi.inputs.some((p) => usesRecursiveCodec(layoutOfType(abiParamToType(p))));
 }
 

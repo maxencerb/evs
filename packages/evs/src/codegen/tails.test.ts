@@ -28,7 +28,7 @@ const concat = (...parts: readonly Hex[]): Hex => `0x${parts.map((p) => p.slice(
 
 /** A runtime that immediately jumps into the chosen shared tail. */
 function tailRuntime(
-  pick: Exclude<keyof SharedTails, 'memcpy' | 'mulDiv'>,
+  pick: Exclude<keyof SharedTails, 'memcpy' | 'mulDiv' | 'codecs'>,
   evmVersion: EvmVersion,
 ): Hex {
   const w = new AsmWriter();

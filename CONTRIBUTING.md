@@ -39,7 +39,10 @@ file in the folder opens with a header saying what it holds, and the barrel's he
 
 Cross-module cycles are a lint error (`import/no-cycle`; type-only imports are exempt), so code
 that recurses into itself stays in one file (the decoder's two array paths, the statement
-dispatch and the control-flow templates).
+dispatch and the control-flow templates). `codegen/codecs.ts` (the shared codec subroutines)
+sits above the emitters it shares: they reach it only through the `CodecHook` interface on
+`SharedTails` (`codegen/abi/shared.ts`), and the keys both sides build live in the leaf
+`codegen/codec-keys.ts`.
 
 ## Development
 
@@ -317,6 +320,74 @@ Releases: see [Releasing](#releasing) below.
   code + the initcode's calldata): keeping the 512-bit product and the `DIV` at the site adds
   ~35 bytes per site (~7.5k deployless gas) to save ~27 gas per evaluation, so it only repays
   for a site evaluated ~280 times in one call.
+- **Shared codecs** (`codegen/codecs.ts`, #95). A tuple or composite-array codec that a program
+  repeats is emitted once, as a checked subroutine (the `@memcpy` / `@muldiv` / fn convention:
+  entered at a fixed absolute height, left through a dynamic `JUMP` to a checked return label),
+  and each use calls it. Units: each top-level composite member of a top-level encode block
+  (call args, the return record, `s.encode` / `s.keccak256` / memref `.eq()`, `s.throw`), each
+  recursive-codec output of an `s.read` / `s.call` / `try*` / `revertReturns` site, and a
+  simulate site's whole outputs tuple; words, `string` / `bytes`, word arrays, anything nested
+  inside a unit and the script-argument decode stay inline. Keys (`codegen/codec-keys.ts`): the
+  layout, with word types erased for encoders (an encoder never inspects a word, so
+  `(uint64,address)` and `(uint256,int32)` share a body) and kept for decoders, plus a decoder's
+  head offset and effective decode budget (`effectiveDecodeBudget`: a type with no charge site
+  decodes to the same code budgeted or not). A body is the unchanged inline emitter run at the
+  inline heights, emitted with the hook off (bodies never call bodies, so one register bank is
+  enough) before the dfail stubs and the shared tails. The registers are up to three
+  static-frame words after the frame (`RET`, `BASE`, `SRC`), reserved only when something
+  shares: every later allocation then sits `32·words` higher, about `9 + (6w + 9)/512` gas once
+  per run at a peak of `w` memory words. **Encoders** run at height 0 (the statement baseline,
+  which the array loops and `@memcpy` require): a static member's site pushes
+  `[ret, base, src]`, a dynamic one writes its head word then pushes `[ret, src]`; the body
+  spills the return address to `RET`, a tuple body its base and source to `BASE` / `SRC` too (a
+  dynamic tuple's `BASE` is its tail cursor; an array body leaves them on the stack for the array
+  encoder), and returns to a label checked at 0. A dynamic tuple body reads its base off the
+  tail cursor where the inline code re-derives it through the head word at every member, so its
+  calls are cheaper than the inline code. **Decoders** enter at `[ret, buf]` (2) and spill the
+  return address, so the decode runs at the inline unit's own height 1 (same template budget,
+  same `UNSUPPORTED_V0` boundary); a dynamic output's block base is cached in `BASE`
+  (`DecodeRegion.cacheBlockBase`). A body returns `[block, buf]`, or `[0, buf]` when the decode
+  fails (a decoded block is a fresh allocation, never 0): a failure at height `h` jumps to the
+  funnel rung `h`, which POPs down to the next rung, and the last one pushes 0 and returns. The
+  site then routes the 0 through its OWN post-snapshot failure path (`DUP1 ISZERO fail(2)`): its
+  `EvsDecodeError(site)` stub, or its try restore and zero block, so revert data,
+  `explainRevert` and the try rollback are the inline site's. The rungs are allocated before any
+  speculative fragment and placed only when referenced (`emitIfWithinBudget` rolls label ids
+  back, so a rung allocated inside a fast path that gets rolled back would be handed out again);
+  a fail continuation kept in a register and taken with a dynamic jump was rejected, as it adds
+  unverifiable edges into checked code. **Cost model** (`planCodecs`): a census of the uses the
+  lowering emits (`walkEmittedStmts`: the main body and the fns it reaches, with whether each
+  statement is inside a loop), grouped per statement; sizes measured on dry runs of the real
+  emitters in a scratch writer (`codeSize`; an encoder site reads its operands at the cheapest
+  cost, so the real saving is at least the measured one); a key shares when ≥ 2 uses save
+  ≥ `SHARE_MIN_SAVING` (16) bytes, ≥ `SHARE_MIN_PER_USE` (8) per use for a key whose calls cost
+  gas, and, under `optimize`, a positive saving after the peephole. A use inside a loop shares
+  only for a cheap key (`isCheap`: a dynamic tuple encoder with ≥ 5 base reads, or the decoder of
+  a dynamic tuple output with ≥ 9, ≥ 5 at a nonzero head offset; each read saves ~15 / ~8 gas,
+  ~14 behind a head offset that the inline read re-adds, against ~60 gas of call overhead,
+  measured on `(uint64 ×k, string)`). A key whose dry run throws stays inline, so a too-deep
+  type reports its own site's `UNSUPPORTED_V0`. The registers are measured at the default
+  allocator's frame end, so both allocators size calls and bodies alike; the prologue's frame-end
+  push, which the register words can widen by a byte, is charged from the program's own frame
+  end, so (with the post-peephole check) a key on a threshold can decide differently under
+  `optimize`. A program where nothing pays is byte-identical to the inline lowering.
+  **Compile time**: most programs share nothing, so the planner stays off their path.
+  `lowerProgram`'s simulate scan also asks
+  `mayUseCodec` (an ABI tuple or array anywhere: a cheap superset of the census), and without a
+  candidate the census is skipped; the census itself builds layouts only for those statements; a
+  key measures only the failure modes its sites use, rejects itself as soon as its inline size
+  cannot pay even an 8-byte call and an empty body, and only then measures the registers (the
+  default allocator's frame end is laid out lazily) and its call and body; the peephole runs on
+  its fragments only once the pre-peephole saving passes. None of these shortcuts may change a
+  decision: under the strict test setup every plan is also computed by the exhaustive planner
+  (`exhaustive: true`, every fragment of every key measured) and compared, and a program the
+  candidate scan skips must have an empty census. **Drift**: the hook counts the calls each statement
+  makes and checks each decoder body's `canFail` against the plan; a mismatch is a
+  `CodecPlanDrift`, which `compile()` turns into a second lowering with sharing off (only ever a
+  missed saving). Measured on the issue's benchmark (`get(T) returns (T)` chained n times,
+  cancun): W8 (8 words + a string) n = 8 6264 → 2138 bytes and −800 gas, `W8[]` n = 8
+  9494 → 2792 bytes and +680 gas (~40 gas per call: array bodies are not cheap), a 3-deep
+  nested struct n = 4 10613 → 3860 bytes and −483 gas; single-use programs are unchanged.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
@@ -430,7 +501,10 @@ Three tiers, all run by CI (`ci.yml`):
   codecs vs viem's `encodeAbiParameters` / `encodeFunctionData`. One callee table (plus an
   optional balance table, `{ balances }` in the options) feeds both legs
   (`test/harness/differential.ts`): the `MockChain` answers sub-calls and `account` reads, the
-  EVM fixture plants the same code and balances.
+  EVM fixture plants the same code and balances. The `unit` and `integration` projects load
+  `test/setup/strict-codecs.ts`, which turns a codec-sharing plan drift (`CodecPlanDrift`) into
+  an INTERNAL error instead of the production fallback to the inline lowering, so every compile
+  in the suite checks the census against the emitters.
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
