@@ -262,6 +262,17 @@ export function convert(from: EvsType, to: EvsType, word: bigint): bigint {
 }
 
 /**
+ * Wrapping `convert` (`wrap: true`, numeric → numeric): the low N bits of the canonical
+ * two's-complement word, re-canonicalized to `to` (masked for uintN, sign-extended for intN).
+ */
+export function wrapConvert(to: EvsType, word: bigint): bigint {
+  if (!isWordType(to)) {
+    throw new EvsInternalError('INTERNAL', `interpret: wrapping convert to '${stringifyType(to)}'`);
+  }
+  return canonWord(to, word);
+}
+
+/**
  * `convert` to `string` / `bytes`: `string ↔ bytes` shares the memref (a free reinterpret); a
  * `bytesN` word becomes a fresh payload of its N bytes with the trailing zero bytes trimmed.
  */

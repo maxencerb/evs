@@ -391,9 +391,12 @@ export abstract class RecorderOps extends RecorderEncode {
 
   /**
    * Every conversion records one `convert` statement whose semantics follow from the operand and
-   * out types (see {@link AS_CONVERSIONS} for the `as*` family). A word → word conversion of a
-   * literal folds on its logical value, which each of them preserves (a `bytesN`'s logical value
-   * is its 8N-bit content, i.e. the same-width `uintN`); an out-of-range fold is a CERTAIN_PANIC.
+   * out types (see {@link AS_CONVERSIONS} for the `as*` family), or, for the wrapping ones
+   * (`wrappingToUint` / `wrappingToInt`, `asInt`, `asUint` on an intN), from the out type alone:
+   * a `wrap: true` convert keeps the low N bits of the two's-complement word. A word → word
+   * conversion of a literal folds on its logical value, which each checked one preserves (a
+   * `bytesN`'s logical value is its 8N-bit content, i.e. the same-width `uintN`), so an
+   * out-of-range fold is a CERTAIN_PANIC; a wrapping one folds to that value modulo 2^N.
    */
   convertOp(kind: ConvertKind, a: unknown, target: unknown, what: string): Expr {
     this.assertOpen(what);
@@ -403,8 +406,13 @@ export abstract class RecorderOps extends RecorderEncode {
     }
     const from = c.type;
     let to: EvsType;
-    if (kind === 'toUint' || kind === 'toInt') {
-      const prefix = kind === 'toUint' ? 'uint' : 'int';
+    if (
+      kind === 'toUint' ||
+      kind === 'toInt' ||
+      kind === 'wrappingToUint' ||
+      kind === 'wrappingToInt'
+    ) {
+      const prefix = kind === 'toUint' || kind === 'wrappingToUint' ? 'uint' : 'int';
       if (
         typeof target !== 'string' ||
         !target.startsWith(prefix) ||
@@ -436,13 +444,23 @@ export abstract class RecorderOps extends RecorderEncode {
       if (resolved === null) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: .${kind}() takes ${conv.sources}, got '${stringifyType(from)}'`,
+          kind === 'asInt'
+            ? asIntMismatch(from)
+            : `${what}: .${kind}() takes ${conv.sources}, got '${stringifyType(from)}'`,
         );
       }
       to = resolved;
     }
+    const wrap =
+      kind === 'wrappingToUint' ||
+      kind === 'wrappingToInt' ||
+      kind === 'asInt' ||
+      (kind === 'asUint' && isNumeric(from));
     const lit = this.litValues.get(c.id);
     if (lit !== undefined && isWordType(to)) {
+      if (wrap) {
+        return makeExpr(this.self, this.wordConst(to, fromUnsignedN(to, toUnsignedN(to, lit))));
+      }
       const [min, max] = rangeOf(to);
       if (lit < min || lit > max) {
         this.certainPanic(what, `${lit} does not fit '${to}'`, 0x11);
@@ -450,7 +468,9 @@ export abstract class RecorderOps extends RecorderEncode {
       return makeExpr(this.self, this.wordConst(to, lit));
     }
     const out = this.newValue(to);
-    this.appendStmt({ k: 'convert', a: c.id, out });
+    this.appendStmt(
+      wrap ? { k: 'convert', a: c.id, out, wrap: true } : { k: 'convert', a: c.id, out },
+    );
     return makeExpr(this.self, out);
   }
 
@@ -594,9 +614,10 @@ type AsKind =
   | 'asBytes32'
   | 'asUint'
   | 'asBytesN'
+  | 'asInt'
   | 'asBytes'
   | 'asString';
-export type ConvertKind = 'toUint' | 'toInt' | AsKind;
+export type ConvertKind = 'toUint' | 'toInt' | 'wrappingToUint' | 'wrappingToInt' | AsKind;
 
 /**
  * The `as*` conversions: the accepted operand types (for the error message) and the out type an
@@ -614,14 +635,19 @@ const AS_CONVERSIONS: Readonly<
   asUint160: { sources: "Expr<'address'>", target: (f) => (f === 'address' ? 'uint160' : null) },
   asUint256: { sources: "Expr<'bytes32'>", target: (f) => (f === 'bytes32' ? 'uint256' : null) },
   asBytes32: { sources: "Expr<'uint256'>", target: (f) => (f === 'uint256' ? 'bytes32' : null) },
-  // same width: bytesN → uint(8N), uintN → bytes(N/8)
+  // same width: bytesN → uint(8N), uintN → bytes(N/8); intN ↔ uintN (two's complement, wrapping)
   asUint: {
-    sources: "Expr<'bytesN'>",
-    target: (f) => (isBytesN(f) ? wordTypeOrNull(`uint${bitsOf(f)}`) : null),
+    sources: "Expr<'bytesN'> / Expr<'intN'>",
+    target: (f) =>
+      isBytesN(f) || (isNumeric(f) && isSigned(f)) ? wordTypeOrNull(`uint${bitsOf(f)}`) : null,
   },
   asBytesN: {
     sources: "Expr<'uintN'>",
     target: (f) => (isNumeric(f) && !isSigned(f) ? wordTypeOrNull(`bytes${bitsOf(f) / 8}`) : null),
+  },
+  asInt: {
+    sources: "Expr<'uintN'>",
+    target: (f) => (isNumeric(f) && !isSigned(f) ? wordTypeOrNull(`int${bitsOf(f)}`) : null),
   },
   asBytes: { sources: "Expr<'string'>", target: (f) => (f === 'string' ? 'bytes' : null) },
   asString: {
@@ -632,4 +658,13 @@ const AS_CONVERSIONS: Readonly<
 
 function wordTypeOrNull(s: string): WordType | null {
   return isWordType(s) ? s : null;
+}
+
+/** `.asInt()`'s TYPE_MISMATCH on a non-`uintN` receiver (mirrored by the `AsIntHint` type). */
+function asIntMismatch(from: EvsType): string {
+  const head = `.asInt(): cannot convert from '${stringifyType(from)}' — the source must be a uintN`;
+  if (from === 'address') return `${head} — use .asUint160() first (then .asInt())`;
+  if (isBytesN(from)) return `${head} — use .asUint() first (same width, then .asInt())`;
+  if (isNumeric(from)) return `${head} — it is already signed`;
+  return head;
 }

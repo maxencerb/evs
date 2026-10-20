@@ -5,7 +5,7 @@
 
 import type { AsmWriter } from '../../asm/assembler.js';
 import { bytesToBigInt, padWordAligned, HEX_BYTES_RE, hexToBytes } from '../../core/bytes.js';
-import { bitsOf, isBytesN, isSigned } from '../../core/types.js';
+import { bitsOf, isBytesN, isSigned, type EvsType } from '../../core/types.js';
 import type { Stmt } from '../../ir/nodes.js';
 import { fmtType, wordNeedsNormalize, emitNormalizeWord } from '../abi.js';
 import { emitPushWordChunk } from '../call/shared.js';
@@ -233,7 +233,9 @@ export function lowerAccount(
  * one shift between the left-aligned and right-aligned lanes; a `bytesN` → `string` copies the
  * word into a fresh string (trailing zero bytes trimmed); otherwise the logical value is
  * range-checked against the target (Panic 0x11) — matching the reference interpreter: checked
- * narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check.
+ * narrowing, cross-signedness, and `asAddress`'s high-96-bits-zero check. A wrapping convert
+ * (`wrap: true`) never checks: it re-canonicalizes the word to the target (one mask or
+ * SIGNEXTEND), or is free when every source value already is one.
  */
 export function lowerConvert(
   w: AsmWriter,
@@ -244,6 +246,13 @@ export function lowerConvert(
   const to = typeOf(ctx, s.out);
   loadOperand(w, ctx, s.a, meta(`convert ${fmtType(from)} → ${fmtType(to)}`)); // [v]
 
+  if (s.wrap === true) {
+    // the canonical source word is its value's two's complement: keep the target's low N bits
+    const wt = asWordType(to);
+    if (!wrapIsFree(from, to) && wordNeedsNormalize(wt)) emitNormalizeWord(w, wt);
+    storeOut(w, ctx, s.out);
+    return;
+  }
   if (to === 'string' && isBytesN(from)) {
     emitWordToString(w); // [ptr]
     storeOut(w, ctx, s.out);
@@ -309,6 +318,18 @@ export function lowerConvert(
     emitMaxCheck(w, ctx, maxUint(t.bits), `max ${fmtType(to)}`);
   }
   storeOut(w, ctx, s.out);
+}
+
+/**
+ * A wrapping convert that changes no value: a 256-bit target, or a source range inside the
+ * target's (a same-sign widening, `uintN → intM` with N < M).
+ */
+function wrapIsFree(from: EvsType, to: EvsType): boolean {
+  const f = numClass(from);
+  const t = numClass(to);
+  if (t.bits === 256) return true;
+  if (t.signed) return f.signed ? f.bits <= t.bits : f.bits < t.bits;
+  return !f.signed && f.bits <= t.bits;
 }
 
 /** `0x0101…01`: bit 0 of every byte. */

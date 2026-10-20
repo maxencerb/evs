@@ -121,7 +121,11 @@ export type Stmt = { readonly site: SiteId } & (
   // account state of the address `a` (s.balance / s.codeSize / s.codeHash). A kind of its own
   // rather than an `env` op: `env` reads the frame and takes no operand, this reads `a`.
   | { k: 'account'; op: AccountOp; a: ValueId; out: ValueId }
-  | { k: 'convert'; a: ValueId; out: ValueId } // semantics from values[a].type → values[out].type
+  // semantics from values[a].type → values[out].type. `wrap` (OPTIONAL, additive; numeric →
+  // numeric only): present ⇒ the wrapping conversion (wrappingToUint / wrappingToInt, asInt,
+  // asUint on an intN) — the low N bits of the two's-complement word, re-canonicalized to the
+  // out type (mask / SIGNEXTEND), never a Panic. Absent ⇒ the checked conversion.
+  | { k: 'convert'; a: ValueId; out: ValueId; wrap?: true }
   | { k: 'select'; cond: ValueId; a: ValueId; b: ValueId; out: ValueId }
   // bounds-checked element read (Panic 0x32): an array's element, or the byte at `i` of a
   // string/bytes as a `bytes1`

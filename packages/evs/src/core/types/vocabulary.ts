@@ -201,3 +201,14 @@ export type UintOfBytesN<t extends EvsType> =
 /** The `bytesN` as wide as a `uintN` (`'uint32'` → `'bytes4'`) — `Expr.asBytesN()`'s result. */
 export type BytesNOfUint<t extends EvsType> =
   t extends `uint${infer n extends keyof BitsToBytesSize}` ? `bytes${BitsToBytesSize[n]}` : never;
+
+// -- same-width intN ↔ uintN (`asUint` / `asInt`) ------------------------------------------------
+
+/** The `uintN` as wide as an `intN` (`'int24'` → `'uint24'`) — `Expr.asUint()`'s result on an intN. */
+export type UintOfInt<t extends EvsType> = t extends `int${infer n extends UintBits}`
+  ? `uint${n}`
+  : never;
+/** The `intN` as wide as a `uintN` (`'uint24'` → `'int24'`) — `Expr.asInt()`'s result. */
+export type IntOfUint<t extends EvsType> = t extends `uint${infer n extends UintBits}`
+  ? `int${n}`
+  : never;

@@ -20,6 +20,8 @@ import type {
   OrderedType,
   UintOfBytesN,
   BytesNOfUint,
+  UintOfInt,
+  IntOfUint,
 } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
@@ -103,15 +105,30 @@ export interface Expr<t extends EvsType = EvsType> {
   // compile error names that conversion (see {@link NumericReceiver})
   toUint<const u extends UintType>(this: NumericReceiver<t, 'toUint'>, target: u): Expr<u>;
   toInt<const i extends IntType>(this: NumericReceiver<t, 'toInt'>, target: i): Expr<i>;
+  // wrapping conversions — Solidity's explicit `uint24(x)` / `int24(x)` truncation: keep the low N
+  // bits of the two's-complement word (a mask for uintN, SIGNEXTEND for intN); never a Panic
+  // (an explicit opt-out of the checked toUint / toInt above, like wrappingAdd vs add)
+  wrappingToUint<const u extends UintType>(
+    this: NumericReceiver<t, 'wrappingToUint'>,
+    target: u,
+  ): Expr<u>;
+  wrappingToInt<const i extends IntType>(
+    this: NumericReceiver<t, 'wrappingToInt'>,
+    target: i,
+  ): Expr<i>;
   // checked from uint256/bytes32 (high 96 bits zero); free from uint160 (Solidity's address(u160))
   asAddress(this: Expr<'uint256' | 'bytes32' | 'uint160'>): Expr<'address'>;
   asUint160(this: Expr<'address'>): Expr<'uint160'>; // free (Solidity's uint160(addr))
   asUint256(this: Expr<'bytes32'>): Expr<'uint256'>; // free reinterpret
   asBytes32(this: Expr<'uint256'>): Expr<'bytes32'>; // free reinterpret
   // same-width bytesN ↔ uintN (Solidity's uint32(bytes4) / bytes4(uint32)): free, a shift
-  // between the left-aligned bytesN lane and the right-aligned uintN one
-  asUint(this: Expr<t & BytesNType>): Expr<UintOfBytesN<t>>;
+  // between the left-aligned bytesN lane and the right-aligned uintN one. On an intN, `asUint`
+  // is the same-width two's-complement reinterpretation (Solidity's uint24(int24)): one mask
+  asUint(this: Expr<t & (BytesNType | IntType)>): Expr<UintOfBytesN<t> | UintOfInt<t>>;
   asBytesN(this: Expr<t & UintType>): Expr<BytesNOfUint<t>>;
+  // same-width uintN → intN (Solidity's int24(uint24)): the bits reinterpreted as two's
+  // complement, one SIGNEXTEND; never a Panic (see {@link AsIntReceiver})
+  asInt(this: AsIntReceiver<t>): Expr<IntOfUint<t>>;
   // string ↔ bytes: free reinterpret (the same memory). On a bytesN, `asString` copies its bytes
   // into a fresh string with the trailing zero bytes trimmed (the legacy bytes32 `symbol()`)
   asBytes(this: Expr<'string'>): Expr<'bytes'>;
@@ -133,13 +150,14 @@ export interface Expr<t extends EvsType = EvsType> {
 }
 
 // ---------------------------------------------------------------------------
-// NumericReceiver — the `this` type of toUint / toInt
+// NumericReceiver / AsIntReceiver — the `this` types of the numeric conversions and asInt
 // ---------------------------------------------------------------------------
 
 export declare const conversionHint: unique symbol;
 
 /**
- * The receiver `toUint` / `toInt` accept: an `Expr` of a numeric type. A non-numeric receiver
+ * The receiver `toUint` / `toInt` (and `wrappingToUint` / `wrappingToInt`) accept: an `Expr` of
+ * a numeric type. A non-numeric receiver
  * is rejected as by `Expr<t & NumericType>`, but against an object type no value has (keyed by
  * the type-only {@link conversionHint} symbol) whose one property is the
  * {@link ConversionHint} message, so tsc's error spells out the fix the recording-time
@@ -158,7 +176,7 @@ export declare const conversionHint: unique symbol;
  * to `never` (`t & NumericType` is: a disjoint discriminant), leaving the message alone in the
  * error.
  */
-export type NumericReceiver<t extends EvsType, method extends 'toUint' | 'toInt'> = [t] extends [
+export type NumericReceiver<t extends EvsType, method extends NumericConversion> = [t] extends [
   NumericType,
 ]
   ? Expr<t>
@@ -167,12 +185,12 @@ export type NumericReceiver<t extends EvsType, method extends 'toUint' | 'toInt'
       | { readonly [conversionHint]: ConversionHint<t, method> };
 
 /**
- * The message of a non-numeric `toUint` / `toInt` receiver: the recording-time TYPE_MISMATCH's
+ * The message of a non-numeric `toUint` / `toInt` (or wrapping twin) receiver: the recording-time TYPE_MISMATCH's
  * text (`ops.ts`, pinned against it by `conversions.test.ts`), the same-width `as*` conversion
  * to use first included for an address or a bytesN. A tuple receiver's runtime text names its
  * JSON descriptor, which a type cannot spell, so its message leaves the source type out.
  */
-export type ConversionHint<t extends EvsType, method extends 'toUint' | 'toInt'> = [t] extends [
+export type ConversionHint<t extends EvsType, method extends NumericConversion> = [t] extends [
   'address',
 ]
   ? `.${method}(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .${method}(…))`
@@ -181,6 +199,33 @@ export type ConversionHint<t extends EvsType, method extends 'toUint' | 'toInt'>
     : [t] extends [string]
       ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN)`
       : `.${method}(): the source must be numeric (uintN/intN)`;
+
+/** The numeric → numeric conversions, whose receiver is a {@link NumericReceiver}. */
+export type NumericConversion = 'toUint' | 'toInt' | 'wrappingToUint' | 'wrappingToInt';
+
+/**
+ * The receiver `asInt` accepts: an `Expr` of a `uintN`. Any other receiver meets an object type
+ * keyed by {@link conversionHint} whose one property is the {@link AsIntHint} message, as in
+ * {@link NumericReceiver}: tsc's error names the conversion to use first.
+ */
+export type AsIntReceiver<t extends EvsType> = [t] extends [UintType]
+  ? Expr<t>
+  : (Expr<t> & { readonly type: UintType }) | { readonly [conversionHint]: AsIntHint<t> };
+
+/**
+ * The message of a non-`uintN` `asInt` receiver: the recording-time TYPE_MISMATCH's text
+ * (`ops.ts`, pinned against it by `conversions.test.ts`), with the conversion to use first for
+ * an address or a bytesN, and a note for an intN (already signed).
+ */
+export type AsIntHint<t extends EvsType> = [t] extends ['address']
+  ? ".asInt(): cannot convert from 'address' — the source must be a uintN — use .asUint160() first (then .asInt())"
+  : [t] extends [BytesNType]
+    ? `.asInt(): cannot convert from '${t}' — the source must be a uintN — use .asUint() first (same width, then .asInt())`
+    : [t] extends [IntType]
+      ? `.asInt(): cannot convert from '${t}' — the source must be a uintN — it is already signed`
+      : [t] extends [string]
+        ? `.asInt(): cannot convert from '${t}' — the source must be a uintN`
+        : '.asInt(): the source must be a uintN';
 
 export type LitOf<t extends EvsType> = t extends NumericType
   ? bigint | number

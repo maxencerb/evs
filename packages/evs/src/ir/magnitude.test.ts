@@ -43,6 +43,22 @@ describe('magnitudeBits', () => {
     ).toBe(64);
   });
 
+  test('a wrapping conversion keeps the bound only when it cannot wrap', () => {
+    const ofUint = (op: (x: Expr<'uint64'>) => Expr) =>
+      boundOf(evscript({ name: 'a', args: [t.uint64] }, (s, x) => s.return({ x: op(x) })));
+    const ofInt = (op: (x: Expr<'int64'>) => Expr) =>
+      boundOf(evscript({ name: 'a', args: [t.int64] }, (s, x) => s.return({ x: op(x) })));
+    // uint64 → uint256 / int256: lossless, the source bound
+    expect(ofUint((x) => x.wrappingToUint(t.uint256))).toBe(64);
+    expect(ofUint((x) => x.wrappingToInt(t.int256))).toBe(64);
+    // uint64 → int64 / uint32: may wrap, the target's full width
+    expect(ofUint((x) => x.asInt())).toBe(63);
+    expect(ofUint((x) => x.wrappingToUint(t.uint32))).toBe(32);
+    // a possibly negative int64 wraps to the top of an unsigned target, not of a wider signed one
+    expect(ofInt((x) => x.wrappingToUint(t.uint256))).toBe(256);
+    expect(ofInt((x) => x.wrappingToInt(t.int256))).toBe(63);
+  });
+
   test('an addition chain is bounded by its operands plus 64 bits, in a loop too', () => {
     const counter = evscript({ name: 'a', args: [t.array(t.address)] }, (s, xs) => {
       const n = s.let(t.uint256, 0n);

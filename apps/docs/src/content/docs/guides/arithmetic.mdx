@@ -19,7 +19,7 @@ Arithmetic in evs is **checked by default**, matching solc 0.8 semantics exactly
 | Boolean            | `and` `or` `not`                                | `bool`                                         | `Expr<'bool'>`  |
 | Bitwise            | `bitAnd` `bitOr` `bitXor` `bitNot`              | `uintN` / `bytesN`, same type                  | same type       |
 | Shifts             | `shl` `shr`                                     | value `uintN` / `intN` / `bytesN`; shift amount `uint256` | same as value |
-| Conversions        | `toUint` `toInt` `asAddress` `asUint160` `asUint256` `asBytes32` `asUint` `asBytesN` `asBytes` `asString` | see [Conversions](#conversions) | target type |
+| Conversions        | `toUint` `toInt` `wrappingToUint` `wrappingToInt` `asAddress` `asUint160` `asUint256` `asBytes32` `asUint` `asBytesN` `asInt` `asBytes` `asString` | see [Conversions](#conversions) | target type |
 
 Every method (except the conversions) also exists as a free function on the builder — `s.add(a, b)`, `s.lt(a, b)`, `s.shl(a, bits)`, `s.pow(base, e)`, `s.mulmod(a, b, n)`, and so on — for literal-left cases like `s.sub(100n, x)`. At least one operand of a free function must be an `Expr`; two plain literals throw `EvsTypeError` at recording (type one with `s.lit`). The exceptions are `addmod` / `mulmod` / `mulDiv` / `mulDivRoundingUp`, whose operands are always `uint256` (all-literal calls simply fold), and `pow` and the shifts, whose left operand must be an `Expr` (its type is the result type).
 
@@ -192,15 +192,17 @@ const mix = evscript(
 ## Conversions
 
 - **`toUint(target)` / `toInt(target)`** — numeric to numeric. Widening is free; narrowing is range-checked and reverts with `Panic(0x11)` when the value does not fit. Cross-signedness conversions are range-checked the same way: `uint256` to `int256` panics for values of 2^255 and above.
+- **`wrappingToUint(target)` / `wrappingToInt(target)`** — the same pairs with Solidity's explicit-conversion semantics: keep the low N bits of the value's two's complement, never revert (the split of `add` vs `wrappingAdd`). `x.wrappingToUint(t.uint24)` is Solidity's `uint24(x)`, `word.wrappingToInt(t.int24)` is `int24(uint24(word))`, and `i24.wrappingToUint(t.uint256)` is `uint256(int256(i24))` (a negative value wraps to the top of the range). Each costs one mask (`uintN`) or `SIGNEXTEND` (`intN`), nothing when no value can change (a widening of the same sign, `uintN` to a wider `intM`, any 256-bit target).
 - **`asAddress()`** — on `Expr<'uint256'>` or `Expr<'bytes32'>`; checked that the high 96 bits are zero (`Panic(0x11)` otherwise). On `Expr<'uint160'>` it is free (Solidity's `address(u160)`).
 - **`asUint160()`** — on `Expr<'address'>`, free (Solidity's `uint160(a)`). Like Solidity, an address converts to the one integer type of its width; widen from there with `toUint`: `a.asUint160().toUint(t.uint256)`. Solidity's `address(b20)` / `bytes20(a)` take two steps through `uint160` (one shift each): `b20.asUint().asAddress()` and `a.asUint160().asBytesN()`.
 - **`asUint256()` / `asBytes32()`** — free reinterpretation between `bytes32` and `uint256` (both occupy the full word; no check, no cost).
 - **`asUint()` / `asBytesN()`** — the same-width `bytesN` ↔ `uintN` conversions of every width (`bytes4` ↔ `uint32`, `bytes20` ↔ `uint160`, …; Solidity's `uint32(b)` / `bytes4(u)`). Both are lossless, so they are unchecked; each costs one shift, since a `bytesN` is left-aligned in its word and a `uintN` right-aligned. As in Solidity there is no direct conversion between different widths: go through `toUint` (`u64.toUint(t.uint256).asBytes32()`) or the bit operations.
+- **`asInt()` / `asUint()`** — the same-width `uintN` ↔ `intN` reinterpretation (Solidity's `int24(u24)` / `uint24(i24)`): the same N bits read as two's complement, so `0xffffff` as an `int24` is `-1` and `-1` as a `uint24` is `0xffffff`. Never checked; `asInt()` costs one `SIGNEXTEND`, `asUint()` on an `intN` one mask. `toInt` / `toUint` stay the range-checked conversions of the same pairs.
 - **`asBytes()` / `asString()`** — `string` ↔ `bytes`, free (the same memory, reinterpreted), and `asString()` on a `bytesN`: see [bytes and strings](/guides/values-and-types/#bytes-and-strings).
 
 A `bytesN` has no `byteAt` / `slice` of its own (Solidity's `b32[i]`): shift and mask after `asUint()`, or index its `N` bytes as a `bytes` through `s.encodePacked(word)`.
 
-A word-to-word conversion of a literal folds at recording, like the arithmetic below.
+A word-to-word conversion of a literal folds at recording, like the arithmetic below (a wrapping one to its wrapped value).
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
@@ -219,6 +221,47 @@ const casts = evscript(
   },
 );
 ```
+
+### Example: packed signed fields
+
+A wrapping conversion reads the signed field of a packed word in one opcode. Uniswap v4 packs a
+pool's `Slot0` as `sqrtPriceX96:160 | tick:int24 | protocolFee:24 | lpFee:24`, read with
+`extsload` (its `StateLibrary.getSlot0` decodes the tick with `signextend(2, shr(160, data))`):
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const POOL_MANAGER = '0x000000000004444c5dc75cB358380D2e3dE08A90';
+const extsloadAbi = [
+  {
+    type: 'function',
+    name: 'extsload',
+    stateMutability: 'view',
+    inputs: [{ name: 'slot', type: 'bytes32' }],
+    outputs: [{ name: 'value', type: 'bytes32' }],
+  },
+] as const;
+
+const slot0 = evscript({ name: 'slot0', args: [t.bytes32] }, (s, stateSlot) => {
+  const raw = s.read({
+    address: POOL_MANAGER,
+    abi: extsloadAbi,
+    functionName: 'extsload',
+    args: [stateSlot],
+  });
+  const data = raw.asUint256();
+  return s.return({
+    sqrtPriceX96: data.wrappingToUint(t.uint160), // uint160(data)
+    tick: data.shr(160n).wrappingToInt(t.int24), // int24(uint24(data >> 160)): one SIGNEXTEND
+    protocolFee: data.shr(184n).wrappingToUint(t.uint24),
+    lpFee: data.shr(208n).wrappingToUint(t.uint24),
+  });
+});
+```
+
+The checked `data.shr(160n).toUint(t.uint24)` would revert on the bits above the tick, and a
+checked `toInt(t.int24)` of the `uint24` on every negative tick: a packed field wants the
+bit-level conversion.
 
 ### Example: a CREATE2 address
 

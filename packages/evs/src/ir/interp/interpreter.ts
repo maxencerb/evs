@@ -40,6 +40,7 @@ import {
   envValue,
   convert,
   convertToBytes,
+  wrapConvert,
   zeroValue,
   zeroFillSlots,
   binOp,
@@ -443,7 +444,9 @@ class Interp {
           s.out,
           to === 'string' || to === 'bytes'
             ? convertToBytes(from, this.getValue(s.a))
-            : convert(from, to, this.word(s.a)),
+            : s.wrap === true
+              ? wrapConvert(to, this.word(s.a))
+              : convert(from, to, this.word(s.a)),
         );
         return;
       }

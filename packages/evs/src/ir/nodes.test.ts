@@ -437,6 +437,16 @@ describe('serializeIr / deserializeIr round trip', () => {
     expect(KITCHEN_SINK.body.filter((st) => st.k === 'call' && 'value' in st)).toEqual([]);
   });
 
+  test('a wrapping convert round-trips; the field is absent when unset', () => {
+    const raw: Record<string, any> = JSON.parse(serializeIr(KITCHEN_SINK));
+    expect(raw['body'][4]).toEqual({ k: 'convert', a: 4, out: 7, site: 5 });
+    raw['body'][4]['wrap'] = true;
+    const back = deserializeIr(JSON.stringify(raw));
+    expect(back.body[4]).toEqual({ k: 'convert', a: 4, out: 7, site: 5, wrap: true });
+    expect(serializeIr(back)).toContain('"wrap":true');
+    expect(serializeIr(deserializeIr(serializeIr(back)))).toBe(serializeIr(back));
+  });
+
   test('deserializeIr deep-freezes the result', () => {
     const back = deserializeIr(serializeIr(KITCHEN_SINK));
     expect(Object.isFrozen(back)).toBe(true);
@@ -835,6 +845,12 @@ describe('deserializeIr rejections', () => {
       (r) => (r['body'][1] = { site: 2, k: 'modarith', op: 'mulmod', a: 0, b: 3, out: 4 }),
       /body\[1\]\.n/,
     );
+  });
+
+  test('rejects a malformed convert wrap flag', () => {
+    // body[4] is the convert of KITCHEN_SINK: `wrap` is `true` or absent
+    reject((r) => (r['body'][4]['wrap'] = false), /body\[4\]\.wrap/);
+    reject((r) => (r['body'][4]['wrap'] = 'yes'), /body\[4\]\.wrap/);
   });
 
   test('rejects a malformed call value', () => {

@@ -642,6 +642,11 @@ class IrValidator {
         const what = `${path} (convert)`;
         const from = this.use(s.a, null, what);
         const to = this.declaredType(s.out, what);
+        if (s.wrap === true && !(isNumeric(from) && isNumeric(to))) {
+          this.fail(
+            `${what}: a wrapping conversion is numeric → numeric (uintN/intN), got '${stringifyType(from)}' → '${stringifyType(to)}'`,
+          );
+        }
         if (!convertOk(from, to)) {
           this.fail(
             `${what}: no conversion from '${stringifyType(from)}' to '${stringifyType(to)}' (legal: uintN/intN → uintN/intN, uint256|bytes32|uint160 → address, address → uint160, bytesN ↔ the same-width uintN, string ↔ bytes, bytesN → string)`,
