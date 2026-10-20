@@ -42,12 +42,11 @@ import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
 import { RETURNS_SITE } from './codec-keys.js';
 import {
+  CodecRepeatScan,
   CodecShare,
   codecRegisters,
   EMPTY_CODEC_PLAN,
-  mayUseCodec,
   planCodecs,
-  returnsMayUseCodec,
 } from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
 import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
@@ -124,12 +123,12 @@ export function lowerProgram(
   const frame = layoutFrames(ir, { optimize });
 
   // One scan of the body and ALL recorded fns: does any `s.simulate` site exist (the simulate
-  // trampoline below), and may any statement use a shared codec (the planner's early exit)?
+  // trampoline below), and does any codec key repeat (the planner's early exit)?
   let hasSimulate = false;
-  let codecCandidates = returnsMayUseCodec(ir);
+  const codecScan = opts.shareCodecs === false ? null : new CodecRepeatScan(ir);
   const scan = (s: Stmt): void => {
     if (s.k === 'call' && s.kind === 'simulate') hasSimulate = true;
-    if (!codecCandidates && mayUseCodec(ir, s)) codecCandidates = true;
+    codecScan?.visit(s);
   };
   walkStmts(ir.body, scan);
   for (const fn of ir.fns) if (fn !== undefined) walkStmts(fn.body, scan);
@@ -138,13 +137,13 @@ export function lowerProgram(
   // (the larger one), so both allocators size calls and bodies alike; the prologue push and the
   // `optimize` peephole check are per program, so a key on a threshold may decide differently
   const plan =
-    opts.shareCodecs === false
+    codecScan === null
       ? EMPTY_CODEC_PLAN
       : planCodecs(ir, {
           evmVersion: opts.evmVersion,
           optimize,
           frameEnd: frame.frameEnd,
-          candidates: codecCandidates,
+          repeats: codecScan.repeats,
           ...(optimize
             ? { measureFrameEnd: () => layoutFrames(ir, { optimize: false }).frameEnd }
             : {}),
