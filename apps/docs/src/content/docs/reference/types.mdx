@@ -131,6 +131,9 @@ type UintOfBytesN<t extends EvsType> =
   t extends `bytes${infer n extends keyof BytesSizeToBits}` ? `uint${BytesSizeToBits[n]}` : never;
 type BytesNOfUint<t extends EvsType> =
   t extends `uint${infer n extends keyof BitsToBytesSize}` ? `bytes${BitsToBytesSize[n]}` : never;
+// the same-width intN ↔ uintN twins (`asUint()` on an intN / `asInt()`)
+type UintOfInt<t extends EvsType> = t extends `int${infer n extends UintBits}` ? `uint${n}` : never;
+type IntOfUint<t extends EvsType> = t extends `uint${infer n extends UintBits}` ? `int${n}` : never;
 ```
 
 | Alias         | Meaning                                                                                     |
@@ -157,6 +160,7 @@ type BytesNOfUint<t extends EvsType> =
 | `BitsType`    | The bitwise/shift domain: `uintN` or `bytesN`.                                               |
 | `OrderedType` | The ordering domain of `lt`/`gt`/`lte`/`gte`: `uintN`, `intN`, `address` or `bytesN`.        |
 | `UintOfBytesN<t>` / `BytesNOfUint<t>` | The same-width twin of a `bytesN` / `uintN` (`'bytes4'` ↔ `'uint32'`): the result types of `asUint()` / `asBytesN()`. |
+| `UintOfInt<t>` / `IntOfUint<t>` | The same-width twin of an `intN` / `uintN` (`'int24'` ↔ `'uint24'`): the result types of `asUint()` on an `intN` / `asInt()`. |
 | `LitOf<t>`    | The host literal type accepted where a `t` is expected (table below).                        |
 | `IntoExpr<t>` | `Expr` of `t`, or a `LitOf<t>` literal.                                                      |
 | `Expr<t>`     | The branded staged-value handle (below).                                                     |
@@ -440,7 +444,10 @@ typed for the receivers in its "Available on" column only: `addr.toUint(t.uint16
 `flag.toUint(t.uint8)` is a compile error (and an `EvsTypeError` `TYPE_MISMATCH` at recording).
 On an address or a `bytesN`, both errors name the conversion to use first: `asUint160()` for an
 address, the same-width `asUint()` for a `bytesN` (`addr.asUint160().toUint(t.uint256)`).
-A `bytes32` reaches the integers through `asUint256()` first. Like the arithmetic methods, `toUint`
+A `bytes32` reaches the integers through `asUint256()` first. The wrapping conversions
+(`wrappingToUint`, `wrappingToInt`, `asInt`, `asUint` on an `intN`) never check: they keep the
+low N bits, as Solidity's explicit conversions do (`asInt()` on an address, a `bytesN` or an
+`intN` is a compile error naming the route, like `toInt`'s). Like the arithmetic methods, `toUint`
 and `toInt` need a receiver whose type is numeric: a bare `Expr` (for example a
 [widened-ABI result](/guides/calls/#widened-abis)) is cast to its concrete type first
 (`dec as Expr<'uint8'>`).
@@ -449,13 +456,17 @@ and `toInt` need a receiver whose type is numeric: a bare `Expr` (for example a
 | ----------- | ---------------------------------- | --------------------------------------- | ------------------------------------------------------- |
 | `toUint`    | `toUint(target: u): Expr<u>`       | any numeric `Expr`                      | checked against the target range                        |
 | `toInt`     | `toInt(target: i): Expr<i>`        | any numeric `Expr`                      | checked against the target range                        |
+| `wrappingToUint` | `wrappingToUint(target: u): Expr<u>` | any numeric `Expr`                 | the low N bits (Solidity's `uint24(x)`), never a Panic: one mask, or free when lossless |
+| `wrappingToInt`  | `wrappingToInt(target: i): Expr<i>`  | any numeric `Expr`                 | the low N bits as two's complement (`int24(uint24(x))`), never a Panic: one `SIGNEXTEND`, or free when lossless |
 | `asAddress` | `asAddress(): Expr<'address'>`     | `Expr<'uint256'>` or `Expr<'bytes32'>`  | checked: panics unless the top 96 bits are zero         |
 | `asAddress` | `asAddress(): Expr<'address'>`     | `Expr<'uint160'>`                       | free (Solidity's `address(u160)`)                       |
 | `asUint160` | `asUint160(): Expr<'uint160'>`     | `Expr<'address'>`                       | free (Solidity's `uint160(a)`); widen on with `toUint`  |
 | `asUint256` | `asUint256(): Expr<'uint256'>`     | `Expr<'bytes32'>`                       | free reinterpret                                        |
 | `asBytes32` | `asBytes32(): Expr<'bytes32'>`     | `Expr<'uint256'>`                       | free reinterpret                                        |
 | `asUint`    | `asUint(): Expr<UintOfBytesN<t>>`  | any `bytesN`                            | free: the same-width `uintN` (`bytes4` → `uint32`, Solidity's `uint32(b)`) |
+| `asUint`    | `asUint(): Expr<UintOfInt<t>>`     | any `intN`                              | the same-width two's complement (`int24` → `uint24`, Solidity's `uint24(i)`): one mask, never a Panic |
 | `asBytesN`  | `asBytesN(): Expr<BytesNOfUint<t>>`| any `uintN`                             | free: the same-width `bytesN` (`uint32` → `bytes4`)     |
+| `asInt`     | `asInt(): Expr<IntOfUint<t>>`      | any `uintN`                             | the same bits as two's complement (`uint24` → `int24`, Solidity's `int24(u)`): one `SIGNEXTEND`, never a Panic |
 | `asBytes`   | `asBytes(): Expr<'bytes'>`         | `Expr<'string'>`                        | free reinterpret (the same memory)                      |
 | `asString`  | `asString(): Expr<'string'>`       | `Expr<'bytes'>`                         | free reinterpret (the same memory)                      |
 | `asString`  | `asString(): Expr<'string'>`       | any `bytesN`                            | a fresh string of its bytes, trailing zero bytes trimmed (`'MKR\0…'` → `'MKR'`) |

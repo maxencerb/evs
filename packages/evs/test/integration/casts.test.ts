@@ -30,6 +30,11 @@ const word = (hex: string): Hex => `0x${hex.padEnd(64, '0')}`;
 const B4 = ['0x00000000', '0x00ffffff', '0xff000000', '0x12345678', '0xffffffff'] as const;
 const B32 = [word(''), word('01'), word('0001'), `0x${'ff'.repeat(32)}`, word('ff')] as const;
 const UINTS = [0n, 1n, 0x7fn, 0x80n, 0xffn] as const;
+const INT24S = [0n, 1n, -1n, 0x7fffffn, -0x800000n] as const;
+const WIDE_UINTS = [0n, 1n, 0x7fffffn, 0x800000n, 0xffffffn, 0x1000000n, 0x123456789abcn, -1n].map(
+  (u) => BigInt.asUintN(256, u),
+);
+const WIDE_INTS = [0n, 1n, -1n, 0x7fffffn, 0x800000n, -0x800000n, -0x800001n, -(1n << 255n)];
 const BYTES: readonly Hex[] = [
   '0x',
   '0x01',
@@ -134,6 +139,56 @@ const PAIRS: Pair[] = [
     body: (s, u) => s.return({ r: u.asBytesN() }),
     corpus: [...UINTS, (1n << bits) - 1n, 0x0102n].filter((u) => u < 1n << bits).map((u) => [u]),
   })),
+  ...(
+    [
+      ['uint8ToInt8', 'uint8', 8n],
+      ['uint24ToInt24', 'uint24', 24n],
+      ['uint256ToInt256', 'uint256', 256n],
+    ] as const
+  ).map(([fn, ty, bits]): Pair => ({
+    fn,
+    args: [ty],
+    body: (s, u) => s.return({ r: u.asInt() }),
+    corpus: [0n, 1n, (1n << (bits - 1n)) - 1n, 1n << (bits - 1n), (1n << bits) - 1n].map((u) => [
+      u,
+    ]),
+  })),
+  ...(
+    [
+      ['int8ToUint8', 'int8', 8n],
+      ['int24ToUint24', 'int24', 24n],
+      ['int256ToUint256', 'int256', 256n],
+    ] as const
+  ).map(([fn, ty, bits]): Pair => ({
+    fn,
+    args: [ty],
+    body: (s, i) => s.return({ r: i.asUint() }),
+    corpus: [0n, 1n, -1n, (1n << (bits - 1n)) - 1n, -(1n << (bits - 1n))].map((i) => [i]),
+  })),
+  ...(
+    [
+      ['truncateUint256ToUint24', 'uint256', (x: any) => x.wrappingToUint(t.uint24)],
+      ['truncateUint256ToInt24', 'uint256', (x: any) => x.wrappingToInt(t.int24)],
+      ['truncateInt256ToInt24', 'int256', (x: any) => x.wrappingToInt(t.int24)],
+      ['truncateInt256ToUint24', 'int256', (x: any) => x.wrappingToUint(t.uint24)],
+      ['widenInt24ToUint256', 'int24', (x: any) => x.wrappingToUint(t.uint256)],
+    ] as const
+  ).map(([fn, ty, op]): Pair => ({
+    fn,
+    args: [ty],
+    body: (s, x) => s.return({ r: op(x) }),
+    corpus: (ty === 'uint256' ? WIDE_UINTS : ty === 'int256' ? WIDE_INTS : INT24S).map((x) => [x]),
+  })),
+  {
+    fn: 'slot0Tick',
+    args: ['bytes32'],
+    body: (s, data) => s.return({ r: data.asUint256().shr(160n).wrappingToInt(t.int24) }),
+    corpus: [0n, -1n, 887272n, -887272n, (1n << 23n) - 1n, -(1n << 23n)].map((tick) => [
+      `0x${((BigInt.asUintN(24, tick) << 160n) | (0xabcdefn << 184n) | 0x1234n)
+        .toString(16)
+        .padStart(64, '0')}`,
+    ]),
+  },
   {
     fn: 'byteAtBytes',
     args: ['bytes', 'uint256'],

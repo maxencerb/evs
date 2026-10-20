@@ -400,8 +400,20 @@ function decodeStmt(v: unknown, path: string): Stmt {
       if (!isAccountOp(op)) fail(`${path}.op`, `unknown account op ${describe(op)}`);
       return { site, k, op, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
     }
-    case 'convert':
-      return { site, k, a: asId(o['a'], `${path}.a`), out: asId(o['out'], `${path}.out`) };
+    case 'convert': {
+      // `wrap` is OPTIONAL: absent → the checked conversion (IR recorded before it existed)
+      const wrap: unknown = o['wrap'];
+      if (wrap !== undefined && wrap !== true) {
+        fail(`${path}.wrap`, `expected true or absent, got ${describe(wrap)}`);
+      }
+      return {
+        site,
+        k,
+        a: asId(o['a'], `${path}.a`),
+        out: asId(o['out'], `${path}.out`),
+        ...(wrap === true ? { wrap } : {}),
+      };
+    }
     case 'select':
       return {
         site,

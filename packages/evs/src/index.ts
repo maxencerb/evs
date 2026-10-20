@@ -44,6 +44,7 @@ export type {
   FixedLengthOf, // issue #4: the outermost fixed length of an array type (`null` for `[]`)
   FromAbiOutputs, // issue #5: the return type of `t.fromOutputs(abi, name)`
   Hex,
+  IntOfUint, // the same-width intN of a uintN (`asInt()`'s result)
   IntoExpr,
   IntType,
   LitOf,
@@ -65,6 +66,7 @@ export type {
   TypeToComponent,
   UintBits,
   UintOfBytesN, // the same-width uintN of a bytesN (`asUint()`'s result)
+  UintOfInt, // the same-width uintN of an intN (`asUint()`'s result on an intN)
   UintType,
   WordType,
 } from './core/types.js';

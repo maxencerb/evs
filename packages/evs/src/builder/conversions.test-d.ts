@@ -10,15 +10,18 @@ import { expectTypeOf, test } from 'vite-plus/test';
 import { compile } from '../compile.js';
 import {
   t,
+  type AsIntReceiver,
   type BytesNOfUint,
   type conversionHint,
   type ConversionHint,
   type Expr,
+  type IntOfUint,
   type IntType,
   type NumericReceiver,
   type NumericType,
   type OrderedType,
   type UintOfBytesN,
+  type UintOfInt,
   type UintType,
 } from '../core/types.js';
 import { evscript } from './script.js';
@@ -38,6 +41,73 @@ test('UintOfBytesN / BytesNOfUint map every width both ways', () => {
   expectTypeOf<'address'>().toExtend<OrderedType>();
   expectTypeOf<'bytes7'>().toExtend<OrderedType>();
   expectTypeOf<'bool'>().not.toExtend<OrderedType>();
+});
+
+test('UintOfInt / IntOfUint map every width both ways', () => {
+  expectTypeOf<UintOfInt<'int8'>>().toEqualTypeOf<'uint8'>();
+  expectTypeOf<UintOfInt<'int24'>>().toEqualTypeOf<'uint24'>();
+  expectTypeOf<UintOfInt<'int256'>>().toEqualTypeOf<'uint256'>();
+  expectTypeOf<IntOfUint<'uint8'>>().toEqualTypeOf<'int8'>();
+  expectTypeOf<IntOfUint<'uint160'>>().toEqualTypeOf<'int160'>();
+  expectTypeOf<IntOfUint<'uint256'>>().toEqualTypeOf<'int256'>();
+  // not an intN / uintN → never
+  expectTypeOf<UintOfInt<'uint24'>>().toEqualTypeOf<never>();
+  expectTypeOf<UintOfInt<'bytes3'>>().toEqualTypeOf<never>();
+  expectTypeOf<IntOfUint<'int24'>>().toEqualTypeOf<never>();
+  expectTypeOf<IntOfUint<'address'>>().toEqualTypeOf<never>();
+});
+
+test('wrapping conversions: result types and receivers', () => {
+  evscript(
+    { name: 'wraps', args: [t.uint24, t.int24, t.uint256, t.bytes3, t.address, t.bool] },
+    (s, u24, i24, word, b3, a, flag) => {
+      expectTypeOf(u24.asInt()).toEqualTypeOf<Expr<'int24'>>();
+      expectTypeOf(i24.asUint()).toEqualTypeOf<Expr<'uint24'>>();
+      expectTypeOf(b3.asUint()).toEqualTypeOf<Expr<'uint24'>>();
+      expectTypeOf(word.asInt()).toEqualTypeOf<Expr<'int256'>>();
+      expectTypeOf(word.wrappingToUint(t.uint24)).toEqualTypeOf<Expr<'uint24'>>();
+      expectTypeOf(word.wrappingToInt('int24')).toEqualTypeOf<Expr<'int24'>>();
+      expectTypeOf(i24.wrappingToUint(t.uint256)).toEqualTypeOf<Expr<'uint256'>>();
+      expectTypeOf(word.shr(160n).wrappingToUint(t.uint24).asInt()).toEqualTypeOf<Expr<'int24'>>();
+
+      // @ts-expect-error — an address reaches asInt through .asUint160()
+      a.asInt();
+      // @ts-expect-error — a bytesN reaches asInt through .asUint()
+      b3.asInt();
+      // @ts-expect-error — an intN is already signed
+      i24.asInt();
+      // @ts-expect-error — bool has no integer counterpart
+      flag.asInt();
+      // @ts-expect-error — asUint is for bytesN / intN (a uintN already is one)
+      u24.asUint();
+      // @ts-expect-error — the wrapping conversions are numeric-only, like toUint
+      a.wrappingToUint(t.uint160);
+      // @ts-expect-error — the target of wrappingToInt is an intN
+      word.wrappingToInt(t.uint24);
+      // @ts-expect-error — the target of wrappingToUint is a uintN
+      word.wrappingToUint(t.int24);
+      return s.return({ ok: flag });
+    },
+  );
+
+  // the receiver of a non-uintN is the recording-time message
+  expectTypeOf<AsIntReceiver<'address'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".asInt(): cannot convert from 'address' — the source must be a uintN — use .asUint160() first (then .asInt())";
+  }>();
+  expectTypeOf<AsIntReceiver<'bytes3'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".asInt(): cannot convert from 'bytes3' — the source must be a uintN — use .asUint() first (same width, then .asInt())";
+  }>();
+  expectTypeOf<AsIntReceiver<'int24'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".asInt(): cannot convert from 'int24' — the source must be a uintN — it is already signed";
+  }>();
+  expectTypeOf<AsIntReceiver<'uint24'>>().toEqualTypeOf<Expr<'uint24'>>();
+  expectTypeOf<NumericReceiver<'address', 'wrappingToUint'>>().toEqualTypeOf<{
+    readonly [conversionHint]: ".wrappingToUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .wrappingToUint(…))";
+  }>();
+
+  // a generic uintN receiver is accepted, its result deferred to IntOfUint
+  const signed = <u extends UintType>(x: Expr<u>) => x.asInt();
+  expectTypeOf(signed).returns.toEqualTypeOf<Expr<IntOfUint<UintType>>>();
 });
 
 test('conversion result types and receiver constraints', () => {
@@ -65,7 +135,7 @@ test('conversion result types and receiver constraints', () => {
       u64.asUint160();
       // @ts-expect-error — asAddress takes uint256 / bytes32 / uint160, not a narrower uintN
       u64.asAddress();
-      // @ts-expect-error — asUint is the bytesN → uintN direction
+      // @ts-expect-error — asUint is the bytesN / intN → uintN direction
       u64.asUint();
       // @ts-expect-error — asBytesN is the uintN → bytesN direction
       b4.asBytesN();

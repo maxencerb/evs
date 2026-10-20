@@ -102,6 +102,11 @@ describe('field-report repros now record', () => {
     // Solidity's address(bytes20) / bytes20(address): two steps through uint160
     ['address(bytes20)', t.bytes20, (x: Expr<'bytes20'>) => x.asUint().asAddress(), 'address'],
     ['bytes20(address)', t.address, (x: Expr<'address'>) => x.asUint160().asBytesN(), 'bytes20'],
+    // packed signed fields (issue #158): int24(uint24(x)), uint24(int24(x)), uint24(x)
+    ['int24(uint24)', t.uint24, (x: Expr<'uint24'>) => x.asInt(), 'int24'],
+    ['uint24(int24)', t.int24, (x: Expr<'int24'>) => x.asUint(), 'uint24'],
+    ['uint24(uint256)', t.uint256, (x: Expr<'uint256'>) => x.wrappingToUint(t.uint24), 'uint24'],
+    ['int24(int256)', t.int256, (x: Expr<'int256'>) => x.wrappingToInt(t.int24), 'int24'],
     // controls (documented before, still accepted)
     ['uint256(bytes32)', t.bytes32, (x: Expr<'bytes32'>) => x.asUint256(), 'uint256'],
     ['address(uint256)', t.uint256, (x: Expr<'uint256'>) => x.asAddress(), 'address'],
@@ -148,6 +153,25 @@ describe('recorded IR', () => {
       'slice',
       'convert',
     ]);
+  });
+
+  test('the wrapping conversions record a `wrap: true` convert; the checked ones do not', () => {
+    const script = evscript(
+      { name: 'wraps', args: [t.uint24, t.int24, t.uint256, t.bytes3] },
+      (s, u24, i24, word, b3) =>
+        s.return({
+          i: u24.asInt(),
+          u: i24.asUint(),
+          tu: word.wrappingToUint(t.uint24),
+          ti: word.wrappingToInt(t.int24),
+          checked: u24.toInt(t.int24),
+          lane: b3.asUint(),
+        }),
+    );
+    const converts = script.ir.body.flatMap((st) => (st.k === 'convert' ? [st.wrap] : []));
+    expect(converts).toEqual([true, true, true, true, undefined, undefined]);
+    // an unset flag is absent, not `wrap: undefined` (the serialized IR is unchanged)
+    expect(script.ir.body.filter((st) => st.k === 'convert' && 'wrap' in st)).toHaveLength(4);
   });
 
   test('slice without an end records the receiver length as the end', () => {
@@ -205,7 +229,7 @@ describe('recording-time rejections', () => {
     );
     expectTypeError(
       rec(t.uint32, (x: Expr<'bytes4'>) => x.asUint()),
-      /\.asUint\(\) takes Expr<'bytesN'>, got 'uint32'/,
+      /\.asUint\(\) takes Expr<'bytesN'> \/ Expr<'intN'>, got 'uint32'/,
     );
     expectTypeError(
       rec(t.int32, (x: Expr<'uint32'>) => x.asBytesN()),
@@ -218,6 +242,40 @@ describe('recording-time rejections', () => {
     expectTypeError(
       rec(t.uint256, (x: Expr<'bytes'>) => x.asString()),
       /\.asString\(\) takes Expr<'bytes'> \/ Expr<'bytesN'>, got 'uint256'/,
+    );
+  });
+
+  test('asInt takes a uintN and names the route from an address / bytesN', () => {
+    expectTypeError(
+      rec(t.address, (x: Expr<'uint8'>) => x.asInt()),
+      /^\.asInt\(\): cannot convert from 'address' — the source must be a uintN — use \.asUint160\(\) first \(then \.asInt\(\)\)$/,
+    );
+    expectTypeError(
+      rec(t.bytes3, (x: Expr<'uint8'>) => x.asInt()),
+      /— use \.asUint\(\) first \(same width, then \.asInt\(\)\)$/,
+    );
+    expectTypeError(
+      rec(t.int24, (x: Expr<'uint8'>) => x.asInt()),
+      /cannot convert from 'int24' — the source must be a uintN — it is already signed$/,
+    );
+    expectTypeError(
+      rec(t.bool, (x: Expr<'uint8'>) => x.asInt()),
+      /cannot convert from 'bool' — the source must be a uintN$/,
+    );
+  });
+
+  test('wrappingToUint / wrappingToInt check their target and receiver like toUint / toInt', () => {
+    expectTypeError(
+      rec(t.uint256, (x: Expr<'uint256'>) => x.wrappingToUint('int24' as never)),
+      /\.wrappingToUint\(\): target must be a uintN type, got/,
+    );
+    expectTypeError(
+      rec(t.uint256, (x: Expr<'uint256'>) => x.wrappingToInt('bytes3' as never)),
+      /\.wrappingToInt\(\): target must be a intN type, got/,
+    );
+    expectTypeError(
+      rec(t.address, (x: Expr<'uint256'>) => x.wrappingToUint(t.uint24)),
+      /cannot convert from 'address' — .* — use \.asUint160\(\) first \(then \.wrappingToUint\(…\)\)/,
     );
   });
 
@@ -295,6 +353,35 @@ describe('recording-time rejections', () => {
       }
       return undefined;
     });
+    expect(hints).toEqual(runtime);
+  }, 60_000);
+
+  test('tsc rejects asInt receivers with the recording-time message', () => {
+    const errors = tscErrors(`
+      import { evscript, t } from './index.js';
+      evscript(
+        { name: 'f', args: [t.address, t.bytes3, t.int24, t.bool] },
+        (s, a, b3, i24, flag) => {
+          a.asInt();
+          b3.asInt();
+          i24.asInt();
+          flag.asInt();
+          return s.return({ ok: flag });
+        },
+      );
+    `);
+    const hints = errors.map(
+      (e) => /\[conversionHint\]: "(.*)"; \}'\.$/.exec(e.split('\n')[0] ?? '')?.[1],
+    );
+    const runtime = ([t.address, t.bytes3, t.int24, t.bool] as const).map((arg) => {
+      try {
+        resultType(arg, (x: Expr<'uint8'>) => x.asInt());
+      } catch (e) {
+        return (e as EvsTypeError).message;
+      }
+      return undefined;
+    });
+    expect(runtime.every((m) => m !== undefined)).toBe(true);
     expect(hints).toEqual(runtime);
   }, 60_000);
 

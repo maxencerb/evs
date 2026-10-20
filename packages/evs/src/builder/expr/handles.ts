@@ -275,6 +275,22 @@ class ExprHandle {
   toInt(target: unknown): Expr {
     return internalsOf(this, 'toInt').owner.convertOp('toInt', this, target, '.toInt()');
   }
+  wrappingToUint(target: unknown): Expr {
+    return internalsOf(this, 'wrappingToUint').owner.convertOp(
+      'wrappingToUint',
+      this,
+      target,
+      '.wrappingToUint()',
+    );
+  }
+  wrappingToInt(target: unknown): Expr {
+    return internalsOf(this, 'wrappingToInt').owner.convertOp(
+      'wrappingToInt',
+      this,
+      target,
+      '.wrappingToInt()',
+    );
+  }
   asAddress(): Expr {
     return internalsOf(this, 'asAddress').owner.convertOp(
       'asAddress',
@@ -317,6 +333,9 @@ class ExprHandle {
       undefined,
       '.asBytesN()',
     );
+  }
+  asInt(): Expr {
+    return internalsOf(this, 'asInt').owner.convertOp('asInt', this, undefined, '.asInt()');
   }
   asBytes(): Expr {
     return internalsOf(this, 'asBytes').owner.convertOp('asBytes', this, undefined, '.asBytes()');

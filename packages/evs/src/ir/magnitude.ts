@@ -26,7 +26,8 @@
  *             `bitXor` the larger; an unsigned `shl` by a literal adds that many bits. A
  *             wrapping op that can wrap, `bitNot`, a signed bitwise op or `shl`, an `shl` by a
  *             non-literal amount and a `pow` by a non-literal exponent (of a base above 1) are
- *             the full width. Numeric conversions keep the bound (narrowing is checked).
+ *             the full width. Numeric conversions keep the bound (narrowing is checked); a
+ *             wrapping one keeps it only when it cannot wrap, else is the full width.
  *   sums      addition gets one rule, so that counters and running sums stay bounded in a
  *             loop: a chain of additions over operands below `2^b` is below `n·2^b` after `n`
  *             additions, and the gas of one call allows fewer than 2^64 of them, so a sum is
@@ -134,8 +135,15 @@ class MagnitudeAnalysis {
       case 'len':
         return this.define(s.out, bits(64));
       case 'convert': {
-        const numeric = isNumeric(this.typeOf(s.a)) && isNumeric(this.typeOf(s.out));
-        return this.define(s.out, numeric ? this.read(s.a) : FULL);
+        const from = this.typeOf(s.a);
+        const to = this.typeOf(s.out);
+        if (!isNumeric(from) || !isNumeric(to)) return this.define(s.out, FULL);
+        if (s.wrap !== true) return this.define(s.out, this.read(s.a)); // checked: the value
+        // wrapping: the value is kept iff the target's range holds the source's bound (a
+        // possibly negative source wraps in an unsigned target); a kept bound is the source's
+        const b = this.capped(this.read(s.a), widthOf(from));
+        const kept = b <= widthOf(to) && (isSigned(to) || !isSigned(from));
+        return this.define(s.out, kept ? bits(b) : FULL);
       }
       case 'bin':
         return this.define(s.out, this.binary(s));

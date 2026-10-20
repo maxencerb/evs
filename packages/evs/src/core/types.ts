@@ -41,6 +41,8 @@ export type {
   OrderedType,
   UintOfBytesN,
   BytesNOfUint,
+  UintOfInt,
+  IntOfUint,
 } from './types/vocabulary.js';
 export type {
   exprBrand,
@@ -48,6 +50,9 @@ export type {
   conversionHint,
   NumericReceiver,
   ConversionHint,
+  NumericConversion,
+  AsIntReceiver,
+  AsIntHint,
   LitOf,
   TupleLitOf,
   TupleAsParam,

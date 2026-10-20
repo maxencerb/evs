@@ -4,7 +4,8 @@ pragma solidity 0.8.30;
 /// @title EvsCastReference — solc oracle for address / fixed-bytes conversions and byte access
 /// @notice The ground truth for evs `lt`/`gt`/`lte`/`gte` on `address` and `bytesN`,
 ///         `asUint160` / `asAddress` from `uint160`, the same-width `asUint` / `asBytesN`,
-///         `string` ↔ `bytes`, `byteAt`, `slice` and `bytesN` → `string`, asserted by
+///         the wrapping integer conversions (`asInt` / `asUint` between intN and uintN,
+///         `wrappingToUint` / `wrappingToInt`), `string` ↔ `bytes`, `byteAt`, `slice` and `bytesN` → `string`, asserted by
 ///         test/integration/casts.test.ts: equal decoded results, and byte-identical Panic
 ///         payloads where solc panics (`b[i]` out of range is `Panic(0x32)` in both).
 ///         A calldata slice out of range reverts without data in solc; evs reverts with
@@ -73,6 +74,56 @@ contract EvsCastReference {
 
     function uint256ToBytes32(uint256 u) external pure returns (bytes32) {
         return bytes32(u);
+    }
+
+    // ------------------------------------------- same-width intN <-> uintN, truncating narrowing
+    function uint8ToInt8(uint8 u) external pure returns (int8) {
+        return int8(u);
+    }
+
+    function uint24ToInt24(uint24 u) external pure returns (int24) {
+        return int24(u);
+    }
+
+    function uint256ToInt256(uint256 u) external pure returns (int256) {
+        return int256(u);
+    }
+
+    function int8ToUint8(int8 i) external pure returns (uint8) {
+        return uint8(i);
+    }
+
+    function int24ToUint24(int24 i) external pure returns (uint24) {
+        return uint24(i);
+    }
+
+    function int256ToUint256(int256 i) external pure returns (uint256) {
+        return uint256(i);
+    }
+
+    function truncateUint256ToUint24(uint256 u) external pure returns (uint24) {
+        return uint24(u);
+    }
+
+    function truncateUint256ToInt24(uint256 u) external pure returns (int24) {
+        return int24(uint24(u));
+    }
+
+    function truncateInt256ToInt24(int256 i) external pure returns (int24) {
+        return int24(i);
+    }
+
+    function truncateInt256ToUint24(int256 i) external pure returns (uint24) {
+        return uint24(uint256(i));
+    }
+
+    function widenInt24ToUint256(int24 i) external pure returns (uint256) {
+        return uint256(int256(i));
+    }
+
+    /// Uniswap v4 `StateLibrary.getSlot0`'s tick: `signextend(2, shr(160, data))`.
+    function slot0Tick(bytes32 data) external pure returns (int24) {
+        return int24(uint24(uint256(data) >> 160));
     }
 
     // ------------------------------------------------------------- string / bytes byte access

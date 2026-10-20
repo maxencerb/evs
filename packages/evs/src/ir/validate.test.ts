@@ -1195,6 +1195,38 @@ describe('validateIr — convert table', () => {
   test.each(REJECTED)('rejects %s → %s', (from, to) => {
     expectInvalid(convertIr(from, to), /no conversion/);
   });
+
+  function wrapIr(from: EvsType, to: EvsType): ScriptIr {
+    const base = convertIr(from, to);
+    const [def] = base.body;
+    if (def === undefined) throw new Error('convertIr has a def');
+    return { ...base, body: [def, mk({ k: 'convert', a: 0, out: 1, wrap: true })] };
+  }
+
+  // wrappingToUint / wrappingToInt, asInt, asUint on an intN: any numeric pair
+  const WRAP_ACCEPTED: readonly [EvsType, EvsType][] = [
+    ['uint24', 'int24'], // asInt
+    ['int24', 'uint24'], // asUint on an intN
+    ['uint256', 'uint24'], // truncation
+    ['int256', 'int8'],
+    ['uint256', 'int24'],
+    ['int8', 'uint256'],
+    ['uint8', 'uint8'],
+  ];
+  test.each(WRAP_ACCEPTED)('accepts a wrapping %s → %s', (from, to) => {
+    expect(() => validateIr(wrapIr(from, to))).not.toThrow();
+  });
+
+  const WRAP_REJECTED: readonly [EvsType, EvsType][] = [
+    ['bytes32', 'uint256'], // a legal checked convert, but not numeric → numeric
+    ['address', 'uint160'],
+    ['uint160', 'address'],
+    ['bytes4', 'uint32'],
+    ['bool', 'uint8'],
+  ];
+  test.each(WRAP_REJECTED)('rejects a wrapping %s → %s', (from, to) => {
+    expectInvalid(wrapIr(from, to), /a wrapping conversion is numeric → numeric/);
+  });
 });
 
 // ---------------------------------------------------------------------------

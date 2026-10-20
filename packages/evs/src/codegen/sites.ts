@@ -136,8 +136,8 @@ function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site
     case 'convert': {
       const from = typeOf(ctx, s.a);
       const to = typeOf(ctx, s.out);
-      const what = `conversion ${fmtType(from)} → ${fmtType(to)} of ${op(s.a)}`;
-      return convertIsChecked(from, to)
+      const what = `${s.wrap === true ? 'wrapping ' : ''}conversion ${fmtType(from)} → ${fmtType(to)} of ${op(s.a)}`;
+      return s.wrap !== true && convertIsChecked(from, to)
         ? checked(`checked ${what}`, [OVERFLOW])
         : site('stmt', what);
     }
