@@ -1,5 +1,17 @@
 # @maxencerb/evs
 
+## 0.4.0
+
+### Minor Changes
+
+- [#161](https://github.com/maxencerb/evs/pull/161) [`9cb8761`](https://github.com/maxencerb/evs/commit/9cb87613ec0e05eb7b917b04598d24d13329cece) Thanks [@maxencerb](https://github.com/maxencerb)! - New bit-level integer conversions for reading signed fields out of packed words ([#158](https://github.com/maxencerb/evs/issues/158)). `uintN.asInt()` reinterprets the same N bits as two's complement (Solidity's `int24(uint24(x))`, one `SIGNEXTEND`), and `asUint()` now also works on an `intN` (`uint24(int24(x))`, one mask). `x.wrappingToUint(t.uint24)` / `x.wrappingToInt(t.int24)` are Solidity's explicit truncating conversions: they keep the low N bits of any numeric value, so the tick of a Uniswap v4 `Slot0` word is `data.shr(160n).wrappingToInt(t.int24)`. None of them reverts, and a conversion that cannot change the value (a same-sign widening, a 256-bit target) costs nothing. `toUint` / `toInt` stay range-checked; the new methods are the explicit opt-in, the same split as `add` vs `wrappingAdd`. Literal operands fold to the wrapped value instead of raising `CERTAIN_PANIC`. `asInt()` on an address, a `bytesN` or an `intN` is a compile error that names the conversion to use first, like `toInt`'s. The result types are exported as `IntOfUint` / `UintOfInt`. The serialized IR's `convert` statement gains an optional `wrap: true`; IR without it reads as before.
+
+### Patch Changes
+
+- [#160](https://github.com/maxencerb/evs/pull/160) [`aee7def`](https://github.com/maxencerb/evs/commit/aee7defb22ba1d31471e2ab522cd265b5bf00767) Thanks [@maxencerb](https://github.com/maxencerb)! - Faster compiles for scripts that never repeat a struct or composite-array codec: the shared-codec planner now skips its full pass over the script when no codec is used twice. The compiled bytecode is unchanged.
+
+- [#157](https://github.com/maxencerb/evs/pull/157) [`7c73759`](https://github.com/maxencerb/evs/commit/7c737596fcadc3d87174a2d8d63de5eef6754da1) Thanks [@maxencerb](https://github.com/maxencerb)! - Scripts that repeat a struct or composite-array codec now emit it once: when several calls pass or return the same struct, struct array or fixed-size array, or the same struct is returned, encoded (`s.encode`, `s.keccak256`, `.eq()`) or thrown more than once, its encoder and decoder become shared subroutines that each site calls instead of inlining them ([#95](https://github.com/maxencerb/evs/issues/95)). Eight chained reads of an 8-field struct shrink from 6,264 to 2,138 runtime bytes (about 905k less gas in the default deployless mode), eight reads of an array of them from 9,494 to 2,792, four reads of a 3-deep nested struct from 10,613 to 3,860. A script that uses each codec once compiles exactly as before. Repeated `s.simulate` sites also share the decoding of their outputs, whatever their shape. Each shared codec call costs about 40-60 gas outside loops (small static structs and fixed-size arrays at the top of that range, struct arrays about 40; wide dynamic structs get cheaper than before; a read that shares both its encoder and its decoder pays it twice), and a use inside a loop only shares when that costs no extra gas. Decoded values, revert data and errors are unchanged, including `EvsDecodeError(site)`, which still names the failing call, and `explainRevert`; no API changes.
+
 ## 0.3.1
 
 ### Patch Changes
