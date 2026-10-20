@@ -1,5 +1,0 @@
----
-'@maxencerb/evs': minor
----
-
-New bit-level integer conversions for reading signed fields out of packed words (#158). `uintN.asInt()` reinterprets the same N bits as two's complement (Solidity's `int24(uint24(x))`, one `SIGNEXTEND`), and `asUint()` now also works on an `intN` (`uint24(int24(x))`, one mask). `x.wrappingToUint(t.uint24)` / `x.wrappingToInt(t.int24)` are Solidity's explicit truncating conversions: they keep the low N bits of any numeric value, so the tick of a Uniswap v4 `Slot0` word is `data.shr(160n).wrappingToInt(t.int24)`. None of them reverts, and a conversion that cannot change the value (a same-sign widening, a 256-bit target) costs nothing. `toUint` / `toInt` stay range-checked; the new methods are the explicit opt-in, the same split as `add` vs `wrappingAdd`. Literal operands fold to the wrapped value instead of raising `CERTAIN_PANIC`. `asInt()` on an address, a `bytesN` or an `intN` is a compile error that names the conversion to use first, like `toInt`'s. The result types are exported as `IntOfUint` / `UintOfInt`. The serialized IR's `convert` statement gains an optional `wrap: true`; IR without it reads as before.
