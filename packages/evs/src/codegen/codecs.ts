@@ -213,8 +213,8 @@ const CHEAP_DECODE_READS_AT_OFFSET = 5;
  * compile (a type too deep for the stack) stays inline, and its site reports the error as it
  * always did.
  *
- * Compile time: a program without a codec candidate (`candidates: false`, from the caller's
- * {@link mayUseCodec} scan) skips the census; a key measures only the failure modes its sites
+ * Compile time: a program where no codec key repeats (`repeats: false`, from the caller's
+ * {@link CodecRepeatScan}) skips the census; a key measures only the failure modes its sites
  * use, rejects itself once its inline size alone cannot pay even the cheapest call and an empty
  * body, measures the registers (`measureFrameEnd`) only past that, and runs the peephole on its
  * fragments only once its pre-peephole saving passes. None of this changes a decision: under
@@ -231,17 +231,21 @@ export function planCodecs(
     /** The default allocator's frame end (≥ `frameEnd`), when `optimize` packs the frame;
      *  called at most once, and only when a key gets past its early reject. */
     readonly measureFrameEnd?: () => number;
-    /** `false` when no statement or return {@link mayUseCodec}: the plan is then empty. */
-    readonly candidates?: boolean;
+    /** `false` when the {@link CodecRepeatScan} saw no key used twice: the plan is then empty. */
+    readonly repeats?: boolean;
     /** @internal Tests: measure every fragment of every key (the reference planner). */
     readonly exhaustive?: boolean;
   },
 ): CodecPlan {
   let plan: CodecPlan;
-  if (opts.candidates === false) {
-    // the caller's scan is a superset of the census: in tests, hold it to that
-    if (strictPlan && census(ir).size > 0) {
-      throw internal('a codec use the candidate scan (mayUseCodec) did not see');
+  if (opts.repeats === false) {
+    // the caller's scan counts a superset of the census's uses: in tests, hold it to that
+    if (strictPlan) {
+      for (const use of census(ir).values()) {
+        let n = 0;
+        for (const g of use.groups.values()) n += g.count;
+        if (n >= 2) throw internal('a repeated codec key the repeat scan did not see');
+      }
     }
     plan = EMPTY_CODEC_PLAN;
   } else {
@@ -257,12 +261,59 @@ export function planCodecs(
 }
 
 /**
+ * Whether some codec key may have two uses, from a scan of EVERY recorded statement: the main
+ * body and all fns, each once, which `lowerProgram` already walks for its simulate scan (feed it
+ * each statement through {@link visit}). The census counts the uses of the statements the
+ * lowering emits (the reached fns, each once), a subset of those, through the same
+ * {@link stmtUnits} / {@link returnUnits}, so where no key repeats here no key has `n ≥ 2`, and
+ * `planCodecs` skips the census and its emitted-statements walk: most of the planner's cost on
+ * the programs that share nothing (codecs used once each, or none at all).
+ */
+export class CodecRepeatScan {
+  readonly #ir: ScriptIr;
+  readonly #seen = new Set<string>();
+  #repeats = false;
+
+  constructor(ir: ScriptIr) {
+    this.#ir = ir;
+    this.#guard(() => returnUnits(ir, this.#add));
+  }
+
+  /** Counts the codec uses of statement `s` (each statement once). */
+  visit(s: Stmt): void {
+    if (this.#repeats || !mayUseCodec(this.#ir, s)) return;
+    this.#guard(() => stmtUnits(this.#ir, s, this.#add));
+  }
+
+  /** Whether a key was seen twice (`planCodecs`' `repeats`). */
+  get repeats(): boolean {
+    return this.#repeats;
+  }
+
+  readonly #add = (unit: CodecUnit): void => {
+    const key = codecKey(unit);
+    if (this.#seen.has(key)) this.#repeats = true;
+    else this.#seen.add(key);
+  };
+
+  /** A use this scan cannot key (a type `layoutOfType` rejects, maybe in an uncalled fn): leave
+   *  it to the census, which keys only the emitted statements and fails as the inline code does. */
+  #guard(count: () => void): void {
+    try {
+      count();
+    } catch {
+      this.#repeats = true;
+    }
+  }
+}
+
+/**
  * Whether statement `s` (anywhere in `ir`) may make the census count a codec use: an `s.encode` /
  * `s.throw` payload or a call with an ABI tuple or array arg, output or simulate output. A
- * superset of the census's predicates (a word array counts too), cheap enough to fold into a scan
- * the lowering already makes; with {@link returnsMayUseCodec} it gives `planCodecs`' `candidates`.
+ * cheap superset of {@link stmtUnits}' predicates (a word array counts too): no layout is built
+ * for a word-only statement.
  */
-export function mayUseCodec(ir: ScriptIr, s: Stmt): boolean {
+function mayUseCodec(ir: ScriptIr, s: Stmt): boolean {
   if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
     return s.args.some((v) => {
       const type = ir.values[v]?.type;
@@ -276,7 +327,7 @@ export function mayUseCodec(ir: ScriptIr, s: Stmt): boolean {
 }
 
 /** Whether the return record may hold a codec use (see {@link mayUseCodec}). */
-export function returnsMayUseCodec(ir: ScriptIr): boolean {
+function returnsMayUseCodec(ir: ScriptIr): boolean {
   return ir.returns.some((r) => typeof r.type !== 'string' || r.type.endsWith(']'));
 }
 
@@ -388,13 +439,14 @@ interface CensusKey {
  *   form), and every simulate site's outputs list.
  *
  * It walks exactly the statements `lowerProgram` lowers (`walkEmittedStmts`), and builds keys
- * with the emitters' own predicates; the drift check holds it to them. A statement the walk visits
- * twice (a site id two statements share, which the IR never records) would make the counts
- * ambiguous, so the census is then empty.
+ * with the emitters' own predicates ({@link stmtUnits}); the drift check holds it to them. A
+ * statement the walk visits twice (a site id two statements share, which the IR never records)
+ * would make the counts ambiguous, so the census is then empty.
  */
 function census(ir: ScriptIr): Map<string, CensusKey> {
   const keys = new Map<string, CensusKey>();
-  const add = (key: string, unit: CodecUnit, site: number, mode: UseMode, hot: boolean): void => {
+  const add = (unit: CodecUnit, site: number, mode: UseMode, hot: boolean): void => {
+    const key = codecKey(unit);
     let entry = keys.get(key);
     if (entry === undefined) {
       entry = { unit, groups: new Map() };
@@ -404,60 +456,73 @@ function census(ir: ScriptIr): Map<string, CensusKey> {
     if (group === undefined) entry.groups.set(site, { count: 1, mode, hot });
     else group.count += 1;
   };
-  const use = (unit: CodecUnit, site: number, mode: UseMode, hot: boolean): void =>
-    add(codecKey(unit), unit, site, mode, hot);
-  const encodeBlock = (params: readonly NamedType[], site: number, hot: boolean): void => {
-    for (const p of params) {
-      const layout = layoutOfType(abiParamToType(p));
-      const kind = encodeMemberKind(layout);
-      if (kind !== null) use({ dir: 'enc', kind, layout }, site, 'strict', hot);
-    }
-  };
-  const valueParam = (v: number): NamedType => {
-    const info = ir.values[v];
-    if (info === undefined) throw internal(`census: unknown ValueId ${v}`);
-    return typeToAbiParam('', info.type);
-  };
   const seen: boolean[] = []; // by site id (small non-negative integers)
   let ambiguous = false;
   walkEmittedStmts(ir, (s, hot) => {
     if (seen[s.site] === true) ambiguous = true;
     seen[s.site] = true;
     if (!mayUseCodec(ir, s)) return; // a cheap superset: no layout built for a word-only site
-    if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
-      encodeBlock(s.args.map(valueParam), s.site, hot);
-      return;
-    }
-    if (s.k !== 'call') return;
-    if (usesRecursiveEncoder(s)) encodeBlock(s.fnAbi.inputs, s.site, hot);
-    if (s.kind === 'simulate') {
-      const outputs = s.fnAbi.outputs;
-      if (outputs.length === 0) return;
-      use(
-        simOutputsUnit(outputs, needsDecodeBudget(outputs) ? 'once' : 'off'),
-        s.site,
-        s.mode,
-        hot,
-      );
-      return;
-    }
-    const outputs = callOutputs(s);
-    const budget = needsDecodeBudget(outputs) ? 'once' : 'off';
-    const offsets = headOffsets(outputs);
-    outputs.forEach((p, j) => {
-      const layout = layoutOfType(abiParamToType(p));
-      if (!usesRecursiveCodec(layout)) return;
-      use(retOutputUnit(layout, offsets[j] ?? 0, budget), s.site, s.mode, hot);
-    });
+    stmtUnits(ir, s, (unit, mode) => add(unit, s.site, mode, hot));
   });
-  if (returnsMayUseCodec(ir)) {
-    encodeBlock(
-      ir.returns.map((r) => typeToAbiParam(r.name, r.type)),
-      RETURNS_SITE,
-      false,
-    );
-  }
+  returnUnits(ir, (unit) => add(unit, RETURNS_SITE, 'strict', false));
   return ambiguous ? new Map() : keys;
+}
+
+/** A codec use of a statement: its unit, and how its site handles a decode failure. */
+type UnitSink = (unit: CodecUnit, mode: UseMode) => void;
+
+/**
+ * The codec units statement `s` emits (call it on a statement that {@link mayUseCodec}): the
+ * top-level composite members of its encode block (an `s.encode` / `s.throw` payload, a
+ * recursive-encoder call's args), then its recursive-codec call outputs, or a simulate site's
+ * outputs list.
+ */
+function stmtUnits(ir: ScriptIr, s: Stmt, sink: UnitSink): void {
+  if ((s.k === 'encode' && s.mode === 'abi') || s.k === 'throw') {
+    encodeUnits(
+      s.args.map((v) => {
+        const info = ir.values[v];
+        if (info === undefined) throw internal(`census: unknown ValueId ${v}`);
+        return typeToAbiParam('', info.type);
+      }),
+      sink,
+    );
+    return;
+  }
+  if (s.k !== 'call') return;
+  if (usesRecursiveEncoder(s)) encodeUnits(s.fnAbi.inputs, sink);
+  if (s.kind === 'simulate') {
+    const outputs = s.fnAbi.outputs;
+    if (outputs.length === 0) return;
+    sink(simOutputsUnit(outputs, needsDecodeBudget(outputs) ? 'once' : 'off'), s.mode);
+    return;
+  }
+  const outputs = callOutputs(s);
+  const layouts = outputs.map((p) => layoutOfType(abiParamToType(p)));
+  if (!layouts.some(usesRecursiveCodec)) return; // word / leaf outputs only (a composite arg's call)
+  const budget = needsDecodeBudget(outputs) ? 'once' : 'off';
+  const offsets = headOffsets(outputs);
+  layouts.forEach((layout, j) => {
+    if (usesRecursiveCodec(layout)) sink(retOutputUnit(layout, offsets[j] ?? 0, budget), s.mode);
+  });
+}
+
+/** The codec units of the return record's encode block. */
+function returnUnits(ir: ScriptIr, sink: UnitSink): void {
+  if (!returnsMayUseCodec(ir)) return;
+  encodeUnits(
+    ir.returns.map((r) => typeToAbiParam(r.name, r.type)),
+    sink,
+  );
+}
+
+/** The encoder units of an encode block's top-level composite members. */
+function encodeUnits(params: readonly NamedType[], sink: UnitSink): void {
+  for (const p of params) {
+    const layout = layoutOfType(abiParamToType(p));
+    const kind = encodeMemberKind(layout);
+    if (kind !== null) sink({ dir: 'enc', kind, layout }, 'strict');
+  }
 }
 
 // ---------------------------------------------------------------------------

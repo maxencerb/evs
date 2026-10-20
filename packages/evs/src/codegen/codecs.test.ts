@@ -951,7 +951,48 @@ describe('growth for n sites (the issue #95 benchmark)', () => {
     const words = evscript({ name: 'words', args: [t.address] }, (s: any, a: any) =>
       s.return({ v: s.read({ address: a, abi, functionName: 'word', args: [1n] }) }),
     );
-    expect(plannerAgainstReference(words.ir, 'cancun', true).candidates).toBe(false);
+    expect(plannerAgainstReference(words.ir, 'cancun', true).repeats).toBe(false);
+  });
+
+  test('the repeat scan skips the census unless some key is used twice', () => {
+    const scan = (script: AnyScript) => {
+      const { fast, reference, repeats } = plannerAgainstReference(script.ir, 'cancun', false);
+      expect(fast).toEqual(reference);
+      return repeats;
+    };
+    // a decoded struct returned: one decoder key and one encoder key, each used once
+    const made = evscript({ name: 'made', args: [t.address] }, (s: any, a: any) =>
+      s.return({ w: s.read({ address: a, abi, functionName: 'make', args: [1n] }) }),
+    );
+    expect(scan(made)).toBe(false);
+    // `get(W8) returns (W8)` once: its args and the return record encode W8 with one key
+    expect(scan(chain('c1', W8, 'get', 1))).toBe(true);
+    // two members of one block count twice (the census groups them under one site)
+    const pair = evscript({ name: 'pair', args: [W8] }, (s: any, x: any) =>
+      s.return({ enc: s.encode(x, x) }),
+    );
+    expect(scan(pair)).toBe(true);
+    // an encoder use in a call's args and one in `s.encode` share one key
+    const mixed = evscript({ name: 'mixed', args: [t.address, W8] }, (s: any, a: any, x: any) =>
+      s.return({
+        v: s.read({ address: a, abi, functionName: 'sink', args: [x] }),
+        enc: s.encode(x),
+      }),
+    );
+    expect(scan(mixed)).toBe(true);
+    // the scan sees every recorded fn (a superset of what the lowering emits): an uncalled fn's
+    // use counts, and the census then decides as it always did
+    const uncalled = evscript(
+      { name: 'uncalled', args: [t.address, W8] },
+      (s: any, a: any, x: any) => {
+        s.fn('unused', [t.address, W8], (at: any, v: any) =>
+          s.read({ address: at, abi, functionName: 'sink', args: [v] }),
+        );
+        return s.return({ v: s.read({ address: a, abi, functionName: 'sink', args: [x] }) });
+      },
+    );
+    expect(scan(uncalled)).toBe(eliminateDeadCode(uncalled.ir).fns.length > 0);
+    expect(planOf(uncalled).keys.size).toBe(0);
   });
 
   test('encode-only and decode-only chains', () => {
