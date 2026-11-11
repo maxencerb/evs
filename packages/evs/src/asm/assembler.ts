@@ -205,6 +205,16 @@ export class AsmWriter {
   }
 
   /**
+   * @internal The node emitted last (by reference, `undefined` on an empty writer). The lowering
+   * registers the `push` node of a `storeOut` / `loadOperand` through it (the store–reload
+   * fusion pass, `codegen/fuse.ts`, matches those nodes by identity); unlike {@link nodes} it
+   * copies nothing.
+   */
+  last(): AsmNode | undefined {
+    return this.#nodes[this.#nodes.length - 1];
+  }
+
+  /**
    * @internal The number of nodes emitted so far, as a cheap position marker. Two equal marks
    * mean nothing was emitted in between (the lowering uses this to tell whether the last node
    * was a given store).

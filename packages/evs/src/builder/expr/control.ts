@@ -283,6 +283,17 @@ export abstract class RecorderControl extends RecorderOps {
    * The shared counter-loop core of `s.for` / `s.forEach`: an internal cell, `i < until` in
    * the loop header, and the step recorded before every `continue` and once at the natural end
    * of the body — continue() must execute the step first (for-loops continue to the step).
+   *
+   * The step is `cell = i + step` where `i` is the header's snapshot (`iId`), not a fresh
+   * `cellget`: the cell is internal (no handle ever reaches the user) and only the step writes
+   * it, and every step is followed by `continue` or the end of the body, so `cell == i` holds
+   * at every step. An outer loop's `continue()` inside an inner loop's BODY is rejected by
+   * `LoopCtlImpl.guard`; inside an inner `s.while` HEADER thunk it is accepted (the guard's
+   * `innermostLoopBody()` only looks at `while-body` scopes), and there the recorded `continue`
+   * sits outside the inner body, so it targets this counter loop: the step before it still
+   * leaves `cell == i` for the next header read. Reusing `i` saves a read per step and ties the step `add(i, 1)` to the header
+   * guard `lt(i, until)` in SSA, which lets codegen drop the step's overflow check and
+   * `s.forEach`'s element bounds check (`codegen/lower/guards.ts`).
    */
   private counterLoop(
     ty: StringType,
@@ -291,17 +302,16 @@ export abstract class RecorderControl extends RecorderOps {
     stepId: ValueId,
     invokeBody: (iSnap: Expr, iId: ValueId, loop: LoopCtlShape) => void,
   ): void {
-    const emitStep = (): void => {
-      const cur = this.cellGetId(cellId);
-      const sum = this.newValue(ty);
-      this.appendStmt({ k: 'bin', op: 'add', a: cur, b: stepId, out: sum });
-      this.appendStmt({ k: 'cellset', cell: cellId, value: sum });
-    };
-
     // the body's `i` snapshot REUSES the header's cellget: the header dominates the body
     // (validate.ts scoping) and nothing runs between the compare and the body start, so the
-    // header read IS the per-iteration counter — no second cellget per iteration
+    // header read IS the per-iteration counter — no second cellget per iteration (and the step
+    // reads it too, see above)
     let iId!: ValueId;
+    const emitStep = (): void => {
+      const sum = this.newValue(ty);
+      this.appendStmt({ k: 'bin', op: 'add', a: iId, b: stepId, out: sum });
+      this.appendStmt({ k: 'cellset', cell: cellId, value: sum });
+    };
     this.whileInternal(
       () => {
         iId = this.cellGetId(cellId);

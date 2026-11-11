@@ -43,8 +43,8 @@ checked arithmetic, checked conversions, array bounds and length checks, and cal
 For the arg sets that do not trip the guard, the recorded IR must still agree byte for byte.
 
 Every script goes through the EVM side twice: the default output and its `optimize: true` twin,
-so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator and the
-peephole pass) is held to the same oracle — and must additionally never be larger, never use a
+so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator,
+store–reload fusion and the peephole pass) is held to the same oracle — and must additionally never be larger, never use a
 larger frame, and never cost more gas.
 
 A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
@@ -95,7 +95,9 @@ their own forge test suite, which runs in CI.
 
 Independently of the test suite, [three mandatory verifier passes](/concepts/how-it-works/)
 run inside every `compile()` call: a consensus-identical JUMPDEST scan, a full stack-height
-simulation (empty stack at every statement boundary, depth at most 16 inside templates), and
+simulation (every label at its annotated height, the operand stack at its baseline between
+statements except for the one value `optimize: true` may keep on the stack between two adjacent
+statements, depth at most 16 inside templates), and
 shape lints that make the dangerous constructs unrepresentable — only the two intrinsically
 safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, and no storage,
 log or contract-creation opcode in the script's own code. The only `CALL` frames are the ones

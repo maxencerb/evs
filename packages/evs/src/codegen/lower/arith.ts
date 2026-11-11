@@ -165,22 +165,26 @@ function constArithTemplate(
 /**
  * Whether a checked add / sub / mul can raise Panic 0x11: the same decision
  * {@link lowerCheckedArith} makes when it picks its template, so the site table
- * (`codegen/sites.ts`) claims the code exactly when the emitted code checks.
+ * (`codegen/sites.ts`) claims the code exactly when the emitted code checks. A counter step
+ * proven by a dominating `lt` guard (`ctx.guards.noOverflow`, see `guards.ts`) cannot.
  */
 export function checkedArithCanOverflow(
   ctx: LowerCtx,
   s: Extract<Stmt, { k: 'bin' }>,
   type: EvsType,
 ): boolean {
+  if (ctx.guards.noOverflow.has(s)) return false;
   return constArithTemplate(ctx, s, type)?.overflowCheck ?? true;
 }
 
 /**
- * add / sub / mul — the width-dependent checked templates. A folded constant operand selects a
- * cheaper exact template (unsigned mul, int256 add / sub; see {@link constArithTemplate});
- * otherwise the operands are loaded as `[a, b]`, or `[b, a]` for add / mul (see
- * {@link loadBinOperands}). Every add / mul template below is symmetric in its two operands, so
- * the swap never changes a result or a panic.
+ * add / sub / mul — the width-dependent checked templates. An `x + 1` under a dominating
+ * `x < y` guard (`ctx.guards.noOverflow`) cannot overflow and is a bare `ADD` (decided before the
+ * constant templates, which the literal 1 would otherwise select for int256). A folded constant
+ * operand selects a cheaper exact template (unsigned mul, int256 add / sub; see
+ * {@link constArithTemplate}); otherwise the operands are loaded as `[a, b]`, or `[b, a]` for
+ * add / mul (see {@link loadBinOperands}). Every add / mul template below is symmetric in its
+ * two operands, so the swap never changes a result or a panic.
  */
 function lowerCheckedArith(
   w: AsmWriter,
@@ -190,6 +194,15 @@ function lowerCheckedArith(
 ): void {
   const { bits, signed } = numClass(type);
   const m = meta(`checked ${s.op} ${fmtType(type)}`);
+
+  if (ctx.guards.noOverflow.has(s)) {
+    // x < y ≤ max(type) ⇒ x + 1 ≤ max(type): the canonical sum needs no check, at any width
+    // (a signed x + 1 of sign-extended words stays sign-extended when it fits)
+    loadBinOperands(w, ctx, s, meta(`add ${fmtType(type)} (guarded: cannot overflow)`), true);
+    w.op('ADD');
+    storeOut(w, ctx, s.out);
+    return;
+  }
 
   const constant = constArithTemplate(ctx, s, type);
   if (constant?.template === 'unsigned-mul') {

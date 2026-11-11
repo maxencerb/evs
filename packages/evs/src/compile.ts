@@ -2,14 +2,17 @@
  * `compile.ts` — pipeline orchestration:
  *
  *   validateIr → eliminateDeadCode (ir/dce.ts, always on) → lowerProgram (re-validates)
- *   [optimize: liveness frame allocator] → [optimize: built-in evsPeephole] → peephole (user
+ *   [optimize: liveness frame allocator, store–reload fusion] → [optimize: built-in
+ *   evsPeephole] → peephole (user
  *   hook) → assemble(EIP-170 check from its layout hook, before fixups — per-region breakdown
  *   from the region labels lowering reports; then verify: jumpdests, stack, shapes) → merge
  *   sites into the sourceMap → build the artifact.
  *
- * `optimize` (default false) is the single switch for the built-in optimizer passes: the
+ * `optimize` (default false) is the single switch for the three built-in optimizer passes: the
  * liveness-based frame allocator behind `codegen/frame.ts` (slot reuse across dead values,
- * issue #41) and the asm-level peephole pass (`codegen/peephole.ts`, issue #39) — dead-code
+ * issue #41), store–reload fusion (`codegen/fuse.ts`, issue #96: a value whose slot is read
+ * once, by the next statement, stays on the stack; it runs inside `lowerProgram`, where the use
+ * counts live) and the asm-level peephole pass (`codegen/peephole.ts`, issue #39) — dead-code
  * elimination is not an optimizer pass and always runs. The peephole pass runs at the same hook
  * position as the user `peephole` hook and BEFORE it, so a user hook always sees the optimized
  * stream, and the verifiers always see the final one. With `optimize: false` the pipeline is
@@ -58,7 +61,7 @@ import {
 
 export interface CompileOptions {
   evmVersion?: EvmVersion; // default 'cancun'
-  optimize?: boolean; // default false — enables the built-in optimizer passes (the liveness-based frame allocator + the asm peephole pass `evsPeephole`); output is still fully verified
+  optimize?: boolean; // default false — enables the three built-in optimizer passes (the liveness-based frame allocator, store–reload fusion of single-use temporaries, and the asm peephole pass `evsPeephole`); output is still fully verified
   peephole?: (nodes: readonly AsmNode[]) => AsmNode[]; // default identity — a user hook over the node stream; with `optimize` it runs AFTER the built-in passes
   onDiagnostic?: (d: EvsDiagnostic) => void; // warnings (e.g. LOOP_ALLOCATION, DEPLOYLESS_RESULT_PREFIX); never logged
 }

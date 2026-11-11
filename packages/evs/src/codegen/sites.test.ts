@@ -302,6 +302,102 @@ const CASES: readonly LockstepCase[] = [
     codes: [0x32],
     unreachable: [0x41],
   },
+  // dominating guard facts (lower/guards.ts): a counter step under its header's `i < until`
+  // cannot overflow and a read / write under `i < len(arr)` is in bounds — no claim, no tail
+  {
+    name: 's.for step (guarded)',
+    script: evscript({ name: 'f', args: [t.uint8] }, (s, n) => {
+      const last = s.let(t.uint8, 0n);
+      s.for({ type: t.uint8, from: 0n, until: n }, (i) => last.set(i));
+      return s.return({ last: last.get() });
+    }),
+    codes: [],
+  },
+  {
+    name: 's.for step 2 (unguarded)',
+    script: evscript({ name: 'f', args: [t.uint8] }, (s, n) => {
+      const last = s.let(t.uint8, 0n);
+      s.for({ type: t.uint8, from: 0n, until: n, step: 2n }, (i) => last.set(i));
+      return s.return({ last: last.get() });
+    }),
+    codes: [0x11],
+  },
+  {
+    name: 's.forEach element + step (guarded)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const last = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => last.set(x));
+      return s.return({ last: last.get() });
+    }),
+    codes: [],
+  },
+  {
+    name: 's.forEach sum (only the sum checks)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => total.set(total.get().add(x)));
+      return s.return({ total: total.get() });
+    }),
+    codes: [0x11],
+  },
+  {
+    name: 'output array (only the allocation checks)',
+    script: evscript({ name: 'f', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      s.for({ from: 0n, until: n }, (i) => out.set(i, i));
+      return s.return({ out: out.expr() });
+    }),
+    codes: [0x41],
+  },
+  {
+    name: 'output array sized by xs.length(), written under forEach(xs)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const out = s.newArray(t.uint256, xs.length());
+      s.forEach(xs, (x, i) => out.set(i, x));
+      return s.return({ out: out.expr() });
+    }),
+    codes: [0x41],
+  },
+  {
+    name: 'output array sized by ys.length(), written under forEach(xs)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256), t.array(t.uint256)] }, (s, xs, ys) => {
+      const out = s.newArray(t.uint256, ys.length());
+      s.forEach(xs, (x, i) => out.set(i, x));
+      return s.return({ out: out.expr() });
+    }),
+    codes: [0x32, 0x41],
+  },
+  {
+    name: 'if-guarded index',
+    script: evscript({ name: 'f', args: [t.array(t.uint256), t.uint256] }, (s, xs, i) => {
+      const r = s.let(t.uint256, 0n);
+      s.if(i.lt(xs.length()), () => r.set(xs.at(i)));
+      return s.return({ r: r.get() });
+    }),
+    codes: [],
+  },
+  {
+    name: 'if-guarded index read in the else branch',
+    script: evscript({ name: 'f', args: [t.array(t.uint256), t.uint256] }, (s, xs, i) => {
+      const r = s.let(t.uint256, 0n);
+      s.if(
+        i.lt(xs.length()),
+        () => {},
+        () => r.set(xs.at(i)),
+      );
+      return s.return({ r: r.get() });
+    }),
+    codes: [0x32],
+  },
+  {
+    name: 'byteAt under i < length (keeps its check)',
+    script: evscript({ name: 'f', args: [t.bytes] }, (s, b) => {
+      const r = s.let(t.bytes1, '0x00');
+      s.for({ from: 0n, until: b.length() }, (i) => r.set(b.byteAt(i)));
+      return s.return({ r: r.get() });
+    }),
+    codes: [0x32],
+  },
   // conversions
   {
     name: 'uint256 → uint8 (narrowing)',

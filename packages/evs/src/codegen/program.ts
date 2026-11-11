@@ -1,6 +1,10 @@
 /**
  * `codegen/program.ts` — `lowerProgram`, the single entry point `compile.ts` consumes
- * (the optimizer seam; `opts.optimize` picks the liveness-based frame allocator, #41).
+ * (the optimizer seam; `opts.optimize` picks the liveness-based frame allocator, #41, and runs
+ * the store–reload fusion pass, #96, `codegen/fuse.ts`, as the last step of the lowering: under
+ * `optimize` both calls that hand out a value's slot, `slotOfValue` and `fnRegion` (its param
+ * slots), go through a counting gateway, and the pass removes the frame
+ * round trip of a value whose slot is read exactly once, by the very next statement).
  *
  * Program layout:
  *
@@ -49,7 +53,14 @@ import {
   planCodecs,
 } from './codecs.js';
 import { layoutFrames, type FrameLayout } from './frame.js';
-import { createLowerCtx, emitFnSubroutines, lowerStmts, selfAddressValues } from './lower.js';
+import { fuseStoreReload, type FuseStats } from './fuse.js';
+import {
+  createLowerCtx,
+  emitFnSubroutines,
+  lowerStmts,
+  selfAddressValues,
+  type FusionLog,
+} from './lower.js';
 import { FRAME_BASE, FREE_PTR } from './memory.js';
 import {
   emitSimulateTrampoline,
@@ -70,6 +81,9 @@ export interface LowerResult {
   sites: SourceMap['sites'];
   regions: ProgramRegions;
   diagnostics: readonly EvsDiagnostic[]; // LOOP_ALLOCATION etc. — compile.ts forwards
+  /** @internal How many windows of each form the store–reload fusion pass fused (`optimize`
+   *  only, else `null`; `codegen/fuse.ts`). */
+  fused: FuseStats | null;
 }
 
 /**
@@ -114,13 +128,24 @@ export function lowerProgram(
      * build the inline twin of a program.
      */
     shareCodecs?: boolean;
+    /**
+     * @internal Whether `optimize` runs the store–reload fusion pass (`codegen/fuse.ts`),
+     * default `true`. Only tests turn it off, to compare the optimized stream with and without
+     * the pass; `compile()` never passes it.
+     */
+    fuse?: boolean;
   },
 ): LowerResult {
   validateIr(ir);
   // `optimize` (compile's single optimizer switch) selects the liveness-based frame allocator
   // (issue #41); the default keeps one slot per value so the default bytes never move.
   const optimize = opts.optimize ?? false;
-  const frame = layoutFrames(ir, { optimize });
+  // under `optimize`, every slot query goes through a counting gateway and the operand templates
+  // register their store / load nodes, for the store–reload fusion pass run last (`fuse.ts`)
+  const queries = new Map<ValueId, number>();
+  const fusion: FusionLog | null = optimize ? { stores: new Map(), loads: new Map() } : null;
+  const laidOut = layoutFrames(ir, { optimize });
+  const frame = optimize ? countingLayout(laidOut, queries, ir.fns) : laidOut;
 
   // One scan of the body and ALL recorded fns: does any `s.simulate` site exist (the simulate
   // trampoline below), and does any codec key repeat (the planner's early exit)?
@@ -169,7 +194,7 @@ export function lowerProgram(
     return label;
   };
 
-  const ctx = createLowerCtx({ ir, frame, tails, opts: evm, dataSeg });
+  const ctx = createLowerCtx({ ir, frame, tails, opts: evm, dataSeg, fusion });
 
   // -- receive: empty calldata succeeds with no output, whatever the value ------------------
   // A script has no function a bare call could mean, but a target paying ETH back to its caller
@@ -297,15 +322,57 @@ export function lowerProgram(
     data: segments[0]?.label ?? null,
   };
   const sites = collectSites(ctx, ctx.fnQueue);
+  const diagnostics = [
+    ...collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
+    ...valueCallDiagnostics(ir, sites, ctx.fnQueue),
+  ];
+  // store–reload fusion LAST: every slot query (the site table and the diagnostics included) has
+  // been counted, so the counts can only over-state a value's uses
+  const fused =
+    fusion === null || opts.fuse === false
+      ? null
+      : fuseStoreReload(w.nodes(), { stores: fusion.stores, loads: fusion.loads, queries });
   return {
-    nodes: w.nodes(),
+    nodes: fused?.nodes ?? w.nodes(),
     frameEnd,
     sites,
     regions,
-    diagnostics: [
-      ...collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
-      ...valueCallDiagnostics(ir, sites, ctx.fnQueue),
-    ],
+    diagnostics,
+    fused: fused?.stats ?? null,
+  };
+}
+
+/**
+ * @internal `frame` behind a counting gateway. Two calls hand out a value's slot address:
+ * `slotOfValue(v)` (counts one query of `v` in `queries` when it returns a slot) and
+ * `fnRegion(f)`, whose `params` are the slots of `fns[f]`'s param values (counts one query of
+ * each of them on every call, whatever the caller then does with the region). With both
+ * gateways counted, a value queried exactly by its one registered store and its one registered
+ * load has no other access (see `codegen/fuse.ts`), and a param, whose slot every call site
+ * learns through `fnRegion`, can never look fusable. `slotOfCell` addresses cells, not values,
+ * and stays uncounted.
+ */
+export function countingLayout(
+  frame: FrameLayout,
+  queries: Map<ValueId, number>,
+  fns: ScriptIr['fns'],
+): FrameLayout {
+  const count = (v: ValueId): void => {
+    queries.set(v, (queries.get(v) ?? 0) + 1);
+  };
+  return {
+    slotOfValue: (v) => {
+      const slot = frame.slotOfValue(v);
+      if (slot !== null) count(v);
+      return slot;
+    },
+    slotOfCell: (c) => frame.slotOfCell(c),
+    fnRegion: (f) => {
+      const region = frame.fnRegion(f);
+      for (const p of fns[f]?.params ?? []) count(p.value);
+      return region;
+    },
+    frameEnd: frame.frameEnd,
   };
 }
 

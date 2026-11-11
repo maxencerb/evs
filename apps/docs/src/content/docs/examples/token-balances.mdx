@@ -126,7 +126,8 @@ size cap is irrelevant here). The real budgets are:
   token list into chunks of at most 765. See
   [deployless limits](/guides/execution/#deployless-limits).
 - **Gas.** Each iteration costs one `STATICCALL` into the token — the subcalls dominate —
-  plus roughly 60 gas of loop bookkeeping per iteration. The ceiling is your node's `eth_call`
+  plus loop bookkeeping: an empty `s.for` iteration costs about 100 gas by default and about
+  70 with `optimize: true`. The ceiling is your node's `eth_call`
   gas cap, not a block limit: anvil defaults to 30M, geth's default cap is 50M. A 50-token
   batch sits far inside either; in state-override mode thousands of tokens per call are
   realistic before the cap matters. Deployless mode also spends about 200 gas per byte of

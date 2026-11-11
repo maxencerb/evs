@@ -827,6 +827,38 @@ describe('validateIr — const rules', () => {
       /memref payload/,
     );
   });
+
+  test.each(['bytes', 'string'] as const)(
+    'rejects %s data consts with a non-zero byte after the declared length',
+    (type) => {
+      const len3 = wordHex(3n).slice(2);
+      // fully padded (29 bytes after len) and partially padded (2 bytes after len)
+      for (const tail of [`${'00'.repeat(28)}01`, 'ff00']) {
+        expectInvalid(
+          constIr(type, { kind: 'data', hex: `0x${len3}616263${tail}` }),
+          /padding after the declared length 3 must be zero/,
+        );
+      }
+    },
+  );
+
+  test.each(['bytes', 'string'] as const)(
+    'accepts %s data consts that are exact, partially or fully zero-padded',
+    (type) => {
+      const len3 = wordHex(3n).slice(2);
+      for (const tail of ['', '0000', '00'.repeat(29)]) {
+        expect(() =>
+          validateIr(constIr(type, { kind: 'data', hex: `0x${len3}616263${tail}` })),
+        ).not.toThrow();
+      }
+      // a 32-byte payload has no padding at all
+      expect(() =>
+        validateIr(
+          constIr(type, { kind: 'data', hex: `0x${wordHex(32n).slice(2)}${'61'.repeat(32)}` }),
+        ),
+      ).not.toThrow();
+    },
+  );
 });
 
 // ---------------------------------------------------------------------------

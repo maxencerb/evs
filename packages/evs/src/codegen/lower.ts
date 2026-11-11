@@ -14,11 +14,19 @@
  * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence, inline for a
  *   single site, else the shared `@muldiv` subroutine);
  * - `composites.ts` — select / index / arrays, string/bytes `byteAt` / `slice`, tuples, and
- *   `s.encode` / `s.keccak256` / `s.throw` payloads.
+ *   `s.encode` / `s.keccak256` / `s.throw` payloads;
+ * - `guards.ts` — the dominating guard facts (`LowerCtx.guards`): the counter-loop step
+ *   overflow checks and guarded index bounds checks the IR's own `lt` guards prove redundant,
+ *   which `arith.ts` / `composites.ts` (and the site table) then elide.
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
- * - every statement template is net-zero on the operand stack; the stack is empty at every
- *   statement boundary;
+ * - every statement template is net-zero on the operand stack: each statement starts and ends
+ *   at its block's baseline (0 in the main body and an fn body). Under `optimize` the
+ *   store–reload fusion pass (`codegen/fuse.ts`, run by `lowerProgram` after lowering) lets one
+ *   single-use value cross the boundary between two adjacent statements on the stack, never
+ *   across a label. Every label carries an annotated height (statement-level labels sit at the
+ *   statement baseline; fn entries, loops inside templates and tails like `@muldiv` carry their
+ *   own), and the verifier checks each one;
  * - simulated depth stays ≤ 16 inside templates;
  * - panic exits jump to the shared `'any'` tails (`SharedTails`), never revert inline.
  *
@@ -26,7 +34,8 @@
  * first, then the left — the left operand sits on top, so `SUB`/`DIV`/`LT`/… compute
  * `op(a, b)` directly. Templates that accept either order (add, mul, eq/neq, the bool and
  * bitwise ops, and the comparisons, which flip LT ↔ GT) load the left operand first when the
- * previous statement just stored it, so the optimizer can fuse that store and reload. Folded
+ * previous statement just stored it, so the optimizer can fuse that store and reload (`storeOut`
+ * and `loadOperand` register their nodes for the fusion pass when `optimize` is on). Folded
  * word constants (`FrameLayout.slotOfValue === null`) load as PUSH immediates; everything else
  * as `PUSH slot MLOAD`.
  *
@@ -52,6 +61,8 @@ export {
   typeOf,
   walkEmittedStmts,
 } from './lower/context.js';
-export type { LowerCtx } from './lower/context.js';
+export type { FusionLog, LowerCtx } from './lower/context.js';
+export { guardFacts } from './lower/guards.js';
+export type { GuardFacts } from './lower/guards.js';
 export { checkedArithCanOverflow } from './lower/arith.js';
 export { lowerStmts, emitFnSubroutines } from './lower/statements.js';

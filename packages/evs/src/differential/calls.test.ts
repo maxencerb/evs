@@ -18,6 +18,7 @@ import {
 import { describe, expect, test } from 'vite-plus/test';
 
 import { Reverter } from '../../test/generated/index.js';
+import { dataLiteralArgIr } from '../../test/harness/data-literal-ir.js';
 import {
   expectAgreement,
   ERROR_ABI,
@@ -29,6 +30,7 @@ import {
   ECHO,
   DEAD,
   USER,
+  SINK,
   erc20ishAbi,
   sel,
   abiEchoMock,
@@ -171,6 +173,33 @@ describe('calls', () => {
       table,
     );
   });
+
+  test.each([
+    ['bytes', 'flat'],
+    ['bytes', 'recursive'],
+    ['string', 'flat'],
+    ['string', 'recursive'],
+  ] as const)(
+    'hand-built IR: a %s literal stopped at its declared length, as a %s call arg',
+    async (kind, path) => {
+      // the echoed calldata carries the literal's tail: zero padding on both legs
+      const table: CalleeTable = {
+        [SINK]: {
+          kind: 'bytecode',
+          runtime: abiEchoMock(),
+          respond: (calldata) => ({
+            success: true,
+            data: encodeAbiParameters([{ type: 'bytes' }], [calldata]),
+          }),
+        },
+      };
+      for (const padding of ['exact', 'partial'] as const) {
+        // oxlint-disable-next-line no-await-in-loop -- sequential: deterministic per-case labels
+        const [o] = await expectAgreement(dataLiteralArgIr(kind, path, padding), [[5n]], table);
+        expect(o?.kind).toBe('return');
+      }
+    },
+  );
 
   test('plain word call with an arg through the raw echo mock', async () => {
     const script = evscript({ name: 'echoCall', args: [t.address] }, (s, who) => {

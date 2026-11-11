@@ -138,22 +138,38 @@ Releases: see [Releasing](#releasing) below.
   EIP-170 size check (through the `onLayout` hook `compile()` passes, before any fixup is
   patched, so a program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps
   (`PUSH2` fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
-  scan, a stack-height simulation (the operand stack must be empty at every statement
-  boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
+  scan, a stack-height simulation (every label carries an annotated height and the simulation
+  checks it on every path: statement-level labels sit at the statement baseline, which the
+  net-zero statement templates keep, while fn entries, loops inside templates and tails such as
+  `@muldiv` carry their own; under `optimize` a fused value may cross the boundary between two
+  adjacent statements but never a label), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
   the differential suite checks the recorded IR (`interpret(ir, …, { dce: false })`),
   `interpret(ir)` (= `dce(ir)`, cached per frozen IR) and the bytecode agree, except for the
   tripping arg sets of the `differential/dead-revert-guards` slice (the harness's
   `deadRevertGuards` indices), where the dead statement is the one that reverts and only the
   last two must agree.
-  An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
-  frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
-  params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
-  for the whole loop) and a peephole pass between codegen and assembly (exported as
-  `evsPeephole`) that folds store-then-reload slot pairs, constants and stack identities, never
-  crosses a `JUMPDEST` and never touches a label or jump target. Both outputs go through the same
-  verifiers. It is off by default so the default bytes stay the plain lowering. The allocator
+  An opt-in optimizer (`compile(script, { optimize: true })`) adds three passes: a
+  liveness-based frame allocator in codegen (a value takes over the slot of a dead one — args,
+  cells and fn params stay dedicated, fn frames stay separate, a value crossing a loop boundary
+  stays live for the whole loop), store–reload fusion (`codegen/fuse.ts`, #96, the last step of
+  `lowerProgram`) and a peephole pass between codegen and assembly (exported as `evsPeephole`)
+  that folds store-then-reload slot pairs, constants and stack identities, never crosses a
+  `JUMPDEST` and never touches a label or jump target. Fusion has the use information the
+  peephole lacks: under `optimize` the layout sits behind a counting gateway
+  (`countingLayout`, `codegen/program.ts`) on both calls that hand out a value's slot —
+  `slotOfValue`, and `fnRegion`, whose `params` are the slots of the fn's param values (every
+  call counts one query of each, so a param is never fusable) — so every access is a query;
+  `storeOut` / `loadOperand`
+  register their `PUSH s` nodes, and a value queried exactly twice — its one store and its one
+  reload — whose reload follows the store across at most leftover `POP`s, one other operand load
+  and a `div` / `mod` zero guard to an `'any'` tail, stays on the stack (`SWAP`s fix the order).
+  The templates stay net-zero; only such a value crosses a statement boundary, never a label,
+  and a count can only over-state uses (speculative emission, the site table), which loses a
+  fusion and never a store a reader needs. All outputs go through the same verifiers. It is off by default so the default bytes stay the plain lowering. The allocator
   (`codegen/frame.ts`) walks the `if`/`while` region tree and scans with two heaps; a seeded
-  test in `frame.test.ts` holds it slot for slot to a naive reference model of the same rules.
+  test in `frame.test.ts` holds it slot for slot to a naive reference model of the same rules;
+  `differential/fusion-random.test.ts` holds generated scripts in both modes to the interpreter,
+  and `differential/fusion.test.ts` fires every fusion window form with a script of its own.
 - **Adding a statement kind or an op.** The IR-side switches over `Stmt['k']`, `BinOp`, `UnOp`,
   `ModArithOp` and `EnvOp` end in a `default` that assigns the subject to `never`
   (`ir/nodes/walk.ts`, `ir/nodes/json.ts`, `ir/validate.ts`, `ir/interp/`, and `ir/dce.ts`'s
@@ -298,7 +314,25 @@ Releases: see [Releasing](#releasing) below.
   (`[a, b]`, left on top); the commutative ones and the comparisons (flipping `LT` ↔ `GT`) load
   the left one first when the previous statement just stored it (`justStored` in
   `codegen/lower/context.ts`), so the peephole's store-then-reload rewrite fuses method chains.
-  `select` is branch-free (`b ^ ((a ^ b) · cond)`).
+  `select` is branch-free (`b ^ ((a ^ b) · cond)`). **Dominating guard facts**
+  (`codegen/lower/guards.ts`, #97, computed once per lowering into `LowerCtx.guards`) drop the
+  checks the IR's own structure proves: values are single-assignment and scoped, so under a
+  `while` body or an `if` then-block whose `cond` is defined by `bin lt x y`, `x < y` holds
+  (facts nest, never reach the while header, the else block, the code after, or an fn body).
+  R1: a checked `add` of such an `x` and a `const` 1 cannot overflow (`x < y ≤ max`), any
+  numeric type. R2: an array `index` / `arrset` at an unsigned `x` is in bounds when `y` is the
+  array's length (lengths are immutable in evs memory, so lengths compare by a canonical key:
+  every `len` of one array is the same bound, and `len(arrnew length=L)` is `L` — so
+  `s.newArray(t, xs.length())` written under `s.forEach(xs)` is proven);
+  `string` / `bytes` `.byteAt` keeps its check. `s.for` / `s.forEach` record exactly these
+  shapes (the step adds to the header's counter snapshot, which the cell always equals at a
+  step), so `s.forEach`'s element bounds check and, for a constant step of 1 (the default of
+  `s.for`, always the case for `s.forEach`), the step's overflow check vanish in both
+  `optimize` modes; a `step: 2n` or a runtime step keeps its overflow check. These are template selections on static facts, like the folded-divisor
+  elision; no IR marker records them, the interpreter keeps every check (it is the oracle), and
+  `codegen/sites.ts` reads the same sets (`checkedArithCanOverflow`, `ctx.guards.inBounds`), so
+  a proven site claims no Panic code and `sites.test.ts` holds the claims to the panic tails the
+  bytecode references.
 - **Wrapping arithmetic and `mulDiv`** are explicit per-operation opt-ins next to the checked
   ops, never a mode: `wrappingAdd` / `wrappingSub` / `wrappingMul` record their own `bin` ops
   (`wrapadd` / `wrapsub` / `wrapmul`: the bare opcode, plus a mask or `SIGNEXTEND` below 256

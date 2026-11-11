@@ -185,8 +185,9 @@ export interface AgreementOptions {
 }
 
 /**
- * Compiles twice — the default output AND its `optimize: true` twin (the built-in passes: the
- * liveness-based frame allocator, issue #41, and the peephole pass, issue #39) — checks the
+ * Compiles twice — the default output AND its `optimize: true` twin (the three built-in passes:
+ * the liveness-based frame allocator, issue #41, store–reload fusion, issue #96, and the
+ * peephole pass, issue #39) — checks the
  * always-on DCE pass (issue #40: the recorded IR and its DCE output agree under the
  * interpreter except on the `deadRevertGuards` arg sets, output validity, idempotence), then for every arg set
  * asserts byte-exact agreement between the reference interpreter (DCE applied, its default)

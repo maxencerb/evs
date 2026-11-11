@@ -2,7 +2,8 @@
  * `codegen/peephole.ts` — the built-in peephole optimizer behind `compile({ optimize: true })`.
  *
  * A conservative, purely local rewrite pass over the `AsmNode` stream. It runs at the
- * `peephole` hook position — after lowering, BEFORE layout — so the mandatory verifiers in
+ * `peephole` hook position — after lowering (and its store–reload fusion pass, `fuse.ts`, which
+ * has the use information this pass lacks), BEFORE layout — so the mandatory verifiers in
  * `asm/verify.ts` (JUMPDEST scan, stack-height simulation, shape lints) and the EIP-170 check
  * always validate its output. Every rewrite below is provably semantics-preserving on its own:
  * same memory effects, same stack effect, same result words, same halting behavior.
@@ -14,9 +15,10 @@
  *   4. identities          `SWAPn SWAPn`, `DUPn POP`, `PUSH x POP`, `PUSH 0 ADD`, … → nothing
  *
  * Guard rails:
- * - A pattern element is only ever an `op` or a `push` node, so `label` (JUMPDEST),
- *   `dataLabel`, `data` and `pushLabel` nodes are barriers: no window spans a label boundary and
- *   no node carrying a label or jump target is ever rewritten.
+ * - A pattern element is an `op` or a `push` node, except that one identity of rewrite 4 ends
+ *   its window with `pushLabel JUMPI` and keeps both nodes (its label untouched); `label` (JUMPDEST),
+ *   `dataLabel` and `data` nodes are barriers: no window spans a label boundary and no node
+ *   carrying a label or jump target is ever rewritten.
  * - The three nodes before every `RETURNDATACOPY` (the sanctioned `[RETURNDATASIZE, PUSH0,
  *   (PUSH0|DUPn)]` window of `verifyShapes`, `SANCTIONED_RETURNDATACOPY_WINDOW`) are protected
  *   from rewriting.
@@ -25,7 +27,9 @@
  *   checks (`asm/verify.ts`).
  * - Source-map fidelity: replacement nodes inherit the `note` of the group they replace
  *   (the surviving original nodes keep their own), so `asm/sourcemap.ts` segments keep their
- *   codegen annotations.
+ *   codegen annotations. The two bool identities of rewrite 4 delete nodes and emit no
+ *   replacement, so they carry each deleted note to the next surviving node of the stream that
+ *   can hold one and has none (copied, never mutated), stopping at a `label` / `dataLabel`.
  * - The pass iterates to a fixpoint with a hard round bound; each round is linear.
  */
 
@@ -52,7 +56,8 @@ const MAX_ROUNDS = 64;
 
 /**
  * The built-in peephole pass. Pure: never mutates the input nodes (surviving nodes are reused
- * by reference; replacement nodes are fresh). Safe to run on any verifier-clean stream,
+ * by reference unless they gain a carried note, which copies them; replacement nodes are
+ * fresh). Safe to run on any verifier-clean stream,
  * including one already optimized (idempotent at the fixpoint).
  */
 export function evsPeephole(nodes: readonly AsmNode[]): AsmNode[] {
@@ -81,6 +86,12 @@ interface Match {
   len: number;
   out: readonly AsmNode[];
   outPeak: number | null;
+  /**
+   * Notes of deleted nodes that must not vanish (the two bool identities of rewrite 4): each
+   * goes to the next node from `out` onward that can carry a note and has none (see
+   * `rewriteOnce`). Absent for every other rewrite.
+   */
+  carry?: readonly string[];
 }
 
 /**
@@ -91,18 +102,32 @@ function rewriteOnce(nodes: readonly AsmNode[]): { out: AsmNode[]; changed: bool
   const heights = stackHeights(nodes);
   const shielded = protectedIndices(nodes);
   const out: AsmNode[] = [];
+  // carried notes waiting for the next node that can hold one and has none; a label or data
+  // label ends the block, and a note still waiting there is dropped
+  const pending: string[] = [];
+  const emit = (node: AsmNode): void => {
+    if (node.k === 'label' || node.k === 'dataLabel') {
+      pending.length = 0;
+      out.push(node);
+      return;
+    }
+    const note = node.note === undefined ? pending.shift() : undefined;
+    // a copy, never a mutation: the input nodes are reused by reference
+    out.push(note === undefined ? node : { ...node, note });
+  };
   let changed = false;
   let i = 0;
   while (i < nodes.length) {
     const m = matchAt(nodes, i);
     if (m !== null && !overlapsProtected(shielded, i, m.len) && withinBudget(heights[i], m)) {
-      out.push(...m.out);
+      if (m.carry !== undefined) pending.push(...m.carry);
+      for (const node of m.out) emit(node);
       i += m.len;
       changed = true;
       continue;
     }
     const node = nodes[i];
-    if (node !== undefined) out.push(node);
+    if (node !== undefined) emit(node);
     i += 1;
   }
   return { out, changed };
@@ -282,11 +307,19 @@ function pushWidth(value: bigint, role: 'in' | 'out'): number {
  *   NOT NOT              → ∅   involution
  *   ISZERO ISZERO ISZERO → ISZERO   (ISZERO∘ISZERO is the bool canonicalization, an idempotent
  *                                    map; three applications equal one)
+ *   ISZERO ISZERO pushLabel JUMPI → pushLabel JUMPI   (JUMPI branches on non-zero, and
+ *                                    iszero(iszero(x)) ≠ 0 ⇔ x ≠ 0; the jump nodes are kept,
+ *                                    the `pushLabel`'s label never changes)
+ *   <cmp> ISZERO ISZERO  → <cmp>   for LT / GT / SLT / SGT / EQ: a comparison yields 0 or 1,
+ *                                    where ISZERO∘ISZERO is the identity
+ *   These two carry the notes of the ISZEROs they delete (`Match.carry`): each note goes to the
+ *   next surviving node without one — the jump nodes, the comparison, or a later node of the
+ *   same block (a copy, so a `pushLabel` may be re-emitted noted) — and is dropped at a label.
  *   x PUSH 0 MUL|AND     → POP PUSH 0   x·0 = x&0 = 0 for every x (same node count, cheaper)
  *
  * Deliberately NOT folded — the immediate is μs[0], the FIRST operand of every non-commutative
- * op: `PUSH 0 SUB` (0 − x), `PUSH 1 DIV` (1 / x), `PUSH 1 EXP` (1ˣ); and anything with
- * `pushLabel`.
+ * op: `PUSH 0 SUB` (0 − x), `PUSH 1 DIV` (1 / x), `PUSH 1 EXP` (1ˣ); and any rewrite of a
+ * `pushLabel` itself.
  */
 function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
   const a = nodes[i];
@@ -299,6 +332,16 @@ function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
     if (a.op === 'NOT' && b.op === 'NOT') return drop(2);
     if (a.op === 'ISZERO' && b.op === 'ISZERO' && isOp(nodes[i + 2], 'ISZERO')) {
       return { len: 3, out: [a], outPeak: null };
+    }
+    const c = nodes[i + 2];
+    const d = nodes[i + 3];
+    if (a.op === 'ISZERO' && b.op === 'ISZERO' && c?.k === 'pushLabel' && isOp(d, 'JUMPI')) {
+      // only the two ISZEROs go; their notes (after fusion, the consuming `if` / `while cond`
+      // annotation sits on exactly such an ISZERO) move to the jump nodes or past them
+      return { len: 4, out: [c, d], outPeak: null, carry: notesOf([a, b]) };
+    }
+    if (BOOLEAN_OPS.has(a.op) && b.op === 'ISZERO' && isOp(c, 'ISZERO')) {
+      return { len: 3, out: [a], outPeak: null, carry: notesOf([b, c]) };
     }
     return null;
   }
@@ -326,6 +369,16 @@ function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
   }
   return null;
 }
+
+/** The notes of `nodes`, in order (the deleted nodes of a rewrite that carries them). */
+function notesOf(nodes: readonly OpNode[]): string[] {
+  const notes: string[] = [];
+  for (const node of nodes) if (node.note !== undefined) notes.push(node.note);
+  return notes;
+}
+
+/** Comparisons: each yields exactly 0 or 1. */
+const BOOLEAN_OPS: ReadonlySet<Mnemonic> = new Set<Mnemonic>(['LT', 'GT', 'SLT', 'SGT', 'EQ']);
 
 function drop(len: number): Match {
   return { len, out: [], outPeak: null };

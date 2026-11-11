@@ -4,7 +4,7 @@
  * range-check helpers.
  */
 
-import type { LabelId, AsmWriter } from '../../asm/assembler.js';
+import type { AsmNode, AsmWriter, LabelId } from '../../asm/assembler.js';
 import type { EvmVersion } from '../../asm/ops.js';
 import { bytesToHex, HEX_BYTES_RE, hexToBytes, padWordAligned } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
@@ -20,6 +20,7 @@ import {
 } from '../../ir/nodes.js';
 import { type SharedTails, fmtType } from '../abi.js';
 import type { FrameLayout } from '../frame.js';
+import { type GuardFacts, guardFacts } from './guards.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -57,6 +58,12 @@ export interface LowerCtx {
    *  every site calls the shared `@muldiv` subroutine, specialized to the rounding the sites
    *  use; see `lowerMulDiv`. */
   readonly mulDivShare: MulDivRounding | null;
+  /** Where `storeOut` / `loadOperand` register the `push` nodes they emit for the store–reload
+   *  fusion pass (`codegen/fuse.ts`); `null` when fusion is off (`optimize: false`). */
+  readonly fusion: FusionLog | null;
+  /** The checks the IR's dominating `lt` guards prove redundant (a counter step's overflow, a
+   *  guarded index's bounds); see `guards.ts`. The templates and the site table both ask it. */
+  readonly guards: GuardFacts;
 
   /** The innermost enclosing loop, `null` outside one (and at the top of every fn body). Set
    *  through `withLoop` only. */
@@ -72,6 +79,17 @@ export interface LowerCtx {
    * order hint only (see {@link justStored}); it never affects what a template computes.
    */
   lastStore: { value: ValueId; mark: number } | null;
+}
+
+/**
+ * The nodes the store–reload fusion pass (`codegen/fuse.ts`) may remove, keyed by node identity:
+ * the `push` node of every `storeOut` (exactly one `PUSH s MSTORE` per slot query) and of every
+ * slot-arm `loadOperand` (exactly one `PUSH s MLOAD` per slot query), each with its value.
+ * Nodes later rolled back stay registered; they are simply absent from the final stream.
+ */
+export interface FusionLog {
+  readonly stores: Map<AsmNode, ValueId>;
+  readonly loads: Map<AsmNode, ValueId>;
 }
 
 /**
@@ -183,10 +201,12 @@ export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
   return out;
 }
 
-/** Builds the context for one lowering pass: scans the IR for its consts and self-address
- *  values, empty worklists. */
+/** Builds the context for one lowering pass: scans the IR for its consts, self-address values
+ *  and guard facts, empty worklists. */
 export function createLowerCtx(
-  input: Pick<LowerCtx, 'ir' | 'frame' | 'tails' | 'opts' | 'dataSeg'>,
+  input: Pick<LowerCtx, 'ir' | 'frame' | 'tails' | 'opts' | 'dataSeg'> & {
+    readonly fusion?: FusionLog | null;
+  },
 ): LowerCtx {
   const consts = new Map<ValueId, ConstData>();
   const literalUses = new Map<string, number>();
@@ -205,10 +225,12 @@ export function createLowerCtx(
   for (const fn of input.ir.fns) scan(fn.body);
   return {
     ...input,
+    fusion: input.fusion ?? null,
     consts,
     literalUses,
     selfAddresses: selfAddressValues(input.ir),
     mulDivShare: mulDivShareOf(input.ir, mulDivSites),
+    guards: guardFacts(input.ir, consts),
     loop: null,
     dfailStubs: [],
     fnEntries: new Map(),
@@ -287,7 +309,16 @@ export function loadOperand(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMet
     return;
   }
   w.push(slot, m);
+  registerFused(ctx.fusion?.loads, w, v);
   w.op('MLOAD');
+}
+
+/** Records the node just emitted (a `push`) in a {@link FusionLog} map, when fusion is on. */
+function registerFused(map: Map<AsmNode, ValueId> | undefined, w: AsmWriter, v: ValueId): void {
+  if (map === undefined) return;
+  const node = w.last();
+  if (node === undefined) throw internal('registerFused: nothing emitted');
+  map.set(node, v);
 }
 
 /**
@@ -295,14 +326,17 @@ export function loadOperand(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMet
  * `undefined`. Values that own a slot are never reported, even when a const defines them.
  */
 export function foldedConst(ctx: LowerCtx, v: ValueId): bigint | undefined {
-  if (ctx.frame.slotOfValue(v) !== null) return undefined;
+  // the const table first: a non-const value never queries the frame (under `optimize` every
+  // slot query counts as a use of the slot, which would block its store–reload fusion)
   const data = ctx.consts.get(v);
-  return data !== undefined && data.kind === 'word' ? BigInt(data.hex) : undefined;
+  if (data === undefined || data.kind !== 'word') return undefined;
+  return ctx.frame.slotOfValue(v) === null ? BigInt(data.hex) : undefined;
 }
 
 /** `[v, …] → […]`: stores the stack top into the out value's slot. */
 export function storeOut(w: AsmWriter, ctx: LowerCtx, v: ValueId, m?: NodeMeta): void {
   w.push(requireSlot(ctx, v, 'storeOut'), m);
+  registerFused(ctx.fusion?.stores, w, v);
   w.op('MSTORE');
   ctx.lastStore = { value: v, mark: w.mark() };
 }

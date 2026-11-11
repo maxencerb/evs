@@ -12,7 +12,8 @@
  * folded multiplier of 0 / 1, a free widening, …) is never claimed, and neither is the
  * allocation check of a folded length below the cap, which can never fire. Checked add / sub /
  * mul ask the lowering itself (`checkedArithCanOverflow`, the predicate `lowerCheckedArith` picks
- * its template with). A statement with no reachable panic is a `'stmt'` site. `sites.test.ts`
+ * its template with), and array `index` / `arrset` read `ctx.guards.inBounds` (the dominating
+ * guard facts of `lower/guards.ts`, which also drop a counter step's overflow check). A statement with no reachable panic is a `'stmt'` site. `sites.test.ts`
  * pins every rule against the panic tails the compiled bytecode actually references, so a
  * lowering change that adds or drops a check fails there until this table follows.
  *
@@ -114,14 +115,15 @@ function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site
       return checked(what, codes);
     }
     case 'index': {
-      // `.byteAt(i)` records an `index` on a string/bytes receiver — name it as a byte read
+      // `.byteAt(i)` records an `index` on a string/bytes receiver — name it as a byte read; an
+      // array index a dominating `i < len` guard proves (ctx.guards) has no bounds check
       const recv = typeOf(ctx, s.arr);
       return recv === 'string' || recv === 'bytes'
         ? checked(`byteAt ${fmtType(recv)} ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS])
-        : checked(`array index ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);
+        : checked(`array index ${op(s.arr)}[${op(s.i)}]`, boundsCodes(ctx, s));
     }
     case 'arrset':
-      return checked(`array write ${op(s.arr)}[${op(s.i)}]`, [OUT_OF_BOUNDS]);
+      return checked(`array write ${op(s.arr)}[${op(s.i)}]`, boundsCodes(ctx, s));
     case 'slice':
       // lowerSlice: Panic 0x32 unless start ≤ end ≤ length
       return checked(`slice ${fmtType(typeOf(ctx, s.a))} ${op(s.a)}[${op(s.start)}:${op(s.end)}]`, [
@@ -194,6 +196,12 @@ function binPanicCodes(ctx: LowerCtx, s: Extract<Stmt, { k: 'bin' }>, type: EvsT
     default:
       return [];
   }
+}
+
+/** lowerIndex / lowerArrset: Panic 0x32 unless a dominating guard proves the index in bounds
+ *  (`ctx.guards.inBounds`, the set the templates read). */
+function boundsCodes(ctx: LowerCtx, s: Stmt): number[] {
+  return ctx.guards.inBounds.has(s) ? [] : [OUT_OF_BOUNDS];
 }
 
 /** Whether a call site sends wei: a `value` operand that is not a folded 0. */

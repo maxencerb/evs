@@ -349,7 +349,7 @@ export function callArgStaging(
     if (data === undefined || data.kind !== 'data') return;
     const bytes = literalDataBytes(data, `arg #${i} of ${stmt.fnAbi.name}`);
     offsets.set(i, size);
-    size += bytes.length; // images are already 32-aligned (validated)
+    size += bytes.length; // literalDataBytes returns the word-aligned image
   });
   return { offsets, size };
 }
