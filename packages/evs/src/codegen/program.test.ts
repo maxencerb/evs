@@ -30,7 +30,10 @@ import { canonicalTypeSignature, selectorOf } from '../abi/artifact.js';
 import { AsmWriter, assemble, type AsmNode, type LabelId } from '../asm/assembler.js';
 import { disassemble } from '../asm/disasm.js';
 import type { EvmVersion } from '../asm/ops.js';
+import { evscript } from '../builder/script.js';
 import {
+  namedArg,
+  t as evsT,
   isStringType,
   isWordType,
   typeToAbiParam,
@@ -47,9 +50,9 @@ import type {
   Stmt,
   ValueId,
 } from '../ir/nodes.js';
-import type { FnRegion, FrameLayout } from './frame.js';
+import { layoutFrames, type FnRegion, type FrameLayout } from './frame.js';
 import { createLowerCtx, lowerStmts, selfAddressValues } from './lower.js';
-import { lowerProgram } from './program.js';
+import { countingLayout, lowerProgram } from './program.js';
 import { createSharedTails, emitDecodeFailStub, emitSharedTails } from './tails.js';
 
 // ---------------------------------------------------------------------------
@@ -1652,5 +1655,37 @@ describe('lowering guards', () => {
         ],
       }),
     ).toThrowError(/tuple op over a non-tuple value \(ValueId 1: .*tuple\[\]/);
+  });
+});
+
+describe('countingLayout: both slot gateways are counted (#96)', () => {
+  const script = evscript({ name: 'f', args: [evsT.uint256, evsT.uint256] }, (s, x, y) => {
+    const add = s.fn(
+      'add2',
+      [namedArg('a', evsT.uint256), namedArg('b', evsT.uint256)] as const,
+      (a, b) => a.add(b),
+    );
+    return s.return({ r: add(x, y) });
+  });
+  const fn = script.ir.fns[0];
+  if (fn === undefined) throw new Error('no fn recorded');
+  const f = 0 as FnId;
+  const [a, b] = fn.params.map((p) => p.value);
+  if (a === undefined || b === undefined) throw new Error('two params expected');
+
+  test('every fnRegion call counts one query of each param value', () => {
+    const inner = layoutFrames(script.ir, { optimize: true });
+    const queries = new Map<ValueId, number>();
+    const frame = countingLayout(inner, queries, script.ir.fns);
+    expect(frame.fnRegion(f)).toEqual(inner.fnRegion(f));
+    expect([queries.get(a), queries.get(b)]).toEqual([1, 1]);
+    frame.fnRegion(f);
+    expect([queries.get(a), queries.get(b)]).toEqual([2, 2]);
+    // slotOfValue on a param adds to the same count; no other value was touched
+    expect(frame.slotOfValue(a)).toBe(inner.slotOfValue(a));
+    expect(queries.get(a)).toBe(3);
+    expect(queries.size).toBe(2);
+    // frameEnd passes through
+    expect(frame.frameEnd).toBe(inner.frameEnd);
   });
 });

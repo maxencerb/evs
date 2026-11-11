@@ -1511,6 +1511,51 @@ describe('s.for', () => {
     expect(bodyStmts.some((s) => s.k === 'cellget' && s.cell === iId.cell)).toBe(false);
   });
 
+  test('an outer loop.continue() inside an inner s.while HEADER is accepted and targets the counter loop', () => {
+    // `LoopCtlImpl.guard` only looks at `while-body` scopes, so inside an inner loop's header
+    // thunk the counter loop's body is still the innermost loop body
+    const script2 = evscript({ name: 'hdrcont', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i, loop) => {
+        const j = s.let(t.uint256, 0n);
+        s.while(
+          () => {
+            s.if(i.eq(2n), () => loop.continue());
+            return j.get().lt(i);
+          },
+          () => j.set(j.get().add(1n)),
+        );
+        acc.set(acc.get().add(j.get()));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    expect(() => validateIr(script2.ir)).not.toThrow();
+    const outer = script2.ir.body.find((s) => s.k === 'while');
+    if (outer?.k !== 'while') throw new Error('expected the counter loop');
+    const iId = outer.header.find((s) => s.k === 'cellget');
+    if (iId?.k !== 'cellget') throw new Error('expected the header cellget');
+    const inner = outer.body.find((s) => s.k === 'while');
+    if (inner?.k !== 'while') throw new Error('expected the inner s.while');
+    // in the inner header: the step from the OUTER snapshot, then continue — which, sitting in a
+    // header and outside the inner body, continues the counter loop, so `cell == i` still holds
+    const contIf = inner.header.find((s) => s.k === 'if');
+    if (contIf?.k !== 'if') throw new Error('expected the if in the inner header');
+    expect(contIf.then.map((s) => s.k)).toEqual(['bin', 'cellset', 'continue']);
+    expect(contIf.then[0]).toMatchObject({ k: 'bin', op: 'add', a: iId.out });
+    expect(contIf.then[1]).toMatchObject({ k: 'cellset', cell: iId.cell });
+  });
+
+  test('an outer loop.continue() inside an inner loop BODY is rejected', () => {
+    expect(() =>
+      evscript({ name: 'bodycont', args: [t.uint256] }, (s, n) => {
+        s.for({ from: 0n, until: n }, (_i, loop) => {
+          s.for({ from: 0n, until: n }, () => loop.continue());
+        });
+        return s.return({ n });
+      }),
+    ).toThrow(/belongs to an outer loop/);
+  });
+
   test('generic over signed word types', () => {
     const script3 = evscript({ name: 'forint', args: [] }, (s) => {
       const last = s.let(t.int16, 0n);

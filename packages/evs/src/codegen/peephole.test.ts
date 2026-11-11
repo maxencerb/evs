@@ -531,6 +531,94 @@ describe('rewrite 4 — boolean identities the store–reload fusion exposes (#9
     }
   }
 
+  /** A copy of `nodes` with `note` set on the node at `at` (the input stays untouched). */
+  const withNote = (nodes: readonly AsmNode[], at: number, note: string): AsmNode[] =>
+    nodes.map((n, k) => (k === at && n.k !== 'label' && n.k !== 'dataLabel' ? { ...n, note } : n));
+
+  test('ISZERO ISZERO pushLabel JUMPI: the deleted ISZERO note moves to a noted copy of the pushLabel', () => {
+    const { nodes, jump } = branchProgram(op('CALLER'));
+    const input = withNote(nodes, 2, 'if'); // the consuming `if`'s annotation after fusion
+    const snapshot = structuredClone(input);
+    const out = evsPeephole(input);
+    expect(out.slice(0, 3)).toEqual([op('CALLER'), { ...jump[0], note: 'if' }, jump[1]]);
+    expect(out[1]).not.toBe(input[3]); // a copy …
+    expect(input).toEqual(snapshot); // … the input nodes are not mutated
+    expect(input[3]).toEqual(jump[0]);
+    expect(out[2]).toBe(input[4]); // the JUMPI (no note to take) survives by reference
+  });
+
+  test('ISZERO ISZERO pushLabel JUMPI: with noted jump nodes the notes go on to the next node', () => {
+    const { nodes } = branchProgram(op('CALLER'));
+    const input = withNote(
+      withNote(withNote(withNote(nodes, 1, 'a'), 2, 'b'), 3, 'jump'),
+      4,
+      'jumpi',
+    );
+    const snapshot = structuredClone(input);
+    const out = evsPeephole(input);
+    expect(
+      out.slice(1, 5).map((n) => (n.k === 'label' || n.k === 'dataLabel' ? undefined : n.note)),
+    ).toEqual([
+      'jump',
+      'jumpi',
+      'a', // the fallthrough's `PUSH 0`, then the next noteless node
+      'b',
+    ]);
+    expect(out[1]).toBe(input[3]);
+    expect(input).toEqual(snapshot);
+  });
+
+  test('<cmp> ISZERO ISZERO: the deleted notes go to the comparison, else to the next node', () => {
+    const plain = [
+      op('CALLER'),
+      op('CALLVALUE'),
+      op('LT'),
+      op('ISZERO'),
+      op('ISZERO', { note: 'if' }),
+    ];
+    const unnoted = evsPeephole([...plain, ...RETURN_TOP]);
+    expect(unnoted[2]).toEqual(op('LT', { note: 'if' }));
+    expect(plain[2]).toEqual(op('LT')); // not mutated
+    const input = [...withNote(plain, 2, 'lt'), ...RETURN_TOP];
+    const snapshot = structuredClone(input);
+    const out = evsPeephole(input);
+    expect(out.slice(2, 4)).toEqual([op('LT', { note: 'lt' }), push(0n, { note: 'if' })]);
+    expect(out[2]).toBe(input[2]);
+    expect(input).toEqual(snapshot);
+  });
+
+  test('a carried note stops at a label', () => {
+    const w = new AsmWriter();
+    const l = w.newLabel('l');
+    w.op('CALLER');
+    w.op('CALLVALUE');
+    w.op('EQ', { note: 'eq' });
+    w.op('ISZERO');
+    w.op('ISZERO', { note: 'not' });
+    w.pushLabel(l, { note: 'jump' });
+    w.op('JUMP', { note: 'jump' });
+    w.label(l, 1);
+    w.push(0n);
+    w.op('MSTORE');
+    w.push(32n);
+    w.push(0n);
+    w.op('RETURN');
+    const out = evsPeephole(w.nodes());
+    expect(out.map((n) => (n.k === 'label' || n.k === 'dataLabel' ? undefined : n.note))).toEqual([
+      undefined,
+      undefined,
+      'eq',
+      'jump',
+      'jump',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+    ]);
+  });
+
   test('negatives: ISZERO ISZERO before anything but pushLabel JUMPI, or after a non-boolean op', () => {
     const w = new AsmWriter();
     const l = w.newLabel('l');

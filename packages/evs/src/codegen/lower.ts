@@ -20,11 +20,13 @@
  *   which `arith.ts` / `composites.ts` (and the site table) then elide.
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
- * - every statement template is net-zero on the operand stack; the stack is empty at every
- *   statement boundary. Under `optimize` the store–reload fusion pass (`codegen/fuse.ts`, run by
- *   `lowerProgram` after lowering) lets one single-use value cross the boundary between two
- *   adjacent statements on the stack, never across a label: the stack is still empty at every
- *   label, which is what the verifier checks;
+ * - every statement template is net-zero on the operand stack: each statement starts and ends
+ *   at its block's baseline (0 in the main body and an fn body). Under `optimize` the
+ *   store–reload fusion pass (`codegen/fuse.ts`, run by `lowerProgram` after lowering) lets one
+ *   single-use value cross the boundary between two adjacent statements on the stack, never
+ *   across a label. Every label carries an annotated height (statement-level labels sit at the
+ *   statement baseline; fn entries, loops inside templates and tails like `@muldiv` carry their
+ *   own), and the verifier checks each one;
  * - simulated depth stays ≤ 16 inside templates;
  * - panic exits jump to the shared `'any'` tails (`SharedTails`), never revert inline.
  *

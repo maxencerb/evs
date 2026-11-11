@@ -95,7 +95,9 @@ their own forge test suite, which runs in CI.
 
 Independently of the test suite, [three mandatory verifier passes](/concepts/how-it-works/)
 run inside every `compile()` call: a consensus-identical JUMPDEST scan, a full stack-height
-simulation (empty stack at every statement boundary, depth at most 16 inside templates), and
+simulation (every label at its annotated height, the operand stack at its baseline between
+statements except for the one value `optimize: true` may keep on the stack between two adjacent
+statements, depth at most 16 inside templates), and
 shape lints that make the dangerous constructs unrepresentable — only the two intrinsically
 safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, and no storage,
 log or contract-creation opcode in the script's own code. The only `CALL` frames are the ones

@@ -8,12 +8,16 @@
  * shapes against the interpreter.
  */
 
+import { encodeFunctionData } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
-import type { AsmNode } from '../asm/assembler.js';
+import { execRuntime } from '../../test/harness/evm.js';
+import { assemble, type AsmNode } from '../asm/assembler.js';
 import type { Mnemonic } from '../asm/ops.js';
+import type { SourceMap } from '../asm/sourcemap.js';
 import { evscript } from '../builder/script.js';
 import { compile } from '../compile.js';
+import { bytesToHex } from '../core/bytes.js';
 import { namedArg, t } from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
 import type { ValueId } from '../ir/nodes.js';
@@ -33,6 +37,8 @@ const push = (value: number | bigint, note?: string): AsmNode =>
     : { k: 'push', value: BigInt(value), note };
 const pushLabel = (label: number): AsmNode => ({ k: 'pushLabel', label });
 const label = (l: number, stack: number | 'any'): AsmNode => ({ k: 'label', label: l, stack });
+
+const word = (v: bigint): string => `0x${v.toString(16).padStart(64, '0')}`;
 
 const V = 7 as ValueId;
 const W = 8 as ValueId;
@@ -586,14 +592,84 @@ describe('fusion in lowerProgram (optimize: true)', () => {
     ]);
   });
 
-  test('compiled optimize: true output is smaller than before the pass, results identical', () => {
+  test('compiled optimize: true output is smaller than before the pass, results identical', async () => {
     const script = evscript({ name: 'f', args: [t.uint256] }, (s, x) => {
       const r = s.let(t.uint256, 0n);
       s.if(x.lte(10n), () => r.set(x.add(1n).mul(3n).sub(2n)));
       return s.return({ r: r.get() });
     });
-    const plain = compile(script).runtimeBytecode.length;
-    const optimized = compile(script, { optimize: true }).runtimeBytecode.length;
-    expect(optimized).toBeLessThan(plain);
+    // the optimized pipeline with and without the pass (the peephole runs on both, as in compile)
+    const build = (fuse: boolean) => {
+      const lowering = lowerProgram(eliminateDeadCode(script.ir), {
+        evmVersion: 'cancun',
+        optimize: true,
+        fuse,
+      });
+      const { bytecode } = assemble(lowering.nodes, {
+        evmVersion: 'cancun',
+        peephole: evsPeephole,
+        verify: true,
+      });
+      return { fused: lowering.fused, runtime: bytesToHex(bytecode) };
+    };
+    const withPass = build(true);
+    const withoutPass = build(false);
+    expect(withoutPass.fused).toBeNull();
+    expect(Object.keys(withPass.fused ?? {}).length).toBeGreaterThan(0);
+    // the seam is the shipped pipeline
+    expect(withPass.runtime).toBe(compile(script, { optimize: true }).runtimeBytecode);
+    expect(withPass.runtime.length).toBeLessThan(withoutPass.runtime.length);
+    for (const x of [0n, 5n, 10n, 11n, (1n << 256n) - 1n]) {
+      const calldata = encodeFunctionData({ abi: script.abi, functionName: 'f', args: [x] });
+      // oxlint-disable-next-line no-await-in-loop -- a handful of sequential executions
+      const [fused, unfused] = await Promise.all([
+        execRuntime(withPass.runtime, calldata),
+        execRuntime(withoutPass.runtime, calldata),
+      ]);
+      expect(fused.success).toBe(true);
+      expect(fused.data).toBe(unfused.data);
+      expect(fused.success).toBe(unfused.success);
+      expect(fused.data).toBe(word(x <= 10n ? (x + 1n) * 3n - 2n : 0n));
+    }
+  });
+});
+
+describe('source map under optimize: true', () => {
+  /** The `note`s of an artifact's source-map segments. */
+  const notesOf = (artifact: { readonly sourceMap: SourceMap }): Set<string | undefined> =>
+    new Set(artifact.sourceMap.segments.map((seg) => seg.note));
+
+  test.each([
+    ['x.lte(y)', 'lte'],
+    ['x.lt(y)', 'lt'],
+    ['x.neq(y)', 'neq'],
+    ['s.not(x.eq(y))', 'not'],
+  ] as const)('s.if(%s, …) keeps its `if` segment', (_name, kind) => {
+    const script = evscript({ name: 'f', args: [t.uint256, t.uint256] }, (s, x, y) => {
+      const r = s.let(t.uint256, 0n);
+      const cond =
+        kind === 'lte'
+          ? x.lte(y)
+          : kind === 'lt'
+            ? x.lt(y)
+            : kind === 'neq'
+              ? x.neq(y)
+              : s.not(x.eq(y));
+      s.if(cond, () => r.set(1n));
+      return s.return({ r: r.get() });
+    });
+    expect(notesOf(compile(script, { optimize: true }))).toContain('if');
+  });
+
+  test('s.while(() => n.neq(0n), …) keeps its `while cond` segment', () => {
+    const script = evscript({ name: 'f', args: [t.uint256] }, (s, x) => {
+      const n = s.let(t.uint256, x.mod(3n));
+      s.while(
+        () => n.get().neq(0n),
+        () => n.set(n.get().sub(1n)),
+      );
+      return s.return({ n: n.get() });
+    });
+    expect(notesOf(compile(script, { optimize: true }))).toContain('while cond');
   });
 });

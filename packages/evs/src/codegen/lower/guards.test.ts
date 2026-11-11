@@ -7,6 +7,7 @@
 
 import { describe, expect, test } from 'vite-plus/test';
 
+import { sharedStatementIr } from '../../../test/harness/shared-ir.js';
 import { evscript } from '../../builder/script.js';
 import { namedArg, t } from '../../core/types.js';
 import {
@@ -318,5 +319,27 @@ describe('R2: index bounds', () => {
       return s.return({ last: last.get() });
     });
     expect(analyze(script).elems).toEqual([false]);
+  });
+});
+
+describe('a statement object that occurs twice', () => {
+  test('a shared arrset, guarded once and unguarded once, keeps its check', () => {
+    const { ir } = sharedStatementIr(false);
+    // walkStmts visits the one object at both of its places
+    expect(analyze({ ir }).elems).toEqual([false, false]);
+  });
+
+  test('a shared if { arrset }, under the guard and after it, keeps its check', () => {
+    const { ir } = sharedStatementIr(true);
+    expect(analyze({ ir }).elems).toEqual([false, false]);
+  });
+
+  test('without the second occurrence the same arrset is proven', () => {
+    const script = evscript({ name: 'shared', args: [t.uint256] }, (s, i) => {
+      const out = s.newArray(t.uint256, 2n);
+      s.if(i.lt(out.expr().length()), () => out.set(i, 7n));
+      return s.return({ out: out.expr() });
+    });
+    expect(analyze(script).elems).toEqual([true]);
   });
 });

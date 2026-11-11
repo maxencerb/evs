@@ -25,7 +25,9 @@
  *   `arrnew length=L`, else "the length of `A`". So `newArray(t, xs.length())` written under
  *   `forEach(xs)`'s guard, and chains like `newArray(t, out.length())`, are proven. `A` must be an array type (a `string` / `bytes` `.byteAt` keeps its check) and `x`
  *   unsigned. Array lengths are immutable in evs memory (no push / pop, the length word is never
- *   rewritten, a failed `try*` output is the canonical zero-length value), so the length read
+ *   rewritten, and a failed `try*` output is a zero value of its type — the canonical zero-length
+ *   value for a dynamic array, a fresh `[N][0…]` block for a fixed-size `T[N]` — which is never
+ *   resized either), so the length read
  *   before the guard equals the word the bounds check would load. `s.forEach` records its
  *   `until` through `len` for a fixed-size `T[N]` too, so no constant-length rule is needed.
  *
@@ -42,7 +44,10 @@ import { isArrayValueType, isNumeric, isSigned } from '../../core/types.js';
 import type { ConstData, ScriptIr, Stmt, ValueId } from '../../ir/nodes.js';
 
 /** The statements the lowering may emit without their runtime check, by object identity
- *  (lowering and the site table walk the same `ctx.ir` objects). */
+ *  (lowering and the site table walk the same `ctx.ir` objects). A statement object that
+ *  occurs at more than one place in the tree (hand-built IR may share one, see `ir/dce.ts`) is
+ *  in a set only when EVERY occurrence is proven: the lowering emits each occurrence from the
+ *  same object, so one unproven occurrence keeps the check for all of them. */
 export interface GuardFacts {
   /** Checked `bin add` statements proven unable to overflow (R1). */
   readonly noOverflow: ReadonlySet<Stmt>;
@@ -107,20 +112,28 @@ export function guardFacts(ir: ScriptIr, consts: ReadonlyMap<ValueId, ConstData>
     return facts.some((f) => f.x === i && lengthIs(arr, f.y));
   };
 
+  // a statement object may occur more than once in the tree (an `arrset` defines no value, so
+  // `validateIr` accepts the same object twice, and a shared `if` / `while` walks its children
+  // twice): a verdict holds only when EVERY occurrence is proven, so each unproven occurrence is
+  // remembered and struck from the result at the end
+  const overflowUnproven = new Set<Stmt>();
+  const boundsUnproven = new Set<Stmt>();
+
   const walk = (stmts: readonly Stmt[], facts: readonly Fact[]): void => {
     for (const s of stmts) {
       switch (s.k) {
         case 'bin':
-          if (
-            s.op === 'add' &&
-            facts.some((f) => (f.x === s.a && isOne(s.b)) || (f.x === s.b && isOne(s.a)))
-          ) {
+          if (s.op !== 'add') break;
+          if (facts.some((f) => (f.x === s.a && isOne(s.b)) || (f.x === s.b && isOne(s.a)))) {
             noOverflow.add(s);
+          } else {
+            overflowUnproven.add(s);
           }
           break;
         case 'index':
         case 'arrset':
           if (indexInBounds(s.arr, s.i, facts)) inBounds.add(s);
+          else boundsUnproven.add(s);
           break;
         case 'if': {
           const fact = factOf(s.cond);
@@ -141,5 +154,7 @@ export function guardFacts(ir: ScriptIr, consts: ReadonlyMap<ValueId, ConstData>
   };
   walk(ir.body, []);
   for (const fn of ir.fns) walk(fn.body, []);
+  for (const s of overflowUnproven) noOverflow.delete(s);
+  for (const s of boundsUnproven) inBounds.delete(s);
   return { noOverflow, inBounds };
 }

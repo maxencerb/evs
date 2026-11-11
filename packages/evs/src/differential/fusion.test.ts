@@ -6,7 +6,7 @@
  * (every case also runs its `optimize: true` twin). Chains through every arithmetic template
  * family, division by zero reached with a fused value under the divisor, control flow at block
  * edges, fn bodies, loops, and values the pass must leave alone (used twice, used later,
- * returned). The last test checks that every window form fired somewhere in this file.
+ * returned). The last block fires every window form with a script of its own.
  */
 
 import { describe, expect, test } from 'vite-plus/test';
@@ -23,24 +23,16 @@ const MAX256 = (1n << 256n) - 1n;
 const MIN_I256 = -(1n << 255n);
 const MAX_I256 = (1n << 255n) - 1n;
 
-/** The window forms fused across this file (`compile()` lowers `dce(ir)`). */
-const seen: FuseStats = {};
-function tally(script: { readonly ir: ScriptIr }): FuseStats {
+/** The window forms one script's optimized lowering fuses (`compile()` lowers `dce(ir)`). */
+function formsOf(script: { readonly ir: ScriptIr }): FuseStats {
   const { fused } = lowerProgram(eliminateDeadCode(script.ir), {
     evmVersion: 'cancun',
     optimize: true,
   });
-  for (const [form, n] of Object.entries(fused ?? {})) seen[form] = (seen[form] ?? 0) + n;
   return fused ?? {};
 }
 
-async function agree(
-  script: Parameters<typeof expectAgreement>[0] & { readonly ir: ScriptIr },
-  argSets: readonly (readonly unknown[])[],
-) {
-  tally(script);
-  return expectAgreement(script, argSets);
-}
+const agree = expectAgreement;
 
 describe('unsigned chains', () => {
   test('sub / div / mod with runtime right operands', async () => {
@@ -313,8 +305,44 @@ describe('values the pass leaves alone', () => {
   });
 });
 
-test('every window form fired in this file', () => {
-  for (const form of ['bare', 'P', 'I', 'M', 'IG', 'MG', 'PIG', 'PMG']) {
-    expect(seen[form] ?? 0, `form ${form}`).toBeGreaterThan(0);
-  }
+describe('every window form', () => {
+  const U3 = [t.uint256, t.uint256, t.uint256] as const;
+  // one script per form of `FuseStats` (`P`: leftover POPs of the 256-bit checked mul; `I` / `M`:
+  // an immediate / memory right operand; `G`: the div / mod zero guard)
+  const cases = [
+    ['bare', evscript({ name: 'fBare', args: U3 }, (s, a, b) => s.return({ r: a.add(b).add(a) }))],
+    ['I', evscript({ name: 'fI', args: U3 }, (s, a) => s.return({ r: a.add(1n).sub(3n) }))],
+    ['M', evscript({ name: 'fM', args: U3 }, (s, a, b, c) => s.return({ r: a.add(b).sub(c) }))],
+    ['IG', evscript({ name: 'fIG', args: U3 }, (s, a) => s.return({ r: a.add(1n).div(0n) }))],
+    ['MG', evscript({ name: 'fMG', args: U3 }, (s, a, b, c) => s.return({ r: a.add(b).div(c) }))],
+    [
+      'P',
+      evscript({ name: 'fP', args: U3 }, (s, a, b) => {
+        const r = s.let(t.uint256, 0n);
+        r.set(a.mul(b));
+        return s.return({ r: r.get() });
+      }),
+    ],
+    ['PI', evscript({ name: 'fPI', args: U3 }, (s, a, b) => s.return({ r: a.mul(b).sub(3n) }))],
+    ['PM', evscript({ name: 'fPM', args: U3 }, (s, a, b, c) => s.return({ r: a.mul(b).sub(c) }))],
+    ['PIG', evscript({ name: 'fPIG', args: U3 }, (s, a, b) => s.return({ r: a.mul(b).mod(0n) }))],
+    ['PMG', evscript({ name: 'fPMG', args: U3 }, (s, a, b, c) => s.return({ r: a.mul(b).div(c) }))],
+  ] as const;
+
+  test('the cases cover all ten forms', () => {
+    expect(cases.map(([form]) => form).toSorted()).toEqual(
+      ['bare', 'I', 'M', 'IG', 'MG', 'P', 'PI', 'PM', 'PIG', 'PMG'].toSorted(),
+    );
+  });
+
+  test.each(cases)('%s fires and agrees with the interpreter', async (form, script) => {
+    expect(formsOf(script)[form] ?? 0, `form ${form}`).toBeGreaterThan(0);
+    await agree(script, [
+      [0n, 0n, 0n],
+      [7n, 6n, 5n],
+      [100n, 3n, 0n], // a zero right operand
+      [MAX256, 2n, 1n], // overflow in the first statement
+      [1n, 0n, 9n],
+    ]);
+  });
 });

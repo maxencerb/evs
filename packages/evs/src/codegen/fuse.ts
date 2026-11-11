@@ -9,9 +9,12 @@
  * node stream and has no use information. This pass has it, from codegen's own accounting, and
  * runs as the last step of `lowerProgram` (before the peephole sees the stream).
  *
- * **Accounting** (`lowerProgram`, `lower/context.ts`). `FrameLayout.slotOfValue` is the only way
- * any code learns a value's slot address, so under `optimize` the layout is wrapped in a
- * counting gateway: every non-null `slotOfValue(v)` counts one query of `v`. `storeOut` emits
+ * **Accounting** (`lowerProgram`, `lower/context.ts`). Two `FrameLayout` calls hand out a
+ * value's slot address: `slotOfValue(v)`, and `fnRegion(f)`, whose `params` are the slots of the
+ * fn's param values. Under `optimize` the layout is wrapped in a counting gateway
+ * (`countingLayout`, `program.ts`) that counts both: every non-null `slotOfValue(v)` counts one
+ * query of `v`, and every `fnRegion(f)` counts one query of each param value of `f`, so a param
+ * is never fusable however it comes to be stored. `storeOut` emits
  * exactly one `PUSH s MSTORE` per query and registers its `push` node as "the store of `v`";
  * `loadOperand` (slot arm) emits exactly one `PUSH s MLOAD` per query and registers its `push`
  * as "a load of `v`" (`FusionLog`, keyed by node identity). A value is **fusable** iff it was
@@ -19,9 +22,10 @@
  * load: then no other instruction addresses its slot on its behalf (a call-arg ref, the return
  * encoder, a second load, a second store would each be a third query), and values sharing the
  * slot under the liveness allocator only ever read their own stores. Counts may over-count
- * (speculative emission rolled back, codec dry runs, the site table and diagnostics after
- * emission) — that only loses a fusion — but never under-count, which is why the pass runs after
- * `collectSites` and the diagnostics.
+ * (speculative emission rolled back, the site table and diagnostics after emission) — that only
+ * loses a fusion — but never under-count, which is why the pass runs after `collectSites` and
+ * the diagnostics. (The codec planner's dry runs never touch the counting layout: they emit
+ * into scratch writers with their own refs.)
  *
  * **Windows.** At a registered store `P = PUSH s` of a fusable `v`, the pass matches
  *
@@ -29,6 +33,8 @@
  *
  * - `POP{n}`: `0 ≤ n ≤ 16` POPs, the defining template's leftover operands (the 256-bit checked
  *   `mul`, the int256 `add` / `sub` and the signed `mul` templates end `storeOut; POP; POP`);
+ *   `MAX_POPS = 16` (the deepest `SWAPn`) is a ceiling for totality, which the 16-item template
+ *   budget never lets a checked region reach;
  * - `L`: one other operand load — a `push` not followed by `MLOAD` (an immediate), or
  *   `PUSH x MLOAD` with `|x − s| ≥ 32` (a different memory word);
  * - `G` (only after `L`): `DUP1 ISZERO pushLabel(ℓ) JUMPI` with ℓ an `'any'` label (the `div` /
@@ -46,8 +52,9 @@
  *   fixes; the taken branch lands on an `'any'` label, where the height does not matter (the
  *   tail reverts);
  * - no `label` node can sit inside a window (it breaks the match), so a fused value never
- *   crosses a JUMPDEST and never changes the height at a checked label or jump: the stack is
- *   still empty at every label, and the mandatory verifiers (`asm/verify.ts`) re-check the fused
+ *   crosses a JUMPDEST and never changes the height at a checked label or jump: every label
+ *   keeps its annotated height (statement-level labels sit at the statement baseline), and the
+ *   mandatory verifiers (`asm/verify.ts`) re-check every label's annotated height on the fused
  *   stream on every compile;
  * - depth: inside a window the fused code is at most one item deeper than the original; a window
  *   that would exceed the 16-item template budget in a checked region is left alone (the same

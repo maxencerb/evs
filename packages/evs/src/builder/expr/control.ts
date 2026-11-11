@@ -286,9 +286,12 @@ export abstract class RecorderControl extends RecorderOps {
    *
    * The step is `cell = i + step` where `i` is the header's snapshot (`iId`), not a fresh
    * `cellget`: the cell is internal (no handle ever reaches the user) and only the step writes
-   * it, and every step is followed by `continue` or the end of the body (an outer loop's
-   * `continue()` inside an inner loop is rejected by `LoopCtlImpl.guard`), so `cell == i` holds
-   * at every step. Reusing `i` saves a read per step and ties the step `add(i, 1)` to the header
+   * it, and every step is followed by `continue` or the end of the body, so `cell == i` holds
+   * at every step. An outer loop's `continue()` inside an inner loop's BODY is rejected by
+   * `LoopCtlImpl.guard`; inside an inner `s.while` HEADER thunk it is accepted (the guard's
+   * `innermostLoopBody()` only looks at `while-body` scopes), and there the recorded `continue`
+   * sits outside the inner body, so it targets this counter loop: the step before it still
+   * leaves `cell == i` for the next header read. Reusing `i` saves a read per step and ties the step `add(i, 1)` to the header
    * guard `lt(i, until)` in SSA, which lets codegen drop the step's overflow check and
    * `s.forEach`'s element bounds check (`codegen/lower/guards.ts`).
    */

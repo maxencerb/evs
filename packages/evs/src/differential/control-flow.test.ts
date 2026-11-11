@@ -12,6 +12,7 @@ import { decodeFunctionResult, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { expectAgreement, panicData, TOKA } from '../../test/harness/differential.js';
+import { sharedStatementIr } from '../../test/harness/shared-ir.js';
 import { evscript } from '../builder/script.js';
 import { t, type Hex } from '../core/types.js';
 
@@ -718,5 +719,53 @@ describe('counter loops: proven step and bounds checks (#97)', () => {
       'revert',
     ]);
     expect(outcomes[3]?.data).toBe(panicData(0x32n));
+  });
+
+  test.each([false, true])(
+    'hand-built IR sharing one statement object under and after the guard (nested if: %s)',
+    async (nested) => {
+      const script = sharedStatementIr(nested);
+      const outcomes = await expectAgreement(script, [
+        [0n, true],
+        [1n, true],
+        [1n, false],
+        [2n, true],
+        [5n, true],
+      ]);
+      expect(outcomes.map((o) => o.kind)).toEqual([
+        'return',
+        'return',
+        'return',
+        'revert',
+        'revert',
+      ]);
+      expect(outcomes[3]?.data).toBe(panicData(0x32n));
+      expect(outcomes[4]?.data).toBe(panicData(0x32n));
+    },
+  );
+
+  test('an outer loop.continue() inside an inner s.while header continues the counter loop', async () => {
+    const script = evscript({ name: 'hdrcont', args: [t.uint256] }, (s, n) => {
+      const acc = s.let(t.uint256, 0n);
+      s.for({ from: 0n, until: n }, (i, loop) => {
+        const j = s.let(t.uint256, 0n);
+        s.while(
+          () => {
+            s.if(i.eq(2n), () => loop.continue());
+            return j.get().lt(i);
+          },
+          () => j.set(j.get().add(1n)),
+        );
+        acc.set(acc.get().add(j.get()));
+      });
+      return s.return({ acc: acc.get() });
+    });
+    const outcomes = await expectAgreement(script, [[0n], [2n], [3n], [5n]]);
+    const acc = (n: bigint): bigint => {
+      let total = 0n;
+      for (let i = 0n; i < n; i++) if (i !== 2n) total += i;
+      return total;
+    };
+    expect(outcomes.map((o) => BigInt(o.data))).toEqual([acc(0n), acc(2n), acc(3n), acc(5n)]);
   });
 });
