@@ -1,5 +1,15 @@
 # @maxencerb/evs
 
+## 0.4.1
+
+### Patch Changes
+
+- [#162](https://github.com/maxencerb/evs/pull/162) [`0aa6100`](https://github.com/maxencerb/evs/commit/0aa61006ba674f8a8c856e1488d969906bc5ff37) Thanks [@maxencerb](https://github.com/maxencerb)! - `s.for` and `s.forEach` loops are cheaper and smaller: the counter step no longer carries an overflow check when it is the constant 1 (the default of `s.for`, always the case for `s.forEach`; a `step: 2n` or a runtime step keeps it), and `s.forEach`'s element read no longer carries a bounds check, since the loop condition already proves both. The same applies to `arr.at(i)` / `out.set(i, …)` inside an `s.for` running until that array's length (or an `s.newArray` length), and under an `s.if(i.lt(arr.length()), …)` guard. Behavior is unchanged: every value, result and revert stays the same.
+
+- [#162](https://github.com/maxencerb/evs/pull/162) [`0aa6100`](https://github.com/maxencerb/evs/commit/0aa61006ba674f8a8c856e1488d969906bc5ff37) Thanks [@maxencerb](https://github.com/maxencerb)! - `compile(script, { optimize: true })` output is smaller and cheaper: a value that is read once, by the very next statement, now stays on the stack instead of being stored to memory and loaded back (so `s.if(x.lte(10n), …)` compiles to a single comparison and a conditional jump, and arithmetic chains keep no intermediate stores). The default output (`optimize: false`) is unchanged, byte for byte.
+
+- [#162](https://github.com/maxencerb/evs/pull/162) [`0aa6100`](https://github.com/maxencerb/evs/commit/0aa61006ba674f8a8c856e1488d969906bc5ff37) Thanks [@maxencerb](https://github.com/maxencerb)! - Hand-written or deserialized IR with a `bytes` / `string` literal that is not padded to a word boundary now compiles when the literal is passed as a call argument (it used to throw an internal error), and a literal whose padding after its declared length is not zero is now rejected by `validateIr` instead of reaching the callee's calldata (where it made `compile()` and `interpret()` disagree). Scripts built with the builder are unaffected.
+
 ## 0.4.0
 
 ### Minor Changes
