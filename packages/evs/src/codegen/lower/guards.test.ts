@@ -242,6 +242,61 @@ describe('R2: index bounds', () => {
     });
   });
 
+  test('every length read of one array is one bound: newArray(xs.length()) under forEach(xs)', () => {
+    const script = evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const out = s.newArray(t.uint256, xs.length()); // len₁(xs)
+      s.forEach(xs, (x, i) => out.set(i, x)); // guard i < len₂(xs)
+      return s.return({ out: out.expr() });
+    });
+    // the forEach element load and the write into `out` are both proven
+    expect(analyze(script)).toMatchObject({ adds: [true], elems: [true, true] });
+  });
+
+  test('two separate .length() reads of one array, guard on one and index under the other', () => {
+    const script = evscript({ name: 'f', args: [t.array(t.uint256), t.uint256] }, (s, xs, i) => {
+      const n = xs.length();
+      const r = s.let(t.uint256, 0n);
+      s.if(i.lt(n), () => r.set(xs.at(i)));
+      s.if(i.lt(xs.length()), () => r.set(xs.at(i)));
+      return s.return({ r: r.get() });
+    });
+    expect(analyze(script).elems).toEqual([true, true]);
+  });
+
+  test('length chains: newArray(out.length), newArray(out.expr().length()), forEach(out)', () => {
+    const script = evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const out = s.newArray(t.uint256, xs.length());
+      const out2 = s.newArray(t.uint256, out.length);
+      const out3 = s.newArray(t.uint256, out.expr().length());
+      s.forEach(xs, (x, i) => {
+        out2.set(i, x);
+        out3.set(i, x);
+      });
+      s.forEach(out.expr(), (x, i) => out2.set(i, x));
+      return s.return({ a: out2.expr(), b: out3.expr() });
+    });
+    expect(analyze(script)).toMatchObject({ elems: [true, true, true, true, true] });
+  });
+
+  test('lengths of two different arrays, or an arrnew of an unrelated length: not proven', () => {
+    const script = evscript(
+      { name: 'f', args: [t.array(t.uint256), t.array(t.uint256), t.uint256] },
+      (s, xs, ys, n) => {
+        const out = s.newArray(t.uint256, ys.length()); // ys's length, not xs's
+        const other = s.newArray(t.uint256, n); // an unrelated length
+        const last = s.let(t.uint256, 0n);
+        s.forEach(xs, (x, i) => {
+          out.set(i, x);
+          other.set(i, x);
+          last.set(ys.at(i));
+        });
+        return s.return({ a: out.expr(), b: other.expr(), last: last.get() });
+      },
+    );
+    // forEach's own element load is proven; the three others are not
+    expect(analyze(script)).toMatchObject({ elems: [true, false, false, false] });
+  });
+
   test('.byteAt(i) under i < bytes.length keeps its check', () => {
     const script = evscript({ name: 'f', args: [t.bytes] }, (s, b) => {
       const r = s.let(t.bytes1, '0x00');

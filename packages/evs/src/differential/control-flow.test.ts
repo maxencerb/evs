@@ -661,6 +661,33 @@ describe('counter loops: proven step and bounds checks (#97)', () => {
     await expectAgreement(script, [[0n], [1n], [6n]]);
   });
 
+  test('an output array sized by a separate length read (and chains of it)', async () => {
+    const script = evscript(
+      { name: 'mapped', args: [t.array(t.uint256), t.array(t.uint256)] },
+      (s, xs, ys) => {
+        const out = s.newArray(t.uint256, xs.length());
+        s.forEach(xs, (x, i) => out.set(i, x.add(i)));
+        const back = s.newArray(t.uint256, out.length);
+        s.forEach(out.expr(), (x, i) => back.set(i, x.mul(2n)));
+        // sized by ys, written under xs's guard: keeps its bounds check
+        const other = s.newArray(t.uint256, ys.length());
+        s.forEach(xs, (x, i) => other.set(i, x));
+        return s.return({ out: out.expr(), back: back.expr(), other: other.expr() });
+      },
+    );
+    const outcomes = await expectAgreement(script, [
+      [[], []],
+      [
+        [1n, 2n, 3n],
+        [0n, 0n, 0n],
+      ],
+      [[5n], [9n, 9n]],
+      [[1n, 2n], [7n]],
+    ]);
+    expect(outcomes.map((o) => o.kind)).toEqual(['return', 'return', 'return', 'revert']);
+    expect(outcomes[3]?.data).toBe(panicData(0x32n));
+  });
+
   test('an if(i < arr.length) guard on both sides of the bound; the else read still Panics 0x32', async () => {
     const script = evscript(
       { name: 'guarded', args: [t.array(t.uint256), t.uint256, t.bool] },

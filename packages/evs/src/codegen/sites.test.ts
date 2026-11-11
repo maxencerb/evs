@@ -350,6 +350,24 @@ const CASES: readonly LockstepCase[] = [
     codes: [0x41],
   },
   {
+    name: 'output array sized by xs.length(), written under forEach(xs)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256)] }, (s, xs) => {
+      const out = s.newArray(t.uint256, xs.length());
+      s.forEach(xs, (x, i) => out.set(i, x));
+      return s.return({ out: out.expr() });
+    }),
+    codes: [0x41],
+  },
+  {
+    name: 'output array sized by ys.length(), written under forEach(xs)',
+    script: evscript({ name: 'f', args: [t.array(t.uint256), t.array(t.uint256)] }, (s, xs, ys) => {
+      const out = s.newArray(t.uint256, ys.length());
+      s.forEach(xs, (x, i) => out.set(i, x));
+      return s.return({ out: out.expr() });
+    }),
+    codes: [0x32, 0x41],
+  },
+  {
     name: 'if-guarded index',
     script: evscript({ name: 'f', args: [t.array(t.uint256), t.uint256] }, (s, xs, i) => {
       const r = s.let(t.uint256, 0n);

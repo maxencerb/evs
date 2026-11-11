@@ -305,7 +305,9 @@ Releases: see [Releasing](#releasing) below.
   (facts nest, never reach the while header, the else block, the code after, or an fn body).
   R1: a checked `add` of such an `x` and a `const` 1 cannot overflow (`x < y ≤ max`), any
   numeric type. R2: an array `index` / `arrset` at an unsigned `x` is in bounds when `y` is the
-  array's length (`len a=A`, or `A = arrnew length=y`; lengths are immutable in evs memory);
+  array's length (lengths are immutable in evs memory, so lengths compare by a canonical key:
+  every `len` of one array is the same bound, and `len(arrnew length=L)` is `L` — so
+  `s.newArray(t, xs.length())` written under `s.forEach(xs)` is proven);
   `string` / `bytes` `.byteAt` keeps its check. `s.for` / `s.forEach` record exactly these
   shapes (the step adds to the header's counter snapshot, which the cell always equals at a
   step), so their step overflow check and `s.forEach`'s element bounds check vanish in both

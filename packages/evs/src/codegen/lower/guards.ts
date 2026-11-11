@@ -18,8 +18,12 @@
  *   `x + 1 ≤ max(type)`, for every numeric type, signed included (`lt` and `add` take
  *   same-typed operands and `x` is shared, so all of them have one type).
  * - **R2, index bounds.** An `index` / `arrset` of array `A` at `x` under a fact `(x, y)` where
- *   `y` is `A`'s length — `y` defined by `len a=A`, or `A` defined by `arrnew length=y` — is in
- *   bounds. `A` must be an array type (a `string` / `bytes` `.byteAt` keeps its check) and `x`
+ *   `y` is `A`'s length is in bounds. Lengths compare by canonical key, not by ValueId, because
+ *   two `.length()` reads of one array are two `len` values: `canon(y)` is `canon(L)` when `y`
+ *   is a `len` of an array defined by `arrnew length=L`, "the length of `B`" when `y` is any
+ *   other `len a=B`, else "the value `y`"; `A`'s own key is `canon(L)` when `A` is an
+ *   `arrnew length=L`, else "the length of `A`". So `newArray(t, xs.length())` written under
+ *   `forEach(xs)`'s guard, and chains like `newArray(t, out.length())`, are proven. `A` must be an array type (a `string` / `bytes` `.byteAt` keeps its check) and `x`
  *   unsigned. Array lengths are immutable in evs memory (no push / pop, the length word is never
  *   rewritten, a failed `try*` output is the canonical zero-length value), so the length read
  *   before the guard equals the word the bounds check would load. `s.forEach` records its
@@ -83,12 +87,18 @@ export function guardFacts(ir: ScriptIr, consts: ReadonlyMap<ValueId, ConstData>
     const d = defs.get(cond);
     return d !== undefined && d.k === 'bin' && d.op === 'lt' ? { x: d.a, y: d.b } : undefined;
   };
-  const lengthIs = (arr: ValueId, y: ValueId): boolean => {
-    const len = defs.get(y);
-    if (len !== undefined && len.k === 'len' && len.a === arr) return true;
+  // lengths are immutable, so every `len` of one array is one number and the length of an
+  // `arrnew` is its `length` operand: canonical keys compare them across separate reads (the
+  // recursion ends — values are single-assignment and defined before use)
+  const lengthOf = (arr: ValueId): string => {
     const alloc = defs.get(arr);
-    return alloc !== undefined && alloc.k === 'arrnew' && alloc.length === y;
+    return alloc !== undefined && alloc.k === 'arrnew' ? canon(alloc.length) : `len:${arr}`;
   };
+  const canon = (y: ValueId): string => {
+    const len = defs.get(y);
+    return len !== undefined && len.k === 'len' ? lengthOf(len.a) : `val:${y}`;
+  };
+  const lengthIs = (arr: ValueId, y: ValueId): boolean => canon(y) === lengthOf(arr);
   const indexInBounds = (arr: ValueId, i: ValueId, facts: readonly Fact[]): boolean => {
     const arrType = typeOf(arr);
     const iType = typeOf(i);
