@@ -14,7 +14,10 @@
  * - `muldiv.ts` — `mulDiv` / `mulDivRoundingUp` (the FullMath 512-bit sequence, inline for a
  *   single site, else the shared `@muldiv` subroutine);
  * - `composites.ts` — select / index / arrays, string/bytes `byteAt` / `slice`, tuples, and
- *   `s.encode` / `s.keccak256` / `s.throw` payloads.
+ *   `s.encode` / `s.keccak256` / `s.throw` payloads;
+ * - `guards.ts` — the dominating guard facts (`LowerCtx.guards`): the counter-loop step
+ *   overflow checks and guarded index bounds checks the IR's own `lt` guards prove redundant,
+ *   which `arith.ts` / `composites.ts` (and the site table) then elide.
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
  * - every statement template is net-zero on the operand stack; the stack is empty at every
@@ -53,5 +56,7 @@ export {
   walkEmittedStmts,
 } from './lower/context.js';
 export type { LowerCtx } from './lower/context.js';
+export { guardFacts } from './lower/guards.js';
+export type { GuardFacts } from './lower/guards.js';
 export { checkedArithCanOverflow } from './lower/arith.js';
 export { lowerStmts, emitFnSubroutines } from './lower/statements.js';

@@ -20,6 +20,7 @@ import {
 } from '../../ir/nodes.js';
 import { type SharedTails, fmtType } from '../abi.js';
 import type { FrameLayout } from '../frame.js';
+import { type GuardFacts, guardFacts } from './guards.js';
 
 // ---------------------------------------------------------------------------
 // contract
@@ -57,6 +58,9 @@ export interface LowerCtx {
    *  every site calls the shared `@muldiv` subroutine, specialized to the rounding the sites
    *  use; see `lowerMulDiv`. */
   readonly mulDivShare: MulDivRounding | null;
+  /** The checks the IR's dominating `lt` guards prove redundant (a counter step's overflow, a
+   *  guarded index's bounds); see `guards.ts`. The templates and the site table both ask it. */
+  readonly guards: GuardFacts;
 
   /** The innermost enclosing loop, `null` outside one (and at the top of every fn body). Set
    *  through `withLoop` only. */
@@ -183,8 +187,8 @@ export function selfAddressValues(ir: ScriptIr): ReadonlySet<ValueId> {
   return out;
 }
 
-/** Builds the context for one lowering pass: scans the IR for its consts and self-address
- *  values, empty worklists. */
+/** Builds the context for one lowering pass: scans the IR for its consts, self-address values
+ *  and guard facts, empty worklists. */
 export function createLowerCtx(
   input: Pick<LowerCtx, 'ir' | 'frame' | 'tails' | 'opts' | 'dataSeg'>,
 ): LowerCtx {
@@ -209,6 +213,7 @@ export function createLowerCtx(
     literalUses,
     selfAddresses: selfAddressValues(input.ir),
     mulDivShare: mulDivShareOf(input.ir, mulDivSites),
+    guards: guardFacts(input.ir, consts),
     loop: null,
     dfailStubs: [],
     fnEntries: new Map(),

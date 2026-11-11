@@ -69,18 +69,26 @@ const CONST_INDEX_LIMIT = 1n << 32n;
  * `[…] → [addr, …]`: the address of element `i` of array `arr`, after the bounds check (Panic
  * 0x32 unless `i < len`). `m` annotates the first node. A folded index below the 2^32
  * allocation cap compiles to a constant bound and a constant offset; any other index (a huge
- * constant included, whose `k + 1` / `32·(k + 1)` could wrap) takes the runtime sequence.
+ * constant included, whose `k + 1` / `32·(k + 1)` could wrap) takes the runtime sequence. When
+ * `inBounds` (a dominating `i < len(arr)` guard proves it, `ctx.guards.inBounds`), both arms
+ * only compute the address: no length load, no compare, no reference to the bounds panic tail.
  */
 function emitCheckedElemAddr(
   w: AsmWriter,
   ctx: LowerCtx,
   arr: ValueId,
   i: ValueId,
+  inBounds: boolean,
   m?: NodeMeta,
 ): void {
   const k = foldedConst(ctx, i);
   if (k !== undefined && k < CONST_INDEX_LIMIT) {
     loadOperand(w, ctx, arr, m); // [ptr]
+    if (inBounds) {
+      w.push(32n * (k + 1n)); // [32·(k+1), ptr]
+      w.op('ADD'); // [addr]
+      return;
+    }
     w.op('DUP1');
     w.op('MLOAD'); // [len, ptr]
     w.push(k + 1n); // [k+1, len, ptr]
@@ -88,6 +96,16 @@ function emitCheckedElemAddr(
     w.pushLabel(ctx.tails.panicBounds);
     w.op('JUMPI'); // [ptr]                Panic 0x32 on OOB
     w.push(32n * (k + 1n)); // [32·(k+1), ptr]
+    w.op('ADD'); // [addr]
+    return;
+  }
+  if (inBounds) {
+    loadOperand(w, ctx, i, m); // [i]
+    w.push(5);
+    w.op('SHL'); // [32·i]
+    loadOperand(w, ctx, arr); // [ptr, 32·i]
+    w.op('ADD'); // [ptr + 32·i]
+    w.push(32);
     w.op('ADD'); // [addr]
     return;
   }
@@ -109,14 +127,17 @@ function emitCheckedElemAddr(
 }
 
 /** `index` — a bounds-checked element read (Panic 0x32): an array's element word / pointer, or
- *  (`.byteAt(i)` on a string/bytes, {@link lowerByteAt}) the payload byte at `i`. */
+ *  (`.byteAt(i)` on a string/bytes, {@link lowerByteAt}) the payload byte at `i`. An array read
+ *  a dominating guard proves in bounds (`ctx.guards.inBounds`) skips the check. */
 export function lowerIndex(w: AsmWriter, s: Extract<Stmt, { k: 'index' }>, ctx: LowerCtx): void {
   const arrType = typeOf(ctx, s.arr);
   if (arrType === 'string' || arrType === 'bytes') {
     lowerByteAt(w, s, ctx, arrType);
     return;
   }
-  emitCheckedElemAddr(w, ctx, s.arr, s.i, meta('index')); // [addr]
+  const inBounds = ctx.guards.inBounds.has(s);
+  emitCheckedElemAddr(w, ctx, s.arr, s.i, inBounds, meta(inBounds ? 'index (guarded)' : 'index'));
+  // [addr]
   w.op('MLOAD'); // [elem]               elements are canonical (decode normalizes eagerly)
   storeOut(w, ctx, s.out);
 }
@@ -269,7 +290,7 @@ export function lowerArrnew(w: AsmWriter, s: Extract<Stmt, { k: 'arrnew' }>, ctx
 
 export function lowerArrset(w: AsmWriter, s: Extract<Stmt, { k: 'arrset' }>, ctx: LowerCtx): void {
   loadOperand(w, ctx, s.value, meta('arrset')); // [v]
-  emitCheckedElemAddr(w, ctx, s.arr, s.i); // [addr, v]
+  emitCheckedElemAddr(w, ctx, s.arr, s.i, ctx.guards.inBounds.has(s)); // [addr, v]
   w.op('MSTORE'); // []                  value is canonical (operand types validated)
 }
 

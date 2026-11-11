@@ -3362,24 +3362,18 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
           "value": 6,
         },
         {
-          "cell": 1,
-          "k": "cellget",
+          "a": 3,
+          "b": 2,
+          "k": "bin",
+          "op": "add",
           "out": 7,
           "site": 9,
         },
         {
-          "a": 7,
-          "b": 2,
-          "k": "bin",
-          "op": "add",
-          "out": 8,
-          "site": 10,
-        },
-        {
           "cell": 1,
           "k": "cellset",
-          "site": 11,
-          "value": 8,
+          "site": 10,
+          "value": 7,
         },
       ],
       "cond": 4,
@@ -3400,13 +3394,13 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
         },
       ],
       "k": "while",
-      "site": 12,
+      "site": 11,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "out": 9,
-      "site": 13,
+      "out": 8,
+      "site": 12,
     },
   ],
   "cells": [
@@ -3424,7 +3418,7 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
     {
       "name": "acc",
       "type": "uint256",
-      "value": 9,
+      "value": 8,
     },
   ],
   "values": [
@@ -3443,9 +3437,6 @@ exports[`s.for > IR snapshot (sugar over while + an internal cell; step defaults
     },
     {
       "type": "bool",
-    },
-    {
-      "type": "uint256",
     },
     {
       "type": "uint256",
@@ -3548,24 +3539,18 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
           "value": 9,
         },
         {
-          "cell": 1,
-          "k": "cellget",
+          "a": 4,
+          "b": 3,
+          "k": "bin",
+          "op": "add",
           "out": 10,
           "site": 12,
         },
         {
-          "a": 10,
-          "b": 3,
-          "k": "bin",
-          "op": "add",
-          "out": 11,
-          "site": 13,
-        },
-        {
           "cell": 1,
           "k": "cellset",
-          "site": 14,
-          "value": 11,
+          "site": 13,
+          "value": 10,
         },
       ],
       "cond": 5,
@@ -3586,13 +3571,13 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
         },
       ],
       "k": "while",
-      "site": 15,
+      "site": 14,
     },
     {
       "cell": 0,
       "k": "cellget",
-      "out": 12,
-      "site": 16,
+      "out": 11,
+      "site": 15,
     },
   ],
   "cells": [
@@ -3610,7 +3595,7 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
     {
       "name": "total",
       "type": "uint256",
-      "value": 12,
+      "value": 11,
     },
   ],
   "values": [
@@ -3636,9 +3621,6 @@ exports[`s.forEach > IR snapshot (one len snapshot before the loop; index per it
     },
     {
       "debugName": "s.forEach(…) element",
-      "type": "uint256",
-    },
-    {
       "type": "uint256",
     },
     {

@@ -1493,14 +1493,22 @@ describe('s.for', () => {
     const wh = allStmts(script2.ir).find((s) => s.k === 'while');
     expect(wh?.k).toBe('while');
     if (wh?.k !== 'while') return;
-    // inside the if-then of the body: [cellget, bin add, cellset, continue]
+    // inside the if-then of the body: [bin add, cellset, continue], stepping from the header's
+    // counter snapshot (no fresh cellget: the cell always equals it at a step)
+    const iId = wh.header.find((s) => s.k === 'cellget');
+    if (iId?.k !== 'cellget') throw new Error('expected the header cellget');
     const ifStmt = wh.body.find((s) => s.k === 'if');
     expect(ifStmt?.k).toBe('if');
     if (ifStmt?.k !== 'if') return;
-    expect(ifStmt.then.map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset', 'continue']);
+    expect(ifStmt.then.map((s) => s.k)).toEqual(['bin', 'cellset', 'continue']);
+    expect(ifStmt.then[0]).toMatchObject({ k: 'bin', op: 'add', a: iId.out });
     // and the natural end of the body repeats the step
-    const tail = wh.body.slice(-3).map((s) => s.k);
-    expect(tail).toEqual(['cellget', 'bin', 'cellset']);
+    const tail = wh.body.slice(-2);
+    expect(tail.map((s) => s.k)).toEqual(['bin', 'cellset']);
+    expect(tail[0]).toMatchObject({ k: 'bin', op: 'add', a: iId.out });
+    const bodyStmts: Stmt[] = [];
+    walkStmts(wh.body, (s) => bodyStmts.push(s));
+    expect(bodyStmts.some((s) => s.k === 'cellget' && s.cell === iId.cell)).toBe(false);
   });
 
   test('generic over signed word types', () => {
@@ -1553,8 +1561,12 @@ describe('s.forEach', () => {
     if (wh?.k !== 'while') throw new Error('expected a while statement');
     expect(wh.header.some((s) => s.k === 'len')).toBe(false);
     expect(wh.body.some((s) => s.k === 'index')).toBe(true);
-    // the counter step at the natural end of the body: cellget + add + cellset
-    expect(wh.body.slice(-3).map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset']);
+    // the counter step at the natural end of the body: add (from the header's counter
+    // snapshot) + cellset
+    const iId = wh.header.find((s) => s.k === 'cellget');
+    if (iId?.k !== 'cellget') throw new Error('expected the header cellget');
+    expect(wh.body.slice(-2).map((s) => s.k)).toEqual(['bin', 'cellset']);
+    expect(wh.body.at(-2)).toMatchObject({ k: 'bin', op: 'add', a: iId.out });
   });
 
   test('sugar only — IR identical to the manual s.for + .at(i) spelling (post-review pin)', () => {
@@ -1624,7 +1636,7 @@ describe('s.forEach', () => {
     if (wh?.k !== 'while') throw new Error('expected a while statement');
     const [contIf, breakIf] = wh.body.filter((s) => s.k === 'if');
     if (contIf?.k !== 'if' || breakIf?.k !== 'if') throw new Error('expected two if statements');
-    expect(contIf.then.map((s) => s.k)).toEqual(['cellget', 'bin', 'cellset', 'continue']);
+    expect(contIf.then.map((s) => s.k)).toEqual(['bin', 'cellset', 'continue']);
     expect(breakIf.then.map((s) => s.k)).toEqual(['break']);
   });
 

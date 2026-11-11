@@ -8,7 +8,7 @@
  * `optimize: true` twin. Runner, callee table and fixture constants: `test/harness/differential.ts`.
  */
 
-import { decodeFunctionResult } from 'viem';
+import { decodeFunctionResult, encodeAbiParameters } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { expectAgreement, panicData, TOKA } from '../../test/harness/differential.js';
@@ -487,4 +487,209 @@ describe('memref equality: a constant literal operand is hashed at record time',
       expect(results[0]).toMatchObject({ a2: true, b4: false, flags: true });
     });
   }
+});
+
+// ---------------------------------------------------------------------------
+// counter loops under dominating guard facts (#97): codegen drops the step's overflow check and
+// the element bounds check the loop guard proves (`codegen/lower/guards.ts`); the interpreter
+// keeps both, so these pin the elision at the edges where it would matter
+// ---------------------------------------------------------------------------
+
+describe('counter loops: proven step and bounds checks (#97)', () => {
+  const MAX256 = (1n << 256n) - 1n;
+
+  test('a uint8 counter stepping onto max(uint8) exactly', async () => {
+    const script = evscript({ name: 'u8edge', args: [t.uint8, t.uint8] }, (s, from, until) => {
+      const count = s.let(t.uint256, 0n);
+      const last = s.let(t.uint8, 0n);
+      s.for({ type: t.uint8, from, until }, (i) => {
+        count.set(count.get().add(1n));
+        last.set(i);
+      });
+      return s.return({ count: count.get(), last: last.get() });
+    });
+    await expectAgreement(script, [
+      [250n, 255n],
+      [254n, 255n],
+      [255n, 255n],
+      [0n, 0n],
+      [7n, 3n],
+    ]);
+  });
+
+  test('a uint256 counter stepping onto 2^256 − 1 exactly', async () => {
+    const script = evscript(
+      { name: 'u256edge', args: [t.uint256, t.uint256] },
+      (s, from, until) => {
+        const count = s.let(t.uint256, 0n);
+        const last = s.let(t.uint256, 0n);
+        s.for({ from, until }, (i) => {
+          count.set(count.get().add(1n));
+          last.set(i);
+        });
+        return s.return({ count: count.get(), last: last.get() });
+      },
+    );
+    await expectAgreement(script, [
+      [MAX256 - 3n, MAX256],
+      [MAX256 - 1n, MAX256],
+      [MAX256, MAX256],
+    ]);
+  });
+
+  test('int8 counters: from −128 with a break, and a short range ending at 127', async () => {
+    const script = evscript(
+      { name: 'i8edge', args: [t.int8, t.int8, t.uint8] },
+      (s, from, until, stopAfter) => {
+        const count = s.let(t.uint8, 0n);
+        const last = s.let(t.int8, 0n);
+        s.for({ type: t.int8, from, until }, (i, loop) => {
+          s.if(count.get().eq(stopAfter), () => loop.break());
+          count.set(count.get().add(1n));
+          last.set(i);
+        });
+        return s.return({ count: count.get(), last: last.get() });
+      },
+    );
+    await expectAgreement(script, [
+      [-128n, 127n, 4n],
+      [124n, 127n, 255n],
+      [126n, 127n, 255n],
+      [-2n, 2n, 255n],
+      [127n, 127n, 255n],
+    ]);
+  });
+
+  test('a step of 2 near max(uint8) still Panics 0x11 (not proven)', async () => {
+    const script = evscript({ name: 'u8step2', args: [t.uint8] }, (s, from) => {
+      const last = s.let(t.uint8, 0n);
+      s.for({ type: t.uint8, from, until: 255n, step: 2n }, (i) => last.set(i));
+      return s.return({ last: last.get() });
+    });
+    const outcomes = await expectAgreement(script, [[251n], [250n]]);
+    expect(outcomes[0]).toMatchObject({ kind: 'return' }); // 251, 253, then 255 ends the loop
+    expect(outcomes[1]).toEqual({ kind: 'revert', data: panicData(0x11n) }); // 254 + 2
+  });
+
+  test('forEach over an arg (empty included), a fixed-size array, and nested', async () => {
+    const flat = evscript({ name: 'sumArr', args: [t.array(t.uint256)] }, (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      const idx = s.let(t.uint256, 0n);
+      s.forEach(xs, (x, i) => {
+        total.set(total.get().add(x));
+        idx.set(idx.get().add(i));
+      });
+      return s.return({ total: total.get(), idx: idx.get() });
+    });
+    await expectAgreement(flat, [[[]], [[5n]], [[1n, 2n, 3n, 4n]], [[MAX256, 1n]]]);
+
+    const fixed = evscript({ name: 'sumFixed', args: [t.array(t.uint64, 3)] }, (s, xs) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => total.set(total.get().add(x.toUint(t.uint256))));
+      return s.return({ total: total.get() });
+    });
+    await expectAgreement(fixed, [[[0n, 0n, 0n]], [[1n, 2n, (1n << 64n) - 1n]]]);
+
+    const nested = evscript({ name: 'sumGrid', args: [t.array(t.array(t.uint256))] }, (s, g) => {
+      const total = s.let(t.uint256, 0n);
+      s.forEach(g, (row, r) => {
+        s.forEach(row, (x, c) => total.set(total.get().add(x.mul(r.add(1n)).add(c))));
+      });
+      return s.return({ total: total.get() });
+    });
+    await expectAgreement(nested, [[[]], [[[], [1n], [2n, 3n]]], [[[1n, 2n, 3n], [], [4n]]]]);
+  });
+
+  test('forEach over a call result (empty and non-empty)', async () => {
+    const numsAbi = [
+      {
+        type: 'function',
+        name: 'nums',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [{ name: '', type: 'uint256[]' }],
+      },
+    ] as const;
+    const script = evscript({ name: 'sumCall', args: [] }, (s) => {
+      const xs = s.read({ address: TOKA, abi: numsAbi, functionName: 'nums', args: [] });
+      const total = s.let(t.uint256, 0n);
+      s.forEach(xs, (x) => total.set(total.get().add(x)));
+      return s.return({ total: total.get(), n: xs.length() });
+    });
+    for (const nums of [[], [3n, 4n, 5n]]) {
+      const data = encodeAbiParameters([{ type: 'uint256[]' }], [nums]);
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      await expectAgreement(script, [[]], { [TOKA]: { kind: 'return', data } });
+    }
+  });
+
+  test('continue / break inside forEach and s.for: the step before continue still runs', async () => {
+    const script = evscript(
+      { name: 'ctlLoops', args: [t.array(t.uint256), t.uint256] },
+      (s, xs, n) => {
+        const kept = s.let(t.uint256, 0n);
+        const seen = s.let(t.uint256, 0n);
+        s.forEach(xs, (x, _i, loop) => {
+          seen.set(seen.get().add(1n));
+          s.if(x.mod(2n).eq(0n), () => loop.continue());
+          s.if(x.gt(100n), () => loop.break());
+          kept.set(kept.get().add(x));
+        });
+        const odd = s.let(t.uint256, 0n);
+        s.for({ from: 0n, until: n }, (i, loop) => {
+          s.if(i.mod(2n).eq(0n), () => loop.continue());
+          s.if(i.gt(20n), () => loop.break());
+          odd.set(odd.get().add(i));
+        });
+        return s.return({ kept: kept.get(), seen: seen.get(), odd: odd.get() });
+      },
+    );
+    await expectAgreement(script, [
+      [[], 0n],
+      [[1n, 2n, 3n, 4n, 5n], 7n],
+      [[2n, 4n, 101n, 7n], 30n],
+      [[1n, 103n, 5n], 1n],
+    ]);
+  });
+
+  test('the output-array pattern', async () => {
+    const script = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      s.for({ from: 0n, until: n }, (i) => out.set(i, i.mul(i)));
+      return s.return({ out: out.expr() });
+    });
+    await expectAgreement(script, [[0n], [1n], [6n]]);
+  });
+
+  test('an if(i < arr.length) guard on both sides of the bound; the else read still Panics 0x32', async () => {
+    const script = evscript(
+      { name: 'guarded', args: [t.array(t.uint256), t.uint256, t.bool] },
+      (s, xs, i, readElse) => {
+        const r = s.let(t.uint256, 0n);
+        s.if(
+          i.lt(xs.length()),
+          () => r.set(xs.at(i).add(1n)),
+          () => s.if(readElse, () => r.set(xs.at(i))),
+        );
+        return s.return({ r: r.get() });
+      },
+    );
+    const outcomes = await expectAgreement(script, [
+      [[7n, 8n, 9n], 0n, false],
+      [[7n, 8n, 9n], 2n, false],
+      [[7n, 8n, 9n], 3n, false],
+      [[7n, 8n, 9n], 3n, true],
+      [[], 0n, true],
+      [[7n], MAX256, true],
+    ]);
+    expect(outcomes.map((o) => o.kind)).toEqual([
+      'return',
+      'return',
+      'return',
+      'revert',
+      'revert',
+      'revert',
+    ]);
+    expect(outcomes[3]?.data).toBe(panicData(0x32n));
+  });
 });

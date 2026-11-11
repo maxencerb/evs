@@ -1208,8 +1208,8 @@ describe('gas of shared calls (in-process EVM)', () => {
         "uint64×1 + string": "inline 69",
         "uint64×3 + string": "inline 10",
         "uint64×4 + string": "enc -339",
-        "uint64×6 + string": "enc -998",
-        "uint64×7 + string": "enc+dec -1495",
+        "uint64×6 + string": "enc -999",
+        "uint64×7 + string": "enc+dec -1496",
         "uint64×9 + string": "enc+dec -2491",
       }
     `);
@@ -1283,8 +1283,8 @@ describe('gas of shared calls (in-process EVM)', () => {
     }
     expect(shares).toMatchInlineSnapshot(`
       {
-        "uint64×1 + string": "inline 45",
-        "uint64×3 + string": "dec -163",
+        "uint64×1 + string": "inline 46",
+        "uint64×3 + string": "dec -164",
         "uint64×4 + string": "enc+dec -1419",
         "uint64×6 + string": "enc+dec -2930",
       }

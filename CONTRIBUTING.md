@@ -298,7 +298,22 @@ Releases: see [Releasing](#releasing) below.
   (`[a, b]`, left on top); the commutative ones and the comparisons (flipping `LT` ↔ `GT`) load
   the left one first when the previous statement just stored it (`justStored` in
   `codegen/lower/context.ts`), so the peephole's store-then-reload rewrite fuses method chains.
-  `select` is branch-free (`b ^ ((a ^ b) · cond)`).
+  `select` is branch-free (`b ^ ((a ^ b) · cond)`). **Dominating guard facts**
+  (`codegen/lower/guards.ts`, #97, computed once per lowering into `LowerCtx.guards`) drop the
+  checks the IR's own structure proves: values are single-assignment and scoped, so under a
+  `while` body or an `if` then-block whose `cond` is defined by `bin lt x y`, `x < y` holds
+  (facts nest, never reach the while header, the else block, the code after, or an fn body).
+  R1: a checked `add` of such an `x` and a `const` 1 cannot overflow (`x < y ≤ max`), any
+  numeric type. R2: an array `index` / `arrset` at an unsigned `x` is in bounds when `y` is the
+  array's length (`len a=A`, or `A = arrnew length=y`; lengths are immutable in evs memory);
+  `string` / `bytes` `.byteAt` keeps its check. `s.for` / `s.forEach` record exactly these
+  shapes (the step adds to the header's counter snapshot, which the cell always equals at a
+  step), so their step overflow check and `s.forEach`'s element bounds check vanish in both
+  `optimize` modes. These are template selections on static facts, like the folded-divisor
+  elision; no IR marker records them, the interpreter keeps every check (it is the oracle), and
+  `codegen/sites.ts` reads the same sets (`checkedArithCanOverflow`, `ctx.guards.inBounds`), so
+  a proven site claims no Panic code and `sites.test.ts` holds the claims to the panic tails the
+  bytecode references.
 - **Wrapping arithmetic and `mulDiv`** are explicit per-operation opt-ins next to the checked
   ops, never a mode: `wrappingAdd` / `wrappingSub` / `wrappingMul` record their own `bin` ops
   (`wrapadd` / `wrapsub` / `wrapmul`: the bare opcode, plus a mask or `SIGNEXTEND` below 256
