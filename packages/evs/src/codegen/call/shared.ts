@@ -6,7 +6,7 @@
 
 import { layoutOfType } from '../../abi/layout.js';
 import type { LabelId, AsmWriter } from '../../asm/assembler.js';
-import { HEX_BYTES_RE, hexToBytes, bytesToBigInt } from '../../core/bytes.js';
+import { HEX_BYTES_RE, hexToBytes, bytesToBigInt, padWordAligned } from '../../core/bytes.js';
 import { EvsInternalError } from '../../core/errors.js';
 import {
   abiParamToType,
@@ -75,10 +75,12 @@ export function literalWordValue(data: ConstData, what: string): bigint {
 export function literalDataBytes(data: ConstData, what: string): Uint8Array {
   if (data.kind !== 'data') throw internal(`${what}: expected a data literal, got '${data.kind}'`);
   const bytes = literalBytes(data.hex, what);
-  if (bytes.length < 32 || bytes.length % 32 !== 0) {
-    throw internal(`${what}: data literal must be a padded [len][payload…] image`);
+  if (bytes.length < 32) {
+    throw internal(`${what}: data literal must start with a 32-byte length word`);
   }
-  return bytes;
+  // hand-written / deserialized IR may stop the payload short of the word boundary (validateIr
+  // guarantees any bytes past `len` are zero): pad it, as `lowerConst` does
+  return padWordAligned(bytes);
 }
 
 /**

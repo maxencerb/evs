@@ -1213,6 +1213,12 @@ class IrValidator {
         `${what}: bytes/string memref payload is ${payload} bytes for declared length ${len} (expected between ${len} and ${padded})`,
       );
     }
+    // the padding after the declared length must be zero (a call arg copies the image verbatim)
+    if (!/^0*$/.test(data.hex.slice(66 + 2 * Number(len)))) {
+      this.fail(
+        `${what}: bytes/string memref padding after the declared length ${len} must be zero`,
+      );
+    }
   }
 }
 
