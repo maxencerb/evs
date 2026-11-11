@@ -21,7 +21,10 @@
  *
  * Invariants (machine-checked by `asm/verify.ts` on every assemble):
  * - every statement template is net-zero on the operand stack; the stack is empty at every
- *   statement boundary;
+ *   statement boundary. Under `optimize` the store–reload fusion pass (`codegen/fuse.ts`, run by
+ *   `lowerProgram` after lowering) lets one single-use value cross the boundary between two
+ *   adjacent statements on the stack, never across a label: the stack is still empty at every
+ *   label, which is what the verifier checks;
  * - simulated depth stays ≤ 16 inside templates;
  * - panic exits jump to the shared `'any'` tails (`SharedTails`), never revert inline.
  *
@@ -29,7 +32,8 @@
  * first, then the left — the left operand sits on top, so `SUB`/`DIV`/`LT`/… compute
  * `op(a, b)` directly. Templates that accept either order (add, mul, eq/neq, the bool and
  * bitwise ops, and the comparisons, which flip LT ↔ GT) load the left operand first when the
- * previous statement just stored it, so the optimizer can fuse that store and reload. Folded
+ * previous statement just stored it, so the optimizer can fuse that store and reload (`storeOut`
+ * and `loadOperand` register their nodes for the fusion pass when `optimize` is on). Folded
  * word constants (`FrameLayout.slotOfValue === null`) load as PUSH immediates; everything else
  * as `PUSH slot MLOAD`.
  *
@@ -55,7 +59,7 @@ export {
   typeOf,
   walkEmittedStmts,
 } from './lower/context.js';
-export type { LowerCtx } from './lower/context.js';
+export type { FusionLog, LowerCtx } from './lower/context.js';
 export { guardFacts } from './lower/guards.js';
 export type { GuardFacts } from './lower/guards.js';
 export { checkedArithCanOverflow } from './lower/arith.js';

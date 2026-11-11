@@ -138,22 +138,32 @@ Releases: see [Releasing](#releasing) below.
   EIP-170 size check (through the `onLayout` hook `compile()` passes, before any fixup is
   patched, so a program past `PUSH2`'s 16-bit reach still gets `COMPILE_LIMIT`), resolves jumps
   (`PUSH2` fixups), and mandatory verifiers run on the output before it is handed to you: a `JUMPDEST`
-  scan, a stack-height simulation (the operand stack must be empty at every statement
-  boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
+  scan, a stack-height simulation (the operand stack must be empty at every label, which the
+  net-zero statement templates guarantee at every statement boundary), and opcode/fork lints. The artifact's `ir` stays the recorded IR;
   the differential suite checks the recorded IR (`interpret(ir, …, { dce: false })`),
   `interpret(ir)` (= `dce(ir)`, cached per frozen IR) and the bytecode agree, except for the
   tripping arg sets of the `differential/dead-revert-guards` slice (the harness's
   `deadRevertGuards` indices), where the dead statement is the one that reverts and only the
   last two must agree.
-  An opt-in optimizer (`compile(script, { optimize: true })`) adds two passes: a liveness-based
-  frame allocator in codegen (a value takes over the slot of a dead one — args, cells and fn
-  params stay dedicated, fn frames stay separate, a value crossing a loop boundary stays live
-  for the whole loop) and a peephole pass between codegen and assembly (exported as
-  `evsPeephole`) that folds store-then-reload slot pairs, constants and stack identities, never
-  crosses a `JUMPDEST` and never touches a label or jump target. Both outputs go through the same
-  verifiers. It is off by default so the default bytes stay the plain lowering. The allocator
+  An opt-in optimizer (`compile(script, { optimize: true })`) adds three passes: a
+  liveness-based frame allocator in codegen (a value takes over the slot of a dead one — args,
+  cells and fn params stay dedicated, fn frames stay separate, a value crossing a loop boundary
+  stays live for the whole loop), store–reload fusion (`codegen/fuse.ts`, #96, the last step of
+  `lowerProgram`) and a peephole pass between codegen and assembly (exported as `evsPeephole`)
+  that folds store-then-reload slot pairs, constants and stack identities, never crosses a
+  `JUMPDEST` and never touches a label or jump target. Fusion has the use information the
+  peephole lacks: under `optimize` the layout sits behind a counting gateway (`slotOfValue` is
+  the only way code learns a slot, so every access is a query), `storeOut` / `loadOperand`
+  register their `PUSH s` nodes, and a value queried exactly twice — its one store and its one
+  reload — whose reload follows the store across at most leftover `POP`s, one other operand load
+  and a `div` / `mod` zero guard to an `'any'` tail, stays on the stack (`SWAP`s fix the order).
+  The templates stay net-zero; only such a value crosses a statement boundary, never a label,
+  and a count can only over-state uses (speculative emission, the site table), which loses a
+  fusion and never a store a reader needs. All outputs go through the same verifiers. It is off by default so the default bytes stay the plain lowering. The allocator
   (`codegen/frame.ts`) walks the `if`/`while` region tree and scans with two heaps; a seeded
-  test in `frame.test.ts` holds it slot for slot to a naive reference model of the same rules.
+  test in `frame.test.ts` holds it slot for slot to a naive reference model of the same rules;
+  `differential/fusion-random.test.ts` holds generated scripts in both modes to the interpreter,
+  and `differential/fusion.test.ts` checks that every fusion window form fires.
 - **Adding a statement kind or an op.** The IR-side switches over `Stmt['k']`, `BinOp`, `UnOp`,
   `ModArithOp` and `EnvOp` end in a `default` that assigns the subject to `never`
   (`ir/nodes/walk.ts`, `ir/nodes/json.ts`, `ir/validate.ts`, `ir/interp/`, and `ir/dce.ts`'s

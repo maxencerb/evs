@@ -2,7 +2,8 @@
  * `codegen/peephole.ts` — the built-in peephole optimizer behind `compile({ optimize: true })`.
  *
  * A conservative, purely local rewrite pass over the `AsmNode` stream. It runs at the
- * `peephole` hook position — after lowering, BEFORE layout — so the mandatory verifiers in
+ * `peephole` hook position — after lowering (and its store–reload fusion pass, `fuse.ts`, which
+ * has the use information this pass lacks), BEFORE layout — so the mandatory verifiers in
  * `asm/verify.ts` (JUMPDEST scan, stack-height simulation, shape lints) and the EIP-170 check
  * always validate its output. Every rewrite below is provably semantics-preserving on its own:
  * same memory effects, same stack effect, same result words, same halting behavior.
@@ -14,9 +15,10 @@
  *   4. identities          `SWAPn SWAPn`, `DUPn POP`, `PUSH x POP`, `PUSH 0 ADD`, … → nothing
  *
  * Guard rails:
- * - A pattern element is only ever an `op` or a `push` node, so `label` (JUMPDEST),
- *   `dataLabel`, `data` and `pushLabel` nodes are barriers: no window spans a label boundary and
- *   no node carrying a label or jump target is ever rewritten.
+ * - A pattern element is an `op` or a `push` node, except that one identity of rewrite 4 ends
+ *   its window with `pushLabel JUMPI` and keeps both nodes by reference; `label` (JUMPDEST),
+ *   `dataLabel` and `data` nodes are barriers: no window spans a label boundary and no node
+ *   carrying a label or jump target is ever rewritten.
  * - The three nodes before every `RETURNDATACOPY` (the sanctioned `[RETURNDATASIZE, PUSH0,
  *   (PUSH0|DUPn)]` window of `verifyShapes`, `SANCTIONED_RETURNDATACOPY_WINDOW`) are protected
  *   from rewriting.
@@ -282,11 +284,16 @@ function pushWidth(value: bigint, role: 'in' | 'out'): number {
  *   NOT NOT              → ∅   involution
  *   ISZERO ISZERO ISZERO → ISZERO   (ISZERO∘ISZERO is the bool canonicalization, an idempotent
  *                                    map; three applications equal one)
+ *   ISZERO ISZERO pushLabel JUMPI → pushLabel JUMPI   (JUMPI branches on non-zero, and
+ *                                    iszero(iszero(x)) ≠ 0 ⇔ x ≠ 0; the jump nodes are kept by
+ *                                    reference)
+ *   <cmp> ISZERO ISZERO  → <cmp>   for LT / GT / SLT / SGT / EQ: a comparison yields 0 or 1,
+ *                                    where ISZERO∘ISZERO is the identity
  *   x PUSH 0 MUL|AND     → POP PUSH 0   x·0 = x&0 = 0 for every x (same node count, cheaper)
  *
  * Deliberately NOT folded — the immediate is μs[0], the FIRST operand of every non-commutative
- * op: `PUSH 0 SUB` (0 − x), `PUSH 1 DIV` (1 / x), `PUSH 1 EXP` (1ˣ); and anything with
- * `pushLabel`.
+ * op: `PUSH 0 SUB` (0 − x), `PUSH 1 DIV` (1 / x), `PUSH 1 EXP` (1ˣ); and any rewrite of a
+ * `pushLabel` itself.
  */
 function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
   const a = nodes[i];
@@ -298,6 +305,15 @@ function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
     if (isDupOp(a.op) && b.op === 'POP') return drop(2);
     if (a.op === 'NOT' && b.op === 'NOT') return drop(2);
     if (a.op === 'ISZERO' && b.op === 'ISZERO' && isOp(nodes[i + 2], 'ISZERO')) {
+      return { len: 3, out: [a], outPeak: null };
+    }
+    const c = nodes[i + 2];
+    const d = nodes[i + 3];
+    if (a.op === 'ISZERO' && b.op === 'ISZERO' && c?.k === 'pushLabel' && isOp(d, 'JUMPI')) {
+      // the jump nodes survive by reference; only the two ISZEROs go
+      return { len: 4, out: [c, d], outPeak: null };
+    }
+    if (BOOLEAN_OPS.has(a.op) && b.op === 'ISZERO' && isOp(c, 'ISZERO')) {
       return { len: 3, out: [a], outPeak: null };
     }
     return null;
@@ -326,6 +342,9 @@ function matchIdentity(nodes: readonly AsmNode[], i: number): Match | null {
   }
   return null;
 }
+
+/** Comparisons: each yields exactly 0 or 1. */
+const BOOLEAN_OPS: ReadonlySet<Mnemonic> = new Set<Mnemonic>(['LT', 'GT', 'SLT', 'SGT', 'EQ']);
 
 function drop(len: number): Match {
   return { len, out: [], outPeak: null };

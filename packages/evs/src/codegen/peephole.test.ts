@@ -127,12 +127,14 @@ describe('rewrite 1 — PUSH s MSTORE PUSH s MLOAD → DUP1 PUSH s MSTORE', () =
 
   test('fuses every link of a method chain (the lowering reloads a just-stored operand first)', async () => {
     // each op takes the previous result as its LEFT operand; the lowering loads that operand
-    // first, so every intermediate store is immediately reloaded and becomes a DUP1
+    // first, so every intermediate store is immediately reloaded and becomes a DUP1. The default
+    // lowering: under `optimize` the store–reload fusion pass (`fuse.ts`) removes these
+    // single-use round trips before the peephole runs
     const script = evscript({ name: 'chain', args: [t.uint256, t.uint256] }, (s, x, y) => {
       const r = x.add(y).mul(y).bitXor(x).bitOr(y).lt(y);
       return s.return({ r });
     });
-    const lowered = lowerProgram(script.ir, { evmVersion: 'cancun', optimize: true }).nodes;
+    const lowered = lowerProgram(script.ir, { evmVersion: 'cancun' }).nodes;
     const out = evsPeephole(lowered);
     // the add, mul, bitXor and bitOr results each feed the next op as its left operand
     expect(storeReloads(lowered, 'unfused')).toBeGreaterThanOrEqual(4);
@@ -467,6 +469,92 @@ describe('rewrite 4 — identities', () => {
     w.op('STOP');
     expect(evsPeephole(w.nodes())).toEqual(w.nodes());
     expect(() => assemble(w.nodes(), { evmVersion: 'cancun' })).not.toThrow();
+  });
+});
+
+describe('rewrite 4 — boolean identities the store–reload fusion exposes (#96)', () => {
+  /** `x ISZERO ISZERO pushLabel(@t) JUMPI` → returns 1 when taken, 0 on the fallthrough. */
+  function branchProgram(x: AsmNode): { nodes: AsmNode[]; jump: AsmNode[] } {
+    const w = new AsmWriter();
+    const taken = w.newLabel('taken');
+    w.op(x.k === 'op' ? x.op : 'CALLER');
+    w.op('ISZERO');
+    w.op('ISZERO');
+    w.pushLabel(taken);
+    w.op('JUMPI');
+    w.push(0n);
+    w.push(0n);
+    w.op('MSTORE');
+    w.push(32n);
+    w.push(0n);
+    w.op('RETURN');
+    w.label(taken, 0);
+    w.push(1n);
+    w.push(0n);
+    w.op('MSTORE');
+    w.push(32n);
+    w.push(0n);
+    w.op('RETURN');
+    const nodes = [...w.nodes()];
+    return { nodes, jump: nodes.slice(3, 5) };
+  }
+
+  test.each([
+    ['CALLER', 1n],
+    ['CALLVALUE', 0n],
+  ] as const)('ISZERO ISZERO pushLabel JUMPI → pushLabel JUMPI (%s)', async (x, expected) => {
+    const { nodes, jump } = branchProgram(op(x));
+    const out = evsPeephole(nodes);
+    expect(out.slice(0, 3)).toEqual([op(x), ...jump]);
+    // the jump nodes survive by reference
+    expect(out[1]).toBe(jump[0]);
+    expect(out[2]).toBe(jump[1]);
+    const [before, after] = await Promise.all([run(nodes), run(out)]);
+    expect(after).toBe(before);
+    expect(after).toBe(word(expected));
+  });
+
+  const cmps: readonly Mnemonic[] = ['LT', 'GT', 'SLT', 'SGT', 'EQ'];
+  for (const cmp of cmps) {
+    for (const [a, b] of [
+      ['CALLER', 'CALLVALUE'],
+      ['CALLVALUE', 'CALLER'],
+      ['CALLER', 'CALLER'],
+    ] as const) {
+      test(`${cmp} ISZERO ISZERO → ${cmp} (${a}, ${b})`, async () => {
+        const data = await expectRewrite(
+          [op(a), op(b), op(cmp), op('ISZERO'), op('ISZERO'), ...RETURN_TOP],
+          [op(a), op(b), op(cmp), ...RETURN_TOP],
+        );
+        expect([word(0n), word(1n)]).toContain(data);
+      });
+    }
+  }
+
+  test('negatives: ISZERO ISZERO before anything but pushLabel JUMPI, or after a non-boolean op', () => {
+    const w = new AsmWriter();
+    const l = w.newLabel('l');
+    w.op('CALLER');
+    w.op('ISZERO');
+    w.op('ISZERO'); // feeds an MSTORE: canonicalizes CALLER to 1
+    w.push(0n);
+    w.op('MSTORE');
+    w.op('CALLER');
+    w.op('CALLVALUE');
+    w.op('ADD');
+    w.op('ISZERO');
+    w.op('ISZERO'); // ADD yields any word
+    w.op('CALLER');
+    w.op('AND');
+    w.op('ISZERO');
+    w.op('ISZERO'); // AND too
+    w.pushLabel(l);
+    w.op('JUMP'); // an unconditional jump: the ISZEROs feed nothing the jump reads
+    w.label(l, 1);
+    w.push(32n);
+    w.push(0n);
+    w.op('RETURN');
+    expect(evsPeephole(w.nodes())).toEqual(w.nodes());
   });
 });
 
