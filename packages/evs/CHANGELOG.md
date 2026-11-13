@@ -1,5 +1,15 @@
 # @maxencerb/evs
 
+## 0.5.0
+
+### Minor Changes
+
+- [#166](https://github.com/maxencerb/evs/pull/166) [`81a3ebe`](https://github.com/maxencerb/evs/commit/81a3ebefef84b842b02cd791f522998b05aa9c98) Thanks [@maxencerb](https://github.com/maxencerb)! - Add precompiled scripts and the compiler-free `@maxencerb/evs/runtime` entry, so an app can compile its scripts at build time and ship only their bytecode. `compiled.toPrecompiled()` narrows a compiled script to its ABI, its runtime bytecode and `toViem()`; `JSON.stringify` turns that into plain data, and `hydrate(data)` from `@maxencerb/evs/runtime` rebuilds it in the client without loading the compiler. A precompiled script's `explainRevert()` is asynchronous and loads its debug data on the first call. The runtime entry also exports `decodeScriptError`, `matchScriptError` and the deployless helpers. The `toViem()` overloads are now the exported `ToViem<abi>` type.
+
+### Patch Changes
+
+- [#166](https://github.com/maxencerb/evs/pull/166) [`81a3ebe`](https://github.com/maxencerb/evs/commit/81a3ebefef84b842b02cd791f522998b05aa9c98) Thanks [@maxencerb](https://github.com/maxencerb)! - The published `.d.ts` files no longer end with a `sourceMappingURL` comment that names a declaration map the package does not ship.
+
 ## 0.4.1
 
 ### Patch Changes
