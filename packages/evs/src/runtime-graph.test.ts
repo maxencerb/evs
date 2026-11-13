@@ -170,6 +170,12 @@ describe('@maxencerb/evs/runtime is compiler-free', () => {
     ).toEqual([]);
   });
 
+  // the compiler imports the explain code statically (the artifact's explainRevert is
+  // synchronous): a dynamic import of it next to that would never split, and bundlers say so
+  test('the main entry has no dynamic import', () => {
+    expect(lazyRootsOf('index.ts')).toEqual([]);
+  });
+
   test.each(lazyRootsOf('runtime.ts'))(
     'what loads on demand reaches no compiler module either: %s',
     (root) => {

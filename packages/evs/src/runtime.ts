@@ -9,7 +9,8 @@
  */
 
 // precompiled scripts
-export { hydrate, isPrecompiledScript } from './precompiled.js';
+export { hydrate } from './hydrate.js';
+export { isPrecompiledScript } from './precompiled.js';
 export type {
   PrecompiledScript,
   PrecompiledScriptData,

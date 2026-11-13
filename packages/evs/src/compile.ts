@@ -43,7 +43,7 @@ import { explainRevert, type RevertExplanation } from './explain.js';
 import { eliminateDeadCode } from './ir/dce.js';
 import type { ScriptIr } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
-import { hydrate, type PrecompiledScript } from './precompiled.js';
+import { createPrecompiledScript, type PrecompiledScript } from './precompiled.js';
 import { assertEvmVersion, createToViem, toCreationBytecode, type ToViem } from './viem.js';
 
 export type { RevertExplanation } from './explain.js';
@@ -204,11 +204,15 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     disassemble: (): Disassembly => disassemble(assembled.bytecode, sourceMap),
     explainRevert: (data: Hex): RevertExplanation =>
       explainRevert(data, { ir, sites, abi, runtimeBytecode, evmVersion }),
-    // the debug data is already in memory here; a hydrated script loads the same object on demand
+    // the debug data and the explain code are already in memory here; a hydrated script loads
+    // both on demand
     toPrecompiled: () =>
-      hydrate(
+      createPrecompiledScript(
         { version: 1, abi, runtimeBytecode, evmVersion },
-        { debug: () => Promise.resolve({ version: 1, ir, sites }) },
+        {
+          debug: () => Promise.resolve({ version: 1, ir, sites }),
+          explain: () => Promise.resolve(explainRevert),
+        },
       ),
   };
   return Object.freeze(artifact);

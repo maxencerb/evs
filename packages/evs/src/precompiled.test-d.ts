@@ -12,8 +12,8 @@ import { evscript } from './builder/script.js';
 import { compile } from './compile.js';
 import { namedArg, t, type Hex } from './core/types.js';
 import type { RevertExplanation } from './explain.js';
+import { hydrate } from './hydrate.js';
 import {
-  hydrate,
   isPrecompiledScript,
   type PrecompiledScript,
   type PrecompiledScriptData,

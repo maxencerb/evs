@@ -15,9 +15,9 @@ import { evscript } from './builder/script.js';
 import { compile, type CompiledEvsScript, type CompileOptions } from './compile.js';
 import { EvsCompileError, EvsError, EvsTypeError } from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
+import { hydrate } from './hydrate.js';
 import { serializeIr } from './ir/nodes.js';
 import {
-  hydrate,
   isPrecompiledScript,
   type PrecompiledScript,
   type PrecompiledScriptData,
