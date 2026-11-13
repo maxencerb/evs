@@ -1,0 +1,238 @@
+---
+title: Expr
+description: The typed handle for a value that only exists inside the eth_call. It is an immutable snapshot, and reusing it never re-executes what produced it.
+---
+
+An `Expr<type>` is the typed handle for a value that only exists inside the `eth_call`. It is an
+immutable snapshot: every method returns a new handle, and reusing one never re-executes what
+produced it.
+
+## Usage
+
+```ts {19-20}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const share = evscript(
+  { name: 'share', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const balance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    const supply = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'totalSupply',
+    });
+
+    const bps = balance.mul(10_000n).div(supply); // Expr<'uint256'>
+    const isHolder = balance.gt(0n); // Expr<'bool'>
+
+    return s.return({ bps, isHolder });
+  },
+);
+```
+
+`balance` is used twice and `balanceOf` is called once.
+
+You get an `Expr` from a script argument, from [`s.lit`](/reference/builder/lit/), from a call
+such as [`s.read`](/reference/builder/read/), or from any method below. You never construct one.
+
+:::caution[An Expr is not a JavaScript value]
+`x + 1n`, `x > y`, a template string and `JSON.stringify(x)` throw `EvsStagingError`. `if (x)`
+and `x === y` cannot throw: they test the handle object, which is always truthy, not its value.
+Use the methods below and [`s.if`](/reference/builder/if/).
+:::
+
+## Literals
+
+Wherever a parameter is typed `IntoExpr<t>`, you can pass an `Expr<t>` or a plain JS value (a
+`LitOf<t>`). The value takes the type of the `Expr` it meets and is validated at build time.
+
+```ts {11-13}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+const check = evscript(
+  { name: 'check', args: [t.address, t.uint256] },
+  (s, token, amount) => {
+    const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+
+    const isWeth = token.eq(WETH); // 0x string → address
+    const named = symbol.eq('WETH'); // string → string
+    const fee = amount.mul(30).div(10_000n); // number and bigint → uint256
+
+    return s.return({ isWeth, named, fee });
+  },
+);
+```
+
+| Type | JS value | Rule |
+| --- | --- | --- |
+| `uintN`, `intN` | `bigint` or `number` | in range for N; a `number` must be a safe integer |
+| `bool` | `boolean` | |
+| `address` | `0x` string | exactly 20 bytes; the checksum is not enforced |
+| `bytesN` | `0x` string | exactly N bytes |
+| `bytes` | `0x` string | any even-length hex |
+| `string` | `string` | encoded as UTF-8 |
+| `T[]` | array | each element is a literal or an `Expr` of `T` |
+| `T[N]` | array | exactly N elements |
+| struct | object keyed by member name | each member follows its own type's rule |
+| tuple with an unnamed member | array, in member order | each member follows its own type's rule |
+
+With no `Expr` to take a type from, name the type with [`s.lit`](/reference/builder/lit/):
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const scale = evscript({ name: 'scale', args: [t.uint8] }, (s, decimals) => {
+  const unit = s.lit(t.uint256, 10n).pow(decimals); // 10n alone has no type
+  return s.return({ unit });
+});
+```
+
+## Properties
+
+### type
+
+- **Type:** `t`
+
+The value's type, readable at build time. It is the only member that is not a method.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint128] }, (s, amount) => {
+  const kind = amount.type; // 'uint128'
+  return s.return({ amount });
+});
+```
+
+## Methods
+
+Each method is typed for the receivers its family lists: `add` on an `Expr<'address'>` is a
+TypeScript error.
+
+### Arithmetic
+
+[Checked math](/reference/expr/arithmetic/) on `uintN` and `intN`. Overflow reverts.
+
+| Method | Description |
+| --- | --- |
+| [`add`](/reference/expr/arithmetic/#add) | `a + b` |
+| [`sub`](/reference/expr/arithmetic/#sub) | `a - b` |
+| [`mul`](/reference/expr/arithmetic/#mul) | `a * b` |
+| [`div`](/reference/expr/arithmetic/#div) | `a / b` |
+| [`mod`](/reference/expr/arithmetic/#mod) | `a % b` |
+| [`pow`](/reference/expr/arithmetic/#pow) | `a ** n` |
+
+### Wrapping math
+
+[Wrap-around math](/reference/expr/wrapping/) on `uintN` and `intN`. Never reverts.
+
+| Method | Description |
+| --- | --- |
+| [`wrappingAdd`](/reference/expr/wrapping/#wrappingadd) | `a + b` modulo 2^N |
+| [`wrappingSub`](/reference/expr/wrapping/#wrappingsub) | `a - b` modulo 2^N |
+| [`wrappingMul`](/reference/expr/wrapping/#wrappingmul) | `a * b` modulo 2^N |
+
+### Full-precision math
+
+[Math on `uint256`](/reference/expr/full-precision/) whose intermediate result never overflows.
+
+| Method | Description |
+| --- | --- |
+| [`mulDiv`](/reference/expr/full-precision/#muldiv) | `a * b / d`, rounded down |
+| [`mulDivRoundingUp`](/reference/expr/full-precision/#muldivroundingup) | `a * b / d`, rounded up |
+| [`addmod`](/reference/expr/full-precision/#addmod) | `(a + b) % n` |
+| [`mulmod`](/reference/expr/full-precision/#mulmod) | `(a * b) % n` |
+
+### Comparison
+
+[Comparisons](/reference/expr/comparison/) return an `Expr<'bool'>`. Ordering is for `uintN`,
+`intN`, `address` and `bytesN`; equality is for every type.
+
+| Method | Description |
+| --- | --- |
+| [`lt`](/reference/expr/comparison/#lt) | `a < b` |
+| [`gt`](/reference/expr/comparison/#gt) | `a > b` |
+| [`lte`](/reference/expr/comparison/#lte) | `a <= b` |
+| [`gte`](/reference/expr/comparison/#gte) | `a >= b` |
+| [`eq`](/reference/expr/comparison/#eq) | `a == b` |
+| [`neq`](/reference/expr/comparison/#neq) | `a != b` |
+
+### Logic
+
+[Boolean logic](/reference/expr/logic/) on `bool`. Both sides are always evaluated.
+
+| Method | Description |
+| --- | --- |
+| [`and`](/reference/expr/logic/#and) | true when both sides are true |
+| [`or`](/reference/expr/logic/#or) | true when either side is true |
+| [`not`](/reference/expr/logic/#not) | the opposite value |
+
+### Bitwise
+
+[Bit operations](/reference/expr/bitwise/) on `uintN` and `bytesN`. Shifts also take `intN`.
+
+| Method | Description |
+| --- | --- |
+| [`bitAnd`](/reference/expr/bitwise/#bitand) | bitwise AND |
+| [`bitOr`](/reference/expr/bitwise/#bitor) | bitwise OR |
+| [`bitXor`](/reference/expr/bitwise/#bitxor) | bitwise XOR |
+| [`bitNot`](/reference/expr/bitwise/#bitnot) | bitwise NOT |
+| [`shl`](/reference/expr/bitwise/#shl) | shift left |
+| [`shr`](/reference/expr/bitwise/#shr) | shift right |
+
+### Conversions
+
+[Conversions](/reference/expr/conversions/) are always explicit.
+
+| Method | From | To |
+| --- | --- | --- |
+| [`toUint`](/reference/expr/conversions/#touint) | `uintN`, `intN` | any `uintM`, range-checked |
+| [`toInt`](/reference/expr/conversions/#toint) | `uintN`, `intN` | any `intM`, range-checked |
+| [`wrappingToUint`](/reference/expr/conversions/#wrappingtouint) | `uintN`, `intN` | any `uintM`, low bits kept |
+| [`wrappingToInt`](/reference/expr/conversions/#wrappingtoint) | `uintN`, `intN` | any `intM`, low bits kept |
+| [`asAddress`](/reference/expr/conversions/#asaddress) | `uint160`, `uint256`, `bytes32` | `address` |
+| [`asUint160`](/reference/expr/conversions/#asuint160) | `address` | `uint160` |
+| [`asUint256`](/reference/expr/conversions/#asuint256) | `bytes32` | `uint256` |
+| [`asBytes32`](/reference/expr/conversions/#asbytes32) | `uint256` | `bytes32` |
+| [`asUint`](/reference/expr/conversions/#asuint) | `bytesN`, `intN` | the `uintN` of the same width |
+| [`asBytesN`](/reference/expr/conversions/#asbytesn) | `uintN` | the `bytesN` of the same width |
+| [`asInt`](/reference/expr/conversions/#asint) | `uintN` | the `intN` of the same width |
+| [`asBytes`](/reference/expr/conversions/#asbytes) | `string` | `bytes` |
+| [`asString`](/reference/expr/conversions/#asstring) | `bytes`, `bytesN` | `string` |
+
+### Bytes & arrays
+
+[Reads](/reference/expr/bytes-and-arrays/) on `string`, `bytes` and arrays. Bounds-checked.
+
+| Method | On | Description |
+| --- | --- | --- |
+| [`length`](/reference/expr/bytes-and-arrays/#length) | `string`, `bytes`, arrays | byte or element count |
+| [`at`](/reference/expr/bytes-and-arrays/#at) | arrays | the element at an index |
+| [`byteAt`](/reference/expr/bytes-and-arrays/#byteat) | `string`, `bytes` | the byte at an index |
+| [`slice`](/reference/expr/bytes-and-arrays/#slice) | `string`, `bytes` | a copy of a byte range |
+
+## Errors
+
+Thrown at build time, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsStagingError` (`STAGING_MISUSE`) | a handle is used as a JS value: `x + 1n`, a template string, `JSON.stringify(x)` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal is out of range, not a safe integer, or hex of the wrong length |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a literal is the wrong kind of JS value, or a `T[N]` literal has not N elements |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an operand is a `Cell`, a `Tuple` or a `MutArray`: pass its `.get()` or `.expr()` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a method is passed on without its handle (`values.map(x.add)`): wrap it in an arrow |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | a handle is used after the block that created it: carry the value out with [`s.let`](/reference/builder/let/) |
+| `EvsScopeError` (`FOREIGN_HANDLE`) | a handle is used in another script |
+| `EvsScopeError` (`RECORDING_CLOSED`) | a handle is used after the script's `s.return` ran |
+
+Every code is listed in [diagnostics](/reference/diagnostics/#error-codes).

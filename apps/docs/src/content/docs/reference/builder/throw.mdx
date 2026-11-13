@@ -1,0 +1,189 @@
+---
+title: s.throw
+description: Reverts the script with a custom error declared on it, encoded like a Solidity revert.
+---
+
+Reverts the script with a custom error declared on it. The revert data is encoded like
+Solidity's `revert TooSmall(x)`.
+
+## Usage
+
+```ts {3,6,9}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const atLeastTen = evscript(
+  { name: 'atLeastTen', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(TooSmall, { value: x });
+    });
+    return s.return({ x });
+  },
+);
+```
+
+1. Declare the error with [`t.error`](/reference/types/error/).
+2. List it in the `errors` of [`evscript`](/reference/evscript/).
+3. Throw it, usually inside an [`s.if`](/reference/builder/if/).
+
+### Named arguments
+
+When every parameter of the error is named, pass one record. Every key is required.
+
+```ts {4-5,13}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const Insufficient = t.error('Insufficient', [
+  namedArg('owner', t.address),
+  namedArg('balance', t.uint256),
+]);
+
+const requireBalance = evscript(
+  { name: 'requireBalance', args: [t.address, t.uint256], errors: [Insufficient] },
+  (s, owner, min) => {
+    const balance = s.balance(owner);
+    s.if(balance.lt(min), () => {
+      s.throw(Insufficient, { owner, balance });
+    });
+    return s.return({ balance });
+  },
+);
+```
+
+### Positional arguments
+
+When a parameter is unnamed, pass one array, in the order of the declaration.
+
+```ts {3,10}
+import { evscript, t } from '@maxencerb/evs';
+
+const Insufficient = t.error('Insufficient', [t.address, t.uint256]);
+
+const requireBalance = evscript(
+  { name: 'requireBalance', args: [t.address, t.uint256], errors: [Insufficient] },
+  (s, owner, min) => {
+    const balance = s.balance(owner);
+    s.if(balance.lt(min), () => {
+      s.throw(Insufficient, [owner, balance]);
+    });
+    return s.return({ balance });
+  },
+);
+```
+
+### No arguments
+
+An error without parameters is thrown alone.
+
+```ts {3,10}
+import { evscript, t } from '@maxencerb/evs';
+
+const NotAContract = t.error('NotAContract');
+
+const requireContract = evscript(
+  { name: 'requireContract', args: [t.address], errors: [NotAContract] },
+  (s, target) => {
+    const size = s.codeSize(target);
+    s.if(size.eq(0n), () => {
+      s.throw(NotAContract);
+    });
+    return s.return({ size });
+  },
+);
+```
+
+## Returns
+
+`void`
+
+At run time the script stops at the throw and the whole call reverts.
+
+## Parameters
+
+### error
+
+- **Type:** `EvsErrorType`, one of the errors the script declares
+
+A value made by [`t.error`](/reference/types/error/) and listed in the script's `errors`. Any
+other error is a type error.
+
+```ts {10}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const atLeastTen = evscript(
+  { name: 'atLeastTen', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(
+        TooSmall,
+        { value: x },
+      );
+    });
+    return s.return({ x });
+  },
+);
+```
+
+### args (optional)
+
+- **Type:** a record, an array or nothing, depending on the error
+
+The arguments of the error. Each value is an `Expr`, a handle or a literal of the parameter's
+type.
+
+| The error declares | `args` |
+| --- | --- |
+| named parameters only | one record, every key required |
+| at least one unnamed parameter | one array, in the order of the declaration |
+| no parameter | nothing |
+
+```ts {11}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const atLeastTen = evscript(
+  { name: 'atLeastTen', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(
+        TooSmall,
+        { value: x },
+      );
+    });
+    return s.return({ x });
+  },
+);
+```
+
+## Behavior
+
+- **Solidity encoding.** The revert data is the 4-byte selector of the error, then its
+  ABI-encoded arguments.
+- **Decoded by viem.** Declared errors are in the script's ABI. Handle them with
+  [`matchScriptError`](/reference/utilities/match-script-error/).
+- **Declared errors only.** An error missing from `errors` is a type error, and
+  `ERROR_UNDECLARED` while building.
+- **Usually conditional.** After an unconditional `s.throw`, the rest of the block never runs.
+- **Any block.** A branch, a loop body or an [`s.fn`](/reference/builder/fn/) body can throw
+  any declared error.
+- **No default.** Every argument is required. Nothing is filled with zero.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ERROR_UNDECLARED`) | the error is not in the script's `errors` |
+| `EvsTypeError` (`ERROR_UNDECLARED`) | an error of that name is declared with other parameters |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `error` is not a `t.error` value |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `args` is a record where an array is expected, or the reverse |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a key is missing or unknown, or the array has the wrong length |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `args` is given for an error without parameters |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an argument is not of its parameter's type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal argument does not fit its parameter's type |

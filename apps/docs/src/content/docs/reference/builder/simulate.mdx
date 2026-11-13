@@ -1,0 +1,338 @@
+---
+title: s.simulate
+description: Dry-runs a nonpayable or payable function on another contract, returns its decoded result, and rolls its state changes back.
+---
+
+Dry-runs a `nonpayable` or `payable` function on another contract, returns its decoded result,
+and rolls its state changes back.
+
+[Calling contracts](/guides/calls/) compares `s.simulate` with `s.read` and `s.call`.
+
+## Usage
+
+```ts {7-12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const previewDeposit = evscript(
+  { name: 'previewDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const shares = s.simulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+    });
+    return s.return({ shares }); // Expr<'uint256'>: the shares a deposit would mint
+  },
+);
+```
+
+:::tip[Run it as the account that would send the transaction]
+A write usually depends on its caller's balances and allowances, and here the caller is the
+script. Sender mode runs the script at an address you choose: see
+[executing scripts](/guides/execution/).
+:::
+
+### What later calls see
+
+The write is undone before the next statement runs, so later calls see the state from before.
+
+```ts {7-12,19}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const approved = evscript(
+  { name: 'approved', args: [t.address, t.address] },
+  (s, token, spender) => {
+    const ok = s.simulate({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [spender, 100n],
+    });
+    const allowance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'allowance',
+      args: [s.env('address'), spender],
+    });
+    return s.return({ ok, allowance }); // true, 0n
+  },
+);
+```
+
+With [`s.call`](/reference/builder/call/#later-calls-see-the-write) in its place, `allowance`
+is `100n`.
+
+## Returns
+
+`Expr | Tuple | readonly (Expr | Tuple)[] | void`
+
+What the function would return. The shape follows its outputs:
+
+| ABI outputs | Result |
+| --- | --- |
+| none | `void` |
+| one value or array | an `Expr` of that type |
+| one struct | a [`Tuple`](/reference/builder/tuple/#tuple) |
+| several | a readonly array of `Expr` and `Tuple`, in ABI order |
+| named outputs, with `struct: true` | one `Tuple` keyed by output name |
+
+## Parameters
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call: a `0x` literal, or an `Expr<'address'>` such as a script argument or an
+earlier result.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const previewSdai = evscript(
+  { name: 'previewSdai', args: [t.uint256, t.address] },
+  (s, assets, receiver) => {
+    const shares = s.simulate({
+      address: '0x83F20F44975D03b1b09e64809B757c47f942BEeA',
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+    });
+    return s.return({ shares });
+  },
+);
+```
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. Declare it `as const`, or build it with viem's `parseAbi`, so that function
+names, arguments and results are typed.
+
+```ts {4-6,13}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const vaultAbi = parseAbi([
+  'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
+]);
+
+const previewDeposit = evscript(
+  { name: 'previewDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const shares = s.simulate({
+      address: vault,
+      abi: vaultAbi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+    });
+    return s.return({ shares });
+  },
+);
+```
+
+An ABI typed `Abi` still works, with an untyped result: see
+[`s.read`](/reference/builder/read/#abi).
+
+### functionName
+
+- **Type:** `string`
+
+The function to dry-run. It autocompletes to the `nonpayable` and `payable` functions of `abi`.
+
+```ts {15}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const vaultAbi = parseAbi([
+  'function deposit(uint256 assets) returns (uint256 shares)',
+  'function deposit(uint256 assets, address receiver) returns (uint256 shares)',
+]);
+
+const previewDeposit = evscript(
+  { name: 'previewDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const shares = s.simulate({
+      address: vault,
+      abi: vaultAbi,
+      functionName: 'deposit(uint256,address)',
+      args: [assets, receiver],
+    });
+    return s.return({ shares });
+  },
+);
+```
+
+A bare name resolves an overload by the number and types of `args`. A canonical signature names
+one exactly: the name, then the parameter types without names or spaces, a struct written as
+`(type,type)`.
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+One entry per function input, omitted when there is none. Each entry is either:
+
+- the literal viem takes: a `bigint` or a `number`, a string, a `boolean`, an object, an array;
+- an `Expr` of exactly the input's type. An `Expr<'uint8'>` does not fit a `uint256` input:
+  convert it with [`toUint`](/reference/expr/conversions/#touint).
+
+```ts {11}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const previewRedeem = evscript(
+  { name: 'previewRedeem', args: [t.address, t.address] },
+  (s, vault, owner) => {
+    const assets = s.simulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'redeem',
+      args: [10n ** 18n, owner, owner], // a literal, then two Exprs
+    });
+    return s.return({ assets });
+  },
+);
+```
+
+A struct input takes an object that names every member, or a
+[`Tuple`](/reference/builder/tuple/#tuple). An array input takes an array literal, an array
+`Expr` or a [`MutArray`](/reference/builder/new-array/#mutarray).
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that runs out fails with empty revert data, which
+`s.simulate` bubbles and [`s.trySimulate`](/reference/builder/try-simulate/) reports as a failure.
+
+It is a cap, not a guarantee: the EVM forwards at most 63/64 of the gas the script has left.
+
+```ts {12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const previewDeposit = evscript(
+  { name: 'previewDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const shares = s.simulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+      gas: 500_000n,
+    });
+    return s.return({ shares });
+  },
+);
+```
+
+### value (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** `0`
+
+The wei sent with the call, which the target reads as `msg.value`. Only a `payable` function
+accepts it.
+
+```ts {16}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi, zeroAddress } from 'viem';
+
+const lidoAbi = parseAbi([
+  'function submit(address referral) payable returns (uint256)',
+]);
+
+const previewStake = evscript(
+  { name: 'previewStake', args: [t.address, t.uint256] },
+  (s, lido, amount) => {
+    const shares = s.simulate({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'submit',
+      args: [zeroAddress],
+      value: amount,
+    });
+    return s.return({ shares });
+  },
+);
+```
+
+The script's own balance pays, and gets the ETH back when the dry-run is rolled back. Fund the
+script as for `s.call`: see [sending ETH](/reference/builder/call/#sending-eth).
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Returns the outputs as one [`Tuple`](/reference/builder/tuple/#tuple) keyed by output name,
+instead of a positional array. Every output must have a name, and no name may repeat.
+
+```ts {13}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const strategyAbi = parseAbi([
+  'function report() returns (uint256 profit, uint256 loss)',
+]);
+
+const preview = evscript({ name: 'preview', args: [t.address] }, (s, strategy) => {
+  const report = s.simulate({
+    address: strategy,
+    abi: strategyAbi,
+    functionName: 'report',
+    struct: true,
+  });
+  return s.return({ profit: report.profit.get(), loss: report.loss.get() });
+});
+```
+
+## Behavior
+
+- **Nonpayable and payable only.** A `view` or `pure` function is a type error, and `ABI_SHAPE`
+  while building: use [`s.read`](/reference/builder/read/).
+- **Rolled back.** Every state change the target makes is undone, ETH sent with `value`
+  included. Each dry-run rolls back on its own, in an [`s.fn`](/reference/builder/fn/) body too.
+- **Failures revert the script.** A target revert bubbles unchanged, and return data that does
+  not decode reverts with `EvsDecodeError(site)`, where `site` identifies the call. For a flag
+  instead, use [`s.trySimulate`](/reference/builder/try-simulate/).
+- **Address without code.** The call succeeds with empty data. A function without outputs
+  returns as if it had run, and one with outputs fails to decode. Check
+  [`s.codeSize`](/reference/builder/balance/#scodesize) when it matters.
+- **Caller is the script.** The target sees the script's address as `msg.sender`, not your
+  `account`. [Sender mode](/guides/execution/) makes the two the same address.
+- **Memory in loops.** Each dry-run allocates memory, so `compile` reports one inside a loop as
+  `LOOP_ALLOCATION` ([warnings](/reference/diagnostics/#warnings)).
+
+## Errors
+
+Thrown while the callback records, at the offending line. With a typed ABI, TypeScript reports
+most of them first.
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array, or `functionName` is missing or names no function of it |
+| `EvsTypeError` (`ABI_SHAPE`) | the function is `view` or `pure`: use `s.read` |
+| `EvsTypeError` (`ABI_SHAPE`) | the `args` fit several overloads |
+| `EvsTypeError` (`ABI_SHAPE`) | `struct: true` on outputs that are unnamed, share a name, or do not exist |
+| `EvsTypeError` (`TYPE_MISMATCH`) | wrong number or type of `args`, or `args` that fit no overload |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `address` is missing, or `address`, `gas` or `value` is an `Expr` of another type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the object has a key that is not a parameter: `revertReturns`, a `chainId` from a spread config |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `value` for a function that is not `payable` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit its parameter type |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | an ABI type nests arrays more than four levels deep |
+
+Reverts when the script runs. [`explainRevert`](/reference/artifact/explain-revert/) names the
+call behind an `EvsDecodeError`, and lists the calls a bubbled revert can have come through.
+
+| Revert | When |
+| --- | --- |
+| the target's revert data | the target reverts; empty data when it runs out of gas |
+| `EvsDecodeError(site)` | the return data does not decode against the ABI, or the address has no code and the function has outputs |
+| `EvsDecodeError(site)` | the script's balance is below `value` |

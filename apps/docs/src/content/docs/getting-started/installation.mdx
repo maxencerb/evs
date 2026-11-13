@@ -1,20 +1,13 @@
 ---
 title: Installation
-description: Install @maxencerb/evs and viem, check the peer dependency and runtime requirements, and verify the setup compiles a script.
+description: Install @maxencerb/evs together with viem, check the requirements and verify that a script compiles.
 ---
 
-import { Tabs, TabItem } from '@astrojs/starlight/components';
+import { TabItem, Tabs } from '@astrojs/starlight/components';
 
-## Install
+Install `@maxencerb/evs` together with `viem`, its one required peer dependency.
 
-`viem` is a required peer dependency — install it alongside the package:
-
-<Tabs syncKey="pkg">
-  <TabItem label="bun">
-    ```sh
-    bun add @maxencerb/evs viem
-    ```
-  </TabItem>
+<Tabs syncKey="pm">
   <TabItem label="npm">
     ```sh
     npm install @maxencerb/evs viem
@@ -25,50 +18,47 @@ import { Tabs, TabItem } from '@astrojs/starlight/components';
     pnpm add @maxencerb/evs viem
     ```
   </TabItem>
+  <TabItem label="bun">
+    ```sh
+    bun add @maxencerb/evs viem
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```sh
+    yarn add @maxencerb/evs viem
+    ```
+  </TabItem>
 </Tabs>
 
 ## Requirements
 
 | Requirement | Version | Notes |
 | --- | --- | --- |
-| `viem` | `>=2.14.1` | Required peer dependency. Execution and result typing go through viem's `readContract` inference. |
-| `typescript` | `>=5.5` | Optional peer dependency — the runtime works without it, but the typed surface (literal-typed ABI, `Expr` inference) is the point of the library. `strict` mode is required. |
-| Node.js | `>=20.19` | Or Bun. |
-
-The package has no dependencies of its own: its ABI types (`Address`, `Abi`, …) are abitype's,
-taken through viem, so they are the exact types viem uses. An abitype
-[`Register`](https://abitype.dev/config) augmentation in your app (a custom `addressType`, say)
-applies to evs and viem alike. Declare it against the abitype viem installs: under npm and bun
-that is the hoisted copy; under pnpm, add `abitype` at the version your viem pins.
-
-:::caution[TypeScript strict mode is required]
-Set `"strict": true` in your `tsconfig.json`. The typed builder surface — argument tuples,
-`Expr` branding, viem result inference — is only sound under strict mode, and the binding
-API contract assumes it.
-:::
-
-## ESM only
-
-The package ships as ESM only (`"type": "module"`): there is no CommonJS build, so use
-`import`, not `require`. Everything is exported from the single entry point
-`@maxencerb/evs` — the exports map exposes no module subpaths, so deep imports like
-`@maxencerb/evs/core` do not resolve.
+| `viem` | `>=2.14.1` | Required peer dependency. |
+| TypeScript | `>=5.5` | Optional peer dependency. Set `"strict": true`. |
+| Node.js | `>=20.19` | Bun works too. |
+| Module format | ESM | No CommonJS build: use `import`, from `@maxencerb/evs` only. |
 
 ## Verify the setup
-
-This compiles a one-argument script to bytecode without touching a network — if it
-typechecks and runs, you are set:
 
 ```ts
 import { compile, evscript, t } from '@maxencerb/evs';
 
-const ping = evscript({ name: 'ping', args: [t.uint256] }, (s, x) => {
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) => {
   return s.return({ doubled: x.mul(2n) });
 });
 
-export const artifact = compile(ping);
-// artifact.runtimeBytecode — EVM bytecode, ready for eth_call
+const { runtimeBytecode } = compile(double); // 0x…
 ```
 
-Continue with the [quick start](/getting-started/quick-start/) to execute a script against a
-real node.
+This compiles without a network. If it typechecks and runs, continue with the
+[quick start](/getting-started/quick-start/).
+
+## Custom abitype types
+
+evs has no dependencies of its own: its ABI types are viem's. An abitype
+[`Register`](https://abitype.dev/config) augmentation in your project, such as a custom
+`addressType`, applies to evs and viem alike.
+
+With pnpm, add `abitype` to your project at the version your viem pins, so the augmentation
+targets viem's copy.

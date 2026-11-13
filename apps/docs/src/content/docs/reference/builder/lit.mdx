@@ -1,0 +1,152 @@
+---
+title: s.lit
+description: Types a JavaScript literal as an Expr of the type you name. Use it when no other operand fixes the type.
+---
+
+Types a JavaScript literal as an `Expr` of the type you name. Most positions already accept a
+plain literal, so you need `s.lit` only when nothing else fixes the type.
+
+## Usage
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const feeTiers = evscript({ name: 'feeTiers' }, (s) => {
+  const tiers = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]);
+  return s.return({ tiers, count: tiers.length() });
+});
+```
+
+`s.return` infers the result types from handles, so a constant result always goes through
+`s.lit`.
+
+### Both operands are literals
+
+An operator or `s.select` reads its type from an `Expr` operand. With two literals there is
+none, so type one of them.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const fee = evscript({ name: 'fee', args: [t.bool] }, (s, stable) => {
+  const bps = s.select(stable, s.lit(t.uint24, 100), 3000);
+  return s.return({ bps });
+});
+```
+
+### A literal on the left
+
+A plain literal has no methods. Type it to call one, here `10 ** decimals`.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const unit = evscript({ name: 'unit', args: [t.address] }, (s, token) => {
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const one = s.lit(t.uint256, 10n).pow(decimals);
+  return s.return({ one });
+});
+```
+
+### Choosing the type
+
+The type decides how the value is encoded. Packed, a `uint8` takes one byte and a `uint256`
+takes thirty-two.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const key = evscript({ name: 'key', args: [t.address] }, (s, owner) => {
+  const version = s.lit(t.uint8, 1);
+  return s.return({ packed: s.encodePacked(version, owner) }); // 1 + 20 bytes
+});
+```
+
+### Strings, arrays and structs
+
+Every type of the [`t` namespace](/reference/types/) has a literal form.
+
+```ts {6-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const constants = evscript({ name: 'constants' }, (s) => {
+  const label = s.lit(t.string, 'hello');
+  const grid = s.lit(t.array(t.array(t.uint256)), [[1n, 2n], [3n]]);
+  const position = s.lit(Position, {
+    liquidity: 1n,
+    owner: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+  });
+  return s.return({ label, grid, position });
+});
+```
+
+## Returns
+
+`Expr<t>`
+
+An `Expr` of exactly `type`. A struct literal is an `Expr` too, not a handle with fields: build
+it with [`s.tuple`](/reference/builder/tuple/) when you need to read or write its members.
+
+## Parameters
+
+### type
+
+- **Type:** `EvsType`
+
+Any type of the [`t` namespace](/reference/types/#primitives): a word type, `string`, `bytes`,
+an array, a struct or a tuple.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const max = evscript({ name: 'max' }, (s) => {
+  const value = s.lit(t.uint128, 2n ** 128n - 1n);
+  return s.return({ value });
+});
+```
+
+### value
+
+- **Type:** `LitOf<t>`
+
+The JavaScript value for that type: a `bigint` or `number` for an integer, a `0x` string for an
+address or bytes, an array for an array. The full table is in
+[Literals](/reference/expr/#literals).
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const pair = evscript({ name: 'pair', args: [t.uint256] }, (s, x) => {
+  const values = s.lit(t.array(t.uint256), [x, 1n]); // an element can be an Expr
+  return s.return({ values });
+});
+```
+
+## Behavior
+
+- **Checked while recording.** The value is validated when the line runs, in your callback.
+  `s.lit(t.uint8, 300)` throws there and never becomes a revert on chain.
+- **Number or bigint.** An integer takes either. A `number` must be a safe integer, so write a
+  `bigint` past 2^53.
+- **Exact sizes.** An `address` is exactly 20 bytes, a `bytesN` exactly N, and a fixed-size
+  array `T[N]` takes exactly N elements.
+- **Allocation in loops.** A `string`, `bytes`, array or struct literal in a loop body allocates
+  on every iteration and `compile` warns with `LOOP_ALLOCATION`. Create it before the loop.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a type of the `t` namespace |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `value` is the wrong kind of JavaScript value, such as a string for a `uint8` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an `address`, `bytes` or `bytesN` string does not start with `0x` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a `T[N]` literal does not have exactly N elements |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a struct literal has an unknown member |
+| `EvsTypeError` (`LITERAL_RANGE`) | an integer is out of range for `type`, or a `number` is not a safe integer |
+| `EvsTypeError` (`LITERAL_RANGE`) | a hex string is malformed or has the wrong byte length |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | an array type nests more than four levels |

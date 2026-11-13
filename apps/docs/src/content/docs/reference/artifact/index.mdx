@@ -1,0 +1,199 @@
+---
+title: Compiled artifact
+description: What compile returns. The typed ABI, the bytecode, a source map, and the methods to run a script with viem and debug a revert.
+---
+
+[`compile`](/reference/compile/) returns a frozen `CompiledEvsScript`: the typed ABI, the
+bytecode, a source map, and the methods to run the script with viem and debug a revert.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const supplyOf = evscript({ name: 'supplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+
+const compiled = supplyOf.compile();
+
+const { supply } = await client.readContract({
+  ...compiled.toViem(),
+  functionName: 'supplyOf',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+});
+// supply: bigint
+```
+
+## Methods
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| [`toViem(options?)`](/reference/artifact/to-viem/) | `readContract` parameters | Packages the ABI and the bytecode for a deployless or a state-override call. |
+| [`disassemble()`](/reference/artifact/disassemble/) | `Disassembly` | Lists the instructions of the runtime bytecode, with labels and notes. |
+| [`explainRevert(data)`](/reference/artifact/explain-revert/) | `RevertExplanation` | Classifies revert data and points at the part of the script it came from. |
+
+## Properties
+
+### abi
+
+- **Type:** `ScriptAbi`
+
+The literal-typed ABI: one `view` function named after the script, the two evs runtime errors,
+then your declared errors. For the script above:
+
+```ts
+const abi = [
+  {
+    type: 'function',
+    name: 'supplyOf',
+    stateMutability: 'view',
+    inputs: [{ name: 'arg0', type: 'address' }],
+    outputs: [
+      {
+        name: 'result',
+        type: 'tuple',
+        components: [{ name: 'supply', type: 'uint256' }],
+      },
+    ],
+  },
+  { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
+  {
+    type: 'error',
+    name: 'EvsDecodeError',
+    inputs: [{ name: 'site', type: 'uint256' }],
+  },
+] as const;
+```
+
+The function has one output, a tuple with one component per key of `s.return`, so viem decodes
+an object. Inputs follow the order of `args`.
+
+The two runtime errors are the [built-in errors](/reference/diagnostics/#built-in-errors),
+also exported on their own as `EVS_ERROR_ABI`.
+
+### runtimeBytecode
+
+- **Type:** `Hex`
+
+The code that runs. At most 24,576 bytes (EIP-170). State-override calls install it as is.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+compiled.runtimeBytecode; // '0x3661000657…', 138 bytes
+```
+
+### initBytecode
+
+- **Type:** `Hex`
+
+Creation bytecode: a 10-byte wrapper that returns `runtimeBytecode`. Deployless calls send this
+one.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+compiled.initBytecode; // '0x61008a80600a5f395ff3' + the runtime bytecode, 148 bytes
+```
+
+:::caution[Never pass `runtimeBytecode` as viem's `code`]
+viem's `code` parameter expects creation bytecode. Runtime bytecode there fails with an empty
+revert and no hint of the cause, which is why the artifact names its two bytecodes and has no
+`code` field. [`toViem`](/reference/artifact/to-viem/) always picks the right one.
+:::
+
+### sourceMap
+
+- **Type:** `SourceMap`
+
+Maps the bytecode back to the script. [`disassemble`](/reference/artifact/disassemble/) and
+[`explainRevert`](/reference/artifact/explain-revert/) read it for you.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `version` | `1` | The format version. |
+| `segments` | `{ pc, len, note? }[]` | Runs of code bytes, sorted by `pc`, with a note on what the code does. |
+| `sites` | `{ id, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement. Its `id` is the site id that errors and warnings report. |
+| `labels` | `{ pc, name }[]` | The name of each jump destination, and of each block of literal data. |
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const { sites } = double.compile().sourceMap;
+
+sites[1];
+// {
+//   id: 1,
+//   kind: 'panic',
+//   detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
+//   panicCodes: [17],
+// }
+```
+
+| Site `kind` | The statement is |
+| --- | --- |
+| `'panic'` | a check that can panic, with its codes in `panicCodes` |
+| `'decode'` | an `s.read`, `s.call` or `s.simulate`, whose return data is decoded |
+| `'call'` | a `try` call |
+| `'stmt'` | anything else |
+
+- `sendsValue` is `true` on a call that sends a `value`.
+- `detail` is display text. Match on `kind` and `panicCodes`, never on it.
+
+A `pc` is a byte offset in the runtime bytecode. To find the segment that covers one, use
+[`lookupPc`](/reference/utilities/disassemble/#lookuppc).
+
+### ir
+
+- **Type:** `ScriptIr`
+
+The recorded program, the same object as `script.ir`. Run it without a node with
+[`interpret`](/reference/utilities/interpret/), or store it with
+[`serializeIr`](/reference/utilities/serialize-ir/).
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+compiled.ir === double.ir; // true
+```
+
+### options
+
+- **Type:** `Readonly<Required<CompileOptions>>`
+
+The [options](/reference/compile/#parameters) the artifact was compiled with, defaults filled
+in.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const { options } = double.compile();
+
+options.evmVersion; // 'cancun'
+options.optimize; // false
+```

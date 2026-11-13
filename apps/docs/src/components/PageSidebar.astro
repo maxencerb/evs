@@ -1,0 +1,41 @@
+---
+// Right column: "On this page", then the page actions. Below 72rem Starlight's dropdown table
+// of contents takes over and the actions move under the page title (PageTitle.astro).
+import MobileTableOfContents from '@astrojs/starlight/components/MobileTableOfContents.astro';
+import TableOfContents from '@astrojs/starlight/components/TableOfContents.astro';
+
+import PageActions from './PageActions.astro';
+---
+
+{
+  Astro.locals.starlightRoute.toc && (
+    <>
+      <div class="lg:sl-hidden">
+        <MobileTableOfContents />
+      </div>
+      <div class="column sl-hidden lg:sl-block">
+        <TableOfContents />
+        <div class="column-actions">
+          <PageActions />
+        </div>
+      </div>
+    </>
+  )
+}
+
+<style>
+  .column {
+    padding: 2.5rem 2rem 2.5rem 0.25rem;
+  }
+
+  .column-actions {
+    margin-top: 1.375rem;
+  }
+
+  /* Stacked here, one action per line. */
+  .column-actions :global(.actions) {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.625rem;
+  }
+</style>

@@ -1,0 +1,145 @@
+---
+title: Bytes & arrays
+description: Reads the length, an element, a byte or a byte range of a string, bytes or array value. Every access is bounds-checked.
+---
+
+Reads the length, an element, a byte or a byte range of a `string`, `bytes` or array value.
+Every access is bounds-checked.
+
+| Method | Signature | Receiver | Description |
+| --- | --- | --- | --- |
+| [`length`](#length) | `length(): Expr<'uint256'>` | `string`, `bytes`, arrays | byte or element count |
+| [`at`](#at) | `at(i: IntoExpr<'uint256'>): Expr<elem>` | arrays | the element at `i` |
+| [`byteAt`](#byteat) | `byteAt(i: IntoExpr<'uint256'>): Expr<'bytes1'>` | `string`, `bytes` | the byte at `i` |
+| [`slice`](#slice) | `slice(start, end?): Expr<t>` | `string`, `bytes` | a copy of bytes `[start, end)` |
+
+An array is a `T[]` or a fixed-size `T[N]`. An `IntoExpr<'uint256'>` is an `Expr<'uint256'>` or
+a [literal](/reference/expr/#literals) number.
+
+## length
+
+Returns the number of elements of an array, or the number of bytes of a `string` or `bytes`.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sizes = evscript(
+  { name: 'sizes', args: [t.array(t.address), t.string] },
+  (s, list, name) => {
+    const count = list.length(); // elements
+    const size = name.length(); // bytes, not characters: 'é' is 2
+    return s.return({ count, size });
+  },
+);
+```
+
+## at
+
+Returns the element at index `i` of an array. Reverts with `Panic(0x32)` when `i` is out of
+bounds.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const first = evscript({ name: 'first', args: [t.array(t.uint128)] }, (s, amounts) => {
+  const head = amounts.at(0n); // Expr<'uint128'>
+  return s.return({ head });
+});
+```
+
+### Arrays of structs
+
+On an array of structs, `at` returns a [`Tuple`](/reference/builder/tuple/#tuple) handle with
+one field per member.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ owner: t.address, liquidity: t.uint128 });
+
+const ownerAt = evscript(
+  { name: 'ownerAt', args: [t.array(Position), t.uint256] },
+  (s, all, i) => {
+    const position = all.at(i);
+    return s.return({ owner: position.owner.get() });
+  },
+);
+```
+
+### Nested arrays
+
+On an array of arrays, `at` returns the inner array, so calls chain.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Grid = t.array(t.array(t.uint256)); // 'uint256[][]'
+
+const cell = evscript({ name: 'cell', args: [Grid] }, (s, grid) => {
+  const value = grid.at(1n).at(0n); // Expr<'uint256'>
+  return s.return({ value });
+});
+```
+
+## byteAt
+
+Returns the byte at index `i` of a `string` or `bytes`. Reverts with `Panic(0x32)` when `i` is
+out of bounds.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const initial = evscript({ name: 'initial', args: [t.string] }, (s, name) => {
+  const first = name.byteAt(0n); // Expr<'bytes1'>
+  return s.return({ first, code: first.asUint() }); // code: Expr<'uint8'>
+});
+```
+
+## slice
+
+Copies the bytes from `start` up to, but not including, `end`. Reverts with `Panic(0x32)` unless
+`start <= end <= length`.
+
+```ts {4-5}
+import { evscript, t } from '@maxencerb/evs';
+
+const split = evscript({ name: 'split', args: [t.bytes] }, (s, data) => {
+  const selector = data.slice(0n, 4n); // bytes [0, 4)
+  const params = data.slice(4n); // from byte 4 to the end
+  return s.return({ selector, params });
+});
+```
+
+`end` defaults to the length. The result has the receiver's type: slicing a `string` gives a
+`string`.
+
+## Behavior
+
+- **Bounds-checked.** `at`, `byteAt` and `slice` revert instead of reading past the end.
+- **`uint256` positions.** An index of a narrower type converts first with
+  [`toUint(t.uint256)`](/reference/expr/conversions/#touint).
+- **`slice` copies.** The result is a new value. Inside a loop, this raises the
+  [`LOOP_ALLOCATION`](/reference/diagnostics/#warnings) warning.
+- **Read-only.** To build or change an array, use a
+  [`MutArray`](/reference/builder/new-array/#mutarray). To walk one, use
+  [`s.forEach`](/reference/builder/for-each/).
+- **Not on `bytesN`.** A `bytesN` has no `byteAt` or `slice`: shift and mask its
+  [`asUint()`](/reference/expr/conversions/#asuint), or turn it into `bytes` with
+  [`s.encodePacked`](/reference/builder/encode-packed/).
+- **Methods only.** These four have no `s.*` mirror.
+
+## Errors
+
+A `Panic` reverts the call at run time. An `EvsTypeError` is thrown at build time, at the
+offending line.
+
+| Error | When |
+| --- | --- |
+| `Panic(0x32)` | `at`, `byteAt`: `i` is not below the length |
+| `Panic(0x32)` | `slice`: `start` is above `end`, or `end` above the length |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the receiver does not support the method: `at` on a `string`, `byteAt` on an array, `length` on a number |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an index or a bound is an `Expr` of another type than `uint256` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal index or bound is negative |
+
+See [panic codes](/reference/diagnostics/#panic-codes) and
+[error codes](/reference/diagnostics/#error-codes).

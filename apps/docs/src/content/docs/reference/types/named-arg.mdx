@@ -1,0 +1,192 @@
+---
+title: namedArg
+description: Names a script or function argument. The name becomes the ABI input name and the label viem shows in the args tuple.
+---
+
+Names a script or function argument. The name becomes the ABI input name and the label viem shows
+in the `args` tuple.
+
+## Import
+
+```ts
+import { namedArg } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {8}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+import type { ReadContractParameters } from 'viem';
+
+const balance = evscript(
+  {
+    name: 'balance',
+    args: [namedArg('token', t.address), namedArg('holder', t.address)],
+  },
+  (s, token, holder) => {
+    const amount = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [holder],
+    });
+    return s.return({ amount });
+  },
+);
+
+type Args = ReadContractParameters<typeof balance.abi, 'balance'>['args'];
+// readonly [token: `0x${string}`, holder: `0x${string}`]
+```
+
+The call stays positional: you still pass `args: [token, holder]`. The name only labels the slot.
+
+### Without a name
+
+A bare type gets a positional name: `arg0`, `arg1`, and so on. You can mix both in one list.
+
+```ts {5,9-10}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+import type { ReadContractParameters } from 'viem';
+
+const pick = evscript(
+  { name: 'pick', args: [t.address, namedArg('holder', t.address)] },
+  (s, token, holder) => s.return({ token, holder }),
+);
+
+pick.abi[0].inputs;
+// [{ name: 'arg0', type: 'address' }, { name: 'holder', type: 'address' }]
+
+type Args = ReadContractParameters<typeof pick.abi, 'pick'>['args'];
+// readonly [arg0: `0x${string}`, holder: `0x${string}`]
+```
+
+### Naming a struct
+
+`type` can be a [`t.struct`](/reference/types/struct/). The argument still arrives as a
+[`Tuple`](/reference/builder/tuple/#tuple) handle.
+
+```ts {6}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const Market = t.struct({ loanToken: t.address, lltv: t.uint256 });
+
+const loanToken = evscript(
+  { name: 'loanToken', args: [namedArg('market', Market)] },
+  (s, market) => s.return({ token: market.loanToken.get() }),
+);
+```
+
+### Function parameters
+
+In [`s.fn`](/reference/builder/fn/), the names label the parameters of the function you get back.
+
+```ts {9}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const pairBalances = evscript(
+  { name: 'pairBalances', args: [t.address, t.address, t.address] },
+  (s, tokenA, tokenB, who) => {
+    const balanceOf = s.fn(
+      'balanceOf',
+      [namedArg('token', t.address), namedArg('owner', t.address)],
+      (token, owner) =>
+        s.read({
+          address: token,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [owner],
+        }),
+    );
+    // balanceOf(token, owner)
+    return s.return({ a: balanceOf(tokenA, who), b: balanceOf(tokenB, who) });
+  },
+);
+```
+
+### ABI parameters as arguments
+
+An ABI parameter that has a `name` is already named. A function's `inputs` work as `args` as they
+are.
+
+```ts {9}
+import { evscript } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi([
+  'struct QuoteParams { address tokenIn; uint256 amountIn; }',
+  'function quote(QuoteParams params, uint24 fee) view returns (uint256)',
+]);
+
+const echo = evscript({ name: 'echo', args: quoterAbi[0].inputs }, (s, params, fee) =>
+  s.return({ amountIn: params.amountIn.get(), fee }),
+);
+// args: readonly [params: { tokenIn: `0x${string}`; amountIn: bigint }, fee: number]
+```
+
+## Returns
+
+`ArgSpec<name, type>`
+
+A frozen object holding the `name` and the `type`. Use it wherever a bare type declares an
+argument: `evscript` args, `s.fn` params and [`t.error`](/reference/types/error/) params.
+
+## Parameters
+
+### name
+
+- **Type:** `string`
+
+The argument name: an identifier made of letters, digits and `_`, not starting with a digit. It
+cannot be `__proto__`.
+
+```ts {4}
+import { namedArg, t } from '@maxencerb/evs';
+
+const amount = namedArg(
+  'amount',
+  t.uint256,
+);
+```
+
+### type
+
+- **Type:** `EvsType`
+
+The argument type: a primitive, an array, a struct or a tuple.
+
+```ts {5}
+import { namedArg, t } from '@maxencerb/evs';
+
+const amounts = namedArg(
+  'amounts',
+  t.array(t.uint256),
+);
+```
+
+## Behavior
+
+- **Labels only.** Arguments stay positional, in declaration order. A label is not part of the
+  type.
+- **Whole arguments.** `namedArg` names a top-level argument. Struct members get their names from
+  [`t.struct`](/reference/types/struct/).
+- **Unique names.** Two arguments cannot share a name, the `arg0` style names of bare types
+  included.
+- **Callback labels.** The names also label the callback's parameters in your editor, with viem
+  2.43.0 or later.
+- **Error parameters.** In `t.error`, naming every parameter makes
+  [`s.throw`](/reference/builder/throw/) take a record.
+
+## Errors
+
+Thrown by the `namedArg` call, then by the function that receives the list:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `name` is not an identifier, or is `__proto__` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a type |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | `type` nests arrays more than four levels deep, or its ABI static size is 2^32 bytes or more |
+| `EvsTypeError` (`ABI_SHAPE`) | in `evscript`: two arguments share a name |
+| `EvsTypeError` (`TYPE_MISMATCH`) | in `s.fn`: two parameters share a name |
+| `EvsTypeError` (`ERROR_DECL`) | in `t.error`: two parameters share a name |

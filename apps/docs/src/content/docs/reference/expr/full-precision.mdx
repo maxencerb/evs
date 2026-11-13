@@ -1,0 +1,116 @@
+---
+title: Full-precision math
+description: uint256 math whose intermediate result never overflows. Multiply-then-divide over 512 bits, plus modular add and multiply.
+---
+
+`uint256` math whose intermediate result never overflows. Multiply-then-divide over 512 bits,
+plus modular add and multiply.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| [`mulDiv`](#muldiv) | `mulDiv(rhs, denominator): Expr<'uint256'>` | `a * b / d`, rounded down |
+| [`mulDivRoundingUp`](#muldivroundingup) | `mulDivRoundingUp(rhs, denominator): Expr<'uint256'>` | `a * b / d`, rounded up |
+| [`addmod`](#addmod) | `addmod(rhs, modulus): Expr<'uint256'>` | `(a + b) % n` |
+| [`mulmod`](#mulmod) | `mulmod(rhs, modulus): Expr<'uint256'>` | `(a * b) % n` |
+
+The receiver is an `Expr<'uint256'>`. Every parameter is an `IntoExpr<'uint256'>`: an
+`Expr<'uint256'>` or a [literal](/reference/expr/#literals).
+
+## mulDiv
+
+Multiplies by `rhs`, then divides by `denominator` and rounds down. The product is kept at 512
+bits, so only the quotient has to fit.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const Q96 = 1n << 96n;
+
+const price = evscript({ name: 'price', args: [t.uint160] }, (s, sqrtPriceX96) => {
+  const p = sqrtPriceX96.toUint(t.uint256);
+  const priceX96 = p.mulDiv(p, Q96); // p * p can reach 2^320
+  return s.return({ priceX96 });
+});
+```
+
+## mulDivRoundingUp
+
+Multiplies by `rhs`, then divides by `denominator` and rounds up.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const toAssets = evscript(
+  { name: 'toAssets', args: [t.uint256, t.uint256, t.uint256] },
+  (s, shares, totalAssets, totalSupply) => {
+    const assets = shares.mulDivRoundingUp(totalAssets, totalSupply);
+    return s.return({ assets });
+  },
+);
+```
+
+## addmod
+
+Adds `rhs` and returns the sum modulo `modulus`. The sum is never truncated to 256 bits.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const P = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+
+const fieldAdd = evscript(
+  { name: 'fieldAdd', args: [t.uint256, t.uint256] },
+  (s, x, y) => {
+    const sum = x.addmod(y, P); // (x + y) % P
+    return s.return({ sum });
+  },
+);
+```
+
+## mulmod
+
+Multiplies by `rhs` and returns the product modulo `modulus`. The product is never truncated to
+256 bits.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const P = 0x30644e72e131a029b85045b68181585d2833e84879b9709143e1f593f0000001n;
+
+const fieldMul = evscript(
+  { name: 'fieldMul', args: [t.uint256, t.uint256] },
+  (s, x, y) => {
+    const product = x.mulmod(y, P); // x.mul(y).mod(P) would overflow first
+    return s.return({ product });
+  },
+);
+```
+
+## Behavior
+
+- **`uint256` only.** Widen a narrower value first with
+  [`toUint(t.uint256)`](/reference/expr/conversions/#touint).
+- **Exact intermediate.** `a.mul(b).div(d)` reverts as soon as `a * b` passes 2^256.
+  `a.mulDiv(b, d)` reverts only when the quotient does.
+- **Panics, not empty reverts.** The results match Uniswap's `FullMath`, which reverts with
+  empty data where these methods revert with a `Panic`.
+- **Literals fold.** A call whose three operands are literals
+  [folds](/reference/expr/arithmetic/#build-time-folding) at build time.
+- **Builder mirrors.** `s.mulDiv(a, b, d)`, `s.mulDivRoundingUp(a, b, d)`, `s.addmod(a, b, n)`
+  and `s.mulmod(a, b, n)` take a literal in any position.
+
+## Errors
+
+A `Panic` reverts the call at run time. An `EvsTypeError` is thrown at build time, at the
+offending line.
+
+| Error | When |
+| --- | --- |
+| `Panic(0x12)` | the denominator or the modulus is zero |
+| `Panic(0x11)` | `mulDiv`, `mulDivRoundingUp`: the quotient does not fit `uint256` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an operand is an `Expr` of another type than `uint256` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit `uint256` |
+| `EvsTypeError` (`CERTAIN_PANIC`) | the three operands are literals and the call would always panic |
+
+See [panic codes](/reference/diagnostics/#panic-codes) and
+[error codes](/reference/diagnostics/#error-codes).

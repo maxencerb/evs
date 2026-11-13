@@ -1,0 +1,282 @@
+---
+title: Conversions
+description: Converts a value from one type to another. Nothing converts implicitly, and each method is checked, free or wrapping.
+---
+
+Converts a value from one type to another. Nothing converts implicitly, and each method is
+checked, free or wrapping.
+
+| From | To | Method | Kind |
+| --- | --- | --- | --- |
+| `uintN`, `intN` | any `uintM` | [`toUint(t.uintM)`](#touint) | checked |
+| `uintN`, `intN` | any `intM` | [`toInt(t.intM)`](#toint) | checked |
+| `uintN`, `intN` | any `uintM` | [`wrappingToUint(t.uintM)`](#wrappingtouint) | wraps |
+| `uintN`, `intN` | any `intM` | [`wrappingToInt(t.intM)`](#wrappingtoint) | wraps |
+| `uintN` | `intN` of the same width | [`asInt()`](#asint) | wraps |
+| `intN` | `uintN` of the same width | [`asUint()`](#asuint) | wraps |
+| `bytesN` | `uintM` of the same width | [`asUint()`](#asuint) | free |
+| `uintN` | `bytesM` of the same width | [`asBytesN()`](#asbytesn) | free |
+| `bytes32` | `uint256` | [`asUint256()`](#asuint256) | free |
+| `uint256` | `bytes32` | [`asBytes32()`](#asbytes32) | free |
+| `address` | `uint160` | [`asUint160()`](#asuint160) | free |
+| `uint160` | `address` | [`asAddress()`](#asaddress) | free |
+| `uint256`, `bytes32` | `address` | [`asAddress()`](#asaddress) | checked |
+| `string` | `bytes` | [`asBytes()`](#asbytes) | free |
+| `bytes` | `string` | [`asString()`](#asstring) | free |
+| `bytesN` | `string` | [`asString()`](#asstring) | copies, trailing zero bytes trimmed |
+
+- **Checked:** reverts with `Panic(0x11)` when the value does not fit the target.
+- **Free:** keeps every bit and cannot fail.
+- **Wraps:** keeps the low bits of the target's width, so the number can change. Never reverts.
+
+## toUint
+
+Converts a number to the `uintN` type you name. Reverts with `Panic(0x11)` when the value does
+not fit.
+
+```ts {4-5}
+import { evscript, t } from '@maxencerb/evs';
+
+const widths = evscript({ name: 'widths', args: [t.uint256] }, (s, amount) => {
+  const small = amount.toUint(t.uint64); // Panic(0x11) when amount >= 2^64
+  const wide = small.toUint(t.uint256); // widening cannot fail
+  return s.return({ small, wide });
+});
+```
+
+From an `intN`, every negative value reverts.
+
+## toInt
+
+Converts a number to the `intN` type you name. Reverts with `Panic(0x11)` when the value does
+not fit.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const delta = evscript(
+  { name: 'delta', args: [t.uint256, t.uint256] },
+  (s, before, after) => {
+    const change = after.toInt(t.int256).sub(before.toInt(t.int256));
+    return s.return({ change });
+  },
+);
+```
+
+From a `uint256`, every value from 2^255 up reverts: an `int256` cannot hold it.
+
+## wrappingToUint
+
+Keeps the low bits of a number as the `uintN` type you name, like Solidity's `uint160(x)`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const priceOf = evscript({ name: 'priceOf', args: [t.uint256] }, (s, slot0) => {
+  const sqrtPriceX96 = slot0.wrappingToUint(t.uint160); // the low 160 bits
+  return s.return({ sqrtPriceX96 });
+});
+```
+
+From an `intN`, a negative value wraps to the top of the range: `-1` becomes the maximum.
+
+## wrappingToInt
+
+Keeps the low bits of a number and reads them as the `intN` type you name, like Solidity's
+`int24(uint24(x))`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const tickOf = evscript({ name: 'tickOf', args: [t.uint256] }, (s, slot0) => {
+  const tick = slot0.shr(160n).wrappingToInt(t.int24); // 0xffffff becomes -1
+  return s.return({ tick });
+});
+```
+
+:::tip[Unpacking a packed word]
+Read each field with a wrapping conversion. A checked `toUint` reverts on the bits above the
+field, and a checked `toInt` on every negative value.
+:::
+
+## asAddress
+
+Converts a `uint160`, a `uint256` or a `bytes32` to an `address`.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const owners = evscript(
+  { name: 'owners', args: [t.bytes32, t.uint160] },
+  (s, word, id) => {
+    const owner = word.asAddress(); // Panic(0x11) unless the high 12 bytes are zero
+    const account = id.asAddress(); // from a uint160: cannot fail
+    return s.return({ owner, account });
+  },
+);
+```
+
+## asUint160
+
+Converts an `address` to the `uint160` of the same bits.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const idOf = evscript({ name: 'idOf', args: [t.address] }, (s, token) => {
+  const id = token.asUint160().toUint(t.uint256); // uint256(uint160(token))
+  return s.return({ id });
+});
+```
+
+## asUint256
+
+Reads a `bytes32` as a `uint256`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const bucketOf = evscript({ name: 'bucketOf', args: [t.bytes32] }, (s, hash) => {
+  const bucket = hash.asUint256().mod(1024n);
+  return s.return({ bucket });
+});
+```
+
+## asBytes32
+
+Reads a `uint256` as a `bytes32`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const saltOf = evscript({ name: 'saltOf', args: [t.uint256] }, (s, tokenId) => {
+  const salt = tokenId.asBytes32();
+  return s.return({ salt });
+});
+```
+
+## asUint
+
+Converts a `bytesN` or an `intN` to the `uintN` of the same width.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const numbers = evscript(
+  { name: 'numbers', args: [t.bytes4, t.int24] },
+  (s, selector, tick) => {
+    const id = selector.asUint(); // Expr<'uint32'>
+    const bits = tick.asUint(); // Expr<'uint24'>: -1 becomes 0xffffff
+    return s.return({ id, bits });
+  },
+);
+```
+
+## asBytesN
+
+Converts a `uintN` to the `bytesN` of the same width.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const selectorOf = evscript({ name: 'selectorOf', args: [t.uint32] }, (s, id) => {
+  const selector = id.asBytesN(); // Expr<'bytes4'>
+  return s.return({ selector });
+});
+```
+
+## asInt
+
+Reads the bits of a `uintN` as the `intN` of the same width, like Solidity's `int24(u24)`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const signedOf = evscript({ name: 'signedOf', args: [t.uint24] }, (s, raw) => {
+  const tick = raw.asInt(); // Expr<'int24'>: 0xffffff becomes -1
+  return s.return({ tick });
+});
+```
+
+## asBytes
+
+Reads a `string` as `bytes`. The two handles share the same bytes.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const rawOf = evscript({ name: 'rawOf', args: [t.string] }, (s, name) => {
+  const raw = name.asBytes(); // Expr<'bytes'>
+  return s.return({ raw });
+});
+```
+
+## asString
+
+Reads `bytes` as a `string`, or copies a `bytesN` into a string without its trailing zero bytes.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const texts = evscript(
+  { name: 'texts', args: [t.bytes32, t.bytes] },
+  (s, symbol32, raw) => {
+    const symbol = symbol32.asString(); // 'MKR' and 29 zero bytes become 'MKR'
+    const text = raw.asString(); // the same bytes, as a string
+    return s.return({ symbol, text });
+  },
+);
+```
+
+On a `bytesN` the result is a new string: inside a loop, this raises the
+[`LOOP_ALLOCATION`](/reference/diagnostics/#warnings) warning.
+
+## Behavior
+
+- **Always explicit.** No operation converts for you: `a.add(b)` on two widths is a type error.
+- **Numeric receivers.** `toUint`, `toInt` and their wrapping twins only take a `uintN` or an
+  `intN`. From an `address`, call `asUint160()` first; from a `bytesN`, `asUint()`.
+- **Widening is free.** A checked conversion to a wider type of the same sign cannot fail.
+- **Literals fold.** Converting a literal is done at build time, except with `asBytes` and
+  `asString`. A checked one that does not fit throws `CERTAIN_PANIC`.
+- **Methods only.** Conversions have no `s.*` mirror.
+
+### Chained conversions
+
+A Solidity conversion that has no single method is a chain of two or three:
+
+```ts {6-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const routes = evscript(
+  { name: 'routes', args: [t.address, t.bytes20, t.uint64, t.string, t.bytes32] },
+  (s, a, b20, u64, name, hash) => {
+    const id = a.asUint160().toUint(t.uint256); // uint256(uint160(a))
+    const account = b20.asUint().asAddress(); // address(b20)
+    const packed = a.asUint160().asBytesN(); // bytes20(a)
+    const word = u64.toUint(t.uint256).asBytes32(); // bytes32(uint256(u64))
+    const first = name.byteAt(0n).asUint(); // uint8(bytes(name)[0])
+    const last20 = hash.asUint256().wrappingToUint(t.uint160).asAddress();
+    return s.return({ id, account, packed, word, first, last20 });
+  },
+);
+```
+
+`last20` is Solidity's `address(uint160(uint256(hash)))`: the low 20 bytes of a hash, where
+`hash.asAddress()` would revert.
+
+## Errors
+
+A `Panic` reverts the call at run time. An `EvsTypeError` is thrown at build time, at the
+offending line.
+
+| Error | When |
+| --- | --- |
+| `Panic(0x11)` | `toUint`, `toInt`: the value does not fit the target type |
+| `Panic(0x11)` | `asAddress` on a `uint256` or a `bytes32`: the high 96 bits are not zero |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the receiver is not a type the method converts from |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the target is not a `uintN` (`toUint`, `wrappingToUint`) or an `intN` (`toInt`, `wrappingToInt`) |
+| `EvsTypeError` (`CERTAIN_PANIC`) | a checked conversion of a literal that does not fit |
+
+See [panic codes](/reference/diagnostics/#panic-codes) and
+[error codes](/reference/diagnostics/#error-codes).

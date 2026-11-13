@@ -1,0 +1,300 @@
+---
+// Errors & debugging: what a callee revert does under a strict verb and under a try verb. Two
+// rows that play together: the call goes eth_call → script → callee, the callee reverts, and the
+// revert comes back. Under s.read it passes straight through the script and the eth_call fails;
+// under s.tryRead the script catches it and the eth_call succeeds. The tones are states, so the
+// static frame keeps them. Loop: 10s.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="RevertBubbling">
+  <div class="evs-rb">
+    <div class="evs-rb-row evs-rb-strict">
+      <div class="evs-rb-head">
+        <span class="evs-dg-title">s.read</span>
+        <span class="evs-dg-note">strict</span>
+      </div>
+      <div class="evs-rb-chain">
+        <div class="evs-rb-nodes">
+          <span class="evs-dg-node evs-dg-danger evs-rb-caller">eth_call</span>
+          <div class="evs-rb-track evs-rb-t1">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left evs-dg-danger"><i class="evs-dg-run"></i></span>
+          </div>
+          <span class="evs-dg-node evs-dg-danger evs-rb-script">script</span>
+          <div class="evs-rb-track evs-rb-t2">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left evs-dg-danger"><i class="evs-dg-run"></i></span>
+          </div>
+          <span class="evs-dg-node evs-dg-danger evs-rb-callee">callee</span>
+        </div>
+        <div class="evs-rb-caps">
+          <span class="evs-dg-note">fails with the callee's error</span>
+          <span class="evs-dg-note">bubbles it up, unchanged</span>
+          <span class="evs-dg-note">reverts</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evs-rb-row evs-rb-try">
+      <div class="evs-rb-head">
+        <span class="evs-dg-title">s.tryRead</span>
+        <span class="evs-dg-note">try</span>
+      </div>
+      <div class="evs-rb-chain">
+        <div class="evs-rb-nodes">
+          <span class="evs-dg-node evs-dg-ok evs-rb-caller">eth_call</span>
+          <div class="evs-rb-track evs-rb-t1">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left evs-dg-ok"><i class="evs-dg-run"></i></span>
+          </div>
+          <span class="evs-dg-node evs-dg-ok evs-rb-script">script</span>
+          <div class="evs-rb-track evs-rb-t2">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left evs-dg-danger"><i class="evs-dg-run"></i></span>
+          </div>
+          <span class="evs-dg-node evs-dg-danger evs-rb-callee">callee</span>
+        </div>
+        <div class="evs-rb-caps">
+          <span class="evs-dg-note">succeeds</span>
+          <span class="evs-dg-note">success = false, zero value</span>
+          <span class="evs-dg-note">reverts</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-rb {
+    display: grid;
+    row-gap: 22px;
+  }
+
+  .evs-rb-head {
+    display: flex;
+    align-items: baseline;
+    column-gap: 8px;
+    margin-bottom: 8px;
+  }
+
+  @container evs-dg (min-width: 600px) {
+    .evs-rb-row {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      column-gap: 16px;
+    }
+
+    .evs-rb-head {
+      flex-direction: column;
+      margin-bottom: 0;
+    }
+  }
+
+  .evs-rb-nodes {
+    display: flex;
+    align-items: stretch;
+  }
+
+  .evs-rb-caller,
+  .evs-rb-callee {
+    min-width: 78px;
+  }
+
+  /* Here a node's tone is its outcome, part of the story: shown in the static frame. */
+  .evs-rb .evs-dg-node::after {
+    opacity: 1;
+  }
+
+  /* Call above, what comes back below, in the tone of what comes back. */
+  .evs-rb-track {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: center;
+    row-gap: 9px;
+    min-width: 16px;
+  }
+
+  .evs-rb-track .evs-dg-wire {
+    flex: 0 0 1px;
+  }
+
+  .evs-rb-track .evs-dg-danger,
+  .evs-rb-track .evs-dg-ok {
+    --evs-dg-line: var(--evs-dg-tone);
+  }
+
+  /* One caption under each node: left, centre, right. */
+  .evs-rb-caps {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+    column-gap: 6px;
+    margin-top: 6px;
+  }
+
+  .evs-rb-caps > :nth-child(2) {
+    max-width: 96px;
+    text-align: center;
+  }
+
+  .evs-rb-try .evs-rb-caps > :nth-child(2) {
+    max-width: 108px;
+  }
+
+  .evs-rb-caps > :nth-child(3) {
+    text-align: end;
+  }
+
+  @container evs-dg (min-width: 600px) {
+    .evs-rb .evs-rb-caps > :nth-child(2) {
+      max-width: none;
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-rb-track .evs-dg-wire:not(.is-left) .evs-dg-run {
+      animation: evs-revertbubbling-out 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rb-track .evs-dg-wire.is-left .evs-dg-run {
+      animation: evs-revertbubbling-back 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* The call's second hop follows the first. */
+    .evs-rb-t2 .evs-dg-wire:not(.is-left) {
+      --evs-dg-delay: 1s;
+    }
+
+    /* Strict: the revert leaves the script as soon as it gets there. Try: the script first
+       turns it into `success = false`, then returns. */
+    .evs-rb-strict .evs-rb-t1 .is-left {
+      --evs-dg-delay: 1s;
+    }
+
+    .evs-rb-try .evs-rb-t1 .is-left {
+      --evs-dg-delay: 2.2s;
+    }
+
+    .evs-diagram[data-anim] .evs-rb-callee::after {
+      animation: evs-revertbubbling-on-24 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rb-script::after {
+      animation: evs-revertbubbling-on-42 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rb-strict .evs-rb-caller::after {
+      animation: evs-revertbubbling-on-52 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rb-try .evs-rb-caller::after {
+      animation: evs-revertbubbling-on-64 10s ease-in-out infinite both;
+    }
+  }
+
+  /* The call's first hop, 0.5s to 1.4s (the second: 1.5s to 2.4s). */
+  @keyframes evs-revertbubbling-out {
+    0%,
+    4% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    5.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    14% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    15.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* The revert's first hop, callee to script, 3.3s to 4.2s. */
+  @keyframes evs-revertbubbling-back {
+    0%,
+    32% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    33.5% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    42% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    43.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+  }
+
+  /* Outcomes: each node takes its tone when the packet reaches it, and keeps it. */
+  @keyframes evs-revertbubbling-on-24 {
+    0%,
+    23% {
+      opacity: 0;
+    }
+    25.5%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-revertbubbling-on-42 {
+    0%,
+    41% {
+      opacity: 0;
+    }
+    43.5%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-revertbubbling-on-52 {
+    0%,
+    51% {
+      opacity: 0;
+    }
+    53.5%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-revertbubbling-on-64 {
+    0%,
+    63% {
+      opacity: 0;
+    }
+    65.5%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

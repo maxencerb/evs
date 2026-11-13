@@ -1,0 +1,156 @@
+---
+title: decodeScriptError
+description: Decodes a caught viem error, or raw revert bytes, against a script's ABI into a typed value you switch on by name.
+---
+
+Decodes a caught viem error, or raw revert bytes, against a script's ABI into a typed value you
+switch on by `name`.
+
+## Import
+
+```ts
+import { decodeScriptError } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {27-28}
+import { compile, decodeScriptError, evscript, namedArg, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const TooSmall = t.error('TooSmall', [namedArg('amount', t.uint256)]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall] },
+  (s, amount) => {
+    s.if(amount.lt(10n), () => {
+      s.throw(TooSmall, { amount });
+    });
+    return s.return({ doubled: amount.mul(2n) });
+  },
+);
+
+const compiled = compile(guard);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'guard',
+    args: [5n],
+  });
+} catch (error) {
+  const decoded = decodeScriptError(compiled, error);
+  if (decoded === undefined) throw error; // not a revert: a network error, a timeout
+
+  switch (decoded.name) {
+    case 'TooSmall':
+      decoded.args.amount; // 5n, typed bigint
+      break;
+    case 'Panic':
+      decoded.code; // bigint, 0x11 for an overflow
+      break;
+  }
+}
+```
+
+Pass the value from `catch` untouched. Each `case` narrows the fields of that arm.
+
+### Raw revert bytes
+
+A `0x` hex string is decoded as the revert payload itself.
+
+```ts {7-10}
+import { decodeScriptError, evscript, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+
+const decoded = decodeScriptError(
+  ratio,
+  '0x4e487b710000000000000000000000000000000000000000000000000000000000000012',
+);
+// { name: 'Panic', code: 18n, meaning: 'division or modulo by zero', raw: '0x4e48…' }
+```
+
+## Returns
+
+`DecodedScriptError | undefined`
+
+`undefined` when the input carries no revert data. Otherwise one of these arms, each with the
+payload in `raw`:
+
+| `name` | Other fields | The payload is |
+| --- | --- | --- |
+| a declared error, like `'TooSmall'` | `args` | an error from the script's `errors`. `args` is keyed by parameter name |
+| `'EvsInvalidCalldata'` | `args` (empty) | the [built-in error](/reference/diagnostics/#built-in-errors) for calldata the script rejects |
+| `'EvsDecodeError'` | `args.site` | the [built-in error](/reference/diagnostics/#built-in-errors) for returndata a call cannot decode |
+| `'Panic'` | `code`, `meaning` | `Panic(uint256)`. See [panic codes](/reference/diagnostics/#panic-codes) |
+| `'Error'` | `reason` | `Error(string)`, a `require` or `revert("…")` in a called contract |
+| `'unknown'` | `selector` | anything else, such as a custom error bubbled from a called contract |
+| `'empty'` | none | a revert with no data |
+
+## Parameters
+
+### script
+
+- **Type:** `{ abi: Abi }`
+
+The script whose errors to decode against: an `evscript()` result or its compiled artifact.
+
+```ts {10}
+import { compile, decodeScriptError, evscript, t } from '@maxencerb/evs';
+
+const NotOwner = t.error('NotOwner');
+const only = evscript({ name: 'only', args: [], errors: [NotOwner] }, (s) => {
+  s.throw(NotOwner);
+  return s.return({ ok: s.lit(t.bool, true) });
+});
+
+const decoded = decodeScriptError(
+  compile(only),
+  '0x30cd7471',
+);
+// { name: 'NotOwner', args: {}, raw: '0x30cd7471' }
+```
+
+### input
+
+- **Type:** `unknown`
+
+The caught error, or a `0x` hex string of revert data. For an error, the `cause` chain is
+searched for the revert.
+
+```ts {13}
+import { decodeScriptError, evscript, interpret, t } from '@maxencerb/evs';
+import type { MockChain } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const { outcome } = interpret(ratio, [1n, 0n], noCalls);
+if (outcome.kind === 'revert') {
+  const decoded = decodeScriptError(
+    ratio,
+    outcome.data,
+  );
+  decoded?.name; // 'Panic'
+}
+```
+
+## Behavior
+
+- **No revert, no result.** A network error, a timeout or any other value without revert data
+  gives `undefined`. Rethrow it.
+- **Shape, not class.** The error is read by its fields, so an error thrown by another copy of
+  viem still decodes.
+- **Never guesses arguments.** A known selector whose arguments do not decode comes back as
+  `'unknown'`.
+- **Only this script's errors.** A custom error from a called contract is `'unknown'`. Decode
+  its `raw` against that contract's ABI.
+- **Same rules as `explainRevert`.** Both classify a payload the same way.
+  [`explainRevert`](/reference/artifact/explain-revert/) adds the site in your script.

@@ -1,0 +1,415 @@
+---
+title: s.read
+description: Calls a view or pure function on another contract and returns its decoded result.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Calls a `view` or `pure` function on another contract and returns its decoded result. The call
+is a `STATICCALL`, so the target cannot change state.
+
+[Calling contracts](/guides/calls/) compares `s.read` with `s.call` and `s.simulate`.
+
+## Usage
+
+```ts {7-12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balanceOf = evscript(
+  { name: 'balanceOf', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const balance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return s.return({ balance }); // Expr<'uint256'>
+  },
+);
+```
+
+`address`, `abi`, `functionName` and `args` are those of viem's `readContract`, except that
+`address` and every argument also accept a value computed earlier in the script.
+
+### Chaining calls
+
+A result is an `Expr`: pass it as the `address` or as an argument of the next call.
+
+```ts {7,9}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, parseAbi } from 'viem';
+
+const poolAbi = parseAbi(['function token0() view returns (address)']);
+
+const tokenSymbol = evscript({ name: 'tokenSymbol', args: [t.address] }, (s, pool) => {
+  const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+  // Expr<'address'>
+  const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ token0, symbol });
+});
+```
+
+Both calls run on-chain, inside the same `eth_call`.
+
+### Multiple outputs
+
+Several outputs come back as a readonly array, in ABI order.
+
+<Tabs syncKey="example">
+  <TabItem label="script.ts">
+    ```ts title="script.ts" {5-9}
+    import { evscript, t } from '@maxencerb/evs';
+    import { pairAbi } from './abi';
+
+    const reserves = evscript({ name: 'reserves', args: [t.address] }, (s, pair) => {
+      const [reserve0, reserve1] = s.read({
+        address: pair,
+        abi: pairAbi,
+        functionName: 'getReserves',
+      });
+      return s.return({ reserve0, reserve1 }); // Expr<'uint112'>, Expr<'uint112'>
+    });
+    ```
+  </TabItem>
+  <TabItem label="abi.ts">
+    ```ts title="abi.ts"
+    // Uniswap V2 pair
+    export const pairAbi = [
+      {
+        type: 'function',
+        name: 'getReserves',
+        stateMutability: 'view',
+        inputs: [],
+        outputs: [
+          { name: 'reserve0', type: 'uint112' },
+          { name: 'reserve1', type: 'uint112' },
+          { name: 'blockTimestampLast', type: 'uint32' },
+        ],
+      },
+    ] as const;
+    ```
+  </TabItem>
+</Tabs>
+
+To read them by name instead, pass [`struct: true`](#struct-optional).
+
+### Overloaded functions
+
+A bare name resolves by the number and types of `args`. When they fit several overloads, name
+one by its signature.
+
+```ts {15-16,21-22}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const oracleAbi = parseAbi([
+  'function price(uint256 id) view returns (uint256)',
+  'function price(uint8 decimals) view returns (int256)',
+]);
+
+const prices = evscript(
+  { name: 'prices', args: [t.address, t.uint256] },
+  (s, oracle, id) => {
+    const byId = s.read({
+      address: oracle,
+      abi: oracleAbi,
+      functionName: 'price',
+      args: [id], // an Expr<'uint256'> fits price(uint256) only
+    });
+    const scaled = s.read({
+      address: oracle,
+      abi: oracleAbi,
+      functionName: 'price(uint8)', // 18 fits both overloads: the signature picks one
+      args: [18],
+    });
+    return s.return({ byId, scaled }); // Expr<'uint256'>, Expr<'int256'>
+  },
+);
+```
+
+A typed literal settles it too: `args: [s.lit(t.uint8, 18)]`.
+
+## Returns
+
+`Expr | Tuple | readonly (Expr | Tuple)[] | void`
+
+The shape follows the function's outputs, as with viem's `readContract`:
+
+| ABI outputs | Result |
+| --- | --- |
+| none | `void` |
+| one value or array | an `Expr` of that type |
+| one struct | a [`Tuple`](/reference/builder/tuple/#tuple) |
+| several | a readonly array of `Expr` and `Tuple`, in ABI order |
+| named outputs, with `struct: true` | one `Tuple` keyed by output name |
+
+```ts {18}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const managerAbi = parseAbi([
+  'struct Position { address operator; uint128 liquidity; }',
+  'function positionOf(uint256 id) view returns (Position)',
+]);
+
+const position = evscript(
+  { name: 'position', args: [t.address, t.uint256] },
+  (s, manager, id) => {
+    const position = s.read({
+      address: manager,
+      abi: managerAbi,
+      functionName: 'positionOf',
+      args: [id],
+    });
+    return s.return({ operator: position.operator.get(), position });
+  },
+);
+```
+
+A struct output is a `Tuple`: read one member with `.get()`, or return the whole handle. An
+array of structs is an `Expr` whose [`at(i)`](/reference/expr/bytes-and-arrays/#at) is a `Tuple`.
+
+## Parameters
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call: a `0x` literal, or an `Expr<'address'>` such as a script argument or an
+earlier result.
+
+```ts {6}
+import { evscript } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const usdcSupply = evscript({ name: 'usdcSupply', args: [] }, (s) => {
+  const supply = s.read({
+    address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+    abi: erc20Abi,
+    functionName: 'totalSupply',
+  });
+  return s.return({ supply });
+});
+```
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. Declare it `as const`, or build it with viem's `parseAbi`, so that function
+names, arguments and results are typed.
+
+```ts {3-11,16}
+import { evscript, t } from '@maxencerb/evs';
+
+const vaultAbi = [
+  {
+    type: 'function',
+    name: 'totalAssets',
+    stateMutability: 'view',
+    inputs: [],
+    outputs: [{ name: 'assets', type: 'uint256' }],
+  },
+] as const;
+
+const totalAssets = evscript({ name: 'totalAssets', args: [t.address] }, (s, vault) => {
+  const assets = s.read({
+    address: vault,
+    abi: vaultAbi,
+    functionName: 'totalAssets',
+  });
+  return s.return({ assets });
+});
+```
+
+An ABI typed `Abi`, such as one imported from JSON, still works. `functionName` is then any
+string, and you cast the result to the function's real shape.
+
+```ts {4,8}
+import { evscript, t, type Expr } from '@maxencerb/evs';
+import type { Abi } from 'viem';
+
+declare const tokenAbi: Abi; // for example, imported from a JSON file
+
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const result = s.read({ address: token, abi: tokenAbi, functionName: 'decimals' });
+  const decimals = result as Expr<'uint8'>; // not checked against the ABI
+  return s.return({ decimals });
+});
+```
+
+### functionName
+
+- **Type:** `string`
+
+The function to call. It autocompletes to the `view` and `pure` functions of `abi`.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbol = evscript({ name: 'symbol', args: [t.address] }, (s, token) => {
+  const symbol = s.read({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'symbol',
+  });
+  return s.return({ symbol });
+});
+```
+
+A canonical signature such as `'price(uint8)'` names one overload exactly: the name, then the
+parameter types without names or spaces, a struct written as `(type,type)`. See
+[overloaded functions](#overloaded-functions).
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+One entry per function input, omitted when there is none. Each entry is either:
+
+- the literal viem takes: a `bigint` or a `number`, a string, a `boolean`, an object, an array;
+- an `Expr` of exactly the input's type. An `Expr<'uint8'>` does not fit a `uint256` input:
+  convert it with [`toUint`](/reference/expr/conversions/#touint).
+
+```ts {13}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const permit2 = '0x000000000022D473030F116dDEE9F6B43aC78BA3';
+
+const allowance = evscript(
+  { name: 'allowance', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const allowance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'allowance',
+      args: [owner, permit2], // an Expr, then a literal
+    });
+    return s.return({ allowance });
+  },
+);
+```
+
+A struct input takes an object that names every member, or a
+[`Tuple`](/reference/builder/tuple/#tuple). An array input takes an array literal, an array
+`Expr` or a [`MutArray`](/reference/builder/new-array/#mutarray).
+
+```ts {16}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const lensAbi = parseAbi([
+  'struct PoolKey { address token0; address token1; uint24 fee; }',
+  'function liquidity(PoolKey key) view returns (uint128)',
+]);
+
+const liquidity = evscript(
+  { name: 'liquidity', args: [t.address, t.address, t.address] },
+  (s, lens, token0, token1) => {
+    const liquidity = s.read({
+      address: lens,
+      abi: lensAbi,
+      functionName: 'liquidity',
+      args: [{ token0, token1, fee: 500 }], // members can be Exprs
+    });
+    return s.return({ liquidity });
+  },
+);
+```
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that runs out fails with empty revert data, which
+`s.read` bubbles and [`s.tryRead`](/reference/builder/try-read/) reports as a failure.
+
+It is a cap, not a guarantee: the EVM forwards at most 63/64 of the gas the script has left.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const name = evscript({ name: 'name', args: [t.address] }, (s, token) => {
+  const name = s.read({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'name',
+    gas: 100_000n,
+  });
+  return s.return({ name });
+});
+```
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Returns the outputs as one [`Tuple`](/reference/builder/tuple/#tuple) keyed by output name,
+instead of a positional array. Every output must have a name, and no name may repeat.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+import { pairAbi } from './abi';
+
+const reserves = evscript({ name: 'reserves', args: [t.address] }, (s, pair) => {
+  const reserves = s.read({
+    address: pair,
+    abi: pairAbi,
+    functionName: 'getReserves',
+    struct: true,
+  });
+  // one member, then the whole struct
+  return s.return({ reserve0: reserves.reserve0.get(), reserves });
+});
+```
+
+`pairAbi` is the `abi.ts` of [multiple outputs](#multiple-outputs). The tuple's type is the one
+[`t.fromOutputs`](/reference/types/from-outputs/) derives from the same ABI entry.
+
+## Behavior
+
+- **View and pure only.** Any other function is a type error, and `ABI_SHAPE` while building.
+  A function mislabeled `view` that writes state fails with empty revert data.
+- **Reverts bubble unchanged.** When the target reverts, the script reverts with the same data,
+  byte for byte. For a flag instead, use [`s.tryRead`](/reference/builder/try-read/).
+- **Malformed return data.** Data that does not decode against the ABI reverts the script with
+  `EvsDecodeError(site)`, where `site` identifies the call.
+- **Out-of-range words.** A word too large for its type is masked, not rejected: a `uint8`
+  output holding 300 reads as 44. viem would return 300.
+- **Address without code.** The call returns empty data, so it fails with `EvsDecodeError(site)`
+  like any undecodable result. Check [`s.codeSize`](/reference/builder/balance/#scodesize) to
+  detect it.
+- **Caller is the script.** The target sees the script's address as `msg.sender`, not your
+  `account`. [Sender mode](/guides/execution/) makes the two the same address.
+
+## Errors
+
+Thrown while the callback records, at the offending line. With a typed ABI, TypeScript reports
+most of them first.
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array, or `functionName` is missing or names no function of it |
+| `EvsTypeError` (`ABI_SHAPE`) | the function is `nonpayable` or `payable`: use `s.call` or `s.simulate` |
+| `EvsTypeError` (`ABI_SHAPE`) | the `args` fit several overloads |
+| `EvsTypeError` (`ABI_SHAPE`) | `struct: true` on outputs that are unnamed, share a name, or do not exist |
+| `EvsTypeError` (`TYPE_MISMATCH`) | wrong number or type of `args`, or `args` that fit no overload |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `address` is missing, or `address` or `gas` is an `Expr` of another type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the object has a key that is not a parameter: `value`, `revertReturns`, a `chainId` from a spread config |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit its parameter type |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | an ABI type nests arrays more than four levels deep |
+
+Reverts when the script runs. [`explainRevert`](/reference/artifact/explain-revert/) names the
+call behind an `EvsDecodeError`, and lists the calls a bubbled revert can have come through.
+
+| Revert | When |
+| --- | --- |
+| the target's revert data | the target reverts; empty data when it runs out of gas or tries to write state |
+| `EvsDecodeError(site)` | the return data does not decode: too short, offsets out of bounds, or no code at the address |

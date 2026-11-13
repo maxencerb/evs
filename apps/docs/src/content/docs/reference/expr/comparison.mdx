@@ -1,0 +1,162 @@
+---
+title: Comparison
+description: Compares two values of the same type and returns a bool. Numbers, addresses and bytesN have an order, and every type has equality.
+---
+
+Compares two values of the same type and returns an `Expr<'bool'>`. Numbers, addresses and
+`bytesN` have an order, and every type has equality.
+
+| Method | Signature | Receiver | Description |
+| --- | --- | --- | --- |
+| [`lt`](#lt) | `lt(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a < b` |
+| [`gt`](#gt) | `gt(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a > b` |
+| [`lte`](#lte) | `lte(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a <= b` |
+| [`gte`](#gte) | `gte(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a >= b` |
+| [`eq`](#eq) | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | every type | `a == b` |
+| [`neq`](#neq) | `neq(rhs: IntoExpr<t>): Expr<'bool'>` | every type | `a != b` |
+
+`t` is the receiver's type, and an `IntoExpr<t>` is an `Expr<t>` or a
+[literal](/reference/expr/#literals). A `bool`, a `string`, `bytes`, an array or a struct has
+equality but no order.
+
+## lt
+
+Returns true when the receiver is lower than `rhs`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const sort = evscript({ name: 'sort', args: [t.address, t.address] }, (s, a, b) => {
+  const aFirst = a.lt(b); // addresses order as numbers
+  return s.return({ token0: s.select(aFirst, a, b), token1: s.select(aFirst, b, a) });
+});
+```
+
+## gt
+
+Returns true when the receiver is greater than `rhs`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const funded = evscript({ name: 'funded', args: [t.address] }, (s, account) => {
+  const hasEth = s.balance(account).gt(0n);
+  return s.return({ hasEth });
+});
+```
+
+## lte
+
+Returns true when the receiver is lower than or equal to `rhs`.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const below = evscript(
+  { name: 'below', args: [t.int24, t.int24] },
+  (s, tick, upper) => {
+    const atOrBelow = tick.lte(upper); // int24: a signed comparison, -100 <= 0
+    return s.return({ atOrBelow });
+  },
+);
+```
+
+## gte
+
+Returns true when the receiver is greater than or equal to `rhs`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const expiry = evscript({ name: 'expiry', args: [t.uint256] }, (s, deadline) => {
+  const expired = s.env('timestamp').gte(deadline);
+  return s.return({ expired });
+});
+```
+
+## eq
+
+Returns true when the receiver equals `rhs`.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const isWeth = evscript({ name: 'isWeth', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const matches = symbol.eq('WETH'); // same bytes
+  return s.return({ matches });
+});
+```
+
+What "equal" means depends on the type:
+
+| Type | Equal when |
+| --- | --- |
+| `uintN`, `intN`, `address`, `bool`, `bytesN` | the values are the same |
+| `string`, `bytes` | the bytes are the same |
+| arrays | the lengths are the same and every element is equal |
+| structs and tuples | every member is equal |
+
+### Arrays and structs
+
+A struct argument is a [`Tuple`](/reference/builder/tuple/#tuple) handle: compare its `expr()`.
+
+```ts {8-9}
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const same = evscript(
+  { name: 'same', args: [t.array(t.uint24), Pair, Pair] },
+  (s, fees, a, b) => {
+    const standard = fees.eq([500n, 3000n, 10000n]);
+    const samePair = a.expr().eq(b.expr());
+    return s.return({ standard, samePair });
+  },
+);
+```
+
+## neq
+
+Returns true when the receiver differs from `rhs`. It is the opposite of [`eq`](#eq) for every
+type.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const ZERO = '0x0000000000000000000000000000000000000000';
+
+const hasOwner = evscript({ name: 'hasOwner', args: [t.address] }, (s, owner) => {
+  const isSet = owner.neq(ZERO);
+  return s.return({ isSet });
+});
+```
+
+## Behavior
+
+- **One type.** Both sides have the same type. A `uint8` does not compare with a `uint256`, nor
+  a `string` with a `bytes`: [convert](/reference/expr/conversions/) one side first.
+- **Signed by type.** An `intN` compares as a signed number: `tick.lt(0n)` is true for `-100`.
+- **Addresses and bytes.** An `address` orders as a number. A `bytesN` orders byte by byte from
+  the left: `0xff000000` is greater than `0x00ffffff`.
+- **Hash equality.** Strings, bytes, arrays and structs compare by
+  [`keccak256`](/reference/builder/keccak256/): `a.eq(b)` is `s.keccak256(a).eq(s.keccak256(b))`.
+- **Literals fold.** Two literal words
+  [fold](/reference/expr/arithmetic/#build-time-folding). A literal string, bytes or array of
+  words is hashed at build time.
+- **Builder mirrors.** `s.lt(a, b)`, `s.gt`, `s.lte`, `s.gte`, `s.eq` and `s.neq` take a literal
+  on either side: `s.gt(100n, x)`.
+
+## Errors
+
+Nothing here reverts at run time. Thrown at build time, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the two sides have different types |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `lt`, `gt`, `lte`, `gte` on a `bool`, `string`, `bytes`, array, struct or tuple |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a builder mirror gets two plain literals: type one with [`s.lit`](/reference/builder/lit/) |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit `t` |
+
+See [error codes](/reference/diagnostics/#error-codes).

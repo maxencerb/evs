@@ -1,0 +1,189 @@
+---
+title: t.fromOutputs
+description: Derives a type from the outputs of an ABI function, so you do not retype a struct the ABI already describes.
+---
+
+Derives a type from the outputs of an ABI function, so you do not retype a struct the ABI already
+describes. [`t.fromAbiParameter`](/reference/types/from-outputs/#tfromabiparameter) does the same
+for a single ABI parameter.
+
+## Usage
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const poolAbi = parseAbi([
+  'function protocolFees() view returns (uint128 token0, uint128 token1)',
+]);
+
+const Fees = t.fromOutputs(poolAbi, 'protocolFees');
+// struct { token0: uint128; token1: uint128 }
+
+const fees = evscript({ name: 'fees', args: [t.array(t.address)] }, (s, pools) => {
+  const out = s.newArray(Fees, pools.length());
+  s.forEach(pools, (pool, i) => {
+    const read = s.read({
+      address: pool,
+      abi: poolAbi,
+      functionName: 'protocolFees',
+      struct: true,
+    });
+    out.set(i, read);
+  });
+  return s.return({ fees: out });
+});
+```
+
+Several outputs give a struct with one member per output. [`s.read`](/reference/builder/read/)
+with `struct: true` decodes the same function into a value of that type.
+
+### A single output
+
+One output gives that output's type directly, not a one-member struct.
+
+```ts {6}
+import { t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const poolAbi = parseAbi(['function token0() view returns (address)']);
+
+const Token0 = t.fromOutputs(poolAbi, 'token0'); // 'address'
+```
+
+### Overloaded functions
+
+There are no arguments to pick an overload by, so name it by its signature.
+
+```ts {9-11}
+import { t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const oracleAbi = parseAbi([
+  'function price() view returns (uint256)',
+  'function price(uint8 decimals) view returns (uint256 value, uint64 updatedAt)',
+]);
+
+const Price = t.fromOutputs(oracleAbi, 'price()'); // 'uint256'
+const Quote = t.fromOutputs(oracleAbi, 'price(uint8)');
+// struct { value: uint256; updatedAt: uint64 }
+```
+
+## Returns
+
+`EvsType`
+
+One output gives that output's type; several give a struct (a `TupleType`) with one member per
+output, in ABI order. The exact type is exported as `FromAbiOutputs`.
+
+## Parameters
+
+### abi
+
+- **Type:** `Abi | readonly unknown[]`
+
+The ABI that holds the function. Declare it `as const` or build it with `parseAbi`: with a
+widened ABI the call still works, but the result is typed as the wide `EvsType`.
+
+```ts {7}
+import { t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const poolAbi = parseAbi(['function token0() view returns (address)']);
+
+const Token0 = t.fromOutputs(
+  poolAbi,
+  'token0',
+);
+```
+
+### name
+
+- **Type:** `string`
+
+The function name, or its signature when the name is overloaded (`'price(uint8)'`).
+
+```ts {8}
+import { t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const poolAbi = parseAbi(['function token0() view returns (address)']);
+
+const Token0 = t.fromOutputs(
+  poolAbi,
+  'token0',
+);
+```
+
+## t.fromAbiParameter
+
+Derives a type from one ABI parameter. A `tuple` parameter gives a struct type, any other
+parameter gives its type string.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi([
+  'struct QuoteParams { address tokenIn; address tokenOut; uint256 amountIn; }',
+  'function quote(QuoteParams params) view returns (uint256 amountOut)',
+]);
+
+const QuoteParams = t.fromAbiParameter(quoterAbi[0].inputs[0]);
+
+const quotes = evscript(
+  { name: 'quotes', args: [t.address, t.array(QuoteParams)] },
+  (s, quoter, requests) => {
+    const amounts = s.newArray(t.uint256, requests.length());
+    s.forEach(requests, (request, i) => {
+      const amountOut = s.read({
+        address: quoter,
+        abi: quoterAbi,
+        functionName: 'quote',
+        args: [request],
+      });
+      amounts.set(i, amountOut);
+    });
+    return s.return({ amounts });
+  },
+);
+```
+
+The result is the bare type: the parameter's own name is dropped. To keep it as an argument
+label, write `namedArg(param.name, t.fromAbiParameter(param))`.
+
+### param
+
+- **Type:** `AbiParameter`
+
+One entry of an ABI's `inputs` or `outputs`. Returns its `EvsType`, exported as
+`AbiParamToEvsType`.
+
+```ts {3}
+import { t } from '@maxencerb/evs';
+
+const Tick = t.fromAbiParameter({ name: 'tick', type: 'int24' }); // 'int24'
+```
+
+## Behavior
+
+- **ABI order.** Members keep the names and the order of the ABI.
+- **Same as hand-written.** The result equals a [`t.struct`](/reference/types/struct/) with the
+  same members in the same order.
+- **Unnamed outputs.** If any output has no name, the type is positional: array literals and
+  `.at(i)`, as with [`t.tuple`](/reference/types/tuple/).
+- **Missing names.** A tuple member with no `name` key gets `''`. The same parameter passed raw
+  as a script argument throws `TYPE_MISMATCH`: pass it through `t.fromAbiParameter` first.
+
+## Errors
+
+Thrown by the `t.fromOutputs` call. The last two rows also apply to `t.fromAbiParameter`:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array |
+| `EvsTypeError` (`ABI_SHAPE`) | no function has that name or signature |
+| `EvsTypeError` (`ABI_SHAPE`) | the name is overloaded: pass a signature |
+| `EvsTypeError` (`ABI_SHAPE`) | the function has no outputs |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a type is unknown, a tuple is empty, or two members of a tuple share a name |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | more than four array levels, or an ABI static size of 2^32 bytes or more |

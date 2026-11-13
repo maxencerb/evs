@@ -1,0 +1,354 @@
+---
+// Writing scripts: the callback runs once at build time and records statements; the recorded
+// program is what runs on-chain. Each line of the callback lights up in turn and the statement it
+// records appears on the right: a native `if` records its body with no branch, `s.if` records a
+// branch. Two panels (side by side from 600px, stacked below). Loop: 12s, 2.4s per line.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="BuildVsRun">
+  <div class="evs-bv">
+    <div class="evs-bv-panel evs-bv-src">
+      <div class="evs-bv-head">
+        <span class="evs-dg-title">your callback</span>
+        <span class="evs-dg-note">runs once, at build time</span>
+      </div>
+      <div class="evs-dg-region evs-bv-rows">
+        <div class="evs-bv-line evs-bv-k1">const a = s.read(…)</div>
+        <div class="evs-bv-line evs-bv-k2">
+          <span>{'if (a) { … }'}</span>
+          <span class="evs-dg-note evs-bv-tag">JS: always true</span>
+        </div>
+        <div class="evs-bv-line evs-bv-k3">s.if(a.gt(0), …)</div>
+        <div class="evs-bv-line evs-bv-k4">{'s.return({ … })'}</div>
+      </div>
+    </div>
+
+    <div class="evs-bv-links">
+      <span class="evs-dg-note evs-bv-verb">records</span>
+      <span class="evs-dg-wire evs-bv-k1"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-wire evs-bv-k2"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-wire evs-bv-k3"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-wire evs-bv-k4"><i class="evs-dg-run"></i></span>
+    </div>
+
+    <div class="evs-bv-panel evs-bv-out">
+      <div class="evs-bv-head">
+        <span class="evs-dg-title">recorded program</span>
+        <span class="evs-dg-note">runs on-chain</span>
+      </div>
+      <div class="evs-dg-region evs-bv-rows">
+        <div class="evs-bv-stmt evs-bv-s1"><span class="evs-dg-node">READ</span></div>
+        <div class="evs-bv-stmt evs-bv-s2">
+          <span class="evs-dg-node">…</span>
+          <span class="evs-dg-note">the body, no branch</span>
+        </div>
+        <div class="evs-bv-stmt evs-bv-s3">
+          <span class="evs-dg-node">BRANCH</span>
+          <span class="evs-dg-note">on a &gt; 0</span>
+        </div>
+        <div class="evs-bv-stmt evs-bv-s4"><span class="evs-dg-node">RETURN</span></div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-bv {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .evs-bv-panel {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+
+  .evs-bv-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: baseline;
+    gap: 0 10px;
+    margin-bottom: 8px;
+  }
+
+  /* Four 30px rows on each side, so line k faces statement k. */
+  .evs-bv-rows {
+    padding: 6px;
+  }
+
+  .evs-bv-line,
+  .evs-bv-stmt {
+    position: relative;
+    display: flex;
+    align-items: center;
+    column-gap: 10px;
+    height: 30px;
+    padding: 0 8px;
+    border-radius: var(--evs-radius-sm);
+    white-space: nowrap;
+  }
+
+  /* The line being run. */
+  .evs-bv-line::after {
+    content: '';
+    position: absolute;
+    inset: 0;
+    border: 1px solid var(--evs-accent);
+    border-radius: inherit;
+    background: var(--evs-accent-soft);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .evs-bv-tag {
+    padding: 1px 6px;
+    border: 1px dashed var(--evs-dg-stroke);
+    border-radius: var(--evs-radius-sm);
+  }
+
+  .evs-bv-stmt {
+    padding: 0 2px;
+  }
+
+  .evs-bv-stmt .evs-dg-node {
+    min-width: 72px;
+    min-height: 24px;
+    padding: 3px 10px;
+  }
+
+  /* Stacked: one arrow from the callback down to the program; the four wires share it. */
+  .evs-bv-links {
+    position: relative;
+    display: flex;
+    align-items: center;
+    height: 30px;
+    margin: 4px 0;
+  }
+
+  .evs-bv-links .evs-dg-wire {
+    position: absolute;
+    top: 0;
+    left: 22px;
+    flex: none;
+    width: 1px;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .evs-bv-links .evs-dg-wire::after {
+    top: auto;
+    right: auto;
+    bottom: 1px;
+    left: 50%;
+    transform: translateX(-50%) rotate(135deg);
+  }
+
+  .evs-bv-verb {
+    margin-left: 34px;
+  }
+
+  /* Side by side: one wire per row. */
+  @container evs-dg (min-width: 600px) {
+    .evs-bv {
+      flex-direction: row;
+    }
+
+    .evs-bv-links {
+      flex: 0 0 56px;
+      flex-direction: column;
+      align-items: stretch;
+      height: auto;
+      margin: 0;
+      padding-top: 31px;
+    }
+
+    .evs-bv-links .evs-dg-wire {
+      position: relative;
+      top: auto;
+      left: auto;
+      flex: 0 0 1px;
+      width: auto;
+      height: 1px;
+      margin: 14.5px 0;
+    }
+
+    .evs-bv-links .evs-dg-wire::after {
+      top: 50%;
+      right: 1px;
+      bottom: auto;
+      left: auto;
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    /* The wires face their rows; the verb would only run into the panel title. */
+    .evs-bv-verb {
+      display: none;
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-bv-line::after {
+      animation: evs-buildvsrun-line 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-bv-links .evs-dg-run {
+      animation: evs-buildvsrun-run-y 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    @container evs-dg (min-width: 600px) {
+      .evs-diagram[data-anim] .evs-bv-links .evs-dg-run {
+        animation-name: evs-buildvsrun-run-x;
+      }
+    }
+
+    /* Line k and its packet run 2.4s after the previous ones. */
+    .evs-bv-k2 {
+      --evs-dg-delay: 2.4s;
+    }
+
+    .evs-bv-k3 {
+      --evs-dg-delay: 4.8s;
+    }
+
+    .evs-bv-k4 {
+      --evs-dg-delay: 7.2s;
+    }
+
+    .evs-diagram[data-anim] .evs-bv-s1 {
+      animation: evs-buildvsrun-on-15 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-bv-s2 {
+      animation: evs-buildvsrun-on-35 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-bv-s3 {
+      animation: evs-buildvsrun-on-55 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-bv-s4 {
+      animation: evs-buildvsrun-on-75 12s ease-in-out infinite both;
+    }
+  }
+
+  /* A line's turn: lit from 0.6s to 2.6s of its 2.4s slot (the fade overlaps the next line). */
+  @keyframes evs-buildvsrun-line {
+    0%,
+    4% {
+      opacity: 0;
+    }
+    6.5%,
+    20% {
+      opacity: 1;
+    }
+    23%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The record crosses from the callback to the program, 1.2s to 1.8s. */
+  @keyframes evs-buildvsrun-run-x {
+    0%,
+    9% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    10% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    15% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    16%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes evs-buildvsrun-run-y {
+    0%,
+    9% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    10% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    15% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    16%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* Recorded statements: each appears when its packet lands and stays until the loop ends. */
+  @keyframes evs-buildvsrun-on-15 {
+    0%,
+    14.5% {
+      opacity: 0;
+    }
+    17%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-buildvsrun-on-35 {
+    0%,
+    34.5% {
+      opacity: 0;
+    }
+    37%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-buildvsrun-on-55 {
+    0%,
+    54.5% {
+      opacity: 0;
+    }
+    57%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-buildvsrun-on-75 {
+    0%,
+    74.5% {
+      opacity: 0;
+    }
+    77%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

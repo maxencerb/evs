@@ -1,390 +1,205 @@
 ---
-title: Errors and debugging
-description: Every way an evs script can fail — recording, compile, and run time — and the toolkit for decoding reverts with explainRevert, disassemble, and the source map.
+title: Errors & debugging
+description: Where a script can fail, at build time or at run time, and how to decode a revert and trace it back to the line that caused it.
 ---
 
-An evs script can fail on three distinct timelines, and each one fails differently:
+import RevertBubbling from '~/components/diagrams/RevertBubbling.astro';
 
-| Timeline                          | What you get                                                                | Typical causes                                                                                  |
-| --------------------------------- | --------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------- |
-| Recording — the builder callback  | `EvsTypeError` / `EvsStagingError` / `EvsScopeError`, thrown at the offending line | out-of-range literals, type mismatches, using an `Expr` as a plain JS value, captures in `s.fn` |
-| Compile — `compile()`             | `EvsCompileError` thrown; `EvsDiagnostic` warnings via `onDiagnostic`        | EIP-170 size overflow, unknown `evmVersion`; warnings like `LOOP_ALLOCATION`                     |
-| Run time — the `eth_call`         | revert payloads: `Panic(uint256)`, the evs error ABI, bubbled callee reverts | overflow, out-of-bounds indexing, malformed returndata, a callee reverting                       |
+A script fails in one of two places: while you build it, as a thrown error that points at your
+line, or while it runs, as a revert you decode.
 
-Every TS-side error extends `EvsError`, which carries a machine-readable `code`
-(`EvsErrorCode`) and a message. The full code list lives in the
-[diagnostics reference](/reference/diagnostics/).
+## Build-time errors
 
-## Recording-time errors
-
-The builder callback runs exactly once, and evs validates everything it can the moment a
-builder method is called. The error is thrown synchronously from inside your `evscript`
-callback, so the ordinary JavaScript stack trace points at *your* line:
-
-```ts
+```ts {5}
 import { evscript, EvsTypeError, t } from '@maxencerb/evs';
 
 try {
-  evscript({ name: 'overflowing', args: [t.uint8] }, (s, x) => {
-    const y = x.add(300n); // 300 does not fit uint8 — throws here, at recording
+  evscript({ name: 'bump', args: [t.uint8] }, (s, x) => {
+    const y = x.add(300n); // throws here: 300 does not fit a uint8
     return s.return({ y });
   });
 } catch (e) {
   if (e instanceof EvsTypeError) {
-    const code = e.code; // 'LITERAL_RANGE'
-    const where = e.stack; // the stack trace includes the line of the offending .add(300n)
+    e.code; // 'LITERAL_RANGE'
+    e.message; // 'uint8 literal 300n is out of range [0, 255]'
   }
 }
 ```
 
-Three classes can surface at recording:
+evs checks each builder call as it records it, so the error is thrown from your own line and
+its stack trace points there. Every error has a stable `code`, listed under
+[error codes](/reference/diagnostics/#error-codes).
 
-| Class             | Thrown for                                                                                                   |
-| ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `EvsTypeError`    | type mismatches, literal range violations, ambiguous overloaded calls, unsupported types, folds that would certainly panic |
-| `EvsStagingError` | using a handle as a plain JS value — `valueOf`, `toString`, template strings, `JSON.stringify`                |
-| `EvsScopeError`   | foreign handles, captures inside `s.fn`, `LoopCtl` outside its loop, builder calls after `s.return`           |
+| Class | Thrown for |
+| --- | --- |
+| `EvsTypeError` | a wrong type, an out-of-range literal, an operation on literals that always panics |
+| `EvsStagingError` | an `Expr` used as a JavaScript value: `x + 1n`, a template string, `JSON.stringify(x)` |
+| `EvsScopeError` | a value used outside the block or script that created it, a builder call after `s.return` |
+| `EvsCompileError` | thrown by `compile()`: bytecode over 24,576 bytes, an unknown `evmVersion` |
+| `EvsInternalError` | a bug in evs, not in your script: please report it |
 
-Staging misuse deserves a callout because TypeScript catches most of it too. This does not
-compile, and each line would throw `EvsStagingError` at recording if it did:
+`compile()` also reports non-fatal [warnings](/reference/diagnostics/#warnings), but only to
+the [`onDiagnostic`](/reference/compile/#ondiagnostic-optional) callback you pass: it never
+logs them.
 
-```ts nocheck
-const sum = x + 1n; // Expr<'uint256'> is not a bigint — use x.add(1n)
-const label = `balance: ${bal}`; // template-string coercion on a handle throws
+## Reverts at run time
+
+<RevertBubbling />
+
+```ts {6, 8}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenInfo = evscript({ name: 'tokenInfo', args: [t.address] }, (s, token) => {
+  // strict: if symbol() reverts, the script reverts with the same payload
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  // try: if decimals() reverts, the script goes on with success = false and value = 0
+  const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ symbol, decimals: s.select(d.success, d.value, 18) });
+});
 ```
 
-See [values and types](/guides/values-and-types/) for the full staging model.
+A strict verb (`s.read`, `s.call`, `s.simulate`) passes the callee's revert through byte for
+byte. A `try*` verb catches it.
 
-## Compile-time errors and diagnostics
+A script reverts with one of these payloads:
 
-`compile()` is reserved for whole-program facts. It throws `EvsCompileError` for hard failures —
-`COMPILE_LIMIT` when the runtime exceeds the EIP-170 cap (with a per-region size breakdown; see
-[EVM targets](/guides/evm-targets/)) and `EVM_VERSION` for an unknown target. Internal verifier
-failures throw `EvsInternalError`, whose message always contains "bug in evs, please report".
+| Payload | Cause |
+| --- | --- |
+| `Panic(uint256)` | a checked operation failed: an overflow, a division by zero, an index out of bounds. See [panic codes](/reference/diagnostics/#panic-codes) |
+| An error you declared | your own [`s.throw`](/reference/builder/throw/) |
+| `EvsDecodeError(uint256 site)` | a strict call returned data that does not decode |
+| `EvsInvalidCalldata()` | the calldata does not match the script's function |
+| The callee's payload | a contract called through a strict verb reverted |
+| No data | see [failures without revert data](#failures-without-revert-data) |
 
-Non-fatal findings are **warnings**, delivered only through the `onDiagnostic` callback —
-`compile()` never logs:
+## Decoding a revert with viem
 
-```ts
-import { compile, evscript, EvsCompileError, t, type EvsDiagnostic } from '@maxencerb/evs';
+Your declared errors are part of the script's ABI, so viem already names them when
+`readContract` throws. `matchScriptError` turns the caught error into a typed switch.
 
-const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
-  s.return({ x }),
-);
-
-const warnings: EvsDiagnostic[] = [];
-try {
-  compile(echo, { onDiagnostic: (d) => warnings.push(d) });
-} catch (e) {
-  if (e instanceof EvsCompileError) {
-    const code = e.code; // 'COMPILE_LIMIT' (EIP-170) or 'EVM_VERSION' (unknown target)
-  }
-}
-```
-
-Each `EvsDiagnostic` is `{ severity: 'warning', code, message, site? }` with five possible
-codes: `LOOP_ALLOCATION` (memory allocated on every loop iteration — evs never resets the free
-pointer), `LARGE_FRAME`, `ENV_FRAME_DEPENDENT` (`s.env('caller')`/`s.env('address')` and the
-script's own balance, `s.balance(s.env('address'))` — covered in
-[executing scripts](/guides/execution/)), and `DEPLOYLESS_RESULT_PREFIX` /
-`DEPLOYLESS_RESULT_SIZE` (a result shape that can break deployless mode — see
-[deployless limits](/reference/artifact/#deployless-limits)). The `echo` script above raises
-`DEPLOYLESS_RESULT_PREFIX`: its result starts with a `uint256` argument, which evs cannot bound
-below `0xEF·2^248`, so it may begin with `0xEF`. `site` identifies the statement that raised a
-per-statement warning, or for `DEPLOYLESS_RESULT_PREFIX` the one that computes the first
-returned value (see [diagnostics](/reference/diagnostics/)).
-
-## Runtime reverts
-
-At run time a script reverts with one of four payload families.
-
-### Declared custom errors — `t.error` and `s.throw`
-
-Scripts can declare and throw Solidity-style custom errors — a 4-byte selector plus
-ABI-encoded parameters. Errors are module-level values created with `t.error`, **declared on
-the script def**, and thrown with `s.throw`; throwing an error that is not in the def's
-`errors` list is a *type error in your editor* (and a record-time error for untyped callers):
-
-```ts
-import { evscript, namedArg, t } from '@maxencerb/evs';
-
-// params take the same shorthand as script args: bare types, namedArg, or a mixed list
-const NoBalance = t.error('NoBalance', [
-  namedArg('balance', t.uint256),
-  namedArg('who', t.address),
-]);
-const NotOwner = t.error('NotOwner');
-
-const guard = evscript(
-  { name: 'guard', args: [t.uint256, t.address], errors: [NoBalance, NotOwner] },
-  (s, x, who) => {
-    s.if(x.lt(10n), () => {
-      s.throw(NoBalance, { balance: x, who }); // named record — every param is required
-    });
-    s.if(x.eq(999n), () => {
-      s.throw(NotOwner); // zero-param — no args
-    });
-    return s.return({ doubled: x.mul(2n) });
-  },
-);
-```
-
-The revert data is exactly Solidity's: `selector ‖ abi.encode(params)`, with the selector
-derived from the canonical signature (`NoBalance(uint256,address)`). Fully-named params are
-thrown with a record; if any param is declared bare (`t.error('BadPair', [t.address,
-t.address])`), the throw takes a positional tuple instead. Struct and array params work like
-everywhere else in evs.
-
-Declared errors are appended to the compiled script's `abi`, so **viem decodes them natively**
-— no wrappers, no extra plumbing (see [decoding script errors](#decoding-script-errors-on-the-client)
-below). Errors thrown inside an [`s.fn`](/guides/functions/) body are checked against the same
-declared set — one error namespace per script.
-
-### Panics — `Panic(uint256)`
-
-evs uses Solidity 0.8's `Panic(uint256)` convention. Your script's own code emits exactly four
-codes; everything else can still reach you because callee reverts bubble verbatim:
-
-| Code   | Meaning                                      | Emitted by your script?                                  |
-| ------ | -------------------------------------------- | -------------------------------------------------------- |
-| `0x00` | generic compiler panic                       | bubbled from a callee only                                |
-| `0x01` | assertion failure (`assert`)                 | bubbled from a callee only                                |
-| `0x11` | arithmetic overflow or underflow             | yes — checked `add`/`sub`/`mul`/`pow`, signed `div` (`intN` min ÷ −1), `mulDiv`/`mulDivRoundingUp` quotient past uint256, narrowing conversions |
-| `0x12` | division or modulo by zero                   | yes — `div`/`mod`/`addmod`/`mulmod`/`mulDiv`/`mulDivRoundingUp` |
-| `0x21` | invalid enum conversion                      | bubbled from a callee only                                |
-| `0x22` | corrupted storage byte array                 | bubbled from a callee only                                |
-| `0x31` | pop on an empty array                        | bubbled from a callee only                                |
-| `0x32` | array index out of bounds                    | yes — `.at()`, `MutArray` get/set, `.byteAt()`, `.slice()` |
-| `0x41` | allocation too large (out of memory)         | yes — `s.newArray` with a runtime length ≥ 2^32           |
-| `0x51` | call to a zero-initialized internal function | bubbled from a callee only                                |
-
-See [arithmetic](/guides/arithmetic/) for exactly which operations check what.
-
-### The evs error ABI
-
-Two custom errors are evs's own. They are exported as `EVS_ERROR_ABI` and — more usefully —
-already included in every compiled script's `abi`, so viem names them when decoding a revert:
-
-| Error                        | Reverted when                                                                                      |
-| ---------------------------- | --------------------------------------------------------------------------------------------------- |
-| `EvsInvalidCalldata()`       | the calldata does not match the script function: wrong selector, truncated calldata, malformed dynamic arguments |
-| `EvsDecodeError(uint256 site)` | a strict `s.read` received structurally malformed returndata; `site` indexes the artifact's source map           |
-
-### Bubbled callee reverts
-
-When a contract called via `s.read` reverts, the script reverts with the callee's payload
-**byte-for-byte** — `Error(string)`, `Panic(uint256)`, and custom errors alike. Nothing is
-wrapped or rewritten, so you can decode the payload against the callee's ABI as if you had
-called it directly. If you want a failed sub-call to produce zeros instead of reverting, use
-`s.tryRead` — see [calling contracts](/guides/calls/).
-
-### Failures without a script payload
-
-Some failures never reach the script's revert families, and their payload says nothing about
-the cause:
-
-- **Deployless creation limits.** The default `toViem()` runs as a contract creation, so the
-  node rejects a result over 24,576 bytes, a result starting with byte `0xEF`, or a payload
-  over 49,152 bytes. viem throws with the node's reason in `details` (`max code size exceeded`,
-  `CreateContractStartingWithEF`, `max initcode size exceeded`, …).
-  `explainDeploylessError(error)` turns it into a typed explanation naming the rule. See
-  [deployless limits](/guides/execution/#deployless-limits).
-- **Empty reverts in deployless mode.** When the script itself dies without revert data — it
-  runs out of gas, or the pinned block lacks an opcode the artifact uses (`PUSH0`, `MCOPY`) —
-  viem's wrapper reverts with empty data, and `explainRevert` reports kind `'empty'`. Re-run
-  the call with `toViem({ mode: 'stateOverride' })` to see the node's own error, and check the
-  artifact's `evmVersion` against the [pinned block](/guides/execution/#block-pinning).
-- **An unfunded `value`.** A `value` on `s.call` / `s.simulate` is paid from the script's own
-  balance, and when that balance falls short the `CALL` fails before the target runs: `s.call`
-  reverts with empty data, while `s.simulate` and an `s.call` with `revertReturns` revert with
-  `EvsDecodeError(site)`. `explainRevert` names the value-sending sites (`sourceMap.sites` marks
-  them `sendsValue`) as a candidate cause in each case. Deployless mode cannot fund the script, so `compile` warns `ENV_FRAME_DEPENDENT`
-  for every such site; fund it with a `balance` in the
-  [state-override entry](/guides/calls/#sending-eth-value).
-
-## Decoding script errors on the client
-
-Because the declared errors ride in the artifact ABI, a plain `readContract` already throws a
-decoded `ContractFunctionRevertedError` (`errorName` + `args`). For an exhaustive, typed
-switch over *your* error set, pass the **caught error itself** (or raw revert bytes) to
-`matchScriptError` — it requires one handler per declared error plus a `_` default arm for
-everything else (panics, bubbled callee errors, unknown selectors):
-
-```ts
+```ts {26-31}
 import { compile, evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
 import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
 
-const NoBalance = t.error('NoBalance', [namedArg('balance', t.uint256)]);
-const NotOwner = t.error('NotOwner');
+const TooLow = t.error('TooLow', [namedArg('balance', t.uint256)]);
 
 const guard = evscript(
-  { name: 'guard', args: [t.uint256], errors: [NoBalance, NotOwner] },
+  { name: 'guard', args: [t.uint256], errors: [TooLow] },
   (s, x) => {
     s.if(x.lt(10n), () => {
-      s.throw(NoBalance, { balance: x });
+      s.throw(TooLow, { balance: x });
     });
     return s.return({ doubled: x.mul(2n) });
   },
 );
-
 const compiled = compile(guard);
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-
-try {
-  await client.readContract({ ...compiled.toViem(), functionName: 'guard', args: [5n] });
-} catch (e) {
-  const message = matchScriptError(compiled, e, {
-    NoBalance: ({ balance }) => `insufficient balance: ${balance}`, // args typed from the declaration
-    NotOwner: () => 'caller is not the owner',
-    _: (other) => `unexpected revert: ${other.name}`, // Panic | Error | Evs* | unknown | empty
-  });
-}
-```
-
-Adding an error to the script without updating the switch is a **type error** — the handler
-record is exhaustive over the declared set. If the caught value carries no revert data at all
-(a network error, a timeout), `matchScriptError` **rethrows it** instead of routing it to `_`
-— transport failures never masquerade as script errors. The error tree is inspected by shape,
-not by class, so a revert thrown by a different copy of viem than the one evs resolved (a
-second bundle, a pnpm-duplicated version) still decodes.
-
-Under the sugar sits `decodeScriptError(script, errorOrHex)`, which returns a
-`name`-discriminated union you can `switch` on directly — one arm per ABI error entry
-(declared errors with a name-keyed, abitype-typed `args` record, plus the evs built-ins) and
-built-in arms for `Panic` (code + meaning), `Error` (reason), `unknown` (selector + raw — e.g.
-a callee error bubbled verbatim), and `empty`. It returns `undefined` when the input is not
-revert-shaped.
-
-## `explainRevert` — from a viem error to the failing site
-
-The artifact's `explainRevert(data)` classifies any revert payload and, where possible, maps it
-back to the site (a numbered read, check, or call in your script) that produced it. The full flow — catch the viem error, extract the raw
-payload, explain it:
-
-```ts
-import { compile, evscript, t } from '@maxencerb/evs';
-import {
-  BaseError,
-  ContractFunctionRevertedError,
-  createPublicClient,
-  erc20Abi,
-  http,
-} from 'viem';
-
-const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
-  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  return s.return({ symbol });
-});
-
-const compiled = compile(tokenMeta);
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+const client = createPublicClient({ chain: mainnet, transport: http() });
 
 try {
   await client.readContract({
     ...compiled.toViem(),
-    functionName: 'tokenMeta',
-    args: ['0x000000000000000000000000000000000000dEaD'], // no symbol() here
+    functionName: 'guard',
+    args: [5n],
   });
 } catch (e) {
-  if (e instanceof BaseError) {
-    const reverted = e.walk((err) => err instanceof ContractFunctionRevertedError);
-    if (reverted instanceof ContractFunctionRevertedError && reverted.raw !== undefined) {
-      const explanation = compiled.explainRevert(reverted.raw);
-      // explanation.kind    → 'evs-decode'
-      // explanation.message → "decoding symbol() returndata failed (EvsDecodeError site 0)
-      //                        — note: the script has strict call sites that bubble callee
-      //                        reverts, and a callee may have reverted with this selector (…)"
-      // explanation.site    → { id, detail } for the s.read that failed
-    }
-  }
+  const message = matchScriptError(compiled, e, {
+    // `balance` is typed from the declaration
+    TooLow: ({ balance }) => `balance too low: ${balance}`,
+    // every other revert: a panic, a callee's error, no data
+    _: (other) => `unexpected revert: ${other.name}`,
+  });
 }
 ```
 
-The result is a `RevertExplanation`: `{ kind, message, raw }` plus `panicCode` for panics,
-`site` for decode errors and `candidateSites` wherever several sites could be the origin. The
-kinds:
+- **Exhaustive.** Each declared error needs a handler, or the call does not typecheck. `_`
+  takes every other revert.
+- **Reverts only.** A network failure is rethrown, never sent to `_`.
+- **As a value.** [`decodeScriptError`](/reference/utilities/decode-script-error/) returns
+  the decoded revert for you to `switch` on.
 
-| `kind`                   | Payload                          | Source attribution                                                                  |
-| ------------------------ | -------------------------------- | ------------------------------------------------------------------------------------ |
-| `'panic'`                | `Panic(uint256)`                 | `candidateSites` — every site in *this* script that can raise that panic code         |
-| `'evs-decode'`           | `EvsDecodeError(uint256 site)`   | `site` — the exact `s.read` whose returndata failed to decode (id + detail); for an `s.simulate` or `revertReturns` site that sends a `value`, also an insufficient script balance for that `value` |
-| `'evs-invalid-calldata'` | `EvsInvalidCalldata()`           | the script's own signature is named in the message                                    |
-| `'script-error'`         | a DECLARED custom error          | `errorName` + `errorArgs` (name-keyed decoded args) — thrown by this script's `s.throw` |
-| `'error-string'`         | `Error(string)`                  | `candidateSites` — the strict call sites a callee revert can bubble through           |
-| `'custom'`               | any other selector               | `candidateSites` as above — decode the payload against the callee's ABI               |
-| `'empty'`                | zero-length returndata           | `candidateSites` as above, an insufficient script balance for an `s.call` `value`, or the frame failed without reason (see below) |
+## Explaining a revert
 
-:::caution[Attribution is a hint when the script has strict call sites]
-Panics share one revert tail, so panic attribution is a list of *candidates*, not proof — but
-only sites that can actually raise that code are listed (a `mod` or a widening conversion is
-never an overflow candidate), and each names its operands (`array index args.prices[0]`; a
-name several values share gets its `#id`), so same-kind sites stay distinguishable. When no site of the script can raise the code, the panic
-came from a callee, and the message names the strict call sites (`s.read`, `s.call`,
-`s.simulate`; never `try*`) it can have been bubbled through. And
-since callee reverts bubble byte-exactly, an adversarial callee can revert with the evs
-selectors verbatim — for scripts with a strict call site, `explainRevert` appends a hedge noting
-that the payload may have originated off-script. Scripts without one (no sub-calls, or only
-`try*` / `revertReturns` sites) cannot bubble anything, so their attributions are authoritative.
+`explainRevert` maps a revert payload back to the sites, the places in your script, that can
+produce it.
+
+```ts {20}
+import { compile, decodeScriptError, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, http, maxUint256 } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const addOne = evscript({ name: 'addOne', args: [t.uint256] }, (s, x) =>
+  s.return({ y: x.add(1n) }),
+);
+const compiled = compile(addOne);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'addOne',
+    args: [maxUint256],
+  });
+} catch (e) {
+  const revert = decodeScriptError(compiled, e); // undefined when `e` is not a revert
+  if (revert === undefined) throw e;
+  const why = compiled.explainRevert(revert.raw);
+  why.kind; // 'panic'
+  why.message;
+  // 'Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this
+  //  script: checked add args.arg0 + 1 (uint256) — Panic 0x11 (site 1)'
+}
+```
+
+:::caution[Sites are candidates, not proof]
+A panic lists every site that can raise its code. A strict call also passes a callee's revert
+through unchanged, so a `Panic` or an evs error can come from a contract you called.
 :::
 
-An empty payload has one more origin: the frame failing without data — out of gas, or an
-opcode the node does not support at that block. The default `cancun` target uses `PUSH0` and
-`MCOPY`, which are invalid before Shanghai and Cancun, so a historical read (or a chain that has
-not activated those forks) fails this way; the message names the fork-gated opcodes the runtime
-uses, and recompiling with an older `evmVersion` (`'paris'` runs everywhere) fixes it.
+## Failures without revert data
 
-## `disassemble()` — read the bytecode
+Some failures leave nothing to decode.
 
-`disassemble()` returns the annotated instruction listing of the runtime bytecode; `format()`
-renders it with labels, jump targets, and notes:
+- **A deployless limit.** The node refuses the call: a result or a payload that is too large,
+  or a result that starts with `0xEF`.
+  [`explainDeploylessError`](/reference/utilities/explain-deployless-error/) names the
+  [limit](/guides/execution/#deployless-limits).
+- **Out of gas, or a missing opcode.** Deployless mode shows a bare `execution reverted`. Run
+  the call again with `toViem({ mode: 'stateOverride' })` to see the node's own error, and
+  check the [EVM target](/guides/evm-targets/).
+- **An unfunded `value`.** A `value` is paid from the script's balance. When it falls short,
+  `s.call` reverts with no data and `s.simulate` with `EvsDecodeError`. Deployless mode cannot
+  fund the script: use a `balance` in the state-override entry.
 
-```ts
-import { compile, evscript, lookupPc, t } from '@maxencerb/evs';
+## Reading the bytecode
 
-const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
-  s.return({ x }),
-);
-const compiled = compile(echo);
+```ts {5}
+import { compile, evscript, t } from '@maxencerb/evs';
 
-const listing = compiled.disassemble().format();
-// pc, raw bytes, mnemonic, jump targets, notes — see below
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
 
-const hit = lookupPc(compiled.sourceMap, 0x29);
-// hit → { note?: string } | undefined
+const listing = compile(echo).disassemble().format();
 ```
-
-The first lines of the real listing for this `echo(uint256)` script (cancun target):
 
 ```txt
-0x0000  60a0        PUSH1 0xa0  ; frameEnd
-0x0002  6040        PUSH1 0x40
-0x0004  52          MSTORE  ; free-ptr init
-0x0005  6004        PUSH1 0x04
-0x0007  36          CALLDATASIZE
-0x0008  10          LT
-0x0009  610048      PUSH2 0x0048 → @badcd
-0x000c  57          JUMPI
-0x000d  5f          PUSH0
-0x000e  35          CALLDATALOAD
-0x000f  60e0        PUSH1 0xe0
-0x0011  1c          SHR
-0x0012  636279e43c  PUSH4 0x6279e43c  ; selector echo(uint256)
-0x0017  14          EQ
-0x0018  610020      PUSH2 0x0020 → @main
+0x0000  36          CALLDATASIZE
+0x0001  610006      PUSH2 0x0006 → @dispatch
+0x0004  57          JUMPI
+0x0005  00          STOP  ; empty calldata: receive
+@dispatch:
+0x0006  5b          JUMPDEST  ; @dispatch
+0x0007  60a0        PUSH1 0xa0  ; frameEnd
+…
 ```
 
-`disassemble` also works on foreign bytecode — it is a free export taking raw bytes or hex.
+Each line holds the program counter, the raw bytes, the mnemonic, then a jump target or a note.
+[`lookupPc`](/reference/utilities/disassemble/) finds the note for a pc taken from a node's
+execution trace.
 
-## `sourceMap` and `lookupPc`
+## Next steps
 
-The artifact's `sourceMap` is the data behind both tools: `segments` cover every emitted pc range
-(with a short note on what the code does; consecutive instructions that share a note, or have none,
-form one segment), `sites` give each panic/decode/call site an id, a kind, a human-readable detail
-naming its operands, and — on panic sites — the `panicCodes` it can raise (this is what
-`explainRevert` resolves `EvsDecodeError(site)` and panic candidates against), and `labels` name
-the pcs of internal jump targets. `lookupPc(map, pc)` binary-searches the segments — handy for
-decorating an execution trace from a node or a fork tool with what each pc range belongs to.
-
-For debugging script *logic* without a node at all, run the IR oracle instead — see
-[testing scripts](/guides/testing-scripts/). Full artifact shapes are in the
-[artifact reference](/reference/artifact/).
+- [Errors & diagnostics](/reference/diagnostics/): every error code, warning and panic code.
+- [`explainRevert`](/reference/artifact/explain-revert/): every kind of explanation it returns.
+- [`matchScriptError`](/reference/utilities/match-script-error/): the handler record in detail.
+- [Testing scripts](/guides/testing-scripts/): reproduce a revert without a node.

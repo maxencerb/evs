@@ -1,0 +1,171 @@
+---
+title: explainDeploylessError
+description: Recognizes a deployless-mode limit failure in a caught error and tells you which limit the call hit.
+---
+
+Recognizes a deployless-mode limit failure in a caught error and tells you which limit the call
+hit. The limits are described in [deployless limits](/guides/execution/#deployless-limits).
+
+## Import
+
+```ts
+import { explainDeploylessError } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {19-20}
+import { compile, evscript, explainDeploylessError, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const hash = evscript({ name: 'hash', args: [t.bytes] }, (s, data) =>
+  s.return({ digest: s.keccak256(data) }),
+);
+
+const compiled = compile(hash);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'hash',
+    args: ['0x1234'],
+  });
+} catch (error) {
+  const limit = explainDeploylessError(error);
+  if (limit === undefined) throw error; // some other failure
+
+  limit.kind; // 'result-starts-with-ef' when the digest starts with 0xEF
+  limit.message; // what happened, and how to avoid it
+}
+```
+
+viem reports these failures as "Missing or invalid parameters" or "Transaction creation failed".
+The explanation names the actual limit.
+
+### From a message
+
+A string is searched the same way as an error.
+
+```ts {3-5}
+import { explainDeploylessError } from '@maxencerb/evs';
+
+const limit = explainDeploylessError(
+  'max code size exceeded: code size 24608 limit 24576',
+);
+
+limit?.kind; // 'result-too-large'
+limit?.size; // 24608
+limit?.limit; // 24576
+```
+
+## Returns
+
+`DeploylessLimitExplanation | undefined`
+
+`undefined` when the error is not a deployless limit. Otherwise an object:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kind` | one of three strings | which limit the call hit: see the next table |
+| `message` | `string` | what happened and what to do about it |
+| `nodeMessage` | `string` | the node's own text that matched |
+| `size` | `number`, optional | the rejected size in bytes, when the node reports it |
+| `limit` | `number`, optional | the cap that was exceeded, for the two size kinds |
+
+| `kind` | Limit | Node text it matches |
+| --- | --- | --- |
+| `'result-starts-with-ef'` | the result must not start with byte `0xEF` | `invalid code: must not begin with 0xef`, `CreateContractStartingWithEF` |
+| `'result-too-large'` | the result is over 24,576 bytes | `max code size exceeded`, `CreateContractSizeLimit` |
+| `'data-too-large'` | the creation data, arguments included, is over 49,152 bytes | `max initcode size exceeded`, `CreateInitCodeSizeLimit` |
+
+## Parameters
+
+### error
+
+- **Type:** `unknown`
+
+The caught error, or a message string. For an error, the whole `cause` chain is searched.
+
+```ts {7}
+import { explainDeploylessError } from '@maxencerb/evs';
+
+const caught = new Error('call failed', {
+  cause: new Error('EVM error CreateContractSizeLimit'),
+});
+
+explainDeploylessError(caught)?.kind; // 'result-too-large'
+explainDeploylessError(new Error('fetch failed')); // undefined
+```
+
+## Behavior
+
+- **Deployless only.** State-override mode is a plain call and has none of these limits. Every
+  `message` suggests `toViem({ mode: 'stateOverride' })`.
+- **Matches node text.** It recognizes the wording of geth and the nodes that reuse it, and of
+  anvil. Any other text gives `undefined`.
+- **Not for reverts.** A script revert is not a limit. Decode it with
+  [`decodeScriptError`](/reference/utilities/decode-script-error/).
+
+## deploylessDataSize
+
+Returns the size in bytes of the data viem sends for a deployless call, so you can pick the mode
+before calling.
+
+```ts {24}
+import {
+  compile,
+  DEPLOYLESS_MAX_DATA_BYTES,
+  deploylessDataSize,
+  evscript,
+  t,
+} from '@maxencerb/evs';
+import { encodeFunctionData, type Address } from 'viem';
+
+const count = evscript({ name: 'count', args: [t.array(t.address)] }, (s, list) =>
+  s.return({ n: list.length() }),
+);
+const compiled = compile(count);
+
+declare const holders: Address[];
+
+const calldata = encodeFunctionData({
+  abi: compiled.abi,
+  functionName: 'count',
+  args: [holders],
+});
+
+const params =
+  deploylessDataSize(compiled, calldata) <= DEPLOYLESS_MAX_DATA_BYTES
+    ? compiled.toViem()
+    : compiled.toViem({ mode: 'stateOverride' });
+```
+
+- **Type:** `(script: { initBytecode: Hex }, calldata: Hex) => number`
+- **Counts:** viem's wrapper, the script's `initBytecode` and the encoded call, arguments
+  included.
+- **Throws:** `EvsTypeError` (`TYPE_MISMATCH`) when `initBytecode` or `calldata` is not `0x` hex.
+
+Nothing is sent: the size is computed locally.
+
+## DEPLOYLESS_MAX_DATA_BYTES
+
+The largest creation data a deployless call may send: `49_152` bytes (EIP-3860). Compare it with
+`deploylessDataSize`.
+
+```ts
+import { DEPLOYLESS_MAX_DATA_BYTES } from '@maxencerb/evs';
+
+DEPLOYLESS_MAX_DATA_BYTES; // 49152
+```
+
+## DEPLOYLESS_MAX_RESULT_BYTES
+
+The largest result a deployless call may return: `24_576` bytes of ABI-encoded data (EIP-170).
+
+```ts
+import { DEPLOYLESS_MAX_RESULT_BYTES } from '@maxencerb/evs';
+
+DEPLOYLESS_MAX_RESULT_BYTES; // 24576
+```

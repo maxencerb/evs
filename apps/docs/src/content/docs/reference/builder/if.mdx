@@ -1,0 +1,177 @@
+---
+title: s.if
+description: Runs one of two branches depending on a runtime condition. A value leaves a branch through a cell.
+---
+
+Runs one of two branches depending on a runtime condition. A branch is a callback, and a value
+leaves it through a [cell](/reference/builder/let/#cell).
+
+## Usage
+
+```ts {5-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  const bps = s.let(t.uint256, 0n);
+  s.if(b.gt(0n), () => {
+    bps.set(a.mul(10_000n).div(b)); // runs only when b > 0
+  });
+  return s.return({ bps: bps.get() });
+});
+```
+
+:::caution[Native if is always true]
+An `Expr` is an object, so a JavaScript `if (b.gt(0n))` always takes the branch, and nothing
+throws. Use `s.if` for a runtime value. The `typescript/strict-boolean-expressions` lint rule
+catches the mistake.
+:::
+
+### With an else branch
+
+The third argument runs when the condition is false. Only one of the two calls below is made.
+
+```ts {11-12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, zeroAddress } from 'viem';
+
+const amount = evscript(
+  { name: 'amount', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const erc20 = { address: token, abi: erc20Abi } as const;
+    const out = s.let(t.uint256, 0n);
+    s.if(
+      owner.eq(zeroAddress),
+      () => out.set(s.read({ ...erc20, functionName: 'totalSupply' })),
+      () => out.set(s.read({ ...erc20, functionName: 'balanceOf', args: [owner] })),
+    );
+    return s.return({ amount: out.get() });
+  },
+);
+```
+
+### Else if
+
+Nest a second `s.if` in the else branch.
+
+```ts {8-10}
+import { evscript, t } from '@maxencerb/evs';
+
+const feeTier = evscript({ name: 'feeTier', args: [t.uint256] }, (s, volume) => {
+  const bps = s.let(t.uint24, 30);
+  s.if(
+    volume.gte(1_000_000n),
+    () => bps.set(5),
+    () => {
+      s.if(volume.gte(10_000n), () => bps.set(10));
+    },
+  );
+  return s.return({ bps: bps.get() });
+});
+```
+
+## Returns
+
+`void`
+
+To get a value out of a branch, set a cell declared before the `s.if`.
+
+## Parameters
+
+### cond
+
+- **Type:** `IntoExpr<'bool'>`
+
+The condition: an `Expr<'bool'>`, or a `boolean` known at build time. It is evaluated once, before
+the branch.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => {
+  const negative = s.let(t.bool, false);
+  s.if(
+    x.lt(0n),
+    () => negative.set(true),
+    () => negative.set(false),
+  );
+  return s.return({ negative: negative.get() });
+});
+```
+
+### then
+
+- **Type:** `() => void`
+
+Records the statements that run when `cond` is true.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => {
+  const negative = s.let(t.bool, false);
+  s.if(
+    x.lt(0n),
+    () => negative.set(true),
+    () => negative.set(false),
+  );
+  return s.return({ negative: negative.get() });
+});
+```
+
+### otherwise (optional)
+
+- **Type:** `() => void`
+
+Records the statements that run when `cond` is false.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => {
+  const negative = s.let(t.bool, false);
+  s.if(
+    x.lt(0n),
+    () => negative.set(true),
+    () => negative.set(false),
+  );
+  return s.return({ negative: negative.get() });
+});
+```
+
+## Behavior
+
+- **Evaluated once.** `cond` is computed before the branch. To test a condition again and again,
+  use [`s.while`](/reference/builder/while/).
+- **Recorded once.** Each callback is called one time,
+  [while building](/guides/writing-scripts/). At run time only the chosen branch executes.
+- **Scoped values.** An `Expr` or a cell created in a branch cannot be used after it (below).
+- **No `s.return` inside.** [`s.return`](/reference/builder/return/) is called once, at the top
+  level of the script.
+- **Value pick.** When both sides are already computed,
+  [`s.select`](/reference/builder/select/) returns the value without a cell.
+
+### Getting a value out
+
+A value recorded in a branch stops at the end of that branch:
+
+```ts nocheck
+let doubled;
+s.if(flag, () => {
+  doubled = x.mul(2n);
+});
+return s.return({ doubled }); // EvsScopeError (SCOPE_VIOLATION)
+```
+
+Declare a cell before the `s.if`, `set` it in the branch and `get` it after, as in
+[Usage](#usage).
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `cond` is not a `bool` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `then` or `otherwise` is not a function |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | a value or a cell created in a branch is used after it |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | `s.return` is called inside a branch |

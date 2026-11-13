@@ -1,27 +1,21 @@
 ---
 title: Executing scripts
-description: Run compiled scripts through viem — deployless eth_call by default, state-override mode for a controllable msg.sender, sender mode for msg.sender-sensitive sub-calls, deployless size and gas limits, block pinning, and s.env caveats.
+description: Run a compiled script through viem's readContract in deployless mode (the default) or state-override mode, and know the limits of each.
 ---
 
-A compiled script is bytecode that runs inside a single `eth_call` — nothing is ever deployed.
-The artifact's `toViem()` method packages everything `readContract` needs, in one of two
-execution modes:
+import ExecutionModes from '~/components/diagrams/ExecutionModes.astro';
 
-- **Deployless** (the default): viem sends the script's *init* bytecode as the `eth_call`
-  `code` parameter. Plain two-parameter `eth_call`, works on every provider, but runs as a
-  contract creation, which caps the result and payload size and adds gas — see
-  [deployless limits](#deployless-limits).
-- **State override**: viem places the script's *runtime* bytecode at a chosen address via the
-  third `eth_call` parameter, then calls that address.
+A compiled script runs inside one `eth_call` and is never deployed. `toViem()` returns the
+`readContract` parameters for one of two modes: deployless (the default) or state override.
 
-Both shapes spread directly into `readContract`, and the artifact's literal-typed ABI gives you
-full inference on `args` and the result either way.
+<ExecutionModes />
 
-## Deployless mode (default)
+## Deployless (default)
 
-```ts
+```ts {14}
 import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
 
 const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
   const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
@@ -29,102 +23,70 @@ const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) 
   return s.return({ symbol, decimals });
 });
 
-const compiled = compile(tokenMeta);
+const client = createPublicClient({ chain: mainnet, transport: http() });
 
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-
-const result = await client.readContract({
-  ...compiled.toViem(), // { abi, code: initBytecode }
+const meta = await client.readContract({
+  ...compile(tokenMeta).toViem(), // { abi, code }
   functionName: 'tokenMeta',
-  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
 });
-// result: { symbol: string; decimals: number }
+// meta: { symbol: string; decimals: number }
 ```
 
-`toViem()` with no arguments (or `toViem({ mode: 'deployless' })`) returns `{ abi, code }`,
-where `code` is the artifact's `initBytecode`. viem omits `to` from the `eth_call`, so the node
-treats the data as a contract-creation frame: viem's wrapper deploys your script inside the
-simulated call (via `CREATE2`), calls it, and returns the result. No state-override support is
-required from the provider, which makes this the maximally portable mode. The price is that the
-node's contract-creation rules apply to the whole call, result included — see
-[deployless limits](#deployless-limits).
+viem sends a plain `eth_call` with no `to`, which every provider accepts. The node runs it as
+a contract creation, which is where the [deployless limits](#deployless-limits) come from.
 
-:::note[Why `code` must be init bytecode — the 10-byte wrapper]
-viem's `code` parameter expects **creation** bytecode. Passing runtime bytecode fails with an
-empty revert that carries no diagnostic data — which is why the artifact names its fields
-`runtimeBytecode` and `initBytecode` and never exposes a field named `code`; only `toViem()`
-produces one, always from `initBytecode`. The init bytecode is the runtime prefixed with the
-locked 10-byte wrapper `61RRRR80600A5F395FF3` (`RRRR` = runtime length, big-endian), which copies
-everything after itself into memory and returns it as the deployed code, so your runtime
-executes unchanged. The opcode-by-opcode listing is in
-[the artifact reference](/reference/artifact/#runtimebytecode-and-initbytecode); on the `paris`
-target the two `PUSH0` bytes become `RETURNDATASIZE` — see [EVM targets](/guides/evm-targets/).
-:::
+## State override
 
-## State-override mode
-
-```ts
+```ts {19-20}
 import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
 
 const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
   const balance = s.read({
     address: token,
     abi: erc20Abi,
     functionName: 'balanceOf',
-    args: [s.env('caller')], // msg.sender — controllable only in this mode
+    args: [s.env('caller')], // msg.sender
   });
   return s.return({ balance });
 });
 
-const compiled = compile(myBalance);
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+const client = createPublicClient({ chain: mainnet, transport: http() });
 
-const result = await client.readContract({
-  ...compiled.toViem({ mode: 'stateOverride' }), // { abi, address, stateOverride }
+const { balance } = await client.readContract({
+  // { abi, address, stateOverride }
+  ...compile(myBalance).toViem({ mode: 'stateOverride' }),
+  account: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', // the script's msg.sender
   functionName: 'myBalance',
-  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
-  account: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045', // msg.sender seen by the script
-  blockNumber: 22_000_000n, // pinned read — it is just eth_call
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
 });
-// result: { balance: bigint }
 ```
 
-`toViem({ mode: 'stateOverride', address? })` returns `{ abi, address, stateOverride }`: the
-script's `runtimeBytecode` is injected at `address` through the third `eth_call` parameter, and
-the call targets that address like a normal contract read. The default address is the exported
-`DEFAULT_SCRIPT_ADDRESS` (`0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` — the last 20 bytes of
-`keccak256("evs.script")`, with no code, storage, or balance on any major chain). Pass
-`address` to relocate the script per call.
+The third `eth_call` parameter places the script's code at an address for this call, and viem
+calls that address like any contract.
 
-This mode requires a provider that supports the state-override `eth_call` extension, and it
-unlocks what deployless mode cannot do: a stable, controllable `address(this)`, a controllable
-`msg.sender` via the `account` call parameter, and a script balance — add `balance` to the override
-entry to fund a script that [sends ETH](/guides/calls/#sending-eth-value).
-
-:::caution
-Overriding `code` does **not** clear the account's existing balance, nonce, or storage. If you
-pass a custom `address`, pick one with no state on the target chain — injecting the script at a
-live contract's address leaves that contract's storage visible to the script.
-:::
+- **Existing state stays.** The override replaces code only, not balance, nonce or storage.
+  If you pass your own `address`, pick one with no state on the chain.
+- **Multicall batching.** A client created with `batch: { multicall: true }` (the wagmi
+  default) sends a state-override call that has no `account` through Multicall3, which
+  becomes `msg.sender`. Pass `account`. Deployless calls are never batched.
 
 ## Sender mode
 
-Sub-call targets (`s.read`, `s.call`, `s.simulate` and their `try*` variants) see
-`msg.sender` = **the address the script runs at** — the `account` parameter only changes the
-script's *own* caller. No EVM primitive can alter that inside a frame, so for `msg.sender`-sensitive
-targets (an ERC-4626 `withdraw` that burns the caller's shares, `onlyOwner` views, permit-style
-checks) state-override mode takes a `sender` option that installs the script **at** the sender's
-address and self-calls through it:
+A contract your script calls sees the script's address as `msg.sender`, whatever `account` is.
+The `sender` option installs the script at the address you pass, so the contract sees that one.
 
-```ts
+```ts {23}
 import { compile, evscript, t } from '@maxencerb/evs';
 import { createPublicClient, erc4626Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
 
-const previewWithdraw = evscript(
-  { name: 'previewWithdraw', args: [t.address, t.uint256] },
+const preview = evscript(
+  { name: 'preview', args: [t.address, t.uint256] },
   (s, vault, assets) => {
-    // withdraw() checks and burns msg.sender's shares — it only succeeds AS the owner
+    // withdraw() burns msg.sender's shares, so it succeeds only as their owner
     const shares = s.simulate({
       address: vault,
       abi: erc4626Abi,
@@ -135,280 +97,105 @@ const previewWithdraw = evscript(
   },
 );
 
-const compiled = compile(previewWithdraw);
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const owner = '0x1715a3E4A142d8b698131108995174F37aEBA10D'; // must hold vault shares
 
-// The sender must OWN the shares: an address without enough sDAI makes withdraw() revert
-// (SavingsDai/insufficient-balance). This one held sDAI at the time of writing — use your own.
-const owner = '0x1715a3E4A142d8b698131108995174F37aEBA10D';
-
-const result = await client.readContract({
-  ...compiled.toViem({ mode: 'stateOverride', sender: owner }),
-  // → { abi, address: sender, stateOverride: [{ address: sender, code }], account: sender }
-  functionName: 'previewWithdraw',
-  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // sDAI, 1e6 wei of DAI
+const { shares } = await client.readContract({
+  ...compile(preview).toViem({ mode: 'stateOverride', sender: owner }),
+  functionName: 'preview',
+  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // sDAI
 });
-// result: { shares: bigint } — withdraw() ran with msg.sender = owner, then rolled back
 ```
 
-`toViem({ mode: 'stateOverride', sender })` returns `{ abi, address, stateOverride, account }` with
-`address` and `account` both set to `sender`: the script lives at the sender's address and is
-called *by* the sender, so every sub-call target sees `msg.sender = sender`, and
-`s.env('caller')` / `s.env('address')` both read `sender`. Passing your own `account` after the
-spread re-targets only the script's outer caller; the targets keep seeing `sender`. `sender` and
-`address` are the same knob: `address` may restate the sender (any casing), and passing both with
-different values throws. A `sender` or `address` that is not a 20-byte `0x` address throws
-`EvsTypeError` (`TYPE_MISMATCH`) up front, before viem sees it.
-
-:::caution
-Sender mode **replaces the code at `sender`** for the duration of the `eth_call`. An EOA sender is
-the normal case (its balance and nonce stay in place, so the targets' view of it is otherwise
-intact). A *contract* sender — a Safe, a vault — loses its own code for the call: targets that call
-back into `msg.sender` (an `onERC721Received` hook, an EIP-1271 signature check) will hit the script
-instead and revert. A plain ETH payment to the sender (`WETH.withdraw`) still succeeds: the script
-accepts empty calldata. The script's own reads of that address see the swap too:
-[`s.codeSize(sender)` / `s.codeHash(sender)`](/reference/builder/#sbalance--scodesize--scodehash)
-return the script's runtime (an EOA sender looks like a contract), while `s.balance(sender)` is the
-sender's real balance.
-:::
+- **One address.** `address` and `account` are both set to `sender`, so `s.env('caller')` and
+  `s.env('address')` both return it.
+- **The sender's code is replaced** for the call. An EOA has none to lose. A contract sender,
+  a Safe for example, cannot answer callbacks such as `onERC721Received` during it.
 
 ## Choosing a mode
 
-|                   | Deployless (default)                                            | State override                                              |
-| ----------------- | --------------------------------------------------------------- | ----------------------------------------------------------- |
-| RPC requirement   | plain two-parameter `eth_call` — every provider                  | provider must support the third `eth_call` parameter        |
-| `address(this)`   | counterfactual CREATE2 address, different per compiled script    | `DEFAULT_SCRIPT_ADDRESS`, or the `address` you pass         |
-| `msg.sender`      | viem's internal wrapper contract — not controllable              | the `account` call parameter (zero address if omitted — but see the multicall note below) |
-| `msg.sender` seen by sub-call targets | the counterfactual script address — not controllable | the script address, or a chosen `sender` in [sender mode](#sender-mode) |
-| Extra overrides   | —                                                                | composes with additional `stateOverride` entries            |
-| Result size       | at most 24,576 bytes, and must not start with byte `0xEF`        | no protocol cap                                             |
-| Payload size      | `398 + 128 + pad32(initBytecode) + pad32(encoded call)` ≤ 49,152 bytes ([details](#deployless-limits)) | no protocol cap |
-| Gas on top of the script | about 75,000 + 220 per runtime byte + 200 per result byte | none                                                        |
-| Reach for it when | always, unless you need the column to the right or hit a [deployless limit](#deployless-limits) | caller-relative reads, stable script address, spoofed state, `msg.sender`-sensitive sub-calls, large results, results that start with a hash or full-width integer, large args |
+Use deployless unless you need something from the right column.
 
-:::caution[`batch.multicall` clients change the state-override caller]
-A client created with `batch: { multicall: … }` (wagmi enables this by default) routes a
-state-override call that has **no `account`** through Multicall3's `aggregate3`. The state
-override is forwarded, so the script still runs at its override address, but `msg.sender` —
-and `s.env('caller')` — becomes the Multicall3 contract instead of the zero address. Pass
-`account` (or use a client without `batch.multicall`) when the caller matters. Deployless mode (no `to`)
-and [sender mode](#sender-mode) (`account` is set) are never batched.
+| | Deployless | State override |
+| --- | --- | --- |
+| Provider needs | plain `eth_call` | the third `eth_call` parameter |
+| `msg.sender`, `s.env('caller')` | viem's wrapper contract, never your `account` | your `account` (zero address if omitted) |
+| `address(this)`, `s.env('address')` | a CREATE2 address, different per script | `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` (`DEFAULT_SCRIPT_ADDRESS`), or your `address` |
+| `msg.sender` seen by called contracts | the script's CREATE2 address | the script address, or your `sender` |
+| Script balance | cannot be funded | `balance` in the override entry |
+| Result size, data size, gas | [limited](#deployless-limits) | no extra limit |
+
+:::caution[Caller-relative reads need state override]
+In deployless mode `balanceOf(s.env('caller'))` reads the balance of viem's wrapper
+(`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) and returns it
+without an error. `compile()` reports each such read as an `ENV_FRAME_DEPENDENT`
+[warning](/reference/diagnostics/#warnings).
 :::
 
-### Provider support
+## Provider support
 
-| Provider / node       | deployless (`to: null`) | `stateOverride` (3rd `eth_call` param)                    |
-| --------------------- | ----------------------- | --------------------------------------------------------- |
-| geth, reth, anvil     | yes                     | yes (documented; anvil verified in the integration suite) |
-| QuickNode, publicnode | yes                     | yes (documented / empirically verified)                   |
-| Alchemy, Infura       | yes                     | **not documented** for `eth_call` — probe before relying  |
+| Provider / node | Deployless (`to: null`) | State override (third `eth_call` parameter) |
+| --- | --- | --- |
+| geth, reth, anvil | yes | yes (documented; anvil verified in the integration suite) |
+| QuickNode, publicnode | yes | yes (documented / empirically verified) |
+| Alchemy, Infura | yes | **not documented** for `eth_call`: probe before relying on it |
 
-Deployless works everywhere `eth_call` works, which is why it is the default. Both modes run
-under the node's `eth_call` gas cap (geth's default `--rpc.gascap` is 50M; hosted providers set
-their own), the ceiling for scripts making many calls. Deployless spends part of that budget on
-the contract creation, and the creation rules bound its result and payload, as described below.
-To pick the mode per provider at run time, type it as `ToViemMode` and call
-`toViem({ mode })`: the result is the union of both shapes and still spreads into
-`readContract` (see [the artifact reference](/reference/artifact/#toviem--execution-shapes)).
+Both modes run under the node's `eth_call` gas cap: 50M by default on geth (`--rpc.gascap`),
+and hosted providers set their own. To pick the mode per provider at run time, pass a
+`ToViemMode` value to [`toViem`](/reference/artifact/to-viem/).
 
 ## Deployless limits
 
-viem's deployless call has no `to`, so the node runs it as a **contract creation**: viem's
-398-byte wrapper constructor deploys your script with `CREATE2`, calls it, and returns the
-script's result *as the wrapper's deployed code*. The protocol's creation rules therefore apply
-to the call itself, and none of them apply to state-override mode, which installs the runtime
-without deploying anything and returns the result as plain return data:
-
-| Rule     | What it caps in deployless mode                                                                                   | Node error (in viem's `details`)                                               |
-| -------- | ----------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| EIP-170  | the script's ABI-encoded **result**: at most 24,576 bytes                                                         | `max code size exceeded` (geth), `CreateContractSizeLimit` (anvil)              |
-| EIP-3541 | the result's **first byte**: it must not be `0xEF`                                                                 | `invalid code: must not begin with 0xef` (geth), `CreateContractStartingWithEF` (anvil) |
-| EIP-3860 | the **payload**: the wrapper, `initBytecode` and the encoded call (selector + args), ABI-framed, at most 49,152 bytes | `max initcode size exceeded` (geth and anvil)                                  |
-
-The payload is `398 + 128 + pad32(initBytecode) + pad32(calldata)` bytes, so the init bytecode
-plus the encoded call must fit in about 48.6 KB: a small script can take roughly 1,500
-`uint256` (or address) array elements as args, and a script returning one `uint256[]` can
-return at most 765 elements. The failure is always loud — the node rejects the call and viem
-throws (usually as "Missing or invalid parameters" or "Transaction creation failed", with the
-rule in `details`); no wrong value is ever returned. evs helps on three fronts, all covered in
-the [artifact reference](/reference/artifact/#deployless-limits):
-
-- **At compile time**, `compile()` warns through `onDiagnostic` about the result shapes that
-  decide a limit on their own: `DEPLOYLESS_RESULT_PREFIX` for a static result whose first
-  value is a `bytesN`, or a `uint256`/`int256` that evs cannot bound away from the values that
-  start with `0xEF` (a hash or an id, a call output, an argument — not a length, a counter or
-  `s.env('blocknumber')`; see [which integers warn](/reference/diagnostics/#which-integers-warn)),
-  and `DEPLOYLESS_RESULT_SIZE` for a result that is always over 24,576 bytes.
-- **Before the call**, `deploylessDataSize(compiled, calldata)` computes the payload size
-  above, to compare with `DEPLOYLESS_MAX_DATA_BYTES` and pick the mode per call.
-- **After a failure**, `explainDeploylessError(error)` recognizes the node's creation error and
-  says which rule failed (`'result-starts-with-ef' | 'result-too-large' | 'data-too-large'`).
-
-The size of a dynamic result depends on the data, so `DEPLOYLESS_RESULT_SIZE` only fires when
-even the smallest encoding is over the cap; a `uint256[]` that grows with its args is caught by
-the node, not by `compile()`.
-
-The creation also costs gas that state-override mode does not pay: about 75,000 gas fixed
-(the creation itself, the `CREATE2` and the wrapper), about 220 gas per byte of runtime
-bytecode (mostly the 200 gas/byte code deposit for deploying it) and 200 gas per byte of result
-(deposited as the wrapper's code). A 5 KB script returning 2 KB spends about 1.6M gas on top of
-its own work in deployless mode.
-
-:::caution[When a deployless limit hits]
-- **Switch to `toViem({ mode: 'stateOverride' })`.** None of the three rules apply there and
-  the creation gas disappears; the script, its args and its result are unchanged.
-- **Without state-override support, chunk the work**: split a large array arg over several
-  calls so each result and payload stays under its cap (`deploylessDataSize` tells you where
-  the payload cap falls).
-- **For `0xEF`, reorder the result.** Only the first byte of the encoded result matters. A
-  first value that is a `bytes32`/`bytesN` (a hash starts with `0xEF` about once in 256
-  calls), a `uint256` near the top of its range (from `0xEF·2^248`, so a hash or an id
-  reinterpreted as an integer, never an amount), or a large negative `int256` (around
-  -2<sup>252</sup>) can trip it — the `DEPLOYLESS_RESULT_PREFIX` warning names that value and
-  the statement that computes it. Put
-  a zero-padded value first — an `address`, a `bool`, a `uintN` below 256 bits — or return any
-  dynamic value (`string`, `bytes`, an array), which makes the encoding start with an offset
-  word.
-- **An empty revert can hide the cause.** If the script itself fails without revert data —
-  it runs out of gas, or uses an opcode the pinned block does not have (see
-  [block pinning](#block-pinning)) — viem's wrapper reverts with empty data, so you get a
-  bare "execution reverted" (`explainRevert` kind `'empty'`; `explainDeploylessError` returns
-  `undefined`, since no creation rule failed). State-override mode reports the node's own
-  error instead, which makes it the quicker way to diagnose such a failure.
-:::
-
-## Block pinning
-
-Both modes are ordinary `eth_call`s, so viem's block selectors pass straight through: give
-`readContract` a `blockNumber` or a `blockTag` and the whole script — including every sub-call
-it makes — executes against that block's state. Historical reads work in either mode.
-
-The pinned block also decides which opcodes exist, so the artifact must target the fork that
-was active **at that block**: the default `cancun` target emits `MCOPY` (Cancun) and `PUSH0`
-(Shanghai). On Ethereum mainnet, use `cancun` from block 19,426,587, `shanghai` from
-17,034,870, and `paris` (the oldest target) before that, down to Constantinople at block
-7,280,000: every build uses `SHL`/`SHR` and viem's deployless wrapper uses `CREATE2`, all
-Constantinople opcodes, and a script reading `s.env('chainid')` needs Istanbul (block
-9,069,000) for `CHAINID`; no evs script runs on an older block. Other chains activated these
-forks at their own heights. A mismatch fails as a bare "execution reverted" with no data in
-deployless mode, and as the node's invalid-opcode error (anvil: `NotActivated`) in
+The node applies its contract-creation rules to a deployless call. None of them apply in
 state-override mode.
-See [EVM targets](/guides/evm-targets/).
 
-```ts
-import { compile, evscript, t } from '@maxencerb/evs';
-import { createPublicClient, erc20Abi, http } from 'viem';
+| Limit | In deployless mode | Node error, in viem's `details` |
+| --- | --- | --- |
+| Result size | the ABI-encoded result is at most 24,576 bytes (EIP-170): 765 elements for one `uint256[]` | `max code size exceeded` (geth), `CreateContractSizeLimit` (anvil) |
+| `0xEF` prefix | the result's first byte is not `0xEF` (EIP-3541) | `invalid code: must not begin with 0xef` (geth), `CreateContractStartingWithEF` (anvil) |
+| Data size | `398 + 128 + pad32(initBytecode) + pad32(calldata)` is at most 49,152 bytes (EIP-3860): about 48.6 KB of script and args, or roughly 1,500 array elements for a small script | `max initcode size exceeded` (geth and anvil) |
+| Gas | about 75,000 + 220 per runtime byte + 200 per result byte extra: 1.6M for a 5 KB script that returns 2 KB | none: it counts toward the node's gas cap |
 
-const supply = evscript({ name: 'supply', args: [t.address] }, (s, token) =>
-  s.return({ supply: s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' }) }),
+A limit never returns a wrong value: viem throws, usually `Missing or invalid parameters` or
+`Transaction creation failed`.
+
+- **Fix.** Switch to `toViem({ mode: 'stateOverride' })`. Without provider support for it,
+  split a large array argument over several calls.
+- **`0xEF` prefix.** Only a first returned value that is a `bytesN` (a hash: once in 256), a
+  `uint256` of at least `0xEF·2^248` or an `int256` below `-2^252` can start with `0xEF`.
+- **`0xEF` fix.** Return an `address`, a `bool` or a narrower integer first, or any dynamic
+  value.
+- **Detect.** `compile()` [warns](/reference/diagnostics/#warnings) about risky result
+  shapes, and [`explainDeploylessError`](/reference/utilities/explain-deployless-error/)
+  names the limit a failed call hit. `deploylessDataSize` measures the data size up front.
+
+## Historical blocks
+
+```ts {12, 14}
+import { compile, evscript } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const now = evscript({ name: 'now' }, (s) =>
+  s.return({ timestamp: s.env('timestamp') }),
 );
+const client = createPublicClient({ chain: mainnet, transport: http() });
 
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-
-// block 16,000,000 predates Shanghai: no PUSH0, no MCOPY
-const { supply: atBlock } = await client.readContract({
-  ...compile(supply, { evmVersion: 'paris' }).toViem(),
-  functionName: 'supply',
-  args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+const { timestamp } = await client.readContract({
+  // block 16,000,000 predates Shanghai
+  ...compile(now, { evmVersion: 'paris' }).toViem(),
+  functionName: 'now',
   blockNumber: 16_000_000n,
 });
 ```
 
-## `s.env` and frame dependence
+`blockNumber` and `blockTag` work in both modes, and every call the script makes reads that
+block. The block also decides which opcodes exist, so compile for the fork active at that
+block: see [EVM targets](/guides/evm-targets/).
 
-`s.env(kind)` reads the execution environment. Three of the five values are block context and
-identical in both modes; two depend on the call frame `toViem()` produces:
+## Next steps
 
-| `s.env(...)`    | Result            | Deployless                                                                 | State override                                       |
-| --------------- | ----------------- | -------------------------------------------------------------------------- | ---------------------------------------------------- |
-| `'caller'`      | `Expr<'address'>` | viem's wrapper contract (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) — never your `account` | the `account` call parameter (zero address if omitted; the Multicall3 contract on a `batch.multicall` client — see below) |
-| `'address'`     | `Expr<'address'>` | a per-script counterfactual CREATE2 address                                 | the override address                                  |
-| `'timestamp'`   | `Expr<'uint256'>` | block timestamp — identical in both modes                                   | identical                                             |
-| `'blocknumber'` | `Expr<'uint256'>` | block number (the `NUMBER` opcode; on Arbitrum an approximate L1 block, see below) — identical | identical                                             |
-| `'chainid'`     | `Expr<'uint256'>` | chain id — identical                                                        | identical                                             |
-
-The deployless values exist because of how the mode works: viem's wrapper contract performs the
-`CREATE2` and then calls your script, so the script sees the wrapper as `msg.sender` and its own
-counterfactual deployment address as `address(this)`. Neither is controllable, and there is no
-deployless workaround. **Caller-relative reads — `balanceOf(s.env('caller'))` and friends —
-require `toViem({ mode: 'stateOverride' })` plus the `account` call parameter.**
-
-The script's own balance, [`s.balance(s.env('address'))`](/reference/builder/#sbalance--scodesize--scodehash),
-inherits the same split: deployless, it is the balance of the fresh counterfactual address
-(normally zero); in state-override mode it is whatever the override address holds, which the
-same override entry can set:
-
-```ts
-import { evscript } from '@maxencerb/evs';
-import { createPublicClient, http, parseEther } from 'viem';
-import { mainnet } from 'viem/chains';
-
-const client = createPublicClient({ chain: mainnet, transport: http() });
-
-const selfBalance = evscript({ name: 'selfBalance' }, (s) =>
-  s.return({ wei: s.balance(s.env('address')) }),
-).compile();
-
-const params = selfBalance.toViem({ mode: 'stateOverride' });
-const { wei } = await client.readContract({
-  ...params,
-  functionName: 'selfBalance',
-  // the script entry keeps its code; `balance` funds the script address for this call
-  stateOverride: params.stateOverride.map((o) => ({ ...o, balance: parseEther('1') })),
-});
-// wei === 10n ** 18n
-```
-
-`s.env('blocknumber')` is Solidity's `block.number`: the `NUMBER` opcode, which reports what the
-chain defines. On Arbitrum that is an approximate **L1** (Ethereum) block number, not the L2
-block you pinned with `blockNumber`; read the L2 height from the `ArbSys` precompile instead:
-
-```ts
-import { evscript } from '@maxencerb/evs';
-import { parseAbi } from 'viem';
-
-const arbSysAbi = parseAbi(['function arbBlockNumber() view returns (uint256)']);
-
-const heights = evscript({ name: 'heights' }, (s) =>
-  s.return({
-    l1: s.env('blocknumber'), // on Arbitrum: an approximate L1 block number
-    l2: s.read({
-      address: '0x0000000000000000000000000000000000000064', // ArbSys
-      abi: arbSysAbi,
-      functionName: 'arbBlockNumber',
-    }),
-  }),
-);
-```
-
-Because compile time cannot know which mode you will pick, `compile()` flags every
-`s.env('caller')` / `s.env('address')` — and every `s.balance(s.env('address'))` — with an
-`ENV_FRAME_DEPENDENT` warning through the `onDiagnostic` channel (never logged):
-
-```ts
-import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-
-const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
-  const balance = s.read({
-    address: token,
-    abi: erc20Abi,
-    functionName: 'balanceOf',
-    args: [s.env('caller')],
-  });
-  return s.return({ balance });
-});
-
-const diagnostics: EvsDiagnostic[] = [];
-compile(myBalance, { onDiagnostic: (d) => diagnostics.push(d) });
-
-// diagnostics[0].code → 'ENV_FRAME_DEPENDENT'
-// diagnostics[0].message → "s.env('caller') is execution-frame-dependent: in the default
-//   deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the
-//   eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' })
-//   plus the `account` call parameter"
-```
-
-See [errors and debugging](/guides/errors-and-debugging/) for the rest of the diagnostics
-channel, and [testing scripts](/guides/testing-scripts/) for modeling either frame off-chain
-with `interpret()`.
+- [`toViem`](/reference/artifact/to-viem/): every option and the shape each mode returns.
+- [`s.env`](/reference/builder/env/): the values a script reads from its execution frame.
+- [EVM targets](/guides/evm-targets/): which `evmVersion` to use for a chain or a block.
+- [Errors & debugging](/guides/errors-and-debugging/): what to do when a call reverts.

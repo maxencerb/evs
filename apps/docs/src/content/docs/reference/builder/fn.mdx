@@ -1,0 +1,290 @@
+---
+title: s.fn
+description: Defines a reusable function inside a script. Its body is compiled once, however many times you call it.
+---
+
+Defines a reusable function inside a script. Its body is compiled once, however many times you
+call it.
+
+## Usage
+
+```ts {7-17}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const pairBalances = evscript(
+  { name: 'pairBalances', args: [t.address, t.address, t.address] },
+  (s, tokenA, tokenB, owner) => {
+    const balanceOf = s.fn(
+      'balanceOf',
+      [namedArg('token', t.address), namedArg('who', t.address)],
+      (token, who) =>
+        s.read({
+          address: token,
+          abi: erc20Abi,
+          functionName: 'balanceOf',
+          args: [who],
+        }),
+    );
+    return s.return({
+      a: balanceOf(tokenA, owner),
+      b: balanceOf(tokenB, owner),
+    });
+  },
+);
+```
+
+### Several results
+
+Return a list. The call gives back one handle per entry.
+
+```ts {6,8}
+import { evscript, t } from '@maxencerb/evs';
+
+const sorted = evscript({ name: 'sorted', args: [t.uint256, t.uint256] }, (s, x, y) => {
+  const minMax = s.fn('minMax', [t.uint256, t.uint256], (a, b) => {
+    const aFirst = a.lt(b);
+    return [s.select(aFirst, a, b), s.select(aFirst, b, a)];
+  });
+  const [low, high] = minMax(x, y);
+  return s.return({ low, high });
+});
+```
+
+The list literal needs no `as const`: each entry keeps its own type. A list built in a variable
+first does need it.
+
+### Struct parameters
+
+A struct parameter is a [`Tuple`](/reference/builder/tuple/#tuple) handle in the body. A call
+passes a `Tuple` handle or an object literal.
+
+```ts {18-20}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Position = t.struct({ token: t.address, owner: t.address });
+
+const twoBalances = evscript(
+  { name: 'twoBalances', args: [Position, t.address] },
+  (s, position, other) => {
+    const balanceOf = s.fn('balanceOf', Position, (p) =>
+      s.read({
+        address: p.token.get(),
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [p.owner.get()],
+      }),
+    );
+    return s.return({
+      mine: balanceOf(position), // a Tuple handle
+      // an object literal
+      theirs: balanceOf({ token: position.token.get(), owner: other }),
+    });
+  },
+);
+```
+
+### Struct and array results
+
+Return a `Tuple` or a [`MutArray`](/reference/builder/new-array/#mutarray) handle directly.
+
+```ts {32-33}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Meta = t.struct({ symbol: t.string, decimals: t.uint8 });
+
+const tokenReport = evscript(
+  { name: 'tokenReport', args: [t.address, t.array(t.address)] },
+  (s, token, owners) => {
+    const getMeta = s.fn('getMeta', t.address, (target) =>
+      s.tuple(Meta, {
+        symbol: s.read({ address: target, abi: erc20Abi, functionName: 'symbol' }),
+        decimals: s.read({ address: target, abi: erc20Abi, functionName: 'decimals' }),
+      }),
+    );
+    const getBalances = s.fn(
+      'getBalances',
+      [t.address, t.array(t.address)],
+      (target, holders) => {
+        const out = s.newArray(t.uint256, holders.length());
+        s.forEach(holders, (holder, i) => {
+          const balance = s.read({
+            address: target,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [holder],
+          });
+          out.set(i, balance);
+        });
+        return out;
+      },
+    );
+    const meta = getMeta(token); // Tuple handle: meta.decimals.get()
+    const balances = getBalances(token, owners); // Expr<'uint256[]'>
+    return s.return({ meta, balances });
+  },
+);
+```
+
+### No result
+
+A body that returns nothing gives a function that returns nothing.
+
+```ts {8-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const DivisionByZero = t.error('DivisionByZero');
+
+const safeDiv = evscript(
+  { name: 'safeDiv', args: [t.uint256, t.uint256], errors: [DivisionByZero] },
+  (s, a, b) => {
+    const requirePositive = s.fn('requirePositive', t.uint256, (x) => {
+      s.if(x.eq(0n), () => s.throw(DivisionByZero));
+    });
+    requirePositive(b);
+    return s.return({ quotient: a.div(b) });
+  },
+);
+```
+
+## Returns
+
+`EvsFn`
+
+A function to call inside the script. Each argument is an `Expr`, a handle or a literal of the
+parameter's type. The result follows what the body returns:
+
+| The body returns | A call returns |
+| --- | --- |
+| an `Expr<t>` | `Expr<t>` |
+| a `Tuple` handle | a `Tuple` handle |
+| a `MutArray`, or an array `Expr` | an array `Expr` |
+| a list, `[a, b]` | a readonly tuple, one handle per entry |
+| nothing | `void` |
+
+## Parameters
+
+### name
+
+- **Type:** `string`
+
+A label for the function, shown in error messages. It must be an identifier: letters, digits and
+`_`, not starting with a digit.
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+
+const quadruple = evscript({ name: 'quadruple', args: [t.uint256] }, (s, x) => {
+  const double = s.fn(
+    'double',
+    t.uint256,
+    (value) => value.mul(2n),
+  );
+  return s.return({ result: double(double(x)) });
+});
+```
+
+### params
+
+- **Type:** a type, a `namedArg`, or a list of both
+
+The parameter types, in the same shorthand as the `args` of
+[`evscript`](/reference/evscript/). A [`namedArg`](/reference/types/named-arg/) names the
+parameter in error messages and in your editor.
+
+```ts {4-6,9,12}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const shapes = evscript({ name: 'shapes', args: [t.uint256] }, (s, x) => {
+  const double = s.fn('double', t.uint256, (value) => value.mul(2n)); // one type
+  // one name
+  const next = s.fn('next', namedArg('value', t.uint256), (value) => value.add(1n));
+  const scale = s.fn(
+    'scale',
+    [namedArg('value', t.uint256), t.uint256], // a list
+    (value, factor) => value.mul(factor),
+  );
+  const one = s.fn('one', [], () => s.lit(t.uint256, 1n)); // no parameter
+  return s.return({ a: double(x), b: next(x), c: scale(x, 3n), d: one() });
+});
+```
+
+### body
+
+- **Type:** `(...params) => Expr | Tuple | MutArray | readonly [...] | void`
+
+Records the function, once, when `s.fn` is called. It receives one handle per parameter: a
+`Tuple` for a struct or a tuple, an `Expr` for everything else.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const quadruple = evscript({ name: 'quadruple', args: [t.uint256] }, (s, x) => {
+  const double = s.fn(
+    'double',
+    t.uint256,
+    (value) => value.mul(2n),
+  );
+  return s.return({ result: double(double(x)) });
+});
+```
+
+## Behavior
+
+- **No capture.** The body uses its parameters and plain JavaScript values. It cannot use an
+  `Expr` or a cell of the enclosing script (below).
+- **Compiled once.** Every call jumps to one shared copy of the body. A function that is never
+  called is left out of the bytecode.
+- **By reference.** A struct argument is passed as a pointer: a field `set` in the body is
+  visible to the caller.
+- **No recursion.** A function cannot call itself. It can call a function defined before it.
+- **Independent calls.** Each call runs the body again at run time and returns its own handles.
+- **Plain return.** Leave the body with a JavaScript `return`.
+  [`s.return`](/reference/builder/return/) and the `LoopCtl` of an outer loop do not work in it.
+
+### No capture
+
+This typechecks, and throws while the script is built:
+
+```ts nocheck
+// `owner` is an argument of the script, not a parameter of the function
+const bad = s.fn('bad', t.address, (target) =>
+  s.read({
+    address: target,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [owner], // EvsScopeError (SCOPE_VIOLATION)
+  }),
+);
+```
+
+Add a parameter and pass `owner` at the call site, as in [Usage](#usage).
+
+### s.fn or a plain function
+
+A plain JavaScript function that calls the builder also works as a helper. The trade-off:
+
+| | `s.fn` | Plain function |
+| --- | --- | --- |
+| Bytecode | one copy | one copy per call |
+| Values of the script | parameters only | can use them |
+| Cost of a call | a jump in and out | none |
+
+Use `s.fn` for a block called from many places, when the
+[size of the bytecode](/guides/execution/#deployless-limits) matters.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `name` is not an identifier, or `body` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a parameter is not a type, or its name is invalid or used twice |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the body returns something that is not a handle, such as a literal |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a call passes the wrong number of arguments, or one of the wrong type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a call passes a literal that does not fit its parameter's type |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | the body uses a value or a cell of the enclosing script |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | the body calls `s.return`, or the `LoopCtl` of an outer loop |

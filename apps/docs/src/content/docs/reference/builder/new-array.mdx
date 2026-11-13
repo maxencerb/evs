@@ -1,0 +1,266 @@
+---
+title: s.newArray
+description: Allocates a zero-filled array you can write to. The length is a runtime value, or a literal for a fixed-size array.
+---
+
+Allocates a zero-filled array you can write to. The length is a runtime value, or a literal for
+a fixed-size array.
+
+## Usage
+
+```ts {4,6}
+import { evscript, t } from '@maxencerb/evs';
+
+const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
+  const out = s.newArray(t.uint256, n);
+  s.for({ from: 0n, until: n }, (i) => {
+    out.set(i, i.mul(i));
+  });
+  return s.return({ squares: out }); // readonly bigint[]
+});
+```
+
+### Collecting call results
+
+One slot per input, one call per slot: this replaces a multicall.
+
+```ts {7,15}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balances = evscript(
+  { name: 'balances', args: [t.address, t.array(t.address)] },
+  (s, user, tokens) => {
+    const out = s.newArray(t.uint256, tokens.length());
+    s.forEach(tokens, (token, i) => {
+      const balance = s.read({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [user],
+      });
+      out.set(i, balance);
+    });
+    return s.return({ balances: out });
+  },
+);
+```
+
+### Fixed-size arrays
+
+With `fixed: true` and a literal length, the array is a `T[N]`: the length is part of its type.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const ordered = evscript(
+  { name: 'ordered', args: [t.uint256, t.uint256] },
+  (s, a, b) => {
+    const pair = s.newArray(t.uint256, 2, { fixed: true }); // MutArray<'uint256', 2>
+    pair.set(0n, s.select(a.lt(b), a, b));
+    pair.set(1n, s.select(a.lt(b), b, a));
+    return s.return({ pair }); // readonly [bigint, bigint]
+  },
+);
+```
+
+### Arrays of structs
+
+`get(i)` returns a handle into slot `i`, so you fill a struct in place.
+
+```ts {8,10-12}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const positions = evscript(
+  { name: 'positions', args: [t.address, t.uint256] },
+  (s, owner, n) => {
+    const out = s.newArray(Position, n);
+    s.for({ from: 0n, until: n }, (i) => {
+      const slot = out.get(i); // Tuple handle
+      slot.owner.set(owner);
+      slot.liquidity.set(i.toUint(t.uint128));
+    });
+    return s.return({ positions: out });
+  },
+);
+```
+
+## Returns
+
+`MutArray<e>`, or `MutArray<e, n>` with `fixed: true`
+
+A handle to the array. `s.return`, a call argument and
+[`s.encode`](/reference/builder/encode/) take it directly.
+
+## MutArray
+
+What `get` returns and `set` takes depends on the element type:
+
+| Element | `get(i)` returns | `set(i, value)` takes |
+| --- | --- | --- |
+| word, `string`, `bytes` | `Expr<e>` | an `Expr<e>` or a literal |
+| array | `Expr<e>` | an `Expr<e>`, a `MutArray` or a literal array |
+| struct, tuple | [`Tuple<e>`](/reference/builder/tuple/#tuple) | a `Tuple` or a literal |
+
+### get
+
+- **Type:** `(i: IntoExpr<'uint256'>) => Expr<e> | Tuple<e>`
+
+Reads element `i`. Reverts with `Panic(0x32)` when `i` is out of bounds.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const firstAndLast = evscript({ name: 'firstAndLast', args: [t.uint256] }, (s, n) => {
+  const xs = s.newArray(t.uint256, n);
+  xs.set(0n, 7n);
+  const first = xs.get(0n); // Expr<'uint256'>
+  return s.return({ first, last: xs.get(n.sub(1n)) });
+});
+```
+
+### set
+
+- **Type:** `(i: IntoExpr<'uint256'>, value: IntoMember<e>) => void`
+
+Writes element `i`. Reverts with `Panic(0x32)` when `i` is out of bounds. `IntoMember<e>` is the
+last column of the table above.
+
+```ts {5,6}
+import { evscript, t } from '@maxencerb/evs';
+
+const labels = evscript({ name: 'labels', args: [t.string] }, (s, name) => {
+  const out = s.newArray(t.string, 2n);
+  out.set(0n, 'name');
+  out.set(1n, name);
+  return s.return({ labels: out }); // readonly string[]
+});
+```
+
+### expr
+
+- **Type:** `() => Expr<e[]>`, or `Expr<e[n]>` with `fixed: true`
+
+The array as an `Expr`, for `.at(i)`, [`s.forEach`](/reference/builder/for-each/) and the other
+[array methods](/reference/expr/bytes-and-arrays/). It is the same array, not a copy.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const total = evscript({ name: 'total', args: [t.uint256] }, (s, n) => {
+  const xs = s.newArray(t.uint256, n);
+  const sum = s.let(t.uint256, 0n);
+  s.forEach(xs.expr(), (x) => sum.set(sum.get().add(x)));
+  return s.return({ sum: sum.get() });
+});
+```
+
+### length
+
+- **Type:** `Expr<'uint256'>`
+
+The length of the array. A property, not a method.
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+
+const fill = evscript({ name: 'fill', args: [t.uint256, t.address] }, (s, n, owner) => {
+  const owners = s.newArray(t.address, n);
+  s.for({ from: 0n, until: owners.length }, (i) => owners.set(i, owner));
+  return s.return({ owners });
+});
+```
+
+### elemType
+
+- **Type:** `e`
+
+The element type you passed, readable while the callback runs: `'uint256'` for
+`s.newArray(t.uint256, n)`.
+
+## Parameters
+
+### elem
+
+- **Type:** `EvsType`
+
+The element type: a word type, `string`, `bytes`, a struct or tuple, or an array. An array
+element gives a nested array, up to four levels in total.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const rows = evscript({ name: 'rows', args: [t.array(t.uint256)] }, (s, row) => {
+  const grid = s.newArray(t.array(t.uint256), 2n); // uint256[][]
+  grid.set(0n, row);
+  grid.set(1n, [1n, 2n, 3n]);
+  return s.return({ grid });
+});
+```
+
+### length
+
+- **Type:** `IntoExpr<'uint256'>`, or a literal `number` with `fixed: true`
+
+The number of elements: an `Expr<'uint256'>` or a literal.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const copy = evscript({ name: 'copy', args: [t.array(t.uint256)] }, (s, xs) => {
+  const out = s.newArray(t.uint256, xs.length());
+  s.forEach(xs, (x, i) => out.set(i, x));
+  return s.return({ out });
+});
+```
+
+### fixed (optional)
+
+- **Type:** `true`, passed as `{ fixed: true }`
+
+Allocates a fixed-size `elem[n]` instead of a dynamic `elem[]`. `length` must then be a literal
+positive integer.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const zeros = evscript({ name: 'zeros' }, (s) => {
+  const xs = s.newArray(t.uint256, 3, { fixed: true });
+  return s.return({ xs: xs.expr() }); // Expr<'uint256[3]'>
+});
+```
+
+## Behavior
+
+- **Zero-filled.** Every slot starts at its zero value: `0`, an empty string, bytes or array, or
+  a zeroed struct. Each struct slot is its own struct.
+- **Bounds-checked.** `get` and `set` revert with `Panic(0x32)` unless `i` is below the length.
+- **One array.** The handle, `expr()` and a cell holding it all refer to the same array. A `set`
+  is visible through each of them.
+- **Handle or `expr()`.** `s.return`, call arguments, `s.encode` and `s.keccak256` take the
+  handle. Operators and `s.forEach` need `expr()`.
+- **Allocation in loops.** Inside a loop body, `s.newArray` allocates on every iteration and
+  `compile` warns with `LOOP_ALLOCATION`.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`CERTAIN_PANIC`) | a literal `length` of 2^32 or more |
+| `EvsTypeError` (`TYPE_MISMATCH`) | with `fixed: true`, `length` is not a literal positive integer below 2^32 |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `elem` is not a type of the `t` namespace |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the array would nest more than four levels |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `length`, an index, or the value given to `set` is an `Expr` of another type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal given to `set` does not fit the element type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the handle is used where an `Expr` is expected: call `expr()` or `get(i)` |
+
+At run time:
+
+| Error | When |
+| --- | --- |
+| [`Panic(0x32)`](/reference/diagnostics/#panic-codes) | `get` or `set` with an index out of bounds |
+| [`Panic(0x41)`](/reference/diagnostics/#panic-codes) | a runtime `length` of 2^32 or more |

@@ -1,0 +1,187 @@
+---
+title: Arithmetic
+description: Checked integer math on uintN and intN values. Overflow and division by zero revert with a Panic, as in Solidity 0.8.
+---
+
+Checked integer math on `uintN` and `intN` values. Overflow and division by zero revert with a
+`Panic`, as in Solidity 0.8.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| [`add`](#add) | `add(rhs: IntoExpr<t>): Expr<t>` | `a + b` |
+| [`sub`](#sub) | `sub(rhs: IntoExpr<t>): Expr<t>` | `a - b` |
+| [`mul`](#mul) | `mul(rhs: IntoExpr<t>): Expr<t>` | `a * b` |
+| [`div`](#div) | `div(rhs: IntoExpr<t>): Expr<t>` | `a / b`, truncated toward zero |
+| [`mod`](#mod) | `mod(rhs: IntoExpr<t>): Expr<t>` | `a % b`, with the sign of `a` |
+| [`pow`](#pow) | `pow(exponent: IntoExpr<'uint256'> \| Expr<UintType>): Expr<t>` | `a ** exponent` |
+
+The receiver is any `uintN` or `intN`, and `t` is its type. An `IntoExpr<t>` is an `Expr<t>` or
+a [literal](/reference/expr/#literals).
+
+## add
+
+Adds `rhs`. Reverts with `Panic(0x11)` when the sum does not fit `t`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const total = evscript({ name: 'total', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  const sum = a.add(b); // Expr<'uint256'>
+  return s.return({ sum });
+});
+```
+
+## sub
+
+Subtracts `rhs`. Reverts with `Panic(0x11)` when the result does not fit `t`, which for a
+`uintN` means below zero.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const left = evscript(
+  { name: 'left', args: [t.uint256, t.uint256] },
+  (s, cap, used) => {
+    const remaining = cap.sub(used); // Panic(0x11) when used > cap
+    return s.return({ remaining });
+  },
+);
+```
+
+## mul
+
+Multiplies by `rhs`. Reverts with `Panic(0x11)` when the product does not fit `t`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const fee = evscript({ name: 'fee', args: [t.uint128] }, (s, amount) => {
+  const scaled = amount.mul(30n); // Expr<'uint128'>: overflows at 2^128
+  return s.return({ scaled });
+});
+```
+
+:::tip
+For `a * b / d` where the product can pass 2^256, use
+[`mulDiv`](/reference/expr/full-precision/#muldiv): it only reverts when the quotient overflows.
+:::
+
+## div
+
+Divides by `rhs` and truncates toward zero. Reverts with `Panic(0x12)` when `rhs` is zero.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const average = evscript(
+  { name: 'average', args: [t.uint256, t.uint256] },
+  (s, sum, count) => {
+    const mean = sum.div(count); // Panic(0x12) when count is zero
+    return s.return({ mean });
+  },
+);
+```
+
+On an `intN`, `-7 / 2` is `-3`, and the minimum value divided by `-1` reverts with
+`Panic(0x11)`.
+
+## mod
+
+Returns the remainder of the division by `rhs`. Reverts with `Panic(0x12)` when `rhs` is zero.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const clock = evscript({ name: 'clock', args: [t.uint256] }, (s, timestamp) => {
+  const secondOfDay = timestamp.mod(86_400n);
+  return s.return({ secondOfDay });
+});
+```
+
+On an `intN`, the remainder takes the sign of the receiver: `-7 % 2` is `-1`.
+
+## pow
+
+Raises the receiver to `exponent`. Reverts with `Panic(0x11)` when the power does not fit `t`.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const scale = evscript(
+  { name: 'scale', args: [t.uint256, t.uint8] },
+  (s, amount, decimals) => {
+    const unit = s.lit(t.uint256, 10n).pow(decimals); // 10 ** decimals
+    const cubed = amount.pow(3n);
+    return s.return({ whole: amount.div(unit), cubed });
+  },
+);
+```
+
+The exponent is a non-negative literal or an `Expr` of any `uintN`. The result has the
+receiver's type, and `0 ** 0` is `1`.
+
+## Behavior
+
+- **Checked by default.** A result outside `t` reverts instead of wrapping. For wrap-around math,
+  use the [wrapping methods](/reference/expr/wrapping/).
+- **The type's width.** A `uint64` addition overflows at 2^64, not at 2^256.
+- **One type.** Both sides have the same type and nothing widens implicitly. Convert one side
+  with [`toUint`](/reference/expr/conversions/#touint) or
+  [`toInt`](/reference/expr/conversions/#toint).
+- **Builder mirrors.** `s.add(a, b)` is `a.add(b)`, and likewise `s.sub`, `s.mul`, `s.div`,
+  `s.mod` and `s.pow` (below).
+- **Literals fold.** An operation whose operands are all literals is computed at build time
+  (below).
+- **Unused results.** An operation whose result nothing reads is
+  [removed](/reference/utilities/dce/), and its `Panic` with it. A bare `a.sub(b)` asserts nothing.
+
+### Literal on the left
+
+A method cannot start from a literal. The builder mirror can:
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const budget = evscript({ name: 'budget', args: [t.uint256] }, (s, used) => {
+  const remaining = s.sub(10_000n, used); // 10_000 - used
+  return s.return({ remaining });
+});
+```
+
+At least one operand must be an `Expr`. In `s.pow(base, exponent)`, the base must be one.
+
+### Build-time folding
+
+`feeBps` below is the constant `60`: no bytecode is emitted for the multiplication.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const fees = evscript({ name: 'fees', args: [t.uint256] }, (s, amount) => {
+  const feeBps = s.lit(t.uint256, 30n).mul(2n); // folded to 60
+  const fee = amount.mul(feeBps).div(10_000n);
+  return s.return({ fee });
+});
+```
+
+A fold that would always panic, such as `s.lit(t.uint8, 250).add(10n)`, throws `CERTAIN_PANIC`
+instead of compiling a script that always reverts.
+
+## Errors
+
+A `Panic` reverts the call at run time. An `EvsTypeError` is thrown at build time, at the
+offending line.
+
+| Error | When |
+| --- | --- |
+| `Panic(0x11)` | `add`, `sub`, `mul`, `pow`: the result does not fit `t` |
+| `Panic(0x11)` | `div` on an `intN`: the minimum value divided by `-1` |
+| `Panic(0x12)` | `div`, `mod`: `rhs` is zero |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the operands have different types, or are not `uintN` or `intN` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a builder mirror gets two plain literals: type one with [`s.lit`](/reference/builder/lit/) |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the `pow` exponent is an `intN` `Expr` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit its type, such as a negative `pow` exponent |
+| `EvsTypeError` (`CERTAIN_PANIC`) | every operand is a literal and the operation would always panic |
+
+See [panic codes](/reference/diagnostics/#panic-codes) and
+[error codes](/reference/diagnostics/#error-codes).

@@ -1,0 +1,378 @@
+---
+// Why evs: the same three dependent reads, as a multicall waterfall and as one evs script. Two
+// lanes (side by side from 600px, stacked below). Both packets leave together: the multicall one
+// comes back to the client after every dependency level, the evs one chains the levels inside
+// the node and comes back once. Loop: 10s; evs is done at 3.6s, the multicall at 7s.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="RoundTrips">
+  <div class="evs-rt">
+    <div class="evs-rt-lane evs-rt-mc">
+      <div class="evs-rt-head">
+        <span class="evs-dg-title">multicall</span>
+        <span class="evs-rt-count" data-text="n round trips">n round trips</span>
+      </div>
+      <div class="evs-rt-body">
+        <div class="evs-dg-region evs-rt-client"><span class="evs-dg-note">client</span></div>
+        <div class="evs-rt-tracks">
+          <div class="evs-rt-track evs-rt-t1">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+          </div>
+          <div class="evs-rt-track evs-rt-t2">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+          </div>
+          <div class="evs-rt-track evs-rt-t3">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+            <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+          </div>
+        </div>
+        <div class="evs-dg-region evs-rt-node">
+          <span class="evs-dg-note evs-rt-label">node</span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p1">pool</span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p2">tokens</span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p3">symbols</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evs-rt-lane evs-rt-evs">
+      <div class="evs-rt-head">
+        <span class="evs-dg-title">evs</span>
+        <span class="evs-rt-count" data-text="1 round trip">1 round trip</span>
+      </div>
+      <div class="evs-rt-body">
+        <div class="evs-dg-region evs-rt-client"><span class="evs-dg-note">client</span></div>
+        <div class="evs-rt-tracks">
+          <div class="evs-rt-track evs-rt-t1">
+            <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+          </div>
+          <div class="evs-rt-track evs-rt-t2"></div>
+          <div class="evs-rt-track evs-rt-t3">
+            <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+          </div>
+        </div>
+        <div class="evs-dg-region evs-rt-node">
+          <span class="evs-dg-note evs-rt-label">node</span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p1">pool</span>
+          <span class="evs-dg-wire is-down evs-rt-chain evs-rt-c1"><i class="evs-dg-run"></i></span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p2">tokens</span>
+          <span class="evs-dg-wire is-down evs-rt-chain evs-rt-c2"><i class="evs-dg-run"></i></span>
+          <span class="evs-dg-node evs-rt-step evs-rt-p3">symbols</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-rt {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    row-gap: 24px;
+  }
+
+  @container evs-dg (min-width: 600px) {
+    .evs-rt {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      column-gap: 48px;
+    }
+  }
+
+  .evs-rt-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 10px;
+  }
+
+  /* The lane's conclusion. `::after` repeats it in the accent, and fades in once the lane is
+     done. */
+  .evs-rt-count {
+    position: relative;
+    color: var(--evs-text-2);
+    white-space: nowrap;
+  }
+
+  .evs-rt-count::after {
+    content: attr(data-text);
+    position: absolute;
+    inset: 0;
+    color: var(--evs-accent);
+    opacity: 0;
+  }
+
+  .evs-rt-body {
+    display: flex;
+    align-items: stretch;
+  }
+
+  .evs-rt-client {
+    flex: 0 0 auto;
+    padding: 7px 8px;
+  }
+
+  /* One track per dependency level, level with its step in the node (28px down, 38px apart). */
+  .evs-rt-tracks {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    row-gap: 12px;
+    min-width: 0;
+    padding-top: 29px;
+  }
+
+  .evs-rt-track {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    row-gap: 9px;
+    height: 26px;
+  }
+
+  .evs-rt-track .evs-dg-wire {
+    flex: 0 0 1px;
+  }
+
+  .evs-rt-node {
+    display: flex;
+    flex: 0 0 auto;
+    flex-direction: column;
+    padding: 7px 8px 8px;
+  }
+
+  .evs-rt-label {
+    margin-bottom: 6px;
+  }
+
+  .evs-rt-node .evs-rt-step {
+    min-width: 76px;
+    min-height: 26px;
+    padding: 4px 10px;
+  }
+
+  .evs-rt-step + .evs-rt-step {
+    margin-top: 12px;
+  }
+
+  .evs-rt-chain {
+    --evs-dg-len: 12px;
+    align-self: center;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-rt-track .evs-dg-wire:not(.is-left) .evs-dg-run {
+      animation: evs-roundtrips-out 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-track .evs-dg-wire.is-left .evs-dg-run {
+      animation: evs-roundtrips-back 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-chain .evs-dg-run {
+      animation: evs-roundtrips-chain 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* Multicall: the same out-and-back, 2.2s later for each level. */
+    .evs-rt-mc .evs-rt-t2 {
+      --evs-dg-delay: 2.2s;
+    }
+
+    .evs-rt-mc .evs-rt-t3 {
+      --evs-dg-delay: 4.4s;
+    }
+
+    /* evs: out once, down the chain, back once. */
+    .evs-rt-evs .evs-rt-c2 {
+      --evs-dg-delay: 0.5s;
+    }
+
+    .evs-rt-evs .evs-rt-t3 {
+      --evs-dg-delay: 1s;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-p1::after {
+      animation: evs-roundtrips-on-14 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-mc .evs-rt-p2::after,
+    .evs-diagram[data-anim] .evs-rt-evs .evs-rt-count::after {
+      animation: evs-roundtrips-on-36 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-mc .evs-rt-p3::after {
+      animation: evs-roundtrips-on-58 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-mc .evs-rt-count::after {
+      animation: evs-roundtrips-on-70 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-evs .evs-rt-p2::after {
+      animation: evs-roundtrips-on-19 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-rt-evs .evs-rt-p3::after {
+      animation: evs-roundtrips-on-24 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+  }
+
+  /* Request: client to node, 0.5s to 1.4s. */
+  @keyframes evs-roundtrips-out {
+    0%,
+    4% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    5.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    14% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    15.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* Response: node to client, 1.7s to 2.6s. */
+  @keyframes evs-roundtrips-back {
+    0%,
+    16% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    17.5% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    26% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    27.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+  }
+
+  /* One step to the next inside the node, 1.6s to 1.9s. */
+  @keyframes evs-roundtrips-chain {
+    0%,
+    15% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    16% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    19% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    20%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* "Done" marks: on at the named percent of the loop, off together before it restarts. */
+  @keyframes evs-roundtrips-on-14 {
+    0%,
+    13% {
+      opacity: 0;
+    }
+    15.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-roundtrips-on-19 {
+    0%,
+    18% {
+      opacity: 0;
+    }
+    20.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-roundtrips-on-24 {
+    0%,
+    23% {
+      opacity: 0;
+    }
+    25.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-roundtrips-on-36 {
+    0%,
+    35% {
+      opacity: 0;
+    }
+    37.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-roundtrips-on-58 {
+    0%,
+    57% {
+      opacity: 0;
+    }
+    59.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-roundtrips-on-70 {
+    0%,
+    69% {
+      opacity: 0;
+    }
+    71.5%,
+    90% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

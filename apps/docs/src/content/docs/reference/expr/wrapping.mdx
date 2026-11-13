@@ -1,0 +1,104 @@
+---
+title: Wrapping math
+description: Adds, subtracts and multiplies with wrap-around, as in a Solidity unchecked block. The result is taken modulo 2^N and never reverts.
+---
+
+Adds, subtracts and multiplies with wrap-around, as in a Solidity `unchecked` block. The result
+is taken modulo 2^N and never reverts.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| [`wrappingAdd`](#wrappingadd) | `wrappingAdd(rhs: IntoExpr<t>): Expr<t>` | `a + b` modulo 2^N |
+| [`wrappingSub`](#wrappingsub) | `wrappingSub(rhs: IntoExpr<t>): Expr<t>` | `a - b` modulo 2^N |
+| [`wrappingMul`](#wrappingmul) | `wrappingMul(rhs: IntoExpr<t>): Expr<t>` | `a * b` modulo 2^N |
+
+The receiver is any `uintN` or `intN`, `t` is its type and N its bit width. An `IntoExpr<t>` is
+an `Expr<t>` or a [literal](/reference/expr/#literals).
+
+:::tip[When to use them]
+Use these when wrapping is the meaning: accumulators that overflow by design, hash mixing,
+negation. Everywhere else, keep the [checked methods](/reference/expr/arithmetic/).
+:::
+
+## wrappingAdd
+
+Adds `rhs` and keeps the low N bits of the sum.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const bump = evscript({ name: 'bump', args: [t.uint8] }, (s, counter) => {
+  const next = counter.wrappingAdd(10n); // 250 + 10 is 4
+  return s.return({ next });
+});
+```
+
+## wrappingSub
+
+Subtracts `rhs` and keeps the low N bits of the difference.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const growth = evscript(
+  { name: 'growth', args: [t.uint256, t.uint256] },
+  (s, global, outside) => {
+    const inside = global.wrappingSub(outside); // Uniswap V3 fee growth wraps by design
+    return s.return({ inside });
+  },
+);
+```
+
+## wrappingMul
+
+Multiplies by `rhs` and keeps the low N bits of the product.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const fnv = evscript({ name: 'fnv', args: [t.uint64, t.uint64] }, (s, hash, byte) => {
+  const next = hash.bitXor(byte).wrappingMul(1099511628211n); // one FNV-1a step
+  return s.return({ next });
+});
+```
+
+## Behavior
+
+- **Never reverts.** No `Panic`, whatever the operands.
+- **The type's width.** A `uint8` wraps at 256: `250 + 10` is `4`. An `int8` wraps in two's
+  complement: `-128 - 1` is `127`.
+- **One type.** Both sides have the same `uintN` or `intN` type, as for
+  [checked arithmetic](/reference/expr/arithmetic/).
+- **No wrapping division.** `div`, `mod` and `pow` only exist
+  [checked](/reference/expr/arithmetic/).
+- **Literals fold.** A wrapping operation on literals
+  [folds](/reference/expr/arithmetic/#build-time-folding) to the wrapped constant.
+- **Builder mirrors.** `s.wrappingAdd(a, b)`, `s.wrappingSub(a, b)` and `s.wrappingMul(a, b)`
+  take a literal on either side (below).
+
+### Negating a value
+
+`s.wrappingSub(0n, x)` is two's-complement negation:
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const negate = evscript({ name: 'negate', args: [t.int256] }, (s, x) => {
+  const negated = s.wrappingSub(0n, x); // -x, and the minimum value stays itself
+  return s.return({ negated });
+});
+```
+
+The checked `s.sub(0n, x)` reverts with `Panic(0x11)` on the minimum value.
+
+## Errors
+
+Nothing here reverts at run time. Thrown at build time, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the operands have different types, or are not `uintN` or `intN` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a builder mirror gets two plain literals: type one with [`s.lit`](/reference/builder/lit/) |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit `t` |
+
+See [error codes](/reference/diagnostics/#error-codes).

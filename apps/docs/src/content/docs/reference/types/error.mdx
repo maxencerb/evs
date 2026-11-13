@@ -1,0 +1,208 @@
+---
+title: t.error
+description: Declares a custom error that a script can revert with, like a Solidity error declaration.
+---
+
+Declares a custom error that a script can revert with, like a Solidity `error` declaration. List
+it in the script's `errors`, then throw it with [`s.throw`](/reference/builder/throw/).
+
+## Usage
+
+```ts {3-6,9,12}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [
+  namedArg('value', t.uint256),
+  namedArg('min', t.uint256),
+]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(TooSmall, { value: x, min: 10n });
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+);
+```
+
+The revert data is what Solidity produces for `revert TooSmall(value, min)`: the 4-byte selector,
+then the ABI-encoded parameters.
+
+### No parameters
+
+Leave `params` out. `s.throw` then takes the error alone.
+
+```ts {3,9}
+import { evscript, t } from '@maxencerb/evs';
+
+const ZeroAddress = t.error('ZeroAddress');
+
+const guard = evscript(
+  { name: 'guard', args: [t.address], errors: [ZeroAddress] },
+  (s, who) => {
+    s.if(who.eq('0x0000000000000000000000000000000000000000'), () => {
+      s.throw(ZeroAddress);
+    });
+    return s.return({ who });
+  },
+);
+```
+
+### Positional parameters
+
+With bare types, `s.throw` takes the values as a list, in order.
+
+```ts {3,9}
+import { evscript, t } from '@maxencerb/evs';
+
+const SameToken = t.error('SameToken', [t.address, t.address]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.address, t.address], errors: [SameToken] },
+  (s, a, b) => {
+    s.if(a.eq(b), () => {
+      s.throw(SameToken, [a, b]);
+    });
+    return s.return({ a, b });
+  },
+);
+```
+
+### In the script's ABI
+
+Each declared error is appended to the script's `abi`, after the function and the two built-in
+evs errors. viem then decodes the revert by name.
+
+```ts {15-16}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(TooSmall, { value: x });
+    });
+    return s.return({ x });
+  },
+);
+
+guard.abi[3];
+// { type: 'error', name: 'TooSmall', inputs: [{ name: 'value', type: 'uint256' }] }
+```
+
+### Decoding on the client
+
+[`matchScriptError`](/reference/utilities/match-script-error/) switches over the declared errors,
+with typed arguments.
+
+```ts {27-30}
+import { compile, evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const TooSmall = t.error('TooSmall', [namedArg('value', t.uint256)]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(TooSmall, { value: x });
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+);
+
+const compiled = compile(guard);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'guard',
+    args: [5n],
+  });
+} catch (e) {
+  const message = matchScriptError(compiled, e, {
+    TooSmall: ({ value }) => `${value} is too small`,
+    _: (other) => `unexpected revert: ${other.name}`,
+  });
+}
+```
+
+## Returns
+
+`EvsErrorType`
+
+A frozen error declaration. Pass it to `evscript` and `s.throw` as is.
+
+| Property | Type | Description |
+| --- | --- | --- |
+| `kind` | `'error'` | marks the value as an error declaration |
+| `name` | `string` | the error name, as a literal type |
+| `params` | `readonly ArgSpec[]` | the parameters, `name` being `''` for a bare type |
+| `abi` | `EvsErrorAbiEntry` | the error's ABI entry, as it appears in the script's `abi` |
+
+## Parameters
+
+### name
+
+- **Type:** `string`
+
+The error name: an identifier, as in Solidity. It is the name viem reports when it decodes the
+revert.
+
+```ts {4}
+import { t } from '@maxencerb/evs';
+
+const Paused = t.error(
+  'Paused',
+);
+```
+
+### params (optional)
+
+- **Type:** `EvsType | ArgSpec | readonly (EvsType | ArgSpec)[]`
+- **Default:** no parameters
+
+The error parameters: a type, a [`namedArg`](/reference/types/named-arg/), or a list mixing both.
+They take any type, structs and arrays included.
+
+```ts {5-8}
+import { namedArg, t } from '@maxencerb/evs';
+
+const Undercollateralized = t.error(
+  'Undercollateralized',
+  [
+    namedArg('account', t.address),
+    namedArg('position', t.struct({ collateral: t.uint256, debt: t.uint256 })),
+  ],
+);
+```
+
+## Behavior
+
+- **Declare first.** `s.throw` accepts only the errors listed in the script's `errors`. Another
+  one is a type error, and `ERROR_UNDECLARED` when the script is built.
+- **Record or list.** When every parameter is named, `s.throw` takes a record. With any bare
+  type, it takes a positional list.
+- **Fallback names.** In the ABI, a bare parameter is named `arg0`, `arg1`, … by position.
+- **One list per script.** A throw inside an [`s.fn`](/reference/builder/fn/) body is checked
+  against the same `errors`.
+- **Reserved names.** `Panic`, `Error`, `EvsDecodeError`, `EvsInvalidCalldata`, `empty`,
+  `unknown` and `_` cannot be declared.
+
+## Errors
+
+Thrown by the `t.error` call, or by `evscript` where the row says so:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ERROR_DECL`) | `name` is not an identifier, or is reserved |
+| `EvsTypeError` (`ERROR_DECL`) | a parameter name is not an identifier, or two parameters share a name |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a parameter is not a type |
+| `EvsTypeError` (`ERROR_DECL`) | in `evscript`: two errors share a name or a 4-byte selector |
+| `EvsTypeError` (`ERROR_DECL`) | in `evscript`: the script has the same name as one of its errors |

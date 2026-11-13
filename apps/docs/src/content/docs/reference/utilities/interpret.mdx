@@ -1,0 +1,363 @@
+---
+title: interpret
+description: Runs a script in the reference interpreter against a mock chain, without a node, and returns its result or revert data.
+---
+
+Runs a script in the reference interpreter against a mock chain, without a node, and returns its
+result or revert data. The bytes match what the compiled bytecode returns.
+
+## Import
+
+```ts
+import { interpret } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {9-14,17}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { encodeFunctionResult, erc20Abi } from 'viem';
+
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const value = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ value });
+});
+
+const chain: MockChain = {
+  staticcall: () => ({
+    success: true,
+    data: encodeFunctionResult({ abi: erc20Abi, functionName: 'decimals', result: 6 }),
+  }),
+};
+
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const result = interpret(decimals, [USDC], chain);
+
+if (result.outcome.kind === 'return') {
+  result.outcome.values.value; // 6
+}
+```
+
+The mock answers the one `s.read` the script makes. `args` and `values` are typed from the
+script, like `readContract`.
+
+### Answering by target and function
+
+A mock receives the target address and the exact calldata, so it can answer each call
+differently.
+
+```ts {18-25}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { decodeFunctionData, encodeFunctionResult, erc20Abi } from 'viem';
+
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const value = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ value });
+});
+
+const six = encodeFunctionResult({
+  abi: erc20Abi,
+  functionName: 'decimals',
+  result: 6,
+});
+
+const chain: MockChain = {
+  staticcall({ to, data }) {
+    if (to !== USDC.toLowerCase()) return { success: false, data: '0x' };
+    const call = decodeFunctionData({ abi: erc20Abi, data });
+    if (call.functionName !== 'decimals') return { success: false, data: '0x' };
+    return { success: true, data: six };
+  },
+};
+
+interpret(decimals, [USDC], chain).outcome.kind; // 'return'
+interpret(decimals, [WETH], chain).outcome.kind; // 'revert': the mock only knows USDC
+```
+
+:::caution[Addresses arrive in lowercase]
+`to`, and the address passed to `account`, are lowercase hex. Compare against
+`USDC.toLowerCase()`, or a checksummed address never matches.
+:::
+
+### Asserting a revert
+
+A revert is an outcome, not an exception. Its `data` is the payload the bytecode reverts with.
+
+```ts {9-10,13}
+import { decodeScriptError, evscript, interpret, t } from '@maxencerb/evs';
+import type { MockChain } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const result = interpret(ratio, [1n, 0n], noCalls);
+result.outcome.kind; // 'revert'
+
+if (result.outcome.kind === 'revert') {
+  decodeScriptError(ratio, result.outcome.data);
+  // { name: 'Panic', code: 18n, meaning: 'division or modulo by zero', raw: '0x4e48…' }
+}
+```
+
+## Returns
+
+`InterpResult`
+
+An object with the `outcome` of the run, and a [`trace`](#trace-optional) when you ask for one.
+
+| `outcome.kind` | Fields | Meaning |
+| --- | --- | --- |
+| `'return'` | `data`, `values` | `data` is the ABI-encoded returndata, `values` the decoded record |
+| `'revert'` | `data` | `data` is the revert payload, byte for byte |
+
+`values` holds what `readContract` returns for the script: a `number` for integers up to 48
+bits, a `bigint` above, checksummed addresses, hex strings for bytes.
+
+## Parameters
+
+`interpret(script, args, chain, options?)`. `trace`, `maxSteps`, `env` and `dce` are the
+optional fields of `InterpOptions`.
+
+### script
+
+- **Type:** `ScriptIr | { ir: ScriptIr; abi: Abi }`
+
+The script to run: an `evscript()` result, its compiled artifact, or a bare IR.
+
+```ts {8-9,11}
+import { compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+interpret(double, [21n], noCalls);
+interpret(compile(double), [21n], noCalls);
+
+const bare = interpret(double.ir, [21n], noCalls);
+if (bare.outcome.kind === 'return') bare.outcome.values['doubled']; // 42n
+```
+
+A bare `ScriptIr`, such as `script.ir` or the result of
+[`deserializeIr`](/reference/utilities/serialize-ir/), carries no ABI. Its `args` and `values`
+are untyped, and checked at run time only.
+
+### args
+
+- **Type:** the tuple `readContract` takes for the script, or `readonly unknown[]` for a bare IR
+
+The script's arguments as plain JS values, in order.
+
+| Script type | JS value |
+| --- | --- |
+| `uintN`, `intN` | `bigint`, or a safe-integer `number` |
+| `bool` | `boolean` |
+| `address` | 20-byte `0x` hex string |
+| `bytesN` | `0x` hex string of exactly N bytes |
+| `bytes` | `0x` hex string |
+| `string` | `string` |
+| `T[]`, `T[N]` | array of element values |
+| struct | object keyed by field name |
+| tuple | positional array |
+
+```ts {11}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const Position = t.struct({ owner: t.address, amount: t.uint256 });
+
+const first = evscript({ name: 'first', args: [t.array(Position)] }, (s, positions) =>
+  s.return({ amount: positions.at(0).amount.get() }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const owner = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
+interpret(first, [[{ owner, amount: 5n }]], noCalls); // one array of one struct
+```
+
+### chain
+
+- **Type:** [`MockChain`](#mockchain)
+
+The object that answers every call and account read the script makes.
+
+### trace (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Records one entry per executed statement: its path in the IR tree and a short note.
+
+```ts {8}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const result = interpret(double, [21n], noCalls, { trace: true });
+result.trace;
+// [
+//   { stmtPath: [0], note: 'const uint256' },
+//   { stmtPath: [1], note: 'bin mul' },
+// ]
+```
+
+### maxSteps (optional)
+
+- **Type:** `number`
+- **Default:** `1_000_000`
+
+The step budget. A step is one executed statement, one loop iteration, or one zero-filled array
+element. Going over it throws, which catches an unbounded loop.
+
+```ts {10}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const spin = evscript({ name: 'spin', args: [] }, (s) => {
+  s.while(() => true, () => {});
+  return s.return({ done: s.lit(t.bool, true) });
+});
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+// throws EvsCompileError (COMPILE_LIMIT)
+interpret(spin, [], noCalls, { maxSteps: 1_000 });
+```
+
+### env (optional)
+
+- **Type:** `InterpEnvOverrides`
+
+The values [`s.env`](/reference/builder/env/) returns. Each field is optional.
+
+| Field | Type | Default |
+| --- | --- | --- |
+| `address` | `Hex` | `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` (`DEFAULT_SCRIPT_ADDRESS`) |
+| `caller` | `Hex` | `0x1000000000000000000000000000000000000001` |
+| `timestamp` | `bigint` | `0n` |
+| `blocknumber` | `bigint` | `0n` |
+| `chainid` | `bigint` | `1n` |
+
+```ts {9}
+import { evscript, interpret, type MockChain } from '@maxencerb/evs';
+
+const stamp = evscript({ name: 'stamp', args: [] }, (s) =>
+  s.return({ at: s.env('timestamp'), chain: s.env('chainid') }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const result = interpret(stamp, [], noCalls, {
+  env: { timestamp: 1_750_000_000n, chainid: 8453n },
+});
+if (result.outcome.kind === 'return') result.outcome.values.at; // 1750000000n
+```
+
+### dce (optional)
+
+- **Type:** `boolean`
+- **Default:** `true`
+
+Runs [dead-code elimination](/reference/utilities/dce/) first, as `compile()` does. `false` runs
+the IR exactly as recorded.
+
+```ts {10}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const check = evscript({ name: 'check', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  a.sub(b); // result unused
+  return s.return({ a });
+});
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+interpret(check, [1n, 2n], noCalls).outcome.kind; // 'return', like the bytecode
+const recorded = interpret(check, [1n, 2n], noCalls, { dce: false });
+recorded.outcome.kind; // 'revert': Panic(0x11)
+```
+
+## MockChain
+
+The mock chain is a plain object with one required method and two optional ones. Every reply is
+`{ success, data }`: ABI-encoded returndata when `success` is true, a revert payload otherwise.
+
+### staticcall
+
+- **Type:** `(req: { to: Hex; data: Hex; gas?: bigint }) => { success: boolean; data: Hex }`
+
+Answers every `s.read` and `s.tryRead`, as in [usage](#usage). It also answers `s.call` and
+`s.simulate` when `call` is missing. `gas` is the call's `gas` cap, when it has one.
+
+Reply `success: false` to play a revert: `s.read` reverts with the same `data`, and `s.tryRead`
+reports `success: false`.
+
+### call (optional)
+
+- **Type:** `(req: { to: Hex; data: Hex; kind: 'call' | 'simulate'; gas?: bigint; value?: bigint }) => { success: boolean; data: Hex }`
+
+Answers `s.call`, `s.simulate` and their `try` forms. `kind` names the verb, and `value` is the
+wei the call sends.
+
+```ts {5-8}
+import type { MockChain } from '@maxencerb/evs';
+
+const chain: MockChain = {
+  staticcall: () => ({ success: false, data: '0x' }),
+  call({ to, data, kind, value }) {
+    const word = (value ?? 0n).toString(16).padStart(64, '0');
+    return { success: true, data: `0x${word}` }; // returns the value it was sent
+  },
+};
+```
+
+### account (optional)
+
+- **Type:** `(address: Hex) => { balance?: bigint; code?: Hex; nonce?: bigint } | undefined`
+
+Answers `s.balance`, `s.codeSize` and `s.codeHash`. A missing field reads as zero or `'0x'`, and
+`undefined` means the account does not exist. Without this method, every account is empty.
+
+```ts {11-12}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const probe = evscript({ name: 'probe', args: [t.address] }, (s, who) =>
+  s.return({ wei: s.balance(who), size: s.codeSize(who) }),
+);
+
+const VAULT = '0x00000000000000000000000000000000000000aa';
+
+const chain: MockChain = {
+  staticcall: () => ({ success: false, data: '0x' }),
+  account: (address) =>
+    address === VAULT ? { balance: 5n, code: '0x6001' } : undefined,
+};
+
+const result = interpret(probe, [VAULT], chain);
+if (result.outcome.kind === 'return') result.outcome.values; // { wei: 5n, size: 2n }
+```
+
+## Behavior
+
+- **Same bytes as the bytecode.** Returndata, panics, decode errors and bubbled reverts match the
+  compiled script. See [Why trust the bytecode?](/concepts/trust-and-testing/).
+- **Stateless.** The mock decides every reply. Nothing persists between calls, and no balance
+  changes after a call that sends `value`.
+- **No gas model.** `gas` reaches the mock as information. Reply `success: false` to play a
+  target that ran out of gas.
+- **Synchronous.** It is a plain function call, so it runs in any test runner.
+
+## Errors
+
+Thrown on the host. None of these is a script outcome.
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | wrong number of arguments, or an argument of the wrong JS type |
+| `EvsTypeError` (`LITERAL_RANGE`) | an integer argument out of range, or an `address` or `bytesN` of the wrong length |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a mock method returns a malformed reply, or `maxSteps` or `env` is invalid |
+| `EvsCompileError` (`COMPILE_LIMIT`) | the run goes over `maxSteps` |
+| `EvsInternalError` (`INTERNAL`) | the IR is invalid, which only hand-built or deserialized IR can be |

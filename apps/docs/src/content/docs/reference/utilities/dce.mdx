@@ -1,0 +1,98 @@
+---
+title: dce
+description: Removes from a script's IR the statements whose results nothing reads. compile() and interpret() run this pass for you.
+---
+
+Removes from a script's IR the statements whose results nothing reads. `compile()` and
+`interpret()` run this pass for you, so call it only to inspect what gets compiled.
+
+## Import
+
+```ts
+import { dce, eliminateDeadCode } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {4,8-9}
+import { dce, evscript, t } from '@maxencerb/evs';
+
+const check = evscript({ name: 'check', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  a.sub(b); // nothing reads this result
+  return s.return({ a });
+});
+
+check.ir.body.length; // 1: the subtraction
+dce(check.ir).body.length; // 0: it is gone
+```
+
+The IR is the recorded program in `script.ir`. The subtraction is recorded, then dropped
+because its result is never used.
+
+:::caution[An unused check does not revert]
+The subtraction above underflows for `a = 1, b = 2`, yet the compiled script returns: the check
+left with the statement. To make a check count, use its result or call
+[`s.throw`](/reference/builder/throw/).
+:::
+
+## What the pass removes
+
+A statement stays when something observable depends on it. Everything else goes.
+
+| Always kept | Removed when nothing reads the result |
+| --- | --- |
+| `s.read`, `s.call`, `s.simulate` and their `try` forms | literals, arithmetic, comparisons, conversions |
+| `s.throw` | `s.env`, `s.balance`, `s.codeSize`, `s.codeHash` |
+| loops, with `break` and `continue` | `s.select`, `.at`, `.length`, `.slice`, field reads |
+| whatever a returned value needs | `s.newArray`, `s.tuple`, `s.encode`, `s.keccak256` |
+| an `s.if` with a kept statement inside | a cell that is never read, with every `set` on it |
+| a call to an `s.fn` that calls a contract, throws, loops or writes to its arguments | writes to an array or tuple that is never read |
+
+A kept loop or `s.if` still loses the unused statements inside it.
+
+## eliminateDeadCode
+
+Returns the IR without its dead statements. This is the IR the bytecode is compiled from.
+
+```ts {9}
+import { compile, eliminateDeadCode, evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  a.mul(b); // unused
+  return s.return({ sum: a.add(b) });
+});
+
+const compiled = compile(sum);
+const lowered = eliminateDeadCode(compiled.ir);
+
+compiled.ir.body.length; // 2: the artifact keeps the recorded IR
+lowered.body.length; // 1: only the addition is compiled
+```
+
+- **Type:** `(ir: ScriptIr) => ScriptIr`
+
+## dce
+
+A shorter name for `eliminateDeadCode`. Both are the same function.
+
+```ts {5}
+import { dce, eliminateDeadCode, evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+
+dce === eliminateDeadCode; // true
+dce(echo.ir) === echo.ir; // true: nothing to remove, same object back
+```
+
+- **Type:** `(ir: ScriptIr) => ScriptIr`
+
+## Behavior
+
+- **Always on.** `compile()` runs the pass on every compile. It is not part of `optimize`.
+- **Interpreter too.** [`interpret`](/reference/utilities/interpret/#dce-optional) runs it
+  unless you pass `dce: false`.
+- **Ids are kept.** Statements are dropped, never renumbered, so site ids and the source map
+  still resolve.
+- **Same object when clean.** With nothing to remove, the input IR is returned as is.
+- **Frozen output.** The returned IR is frozen, and running the pass on it again changes
+  nothing.

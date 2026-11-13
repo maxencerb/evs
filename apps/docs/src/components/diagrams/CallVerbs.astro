@@ -1,0 +1,331 @@
+---
+// Calling contracts: what each verb does to the target's state. Three panels (in a row from
+// 600px, stacked below), played one after the other: s.read cannot change `x`, s.call changes it
+// and the change stays, s.simulate changes it, brings the return value back, then the change is
+// struck out. Loop: 12s, 3.3s per panel.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="CallVerbs">
+  <div class="evs-cv">
+    <div class="evs-cv-panel evs-cv-read">
+      <div class="evs-cv-head">
+        <span class="evs-dg-title">s.read</span>
+        <span class="evs-dg-note">STATICCALL</span>
+      </div>
+      <div class="evs-cv-body">
+        <span class="evs-dg-node evs-cv-script">script</span>
+        <div class="evs-cv-track">
+          <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+          <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-dg-node evs-cv-target">
+          <span>target</span>
+          <span class="evs-cv-state"><span class="evs-cv-var">x =</span><span>1</span></span>
+        </div>
+      </div>
+      <div class="evs-dg-note evs-cv-foot">state cannot change</div>
+    </div>
+
+    <div class="evs-cv-panel evs-cv-call">
+      <div class="evs-cv-head">
+        <span class="evs-dg-title">s.call</span>
+        <span class="evs-dg-note">CALL</span>
+      </div>
+      <div class="evs-cv-body">
+        <span class="evs-dg-node evs-cv-script">script</span>
+        <div class="evs-cv-track">
+          <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+          <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-dg-node evs-cv-target">
+          <span>target</span>
+          <span class="evs-cv-state">
+            <span class="evs-cv-var">x =</span><span>1</span>
+            <span class="evs-cv-write"><span class="evs-cv-next">→ 2</span></span>
+          </span>
+        </div>
+      </div>
+      <div class="evs-dg-note evs-cv-foot">write stays for later calls</div>
+    </div>
+
+    <div class="evs-cv-panel evs-cv-sim">
+      <div class="evs-cv-head">
+        <span class="evs-dg-title">s.simulate</span>
+        <span class="evs-dg-note">CALL</span>
+      </div>
+      <div class="evs-cv-body">
+        <span class="evs-dg-node evs-cv-script">script</span>
+        <div class="evs-cv-track">
+          <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+          <span class="evs-dg-wire is-left"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-dg-node evs-cv-target">
+          <span>target</span>
+          <span class="evs-cv-state">
+            <span class="evs-cv-var">x =</span><span>1</span>
+            <span class="evs-cv-write"><span class="evs-cv-next">→ 2</span></span>
+          </span>
+        </div>
+      </div>
+      <div class="evs-dg-note evs-cv-foot">write rolled back, value kept</div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-cv {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 22px 24px;
+  }
+
+  @container evs-dg (min-width: 600px) {
+    .evs-cv {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+  }
+
+  .evs-cv-head {
+    display: flex;
+    align-items: baseline;
+    justify-content: space-between;
+    margin-bottom: 8px;
+  }
+
+  .evs-cv-body {
+    display: flex;
+    align-items: stretch;
+  }
+
+  /* Call above, return below. */
+  .evs-cv-track {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    justify-content: center;
+    row-gap: 13px;
+    min-width: 40px;
+  }
+
+  .evs-cv-track .evs-dg-wire {
+    flex: 0 0 1px;
+  }
+
+  .evs-cv-body .evs-cv-target {
+    flex-direction: column;
+    align-items: flex-start;
+    row-gap: 5px;
+    padding: 6px 8px 8px;
+  }
+
+  /* The target's storage: one slot and what happens to it. */
+  .evs-cv-state {
+    display: flex;
+    column-gap: 7px;
+    min-width: 77px;
+    padding: 3px 6px;
+    border-radius: var(--evs-radius-sm);
+    background: var(--evs-bg);
+  }
+
+  .evs-cv-var {
+    color: var(--evs-text-2);
+  }
+
+  /* A write. Rolled back (s.simulate), it is dimmed and struck through. */
+  .evs-cv-write {
+    position: relative;
+  }
+
+  .evs-cv-sim .evs-cv-next {
+    opacity: 0.55;
+  }
+
+  .evs-cv-sim .evs-cv-write::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: -2px;
+    left: -2px;
+    height: 1px;
+    background: var(--evs-text);
+  }
+
+  .evs-cv-foot {
+    margin-top: 8px;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-cv-track .evs-dg-wire:not(.is-left) .evs-dg-run {
+      animation: evs-callverbs-out 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-track .evs-dg-wire.is-left .evs-dg-run {
+      animation: evs-callverbs-back 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-target::after {
+      animation: evs-callverbs-target 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-script::after {
+      animation: evs-callverbs-script 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* The three panels play in turn. */
+    .evs-cv-call {
+      --evs-dg-delay: 3.3s;
+    }
+
+    .evs-cv-sim {
+      --evs-dg-delay: 6.6s;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-call .evs-cv-write {
+      animation: evs-callverbs-write-call 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-sim .evs-cv-write {
+      animation: evs-callverbs-write-sim 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-sim .evs-cv-next {
+      animation: evs-callverbs-rollback-dim 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cv-sim .evs-cv-write::after {
+      animation: evs-callverbs-rollback-strike 12s ease-in-out infinite both;
+    }
+  }
+
+  /* One panel's turn. Call: script to target, 0.3s to 1s. */
+  @keyframes evs-callverbs-out {
+    0%,
+    1.5% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    2.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    8.5% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    9.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* Return value: target to script, 2.1s to 2.8s. */
+  @keyframes evs-callverbs-back {
+    0%,
+    16.5% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+    17.5% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    23.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    24.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+  }
+
+  /* The target is lit while the call is in it; the script lights up when the value lands. */
+  @keyframes evs-callverbs-target {
+    0%,
+    7.5% {
+      opacity: 0;
+    }
+    9.5%,
+    17.5% {
+      opacity: 1;
+    }
+    20%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-callverbs-script {
+    0%,
+    22.5% {
+      opacity: 0;
+    }
+    24.5%,
+    26.5% {
+      opacity: 1;
+    }
+    29%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The write appears as the target starts running (4.3s under s.call, 7.6s under s.simulate)
+     and is on screen for a second before the value leaves. */
+  @keyframes evs-callverbs-write-call {
+    0%,
+    35.5% {
+      opacity: 0;
+    }
+    38%,
+    93% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-callverbs-write-sim {
+    0%,
+    63% {
+      opacity: 0;
+    }
+    65.5%,
+    93% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The rollback, once the value is back in the script (9.6s). */
+  @keyframes evs-callverbs-rollback-dim {
+    0%,
+    80% {
+      opacity: 1;
+    }
+    83%,
+    100% {
+      opacity: 0.55;
+    }
+  }
+
+  @keyframes evs-callverbs-rollback-strike {
+    0%,
+    80% {
+      opacity: 0;
+    }
+    83%,
+    100% {
+      opacity: 1;
+    }
+  }
+</style>

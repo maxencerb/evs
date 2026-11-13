@@ -1,0 +1,191 @@
+---
+title: s.while
+description: Repeats a body while a condition holds. The condition is a callback, evaluated again before every iteration.
+---
+
+Repeats a body while a condition holds. The condition is a callback, so it is evaluated again
+before every iteration.
+
+## Usage
+
+```ts {6-12}
+import { evscript, t } from '@maxencerb/evs';
+
+const log2 = evscript({ name: 'log2', args: [t.uint256] }, (s, x) => {
+  const v = s.let(t.uint256, x);
+  const bits = s.let(t.uint256, 0n);
+  s.while(
+    () => v.get().gt(1n),
+    () => {
+      v.set(v.get().div(2n));
+      bits.set(bits.get().add(1n));
+    },
+  );
+  return s.return({ bits: bits.get() });
+});
+```
+
+The loop state lives in [cells](/reference/builder/let/#cell): the condition reads `v.get()`,
+the body updates it with `v.set()`.
+
+:::caution[A loop that never ends]
+The loop ends only when `cond` turns false or the body calls `loop.break()`. A condition built
+only from values computed before the loop never changes, and the call runs out of gas.
+:::
+
+## Returns
+
+`void`
+
+Carry results out of the loop through a cell declared before it.
+
+## LoopCtl
+
+The handle a loop body receives to leave the loop or skip to the next iteration.
+
+| Loop | Body signature |
+| --- | --- |
+| `s.while` | `(loop) => void` |
+| [`s.for`](/reference/builder/for/) | `(i, loop) => void` |
+| [`s.forEach`](/reference/builder/for-each/) | `(elem, i, loop) => void` |
+
+- A `LoopCtl` works only inside the body of its own loop.
+- In nested loops, call the `LoopCtl` of the innermost loop. There is no labeled break.
+- To leave an outer loop from an inner one, set a flag cell, break, and test the flag outside.
+
+### break
+
+- **Type:** `() => void`
+
+Leaves the loop. Cells keep the values set so far.
+
+```ts {17}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const ownableAbi = parseAbi(['function owner() view returns (address)']);
+
+const rootOwner = evscript({ name: 'rootOwner', args: [t.address] }, (s, start) => {
+  const current = s.let(t.address, start);
+  const hops = s.let(t.uint256, 0n);
+  s.while(
+    () => hops.get().lt(8n),
+    (loop) => {
+      const next = s.tryRead({
+        address: current.get(),
+        abi: ownableAbi,
+        functionName: 'owner',
+      });
+      s.if(next.success.not(), () => loop.break()); // no owner(): stop here
+      current.set(next.value);
+      hops.set(hops.get().add(1n));
+    },
+  );
+  return s.return({ owner: current.get(), hops: hops.get() });
+});
+```
+
+### continue
+
+- **Type:** `() => void`
+
+Skips the rest of the body and tests the condition again. In `s.for` and `s.forEach` the counter
+steps first.
+
+```ts {10-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumSkipping = evscript({ name: 'sumSkipping', args: [t.uint256] }, (s, n) => {
+  const total = s.let(t.uint256, 0n);
+  const next = s.let(t.uint256, 0n);
+  s.while(
+    () => next.get().lt(n),
+    (loop) => {
+      const i = next.get();
+      next.set(i.add(1n)); // advance before continuing
+      s.if(i.mod(3n).eq(0n), () => loop.continue());
+      total.set(total.get().add(i));
+    },
+  );
+  return s.return({ total: total.get() });
+});
+```
+
+:::caution[Advance before you continue]
+In `s.while`, `loop.continue()` jumps straight to the condition. If the counter is updated after
+it, the same iteration repeats until the call runs out of gas.
+:::
+
+## Parameters
+
+### cond
+
+- **Type:** `() => IntoExpr<'bool'>`
+
+A callback that returns the condition. Everything it records runs before every iteration, so
+read your cells inside it.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const digits = evscript({ name: 'digits', args: [t.uint256] }, (s, x) => {
+  const rest = s.let(t.uint256, x);
+  const count = s.let(t.uint256, 0n);
+  s.while(
+    () => rest.get().gt(0n),
+    () => {
+      rest.set(rest.get().div(10n));
+      count.set(count.get().add(1n));
+    },
+  );
+  return s.return({ count: count.get() });
+});
+```
+
+### body
+
+- **Type:** `(loop: LoopCtl) => void`
+
+Records one iteration. It receives the [`LoopCtl`](#loopctl) of this loop.
+
+```ts {8-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const digits = evscript({ name: 'digits', args: [t.uint256] }, (s, x) => {
+  const rest = s.let(t.uint256, x);
+  const count = s.let(t.uint256, 0n);
+  s.while(
+    () => rest.get().gt(0n),
+    () => {
+      rest.set(rest.get().div(10n));
+      count.set(count.get().add(1n));
+    },
+  );
+  return s.return({ count: count.get() });
+});
+```
+
+## Behavior
+
+- **Condition re-evaluated.** What `cond` records runs before each iteration, the first one
+  included. A false condition skips the body entirely.
+- **Recorded once.** Both callbacks are called one time while building. The recorded code
+  repeats at run time.
+- **Shared with the body.** A value created in `cond` can be used in the body of the same
+  iteration.
+- **Scoped values.** Nothing created in `cond` or in the body can be used after the loop.
+- **No iteration limit.** The loop runs until `cond` is false, a `break`, or the gas runs out.
+- **Counted loops.** For a counter or an array, [`s.for`](/reference/builder/for/) and
+  [`s.forEach`](/reference/builder/for-each/) manage the cell for you.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `cond` is not a function: write `() => x.lt(n)`, not `x.lt(n)` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `cond` does not return a `bool`, or `body` is not a function |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | `break` or `continue` is called outside the body of its loop |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | an outer loop's `LoopCtl` is used in the body of an inner loop |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the loop is used after it |

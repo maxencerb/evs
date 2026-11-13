@@ -1,0 +1,439 @@
+---
+// Control flow: loop over a runtime array and collect the results. Left: the input array of n
+// addresses. Middle: the s.for body, one call per element. Right: the s.newArray buffer, whose
+// slots are dashed until written. The cursor steps down the input; each element's call lands in
+// the slot of the same index; the buffer is then returned. One layout at every width (the wires
+// stretch). Loop: 10s, 2.2s per element.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="LoopCollect">
+  <div class="evs-lc">
+    <div class="evs-lc-col evs-lc-in">
+      <span class="evs-dg-title evs-lc-title">addresses</span>
+      <span class="evs-dg-node evs-lc-cell evs-lc-k0">[0]</span>
+      <span class="evs-dg-node evs-lc-cell evs-lc-k1">[1]</span>
+      <span class="evs-lc-more">…</span>
+      <span class="evs-dg-node evs-lc-cell evs-lc-k2">[n-1]</span>
+    </div>
+
+    <div class="evs-lc-wires">
+      <span class="evs-lc-row evs-lc-k0"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+      <span class="evs-lc-row evs-lc-k1"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+      <span class="evs-lc-row"></span>
+      <span class="evs-lc-row evs-lc-k2"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+    </div>
+
+    <div class="evs-dg-region evs-lc-loop">
+      <span class="evs-dg-note">s.for</span>
+      <span class="evs-dg-node evs-lc-call evs-lc-k0">s.read</span>
+      <span class="evs-dg-node evs-lc-call evs-lc-k1">s.read</span>
+      <span class="evs-lc-more">…</span>
+      <span class="evs-dg-node evs-lc-call evs-lc-k2">s.read</span>
+    </div>
+
+    <div class="evs-lc-wires evs-lc-landing">
+      <span class="evs-lc-row evs-lc-k0"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+      <span class="evs-lc-row evs-lc-k1"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+      <span class="evs-lc-row"></span>
+      <span class="evs-lc-row evs-lc-k2"><span class="evs-dg-wire"><i class="evs-dg-run"></i></span></span>
+    </div>
+
+    <div class="evs-lc-col evs-lc-out">
+      <span class="evs-dg-title evs-lc-title">s.newArray</span>
+      <span class="evs-lc-slot evs-lc-s0"><span class="evs-dg-node evs-lc-cell">[0]</span></span>
+      <span class="evs-lc-slot evs-lc-s1"><span class="evs-dg-node evs-lc-cell">[1]</span></span>
+      <span class="evs-lc-more">…</span>
+      <span class="evs-lc-slot evs-lc-s2"><span class="evs-dg-node evs-lc-cell">[n-1]</span></span>
+      <span class="evs-dg-wire is-down evs-lc-retwire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-node evs-lc-ret">s.return</span>
+    </div>
+
+    <span class="evs-dg-note evs-lc-foot">one call per element</span>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  /* input array | wires | s.for body | wires | output buffer. Every row sits on a 29px pitch
+     that starts 29px down (the titles and the region label take the band above). */
+  .evs-lc {
+    display: grid;
+    grid-template-columns: 72px minmax(16px, 1fr) auto minmax(16px, 1fr) 72px;
+    align-items: start;
+    max-width: 420px;
+    margin: 0 auto;
+  }
+
+  /* Everything shares row 1 (the note under the loop included), so each column is placed. */
+  .evs-lc > * {
+    grid-row: 1;
+  }
+
+  .evs-lc-in {
+    grid-column: 1;
+  }
+
+  .evs-lc-wires {
+    grid-column: 2;
+  }
+
+  .evs-lc-loop {
+    grid-column: 3;
+  }
+
+  .evs-lc-landing {
+    grid-column: 4;
+  }
+
+  .evs-lc-out {
+    grid-column: 5;
+  }
+
+  .evs-lc-col {
+    position: relative;
+    display: flex;
+    flex-direction: column;
+    padding-top: 29px;
+  }
+
+  .evs-lc-title {
+    position: absolute;
+    top: 0;
+    left: 0;
+    white-space: nowrap;
+  }
+
+  .evs-lc-out .evs-lc-title {
+    right: 0;
+    left: auto;
+  }
+
+  /* Array elements share their borders: one 30px cell, then 29px cells without a top border
+     (the cell after the gap draws its own). */
+  .evs-lc .evs-lc-cell {
+    height: 29px;
+    min-height: 0;
+    padding: 0 4px;
+    border-top-width: 0;
+    border-radius: 0;
+  }
+
+  .evs-lc-in .evs-lc-k0,
+  .evs-lc-s0 .evs-lc-cell {
+    height: 30px;
+    border-top-width: 1px;
+    border-top-left-radius: var(--evs-radius-sm);
+    border-top-right-radius: var(--evs-radius-sm);
+  }
+
+  .evs-lc-in .evs-lc-k2,
+  .evs-lc-s2 .evs-lc-cell {
+    border-top-width: 1px;
+    border-bottom-right-radius: var(--evs-radius-sm);
+    border-bottom-left-radius: var(--evs-radius-sm);
+  }
+
+  /* Output slots: the same grid, dashed until written. The written cell sits over the slot's
+     borders. */
+  .evs-lc-slot {
+    display: block;
+    height: 29px;
+    border: dashed var(--evs-dg-stroke);
+    border-width: 0 1px 1px;
+  }
+
+  .evs-lc-slot .evs-lc-cell {
+    margin: 0 -1px -1px;
+  }
+
+  .evs-lc-s0 {
+    height: 30px;
+    border-top-width: 1px;
+    border-top-left-radius: var(--evs-radius-sm);
+    border-top-right-radius: var(--evs-radius-sm);
+  }
+
+  .evs-lc-s0 .evs-lc-cell {
+    margin-top: -1px;
+  }
+
+  .evs-lc-s2 {
+    border-top-width: 1px;
+    border-bottom-right-radius: var(--evs-radius-sm);
+    border-bottom-left-radius: var(--evs-radius-sm);
+  }
+
+  .evs-lc-s2 .evs-lc-cell {
+    margin-top: -1px;
+  }
+
+  /* The elements in between. */
+  .evs-lc-more {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    height: 29px;
+    color: var(--evs-text-2);
+  }
+
+  .evs-lc-col .evs-lc-more {
+    border: dashed var(--evs-dg-stroke);
+    border-width: 0 1px;
+  }
+
+  .evs-lc-wires {
+    display: flex;
+    flex-direction: column;
+    padding-top: 29px;
+  }
+
+  .evs-lc-row {
+    display: flex;
+    align-items: center;
+    height: 29px;
+  }
+
+  .evs-lc-row:first-child {
+    height: 30px;
+  }
+
+  .evs-lc-loop {
+    display: flex;
+    flex-direction: column;
+    padding: 7px 6px;
+  }
+
+  .evs-lc-loop .evs-dg-note {
+    margin-bottom: 4px;
+  }
+
+  .evs-lc-loop .evs-lc-call,
+  .evs-lc-loop .evs-lc-more {
+    height: 24px;
+    min-height: 0;
+    margin-top: 5px;
+    padding: 0 10px;
+  }
+
+  .evs-lc-retwire {
+    --evs-dg-len: 20px;
+    align-self: center;
+  }
+
+  .evs-lc-out .evs-lc-ret {
+    padding: 5px 4px;
+  }
+
+  .evs-lc-foot {
+    grid-column: 2 / 5;
+    justify-self: center;
+    margin-top: 158px;
+    white-space: nowrap;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-lc-in .evs-lc-cell::after {
+      animation: evs-loopcollect-cursor 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-wires .evs-dg-run {
+      animation: evs-loopcollect-call 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-call::after {
+      animation: evs-loopcollect-read 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-landing .evs-dg-run {
+      animation-name: evs-loopcollect-result;
+    }
+
+    /* One iteration every 2.2s. */
+    .evs-lc-k1 {
+      --evs-dg-delay: 2.2s;
+    }
+
+    .evs-lc-k2 {
+      --evs-dg-delay: 4.4s;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-s0 .evs-lc-cell {
+      animation: evs-loopcollect-on-22 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-s1 .evs-lc-cell {
+      animation: evs-loopcollect-on-44 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-s2 .evs-lc-cell {
+      animation: evs-loopcollect-on-66 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-retwire .evs-dg-run {
+      animation: evs-loopcollect-return 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-lc-ret::after {
+      animation: evs-loopcollect-returned 10s ease-in-out infinite both;
+    }
+  }
+
+  /* One iteration. The cursor is on the element, 0.4s to 2.2s. */
+  @keyframes evs-loopcollect-cursor {
+    0%,
+    3% {
+      opacity: 0;
+    }
+    5.5%,
+    21% {
+      opacity: 1;
+    }
+    23.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Its address goes to the call, 0.7s to 1.3s. */
+  @keyframes evs-loopcollect-call {
+    0%,
+    6% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    7% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    13% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    14%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* The call runs, 1.3s to 1.9s. */
+  @keyframes evs-loopcollect-read {
+    0%,
+    12% {
+      opacity: 0;
+    }
+    14%,
+    17% {
+      opacity: 1;
+    }
+    20%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Its result goes to the slot of the same index, 1.6s to 2.2s. */
+  @keyframes evs-loopcollect-result {
+    0%,
+    15% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    16% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    22% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    23%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* Slots: written at 2.2s, 4.4s and 6.6s, then kept until the loop ends. */
+  @keyframes evs-loopcollect-on-22 {
+    0%,
+    21.5% {
+      opacity: 0;
+    }
+    24%,
+    92% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-loopcollect-on-44 {
+    0%,
+    43.5% {
+      opacity: 0;
+    }
+    46%,
+    92% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-loopcollect-on-66 {
+    0%,
+    65.5% {
+      opacity: 0;
+    }
+    68%,
+    92% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The full buffer is returned, 7.2s to 7.8s. */
+  @keyframes evs-loopcollect-return {
+    0%,
+    71% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    72% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    78% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    79%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  @keyframes evs-loopcollect-returned {
+    0%,
+    77% {
+      opacity: 0;
+    }
+    79.5%,
+    92% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

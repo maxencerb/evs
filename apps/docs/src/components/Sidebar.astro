@@ -1,0 +1,86 @@
+---
+// Starlight's sidebar tree, followed by a footer pinned to the bottom of the pane: social links
+// on the left, the theme switch on the right. The stock sidebar only renders such a footer in
+// the mobile menu; this one is the same on every viewport.
+import SidebarPersister from '@astrojs/starlight/components/SidebarPersister.astro';
+import SidebarSublist from '@astrojs/starlight/components/SidebarSublist.astro';
+import SocialIcons from '@astrojs/starlight/components/SocialIcons.astro';
+
+import ThemeSelect from './ThemeSelect.astro';
+
+const { sidebar } = Astro.locals.starlightRoute;
+---
+
+<SidebarPersister>
+  <SidebarSublist sublist={sidebar} />
+</SidebarPersister>
+
+{
+  /* Inlined so it runs before first paint, after Starlight has restored the saved scroll
+     position: a deep link must not open on a tree whose current row is out of sight. */
+}
+<script is:inline>
+  (() => {
+    const pane = document.getElementById('starlight__sidebar');
+    const current = pane?.querySelector('a[aria-current="page"]');
+    if (!pane || !current) return;
+    const paneBox = pane.getBoundingClientRect();
+    const box = current.getBoundingClientRect();
+    // 80px keeps the row clear of the pinned footer.
+    if (box.top < paneBox.top || box.bottom > paneBox.bottom - 80) {
+      pane.scrollTop += box.top - paneBox.top - paneBox.height / 3;
+    }
+  })();
+</script>
+
+<div class="footer">
+  <div class="social">
+    <SocialIcons />
+  </div>
+  <ThemeSelect />
+</div>
+
+<style>
+  .footer {
+    position: sticky;
+    bottom: 0;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    /* Pushed to the bottom of a short tree, and bled over the pane's inline padding so the
+       tree scrolls underneath an opaque strip. */
+    margin-top: auto;
+    margin-inline: calc(-1 * var(--evs-sidebar-pad-start)) calc(-1 * var(--evs-sidebar-pad-end));
+    padding: 0.75rem var(--evs-sidebar-pad-end) 0.875rem var(--evs-sidebar-pad-start);
+    background: var(--evs-bg);
+  }
+
+  /* Fades the last tree rows into the footer instead of cutting them off. */
+  .footer::before {
+    content: '';
+    position: absolute;
+    inset-inline: 0;
+    bottom: 100%;
+    height: 1.5rem;
+    background: linear-gradient(to top, var(--evs-bg), transparent);
+    pointer-events: none;
+  }
+
+  .social {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+  }
+
+  .social :global(a) {
+    margin: -0.375rem;
+    border-radius: var(--evs-radius-md);
+    padding: 0.375rem;
+    color: var(--evs-text-2);
+    font-size: 1.125rem;
+  }
+
+  .social :global(a:hover) {
+    color: var(--evs-heading);
+  }
+</style>

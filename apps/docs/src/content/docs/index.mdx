@@ -1,10 +1,10 @@
 ---
 title: evs
-description: Typed EVM read scripts in plain TypeScript. Batch dozens of dependent on-chain reads into a single eth_call, with full viem inference and no deployed contracts.
+description: Typed EVM read scripts in TypeScript. Reads that depend on earlier reads run in one eth_call, typed by viem, with nothing to deploy.
 template: splash
 hero:
   title: Ethereum Virtual Script
-  tagline: Write read-only EVM scripts in TypeScript. <strong>evs</strong> compiles them to bytecode and runs them as one <code>eth_call</code>, so reads that depend on earlier reads cost a single round trip. Nothing to deploy, and viem types the result.
+  tagline: Write read-only EVM scripts in TypeScript. <strong>evs</strong> compiles them to bytecode and runs them as one <code>eth_call</code>, so reads that depend on earlier reads cost a single round trip.
   actions:
     - text: Quick start
       link: /getting-started/quick-start/
@@ -18,94 +18,93 @@ hero:
       variant: minimal
 ---
 
-import { Steps } from '@astrojs/starlight/components';
+import { CardGrid, LinkCard, TabItem, Tabs } from '@astrojs/starlight/components';
 
-## From ABI to typed result in three steps
+## Dependent reads in one call
 
-The example reads a Uniswap V3 pool's two tokens and each token's symbol: four reads, two of
-which target addresses that only exist once the first two have returned. One `eth_call` runs all
-of them.
+Read a Uniswap V3 pool's two tokens, then each token's symbol.
 
-<Steps>
+<Tabs syncKey="example">
+  <TabItem label="script.ts">
+    ```ts title="script.ts" {10-11}
+    import { evscript, t } from '@maxencerb/evs';
+    import { erc20Abi } from 'viem';
+    import { poolAbi } from './abi';
 
-1. **Describe the contracts.** Plain `as const` ABI fragments, the same shape viem uses. viem
-   already ships `erc20Abi`, so only the pool needs writing down.
+    export const poolTokens = evscript(
+      { name: 'poolTokens', args: [t.address] },
+      (s, pool) => {
+        const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+        const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
+        const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+        const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+        return s.return({ token0, token1, symbol0, symbol1 });
+      },
+    );
+    ```
+  </TabItem>
+  <TabItem label="abi.ts">
+    ```ts title="abi.ts"
+    import { parseAbi } from 'viem';
 
-   ```ts title="abis.ts"
-   export const poolAbi = [
-     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-   ] as const;
-   ```
+    export const poolAbi = parseAbi([
+      'function token0() view returns (address)',
+      'function token1() view returns (address)',
+    ]);
+    ```
+  </TabItem>
+  <TabItem label="client.ts">
+    ```ts title="client.ts"
+    import { compile } from '@maxencerb/evs';
+    import { createPublicClient, http } from 'viem';
+    import { mainnet } from 'viem/chains';
+    import { poolTokens } from './script';
 
-2. **Write the script.** The callback runs once, at build time, and records what the bytecode
-   will do. Every value it touches is an `Expr`, a typed placeholder for something that only
-   exists inside the `eth_call`. Passing one call's result as the next call's address is the
-   part a multicall cannot express.
+    const client = createPublicClient({ chain: mainnet, transport: http() });
+    const compiled = compile(poolTokens);
 
-   ```ts title="script.ts" collapse={3-7}
-   import { evscript, t } from '@maxencerb/evs';
-   import { erc20Abi } from 'viem';
-   // abis.ts (step 1)
-   const poolAbi = [
-     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-   ] as const;
+    const result = await client.readContract({
+      ...compiled.toViem(),
+      functionName: 'poolTokens',
+      args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // USDC/WETH 0.05% pool
+    });
+    // { token0: `0x${string}`; token1: `0x${string}`; symbol0: string; symbol1: string }
+    ```
+  </TabItem>
+</Tabs>
 
-   export const poolTokens = evscript({ name: 'poolTokens', args: [t.address] }, (s, pool) => {
-     const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
-     //    ^? Expr<'address'>
-     const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
-     // The target of these two calls is the result of the previous two.
-     const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-     const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-     return s.return({ token0, token1, symbol0, symbol1 });
-   });
-   ```
+A multicall encodes every call before the request leaves, so it cannot read `symbol` from an
+address that the same batch returns.
 
-3. **Compile it and run it with viem.** `compile` produces verified runtime bytecode plus a
-   literal-typed ABI. `toViem()` hands both to `readContract` as a deployless `eth_call`, and
-   the argument list and the result object are inferred from the script.
-
-   ```ts title="main.ts" collapse={4-19}
-   import { compile } from '@maxencerb/evs';
-   import { createPublicClient, http } from 'viem';
-   import { mainnet } from 'viem/chains';
-   // script.ts (step 2)
-   import { evscript, t } from '@maxencerb/evs';
-   import { erc20Abi } from 'viem';
-   const poolAbi = [
-     { type: 'function', name: 'token0', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-     { type: 'function', name: 'token1', stateMutability: 'view', inputs: [], outputs: [{ type: 'address' }] },
-   ] as const;
-   const poolTokens = evscript({ name: 'poolTokens', args: [t.address] }, (s, pool) => {
-     const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
-     const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
-     const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-     const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
-     return s.return({ token0, token1, symbol0, symbol1 });
-   });
-
-   const compiled = compile(poolTokens);
-
-   const client = createPublicClient({ chain: mainnet, transport: http() });
-   const out = await client.readContract({
-     ...compiled.toViem(), // { abi, code }: a plain deployless eth_call
-     functionName: 'poolTokens',
-     args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // typed readonly [pool: `0x${string}`]
-   });
-   // out: { token0: `0x${string}`; token1: `0x${string}`; symbol0: string; symbol1: string }
-   ```
-
-</Steps>
-
-## Where next
-
-- [Why evs?](/getting-started/why-evs/) compares this with multicall and hand-written helper
-  contracts, and says when not to use it.
-- [Writing scripts](/guides/writing-scripts/) covers values, control flow, loops over runtime
-  arrays and the three calling verbs.
-- [Executing scripts](/guides/execution/) explains the deployless and state-override modes and
-  which providers support each.
-- [How it works](/concepts/how-it-works/) walks through the pipeline from recorded IR to verified
-  bytecode.
+<CardGrid>
+  <LinkCard
+    title="Quick start"
+    href="/getting-started/quick-start/"
+    description="Write, compile and run a script in three steps."
+  />
+  <LinkCard
+    title="Writing scripts"
+    href="/guides/writing-scripts/"
+    description="What runs at build time and what runs on-chain."
+  />
+  <LinkCard
+    title="Calling contracts"
+    href="/guides/calls/"
+    description="Read views, call quoters and dry-run writes."
+  />
+  <LinkCard
+    title="Executing scripts"
+    href="/guides/execution/"
+    description="Deployless or state override, and which providers support each."
+  />
+  <LinkCard
+    title="Examples"
+    href="/examples/pool-metadata/"
+    description="Pool metadata, batch token balances and more patterns."
+  />
+  <LinkCard
+    title="API reference"
+    href="/reference/builder/"
+    description="One page per function, each with usage, returns and parameters."
+  />
+</CardGrid>

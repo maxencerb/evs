@@ -1,0 +1,248 @@
+---
+title: explainRevert
+description: Classifies revert data and points at the part of your script it can have come from.
+---
+
+Classifies revert data and points at the part of your script it can have come from.
+
+## Usage
+
+```ts {8-10}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const explanation = compiled.explainRevert(
+  '0x4e487b710000000000000000000000000000000000000000000000000000000000000011',
+);
+
+explanation.kind; // 'panic'
+explanation.panicCode; // 17n, which is 0x11
+explanation.message;
+```
+
+`message` names the multiplication that overflowed. A message is one line: the samples on this
+page are wrapped.
+
+```txt
+Panic(0x11): arithmetic overflow or underflow — 1 candidate site(s) in this script:
+checked mul args.arg0 * 2 (uint256) — Panic 0x11 (site 1)
+```
+
+### From a viem error
+
+viem keeps the revert data on `ContractFunctionRevertedError`, as `raw`.
+
+```ts {27-29}
+import { evscript, t } from '@maxencerb/evs';
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  erc20Abi,
+  http,
+} from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+const compiled = symbolOf.compile();
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'symbolOf',
+    args: ['0x000000000000000000000000000000000000dEaD'], // no symbol() here
+  });
+} catch (error) {
+  if (!(error instanceof BaseError)) throw error;
+  const reverted = error.walk((e) => e instanceof ContractFunctionRevertedError);
+  if (reverted instanceof ContractFunctionRevertedError && reverted.raw !== undefined) {
+    const explanation = compiled.explainRevert(reverted.raw);
+    // explanation.kind: 'evs-decode'
+    // explanation.site: { id: 0, detail: 'decoding symbol() returndata' }
+  }
+}
+```
+
+The call returned nothing to decode, so the script reverted with `EvsDecodeError`. `site` is
+the `s.read` that failed.
+
+### Declared errors
+
+An error thrown by [`s.throw`](/reference/builder/throw/) comes back with its name and decoded
+arguments.
+
+```ts {17-19}
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooSmall = t.error('TooSmall', [namedArg('amount', t.uint256)]);
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall] },
+  (s, amount) => {
+    s.if(amount.lt(10n), () => {
+      s.throw(TooSmall, { amount });
+    });
+    return s.return({ doubled: amount.mul(2n) });
+  },
+);
+const compiled = guard.compile();
+
+// the revert data of guard(5)
+const explanation = compiled.explainRevert(
+  '0x42128ec30000000000000000000000000000000000000000000000000000000000000005',
+);
+
+explanation.kind; // 'script-error'
+explanation.errorName; // 'TooSmall'
+explanation.errorArgs; // { amount: 5n }
+```
+
+### Callee reverts
+
+A revert from a contract the script calls passes through unchanged. `candidateSites` lists the
+calls it can have come through.
+
+```ts {10-12}
+import { evscript, t } from '@maxencerb/evs';
+import { encodeErrorResult, erc20Abi, parseAbi } from 'viem';
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+const compiled = symbolOf.compile();
+
+const explanation = compiled.explainRevert(
+  encodeErrorResult({ abi: parseAbi(['error Error(string)']), args: ['paused'] }),
+);
+
+explanation.kind; // 'error-string'
+explanation.candidateSites; // [{ id: 0, detail: 'decoding symbol() returndata' }]
+explanation.message;
+```
+
+```txt
+callee revert Error("paused") — bubbled verbatim from a callee through the strict
+call site: decoding symbol() returndata (site 0)
+```
+
+### Empty reverts
+
+Empty revert data has several possible causes. The message lists the ones that apply to this
+artifact.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+const compiled = symbolOf.compile();
+
+const explanation = compiled.explainRevert('0x');
+
+explanation.kind; // 'empty'
+explanation.message;
+```
+
+```txt
+empty revert payload (no returndata) — a bare revert() / require(false) bubbled
+verbatim from a callee through the strict call site: decoding symbol() returndata
+(site 0); or the call frame failed without a reason: out of gas, or an opcode the
+node rejects at this block — the runtime uses MCOPY (cancun) and PUSH0 (shanghai)
+(evmVersion 'cancun'); for a block or chain before that fork, recompile with an
+older evmVersion ('paris' runs everywhere)
+```
+
+## Returns
+
+`RevertExplanation`
+
+`kind`, `message` and `raw` are always set. The other fields depend on the kind.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `kind` | see below | What the revert data is. |
+| `message` | `string` | The explanation, in one line. |
+| `raw` | `Hex` | The data you passed. |
+| `panicCode` | `bigint` | The [panic code](/reference/diagnostics/#panic-codes). |
+| `site` | `{ id, detail }` | The call whose return data failed to decode. |
+| `candidateSites` | `{ id, detail }[]` | The places the revert can have come from. |
+| `errorName` | `string` | The name of the declared error. |
+| `errorArgs` | `Record<string, unknown>` | Its decoded arguments, by name. |
+
+One row per `kind`:
+
+| `kind` | Revert data | Fields set |
+| --- | --- | --- |
+| `'panic'` | `Panic(uint256)` | `panicCode`, and `candidateSites`: the checks that can raise that code |
+| `'evs-decode'` | `EvsDecodeError(uint256)` | `site`, when the id is a decode site of this artifact |
+| `'evs-invalid-calldata'` | `EvsInvalidCalldata()` | none: the message gives the expected signature |
+| `'script-error'` | an error declared in `errors` | `errorName`, `errorArgs` |
+| `'error-string'` | `Error(string)` | `candidateSites`: the calls it can have come through |
+| `'custom'` | any other selector, or fewer than 4 bytes | `candidateSites`, as above |
+| `'empty'` | `0x` | `candidateSites`, as above |
+
+A site's `id` is the `id` of an entry of [`sourceMap.sites`](/reference/artifact/#properties).
+
+## Parameters
+
+### data
+
+- **Type:** `Hex`
+
+The revert data: `0x` followed by an even number of hex digits. `0x` alone is the empty revert.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const explanation = compiled.explainRevert(
+  '0xf43fed56', // EvsInvalidCalldata()
+);
+// explanation.kind: 'evs-invalid-calldata'
+```
+
+## Behavior
+
+- **Strict calls only.** A callee revert passes through `s.read`, `s.call` and `s.simulate`.
+  The `try` verbs absorb it, and so does a call with `revertReturns`, so neither is ever
+  listed in `candidateSites`.
+- **Candidates, not proof.** A panic lists every check in the script that can raise that code.
+  With none, the message says the panic came from a callee.
+- **Not from this script.** With no strict call, a callee revert cannot have come from this
+  artifact, and the message says so.
+- **Malformed data.** Known selectors whose arguments do not decode fall back to `'custom'`. A
+  declared error stays `'script-error'`, without `errorArgs`.
+- **Unfunded `value`.** When a call sends a `value` the script's balance cannot cover, the
+  message names that call. See
+  [funding the script](/reference/artifact/to-viem/#funding-the-script).
+- **Matches `decodeScriptError`.** Both classify revert data the same way. Use
+  [`decodeScriptError`](/reference/utilities/decode-script-error/) for a typed value to switch on.
+
+:::caution[A callee can imitate your errors]
+Selectors are public, and a strict call passes a callee revert through byte for byte. When the
+script has a strict call, treat `'evs-decode'`, `'evs-invalid-calldata'` and `'script-error'` as
+a strong hint. The message says so.
+:::
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `data` is not `0x`-prefixed hex with an even number of digits |

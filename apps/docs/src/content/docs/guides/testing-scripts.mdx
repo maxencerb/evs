@@ -1,398 +1,170 @@
 ---
 title: Testing scripts
-description: Unit-test evs scripts without a node — interpret() runs a script's IR against a MockChain with byte-exact EVM semantics, in milliseconds.
+description: Test a script's logic without a node using interpret and a mock chain, then run the compiled bytecode against a local anvil node.
 ---
 
-You do not need a node, a fork, or even the compiler to test a script's logic. `interpret()`
-executes a script's IR directly in TypeScript against a `MockChain` you define — and it is the
-same reference oracle the evs test suite holds the compiled bytecode against, byte for byte:
-returndata, `Panic` codes, decode errors, bubbled reverts, and `try*` zeroing all match the
-real thing exactly (see [Why trust the bytecode?](/concepts/trust-and-testing/)). If your
-script behaves under `interpret()`, the bytecode behaves the same way on-chain.
+Test a script's logic in milliseconds with `interpret()` and a mock chain. Run the compiled
+bytecode against a local anvil node when the test depends on a real chain.
 
-`interpret()` runs the program `compile()` actually lowers: the IR after
-[dead-code elimination](/concepts/how-it-works/#stage-3-dead-code-elimination). That pass drops a
-checked operation whose result nothing reads, and its revert with it, so a script that
-overflows while computing an unused value returns, under `interpret()` and on-chain alike.
-`{ dce: false }` runs the IR exactly as recorded instead (see
-[Unused results do not revert](#unused-results-do-not-revert)).
+## Which one to use
 
-## The signature
+| | `interpret()` | anvil |
+| --- | --- | --- |
+| Needs | a mock chain you write | foundry's `anvil` |
+| Runs | the script's recorded program, in TypeScript | the compiled bytecode, in a node |
+| Speed | synchronous, milliseconds | one RPC round trip per call |
+| Best for | logic, branches, edge cases, reverts | real contracts, both execution modes, gas and size limits |
 
-```ts
-import type { InterpOptions, InterpResult, InterpValues, MockChain, ScriptIr } from '@maxencerb/evs';
-import type { Abi, ContractFunctionArgs, ContractFunctionName } from 'viem';
+`interpret()` returns the same bytes as the bytecode, for results and for reverts: see
+[why trust the bytecode?](/concepts/trust-and-testing/) It does not model gas, the script's
+balance, or state that changes between calls.
 
-declare function interpret<const abi extends Abi = Abi>(
-  // an evscript() result or its compiled artifact — or a bare ScriptIr (e.g. from deserializeIr),
-  // which leaves abi at the wide Abi (untyped args and values)
-  script: ScriptIr | { readonly ir: ScriptIr; readonly abi: abi },
-  args: NoInfer<ContractFunctionArgs<abi, 'view', ContractFunctionName<abi, 'view'>>>, // readContract's args
-  chain: MockChain,
-  opts?: InterpOptions,
-): InterpResult<InterpValues<abi>>; // values: what readContract returns for this script
+## Without a node
 
-// InterpOptions = { trace?: boolean; maxSteps?: number; env?: InterpEnvOverrides; dce?: boolean }
+```ts {16-22, 24}
+import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+import { encodeFunctionResult, erc20Abi } from 'viem';
 
-interface MockChainShape {
-  // the one required method — every s.read/s.tryRead (and, when `call` is omitted, every
-  // s.call/s.simulate too) arrives here; `gas` is the site's `gas` cap when one was given
-  staticcall(req: { to: `0x${string}`; data: `0x${string}`; gas?: bigint }): {
-    success: boolean;
-    data: `0x${string}`;
-  };
-  // optional: a separate oracle for the mutable verbs, told which verb is calling; `value` is
-  // the wei the site sends (absent = 0)
-  call?(req: {
-    to: `0x${string}`;
-    data: `0x${string}`;
-    kind: 'call' | 'simulate';
-    gas?: bigint;
-    value?: bigint;
-  }): {
-    success: boolean;
-    data: `0x${string}`;
-  };
-  // optional: account state for s.balance / s.codeSize / s.codeHash (undefined = no account)
-  account?(address: `0x${string}`):
-    | { balance?: bigint; code?: `0x${string}`; nonce?: bigint }
-    | undefined;
-}
+const decimalsOf = evscript({ name: 'decimalsOf', args: [t.address] }, (s, token) => {
+  const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ decimals: s.select(d.success, d.value, 18) });
+});
+
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const six = encodeFunctionResult({
+  abi: erc20Abi,
+  functionName: 'decimals',
+  result: 6,
+});
+
+const chain: MockChain = {
+  // USDC answers 6, every other address reverts
+  staticcall: ({ to }) =>
+    to === USDC.toLowerCase()
+      ? { success: true, data: six }
+      : { success: false, data: '0x' },
+};
+
+const { outcome } = interpret(decimalsOf, [USDC], chain);
+// outcome → { kind: 'return', data: '0x…06', values: { decimals: 6 } }
 ```
 
-- `script` — the script itself (`interpret(myScript, …)`), or its compiled artifact. Both
-  sides are then typed from the script's literal ABI with the same viem types `readContract`
-  uses: `args` is the positional tuple `readContract` takes, so a wrong argument shape is a
-  compile error on the offending value, and `outcome.values` is the record `readContract`
-  returns. A bare `ScriptIr` works too (one loaded with `deserializeIr`, say): `args` is then
-  `readonly unknown[]` and `outcome.values` a `Record<string, unknown>`, checked at run time
-  only. Either way the IR is validated on entry, so garbage IR fails loudly instead of
-  producing garbage results.
-- `args` — the script's arguments as plain JS values (same conventions as viem; table below).
-- `chain` — your mock: every `s.read`/`s.tryRead` the script executes arrives as one
-  `staticcall` request with the target address and the exact ABI-encoded calldata the
-  compiled script would send. `s.call`/`s.simulate` go to the optional `call` oracle (or fall
-  back to `staticcall`). A site's `gas` cap rides along as `req.gas` — the interpreter has no
-  gas model, so it is informational: answer `{ success: false, data: '0x' }` to emulate a target
-  that ran out of gas. A site's `value` rides along as `req.value` (the target's `msg.value`); the
-  script's balance is not modeled.
-  `s.balance`/`s.codeSize`/`s.codeHash` ask the optional `account` oracle instead (see
-  [mocking account state](#mocking-account-state)).
-- `opts.dce` — `true` by default: run `eliminateDeadCode(ir)`, the IR the bytecode is
-  compiled from. `false` executes the recorded IR, every unused revert guard included.
-- `InterpResult.outcome` is either `{ kind: 'return', data, values }` — `data` is the
-  ABI-encoded returndata, `values` the decoded result record — or `{ kind: 'revert', data }`
-  with the byte-exact revert payload.
+The mock answers each call the script makes with `{ success, data }`. `args` and
+`outcome.values` are typed like `readContract`'s arguments and result.
 
-## Mocking the chain
+- `staticcall` answers `s.read` and `s.tryRead`. It is the only required method.
+- `call` answers `s.call` and `s.simulate`, and `account` answers `s.balance`, `s.codeSize`
+  and `s.codeHash`. Both are optional: see [`interpret`](/reference/utilities/interpret/).
+- `interpret()` is synchronous and needs no setup, so it runs in any test runner.
 
-A `MockChain` answers each sub-call with `{ success, data }`. Return `success: true` with
-ABI-encoded returndata (viem's `encodeFunctionResult` is the convenient way to build it), or
-`success: false` with a revert payload — a strict `s.read` bubbles it verbatim, a `s.tryRead`
-zeroes its outputs. This is a complete, runnable test with no test framework at all:
+:::caution[Addresses arrive in lowercase]
+`to` is always lowercase. Comparing it with a checksummed address never matches, so the mock
+takes its fallback branch without an error. Compare with `address.toLowerCase()`.
+:::
 
-```ts
+## Testing a revert
+
+```ts {8-11}
+import { compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const { outcome } = interpret(ratio, [1n, 0n], noCalls);
+// outcome → { kind: 'revert', data: '0x4e487b71…12' }
+const why = compile(ratio).explainRevert(outcome.data);
+// why.kind → 'panic', why.panicCode → 18n (0x12, division by zero)
+```
+
+A revert is an outcome, not an exception: `outcome.data` is the exact payload the bytecode
+reverts with. To test a failing contract, answer `success: false` from the mock.
+
+## Unused results do not revert
+
+```ts {4, 9, 11-12}
 import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
-import { encodeFunctionResult, erc20Abi, toFunctionSelector } from 'viem';
+
+const check = evscript({ name: 'check', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  a.sub(b); // nothing reads the result: the subtraction and its check are dropped
+  return s.return({ a });
+});
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+interpret(check, [1n, 2n], noCalls).outcome.kind; // 'return', like the bytecode
+
+const asRecorded = interpret(check, [1n, 2n], noCalls, { dce: false });
+asRecorded.outcome.kind; // 'revert': Panic(0x11)
+```
+
+The compiler removes a checked operation whose result nothing reads, and `interpret()` does
+the same unless you pass [`dce: false`](/reference/utilities/interpret/#dce-optional). To make
+a check count, use its result, or write it with [`s.if`](/reference/builder/if/) and
+[`s.throw`](/reference/builder/throw/).
+
+## Setting the environment
+
+```ts {8-13}
+import { evscript, interpret, type MockChain } from '@maxencerb/evs';
+
+const stamp = evscript({ name: 'stamp' }, (s) =>
+  s.return({ at: s.env('timestamp'), by: s.env('caller') }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const { outcome } = interpret(stamp, [], noCalls, {
+  env: {
+    timestamp: 1_750_000_000n,
+    caller: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+  },
+});
+// outcome.values → { at: 1750000000n, by: '0xd8dA…6045' }
+```
+
+[`env`](/reference/utilities/interpret/#env-optional) sets what
+[`s.env`](/reference/builder/env/) returns: `address`, `caller`, `timestamp`, `blocknumber`
+and `chainid`. Use it to test a script as each
+[execution mode](/guides/execution/#choosing-a-mode) would run it.
+
+## Against a local node
+
+Start a node that forks mainnet at a fixed block, so results never change:
+
+```sh
+anvil --fork-url $MAINNET_RPC_URL --fork-block-number 22000000
+```
+
+```ts {13}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
 
 const tokenInfo = evscript({ name: 'tokenInfo', args: [t.address] }, (s, token) => {
   const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
   const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
   return s.return({ symbol, decimals });
 });
+const compiled = compile(tokenInfo);
 
-const USDC = '0xA0b86991c6218b36c1D19D4a2e9Eb0cE3606eB48';
-const SYMBOL = toFunctionSelector('function symbol() view returns (string)');
-const DECIMALS = toFunctionSelector('function decimals() view returns (uint8)');
+const client = createPublicClient({ transport: http('http://127.0.0.1:8545') });
 
-const chain: MockChain = {
-  staticcall({ to, data }) {
-    if (to !== USDC.toLowerCase()) return { success: false, data: '0x' };
-    const selector = data.slice(0, 10);
-    if (selector === SYMBOL) {
-      return {
-        success: true,
-        data: encodeFunctionResult({ abi: erc20Abi, functionName: 'symbol', result: 'USDC' }),
-      };
-    }
-    if (selector === DECIMALS) {
-      return {
-        success: true,
-        data: encodeFunctionResult({ abi: erc20Abi, functionName: 'decimals', result: 6 }),
-      };
-    }
-    return { success: false, data: '0x' };
-  },
-};
-
-const result = interpret(tokenInfo, [USDC], chain);
-
-if (result.outcome.kind !== 'return') throw new Error('expected a return');
-// typed like readContract's result: symbol is a string, decimals (uint8) a number
-const { symbol, decimals } = result.outcome.values;
-if (symbol !== 'USDC') throw new Error('wrong symbol');
-if (decimals !== 6) throw new Error('wrong decimals');
-```
-
-:::note
-The `to` address your mock receives is always **lowercase** (it is formatted from the 160-bit
-word the script holds), so normalize before comparing — `USDC.toLowerCase()` above.
-:::
-
-### Mocking account state
-
-`s.balance`, `s.codeSize` and `s.codeHash` read account state, not a sub-call, so they go to the
-optional `account(address)` oracle (the address is lowercase, like `to`). Return the account's
-`balance` (wei), its deployed `code` and its `nonce` — any field may be omitted and reads as
-zero / `'0x'` — or `undefined` for an address with no account at all. Without the oracle every
-address reads as nonexistent: zero balance, no code, zero code hash.
-
-```ts
-import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
-import { keccak256 } from 'viem';
-
-const probe = evscript({ name: 'probe', args: [t.address] }, (s, who) =>
-  s.return({ wei: s.balance(who), size: s.codeSize(who), hash: s.codeHash(who) }),
-);
-
-const VAULT = '0x00000000000000000000000000000000000000aa';
-const VAULT_CODE = '0x600160005260206000f3';
-
-const chain: MockChain = {
-  staticcall: () => ({ success: false, data: '0x' }),
-  account: (address) => (address === VAULT ? { balance: 5n, code: VAULT_CODE } : undefined),
-};
-
-const result = interpret(probe.ir, [VAULT], chain);
-
-if (result.outcome.kind !== 'return') throw new Error('expected a return');
-if (result.outcome.values['wei'] !== 5n) throw new Error('wrong balance');
-if (result.outcome.values['size'] !== 10n) throw new Error('wrong code size');
-if (result.outcome.values['hash'] !== keccak256(VAULT_CODE)) throw new Error('wrong code hash');
-```
-
-`s.codeHash` follows `EXTCODEHASH`: `keccak256(code)` for an account with code,
-`keccak256(0x)` for one without code but with a balance or a nonce (an EOA), and zero for an
-empty or missing account. The oracle is stateless like the call oracles — a balance read after an
-`s.call` that moved ETH is still whatever it returns. The interpreter never sees the compiled
-bytecode, so a test that reads the script's own code (`s.codeSize(s.env('address'))`) must hand
-back the artifact's `runtimeBytecode` for the script address itself.
-
-## Arguments in, values out
-
-`args` accepts the same JS shapes viem uses. When you pass the script, a wrong shape is a type
-error; at run time (and always for a bare IR) a wrong shape or out-of-range value throws
-`EvsTypeError` immediately — a bug in your test, never a chain outcome.
-
-| Script arg type        | Accepted JS values                                  |
-| ---------------------- | ---------------------------------------------------- |
-| `uintN` / `intN`       | `bigint`, or a safe-integer `number` (range-checked) |
-| `bool`                 | `boolean`                                            |
-| `address`              | 20-byte `0x` hex string                              |
-| `bytesN`               | `0x` hex string of exactly N bytes                   |
-| `bytes`                | `0x` hex string                                      |
-| `string`               | `string`                                             |
-| `T[]`                  | array of element values                              |
-| `tuple` / `struct`     | object keyed by component names (a `t.struct`), or a positional array (a `t.tuple`); members coerce by their own type's rules |
-
-`outcome.values` decodes the return record with viem's conventions, so assertions written
-against `interpret()` match what `readContract` returns in production: `bool` becomes
-`boolean`, `address` a checksummed string, `uintN`/`intN` a `number` when N is at most 48 and
-a `bigint` otherwise, `bytesN`/`bytes` hex strings, `string` a string, arrays an array of
-element values, and a tuple/struct an object keyed by component names when every member is named
-(otherwise a positional array, recursing through members). `outcome.data` is the raw ABI-encoded returndata — byte-equal to what the
-compiled script returns from `eth_call`.
-
-## Testing reverts
-
-Reverts come back as `{ kind: 'revert', data }` with the exact payload the bytecode would
-produce — so you can assert on raw bytes, or feed them to `explainRevert` from the compiled
-artifact (see [Errors & debugging](/guides/errors-and-debugging/)):
-
-```ts
-import { compile, evscript, interpret, t, type MockChain } from '@maxencerb/evs';
-
-const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
-  s.return({ q: s.div(x, y) }),
-);
-
-const noCalls: MockChain = {
-  staticcall() {
-    throw new Error('this script makes no sub-calls');
-  },
-};
-
-const result = interpret(ratio, [1n, 0n], noCalls);
-if (result.outcome.kind !== 'revert') throw new Error('expected a revert');
-
-// Same bytes the compiled script reverts with: Panic(0x12), division by zero.
-const explained = compile(ratio).explainRevert(result.outcome.data);
-if (explained.kind !== 'panic' || explained.panicCode !== 0x12n) throw new Error('wrong revert');
-```
-
-Malformed returndata is covered with the same fidelity: have your mock return `success: true`
-with truncated or structurally invalid bytes and a strict `s.read` reverts with
-`EvsDecodeError(site)`, while a `s.tryRead` reports `success = false` with zeroed values —
-exactly like the bytecode. See [Calling contracts](/guides/calls/) for those semantics.
-
-### Unused results do not revert
-
-A checked `add`/`sub`/`mul`/`div`/`mod`/`pow`, an `addmod`/`mulmod`, a checked conversion
-(`toUint`/`toInt`, `asAddress`), `array.at(i)`, a `set(i, v)` on an array nothing reads,
-`s.newArray` or a call to a pure `s.fn` reverts only if its result is used.
-When nothing reads the value, the compiled script never computes it, so it cannot panic.
-This differs from Solidity, where `a - b;` on its own still reverts on underflow.
-`interpret()` follows the bytecode; pass `{ dce: false }` to see what the recorded IR would do:
-
-```ts
-import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
-
-const check = evscript({ name: 'check', args: [t.uint256, t.uint256] }, (s, a, b) => {
-  a.sub(b); // result unused: dropped, its underflow Panic with it
-  return s.return({ a });
-});
-
-const noCalls: MockChain = {
-  staticcall() {
-    throw new Error('this script makes no sub-calls');
-  },
-};
-
-interpret(check.ir, [1n, 2n], noCalls).outcome.kind; // 'return', like the bytecode
-interpret(check.ir, [1n, 2n], noCalls, { dce: false }).outcome.kind; // 'revert': Panic(0x11)
-```
-
-To make a check fail on purpose, use its result (return it, or feed it to `s.throw`, a
-sub-call or a cell that is read), or test the condition explicitly with `s.if` and `s.throw`.
-
-## Modeling the execution frame
-
-`s.env(…)` values default to the state-override execution frame:
-
-| Env op               | Default                                                          |
-| -------------------- | ----------------------------------------------------------------- |
-| `s.env('address')`   | `0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530` (`DEFAULT_SCRIPT_ADDRESS`) |
-| `s.env('caller')`    | `0x1000000000000000000000000000000000000001`                      |
-| `s.env('timestamp')` | `0n`                                                              |
-| `s.env('blocknumber')` | `0n`                                                            |
-| `s.env('chainid')`   | `1n`                                                              |
-
-Override any of them per call with `opts.env`:
-
-```ts
-import { evscript, interpret, type InterpEnvOverrides, type MockChain } from '@maxencerb/evs';
-
-const stamp = evscript({ name: 'stamp', args: [] }, (s) =>
-  s.return({ at: s.env('timestamp'), chain: s.env('chainid') }),
-);
-
-const noCalls: MockChain = {
-  staticcall() {
-    throw new Error('this script makes no sub-calls');
-  },
-};
-
-const env: InterpEnvOverrides = { timestamp: 1_750_000_000n, chainid: 8453n };
-const result = interpret(stamp, [], noCalls, { env });
-
-if (result.outcome.kind !== 'return') throw new Error('expected a return');
-if (result.outcome.values.at !== 1_750_000_000n) throw new Error('wrong timestamp');
-```
-
-:::caution
-`s.env('caller')` and `s.env('address')` are execution-frame-dependent: the default deployless
-mode runs your script with a different caller and address than the state-override mode, which
-is why `compile()` emits the `ENV_FRAME_DEPENDENT` diagnostic for them. Use `opts.env` to test
-both frames — and read [Executing scripts](/guides/execution/) before relying on either value.
-:::
-
-## Tracing and the step budget
-
-Pass `{ trace: true }` and the result carries a `trace` array with one entry per executed
-statement — `{ stmtPath, note }`: the statement's path in the IR tree and a short note such as `call symbol() [strict] site 0`. It is the quickest
-way to see which branch ran or how many loop iterations executed. Paths index the IR that
-ran: `eliminateDeadCode(ir)` by default (the same deterministic output you get by calling it
-yourself), the recorded IR under `{ dce: false }`.
-
-Execution is budgeted at `maxSteps` (default 1,000,000 — one step per executed statement, one
-per loop iteration, and one per array element a zero-fill creates: `s.newArray`, and the zero
-value of a fixed-size `T[N]` that a new struct leaves out or a failed `try*` output returns). Exceeding it throws
-`EvsCompileError` with code `COMPILE_LIMIT` on the host — usually an unbounded loop in the
-script; raise `opts.maxSteps` if the workload is genuinely that large. A zero-fill is charged
-before anything is allocated, so a huge array (`s.newArray(t.uint256, n)` with `n` near 2^32)
-fails with `COMPILE_LIMIT` instead of running the host out of memory.
-
-## Shipping IR: `serializeIr` and `deserializeIr`
-
-A script's IR is plain JSON-safe data. `serializeIr` produces a stable string (keys sorted, so
-structurally equal IRs serialize identically — ideal for snapshot tests), and `deserializeIr`
-parses one back with a full structural shape-and-version check, throwing `EvsTypeError` with
-the offending JSON path on any malformation. Both `interpret()` and `compile()` re-validate
-IR semantically against the same invariants the builder enforces (types, operands, scoping,
-in-place writes), so externally loaded IR fails loudly with an `EvsInternalError` (`INTERNAL`)
-before anything runs instead of miscompiling: well-shaped IR that uses a value before defining
-it, names an unknown value id or feeds an operand of the wrong type. Recorded IR can only be
-that broken through a bug, so the message asks you to report it to evs; for IR you loaded, the
-bug is in whatever produced it. One builder rule is not an IR rule: `returns` may be empty at
-the IR level (such a program returns `0x`), while `s.return({})` is refused because viem cannot
-decode an empty result.
-
-```ts
-import {
-  deserializeIr,
-  evscript,
-  interpret,
-  serializeIr,
-  t,
-  type MockChain,
-} from '@maxencerb/evs';
-
-const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
-  s.return({ y: s.mul(x, 2n) }),
-);
-
-const json = serializeIr(double.ir); // store it, snapshot it, send it to another process
-const restored = deserializeIr(json); // shape + version checked on the way in
-
-const noCalls: MockChain = {
-  staticcall() {
-    throw new Error('this script makes no sub-calls');
-  },
-};
-
-// a bare IR carries no ABI, so this call is untyped: args unknown[], values a plain record
-const result = interpret(restored, [21n], noCalls);
-if (result.outcome.kind !== 'return' || result.outcome.values['y'] !== 42n) {
-  throw new Error('round trip failed');
+for (const params of [compiled.toViem(), compiled.toViem({ mode: 'stateOverride' })]) {
+  const info = await client.readContract({
+    ...params,
+    functionName: 'tokenInfo',
+    args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+  });
+  // info → { symbol: 'USDC', decimals: 6 }, in both modes
 }
 ```
 
-## In a test runner
+This is the same `readContract` call as in production, so it covers what `interpret()` cannot:
+the RPC, the [execution mode](/guides/execution/) and real contract code. anvil supports both
+modes.
 
-Everything above is framework-agnostic — `interpret()` is a pure synchronous function, so it
-drops into any runner. A vitest example (this fence is not checked by the docs snippet gate
-because vitest is not a docs dependency; it typechecks in a project that has vitest installed):
+## Next steps
 
-```ts nocheck
-import { interpret } from '@maxencerb/evs';
-import { describe, expect, test } from 'vitest';
-
-import { chain, tokenInfo, USDC } from './fixtures.js';
-
-describe('tokenInfo', () => {
-  test('returns symbol and decimals', () => {
-    const result = interpret(tokenInfo, [USDC], chain);
-    expect(result.outcome).toMatchObject({
-      kind: 'return',
-      values: { symbol: 'USDC', decimals: 6 },
-    });
-  });
-});
-```
-
-:::tip[Going end to end]
-`interpret()` proves your script's logic; it does not exercise a real RPC node. For full
-end-to-end coverage, run the compiled script against a local anvil instance (the prool package
-manages per-worker instances nicely) through `readContract`, exactly as in
-[Executing scripts](/guides/execution/) — both execution modes work against anvil.
-:::
+- [`interpret`](/reference/utilities/interpret/): the mock chain, options and result in full.
+- [`explainRevert`](/reference/artifact/explain-revert/): read the revert a test produced.
+- [Executing scripts](/guides/execution/): what changes between the two modes.
+- [Why trust the bytecode?](/concepts/trust-and-testing/): how evs tests itself.

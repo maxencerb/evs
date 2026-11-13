@@ -1,0 +1,1233 @@
+/*
+ * Site theme. Everything here is unlayered on purpose: Starlight and Expressive Code ship their
+ * rules inside `@layer starlight.*`, and an unlayered rule beats a layered one whatever the
+ * specificity, so plain selectors are enough to restyle scoped component CSS.
+ *
+ * Colours, fonts and radii come from tokens.css (`--evs-*`); this file never hard-codes one.
+ * Component-specific layout lives in the overrides under src/components/.
+ */
+
+/* ── Starlight variables ─────────────────────────────────────────────────────────────── */
+
+:root,
+::backdrop {
+  --sl-font: var(--evs-font-sans);
+  --sl-font-mono: var(--evs-font-mono);
+
+  --sl-color-white: var(--evs-heading);
+  --sl-color-gray-1: var(--evs-text);
+  --sl-color-gray-2: var(--evs-text);
+  --sl-color-gray-3: var(--evs-text-2);
+  --sl-color-gray-4: var(--evs-text-3);
+  --sl-color-gray-5: var(--evs-border);
+  --sl-color-gray-6: var(--evs-surface-2);
+  --sl-color-gray-7: var(--evs-surface-2);
+  --sl-color-black: var(--evs-bg);
+
+  --sl-color-accent-low: var(--evs-accent-soft);
+  --sl-color-accent: var(--evs-accent);
+  --sl-color-accent-high: var(--evs-accent);
+
+  --sl-color-text: var(--evs-text);
+  --sl-color-text-accent: var(--evs-accent);
+  --sl-color-text-invert: var(--evs-accent-contrast);
+  --sl-color-bg: var(--evs-bg);
+  --sl-color-bg-nav: var(--evs-bg);
+  --sl-color-bg-sidebar: var(--evs-bg);
+  --sl-color-bg-inline-code: var(--evs-code-bg);
+  --sl-color-bg-accent: var(--evs-accent);
+  --sl-color-hairline-light: var(--evs-border);
+  --sl-color-hairline: var(--evs-border);
+  --sl-color-hairline-shade: var(--evs-border);
+  --sl-color-backdrop-overlay: var(--evs-backdrop);
+
+  --sl-shadow-sm: none;
+  --sl-shadow-md: none;
+  --sl-shadow-lg: var(--evs-shadow-float);
+
+  --sl-text-h1: 2.25rem;
+  --sl-text-h2: 1.5rem;
+  --sl-text-h3: 1.25rem;
+  --sl-text-h4: 1.0625rem;
+  --sl-text-h5: 1rem;
+  --sl-text-h6: 0.875rem;
+  --sl-line-height: 1.625;
+  --sl-line-height-headings: 1.2;
+
+  --sl-nav-height: 3.5rem;
+  --sl-nav-pad-x: 1rem;
+  --sl-sidebar-width: 18.75rem;
+  --sl-content-width: 46.5rem;
+  --sl-content-pad-x: 1.25rem;
+  --sl-content-gap-y: 1.5rem;
+  --sl-main-pad: 0 0 4rem 0;
+
+  /* Inline padding of the sidebar pane; the pinned footer bleeds over it (Sidebar.astro). */
+  --evs-sidebar-pad-start: 1.5rem;
+  --evs-sidebar-pad-end: 0.75rem;
+  /* Width of the "On this page" column. */
+  --evs-toc-width: clamp(13.75rem, 21vw, 18.75rem);
+}
+
+@media (max-width: 49.99rem) {
+  :root {
+    --sl-text-h1: 1.875rem;
+    --sl-text-h2: 1.375rem;
+    --sl-text-h3: 1.1875rem;
+  }
+}
+
+@media (min-width: 50rem) {
+  :root {
+    --sl-nav-pad-x: 1.5rem;
+    --sl-content-pad-x: 2rem;
+  }
+}
+
+@media (min-width: 80rem) {
+  :root {
+    --sl-content-pad-x: 3rem;
+  }
+}
+
+/* ── Base ────────────────────────────────────────────────────────────────────────────── */
+
+html {
+  scrollbar-color: var(--evs-border-strong) transparent;
+}
+
+body {
+  text-rendering: optimizeLegibility;
+}
+
+::selection {
+  background-color: color-mix(in oklch, var(--evs-accent) 28%, transparent);
+}
+
+:focus-visible {
+  outline: 2px solid var(--evs-accent);
+  outline-offset: 2px;
+}
+
+/* ── Shell: top bar, content panel, sidebar pane ─────────────────────────────────────── */
+
+.page > .header {
+  border-bottom: 0;
+  padding-block: 0;
+  background-color: var(--evs-bg);
+}
+
+/*
+ * The content panel is a fixed backdrop rather than a box around the content: the page scrolls
+ * with the window, and the panel's edge has to stay put under the top bar while it does.
+ */
+[data-has-sidebar] .main-frame::before {
+  content: '';
+  position: fixed;
+  z-index: -1;
+  inset: var(--sl-nav-height) 0 0;
+  border-top: 1px solid var(--evs-border);
+  background-color: var(--evs-surface);
+  pointer-events: none;
+}
+
+@media (min-width: 50rem) {
+  [data-has-sidebar] .main-frame::before {
+    inset-inline-start: var(--sl-sidebar-width);
+    border-inline-start: 1px solid var(--evs-border);
+    border-start-start-radius: var(--evs-radius-lg);
+  }
+
+  /* The same edge again, drawn by the top bar so that scrolled content passes underneath it. */
+  [data-has-sidebar] .page > .header::after {
+    content: '';
+    position: absolute;
+    inset-block-start: 100%;
+    inset-inline: var(--sl-sidebar-width) 0;
+    height: var(--evs-radius-lg);
+    border-top: 1px solid var(--evs-border);
+    border-inline-start: 1px solid var(--evs-border);
+    border-start-start-radius: var(--evs-radius-lg);
+    pointer-events: none;
+  }
+
+  .sidebar-pane {
+    border-inline-end: 0;
+  }
+}
+
+.sidebar-pane {
+  background-color: var(--evs-bg);
+  scrollbar-width: thin;
+  scrollbar-color: var(--evs-border) transparent;
+}
+
+.sidebar-content {
+  gap: 0;
+  padding: 0.25rem var(--evs-sidebar-pad-end) 0 var(--evs-sidebar-pad-start);
+}
+
+.sidebar-content::after {
+  display: none;
+}
+
+/* Mobile menu button: a plain icon button in place of the filled disc. */
+button.sl-menu-button,
+[data-theme='light'] button.sl-menu-button,
+button.sl-menu-button:has(~ :popover-open) {
+  border-radius: var(--evs-radius);
+  background-color: transparent;
+  box-shadow: none;
+  color: var(--evs-text);
+}
+
+/* ── Content columns ─────────────────────────────────────────────────────────────────── */
+
+.content-panel {
+  padding: 2.5rem var(--sl-content-pad-x) 0;
+}
+
+.content-panel + .content-panel {
+  border-top: 0;
+  padding-block: 2rem 0;
+}
+
+/* The title panel (a panel followed by the body panel) ends in the title's hairline rule. */
+.content-panel:has(+ .content-panel) > .sl-container {
+  border-bottom: 1px solid var(--evs-border);
+  padding-bottom: 1.4375rem;
+}
+
+@media (min-width: 72rem) {
+  /* Article and table of contents form one group, centred in the panel on very wide screens. */
+  [data-has-sidebar] .main-frame > div {
+    max-width: 71.25rem;
+    margin-inline: auto;
+  }
+
+  [data-has-sidebar] .content-panel > .sl-container {
+    margin-inline: 0;
+  }
+
+  [data-has-sidebar][data-has-toc] .main-pane {
+    flex: 1 1 0;
+    width: auto;
+    min-width: 0;
+  }
+
+  .right-sidebar-container {
+    flex: none;
+    width: var(--evs-toc-width);
+  }
+
+  /* Sticky instead of Starlight's fixed column, so it stays inside the centred group. */
+  .right-sidebar {
+    position: sticky;
+    top: var(--sl-nav-height);
+    width: auto;
+    height: calc(100vh - var(--sl-nav-height));
+    border-inline-start: 0;
+    padding-top: 0;
+  }
+}
+
+/* ── Sidebar tree ────────────────────────────────────────────────────────────────────── */
+
+.sidebar-content .top-level > li + li {
+  margin-top: 0;
+}
+
+.sidebar-content a,
+.sidebar-content summary {
+  border-radius: var(--evs-radius-md);
+  line-height: 1.125rem;
+}
+
+.sidebar-content a {
+  padding: 0.25rem 0.75rem;
+  color: color-mix(in oklch, var(--evs-text) 80%, transparent);
+  font-size: 0.8125rem;
+  font-weight: 450;
+}
+
+.sidebar-content a:hover,
+.sidebar-content a:focus-visible {
+  color: var(--evs-heading);
+}
+
+.sidebar-content a[aria-current='page'],
+.sidebar-content a[aria-current='page']:hover,
+.sidebar-content a[aria-current='page']:focus {
+  background-color: var(--evs-accent-soft);
+  color: var(--evs-accent);
+  font-weight: 450;
+}
+
+.sidebar-content summary {
+  padding: 0.4375rem 0.25rem 0.4375rem 0;
+}
+
+.sidebar-content summary:hover .large {
+  color: var(--evs-heading);
+}
+
+.sidebar-content .large {
+  color: var(--evs-text);
+  font-size: 0.875rem;
+  font-weight: 450;
+}
+
+.sidebar-content .top-level > li > a.large {
+  margin-inline-start: -0.75rem;
+}
+
+.sidebar-content .caret {
+  color: var(--evs-text-3);
+  font-size: 0.875rem;
+}
+
+/* Nested rows hang behind a guide line; one level deeper, the guide aligns with the text above. */
+.sidebar-content ul ul li {
+  margin-inline-start: 0;
+  border-inline-start: 1px solid var(--evs-border);
+  padding-inline-start: 0.3125rem;
+}
+
+.sidebar-content ul ul ul {
+  margin-inline-start: 0.75rem;
+}
+
+.sidebar-content ul ul summary {
+  padding: 0.25rem 0.25rem 0.25rem 0.75rem;
+}
+
+.sidebar-content ul ul .large {
+  font-size: 0.8125rem;
+}
+
+.sidebar-content .top-level > li > details[open] {
+  padding-bottom: 0.5rem;
+}
+
+/* ── Table of contents ───────────────────────────────────────────────────────────────── */
+
+starlight-toc h2 {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  margin-bottom: 0.75rem;
+  color: var(--evs-heading);
+  font-size: 0.8125rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
+starlight-toc h2::before {
+  content: '';
+  width: 0.875rem;
+  height: 0.875rem;
+  background-color: currentColor;
+  mask: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='black' stroke-width='2.25' stroke-linecap='round'%3E%3Cpath d='M4 6h16M4 12h10M4 18h13'/%3E%3C/svg%3E")
+    center / contain no-repeat;
+}
+
+starlight-toc nav > ul {
+  border-inline-start: 1px solid var(--evs-border);
+}
+
+starlight-toc a {
+  display: block;
+  /* The 2px marker of the current item sits on top of the list's 1px rule. */
+  margin-inline-start: -1px;
+  border-inline-start: 2px solid transparent;
+  border-radius: 0;
+  padding-block: 0.1875rem;
+  padding-inline: calc(0.75rem + 1rem * var(--depth, 0) - 1px) 0;
+  color: var(--evs-text-2);
+  font-size: 0.8125rem;
+  font-weight: 450;
+  line-height: 1.5;
+  text-decoration: none;
+  overflow-wrap: anywhere;
+}
+
+starlight-toc a:hover {
+  color: var(--evs-heading);
+}
+
+starlight-toc a[aria-current='true'] {
+  border-inline-start-color: var(--evs-accent);
+  color: var(--evs-accent);
+}
+
+/* Dropdown variant below 72rem: a strip across the top of the panel. */
+mobile-starlight-toc nav {
+  top: var(--sl-nav-height);
+  border-top: 1px solid var(--evs-border);
+  background-color: var(--evs-surface);
+}
+
+@media (min-width: 50rem) {
+  /* It covers the panel's top-left corner, so it repeats that corner. */
+  mobile-starlight-toc nav {
+    border-inline-start: 1px solid var(--evs-border);
+    border-start-start-radius: var(--evs-radius-lg);
+  }
+}
+
+mobile-starlight-toc summary {
+  border-bottom: 1px solid var(--evs-border);
+  padding: 0 var(--sl-content-pad-x);
+  font-size: 0.8125rem;
+}
+
+mobile-starlight-toc .toggle,
+mobile-starlight-toc details[open] .toggle,
+mobile-starlight-toc details .toggle:hover {
+  gap: 0.25rem;
+  border: 0;
+  padding: 0;
+  background-color: transparent;
+  color: var(--evs-text-2);
+  font-weight: 450;
+}
+
+mobile-starlight-toc details[open] .toggle,
+mobile-starlight-toc details .toggle:hover {
+  color: var(--evs-heading);
+}
+
+mobile-starlight-toc .display-current {
+  color: var(--evs-text);
+}
+
+mobile-starlight-toc .dropdown {
+  border: 0;
+  border-bottom: 1px solid var(--evs-border);
+  padding-block: 0.375rem;
+  background-color: var(--evs-surface);
+  box-shadow: var(--evs-shadow-float);
+}
+
+mobile-starlight-toc .isMobile a {
+  border-top: 0;
+  padding-block: 0.375rem;
+  padding-inline: calc(var(--sl-content-pad-x) + 1rem * var(--depth, 0)) var(--sl-content-pad-x);
+  color: var(--evs-text-2);
+}
+
+mobile-starlight-toc .isMobile a[aria-current='true'] {
+  color: var(--evs-accent);
+}
+
+/* ── Article typography ──────────────────────────────────────────────────────────────── */
+
+.sl-markdown-content p + p:not(:where(.not-content *)) {
+  margin-top: 1rem;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6):not(:where(.not-content *)) {
+  font-weight: 500;
+  letter-spacing: -0.025em;
+}
+
+/* A second-level heading opens a section: hairline rule, then the heading. */
+.sl-markdown-content > .sl-heading-wrapper.level-h2 {
+  margin-top: 2.5rem;
+  border-top: 1px solid var(--evs-border);
+  padding-top: 2rem;
+}
+
+.sl-markdown-content > .sl-heading-wrapper.level-h2:first-child {
+  margin-top: 0;
+  border-top: 0;
+  padding-top: 0;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h3 {
+  margin-top: 2.5rem;
+}
+
+.sl-markdown-content .sl-heading-wrapper:is(.level-h4, .level-h5, .level-h6) {
+  margin-top: 2rem;
+}
+
+.sl-markdown-content .sl-heading-wrapper + .sl-heading-wrapper.sl-heading-wrapper {
+  margin-top: 1.5rem;
+}
+
+.sl-markdown-content .sl-heading-wrapper + :not(.sl-heading-wrapper) {
+  margin-top: 1rem;
+}
+
+.sl-markdown-content .sl-heading-wrapper.level-h2 + :not(.sl-heading-wrapper) {
+  margin-top: 1.5rem;
+}
+
+.sl-markdown-content a.sl-anchor-link {
+  border-radius: var(--evs-radius-sm);
+  color: var(--evs-text-3);
+}
+
+.sl-markdown-content a.sl-anchor-link:hover {
+  color: var(--evs-accent);
+}
+
+.sl-markdown-content a:not(.sl-anchor-link, .not-content):not(:where(.not-content *)) {
+  color: var(--evs-accent);
+  font-weight: 450;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+}
+
+.sl-markdown-content a:not(.sl-anchor-link, .not-content):hover:not(:where(.not-content *)) {
+  color: var(--evs-heading);
+  text-decoration-color: var(--evs-accent);
+}
+
+.sl-markdown-content strong:not(:where(.not-content *)) {
+  color: var(--evs-heading);
+  font-weight: 550;
+}
+
+.sl-markdown-content :is(ul, ol):not(:where(.not-content *)) {
+  padding-inline-start: 1.5rem;
+}
+
+.sl-markdown-content li:not(:where(.not-content *))::marker {
+  color: var(--evs-text-3);
+}
+
+.sl-markdown-content li + li:not(:where(.not-content *)) {
+  margin-top: 0.5rem;
+}
+
+.sl-markdown-content li > * + :is(p, ul, ol, blockquote, table, .expressive-code, starlight-tabs) {
+  margin-top: 0.75rem;
+}
+
+.sl-markdown-content blockquote:not(:where(.not-content *)) {
+  border-inline-start: 2px solid var(--evs-border-strong);
+  padding-inline-start: 1rem;
+  color: var(--evs-text-2);
+}
+
+.sl-markdown-content :is(img, video):not(:where(.not-content *, .evs-diagram *)) {
+  border-radius: var(--evs-radius);
+}
+
+.sl-markdown-content hr:not(:where(.not-content *)) {
+  margin-block: 2.5rem;
+  border-bottom-color: var(--evs-border);
+}
+
+.sl-markdown-content kbd:not(:where(.not-content *)) {
+  border: 1px solid var(--evs-border-strong);
+  border-bottom-width: 2px;
+  border-radius: var(--evs-radius-sm);
+  padding: 0.0625rem 0.3125rem;
+  background-color: var(--evs-surface-2);
+  color: var(--evs-text);
+  font-family: var(--evs-font-mono);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+/* ── Inline code ─────────────────────────────────────────────────────────────────────── */
+
+.sl-markdown-content code:not(:where(.not-content *)) {
+  /* Pulled in vertically so a bordered chip does not push its line apart. */
+  margin-block: -0.1875rem;
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius-sm);
+  padding: 0.125rem 0.375rem;
+  background-color: var(--evs-code-bg);
+  color: var(--evs-text);
+  font-size: 0.875rem;
+  font-weight: 500;
+}
+
+.sl-markdown-content a code:not(:where(.not-content *)) {
+  color: inherit;
+}
+
+.sl-markdown-content :is(h1, h2, h3, h4, h5, h6) code:not(:where(.not-content *)) {
+  font-size: 0.9em;
+  font-weight: inherit;
+}
+
+/* ── Code blocks (Expressive Code; colours and metrics are set in astro.config.mjs) ──── */
+
+.expressive-code .frame.has-title:not(.is-terminal) .title {
+  padding: 0.5625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+.expressive-code .frame.is-terminal .header {
+  justify-content: flex-start;
+  padding: 0.5625rem 1rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+}
+
+/* A smaller copy button than Expressive Code's, on every pointer type. */
+.expressive-code .copy button {
+  width: 1.875rem;
+  height: 1.875rem;
+  border-radius: var(--evs-radius-md);
+}
+
+.expressive-code .copy button::after {
+  margin: 0.4375rem;
+}
+
+/*
+ * Focus lines. A `{5}` / `{5-7}` marker in the fence meta does not paint the marked lines: it
+ * dims every other line of that block, and the whole block comes back while it is hovered or
+ * holds keyboard focus. The second selector repeats the first so that it outranks it.
+ */
+.expressive-code pre:has(.ec-line.mark) .ec-line:not(.mark):not(.ins):not(.del) {
+  opacity: 0.45;
+  transition: opacity 180ms ease;
+}
+
+.expressive-code
+  .frame:is(:hover, :focus-within)
+  pre:has(.ec-line.mark)
+  .ec-line:not(.mark):not(.ins):not(.del) {
+  opacity: 1;
+}
+
+/* Collapsed-lines toggle (`collapse={a-b}`). */
+.expressive-code .ec-section summary {
+  font-weight: 450;
+  transition: color 120ms ease;
+}
+
+.expressive-code .ec-section summary:hover {
+  color: var(--evs-heading);
+}
+
+/* ── Tabs and code groups ────────────────────────────────────────────────────────────── */
+
+/* A tab set is one bordered unit: the tab bar, then the active panel. */
+starlight-tabs {
+  overflow: hidden;
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius);
+}
+
+starlight-tabs .tablist-wrapper {
+  border-bottom: 1px solid var(--evs-border);
+  padding-inline: 0.5rem;
+  background-color: var(--evs-surface);
+  scrollbar-width: none;
+}
+
+starlight-tabs [role='tablist'] {
+  border-bottom: 0;
+}
+
+starlight-tabs .tab > [role='tab'],
+starlight-tabs .tab > [role='tab'][aria-selected='true'] {
+  height: 2.375rem;
+  padding: 0 0.75rem;
+  box-shadow: none;
+  color: var(--evs-text-2);
+  font-size: 0.875rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  white-space: nowrap;
+  transition: color 120ms ease;
+}
+
+starlight-tabs .tab > [role='tab']:hover,
+starlight-tabs .tab > [role='tab'][aria-selected='true'] {
+  color: var(--evs-heading);
+}
+
+starlight-tabs > [role='tabpanel'] {
+  margin-top: 0;
+  padding: 1rem 1.25rem;
+}
+
+/*
+ * Code group: a panel holding nothing but a code block. The block loses its own frame and
+ * title bar (the tab already names the file) and fuses with the tab bar above it.
+ */
+starlight-tabs > [role='tabpanel']:has(> .expressive-code:only-child) {
+  padding: 0;
+}
+
+starlight-tabs > [role='tabpanel'] > .expressive-code:only-child .frame .header {
+  display: none;
+}
+
+starlight-tabs > [role='tabpanel'] > .expressive-code:only-child .frame,
+starlight-tabs > [role='tabpanel'] > .expressive-code:only-child .frame pre {
+  border: 0;
+  border-radius: 0;
+}
+
+/* ── Tables ──────────────────────────────────────────────────────────────────────────── */
+
+.sl-markdown-content table:not(:where(.not-content *)) {
+  /* A block that hugs its columns: narrow tables stay narrow, wide ones scroll sideways. */
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius);
+  font-size: 0.875rem;
+  line-height: 1.5;
+}
+
+.sl-markdown-content :is(th, td):not(:where(.not-content *)) {
+  border-bottom: 1px solid var(--evs-border);
+  padding: 0.625rem 1rem;
+}
+
+.sl-markdown-content :is(th:first-child, td:first-child):not(:where(.not-content *)) {
+  padding-inline-start: 1rem;
+}
+
+.sl-markdown-content :is(th:last-child, td:last-child):not(:where(.not-content *)) {
+  padding-inline-end: 1rem;
+}
+
+.sl-markdown-content th:not(:where(.not-content *)) {
+  background-color: var(--evs-surface-2);
+  color: var(--evs-text-2);
+  font-size: 0.8125rem;
+  font-weight: 500;
+}
+
+.sl-markdown-content tbody tr:last-child > :is(th, td):not(:where(.not-content *)) {
+  border-bottom: 0;
+}
+
+@media (max-width: 49.99rem) {
+  /* The last column usually holds the prose. Without a floor it is squeezed to one word per
+     line on a phone; with one, the table scrolls sideways and its rows stay short. */
+  .sl-markdown-content :is(th, td):last-child:not(:first-child, :where(.not-content *)) {
+    min-width: min(16rem, 70vw);
+  }
+}
+
+/* ── Callouts ────────────────────────────────────────────────────────────────────────── */
+
+.starlight-aside {
+  --sl-color-asides-text-accent: var(--evs-aside);
+  --sl-color-asides-border: color-mix(in oklch, var(--evs-aside) 30%, transparent);
+
+  border: 1px solid var(--sl-color-asides-border);
+  border-radius: var(--evs-radius);
+  padding: 0.875rem 1rem;
+  background-color: color-mix(in oklch, var(--evs-aside) 8%, transparent);
+  color: var(--evs-text);
+  font-size: 0.9375rem;
+  line-height: 1.6;
+}
+
+.starlight-aside--note {
+  --evs-aside: var(--evs-info);
+}
+
+.starlight-aside--tip {
+  --evs-aside: var(--evs-ok);
+}
+
+.starlight-aside--caution {
+  --evs-aside: var(--evs-warn);
+}
+
+.starlight-aside--danger {
+  --evs-aside: var(--evs-danger);
+}
+
+.starlight-aside__title {
+  gap: 0.5rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+}
+
+.starlight-aside__icon {
+  font-size: 1rem;
+}
+
+.starlight-aside__title + .starlight-aside__content {
+  margin-top: 0.375rem;
+}
+
+.sl-markdown-content .starlight-aside code:not(:where(.not-content *)) {
+  border-color: var(--sl-color-asides-border);
+  font-size: 0.8125rem;
+}
+
+/* ── Disclosure, steps, cards, badges, buttons ───────────────────────────────────────── */
+
+.sl-markdown-content details:not(:where(.not-content *)) {
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius);
+  padding: 0 1rem;
+}
+
+.sl-markdown-content details[open]:not(:where(.not-content *)) {
+  padding-bottom: 1rem;
+}
+
+.sl-markdown-content summary:not(:where(.not-content *)) {
+  margin-inline: -1rem;
+  border-radius: var(--evs-radius);
+  padding: 0.625rem 1rem;
+  color: var(--evs-text);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.sl-markdown-content summary:hover:not(:where(.not-content *)) {
+  color: var(--evs-heading);
+}
+
+.sl-markdown-content details[open] > summary:not(:where(.not-content *)) {
+  margin-bottom: 0.25rem;
+}
+
+.sl-steps {
+  --bullet-size: 1.625rem;
+}
+
+.sl-steps > li::before {
+  background-color: var(--evs-surface-2);
+  box-shadow: inset 0 0 0 1px var(--evs-border);
+  color: var(--evs-text);
+  font-size: 0.75rem;
+  font-weight: 500;
+}
+
+.sl-steps > li::after {
+  background-color: var(--evs-border);
+}
+
+.sl-markdown-content .sl-link-card,
+.sl-link-card {
+  border-color: var(--evs-border);
+  border-radius: var(--evs-radius);
+  padding: 0.875rem 1rem;
+  box-shadow: none;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease;
+}
+
+.sl-link-card:hover {
+  border-color: var(--evs-border-strong);
+  background-color: var(--evs-surface-2);
+}
+
+.sl-markdown-content .sl-link-card a {
+  color: inherit;
+  font-weight: inherit;
+  text-decoration: none;
+}
+
+.sl-link-card .stack {
+  gap: 0.25rem;
+}
+
+.sl-link-card .title {
+  color: var(--evs-heading);
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.sl-link-card .description {
+  color: var(--evs-text-2);
+  font-size: 0.875rem;
+}
+
+.sl-link-card .icon {
+  color: var(--evs-text-3);
+  font-size: 1rem;
+  transition: color 120ms ease;
+}
+
+.sl-link-card:hover .icon {
+  color: var(--evs-accent);
+}
+
+.card-grid {
+  gap: 0.75rem;
+}
+
+@media (min-width: 50rem) {
+  .card-grid {
+    gap: 1rem;
+  }
+}
+
+.card {
+  border-color: var(--evs-border);
+  border-radius: var(--evs-radius);
+  padding: 1.125rem 1.25rem;
+  background-color: transparent;
+  gap: 0.5rem;
+}
+
+.card .title {
+  gap: 0.625rem;
+  font-size: 0.9375rem;
+  font-weight: 500;
+}
+
+.card .icon,
+.card:nth-child(n) .icon {
+  border-color: var(--evs-border);
+  border-radius: var(--evs-radius-md);
+  background-color: var(--evs-surface-2);
+  color: var(--evs-accent);
+}
+
+.card .body {
+  color: var(--evs-text-2);
+  font-size: 0.875rem;
+}
+
+:root {
+  --sl-badge-default-border: color-mix(in oklch, var(--evs-accent) 35%, transparent);
+  --sl-badge-default-bg: var(--evs-accent-soft);
+  --sl-badge-default-text: var(--evs-accent);
+  --sl-badge-note-border: color-mix(in oklch, var(--evs-info) 35%, transparent);
+  --sl-badge-note-bg: color-mix(in oklch, var(--evs-info) 10%, transparent);
+  --sl-badge-note-text: var(--evs-info);
+  --sl-badge-tip-border: color-mix(in oklch, var(--evs-ok) 35%, transparent);
+  --sl-badge-tip-bg: color-mix(in oklch, var(--evs-ok) 10%, transparent);
+  --sl-badge-tip-text: var(--evs-ok);
+  --sl-badge-success-border: var(--sl-badge-tip-border);
+  --sl-badge-success-bg: var(--sl-badge-tip-bg);
+  --sl-badge-success-text: var(--sl-badge-tip-text);
+  --sl-badge-caution-border: color-mix(in oklch, var(--evs-warn) 35%, transparent);
+  --sl-badge-caution-bg: color-mix(in oklch, var(--evs-warn) 10%, transparent);
+  --sl-badge-caution-text: var(--evs-warn);
+  --sl-badge-danger-border: color-mix(in oklch, var(--evs-danger) 35%, transparent);
+  --sl-badge-danger-bg: color-mix(in oklch, var(--evs-danger) 10%, transparent);
+  --sl-badge-danger-text: var(--evs-danger);
+}
+
+.sl-badge {
+  border-radius: var(--evs-radius-sm);
+  font-family: var(--evs-font-sans);
+  font-weight: 500;
+}
+
+.sl-link-button {
+  border-radius: var(--evs-radius);
+  padding: 0.5rem 0.875rem;
+  font-size: 0.875rem;
+  font-weight: 500;
+  line-height: 1.25rem;
+  transition:
+    background-color 120ms ease,
+    border-color 120ms ease,
+    color 120ms ease;
+}
+
+.sl-link-button.primary {
+  border-color: var(--evs-accent);
+  background-color: var(--evs-accent);
+  color: var(--evs-accent-contrast);
+}
+
+.sl-link-button.primary:hover {
+  background-color: color-mix(in oklch, var(--evs-accent) 88%, var(--evs-heading));
+  color: var(--evs-accent-contrast);
+}
+
+.sl-link-button.secondary {
+  border-color: var(--evs-border-strong);
+  color: var(--evs-text);
+}
+
+.sl-link-button.secondary:hover {
+  border-color: var(--evs-text-3);
+  color: var(--evs-heading);
+}
+
+.sl-link-button.minimal {
+  color: var(--evs-text);
+}
+
+.sl-link-button.minimal:hover {
+  color: var(--evs-heading);
+}
+
+/* ── Diagrams (the stage's contents belong to src/components/diagrams) ───────────────── */
+
+.evs-diagram {
+  margin-block: 2rem;
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius);
+  padding: 1.25rem;
+  background-color: var(--evs-code-bg);
+}
+
+.evs-diagram__stage:empty {
+  display: none;
+}
+
+.evs-diagram__caption {
+  color: var(--evs-text-2);
+  font-size: 0.8125rem;
+  line-height: 1.55;
+}
+
+.evs-diagram__stage:not(:empty) + .evs-diagram__caption {
+  margin-top: 1rem;
+}
+
+/* ── Page footer ─────────────────────────────────────────────────────────────────────── */
+
+.content-panel footer .meta {
+  margin-top: 2.5rem;
+  color: var(--evs-text-2);
+  font-size: 0.875rem;
+}
+
+/* The rule under the edit link only exists when there is an edit link (not on the 404 page). */
+.content-panel footer .meta:has(> *) {
+  border-bottom: 1px solid var(--evs-border);
+  padding-bottom: 1rem;
+}
+
+.content-panel footer .meta a {
+  border-radius: var(--evs-radius-sm);
+  color: var(--evs-text-2);
+  font-weight: 450;
+}
+
+.content-panel footer .meta a:hover {
+  color: var(--evs-heading);
+}
+
+/* Previous / next: plain links, the page title first and the direction under it. */
+.pagination-links a {
+  align-items: flex-start;
+  gap: 0.5rem;
+  border: 0;
+  border-radius: var(--evs-radius-md);
+  padding: 0.25rem 0;
+  box-shadow: none;
+  color: var(--evs-text-2);
+}
+
+.pagination-links a > span {
+  display: flex;
+  flex-direction: column-reverse;
+  gap: 0.25rem;
+  font-size: 0.8125rem;
+  line-height: 1.25rem;
+}
+
+.pagination-links a > span > br {
+  display: none;
+}
+
+.pagination-links .link-title {
+  color: var(--evs-heading);
+  font-size: 1.125rem;
+  font-weight: 500;
+  letter-spacing: -0.02em;
+  line-height: 1.5rem;
+}
+
+.pagination-links a > svg {
+  margin-top: 0.1875rem;
+  color: var(--evs-text-2);
+  font-size: 1.125rem;
+  transition: transform 160ms ease;
+}
+
+.pagination-links a:hover > svg {
+  color: var(--evs-accent);
+}
+
+.pagination-links a[rel='prev']:hover > svg {
+  transform: translateX(-2px);
+}
+
+.pagination-links a[rel='next']:hover > svg {
+  transform: translateX(2px);
+}
+
+/* ── Search ──────────────────────────────────────────────────────────────────────────── */
+
+site-search button[data-open-modal] {
+  border-radius: var(--evs-radius-lg);
+  color: var(--evs-text-2);
+  font-size: 1.125rem;
+}
+
+@media (min-width: 50rem) {
+  site-search button[data-open-modal] {
+    width: 100%;
+    max-width: 15rem;
+    border-color: var(--evs-border);
+    padding-inline: 0.75rem 0.5rem;
+    background-color: var(--evs-surface);
+    color: var(--evs-text-2);
+    font-size: 0.875rem;
+    transition:
+      border-color 120ms ease,
+      color 120ms ease;
+  }
+
+  site-search button[data-open-modal]:hover {
+    border-color: var(--evs-border-strong);
+    color: var(--evs-text);
+  }
+}
+
+site-search button[data-open-modal] > kbd {
+  gap: 0.25rem;
+  padding: 0;
+  background-color: transparent;
+}
+
+site-search button[data-open-modal] > kbd > kbd {
+  display: grid;
+  place-items: center;
+  min-width: 1.25rem;
+  height: 1.25rem;
+  border: 1px solid var(--evs-border);
+  border-radius: var(--evs-radius-sm);
+  padding-inline: 0.25rem;
+  color: var(--evs-text-2);
+  font-size: 0.6875rem;
+  line-height: 1;
+}
+
+site-search dialog {
+  border-color: var(--evs-border);
+  background-color: var(--evs-surface);
+  box-shadow: var(--evs-shadow-float);
+}
+
+site-search dialog::backdrop {
+  -webkit-backdrop-filter: blur(2px);
+  backdrop-filter: blur(2px);
+}
+
+@media (min-width: 50rem) {
+  site-search dialog {
+    /* No reserved height: before a query the dialog is just its input. */
+    min-height: 0;
+    border-radius: var(--evs-radius-lg);
+  }
+
+  site-search .dialog-frame {
+    padding: 1rem;
+  }
+}
+
+#starlight__search {
+  --pagefind-ui-scale: 0.8;
+  --pagefind-ui-primary: var(--evs-text);
+  --pagefind-ui-text: var(--evs-text-2);
+  --pagefind-ui-background: var(--evs-bg);
+  --pagefind-ui-border: var(--evs-border);
+  --pagefind-ui-tag: var(--evs-surface-2);
+  --pagefind-ui-border-radius: var(--evs-radius);
+  --pagefind-ui-font: var(--evs-font-sans);
+  --sl-search-corners: var(--evs-radius);
+}
+
+#starlight__search .pagefind-ui__search-input {
+  border-radius: var(--evs-radius);
+  color: var(--evs-heading);
+  font-weight: 400;
+}
+
+#starlight__search .pagefind-ui__search-input:focus {
+  outline: 2px solid var(--evs-accent);
+  outline-offset: -1px;
+}
+
+#starlight__search .pagefind-ui__message {
+  color: var(--evs-text-2);
+  font-weight: 450;
+}
+
+#starlight__search .pagefind-ui__result-title:not(:where(.pagefind-ui__result-nested *)),
+#starlight__search .pagefind-ui__result-nested {
+  background-color: var(--evs-bg);
+}
+
+#starlight__search .pagefind-ui__result-title:not(:where(.pagefind-ui__result-nested *)):hover,
+#starlight__search
+  .pagefind-ui__result-title:not(:where(.pagefind-ui__result-nested *)):focus-within,
+#starlight__search .pagefind-ui__result-nested:hover,
+#starlight__search .pagefind-ui__result-nested:focus-within {
+  outline: 1px solid var(--evs-accent);
+  background-color: var(--evs-accent-soft);
+}
+
+#starlight__search .pagefind-ui__result-link {
+  --pagefind-ui-text: var(--evs-heading);
+  font-weight: 500;
+}
+
+/* The whole result row is outlined while its link has focus; a second ring would double it. */
+#starlight__search .pagefind-ui__result-link:focus-visible {
+  outline: none;
+}
+
+#starlight__search .pagefind-ui__result-excerpt {
+  color: var(--evs-text-2);
+}
+
+#starlight__search mark {
+  color: var(--evs-accent);
+  font-weight: 500;
+}
+
+#starlight__search .pagefind-ui__button {
+  border-radius: var(--evs-radius);
+  color: var(--evs-text);
+  font-weight: 500;
+}
+
+/* ── Landing page (`template: splash`: no sidebar, no panel) ─────────────────────────── */
+
+html:not([data-has-sidebar]) .page > .header {
+  border-bottom: 1px solid var(--evs-border);
+}
+
+html:not([data-has-sidebar]) .content-panel {
+  padding-block: 1.5rem 0;
+}
+
+/* Under the hero, the page body is a reading column centred on the hero's axis. */
+[data-has-hero] .sl-markdown-content,
+[data-has-hero] .content-panel footer {
+  max-width: var(--evs-splash-column, 46.5rem);
+  margin-inline: auto;
+}
+
+[data-has-hero] .sl-markdown-content {
+  margin-top: 4rem;
+}
+
+/* ── Motion ──────────────────────────────────────────────────────────────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}

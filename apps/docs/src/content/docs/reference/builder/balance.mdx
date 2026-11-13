@@ -1,0 +1,138 @@
+---
+title: s.balance
+description: Reads the native balance of any address, in wei. s.codeSize and s.codeHash read the size and the hash of its code.
+---
+
+Reads the native balance of any address, in wei. Its siblings
+[`s.codeSize`](#scodesize) and [`s.codeHash`](#scodehash) read the account's code.
+
+## Usage
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const ethBalance = evscript({ name: 'ethBalance', args: [t.address] }, (s, account) => {
+  const wei = s.balance(account);
+  return s.return({ wei });
+});
+```
+
+### Many accounts in one call
+
+The loop runs on chain, so one `eth_call` returns every balance.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const ethBalances = evscript(
+  { name: 'ethBalances', args: [t.array(t.address)] },
+  (s, accounts) => {
+    const out = s.newArray(t.uint256, accounts.length());
+    s.forEach(accounts, (account, i) => out.set(i, s.balance(account)));
+    return s.return({ balances: out });
+  },
+);
+```
+
+### The script's own balance
+
+`s.balance(s.env('address'))` depends on the [execution mode](/guides/execution/): normally zero
+in deployless mode, the balance of the override address in state-override mode.
+
+```ts {4}
+import { evscript } from '@maxencerb/evs';
+
+const funded = evscript({ name: 'funded' }, (s) => {
+  const own = s.balance(s.env('address'));
+  return s.return({ funded: own.gt(0n) });
+});
+```
+
+## Returns
+
+`Expr<'uint256'>`
+
+The balance in wei. An address that does not exist has a balance of `0`.
+
+## Parameters
+
+### account
+
+- **Type:** `IntoExpr<'address'>`
+
+The address to read: an `Expr<'address'>` or a `0x` string of 20 bytes. `s.codeSize` and
+`s.codeHash` take the same parameter.
+
+```ts {5}
+import { evscript } from '@maxencerb/evs';
+
+const holder = evscript({ name: 'holder' }, (s) => {
+  const wei = s.balance(
+    '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+  );
+  return s.return({ wei });
+});
+```
+
+## s.codeSize
+
+Reads the size of an account's code, in bytes. It returns an `Expr<'uint256'>`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const isContract = evscript({ name: 'isContract', args: [t.address] }, (s, account) => {
+  const size = s.codeSize(account);
+  return s.return({ isContract: size.gt(0n) });
+});
+```
+
+The size is `0` for an address without code: an EOA, an unused address, or a contract still in
+its constructor.
+
+## s.codeHash
+
+Reads the `keccak256` hash of an account's code. It returns an `Expr<'bytes32'>`.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const sameCode = evscript(
+  { name: 'sameCode', args: [t.address, t.address] },
+  (s, a, b) => {
+    const same = s.codeHash(a).eq(s.codeHash(b));
+    return s.return({ same });
+  },
+);
+```
+
+| Account | `s.codeHash` |
+| --- | --- |
+| has code | the hash of that code |
+| exists without code (an EOA with a balance or a nonce) | `keccak256` of empty bytes, `0xc5d2…a470` |
+| does not exist | `bytes32(0)` |
+
+## Behavior
+
+- **Solidity equivalents.** `account.balance`, `account.code.length` and `account.codehash`.
+- **Own balance warning.** `compile` reports an `ENV_FRAME_DEPENDENT`
+  [warning](/reference/diagnostics/#warnings) for `s.balance(s.env('address'))`.
+- **Delegated EOAs.** An EOA that delegates through EIP-7702 has 23 bytes of code, so its
+  `codeSize` is not `0`.
+- **Hash returned first.** A script whose first result is a `bytes32` can fail in deployless
+  mode. See [deployless limits](/guides/execution/#deployless-limits).
+
+:::caution[Sender mode replaces the sender's code]
+In [sender mode](/guides/execution/) the script runs at `sender`, in place of its code.
+`s.codeSize(sender)` is then never `0`, even for an EOA, and `s.codeHash(sender)` is the
+script's hash. `s.balance(sender)` stays the real balance.
+:::
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `account` is an `Expr` of another type, or a literal that is not a `0x` string |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal `account` is not 20 bytes of valid hex |

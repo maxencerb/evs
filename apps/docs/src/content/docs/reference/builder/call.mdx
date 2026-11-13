@@ -1,0 +1,491 @@
+---
+title: s.call
+description: Calls a nonpayable or payable function on another contract and returns its decoded result. Its state changes stay visible to later calls.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Calls a `nonpayable` or `payable` function on another contract and returns its decoded result.
+The call is a real `CALL`: its state changes stay visible to later calls in the script, and
+nothing is committed on-chain.
+
+[Calling contracts](/guides/calls/) compares `s.call` with `s.read` and `s.simulate`.
+
+## Usage
+
+<Tabs syncKey="example">
+  <TabItem label="script.ts">
+    ```ts title="script.ts" {7-12}
+    import { evscript, t } from '@maxencerb/evs';
+    import { quoterAbi } from './abi';
+
+    const quote = evscript(
+      { name: 'quote', args: [t.address, t.address, t.address, t.uint256] },
+      (s, quoter, tokenIn, tokenOut, amountIn) => {
+        const [amountOut] = s.call({
+          address: quoter,
+          abi: quoterAbi,
+          functionName: 'quoteExactInputSingle',
+          args: [{ tokenIn, tokenOut, amountIn, fee: 500, sqrtPriceLimitX96: 0n }],
+        });
+        return s.return({ amountOut }); // Expr<'uint256'>
+      },
+    );
+    ```
+  </TabItem>
+  <TabItem label="abi.ts">
+    ```ts title="abi.ts"
+    // Uniswap V3 QuoterV2
+    export const quoterAbi = [
+      {
+        type: 'function',
+        name: 'quoteExactInputSingle',
+        stateMutability: 'nonpayable',
+        inputs: [
+          {
+            name: 'params',
+            type: 'tuple',
+            components: [
+              { name: 'tokenIn', type: 'address' },
+              { name: 'tokenOut', type: 'address' },
+              { name: 'amountIn', type: 'uint256' },
+              { name: 'fee', type: 'uint24' },
+              { name: 'sqrtPriceLimitX96', type: 'uint160' },
+            ],
+          },
+        ],
+        outputs: [
+          { name: 'amountOut', type: 'uint256' },
+          { name: 'sqrtPriceX96After', type: 'uint160' },
+          { name: 'initializedTicksCrossed', type: 'uint32' },
+          { name: 'gasEstimate', type: 'uint256' },
+        ],
+      },
+    ] as const;
+    ```
+  </TabItem>
+</Tabs>
+
+A Uniswap quoter prices a swap by running it, so its functions are not `view`:
+[`s.read`](/reference/builder/read/) rejects them and `s.call` runs them.
+
+### Later calls see the write
+
+A write made by `s.call` lasts until the `eth_call` ends.
+
+```ts {7-12,19}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const approved = evscript(
+  { name: 'approved', args: [t.address, t.address] },
+  (s, token, spender) => {
+    s.call({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [spender, 100n],
+    });
+    const allowance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'allowance',
+      args: [s.env('address'), spender], // the script approved, so it is the owner
+    });
+    return s.return({ allowance }); // 100n
+  },
+);
+```
+
+To undo a write before the next statement, use [`s.simulate`](/reference/builder/simulate/).
+
+### Sending ETH
+
+`value` sends wei to a `payable` function. The script pays from its own balance, so give it one
+with a state override.
+
+```ts {17,28-29}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { createPublicClient, http, parseAbi, parseEther, zeroAddress } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const lidoAbi = parseAbi([
+  'function submit(address referral) payable returns (uint256)',
+]);
+
+const stake = evscript(
+  { name: 'stake', args: [t.address, t.uint256] },
+  (s, lido, amount) => {
+    const shares = s.call({
+      address: lido,
+      abi: lidoAbi,
+      functionName: 'submit',
+      args: [zeroAddress],
+      value: amount,
+    });
+    return s.return({ shares });
+  },
+);
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const params = compile(stake).toViem({ mode: 'stateOverride' });
+
+const { shares } = await client.readContract({
+  ...params,
+  // the script's override entry, plus a balance
+  stateOverride: [{ ...params.stateOverride[0], balance: parseEther('1') }],
+  functionName: 'stake',
+  args: ['0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84', parseEther('1')],
+});
+```
+
+- **Deployless mode cannot fund the script.** Use state-override mode with a `balance`, or sender
+  mode, where the sender's balance pays. See [executing scripts](/guides/execution/).
+- **An unfunded call fails before the target runs.** `s.call` then reverts with empty data.
+- **`compile` warns.** Each call that sends a `value` is reported as `ENV_FRAME_DEPENDENT`
+  ([warnings](/reference/diagnostics/#warnings)).
+
+### Results returned by reverting
+
+Some contracts report a result by reverting with it. `revertReturns` lists the types the revert
+data holds, and the call decodes that data as its result.
+
+```ts {15}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+// no outputs: this quoter reverts with abi.encode(amountOut)
+const quoterAbi = parseAbi(['function quote(bytes path, uint256 amountIn)']);
+
+const quote = evscript(
+  { name: 'quote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
+    const amountOut = s.call({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quote',
+      args: [path, amountIn],
+      revertReturns: [t.uint256],
+    });
+    return s.return({ amountOut }); // Expr<'uint256'>, decoded from the revert data
+  },
+);
+```
+
+The roles swap: a revert is the result, and a normal return reverts the script with
+`EvsDecodeError(site)`.
+
+:::caution[Any revert that is long enough is decoded]
+A real failure such as `Error(string)` holds enough bytes to decode as the declared types, so
+it comes back as a result. Check the value in the script when the target can revert for
+another reason.
+:::
+
+## Returns
+
+`Expr | Tuple | readonly (Expr | Tuple)[] | void`
+
+The shape follows the function's outputs, or the `revertReturns` list when you pass one:
+
+| Outputs | Result |
+| --- | --- |
+| none | `void` |
+| one value or array | an `Expr` of that type |
+| one struct | a [`Tuple`](/reference/builder/tuple/#tuple) |
+| several | a readonly array of `Expr` and `Tuple`, in order |
+| named outputs, with `struct: true` | one `Tuple` keyed by output name |
+
+## Parameters
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call: a `0x` literal, or an `Expr<'address'>` such as a script argument or an
+earlier result.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const approveUsdc = evscript(
+  { name: 'approveUsdc', args: [t.address] },
+  (s, spender) => {
+    const ok = s.call({
+      address: '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48',
+      abi: erc20Abi,
+      functionName: 'approve',
+      args: [spender, 1_000_000n],
+    });
+    return s.return({ ok });
+  },
+);
+```
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. Declare it `as const`, or build it with viem's `parseAbi`, so that function
+names, arguments and results are typed.
+
+```ts {4-6,13}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const tokenAbi = parseAbi([
+  'function approve(address spender, uint256 amount) returns (bool)',
+]);
+
+const approve = evscript(
+  { name: 'approve', args: [t.address, t.address] },
+  (s, token, spender) => {
+    const ok = s.call({
+      address: token,
+      abi: tokenAbi,
+      functionName: 'approve',
+      args: [spender, 1_000_000n],
+    });
+    return s.return({ ok });
+  },
+);
+```
+
+An ABI typed `Abi` still works, with an untyped result: see
+[`s.read`](/reference/builder/read/#abi).
+
+### functionName
+
+- **Type:** `string`
+
+The function to call. It autocompletes to the `nonpayable` and `payable` functions of `abi`.
+
+```ts {15}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const routerAbi = parseAbi([
+  'function swap(uint256 amountIn) returns (uint256 amountOut)',
+  'function swap(uint256 amountIn, address to) returns (uint256 amountOut)',
+]);
+
+const swap = evscript(
+  { name: 'swap', args: [t.address, t.uint256, t.address] },
+  (s, router, amountIn, to) => {
+    const amountOut = s.call({
+      address: router,
+      abi: routerAbi,
+      functionName: 'swap(uint256,address)',
+      args: [amountIn, to],
+    });
+    return s.return({ amountOut });
+  },
+);
+```
+
+A bare name resolves an overload by the number and types of `args`. A canonical signature names
+one exactly: the name, then the parameter types without names or spaces, a struct written as
+`(type,type)`.
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+One entry per function input, omitted when there is none. Each entry is either:
+
+- the literal viem takes: a `bigint` or a `number`, a string, a `boolean`, an object, an array;
+- an `Expr` of exactly the input's type. An `Expr<'uint8'>` does not fit a `uint256` input:
+  convert it with [`toUint`](/reference/expr/conversions/#touint).
+
+```ts {11}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const transfer = evscript(
+  { name: 'transfer', args: [t.address, t.address] },
+  (s, token, to) => {
+    const ok = s.call({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [to, 1_000_000n], // an Expr, then a literal
+    });
+    return s.return({ ok });
+  },
+);
+```
+
+A struct input takes an object that names every member, as in [Usage](#usage), or a
+[`Tuple`](/reference/builder/tuple/#tuple). An array input takes an array literal, an array
+`Expr` or a [`MutArray`](/reference/builder/new-array/#mutarray).
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that runs out fails with empty revert data, which
+`s.call` bubbles and [`s.tryCall`](/reference/builder/try-call/) reports as a failure.
+
+It is a cap, not a guarantee: the EVM forwards at most 63/64 of the gas the script has left.
+
+```ts {12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const transfer = evscript(
+  { name: 'transfer', args: [t.address, t.address] },
+  (s, token, to) => {
+    const ok = s.call({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'transfer',
+      args: [to, 1_000_000n],
+      gas: 200_000n,
+    });
+    return s.return({ ok });
+  },
+);
+```
+
+### value (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** `0`
+
+The wei sent with the call, which the target reads as `msg.value`. Only a `payable` function
+accepts it, and the script's own balance pays: see [sending ETH](#sending-eth).
+
+```ts {13}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, parseAbi } from 'viem';
+
+const wethAbi = parseAbi(['function deposit() payable']);
+
+const wrap = evscript(
+  { name: 'wrap', args: [t.address, t.uint256] },
+  (s, weth, amount) => {
+    s.call({
+      address: weth,
+      abi: wethAbi,
+      functionName: 'deposit',
+      value: amount,
+    });
+    const wrapped = s.read({
+      address: weth,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [s.env('address')],
+    });
+    return s.return({ wrapped }); // the script's WETH: the read sees the deposit
+  },
+);
+```
+
+The ETH stays with the target for the rest of the `eth_call`.
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Returns the outputs as one [`Tuple`](/reference/builder/tuple/#tuple) keyed by output name,
+instead of a positional array. Every output must have a name, and no name may repeat.
+
+```ts {12}
+import { evscript, t } from '@maxencerb/evs';
+import { quoterAbi } from './abi';
+
+const quote = evscript(
+  { name: 'quote', args: [t.address, t.address, t.address, t.uint256] },
+  (s, quoter, tokenIn, tokenOut, amountIn) => {
+    const quote = s.call({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quoteExactInputSingle',
+      args: [{ tokenIn, tokenOut, amountIn, fee: 500, sqrtPriceLimitX96: 0n }],
+      struct: true,
+    });
+    return s.return({ amountOut: quote.amountOut.get(), gas: quote.gasEstimate.get() });
+  },
+);
+```
+
+`quoterAbi` is the `abi.ts` of [Usage](#usage).
+
+### revertReturns (optional)
+
+- **Type:** `readonly EvsType[]`
+
+The types held by the target's revert data, which the call decodes as its result. They replace
+the ABI outputs: see [results returned by reverting](#results-returned-by-reverting).
+
+```ts {14}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi(['function quote(bytes path, uint256 amountIn)']);
+
+const quote = evscript(
+  { name: 'quote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
+    const [amountOut, gasEstimate] = s.call({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quote',
+      args: [path, amountIn],
+      revertReturns: [t.uint256, t.uint256],
+    });
+    return s.return({ amountOut, gasEstimate });
+  },
+);
+```
+
+One type gives its handle, several a readonly array, and a
+[`t.struct`](/reference/types/struct/) a `Tuple`. It cannot be combined with `struct: true`.
+
+## Behavior
+
+- **Nonpayable and payable only.** A `view` or `pure` function is a type error, and `ABI_SHAPE`
+  while building: use [`s.read`](/reference/builder/read/).
+- **No rollback.** Later calls see the target's state changes, whatever their verb. Nothing
+  reaches the chain.
+- **Failures revert the script.** A target revert bubbles unchanged, and return data that does
+  not decode reverts with `EvsDecodeError(site)`, where `site` identifies the call. For a flag
+  instead, use [`s.tryCall`](/reference/builder/try-call/).
+- **Address without code.** The call succeeds with empty data. A function without outputs
+  returns as if it had run, and one with outputs fails to decode. Check
+  [`s.codeSize`](/reference/builder/balance/#scodesize) when it matters.
+- **Caller is the script.** The target sees the script's address as `msg.sender`, not your
+  `account`. [Sender mode](/guides/execution/) makes the two the same address.
+- **Receiving ETH.** The script accepts plain ETH transfers, so a target that pays its caller,
+  such as `WETH.withdraw`, does not fail.
+
+## Errors
+
+Thrown while the callback records, at the offending line. With a typed ABI, TypeScript reports
+most of them first.
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array, or `functionName` is missing or names no function of it |
+| `EvsTypeError` (`ABI_SHAPE`) | the function is `view` or `pure`: use `s.read` |
+| `EvsTypeError` (`ABI_SHAPE`) | the `args` fit several overloads |
+| `EvsTypeError` (`ABI_SHAPE`) | `struct: true` on outputs that are unnamed, share a name, or do not exist |
+| `EvsTypeError` (`TYPE_MISMATCH`) | wrong number or type of `args`, or `args` that fit no overload |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `address` is missing, or `address`, `gas` or `value` is an `Expr` of another type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the object has a key that is not a parameter, such as a `chainId` from a spread config |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `value` for a function that is not `payable` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `revertReturns` is not an array of types, or comes with `struct: true` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit its parameter type |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | an ABI type nests arrays more than four levels deep |
+
+Reverts when the script runs. [`explainRevert`](/reference/artifact/explain-revert/) names the
+call behind an `EvsDecodeError`, and lists the calls a bubbled revert can have come through.
+
+| Revert | When |
+| --- | --- |
+| the target's revert data | the target reverts |
+| empty revert data | the target runs out of gas, or the script's balance is below `value` |
+| `EvsDecodeError(site)` | the return data does not decode against the ABI, or the address has no code and the function has outputs |
+| `EvsDecodeError(site)` | with `revertReturns`: the target returns normally, or reverts with data that does not decode, empty data included |

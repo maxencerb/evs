@@ -1,0 +1,252 @@
+---
+title: s.for
+description: Runs a body once per value of a counter, from a start value up to an exclusive end.
+---
+
+Runs a body once per value of a counter, from `from` up to `until` (exclusive).
+
+## Usage
+
+```ts {5-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumTo = evscript({ name: 'sumTo', args: [t.uint256] }, (s, n) => {
+  const total = s.let(t.uint256, 0n);
+  s.for({ from: 0n, until: n }, (i) => {
+    total.set(total.get().add(i)); // i: Expr<'uint256'>
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+To walk an array, [`s.forEach`](/reference/builder/for-each/) is shorter.
+
+### Filling an array
+
+Use the counter as the index of a [`MutArray`](/reference/builder/new-array/#mutarray).
+
+```ts {5-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
+  const out = s.newArray(t.uint256, n);
+  s.for({ from: 0n, until: n }, (i) => {
+    out.set(i, i.mul(i));
+  });
+  return s.return({ squares: out });
+});
+```
+
+### A typed counter
+
+Pass `type` to count in another integer type, signed ones included.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumTicks = evscript(
+  { name: 'sumTicks', args: [t.int24, t.int24] },
+  (s, lower, upper) => {
+    const total = s.let(t.int24, 0);
+    s.for({ type: t.int24, from: lower, until: upper, step: 60 }, (tick) => {
+      total.set(total.get().add(tick)); // tick: Expr<'int24'>
+    });
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+### Break and continue
+
+The body's second argument is a [`LoopCtl`](/reference/builder/while/#loopctl).
+
+```ts {8-9}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumOdd = evscript(
+  { name: 'sumOdd', args: [t.uint256, t.uint256] },
+  (s, n, cap) => {
+    const total = s.let(t.uint256, 0n);
+    s.for({ from: 0n, until: n }, (i, loop) => {
+      s.if(i.mod(2n).eq(0n), () => loop.continue()); // skip even numbers
+      s.if(total.get().gt(cap), () => loop.break()); // stop once above the cap
+      total.set(total.get().add(i));
+    });
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+## Returns
+
+`void`
+
+Carry results out of the body through a cell or a `MutArray` declared before the loop.
+
+## Parameters
+
+The first argument is a range object with `type`, `from`, `until` and `step`. The second is the
+body.
+
+### type (optional)
+
+- **Type:** `NumericType` (any `uintN` or `intN`)
+- **Default:** `'uint256'`
+
+The type of the counter. `from`, `until` and `step` take this type too.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumBelow = evscript({ name: 'sumBelow', args: [t.uint8] }, (s, n) => {
+  const total = s.let(t.uint8, 0);
+  s.for(
+    {
+      type: t.uint8,
+      from: 0,
+      until: n,
+    },
+    (i) => total.set(total.get().add(i)), // i: Expr<'uint8'>
+  );
+  return s.return({ total: total.get() });
+});
+```
+
+### from
+
+- **Type:** `IntoExpr<t>`, where `t` is the counter type
+
+The first value of the counter: an `Expr` or a literal.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+
+const everyOther = evscript(
+  { name: 'everyOther', args: [t.array(t.uint256)] },
+  (s, xs) => {
+    const total = s.let(t.uint256, 0n);
+    s.for(
+      {
+        from: 1n,
+        until: xs.length(),
+        step: 2n,
+      },
+      (i) => total.set(total.get().add(xs.at(i))),
+    );
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+### until
+
+- **Type:** `IntoExpr<t>`
+
+The exclusive end: the loop runs while `i < until`. It is read once, before the loop.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+
+const everyOther = evscript(
+  { name: 'everyOther', args: [t.array(t.uint256)] },
+  (s, xs) => {
+    const total = s.let(t.uint256, 0n);
+    s.for(
+      {
+        from: 1n,
+        until: xs.length(),
+        step: 2n,
+      },
+      (i) => total.set(total.get().add(xs.at(i))),
+    );
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+### step (optional)
+
+- **Type:** `IntoExpr<t>`
+- **Default:** `1`
+
+The amount added to the counter after each iteration. It is read once, before the loop.
+
+Keep it positive: the loop only counts up. A step of `0` repeats until the call runs out of gas.
+
+```ts {11}
+import { evscript, t } from '@maxencerb/evs';
+
+const everyOther = evscript(
+  { name: 'everyOther', args: [t.array(t.uint256)] },
+  (s, xs) => {
+    const total = s.let(t.uint256, 0n);
+    s.for(
+      {
+        from: 1n,
+        until: xs.length(),
+        step: 2n,
+      },
+      (i) => total.set(total.get().add(xs.at(i))),
+    );
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+### body
+
+- **Type:** `(i: Expr<t>, loop: LoopCtl) => void`
+
+Records one iteration. `i` is the counter for that iteration, read-only. `loop` is the
+[`LoopCtl`](/reference/builder/while/#loopctl) of this loop.
+
+```ts {13}
+import { evscript, t } from '@maxencerb/evs';
+
+const everyOther = evscript(
+  { name: 'everyOther', args: [t.array(t.uint256)] },
+  (s, xs) => {
+    const total = s.let(t.uint256, 0n);
+    s.for(
+      {
+        from: 1n,
+        until: xs.length(),
+        step: 2n,
+      },
+      (i) => total.set(total.get().add(xs.at(i))),
+    );
+    return s.return({ total: total.get() });
+  },
+);
+```
+
+## Behavior
+
+- **Exclusive end.** The body runs while `i < until`. When `from` is not below `until`, it never
+  runs.
+- **Bounds read once.** `until` and `step` are computed before the loop. Changing a cell they
+  came from does not move them.
+- **Recorded once.** The callback is called one time while building. The recorded body repeats
+  at run time.
+- **Checked step.** `i + step` reverts with `Panic(0x11)` when it overflows the counter type.
+- **Continue steps first.** `loop.continue()` adds the step, then tests `i < until` again.
+- **Scoped values.** Nothing created in the body, `i` included, can be used after the loop.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the range is not an object, or `body` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a `uintN` or an `intN` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `from` or `until` is missing |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `from`, `until` or `step` is not of the counter type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal `from`, `until` or `step` does not fit the counter type |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the body is used after the loop |
+
+At run time:
+
+| Error | When |
+| --- | --- |
+| [`Panic(0x11)`](/reference/diagnostics/#panic-codes) | `i + step` overflows the counter type |

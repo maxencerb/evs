@@ -1,0 +1,40 @@
+---
+// Page title. The page actions follow it wherever the right column (which also carries them)
+// is absent: below 72rem, and on pages without a table of contents.
+import { hasMarkdown } from '../lib/page-markdown.ts';
+import PageActions from './PageActions.astro';
+
+// Same value as Starlight's `PAGE_TITLE_ID`: the skip-link and table-of-contents target.
+const PAGE_TITLE_ID = '_top';
+const { entry } = Astro.locals.starlightRoute;
+---
+
+<h1 id={PAGE_TITLE_ID}>{entry.data.title}</h1>
+{
+  hasMarkdown(entry.id) && (
+    <div class="title-actions">
+      <PageActions />
+    </div>
+  )
+}
+
+<style>
+  h1 {
+    color: var(--evs-heading);
+    font-size: var(--sl-text-h1);
+    font-weight: 500;
+    letter-spacing: -0.04em;
+    line-height: 1.111;
+  }
+
+  /* Starlight spaces the panel's children 1.5rem apart; the actions sit closer to the title. */
+  .title-actions {
+    margin-top: 0.875rem;
+  }
+
+  @media (min-width: 72rem) {
+    :global([data-has-toc]) .title-actions {
+      display: none;
+    }
+  }
+</style>

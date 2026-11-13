@@ -1,0 +1,204 @@
+---
+title: matchScriptError
+description: Decodes a caught error and calls the handler for it, with one required handler per declared error and a fallback.
+---
+
+Decodes a caught error and calls the handler for it, with one required handler per declared
+error and a `_` fallback for everything else.
+
+## Import
+
+```ts
+import { matchScriptError } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {28-32}
+import { compile, evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const TooSmall = t.error('TooSmall', [namedArg('amount', t.uint256)]);
+const NotOwner = t.error('NotOwner');
+
+const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooSmall, NotOwner] },
+  (s, amount) => {
+    s.if(amount.lt(10n), () => {
+      s.throw(TooSmall, { amount });
+    });
+    return s.return({ doubled: amount.mul(2n) });
+  },
+);
+
+const compiled = compile(guard);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem(),
+    functionName: 'guard',
+    args: [5n],
+  });
+} catch (error) {
+  const message = matchScriptError(compiled, error, {
+    TooSmall: ({ amount }) => `amount too small: ${amount}`,
+    NotOwner: () => 'caller is not the owner',
+    _: (other) => `unexpected revert: ${other.name}`,
+  });
+  // 'amount too small: 5'
+}
+```
+
+Add an error to the script without adding its handler, and the call no longer typechecks.
+
+### Narrowing the fallback
+
+`_` receives every revert that is not a declared error. Switch on its `name` to tell them apart.
+
+```ts {8-13}
+import { evscript, matchScriptError, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+
+const explain = (error: unknown) =>
+  matchScriptError(ratio, error, {
+    _: (other) => {
+      if (other.name === 'Panic') return `panic: ${other.meaning}`;
+      if (other.name === 'Error') return `reverted: ${other.reason}`;
+      return `other revert: ${other.name}`;
+    },
+  });
+
+explain('0x4e487b710000000000000000000000000000000000000000000000000000000000000012');
+// 'panic: division or modulo by zero'
+```
+
+### Errors that are not reverts
+
+A value with no revert data is thrown again, so a network failure never reaches `_`.
+
+```ts {6,8}
+import { evscript, matchScriptError, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.address] }, (s, x) => s.return({ x }));
+
+try {
+  matchScriptError(echo, new Error('fetch failed'), { _: () => 'a revert' });
+} catch (error) {
+  error; // the same Error('fetch failed')
+}
+```
+
+## Returns
+
+`HandlerResult<handlers>`
+
+Whatever the handler that ran returns. The type is the union of every handler's return type.
+
+## Parameters
+
+### script
+
+- **Type:** `{ abi: Abi }`
+
+The script whose errors to match: an `evscript()` result or its compiled artifact.
+
+```ts {7}
+import { compile, evscript, matchScriptError, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.address] }, (s, x) => s.return({ x }));
+const compiled = compile(echo);
+
+const name = matchScriptError(
+  compiled,
+  '0x',
+  { _: (other) => other.name },
+);
+// 'empty'
+```
+
+### error
+
+- **Type:** `unknown`
+
+The value from `catch`, untouched, or a `0x` hex string of revert data.
+
+```ts {13}
+import { evscript, interpret, matchScriptError, t } from '@maxencerb/evs';
+import type { MockChain } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const { outcome } = interpret(ratio, [1n, 0n], noCalls);
+if (outcome.kind === 'revert') {
+  matchScriptError(
+    ratio,
+    outcome.data,
+    { _: (other) => other.name },
+  );
+  // 'Panic'
+}
+```
+
+### handlers
+
+- **Type:** `ScriptErrorHandlers<abi, r>`
+
+A record with one function per declared error, plus `_`.
+
+| Key | Called with | Required |
+| --- | --- | --- |
+| a declared error name | `(args, error)`: the decoded arguments keyed by name, then the whole decoded error | yes |
+| `_` | `(error)`: any other [decoded error](/reference/utilities/decode-script-error/#returns) | yes |
+
+```ts {20-21}
+import { evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
+
+const TooLow = t.error('TooLow', [
+  namedArg('value', t.uint256),
+  namedArg('min', t.uint256),
+]);
+
+const atLeast = evscript(
+  { name: 'atLeast', args: [t.uint256], errors: [TooLow] },
+  (s, value) => {
+    s.if(value.lt(10n), () => {
+      s.throw(TooLow, { value, min: 10n });
+    });
+    return s.return({ value });
+  },
+);
+
+const handle = (error: unknown) =>
+  matchScriptError(atLeast, error, {
+    TooLow: ({ value, min }, decoded) => `${decoded.name}: ${value} is under ${min}`,
+    _: (other) => other.name,
+  });
+```
+
+## Behavior
+
+- **Exhaustive.** A missing handler for a declared error is a type error.
+- **Everything else goes to `_`.** Panics, `Error(string)`, the two
+  [built-in errors](/reference/diagnostics/#built-in-errors), unknown selectors and empty
+  reverts.
+- **Optional built-in handlers.** A handler named `Panic`, `Error`, `EvsDecodeError` or
+  `EvsInvalidCalldata` takes that revert instead of `_`, as `(args, error)`. Its parameters are
+  not inferred: annotate them.
+- **Not a revert, not handled.** Without revert data the original error is thrown again.
+- **Built on `decodeScriptError`.** The decoding rules are those of
+  [`decodeScriptError`](/reference/utilities/decode-script-error/).
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| the original error | `error` is an `Error` that carries no revert data |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `error` is not an `Error` and carries no revert data |

@@ -3,7 +3,9 @@
   "compilerOptions": {
     // TypeScript 6 no longer auto-includes every @types/* package (`types` defaults to []);
     // the build scripts under scripts/ run on Node (type stripping) and use its globals.
-    "types": ["node"]
+    "types": ["node"],
+    // `~/components/…` from any content page, whatever its depth under src/content/docs.
+    "paths": { "~/*": ["./src/*"] }
   },
   "include": [".astro/types.d.ts", "**/*"],
   "exclude": ["dist", ".snippets", "node_modules", "public"]

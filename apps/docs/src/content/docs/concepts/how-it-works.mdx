@@ -1,310 +1,175 @@
 ---
 title: How it works
-description: The evs compile pipeline stage by stage — IR recording, validation, dead-code elimination, codegen, assembly, mandatory bytecode verifiers — and the Solidity-compatible memory model.
+description: A script is recorded into an IR, compiled to verified EVM bytecode, executed as one eth_call and decoded by viem.
 ---
 
-`compile()` turns the statement tree your builder callback recorded into a single-function EVM
-contract that runs under `eth_call`. The pipeline is deliberately short and unclever: one
-IR-level pass (dead-code elimination, which only ever removes work nothing observes), an
-optimizer that stays off unless you ask for it (`optimize: true`), and a set of
-machine-checked invariants that run on **every** compile — optimized or not. Each stage
-produces an artifact you can inspect.
+import Pipeline from '~/components/diagrams/Pipeline.astro';
 
-```txt
-your callback       s.read / a.add(b) / s.if / s.while / s.fn / s.return
-      |  recording: TS types + eager runtime validation
-      v
-ScriptIr            structured statement tree over a flat value table — plain JSON, frozen
-      |  validateIr (always re-checked, even for IR you just recorded)
-      |  eliminateDeadCode: drop statements whose results nothing observable reads
-      |  (re-validated)
-      v
-AsmNode[]           codegen: frame layout (liveness-packed with optimize: true) ->
-      |             dispatcher -> statement templates ->
-      |             call/ABI emitters -> shared revert tails -> data segments
-      |  optimize: true -> store-reload fusion, then the built-in peephole pass
-      |  (both off by default)
-      |  peephole hook (default: identity) -> assemble: layout -> EIP-170 size check
-      |  -> patch PUSH2 fixups -> verify: JUMPDEST scan + stack-height simulation + shape lints
-      v
-CompiledEvsScript   runtimeBytecode, initBytecode, literal-typed abi, sourceMap, ir,
-                    toViem(), disassemble(), explainRevert()
+A script goes through four stages: your callback is recorded, the recording is compiled to
+bytecode, a node executes it as one `eth_call`, and viem decodes the result.
+
+<Pipeline />
+
+Every output on this page comes from this script:
+
+```ts title="script.ts"
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+export const supplyOf = evscript(
+  { name: 'supplyOf', args: [t.address] },
+  (s, token) => {
+    const supply = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'totalSupply',
+    });
+    return s.return({ supply });
+  },
+);
 ```
+
+## Record
+
+`evscript` runs your callback once, without touching a chain. Each builder call appends a
+statement to the IR (intermediate representation), the recorded program.
 
 ```ts
-import { compile, evscript, t } from '@maxencerb/evs';
+import { supplyOf } from './script';
 
-const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
-  s.return({ x }),
-);
-
-const compiled = compile(echo);
-
-const ir = compiled.ir; // stage 1: the recorded statement tree (also `echo.ir`)
-const bytecode = compiled.runtimeBytecode; // the verified runtime bytecode
-const listing = compiled.disassemble().format(); // annotated mnemonic listing: labels, jump targets, notes
-const map = compiled.sourceMap; // pc -> location segments + revert-site table
+const statements = supplyOf.ir.body;
 ```
 
-## Stage 1: recording produces `ScriptIr`
+The one `s.read` became one `call` statement:
 
-Your callback runs exactly once, at recording time. Every builder call appends a statement to
-the script's IR: a structured statement tree (`if`/`while` nest, everything else is flat) over
-a table of typed values. The IR is plain JSON-safe data — words are 0x-hex strings, the format
-is versioned (`irVersion: 1`) — and it is frozen the moment recording ends. It is exposed as
-`script.ir` and again as `compiled.ir`, which makes it snapshot-testable and attachable to bug
-reports. See [Writing scripts](/guides/writing-scripts/) for the recording model itself.
+```json
+[
+  {
+    "k": "call",
+    "target": 0,
+    "fnAbi": {
+      "name": "totalSupply",
+      "selector": "0x18160ddd",
+      "inputs": [],
+      "outputs": [{ "name": "", "type": "uint256" }]
+    },
+    "args": [],
+    "outs": [1],
+    "mode": "strict",
+    "site": 0
+  }
+]
+```
 
-Every statement carries a site id, which is how `explainRevert` and the source
-map trace a revert or a program counter back to the read, check, or call that produced it.
+The IR is frozen, plain JSON data. Because the callback only records, a native `if` never
+branches on a chain value: see [Writing scripts](/guides/writing-scripts/).
 
-## Stage 2: `validateIr`
+## Compile
 
-`compile()` always re-validates the IR before lowering it — every declared type (no empty
-tuple, at most four nested array levels, no static type of 2^32 bytes or more), operand types
-per operation, definition-before-use under the scope rules, cell types, call-graph acyclicity,
-return names, and in-place writes only into arrays the program allocated itself. The builder
-already enforced all of this at recording time but one size: a struct output of a raw ABI whose
-members each fit but whose total is 2^32 bytes or more is recorded, and this pass is the first
-to reject it (`UNSUPPORTED_V0`, from `compile()` and `interpret()` alike). Validating again
-also means IR loaded with `deserializeIr` (see [Testing scripts](/guides/testing-scripts/))
-cannot reach code generation in a shape the builder would never record. The one builder rule
-the IR layer relaxes is a non-empty return list: an IR program may return nothing (it returns
-`0x`).
+[`compile`](/reference/compile/) turns the IR into runtime bytecode, in five steps:
 
-## Stage 3: dead-code elimination
+1. Validate the IR.
+2. Remove dead code: statements whose result nothing reads.
+3. Emit opcodes for each remaining statement.
+4. Assemble the bytes and enforce the 24,576-byte code size limit.
+5. [Verify the bytecode](/concepts/trust-and-testing/) before returning it.
 
-The one IR-level pass. `compile()` runs it on every compile, and it is exported as
-`eliminateDeadCode` (alias `dce`) so you can apply it to any `ScriptIr` yourself. It drops
-statements whose results nothing observable depends on, and nothing else:
+```ts
+import { compile } from '@maxencerb/evs';
+import { supplyOf } from './script';
 
-- **What is live**: every returned value, every `s.throw` argument, every sub-call (`s.read`,
-  `s.call`, `s.simulate` and their `try*` forms — with or without a used result), every loop,
-  every `s.let` cell that is read somewhere, and every `s.fn` call whose callee is not pure
-  (it makes a sub-call, throws, loops, or writes an array/struct it was passed). Everything a
-  live statement reads is live, recursively; an `s.if` is live if anything inside it is.
-- **What is dropped**: arithmetic, comparisons, conversions, literals, `array.at(i)`,
-  `array.length()`, `s.newArray`, struct/array construction and member reads, `s.encode`,
-  `s.keccak256`, `.get()` on a cell, a `.set()` on a cell nothing ever reads, and a call to a
-  pure `s.fn` — whenever the value produced is never used. Writes to an array or struct stay
-  whenever anything that may alias the same memory is live.
-- **Revert guards are not side effects.** A checked `add` that overflows, an `array.at(i)` out
-  of bounds, a narrowing `convert` — these revert, but when the value they guard is never read
-  the guard is dead work too, and the pass removes it: a script that overflows while computing
-  an unused sum returns instead of panicking. This is an evs choice, not Solidity's: solc keeps
-  the Panic of an unused `a - b;`, with or without its optimizer. Anything that must fail has
-  to feed a return, a `s.throw`, a sub-call, or a cell that is read. `interpret()` runs the
-  same pass by default, so it agrees with the bytecode here; `{ dce: false }` runs the recorded
-  IR (see [Testing scripts](/guides/testing-scripts/#unused-results-do-not-revert)).
+const compiled = compile(supplyOf);
+const listing = compiled.disassemble().format();
+```
 
-The pass keeps the value table and every surviving statement — its site id, its source
-location — untouched, so the source map and `explainRevert` still resolve, and `compiled.ir`
-stays the recorded IR (`script.ir`). It is idempotent, its output is re-validated before
-lowering, and the differential suite checks the recorded IR, `dce(ir)` and the compiled
-bytecode agree on the whole corpus, except where a dropped guard is the statement that would
-revert (see [Why trust the bytecode?](/concepts/trust-and-testing/)). One practical consequence:
-`s.forEach(xs, () => { ... })` with an unused element records the element load like any other
-iteration, and the pass removes it — no builder special case.
+The `s.read` is a `STATICCALL`. When the callee reverts, the script reverts with the same data:
 
-## Stage 4: codegen lowers IR to an assembly stream
+```txt
+…
+0x0060  6080        PUSH1 0x80
+0x0062  51          MLOAD  ; target
+0x0063  5a          GAS
+0x0064  fa          STATICCALL  ; strict read totalSupply (site 0)
+0x0065  610070      PUSH2 0x0070 → @call_ok_0
+0x0068  57          JUMPI
+0x0069  3d          RETURNDATASIZE
+0x006a  5f          PUSH0
+0x006b  5f          PUSH0
+0x006c  3e          RETURNDATACOPY
+0x006d  3d          RETURNDATASIZE
+0x006e  5f          PUSH0
+0x006f  fd          REVERT  ; bubble callee revert
+…
+```
 
-Lowering assigns the frame layout (one 32-byte memory slot per argument, cell, value, and
-function parameter/result — see the memory model below), then emits, as one node stream:
-
-- the **dispatcher**: a receive check (empty calldata stops successfully, so a target can pay ETH
-  back to the script), the free-pointer prologue, a single 4-byte selector compare (a script is a
-  one-function contract), and the calldata-size guard;
-- the **argument decoder**: each script arg is read from calldata, bounds-checked (dynamic
-  args get full offset/length validation), normalized to its canonical word form, and stored
-  to its frame slot;
-- one **statement template** per IR statement — load operands from slots, compute, store the
-  result back;
-- the **call emitters** for every sub-call verb (`s.read`, `s.call`, `s.simulate` and their
-  `try*` forms), the **ABI encoders** (`s.encode`, `s.encodePacked`) and the return-tuple
-  encoder;
-- the **shared codec subroutines** (`@enc_<k>` / `@dec_<k>`): when the same struct or
-  composite array is encoded or decoded at several sites (or the same `s.simulate` outputs are
-  decoded twice), its encoder or decoder is emitted once and each site calls it — only when
-  that makes the program smaller, and never inside a loop where the call would cost gas;
-- the **shared revert tails**: one `Panic(uint256)` tail (entered via per-code stubs), the
-  `EvsDecodeError(uint256 site)` tail, and the `EvsInvalidCalldata()` fallback — each emitted
-  only when some code jumps to it;
-- **data segments** for large constants, referenced only by `CODECOPY`.
-
-Compile-time diagnostics (`LOOP_ALLOCATION`, `LARGE_FRAME`, `ENV_FRAME_DEPENDENT`,
-`DEPLOYLESS_RESULT_PREFIX`, `DEPLOYLESS_RESULT_SIZE`) are emitted
-during this stage through the `onDiagnostic` callback — `compile()` never logs. See
-[Errors & diagnostics](/reference/diagnostics/).
-
-## Stage 5: assembly
-
-The assembler turns the node stream into bytes: opcodes, minimal-width `PUSH` immediates, and
-label pushes. Label pushes are always emitted as `PUSH2` plus a fixup that is patched in after
-layout — the EIP-170 size cap, checked as soon as layout fixes the final length and before any
-fixup is patched, keeps every offset within 16 bits, so `PUSH2` always suffices and no
-narrowing pass exists to get wrong. Data segments are placed after the last code byte behind
-a single `INVALID` (`0xFE`) guard byte, so execution can never fall through into data.
-
-Between codegen and assembly sits the optimizer seam. By default nothing runs there and the
-bytes are the plain lowering. `compile(script, { optimize: true })` first runs store–reload
-fusion ([#96](https://github.com/maxencerb/evs/issues/96)): codegen counts how many times each
-value's frame slot is handed out, so it knows when a value is written once and read exactly once,
-by the operand load of the very next statement. Such a value then stays on the stack: its
-`MSTORE` and the reload disappear (a `SWAP` rearranges the stack when the next statement loads
-another operand first). It never carries a value across a `JUMPDEST`, so every label keeps the
-stack height it is annotated with, which the verifier checks. With it, `s.if(x.lte(10n), …)` compiles to `GT` and a conditional jump,
-with no store of the condition. Then comes the built-in
-peephole pass ([#39](https://github.com/maxencerb/evs/issues/39)) — a conservative, purely local
-rewrite over the node stream: a store immediately reloaded from the same slot becomes
-`DUP1` + store, arithmetic over two immediates is folded (256-bit wraparound, EVM division-by-zero
-semantics, never widening the immediate), and stack identities such as `SWAP1 SWAP1`, `DUP1 POP`
-or `PUSH 0 ADD` are dropped, and so is the `ISZERO ISZERO` a comparison or a conditional jump does not
-need. It never rewrites across a `JUMPDEST`, never touches a label or a
-jump target, keeps every source-map site, and runs **before** the verifiers below, so optimized
-output is checked exactly like unoptimized output. A user `peephole` hook in `CompileOptions`
-runs at the same position, after the built-in pass when both are on; its output is held to the
-same node contract (a bare `PUSH1`–`PUSH32` op node, which would leave its immediate to the next
-bytes, and a `push` node whose `value` is not a bigint are rejected at layout). The pass is exported as
-`evsPeephole` (`peephole: evsPeephole` runs only this pass; `optimize: true` also switches
-codegen to the liveness-based frame allocator described in [the memory model](#the-memory-model)).
-
-## Stage 6: mandatory verifiers
-
-After assembly, three verification passes run on the final bytecode. They are always on — not
-a debug mode — and a failure throws `EvsInternalError` ("this is a bug in evs, please
-report"), never silently ships bad bytecode.
-
-1. **JUMPDEST scan.** The bytecode is scanned exactly the way consensus clients do (skipping
-   `PUSH` immediates), and the verifier asserts that every patched jump target lands on a real
-   `JUMPDEST`, every label was defined, no fixup is left unpatched, and no jump targets the
-   data segment.
-2. **Stack-height simulation.** The verifier walks every path and checks the heights the
-   codegen contract promises: every label sees the height it is annotated with (statement-level
-   labels sit at the statement baseline; fn entries and loops inside templates carry their own),
-   every label join sees one consistent height, and simulated depth never exceeds 16 inside a
-   template (the `DUP`/`SWAP` reach). Statement templates are net-zero, so by default the
-   operand stack is at its baseline at every statement boundary; with `optimize: true`, store–reload
-   fusion may keep one value on the stack across the boundary between two adjacent statements,
-   never across a label. Revert
-   tails are tracked as terminating regions that must end in `REVERT`, `INVALID`, or `RETURN`.
-3. **Shape lints.** Every `RETURNDATACOPY` must be one of the two intrinsically safe shapes
-   (`offset 0`, `size RETURNDATASIZE` — which can never read out of bounds, so the
-   all-gas-consuming halt is unreachable by construction); no opcode newer than the selected
-   `evmVersion` may appear (catches a stray `MCOPY` in a `paris` build — see
-   [EVM targets](/guides/evm-targets/)); and `SLOAD`, `SSTORE`, `TLOAD`, `TSTORE`, `LOG0`–`LOG4`,
-   `CREATE`, `CREATE2`, `CALLCODE`, `DELEGATECALL` and `SELFDESTRUCT` must never appear — a
-   script never touches its own storage, emits logs or deploys contracts. `CALL` is allowed, and
-   emitted only by the mutable-call verbs `s.call`/`s.simulate` (and their `try*` forms): its
-   effects stay inside the `eth_call` and are discarded when it ends (`s.simulate` additionally
-   reverts its own frame).
-
-## Stage 7: the EIP-170 size check
-
-Runtime bytecode is capped at 24,576 bytes (EIP-170). Exceeding it throws `EvsCompileError`
-with a per-region size breakdown (dispatcher, body, functions, shared tails, data segments, plus
-the simulate trampoline and the shared codec subroutines when present) so you can see
-what to trim. The check runs from the assembler's layout pass, before label fixups are patched
-and before the verifiers, so every oversized script gets this error however large it is — even
-one that host-side loops unrolled past 64 KiB. The artifact that comes out the other side — `runtimeBytecode`, the deployless
-`initBytecode` wrapper, the literal-typed ABI, the source map, and the debugging methods — is
-documented in [The compiled artifact](/reference/artifact/).
-
-## The memory model
-
-Scripts use Solidity's memory layout verbatim:
-
-| Range            | Use                                                                                     |
-| ---------------- | --------------------------------------------------------------------------------------- |
-| `0x00`–`0x3f`    | scratch — revert-payload assembly and intra-template temporaries only                   |
-| `0x40`–`0x5f`    | free-memory pointer                                                                     |
-| `0x60`–`0x7f`    | zero slot — never written; the canonical empty memref (`try*` failure values point here) |
-| `0x80`…`frameEnd` | **static frame**: one 32-byte slot per arg, cell, value, and fn param/result (packed by liveness with `optimize: true`), then, only when a codec subroutine is shared, up to three codec register words (its return address, base and source pointer), so `frameEnd` and the free pointer start after them |
-| `frameEnd`…      | bump allocations: returndata snapshots of memref outputs, dynamic values, mutable arrays, the return tuple |
-
-The very first instructions of every script store `frameEnd` into the free pointer at `0x40`.
-From there:
-
-- **Every value has a fixed slot.** A statement template loads its operands from their slots
-  (or pushes a folded constant), computes, and stores the result to the output's slot. There
-  is no stack scheduling, and by default no slot reuse either — which is exactly what makes
-  the empty-stack invariant checkable and the disassembly legible (with `optimize: true`,
-  store–reload fusion lets a single-use value skip its slot between two adjacent statements,
-  never across a label). With `optimize: true` the
-  liveness-based allocator ([#41](https://github.com/maxencerb/evs/issues/41)) keeps the
-  templates and gives a value the slot of one that is dead: a value is live from its defining
-  statement to its last read, args, cells and fn params keep dedicated slots, fn frames stay
-  separate, a value crossing a loop boundary stays live for the whole loop, and a value read
-  in one `if` branch stays live through the whole `if`.
-- **Every slot holds a canonical word**: `uintN` zero-extended, `intN` sign-extended, `bool`
-  is 0 or 1, `bytesN` left-aligned, `address` 160-bit zero-extended. The invariant is
-  established at the three trust boundaries (literal coercion at recording, calldata decode,
-  returndata decode) and preserved by every operation.
-- **Dynamic values are memrefs.** A slot for a `string`, `bytes`, or array value holds a
-  pointer to a `[length][payload]` buffer — strings and bytes as raw zero-padded bytes, arrays
-  as one canonical word per element.
-- **Allocation only bumps.** New buffers advance the free pointer and are never freed, so
-  allocations inside a loop grow memory monotonically — `compile()` warns with a
-  `LOOP_ALLOCATION` diagnostic when an allocating statement sits inside a loop: a sub-call with
-  a `string`/`bytes`/array/tuple output (or any `s.simulate`), `s.newArray`, `s.tuple(…)` or a
-  struct literal, `s.encode`/`s.encodePacked` (and `s.keccak256` over values that need encoding),
-  a dynamic literal, or a call to an `s.fn` whose body allocates (see
-  [`LOOP_ALLOCATION`](/reference/diagnostics/)). A read whose outputs are all words copies them
-  into their slots straight from a transient returndata snapshot, so it allocates nothing
-  (unless its arguments need encoder state, below).
-- **Memory above the free pointer is not guaranteed zero.** Sub-call calldata is built there
-  transiently without bumping, and a failed `try*` decode rolls the free pointer back over its
-  returndata copy. So the return encoder zero-pads dynamic tails explicitly, and a fresh
-  allocation is zero-filled whenever one of its words would otherwise be read unwritten — for
-  example a word-element `s.newArray`, an `s.tuple` with an omitted word member, or the zero
-  value of a struct with a word member or of a fixed-size word array. Blocks whose every word is
-  written right away (a `string[]`'s element pointers, a struct of only strings and
-  arrays, a literal) skip the fill.
-  (Arguments holding fixed-size arrays, arrays of structs, strings, bytes or arrays, or structs
-  nested three or more dynamic levels deep need a few words of encoder state, reserved just below
-  the calldata: such a call advances the free pointer by those words, and warns with
-  `LOOP_ALLOCATION` inside a loop. So does a call with a struct argument, or a fixed-size array
-  or an array of structs, strings, bytes or arrays, that also takes a literal `string` or `bytes`
-  or an all-literal word array: its arguments are encoded without folding literals into the calldata, so each
-  such literal is first copied into a block allocated at the free pointer.)
-
-## What evs deliberately does not do (yet)
-
-evs optimizes for *auditable correctness* over gas:
-
-- **No optimization by default.** Dead-code elimination (Stage 3) always runs, but it only ever
-  removes work nothing observes. The built-in optimizer is opt-in (`optimize: true`) and
-  deliberately small: the peephole pass ([#39](https://github.com/maxencerb/evs/issues/39))
-  folds the back-to-back `MSTORE`/`MLOAD` pairs the uniform slot lowering produces, constants,
-  and stack identities, the liveness-based frame allocator
-  ([#41](https://github.com/maxencerb/evs/issues/41)) reuses the slots of dead values, and
-  store–reload fusion ([#96](https://github.com/maxencerb/evs/issues/96)) keeps a value read
-  once, by the next statement, on the stack — nothing more. There is no stack scheduling beyond
-  that: every other value is still stored to and loaded from memory. The
-  remaining overhead is a cost in gas, never in correctness, and `eth_call` gas budgets are
-  enormous (an `s.for` sum loop costs about 170 gas per iteration by default — roughly 1.7M gas
-  for 10,000 iterations — far inside any node's cap).
-- **No call deduplication.** The first `STATICCALL` to an address costs 2600 gas, repeats cost
-  100; evs does not dedupe repeated calls.
-- **The ABI type vocabulary is supported**: structs and tuples (including nested structs),
-  arrays of structs (`tuple[]`, `tuple[][]`), nested arrays (`uint256[][][]`, `string[][]`,
-  `bytes[][]`), and fixed-size arrays (`uint256[3]`, `Position[2]`, mixed with dynamic
-  suffixes), up to four array levels — across script args, returns, and call ABIs, byte-exact
-  vs viem and real solc. Deeper arrays are rejected with a recording-time error
-  ([#4](https://github.com/maxencerb/evs/issues/4)). The decoder keeps a fast stack-based loop
-  for the one- and two-level shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`) and switches to
-  heap-allocated loop frames for the deeper ones, so the common shapes pay no gas for the
-  others ([#52](https://github.com/maxencerb/evs/issues/52)). A fixed-size word array is
-  copied in bulk rather than decoded element by element: one `MCOPY` on `cancun` for full-word
-  elements (`uint256[3]`, `bytes32[2]`), a short copy-and-clean loop for narrower ones
-  (`address[2]`, `uint8[4]`) and before `cancun`. A chain of nested structs costs the same code
-  per level however deep it goes.
-- **Read-only by construction.** The script's own code never writes storage, emits logs or
-  deploys contracts (enforced by the shape lints above), and the effects of `s.call`/`s.simulate`
-  `CALL` frames are never committed, because the whole execution is an `eth_call`.
-
-:::note
-Every bytecode listing in this documentation was generated from real compiler output at the
-time of writing — no example shows an optimization the compiler does not perform. The
-broader verification story (differential testing against an independent interpreter, viem's
-codecs, and real solc) is covered in [Why trust the bytecode?](/concepts/trust-and-testing/).
+:::caution[Unused results do not revert]
+Dead-code removal also drops the checks of a removed statement. An overflowing `a.add(b)` whose
+result you never use does not panic. Return the value, or pass it to a call or to
+[`s.throw`](/reference/builder/throw/).
 :::
+
+## Execute
+
+[`toViem()`](/reference/artifact/to-viem/) returns what `readContract` needs to send the
+bytecode in one `eth_call`.
+
+```ts title="client.ts" {10}
+import { compile } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+import { supplyOf } from './script';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const compiled = compile(supplyOf);
+
+export const result = await client.readContract({
+  ...compiled.toViem(), // { abi, code }
+  functionName: 'supplyOf',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'], // USDC
+});
+```
+
+Inside the call, the script decodes its arguments, runs its statements and ABI-encodes the
+returned values. The node discards every state change when the call ends.
+
+The default mode is deployless: the node runs the code as a contract creation that it never
+commits. With `toViem({ mode: 'stateOverride' })` the code sits at an address for the call
+instead. [Executing scripts](/guides/execution/) compares the two.
+
+## Decode
+
+The first entry of `compiled.abi` describes the script as one `view` function:
+
+```json
+{
+  "type": "function",
+  "name": "supplyOf",
+  "stateMutability": "view",
+  "inputs": [{ "name": "arg0", "type": "address" }],
+  "outputs": [
+    {
+      "name": "result",
+      "type": "tuple",
+      "components": [{ "name": "supply", "type": "uint256" }]
+    }
+  ]
+}
+```
+
+The type of that ABI is literal, so viem infers `args` and the result without codegen.
+
+```ts
+import { result } from './client';
+
+const supply: bigint = result.supply;
+```
+
+The ABI also lists the script's errors, which is how viem names a revert: see
+[Errors & debugging](/guides/errors-and-debugging/).
+
+## Next steps
+
+- [Why trust the bytecode?](/concepts/trust-and-testing/)
+- [The compiled artifact](/reference/artifact/)
+- [`disassemble`](/reference/artifact/disassemble/)
+- [Testing scripts](/guides/testing-scripts/)

@@ -1,0 +1,190 @@
+---
+title: s.forEach
+description: Runs a body once per element of an array value. The body gets the element, its index and a loop control.
+---
+
+Runs a body once per element of an array value. The body gets the element, its index and a
+loop control.
+
+## Usage
+
+```ts {5-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(xs, (x) => {
+    total.set(total.get().add(x)); // x: Expr<'uint256'>
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+### An array of structs
+
+Each element is a [`Tuple`](/reference/builder/tuple/#tuple) handle: read a field with `.get()`.
+
+```ts {10-18}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Query = t.struct({ token: t.address, owner: t.address });
+
+const balances = evscript(
+  { name: 'balances', args: [t.array(Query)] },
+  (s, queries) => {
+    const out = s.newArray(t.uint256, queries.length());
+    s.forEach(queries, (query, i) => {
+      const balance = s.read({
+        address: query.token.get(),
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [query.owner.get()],
+      });
+      out.set(i, balance);
+    });
+    return s.return({ balances: out });
+  },
+);
+```
+
+### A nested array
+
+Each element of a `uint256[][]` is itself an array value, so you can iterate it again.
+
+```ts {7-11}
+import { evscript, t } from '@maxencerb/evs';
+
+const total = evscript(
+  { name: 'total', args: [t.array(t.array(t.uint256))] },
+  (s, rows) => {
+    const sum = s.let(t.uint256, 0n);
+    s.forEach(rows, (row) => {
+      s.forEach(row, (x) => {
+        sum.set(sum.get().add(x)); // row: Expr<'uint256[]'>, x: Expr<'uint256'>
+      });
+    });
+    return s.return({ total: sum.get() });
+  },
+);
+```
+
+### A mutable array
+
+A [`MutArray`](/reference/builder/new-array/#mutarray) is not an array value. Iterate its
+`.expr()`.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const sumOfSquares = evscript({ name: 'sumOfSquares', args: [t.uint256] }, (s, n) => {
+  const squares = s.newArray(t.uint256, n);
+  s.for({ from: 0n, until: n }, (i) => squares.set(i, i.mul(i)));
+  const total = s.let(t.uint256, 0n);
+  s.forEach(squares.expr(), (x) => total.set(total.get().add(x)));
+  return s.return({ total: total.get() });
+});
+```
+
+### Stopping early
+
+The body's third argument is a [`LoopCtl`](/reference/builder/while/#loopctl).
+
+```ts {8-14}
+import { evscript, t } from '@maxencerb/evs';
+
+const indexOf = evscript(
+  { name: 'indexOf', args: [t.array(t.address), t.address] },
+  (s, list, target) => {
+    const found = s.let(t.bool, false);
+    const index = s.let(t.uint256, 0n);
+    s.forEach(list, (item, i, loop) => {
+      s.if(item.eq(target), () => {
+        found.set(true);
+        index.set(i);
+        loop.break();
+      });
+    });
+    return s.return({ found: found.get(), index: index.get() });
+  },
+);
+```
+
+## Returns
+
+`void`
+
+Carry results out of the body through a cell or a `MutArray` declared before the loop.
+
+## Parameters
+
+### array
+
+- **Type:** `Expr` of an array type
+
+The array to iterate, dynamic (`T[]`) or fixed-size (`T[N]`): a script argument, a call result,
+an [`s.lit`](/reference/builder/lit/) array, a struct field.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48';
+const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2';
+
+const isListed = evscript({ name: 'isListed', args: [t.address] }, (s, token) => {
+  const listed = s.let(t.bool, false);
+  s.forEach(s.lit(t.array(t.address), [USDC, WETH]), (entry) => {
+    s.if(entry.eq(token), () => listed.set(true));
+  });
+  return s.return({ listed: listed.get() });
+});
+```
+
+### body
+
+- **Type:** `(elem, i: Expr<'uint256'>, loop: LoopCtl) => void`
+
+Records one iteration. `i` is the index and `loop` is the
+[`LoopCtl`](/reference/builder/while/#loopctl) of this loop. The type of `elem` follows the
+array:
+
+| Array | `elem` |
+| --- | --- |
+| `uint256[]`, `address[]`, `string[]` | `Expr` of the element type |
+| `uint256[][]` | `Expr<'uint256[]'>` |
+| array of structs (`tuple[]`) | `Tuple` handle with named fields |
+| `tuple[][]` | `Expr` of the inner `tuple[]` row |
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+
+const weighted = evscript({ name: 'weighted', args: [t.array(t.uint256)] }, (s, xs) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(xs, (x, i) => total.set(total.get().add(x.mul(i))));
+  return s.return({ total: total.get() });
+});
+```
+
+## Behavior
+
+- **Length read once.** The length of the array is taken before the loop.
+- **Checked read.** `elem` is the same bounds-checked read as
+  [`array.at(i)`](/reference/expr/bytes-and-arrays/#at).
+- **Live elements.** Each element is read when its iteration runs, so it reflects a
+  `MutArray.set` made earlier in the loop.
+- **Recorded once.** The callback is called one time while building. The recorded body repeats
+  at run time.
+- **Continue moves on.** `loop.continue()` goes to the next element.
+- **Scoped values.** Nothing created in the body, `elem` and `i` included, can be used after
+  the loop.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `array` is not an `Expr` of an array type, for example a JavaScript array |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `array` is a bare `MutArray`: pass `arr.expr()` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `body` is not a function |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the body is used after the loop |

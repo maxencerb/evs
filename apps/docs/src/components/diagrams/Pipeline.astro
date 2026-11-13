@@ -1,0 +1,244 @@
+---
+// How it works: callback → IR → bytecode → eth_call → typed result. Five stages in a row (a
+// column below 620px), each with a sample of what it holds; the highlight walks the stages and a
+// packet crosses each arrow. Loop: 10s, 2s per stage.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="Pipeline">
+  <div class="evs-pl">
+    <div class="evs-pl-stage evs-pl-s1">
+      <span class="evs-dg-node">callback</span>
+      <span class="evs-dg-note evs-pl-sample">s.read(…)</span>
+    </div>
+    <div class="evs-pl-link evs-pl-l1">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-pl-verb">record</span>
+    </div>
+    <div class="evs-pl-stage evs-pl-s2">
+      <span class="evs-dg-node">IR</span>
+      <span class="evs-dg-note evs-pl-sample">{"{ k: 'call', … }"}</span>
+    </div>
+    <div class="evs-pl-link evs-pl-l2">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-pl-verb">compile</span>
+    </div>
+    <div class="evs-pl-stage evs-pl-s3">
+      <span class="evs-dg-node">bytecode</span>
+      <span class="evs-dg-note evs-pl-sample">0x3661…</span>
+    </div>
+    <div class="evs-pl-link evs-pl-l3">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-pl-verb">execute</span>
+    </div>
+    <div class="evs-pl-stage evs-pl-s4">
+      <span class="evs-dg-node">eth_call</span>
+      <span class="evs-dg-note evs-pl-sample">node</span>
+    </div>
+    <div class="evs-pl-link evs-pl-l4">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-pl-verb">decode</span>
+    </div>
+    <div class="evs-pl-stage evs-pl-s5">
+      <span class="evs-dg-node">typed result</span>
+      <span class="evs-dg-note evs-pl-sample">{'{ supply: bigint }'}</span>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  /* Column layout (narrow): node on the left, its sample beside it, arrows pointing down. */
+  .evs-pl {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .evs-pl-stage {
+    display: grid;
+    grid-template-columns: 112px minmax(0, 1fr);
+    align-items: center;
+    column-gap: 12px;
+  }
+
+  .evs-pl-sample,
+  .evs-pl-verb {
+    white-space: nowrap;
+  }
+
+  .evs-pl-link {
+    position: relative;
+    display: flex;
+    align-items: center;
+    column-gap: 12px;
+    height: 26px;
+    padding-left: 55px;
+  }
+
+  .evs-pl-link .evs-dg-wire {
+    flex: 0 0 auto;
+    width: 1px;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .evs-pl-link .evs-dg-wire::after {
+    top: auto;
+    right: auto;
+    bottom: 1px;
+    left: 50%;
+    transform: translateX(-50%) rotate(135deg);
+  }
+
+  /* Row layout: samples hang under their node, verbs sit on the arrows. */
+  @container evs-dg (min-width: 620px) {
+    .evs-pl {
+      flex-direction: row;
+      align-items: flex-start;
+      padding: 12px 0 23px;
+    }
+
+    .evs-pl-stage {
+      position: relative;
+      display: block;
+    }
+
+    .evs-pl-s2 .evs-dg-node {
+      min-width: 52px;
+    }
+
+    .evs-pl-sample {
+      position: absolute;
+      top: 100%;
+      left: 50%;
+      margin-top: 8px;
+      transform: translateX(-50%);
+    }
+
+    .evs-pl-s5 .evs-pl-sample {
+      right: 0;
+      left: auto;
+      transform: none;
+    }
+
+    .evs-pl-link {
+      flex: 1 1 0;
+      min-width: 48px;
+      height: 28px;
+      padding-left: 0;
+    }
+
+    .evs-pl-link .evs-dg-wire {
+      flex: 1 1 0;
+      width: auto;
+      height: 1px;
+    }
+
+    .evs-pl-link .evs-dg-wire::after {
+      top: 50%;
+      right: 1px;
+      bottom: auto;
+      left: auto;
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    .evs-pl-verb {
+      position: absolute;
+      bottom: calc(50% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-pl-stage .evs-dg-node::after {
+      animation: evs-pipeline-stage 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-pl-link .evs-dg-run {
+      animation: evs-pipeline-run-y 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    @container evs-dg (min-width: 620px) {
+      .evs-diagram[data-anim] .evs-pl-link .evs-dg-run {
+        animation-name: evs-pipeline-run-x;
+      }
+    }
+
+    /* Each stage and the arrow that leaves it run 2s after the previous ones. */
+    .evs-pl-s2,
+    .evs-pl-l2 {
+      --evs-dg-delay: 2s;
+    }
+
+    .evs-pl-s3,
+    .evs-pl-l3 {
+      --evs-dg-delay: 4s;
+    }
+
+    .evs-pl-s4,
+    .evs-pl-l4 {
+      --evs-dg-delay: 6s;
+    }
+
+    .evs-pl-s5 {
+      --evs-dg-delay: 8s;
+    }
+  }
+
+  /* One stage's share of the loop: lit for 1.4s, then its packet leaves for the next stage. */
+  @keyframes evs-pipeline-stage {
+    0% {
+      opacity: 0;
+    }
+    3%,
+    14% {
+      opacity: 1;
+    }
+    18%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-pipeline-run-x {
+    0%,
+    12% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    13.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    20% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    21.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes evs-pipeline-run-y {
+    0%,
+    12% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    13.5% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    20% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    21.5%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+</style>

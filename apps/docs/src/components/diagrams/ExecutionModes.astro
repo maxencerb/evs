@@ -1,0 +1,281 @@
+---
+// Executing scripts: who calls the script and where its code lives, in each mode. Two panels
+// (side by side from 600px, stacked below), played one after the other. Deployless: the code
+// travels in the call, the wrapper creates the script (it appears) and calls it. stateOverride:
+// the code is placed at the address first, then the call arrives from your account. The script
+// is an empty dashed slot until its code exists. Loop: 12s, 5.6s per panel.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="ExecutionModes">
+  <div class="evs-em">
+    <div class="evs-em-panel evs-em-dl">
+      <div class="evs-em-head">
+        <span class="evs-dg-title">deployless</span>
+        <span class="evs-dg-note">(default)</span>
+      </div>
+      <div class="evs-em-flow">
+        <div class="evs-em-cell">
+          <span class="evs-dg-node evs-em-client">client</span>
+          <span class="evs-dg-wire is-down evs-em-w1"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-em-text">
+          <span class="evs-dg-note">sends the code inside the call</span>
+        </div>
+        <div class="evs-em-cell">
+          <span class="evs-dg-node evs-em-caller">wrapper</span>
+          <span class="evs-dg-wire is-down evs-em-w2"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-em-text">
+          <span>msg.sender</span>
+          <span class="evs-dg-note">creates the script, calls it</span>
+        </div>
+        <div class="evs-em-cell">
+          <span class="evs-dg-slot"><span class="evs-dg-node evs-em-script">script</span></span>
+        </div>
+        <div class="evs-em-text">
+          <span>address(this)</span>
+          <span class="evs-dg-note">counterfactual, not controllable</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evs-em-panel evs-em-so">
+      <div class="evs-em-head">
+        <span class="evs-dg-title">stateOverride</span>
+      </div>
+      <div class="evs-em-flow">
+        <div class="evs-em-cell">
+          <span class="evs-dg-node evs-em-client">client</span>
+          <span class="evs-dg-wire is-down evs-em-w1"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-em-text">
+          <span class="evs-dg-note">places the code at an address for the duration of the call</span>
+        </div>
+        <div class="evs-em-cell">
+          <span class="evs-dg-node evs-em-caller">account</span>
+          <span class="evs-dg-wire is-down evs-em-w2"><i class="evs-dg-run"></i></span>
+        </div>
+        <div class="evs-em-text">
+          <span>msg.sender</span>
+          <span class="evs-dg-note">the account you pass</span>
+        </div>
+        <div class="evs-em-cell">
+          <span class="evs-dg-slot"><span class="evs-dg-node evs-em-script">script</span></span>
+        </div>
+        <div class="evs-em-text">
+          <span>address(this)</span>
+          <span class="evs-dg-note">default address, or yours</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-em {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 24px 48px;
+  }
+
+  @container evs-dg (min-width: 600px) {
+    .evs-em {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+  }
+
+  .evs-em-head {
+    display: flex;
+    align-items: baseline;
+    column-gap: 8px;
+    margin-bottom: 10px;
+  }
+
+  /* Left: client, caller, script, top to bottom. Right: what the EVM calls each of them. */
+  .evs-em-flow {
+    display: grid;
+    grid-template-columns: 72px minmax(0, 1fr);
+    column-gap: 12px;
+  }
+
+  .evs-em-cell {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .evs-em-cell .evs-dg-wire.is-down {
+    flex: 1 1 auto;
+    align-self: center;
+    height: auto;
+    min-height: 20px;
+  }
+
+  .evs-em-text {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    min-height: 28px;
+    padding-bottom: 6px;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-em-client::after {
+      animation: evs-executionmodes-client 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-em-w1 .evs-dg-run {
+      animation: evs-executionmodes-call 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-em-caller::after {
+      animation: evs-executionmodes-caller 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-em-w2 .evs-dg-run {
+      animation: evs-executionmodes-subcall 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-em-script::after {
+      animation: evs-executionmodes-run 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* The second panel plays after the first. */
+    .evs-em-so {
+      --evs-dg-delay: 5.6s;
+    }
+
+    .evs-diagram[data-anim] .evs-em-dl .evs-em-script {
+      animation: evs-executionmodes-created 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-em-so .evs-em-script {
+      animation: evs-executionmodes-placed 12s ease-in-out infinite both;
+    }
+  }
+
+  /* One panel's turn. The client sends the call, 0.4s to 1.6s. */
+  @keyframes evs-executionmodes-client {
+    0%,
+    2% {
+      opacity: 0;
+    }
+    4%,
+    13% {
+      opacity: 1;
+    }
+    15.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The call reaches the caller, 1.4s to 2.2s. */
+  @keyframes evs-executionmodes-call {
+    0%,
+    11% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    12% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    18% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    19%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* The caller is msg.sender, 2.2s to 4.3s. */
+  @keyframes evs-executionmodes-caller {
+    0%,
+    17% {
+      opacity: 0;
+    }
+    19%,
+    36% {
+      opacity: 1;
+    }
+    38.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* It calls the script, 3.7s to 4.3s. */
+  @keyframes evs-executionmodes-subcall {
+    0%,
+    29.5% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    30.5% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    36% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    37%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* The script runs, 4.3s to 5.2s. */
+  @keyframes evs-executionmodes-run {
+    0%,
+    35% {
+      opacity: 0;
+    }
+    37%,
+    43% {
+      opacity: 1;
+    }
+    45.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* Deployless: the wrapper creates the script once the call has reached it (2.6s), a second
+     before it calls it. */
+  @keyframes evs-executionmodes-created {
+    0%,
+    20.5% {
+      opacity: 0;
+    }
+    23%,
+    93% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* stateOverride: the code is at the address before the call leaves the client (6.1s). */
+  @keyframes evs-executionmodes-placed {
+    0%,
+    50% {
+      opacity: 0;
+    }
+    52.5%,
+    93% {
+      opacity: 1;
+    }
+    96%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>
