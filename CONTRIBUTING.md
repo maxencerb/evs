@@ -8,17 +8,20 @@ presentation page (npm, GitHub) and stays user-facing.
 
 ## Repository map
 
-| Path                                                                                  | What                                                                                                |
-| ------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------- |
-| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)             | the published library: builder, IR + interpreter, codegen, assembler, viem glue                     |
-| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts) | Foundry fixtures: mocks + the solc reference contracts for differential tests                       |
-| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                    | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) |
+| Path                                                                                              | What                                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)                         | the published library: builder, IR + interpreter, codegen, assembler, viem glue                                                                                                               |
+| [`packages/vite-plugin-evs`](https://github.com/maxencerb/evs/tree/main/packages/vite-plugin-evs) | the published Vite plugin: compiles `*.evs.ts` modules at build time (see [Vite plugin](#vite-plugin-packagesvite-plugin-evs))                                                                |
+| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts)             | Foundry fixtures: mocks + the solc reference contracts for differential tests                                                                                                                 |
+| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                                | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) and `vite-precompile`, a Vite app built through the plugin (`vp run build` in its folder) |
 
 ### Library sources (`packages/evs/src`)
 
 The pipeline order: `builder/` records the callback into the IR (`ir/`), `codegen/` lowers it to
 an assembly stream, `asm/` lays it out and verifies it, `compile.ts` ties them together and
-`viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
+`viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits).
+`precompiled.ts`, `hydrate.ts`, `explain.ts` and the `runtime.ts` entry are the part a client
+runs without the compiler (see [The runtime entry](#the-runtime-entry)). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
 the script artifact's ABI) are shared by every stage; `differential/` holds the
 interpreter-vs-bytecode test slices.
 
@@ -58,9 +61,9 @@ erasable syntax only, explicit `.ts` import specifiers).
 ```sh
 curl -fsSL https://vite.plus | bash   # once: the global `vp` CLI (provisions Node + pnpm)
 vp install                # workspaces + pinned catalogs (= pnpm install)
-vp run build              # build @maxencerb/evs (vp pack → dist/, see below)
-vp run test               # unit + type tests (vitest via vp test)
-vp run test:integration   # anvil integration tests (requires foundry)
+vp run build              # build @maxencerb/evs, then the Vite plugin (vp pack → dist/, see below)
+vp run test               # unit + type tests, and the plugin's tests (vitest via vp test)
+vp run test:integration   # anvil integration tests of the library and the plugin (requires foundry)
 vp check                  # format + lint + type-check (tsgolint) in one pass
 vp run check              # vp check + tsc/astro typecheck across workspaces (= CI)
 vp fmt                    # oxfmt (writes)
@@ -98,8 +101,8 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 
 ### Library build (`vp pack`)
 
-`packages/evs` builds with `vp pack` (tsdown, the `pack` block in its `vite.config.ts`): entry
-`src/index.ts`, unbundled ESM (one `dist/` module per reachable source file, `.js` / `.d.ts`
+`packages/evs` builds with `vp pack` (tsdown, the `pack` block in its `vite.config.ts`): entries
+`src/index.ts` and `src/runtime.ts` (the `.` and `./runtime` exports), unbundled ESM (one `dist/` module per reachable source file, `.js` / `.d.ts`
 names so `exports` / `main` / `types` are unchanged) and JS source maps. The maps embed the
 TypeScript sources (`sourcesContent`, pinned with `outputOptions.sourcemapExcludeSources: false`)
 so stack traces and debuggers resolve to the original code, which is why `src/` is **not**
@@ -119,6 +122,71 @@ re-export does not merge into the emitted declarations. The public surface — t
 `dist/index.d.ts` — is identical by name, kind and type. Consumers are checked by
 publint, attw, the docs snippet gate and the examples; the type tests
 (`*.test-d.ts`) run against `src/`.
+
+The Vite plugin builds the same way (`packages/vite-plugin-evs/vite.config.ts`, one entry).
+
+### The runtime entry
+
+`@maxencerb/evs/runtime` (`src/runtime.ts`) is what a client imports when its scripts were
+compiled at build time: `hydrate`, `isPrecompiledScript`, the error decoders and the deployless
+helpers. Rules that keep it small, each held by a test:
+
+- **Nothing it reaches may import the compiler.** `src/runtime-graph.test.ts` walks the source
+  import graph from `runtime.ts` and fails with the offending chain. The opcode table
+  (`asm/ops.ts`) is forbidden too: a frozen top-level table survives tree-shaking, which is why
+  the fork facts live in `asm/forks.ts`.
+- **The explain code loads on demand.** `hydrate.ts` reaches `explain.ts` through a dynamic
+  import, so a bundler gives it a chunk of its own, fetched on the first `explainRevert()` with
+  the script's debug data (`PrecompiledScriptDebug`: the IR and the emitted sites).
+- **The compiler has no dynamic import.** `compile.ts` imports `explain.ts` statically (the
+  artifact's `explainRevert` is synchronous) and builds its precompiled scripts with
+  `createPrecompiledScript` (`precompiled.ts`), never through `hydrate.ts`. A dynamic import of
+  a module that is also imported statically cannot split, and Rolldown warns about it
+  (`INEFFECTIVE_DYNAMIC_IMPORT`) in every app that bundles the compiler.
+- **Its export list is pinned** (`src/index.test.ts`): `hydrate` and `isPrecompiledScript` are
+  exported from the runtime entry only, so nobody loads the main entry to get them.
+
+The serialized form (`PrecompiledScriptData`) carries `version: 1`. Change that number, in
+`precompiled.ts`, whenever the data or the debug data changes shape: `hydrate` then rejects
+data written by another version with a message that says to regenerate it.
+
+### Vite plugin (`packages/vite-plugin-evs`)
+
+The plugin runs every `*.evs.ts` module in Node during the build (and in the dev server) and
+replaces it with the values it exports. One module per job:
+
+| Module                  | What                                                                                            |
+| ----------------------- | ----------------------------------------------------------------------------------------------- |
+| `index.ts`              | the plugin: hooks and the public option                                                         |
+| `build-time-module.ts`  | which files run at build time, and running one with Vite's `runnerImport`                       |
+| `precompiled-module.ts` | the replacement module: each export as code, and the error for an export that cannot be written |
+| `debug-module.ts`       | the virtual modules that hold each script's debug data                                          |
+| `compiler-check.ts`     | whether compiler code is in the client output, and the report                                   |
+| `evs-package.ts`        | where the installed `@maxencerb/evs` is, and what its runtime entry reaches                     |
+| `import-closure.ts`     | the import closure of a file on disk                                                            |
+
+What is worth knowing before changing it:
+
+- **The work happens in `transform`, not `load`.** In the dev server, Vite drops the watch
+  files a `load` hook registers on a module's first request, so edits to an imported file were
+  not picked up.
+- **The plugin does not know the precompiled format.** It calls `isPrecompiledScript`,
+  `JSON.stringify(script)` and `script.debug()`, and emits a call to `hydrate`. The format
+  belongs to the library alone.
+- **A build-time module sees only `root`, `mode` and `resolve.alias`.** `runnerImport` starts
+  from an empty config (which is what prevents the plugin from running inside itself); the app's
+  other plugins, `define` and `.env` files do not apply. Bare imports are loaded by Node.
+- **"Compiler code" is defined by the library's own files.** It is every module of the installed
+  `@maxencerb/evs` outside the import closure of its runtime entry, computed by reading the
+  package on disk (`import-closure.ts`), that has rendered code in an output chunk
+  (`chunk.modules[id].renderedLength > 0`). A module the bundler tree-shook away does not count,
+  so importing `decodeScriptError` from the main entry is not reported.
+- **One bundler log is dropped** (`onLog`): Rolldown's `INEFFECTIVE_DYNAMIC_IMPORT` about the
+  library's explain module, which appears when an app holds a precompiled script and the
+  compiler in the same chunk. The user cannot act on it, and the compiler report already says
+  what to do.
+- **The dev server only runs files it may serve.** A debug-module URL names a file; the plugin
+  runs it only when it is a `*.evs.*` file that `server.fs` allows.
 
 Releases: see [Releasing](#releasing) below.
 
@@ -527,7 +595,7 @@ Releases: see [Releasing](#releasing) below.
 
 ## Testing
 
-Three tiers, all run by CI (`ci.yml`):
+Three tiers for the library, two projects for the Vite plugin, all run by CI (`ci.yml`):
 
 - **unit** (`src/**/*.test.ts`, `test/harness/**/*.test.ts`) — in-process EVM harness
   (`@ethereumjs/evm`), including the anti-miscompilation core: the IR **interpreter vs the
@@ -553,6 +621,17 @@ Three tiers, all run by CI (`ci.yml`):
   mainnet-fork suite (`ANVIL_FORK_URL`, an empty value counts as unset and skips it) covers
   the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
 
+- **plugin** (`packages/vite-plugin-evs`: `src/**/*.test.ts`, `test/*.test.ts`) — drives Vite
+  programmatically on the fixtures in `test/fixtures/`, with the plugin taken from source: the
+  bundled bytecode is byte-identical to a direct compile, no compiler module has rendered code,
+  the debug data and the explain code sit in on-demand chunks, the entry stays under a size
+  budget, every export error and module error has its message, the compiler report in each
+  variant, the dev server (precompiled module, recompile on edit, the debug module on a cold
+  cache), and `examples/vite-precompile` builds clean.
+- **plugin-integration** (`packages/vite-plugin-evs/test/integration`) — builds a fixture,
+  imports the built output and runs its scripts against anvil (prool) in both execution modes,
+  including `explainRevert` on a real revert, which loads the on-demand chunks.
+
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need
 vitest); test files import from `vite-plus/test`. The integration project's global setup
 (`test/global-setup.ts`) keeps a prool `Pool` of anvils keyed on `VITEST_POOL_ID` behind a small
@@ -567,17 +646,18 @@ unretried `eth_sendRawTransaction` (`connect ECONNRESET`).
 Versioning is driven by [changesets](https://github.com/changesets/changesets); publishing by
 `release.yml` with npm **OIDC trusted publishing** (no token anywhere).
 
-1. A PR that changes the library in a user-visible way adds a changeset (`vp run changeset`).
+1. A PR that changes the library or the Vite plugin in a user-visible way adds a changeset
+   (`vp run changeset`), naming each package it changes.
 2. On merge to `main`, `release.yml` opens / refreshes the **"chore(release): version packages"**
-   PR: bumps `packages/evs/package.json` and writes the changelog (`CHANGELOG.md` is excluded
+   PR: bumps the `package.json` of each changed package and writes its changelog (`CHANGELOG.md` is excluded
    from the formatter, since changesets writes it in its own style). No lockfile resync: pnpm
    links workspace packages without recording their version.
 3. Merging that PR publishes: full gate (+ publint / attw) → `changeset publish`, which
    (changesets CLI 3) detects pnpm and runs
    `pnpm publish --access public --tag <tag> --no-git-checks` for each package whose version is
-   not on npm yet (`prepublishOnly` rebuilds `dist/`), then creates the `@maxencerb/evs@X.Y.Z`
-   tag and reports it through `CHANGESETS_OUTPUT`; the action pushes the tag and creates the
-   GitHub release. The committed version is always the last released one. The tarball is
+   not on npm yet (`prepublishOnly` rebuilds `dist/`), then creates one `<name>@X.Y.Z` tag per
+   published package and reports them through `CHANGESETS_OUTPUT`; the action pushes the tags and
+   creates the GitHub releases. The committed version is always the last released one. The tarball is
    `dist/` + CHANGELOG + README + LICENSE + package.json only (see
    [Library build](#library-build-vp-pack): sources live inside the `.js.map` files), and its
    package.json carries no `scripts`, `devDependencies` or `//` comment fields: the
@@ -597,10 +677,20 @@ provenance pnpm cannot attach is only a warning, so check the npm page after a r
 post-publish attestation check: registry metadata lags the publish and the check failed a good
 release.
 
+Two packages are published: `@maxencerb/evs` and `@maxencerb/vite-plugin-evs`. The plugin
+declares the library as a peer with `workspace:^`, which pnpm rewrites to `^X.Y.Z` (the
+library's version at that moment) in the published manifest. Changesets follows that range: a
+minor of the library, which leaves a `^0.x` range, gives the plugin a patch release of its own
+in the same "Version Packages" PR, so the pair is always published together. Do not replace
+`workspace:^` with a hand-written range: changesets then rewrites the range on every library
+release without releasing the plugin.
+
 Prereleases: `vp exec changeset pre enter beta` / `pre exit` (pre-mode releases publish under
-the pre tag). One-time setup already done: the npm trusted publisher is bound to workflow file
-`release.yml` (do not rename it), and "Allow GitHub Actions to create and approve pull
-requests" is enabled in the repo settings.
+the pre tag). One-time setup, per published package: the npm trusted publisher is bound to
+workflow file `release.yml` (do not rename it). npm only lets you configure a trusted publisher
+on a package that exists, so a new package needs one manual first publish (from its folder,
+after `vp run build`: `pnpm publish --access public`) before the workflow can publish it. Also
+done once: "Allow GitHub Actions to create and approve pull requests" in the repo settings.
 
 ## Docs site
 
