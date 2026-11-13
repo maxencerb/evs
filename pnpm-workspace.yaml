@@ -10,6 +10,7 @@ catalog:
   '@types/node': ^24.19.0
   typescript: ^6.0.3
   viem: 2.57.1
+  vite: npm:@voidzero-dev/vite-plus-core@1.0.0
   vite-plus: 1.0.0
 
 catalogs:

@@ -1,18 +1,26 @@
 import { defineConfig } from 'vite-plus';
 
 import evsConfig from './packages/evs/vite.config.ts';
+import pluginConfig from './packages/vite-plugin-evs/vite.config.ts';
 
 // Shared toolchain config for the whole workspace (Vite+): formatter, linter, and the test
-// projects. Per-package Vite/Vitest config stays next to the package; the library's test
-// projects (packages/evs/vite.config.ts, the single source of truth) are
-// re-rooted here so `vp test --project unit|types|integration` works from the repo root —
-// vitest does not flatten nested `projects` out of a referenced package config.
-const evsProjects = (evsConfig.test?.projects ?? []).map((project) => {
-  if (typeof project === 'string' || typeof project === 'function' || project instanceof Promise) {
-    throw new TypeError('packages/evs/vite.config.ts projects must be inline config objects');
-  }
-  return Object.assign({}, project, { root: './packages/evs' });
-});
+// projects. Per-package Vite/Vitest config stays next to the package; the test projects of the
+// library and of the Vite plugin (their own vite.config.ts, the single source of truth) are
+// re-rooted here so `vp test --project unit|types|integration|plugin|plugin-integration` works
+// from the repo root — vitest does not flatten nested `projects` out of a referenced package
+// config.
+function projectsOf(config: typeof evsConfig, root: string) {
+  return (config.test?.projects ?? []).map((project) => {
+    if (
+      typeof project === 'string' ||
+      typeof project === 'function' ||
+      project instanceof Promise
+    ) {
+      throw new TypeError(`${root}/vite.config.ts projects must be inline config objects`);
+    }
+    return Object.assign({}, project, { root });
+  });
+}
 
 const generatedAndVendored = [
   '**/dist/**',
@@ -107,6 +115,15 @@ export default defineConfig({
         },
       },
       {
+        // A published Vite plugin imports its peer by its real name, and so does the example
+        // app a user copies: `vite-plus` is this repository's toolchain, not something a user
+        // of the plugin has installed.
+        files: ['packages/vite-plugin-evs/src/**', 'examples/vite-precompile/**'],
+        rules: {
+          'vite-plus/prefer-vite-plus-imports': 'off',
+        },
+      },
+      {
         files: ['examples/**'],
         rules: {
           'no-console': 'off',
@@ -129,7 +146,10 @@ export default defineConfig({
     jsPlugins: [{ name: 'vite-plus', specifier: 'vite-plus/oxlint-plugin' }],
   },
   test: {
-    projects: evsProjects,
+    projects: [
+      ...projectsOf(evsConfig, './packages/evs'),
+      ...projectsOf(pluginConfig, './packages/vite-plugin-evs'),
+    ],
     // Vitest 5 matches coverage globs against paths relative to the project root
     // (packages/evs); the old repo-relative `packages/evs/src/**` matched nothing there.
     // Same file set as under Vitest 4 (plus the src/index.ts barrel).

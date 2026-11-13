@@ -3,10 +3,10 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vp run @maxencerb/evs#build",
+    "build": "vp run @maxencerb/evs#build && vp run @maxencerb/vite-plugin-evs#build",
     "typecheck": "vp run --filter '@maxencerb/*' typecheck",
-    "test": "vp test run --project unit --project types",
-    "test:integration": "vp test run --project integration",
+    "test": "vp test run --project unit --project types --project plugin",
+    "test:integration": "vp test run --project integration --project plugin-integration",
     "test:all": "vp test run",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix --fix-suggestions",

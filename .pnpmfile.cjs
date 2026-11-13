@@ -3,7 +3,7 @@
 // (a stale checksum fails `--frozen-lockfile` in CI and on the docs build).
 'use strict';
 
-const PUBLISHED = '@maxencerb/evs';
+const PUBLISHED = new Set(['@maxencerb/evs', '@maxencerb/vite-plugin-evs']);
 
 module.exports = {
   hooks: {
@@ -14,7 +14,7 @@ module.exports = {
     // nothing to a consumer (npm never installs a dependency's devDependencies), so the published
     // manifest leaves them out.
     beforePacking(manifest) {
-      if (manifest.name !== PUBLISHED) return manifest;
+      if (!PUBLISHED.has(manifest.name)) return manifest;
       const packed = { ...manifest };
       delete packed.scripts;
       delete packed.devDependencies;
