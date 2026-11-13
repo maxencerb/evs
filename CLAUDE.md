@@ -87,7 +87,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `description` (quote it when it contains `: `). The theme is `src/styles/tokens.css` +
   `theme.css` over the Starlight overrides in `src/components/`; `src/components/diagrams/`
   holds the animated concept diagrams. Every page is also served as Markdown at `<path>.md`
-  (`src/pages/[...slug].md.ts`) and indexed in `/llms.txt` (`llms-index.mjs`).
+  (`src/pages/[...slug].md.ts`); `/llms.txt`, `/llms-full.txt` and `/llms-small.txt` are
+  assembled from the same Markdown (`src/lib/llms.ts`). The docs build prints no warning: keep
+  it that way.
   Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).
 - `.github/assets/` — repository artwork (`evs-banner.svg`, the animated README banner; the
   docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).

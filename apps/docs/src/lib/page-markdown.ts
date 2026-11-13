@@ -14,7 +14,7 @@ export function markdownPath(entryId: string): string {
   return `/${entryId === '' ? 'index' : entryId}.md`;
 }
 
-/** Whether an entry has a Markdown rendition (Starlight's built-in 404 page does not). */
+/** Whether an entry has a Markdown rendition (the 404 page does not). */
 export function hasMarkdown(entryId: string): boolean {
   return entryId !== '404' && !entryId.endsWith('/404');
 }
@@ -390,10 +390,15 @@ export function pageToMarkdown(page: PageSource, site: string): string {
   const body = mdxToMarkdown(page.body ?? '', site);
   const parts = [`# ${page.title}`];
 
-  // Most pages open with the first sentence of their description; it is not repeated then.
-  const firstParagraph = squash(body.split(/\n\s*\n/, 1)[0] ?? '');
+  // Most pages open with the first sentence of their description, give or take code spans and
+  // links, which a description cannot hold; it is not repeated then.
+  const plain = (text: string) =>
+    squash(text)
+      .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+      .replace(/[`*_]/g, '');
+  const firstParagraph = plain(body.split(/\n\s*\n/, 1)[0] ?? '');
   const description = squash(page.description ?? '');
-  const opening = description.split(/(?<=\.)\s/, 1)[0] ?? description;
+  const opening = plain(description.split(/(?<=\.)\s/, 1)[0] ?? description);
   if (description !== '' && !firstParagraph.startsWith(opening)) parts.push(description);
 
   if (page.hero?.tagline) parts.push(squash(stripHtml(page.hero.tagline)));

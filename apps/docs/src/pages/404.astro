@@ -1,0 +1,25 @@
+---
+// The 404 page. Starlight's built-in one is disabled (`disable404Route`): it looks up a `404`
+// entry in the docs collection and warns on every build when there is none, and a `404.md`
+// entry would clash with its own `/404` route.
+import StarlightPage from '@astrojs/starlight/components/StarlightPage.astro';
+---
+
+<StarlightPage
+  frontmatter={{
+    title: 'Page not found',
+    description: 'This page does not exist, or it moved.',
+    template: 'splash',
+    editUrl: false,
+    pagefind: false,
+    hero: {
+      title: '404',
+      tagline:
+        'This page does not exist, or it moved when the reference was split into one page per function.',
+      actions: [
+        { text: 'Quick start', link: '/getting-started/quick-start/', icon: 'right-arrow' },
+        { text: 'Browse the reference', link: '/reference/builder/', variant: 'minimal' },
+      ],
+    },
+  }}
+/>

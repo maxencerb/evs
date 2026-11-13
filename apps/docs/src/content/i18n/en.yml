@@ -1,0 +1,3 @@
+# Overrides of Starlight's interface strings: none so far. The file exists so that the `i18n`
+# collection has an entry; Astro reports an empty collection as a warning on every build.
+{}

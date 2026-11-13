@@ -29,7 +29,7 @@
 import { LinkButton } from '@astrojs/starlight/components';
 
 const { data, id } = Astro.locals.starlightRoute.entry;
-// Starlight's built-in 404 page also renders through this component (it has a hero); the
+// The 404 page (src/pages/404.astro) also renders through this component (it has a hero); the
 // install line and the facts strip are for the landing page only.
 const isLanding = id !== '404';
 const { title = data.title, tagline, actions = [] } = data.hero || {};

@@ -3,9 +3,7 @@ import starlight from '@astrojs/starlight';
 import { pluginCollapsibleSections } from '@expressive-code/plugin-collapsible-sections';
 import { defineConfig } from 'astro/config';
 import starlightLinksValidator from 'starlight-links-validator';
-import starlightLlmsTxt from 'starlight-llms-txt';
 
-import { llmsPageIndex } from './llms-index.mjs';
 import { redirects, sidebar } from './sidebar.mjs';
 
 // https://astro.build/config
@@ -13,12 +11,29 @@ export default defineConfig({
   site: 'https://evs.maxencerb.com',
   // Legacy URLs (moved pages, the removed playground): see sidebar.mjs.
   redirects,
+  vite: {
+    build: {
+      rollupOptions: {
+        // Astro tags every content module with a "use astro:head-inject" directive that it
+        // reads itself. Rolldown then warns, once per page, that a bundle may not preserve a
+        // module-level directive: dozens of identical notices that bury any real warning.
+        onwarn(warning, defaultHandler) {
+          const expected =
+            warning.code === 'MODULE_LEVEL_DIRECTIVE' &&
+            warning.message.includes('astro:head-inject');
+          if (!expected) defaultHandler(warning);
+        },
+      },
+    },
+  },
   integrations: [
     starlight({
       title: 'evs',
       description:
         'Typed EVM read scripts in plain TypeScript. Batch dozens of dependent on-chain reads into a single eth_call, with full viem inference and no deployed contracts.',
       favicon: '/favicon.svg',
+      // The 404 page is src/pages/404.astro.
+      disable404Route: true,
       social: [
         { icon: 'github', label: 'GitHub', href: 'https://github.com/maxencerb/evs' },
         { icon: 'npm', label: 'npm', href: 'https://www.npmjs.com/package/@maxencerb/evs' },
@@ -128,28 +143,7 @@ export default defineConfig({
           },
         },
       },
-      plugins: [
-        // /llms.txt (an index of every page's Markdown URL), /llms-full.txt and /llms-small.txt
-        // for LLM ingestion; code fences are kept intact.
-        starlightLlmsTxt({
-          projectName: 'evs',
-          description:
-            'Typed EVM read scripts in plain TypeScript: a callback-builder compiled to EVM bytecode that batches dozens of dependent on-chain reads into a single deployless eth_call, with full viem type inference and no deployed contracts.',
-          details: [
-            'evs (`@maxencerb/evs`) lets you write read-only EVM scripts in TypeScript, compile them to runtime bytecode, and execute them with viem in one eth_call, including reads whose targets depend on earlier reads, which a multicall cannot batch.',
-            'Every documentation page is also served as plain Markdown: append `.md` to its path without the trailing slash (`/reference/builder/read/` is `/reference/builder/read.md`; the landing page is `/index.md`). The pages are listed below.',
-            llmsPageIndex(),
-          ].join('\n\n'),
-          optionalLinks: [
-            { label: 'GitHub repository', url: 'https://github.com/maxencerb/evs' },
-            { label: 'npm package', url: 'https://www.npmjs.com/package/@maxencerb/evs' },
-          ],
-          // Diagram stages are animated, aria-hidden illustrations; the figcaption next to each
-          // carries the same statement as text.
-          customSelectors: { all: ['.evs-diagram__stage'] },
-        }),
-        starlightLinksValidator(),
-      ],
+      plugins: [starlightLinksValidator()],
       sidebar,
     }),
   ],

@@ -635,16 +635,17 @@ The site follows the shape of viem.sh: narrative groups first, then a reference 
 per function**. Paragraphs are one or two sentences, every statement has an example, and tables
 carry the enumerations (types, codes, modes).
 
-| Path (under `apps/docs`)    | What                                                                                                |
-| --------------------------- | --------------------------------------------------------------------------------------------------- |
-| `sidebar.mjs`               | the sidebar tree and the redirects of moved pages: a new page must be added here                    |
-| `llms-index.mjs`            | builds the page index of `/llms.txt` from the sidebar and each page's frontmatter                   |
-| `src/content/docs/**`       | the pages: `getting-started/`, `guides/`, `examples/`, `concepts/`, `reference/`                    |
-| `src/styles/tokens.css`     | design tokens (`--evs-*`), dark by default, light under `data-theme="light"`                        |
-| `src/styles/theme.css`      | maps the tokens onto Starlight's `--sl-*` variables and restyles its chrome                         |
-| `src/components/*.astro`    | Starlight overrides (header, sidebar, page title, right column, hero), listed in `astro.config.mjs` |
-| `src/components/diagrams/`  | the animated concept diagrams; `captions.ts` holds the sentence each one shows as its caption       |
-| `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)         |
+| Path (under `apps/docs`)    | What                                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `sidebar.mjs`               | the sidebar tree and the redirects of moved pages: a new page must be added here                      |
+| `src/content/docs/**`       | the pages: `getting-started/`, `guides/`, `examples/`, `concepts/`, `reference/`                      |
+| `src/styles/tokens.css`     | design tokens (`--evs-*`), dark by default, light under `data-theme="light"`                          |
+| `src/styles/theme.css`      | maps the tokens onto Starlight's `--sl-*` variables and restyles its chrome                           |
+| `src/components/*.astro`    | Starlight overrides (header, sidebar, page title, right column, hero), listed in `astro.config.mjs`   |
+| `src/components/diagrams/`  | the animated concept diagrams; `captions.ts` holds the sentence each one shows as its caption         |
+| `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)           |
+| `src/pages/llms*.txt.ts`    | `/llms.txt`, `/llms-full.txt` and `/llms-small.txt`, assembled from that Markdown (`src/lib/llms.ts`) |
+| `src/pages/404.astro`       | the 404 page (Starlight's built-in one is disabled)                                                   |
 
 Page shapes:
 
@@ -676,8 +677,15 @@ it contains `: `, which is otherwise invalid YAML and stops the build at content
 
 A diagram's animated stage is `aria-hidden` and is stripped from the Markdown outputs, so its
 caption has to state the mechanism on its own. The site exposes four machine-readable outputs:
-`/llms.txt` (description plus the page index), `/llms-full.txt`, `/llms-small.txt`, and one
-`.md` file per page, which the "Copy page" button also uses.
+one `.md` file per page (which the "Copy page" button also uses), `/llms.txt` (a description
+plus a link to every page's `.md`), `/llms-full.txt` (every page) and `/llms-small.txt`
+(everything but the per-function reference). All four come from the raw MDX, not from the
+rendered HTML: rendering every page a second and third time for the two big files used to take
+a third of the site build.
+
+The build should print no warning. `astro.config.mjs` filters one that rolldown would repeat
+for every page (Astro's own `use astro:head-inject` directive), and the `i18n` collection has an
+empty `src/content/i18n/en.yml` because Astro warns about an empty collection.
 
 Deployment deliberately stays on **wrangler**, not Cloudflare's `cf` CLI (evaluated with
 `cf@1.0.0-beta.6` on 2026-09-30; wrangler stays supported for 18 months after the `cf` beta

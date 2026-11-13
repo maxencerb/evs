@@ -15,8 +15,7 @@
     "@expressive-code/plugin-collapsible-sections": "catalog:docs",
     "@fontsource-variable/geist": "catalog:docs",
     "astro": "catalog:docs",
-    "starlight-links-validator": "catalog:docs",
-    "starlight-llms-txt": "catalog:docs"
+    "starlight-links-validator": "catalog:docs"
   },
   "devDependencies": {
     "@astrojs/check": "catalog:docs",
