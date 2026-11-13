@@ -1,0 +1,75 @@
+---
+title: toJSON
+description: Returns the plain data of a precompiled script, the data hydrate takes. JSON.stringify calls it for you.
+---
+
+Returns the plain data of a precompiled script: what
+[`hydrate`](/reference/precompiled/hydrate/) takes. `JSON.stringify` calls it for you.
+
+## Usage
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+const data = precompiled.toJSON();
+
+data.version; // 1
+data.evmVersion; // 'cancun'
+data.runtimeBytecode; // '0x3661000657…', 138 bytes
+data.abi === precompiled.abi; // true
+```
+
+### Writing it to a file
+
+A build step writes the data as a `.ts` module that ends with `as const`, so the client keeps
+the literal types of the ABI.
+
+```ts nocheck title="build.ts" {10,12}
+import { writeFileSync } from 'node:fs';
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+)
+  .compile()
+  .toPrecompiled();
+
+const data = JSON.stringify(double, null, 2); // calls double.toJSON()
+
+writeFileSync('double.gen.ts', `export const data = ${data} as const;\n`);
+```
+
+[`hydrate`](/reference/precompiled/hydrate/#usage) shows the generated file and the client that
+reads it.
+
+## Returns
+
+`PrecompiledScriptData`
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `version` | `1` | The format version. |
+| `abi` | `ScriptAbi` | The script's ABI, the same array as `precompiled.abi`. |
+| `runtimeBytecode` | `Hex` | The code that runs. |
+| `evmVersion` | `'paris' \| 'shanghai' \| 'cancun'` | The EVM target it was compiled for. |
+
+## Parameters
+
+None.
+
+## Behavior
+
+- **Four fields.** `initBytecode` is left out: `hydrate` rebuilds it, so the file holds the
+  code once.
+- **No debug data.** What `explainRevert` reads is separate: see
+  [`debug`](/reference/precompiled/debug/).
+- **Round trip.** `hydrate(precompiled.toJSON())` gives a script with the same `toViem()`
+  results.
+- **Frozen.** The data cannot be modified, and every call returns the same object.
+- **`version` stays a literal.** A file that widens it to `number`, such as a `.json` import,
+  no longer fits the type `hydrate` takes.

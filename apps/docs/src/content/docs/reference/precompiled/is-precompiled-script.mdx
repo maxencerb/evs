@@ -1,0 +1,77 @@
+---
+title: isPrecompiledScript
+description: Tells whether a value is a precompiled script, as returned by toPrecompiled or hydrate.
+---
+
+Tells whether a value is a [precompiled script](/reference/precompiled/), as returned by
+`toPrecompiled` or `hydrate`.
+
+## Import
+
+```ts
+import { isPrecompiledScript } from '@maxencerb/evs/runtime';
+```
+
+Only the runtime entry exports it, so importing it never loads the compiler.
+
+## Usage
+
+```ts {9-11}
+import { evscript, t } from '@maxencerb/evs';
+import { isPrecompiledScript } from '@maxencerb/evs/runtime';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+isPrecompiledScript(compiled.toPrecompiled()); // true
+isPrecompiledScript(compiled); // false: the artifact
+isPrecompiledScript(compiled.toPrecompiled().toJSON()); // false: the plain data
+```
+
+### Narrowing an unknown value
+
+A build tool that loads a module does not know what it exports. The guard narrows each export.
+
+```ts {4}
+import { isPrecompiledScript, type PrecompiledScript } from '@maxencerb/evs/runtime';
+
+function scriptsOf(exports: Record<string, unknown>): PrecompiledScript[] {
+  return Object.values(exports).filter(isPrecompiledScript);
+}
+```
+
+## Returns
+
+`boolean`
+
+`true` for a precompiled script. The return type is the type predicate
+`value is PrecompiledScript`.
+
+## Parameters
+
+### value
+
+- **Type:** `unknown`
+
+Any value.
+
+```ts {4}
+import { isPrecompiledScript } from '@maxencerb/evs/runtime';
+
+isPrecompiledScript(
+  { abi: [], runtimeBytecode: '0x' },
+);
+// false: an object shaped like a script is not one
+```
+
+## Behavior
+
+- **Scripts only.** The compiled artifact, the plain data of
+  [`toJSON`](/reference/precompiled/to-json/) and parsed JSON all give `false`.
+- **A copy is not a script.** `{ ...precompiled }` gives `false`: the mark is not copied by a
+  spread.
+- **Works across copies of evs.** The mark is a registered symbol, so a script built by another
+  copy of the package is recognized: the copy a build step runs, or a duplicated install.
+- **Never throws.** Any value is accepted, `null` and `undefined` included.

@@ -1,0 +1,292 @@
+---
+title: Vite plugin
+description: Runs the .evs.ts modules of a Vite app at build time and replaces each with the precompiled scripts it exports, so the client never loads the compiler.
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+
+`evs()` is a Vite plugin. It runs every `*.evs.ts` module at build time and replaces it with
+the [precompiled scripts](/reference/precompiled/) it exports, so the client bundle holds the
+ABI and the bytecode and never the compiler.
+
+[Precompiling scripts](/guides/precompiling/) is the guide to it.
+
+## Install
+
+<Tabs syncKey="pm">
+  <TabItem label="npm">
+    ```sh
+    npm install -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```sh
+    pnpm add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```sh
+    bun add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```sh
+    yarn add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+</Tabs>
+
+## Usage
+
+```ts nocheck title="vite.config.ts" {1,5}
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [evs()],
+});
+```
+
+### A build-time module
+
+A `*.evs.ts` file exports precompiled scripts. The rest of the app imports them like any module.
+
+<Tabs syncKey="example">
+  <TabItem label="pool.evs.ts">
+    ```ts title="pool.evs.ts" {20-21}
+    import { evscript, t } from '@maxencerb/evs';
+    import { erc20Abi, parseAbi } from 'viem';
+
+    const poolAbi = parseAbi([
+      'function token0() view returns (address)',
+      'function token1() view returns (address)',
+    ]);
+
+    export const poolTokens = evscript(
+      { name: 'poolTokens', args: [t.address] },
+      (s, pool) => {
+        const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+        const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
+        const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+        const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+        return s.return({ token0, token1, symbol0, symbol1 });
+      },
+    )
+      // both run in Node, during the build
+      .compile({ optimize: true })
+      .toPrecompiled();
+    ```
+  </TabItem>
+  <TabItem label="main.ts">
+    ```ts title="main.ts" {3,8}
+    import { createPublicClient, http } from 'viem';
+    import { mainnet } from 'viem/chains';
+    import { poolTokens } from './pool.evs';
+
+    const client = createPublicClient({ chain: mainnet, transport: http() });
+
+    const result = await client.readContract({
+      ...poolTokens.toViem(),
+      functionName: 'poolTokens',
+      args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'],
+    });
+    // result.symbol0: string
+    ```
+  </TabItem>
+</Tabs>
+
+TypeScript reads the real file, so the call is typed as before. The bundle gets the precompiled
+script in its place.
+
+## Returns
+
+`Plugin`
+
+A Vite plugin, for the `plugins` array of your config.
+
+## Parameters
+
+### compilerInBundle (optional)
+
+- **Type:** `'warn' | 'error' | 'ignore'`
+- **Default:** `'warn'`
+
+What to do when a client build still contains the compiler: see
+[the compiler check](#the-compiler-check).
+
+| Value | A build that ships the compiler |
+| --- | --- |
+| `'warn'` | prints a warning and succeeds |
+| `'error'` | fails. Use it in CI |
+| `'ignore'` | prints nothing. Use it for an app that compiles in the browser on purpose |
+
+```ts nocheck title="vite.config.ts" {5}
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [evs({ compilerInBundle: 'error' })],
+});
+```
+
+## Build-time modules
+
+A module is compiled at build time when its file name ends with one of four suffixes.
+
+| Suffix | For |
+| --- | --- |
+| `.evs.ts`, `.evs.mts` | TypeScript |
+| `.evs.js`, `.evs.mjs` | JavaScript |
+
+- **Runs in Node.** The module runs during `vite build` and in the dev server, never in the
+  browser. It cannot read `window` or `document`.
+- **Replaced in the bundle only.** TypeScript still reads the source file, so the types of its
+  exports do not change.
+- **Recompiled in dev.** Editing the file, or a file of your app that it imports, compiles it
+  again. A package it imports is loaded by Node and is not watched.
+- **Loaded apart from the app.** The module sees your `resolve.alias` and your `mode`. Your
+  other plugins, `define` and `.env` files do not apply to it, so a variable that comes from a
+  `.env` file is `undefined` there.
+- **Debug data apart.** Each script's debug data goes in a chunk of its own, downloaded on the
+  first [`explainRevert()`](/reference/precompiled/explain-revert/).
+- **Optional.** Without the plugin, in a test or a Node script, the same file compiles when it
+  is imported and exports the same scripts.
+
+## Exports
+
+Every export of a build-time module must be able to cross from the build to the browser.
+
+| Export | Allowed |
+| --- | --- |
+| a [precompiled script](/reference/precompiled/) | yes |
+| plain data: what JSON holds, plus `bigint` and `undefined` | yes |
+| a function, such as a factory that returns a script | no |
+| a script from `evscript`, not compiled | no |
+| a compiled artifact, not narrowed with `toPrecompiled()` | no |
+| a precompiled script inside an object or an array | no |
+| any other value that is not plain data: a class instance, a symbol, a circular reference | no |
+
+Each script has an export of its own, so the bundler drops the scripts a page does not use.
+
+```ts title="tokens.evs.ts" {4,7,19-20}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+export const USDC = '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'; // plain data
+
+// a precompiled script, with the address as a constant in its bytecode
+export const usdcBalance = evscript(
+  { name: 'usdcBalance', args: [t.address] },
+  (s, owner) => {
+    const balance = s.read({
+      address: USDC,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return s.return({ balance });
+  },
+)
+  .compile()
+  .toPrecompiled();
+```
+
+## Build errors
+
+Each of these stops the build, and the dev server shows it in its overlay. The message names
+the file and, for an export, the export.
+
+| Cause | Fix |
+| --- | --- |
+| an export is a function | Turn what the function takes into a script argument: see [values the build does not know](/guides/precompiling/#values-the-build-does-not-know). |
+| an export is a script that was not compiled | Add `.compile().toPrecompiled()`. |
+| an export is a compiled artifact | Add `.toPrecompiled()`. |
+| an export holds a precompiled script inside an object or an array | Give each script an export of its own. |
+| an export is not plain data | Export plain data, or move the value to a module that is not a build-time module. |
+| the module throws when it runs | Fix the error it reports: a script that fails to record or compile, or code that needs a browser. |
+
+### Messages
+
+One sample per row, in the same order. A message is one line, wrapped here, and the build
+prints a stack trace under it.
+
+```txt
+src/balance.evs.ts: the export `balanceOf` is a function, and a function cannot be
+precompiled. If it builds a script, turn its parameters into script arguments, or call
+it here with values known at build time.
+```
+
+```txt
+src/double.evs.ts: the export `double` is a script that was not compiled. Export
+`evscript(...).compile().toPrecompiled()`.
+```
+
+```txt
+src/echo.evs.ts: the export `echo` is a compiled script, which holds the whole output
+of the compiler. Add `.toPrecompiled()` after `.compile()` to export the part a client
+runs.
+```
+
+```txt
+src/scripts.evs.ts: the export `scripts.double` is a precompiled script inside another
+value. Give each script an export of its own, so the bundler can drop the ones a page
+does not use.
+```
+
+```txt
+src/config.evs.ts: the export `config.cache` is an instance of Map, which cannot be
+written into the bundle. A *.evs.ts module exports precompiled scripts and plain data
+(what JSON holds, plus bigint and undefined).
+```
+
+A module that throws keeps the name and the message of what it threw. For a browser global,
+the plugin adds where the module runs:
+
+```txt
+src/width.evs.ts: the module threw while it ran at build time.
+ReferenceError: window is not defined
+`window` does not exist here: a *.evs.ts module runs in Node at build time. Keep browser
+code out of it and out of the files it imports.
+```
+
+## The compiler check
+
+After a client build, the plugin looks for compiler code in the output. It is there when a
+module outside the build-time modules still calls `compile` or `evscript` at run time: the whole
+compiler then ships, next to the scripts that were precompiled.
+
+```txt
+[plugin evs] precompiled 1 script from 1 file
+[plugin evs] The evs compiler is in the client bundle: about 185 kB before compression.
+
+1 script from 1 file was precompiled, but the compiler still ships in:
+  assets/index-CfljxV1r.js  loaded up front
+
+It comes in through the modules that import '@maxencerb/evs':
+  src/balance.ts
+
+To keep it out:
+  - move the scripts these modules compile into a *.evs.ts file
+  - import run-time helpers (decodeScriptError, ...) from '@maxencerb/evs/runtime'
+  - or set evs({ compilerInBundle: 'ignore' }) if compiling in the browser is intended
+```
+
+| Part of the output | Tells you |
+| --- | --- |
+| the first line | how many scripts were precompiled, on every client build |
+| `about 185 kB` | how much compiler code is shipped, before compression |
+| the chunk list | which chunks hold it, and whether each loads up front or on demand |
+| the module list | which of your modules import `@maxencerb/evs` |
+
+- **Client builds only.** A server build is not checked: nobody downloads it.
+- **Helpers are fine.** Importing only run-time helpers from the main entry, such as
+  `decodeScriptError`, does not trigger it: the bundler drops the compiler.
+- **Configurable.** [`compilerInBundle`](#compilerinbundle-optional) sets what the check does.
+
+## Requirements
+
+| Requirement | Version | Notes |
+| --- | --- | --- |
+| `vite` | `>=8` | Peer dependency. |
+| `@maxencerb/evs` | a version with [`toPrecompiled`](/reference/precompiled/to-precompiled/) | Peer dependency. |
+| Node.js | `>=20.19` | The build runs your scripts in Node. |

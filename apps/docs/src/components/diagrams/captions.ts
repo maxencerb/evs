@@ -22,6 +22,8 @@ export const captions = {
     'Importing the library, recording a script and compiling it happen once: about 13 ms, 2 ms and 4 ms in a fresh Node process on the benchmark machine. Every call after that encodes the arguments with the bytecode, makes one eth_call round trip and decodes the result, for about 0.015 ms of CPU.',
   LoopCollect:
     's.for walks a runtime array, makes one call per element and writes each result into an s.newArray buffer that is returned at the end.',
+  Precompile:
+    'With the Vite plugin, a .evs.ts file is recorded and compiled on the build machine, in Node; only the ABI and the bytecode of each script cross into the bundle the page loads, so the browser encodes, calls and decodes without ever loading the compiler. The data that explains a revert goes into a separate chunk, downloaded on the first explainRevert().',
 } as const;
 
 export type DiagramName = keyof typeof captions;

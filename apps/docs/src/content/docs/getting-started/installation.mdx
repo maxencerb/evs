@@ -37,7 +37,7 @@ Install `@maxencerb/evs` together with `viem`, its one required peer dependency.
 | `viem` | `>=2.14.1` | Required peer dependency. |
 | TypeScript | `>=5.5` | Optional peer dependency. Set `"strict": true`. |
 | Node.js | `>=20.19` | Bun works too. |
-| Module format | ESM | No CommonJS build: use `import`, from `@maxencerb/evs` only. |
+| Module format | ESM | No CommonJS build: use `import`, from one of the two [entry points](#entry-points). |
 
 ## Verify the setup
 
@@ -53,6 +53,22 @@ const { runtimeBytecode } = compile(double); // 0x…
 
 This compiles without a network. If it typechecks and runs, continue with the
 [quick start](/getting-started/quick-start/).
+
+## Entry points
+
+| Import from | Holds | Use it |
+| --- | --- | --- |
+| `@maxencerb/evs` | everything: the builder, the compiler, the utilities | to write, compile and test scripts |
+| `@maxencerb/evs/runtime` | `hydrate`, the error decoders, the deployless helpers and the error classes, without the compiler | in a client that runs [precompiled scripts](/reference/precompiled/) |
+
+```ts
+import { compile, evscript, t } from '@maxencerb/evs';
+import { decodeScriptError, hydrate } from '@maxencerb/evs/runtime';
+```
+
+The optional [Vite plugin](/reference/vite-plugin/), `@maxencerb/vite-plugin-evs`, compiles
+your scripts during the build, so the client bundle holds the second entry only: see
+[Precompiling scripts](/guides/precompiling/).
 
 ## Custom abitype types
 

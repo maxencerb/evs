@@ -1,0 +1,95 @@
+---
+title: debug
+description: Resolves to the debug data of a precompiled script, the data explainRevert reads, so a build step can write it to a file of its own.
+---
+
+Resolves to the debug data of a precompiled script: what
+[`explainRevert`](/reference/precompiled/explain-revert/) reads. A build step writes it to a
+file of its own, so the client downloads it only when it explains a revert.
+
+The [Vite plugin](/reference/vite-plugin/) does this for you. Call `debug` yourself with another
+bundler.
+
+## Usage
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+const debug = await precompiled.debug();
+
+debug.sites[1];
+// {
+//   id: 1,
+//   kind: 'panic',
+//   detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
+//   panicCodes: [17],
+// }
+```
+
+### Writing it to a file
+
+The data is JSON-safe. Write it as a `.ts` module that ends with `as const`, next to the
+[script's own data](/reference/precompiled/to-json/).
+
+```ts nocheck title="build.ts" {10,16}
+import { writeFileSync } from 'node:fs';
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+)
+  .compile()
+  .toPrecompiled();
+
+const debug = JSON.stringify(await double.debug());
+const data = JSON.stringify(double);
+
+// what the client imports
+writeFileSync('double.gen.ts', `export const data = ${data} as const;\n`);
+// what it loads on the first explainRevert()
+writeFileSync('double.debug.ts', `export default ${debug} as const;\n`);
+```
+
+The client hands the second file back to `hydrate`: see
+[loading the debug data](/reference/precompiled/hydrate/#loading-the-debug-data).
+
+## Returns
+
+`Promise<PrecompiledScriptDebug>`
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `version` | `1` | The format version. |
+| `ir` | `ScriptIr` | The recorded program: the artifact's [`ir`](/reference/artifact/#ir). |
+| `sites` | `{ id, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement: the artifact's [`sourceMap.sites`](/reference/artifact/#sourcemap). |
+
+The rest of the source map, its `segments` and `labels`, stays on the artifact.
+
+## Parameters
+
+None.
+
+## Behavior
+
+- **Loaded once.** On a hydrated script the first call runs the `debug` loader, and later calls
+  resolve to the same object.
+- **Already there after `toPrecompiled()`.** A script that comes straight from the artifact
+  resolves at once, with the artifact's own `ir` and `sites`.
+- **Shared with `explainRevert`.** Both use one load, whichever is called first.
+- **Tied to one build.** The debug data describes one compilation. Write it in the same build
+  step as the script's data, never from an older run.
+
+## Errors
+
+The promise rejects with:
+
+| Error | When |
+| --- | --- |
+| `EvsError` (`DEBUG_DATA_MISSING`) | the script was [hydrated](/reference/precompiled/hydrate/) without a `debug` loader |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than debug data, or to data of another version |
+| the loader's own error | the debug data failed to load |

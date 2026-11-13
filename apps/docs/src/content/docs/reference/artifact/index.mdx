@@ -35,6 +35,7 @@ const { supply } = await client.readContract({
 | [`toViem(options?)`](/reference/artifact/to-viem/) | `readContract` parameters | Packages the ABI and the bytecode for a deployless or a state-override call. |
 | [`disassemble()`](/reference/artifact/disassemble/) | `Disassembly` | Lists the instructions of the runtime bytecode, with labels and notes. |
 | [`explainRevert(data)`](/reference/artifact/explain-revert/) | `RevertExplanation` | Classifies revert data and points at the part of the script it came from. |
+| [`toPrecompiled()`](/reference/precompiled/to-precompiled/) | `PrecompiledScript` | Narrows the artifact to what a client needs to run it: no compiler, no source map. |
 
 ## Properties
 

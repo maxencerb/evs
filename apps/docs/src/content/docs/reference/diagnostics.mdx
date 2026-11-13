@@ -34,7 +34,7 @@ try {
 
 | Class | Thrown when | Codes |
 | --- | --- | --- |
-| `EvsError` | never directly: it is the base class of the five below | any |
+| `EvsError` | the base class of the five below. On its own, only for a precompiled script without debug data | `DEBUG_DATA_MISSING` |
 | `EvsStagingError` | a handle is used as a plain JS value | `STAGING_MISUSE` |
 | `EvsTypeError` | a type, literal, ABI or error declaration is wrong, or a function gets a malformed input | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` |
 | `EvsScopeError` | a value, cell, loop control or builder is used where it is not valid | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` |
@@ -65,6 +65,7 @@ try {
 | `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` gets an error that is not in the script's `errors` |
 | `COMPILE_LIMIT` | `EvsCompileError` | the runtime bytecode is over 24,576 bytes, or `interpret()` goes over `maxSteps` |
 | `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'` or `'cancun'` |
+| `DEBUG_DATA_MISSING` | `EvsError` | [`explainRevert()`](/reference/precompiled/explain-revert/) or `debug()` is called on a precompiled script [hydrated](/reference/precompiled/hydrate/) without a `debug` loader. The promise rejects with it |
 | `INTERNAL` | `EvsInternalError` | an evs invariant or bytecode check failed: a bug in evs, unless you loaded the IR with [`deserializeIr`](/reference/utilities/serialize-ir/) or passed a `peephole` hook |
 
 Reserved error names, rejected with `ERROR_DECL`: `Error`, `Panic`, `EvsDecodeError`,
@@ -226,4 +227,5 @@ EVS_ERROR_ABI[1].inputs; // [{ name: 'site', type: 'uint256' }]
 | [`decodeScriptError`](/reference/utilities/decode-script-error/) | turn a caught error into a typed value |
 | [`matchScriptError`](/reference/utilities/match-script-error/) | run one handler per declared error |
 | [`compiled.explainRevert`](/reference/artifact/explain-revert/) | find the statement in your script that reverted |
+| [`precompiled.explainRevert`](/reference/precompiled/explain-revert/) | do the same in a client that ships no compiler |
 | [`explainDeploylessError`](/reference/utilities/explain-deployless-error/) | recognize a deployless limit, which is not a revert |

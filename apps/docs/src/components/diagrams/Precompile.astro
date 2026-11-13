@@ -1,0 +1,263 @@
+---
+// Precompiling scripts: what runs where. Two lanes, each a row of three steps, the same drawing
+// as OnceVsEveryCall: the build machine records, compiles and exports; the browser encodes,
+// calls and decodes. An arrow leaves the export step for the browser lane, and a packet crosses
+// it: only the ABI and the bytecode go down, the compiler stays in the first lane. The highlight
+// walks the build lane once, the packet crosses, then the browser lane is walked twice, so one
+// loop is "build, then call, call". The lane title sits on the left (above the steps below
+// 520px). Loop: 12s, 1s per step.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="Precompile">
+  <div class="evs-pc">
+    <div class="evs-dg-region evs-pc-lane evs-pc-build">
+      <div class="evs-pc-head">
+        <span class="evs-dg-title">build machine</span>
+        <span class="evs-dg-note">once per build</span>
+      </div>
+      <div class="evs-pc-steps">
+        <div class="evs-pc-step evs-pc-s1">
+          <span class="evs-dg-node">record</span>
+          <span class="evs-dg-note">evscript</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-pc-step evs-pc-s2">
+          <span class="evs-dg-node">compile</span>
+          <span class="evs-dg-note">the compiler</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-pc-step evs-pc-s3">
+          <span class="evs-dg-node">export</span>
+          <span class="evs-dg-note">ABI + code</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evs-pc-link">
+      <span class="evs-dg-wire is-down"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note">only the ABI and the bytecode cross</span>
+    </div>
+
+    <div class="evs-dg-region evs-pc-lane evs-pc-run">
+      <div class="evs-pc-head">
+        <span class="evs-dg-title">browser</span>
+        <span class="evs-dg-note">no compiler</span>
+      </div>
+      <div class="evs-pc-steps">
+        <div class="evs-pc-step evs-pc-s1">
+          <span class="evs-dg-node">encode</span>
+          <span class="evs-dg-note">args + code</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-pc-step evs-pc-s2">
+          <span class="evs-dg-node">eth_call</span>
+          <span class="evs-dg-note">one round trip</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-pc-step evs-pc-s3">
+          <span class="evs-dg-node">decode</span>
+          <span class="evs-dg-note">typed result</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-pc {
+    display: flex;
+    flex-direction: column;
+    max-width: 620px;
+    margin: 0 auto;
+  }
+
+  /* Narrow: the title above its steps. */
+  .evs-pc-lane {
+    display: flex;
+    flex-direction: column;
+    row-gap: 10px;
+    padding: 12px;
+  }
+
+  .evs-pc-head {
+    display: flex;
+    align-items: baseline;
+    column-gap: 10px;
+  }
+
+  .evs-pc-steps {
+    display: flex;
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  /* Narrow: the three steps share the row, and a note that does not fit wraps under its node. */
+  .evs-pc-step {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: center;
+    row-gap: 4px;
+    min-width: 0;
+  }
+
+  .evs-pc-step .evs-dg-node {
+    width: 100%;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .evs-pc-step .evs-dg-note {
+    text-align: center;
+  }
+
+  /* A step's node is 28px tall: the wire runs through its middle. */
+  .evs-pc-steps .evs-dg-wire {
+    flex: 0 0 14px;
+    min-width: 14px;
+    margin: 14px 4px 0;
+  }
+
+  /* The arrow from the export step down to the browser lane, with what crosses written beside
+     it. Narrow: the lane has 12px of padding and its three steps share what the two 22px wires
+     leave, so the middle of the last step is this far from the right edge. */
+  .evs-pc-link {
+    display: flex;
+    flex-direction: row-reverse;
+    align-items: center;
+    column-gap: 12px;
+    padding: 4px calc(12px + (100% - 68px) / 6) 4px 0;
+    --evs-dg-len: 26px;
+  }
+
+  /* Wide: the title in a column on the left, both lanes' steps aligned. */
+  @container evs-dg (min-width: 520px) {
+    .evs-pc-lane {
+      flex-direction: row;
+      align-items: center;
+      column-gap: 16px;
+      padding: 14px 16px;
+    }
+
+    .evs-pc-head {
+      flex: 0 0 128px;
+      flex-direction: column;
+      row-gap: 2px;
+    }
+
+    .evs-pc-steps {
+      flex: 1 1 0;
+    }
+
+    .evs-pc-step {
+      flex: 0 0 auto;
+    }
+
+    .evs-pc-step .evs-dg-node {
+      width: auto;
+      min-width: 72px;
+      padding-right: 10px;
+      padding-left: 10px;
+    }
+
+    .evs-pc-step .evs-dg-note {
+      white-space: nowrap;
+    }
+
+    .evs-pc-steps .evs-dg-wire {
+      flex: 1 1 0;
+      min-width: 16px;
+      margin: 14px 6px 0;
+    }
+
+    /* The last step is 72px wide and ends at the lane's 16px padding. */
+    .evs-pc-link {
+      padding-right: 52px;
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-pc-build .evs-dg-node::after {
+      animation: evs-precompile-build 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-pc-link .evs-dg-run {
+      animation: evs-precompile-cross 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-pc-run .evs-dg-node::after {
+      animation: evs-precompile-call 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* Within a lane, each step runs 1s after the one before it. */
+    .evs-pc-s2 {
+      --evs-dg-delay: 1s;
+    }
+
+    .evs-pc-s3 {
+      --evs-dg-delay: 2s;
+    }
+  }
+
+  /* The build lane's steps are lit once per loop, during its first 3s. */
+  @keyframes evs-precompile-build {
+    0% {
+      opacity: 0;
+    }
+    1.2%,
+    7% {
+      opacity: 1;
+    }
+    8.3%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The ABI and the bytecode go down to the browser, 3s to 3.8s. */
+  @keyframes evs-precompile-cross {
+    0%,
+    24.5% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    25.5% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    31% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    32%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* The browser lane's steps are lit twice: from 4s and from 8s. */
+  @keyframes evs-precompile-call {
+    0%,
+    33.3% {
+      opacity: 0;
+    }
+    34.5%,
+    40.3% {
+      opacity: 1;
+    }
+    41.6%,
+    66.6% {
+      opacity: 0;
+    }
+    67.8%,
+    73.6% {
+      opacity: 1;
+    }
+    75%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

@@ -1,0 +1,536 @@
+---
+title: Precompiling scripts
+description: Compile your scripts during the build with the Vite plugin, so the app ships each script's ABI and bytecode and never the compiler.
+---
+
+import { TabItem, Tabs } from '@astrojs/starlight/components';
+import Precompile from '~/components/diagrams/Precompile.astro';
+
+An app that calls `compile()` ships the whole compiler, 66 kB of JavaScript (brotli), and
+records and compiles each script on every page load. Compile during the build instead, and the
+app ships only each script's ABI and bytecode.
+
+<Precompile />
+
+## Install
+
+<Tabs syncKey="pm">
+  <TabItem label="npm">
+    ```sh
+    npm install -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="pnpm">
+    ```sh
+    pnpm add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="bun">
+    ```sh
+    bun add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+  <TabItem label="yarn">
+    ```sh
+    yarn add -D @maxencerb/vite-plugin-evs
+    ```
+  </TabItem>
+</Tabs>
+
+The plugin needs Vite 8 or later. With another bundler, see [without Vite](#without-vite).
+
+## Add the plugin
+
+```ts nocheck title="vite.config.ts" {1,5}
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [evs()],
+});
+```
+
+The plugin handles every file whose name ends with `.evs.ts`.
+
+## Write a script file
+
+```ts title="pool.evs.ts" {19-20}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, parseAbi } from 'viem';
+
+const poolAbi = parseAbi([
+  'function token0() view returns (address)',
+  'function token1() view returns (address)',
+]);
+
+export const poolTokens = evscript(
+  { name: 'poolTokens', args: [t.address] },
+  (s, pool) => {
+    const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+    const token1 = s.read({ address: pool, abi: poolAbi, functionName: 'token1' });
+    const symbol0 = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+    const symbol1 = s.read({ address: token1, abi: erc20Abi, functionName: 'symbol' });
+    return s.return({ token0, token1, symbol0, symbol1 });
+  },
+)
+  .compile({ optimize: true })
+  .toPrecompiled();
+```
+
+This file runs in Node, during the build. [`compile`](/reference/compile/) produces the
+bytecode, and [`toPrecompiled`](/reference/precompiled/to-precompiled/) keeps what a client
+needs to run it.
+
+## Use it
+
+```ts title="main.ts" {3,8}
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+import { poolTokens } from './pool.evs';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const result = await client.readContract({
+  ...poolTokens.toViem(),
+  functionName: 'poolTokens',
+  args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'], // USDC/WETH 0.05% pool
+});
+// result.symbol0: string
+```
+
+TypeScript reads the real file, so `args` and `result` are typed as before. The bundle gets a
+[precompiled script](/reference/precompiled/) in its place, and
+[`toViem()`](/reference/artifact/to-viem/) takes the same options.
+
+## What is shipped
+
+What a client build made with the plugin holds, and when the browser downloads it:
+
+| Shipped | What | Downloaded |
+| --- | --- | --- |
+| Yes | each script's ABI and runtime bytecode, and the small runtime that makes them callable | with the code that imports the script |
+| If you import them | `decodeScriptError` and `matchScriptError`, which need the ABI alone | with the code that imports them |
+| Yes, in chunks of their own | each script's debug data (its recorded program and its sites), and the code that explains a revert | on the first `explainRevert()`, never before |
+| No | the compiler, the builder (`evscript`, `t`), `interpret`, `disassemble()` and the rest of the source map | never |
+
+The last row holds as long as no other module of your app imports the compiler.
+[The compiler check](#the-compiler-check) tells you when one does.
+
+[Overhead](/concepts/overhead/#precompile-at-build-time) has the sizes.
+
+## Errors
+
+A precompiled script reverts like a compiled one, and the same tools read the revert. What
+changes is where each tool finds its data.
+
+| Tool | Reads | With a precompiled script |
+| --- | --- | --- |
+| `decodeScriptError`, `matchScriptError` | the ABI, shipped with the script | unchanged |
+| `explainRevert()` | the debug data, downloaded on demand | asynchronous: the first call loads the data |
+| `disassemble()`, the full source map | the compiled artifact, which is not shipped | used during the build, in the `*.evs.ts` file |
+| recording and compile errors | the compiler, which is not shipped | stop the build |
+
+The examples share this script:
+
+```ts title="guard.evs.ts"
+import { evscript, namedArg, t } from '@maxencerb/evs';
+
+const TooLow = t.error('TooLow', [namedArg('balance', t.uint256)]);
+
+export const guard = evscript(
+  { name: 'guard', args: [t.uint256], errors: [TooLow] },
+  (s, x) => {
+    s.if(x.lt(10n), () => {
+      s.throw(TooLow, { balance: x });
+    });
+    return s.return({ doubled: x.mul(2n) });
+  },
+)
+  .compile()
+  .toPrecompiled();
+```
+
+### Decoding a revert
+
+```ts {1,6-9}
+import { matchScriptError } from '@maxencerb/evs/runtime';
+import { guard } from './guard.evs';
+
+// `error` is what readContract threw
+export function describe(error: unknown): string {
+  return matchScriptError(guard, error, {
+    TooLow: ({ balance }) => `balance too low: ${balance}`, // typed from the ABI
+    _: (other) => `unexpected revert: ${other.name}`,
+  });
+}
+```
+
+[`matchScriptError`](/reference/utilities/match-script-error/) and
+[`decodeScriptError`](/reference/utilities/decode-script-error/) need the ABI alone, so they
+work as before: typed declared errors, panics with their meaning, `Error(string)` and the evs
+runtime errors.
+
+Import them from `@maxencerb/evs/runtime`, the entry that never loads the compiler.
+
+### Explaining a revert
+
+```ts {8}
+import { decodeScriptError } from '@maxencerb/evs/runtime';
+import { guard } from './guard.evs';
+
+export async function explain(error: unknown): Promise<string> {
+  const revert = decodeScriptError(guard, error);
+  if (revert === undefined) throw error; // not a revert
+  // the first call downloads the script's debug data and the explain code
+  const why = await guard.explainRevert(revert.raw);
+  return why.message;
+  // for an overflow: 'Panic(0x11): arithmetic overflow or underflow — 1 candidate
+  //  site(s) in this script: checked mul args.arg0 * 2 (uint256) — Panic 0x11 (site 5)'
+}
+```
+
+[`explainRevert`](/reference/precompiled/explain-revert/) resolves to the same explanation as
+the compiled artifact's, sites included. It is asynchronous because the plugin puts each
+script's debug data in a chunk of its own, which the browser downloads on the first call only.
+
+### Reading the bytecode
+
+```ts nocheck title="echo.evs.ts" {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const compiled = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
+  s.return({ x }),
+).compile();
+
+// printed in the terminal that runs the build
+console.log(compiled.disassemble().format());
+
+export const echo = compiled.toPrecompiled();
+```
+
+[`disassemble`](/reference/artifact/disassemble/) and the full source map are on the compiled
+artifact only. A `*.evs.ts` file runs in Node, so it can keep the artifact in a local `const`,
+log what it needs, and export the precompiled script.
+
+### Errors while building
+
+```ts title="bump.evs.ts" {4}
+import { evscript, t } from '@maxencerb/evs';
+
+export const bump = evscript({ name: 'bump', args: [t.uint8] }, (s, x) => {
+  const y = x.add(300n); // throws here: 300 does not fit a uint8
+  return s.return({ y });
+})
+  .compile()
+  .toPrecompiled();
+```
+
+A script that fails to record or compile stops the build. The error names the file and carries
+the evs message, in the terminal and in the dev server's overlay.
+
+```txt
+[plugin evs] src/bump.evs.ts
+Error: src/bump.evs.ts: the module threw while it ran at build time.
+EvsTypeError: uint8 literal 300n is out of range [0, 255]
+    …
+    at eval (src/bump.evs.ts:4:15)
+    …
+```
+
+The stack trace is trimmed here. Its frame in `bump.evs.ts` points at line 4, the `x.add(300n)`.
+
+## Values the build does not know
+
+A `*.evs.ts` file runs before the app does. What the browser knows and the build did not must
+enter the script as an argument.
+
+| Situation | What to do |
+| --- | --- |
+| A JavaScript loop or branch over values known at build time: a config, a token list, one variant per chain | Nothing: it runs during the build. Export one precompiled script per variant. |
+| A value known only at run time, used as a constant in the script | Make it a script argument and pass it with the call. |
+| A JavaScript loop over a list known only at run time | Take an array argument and loop with [`s.forEach`](/reference/builder/for-each/). |
+| A script whose shape depends on a run-time value: which ABI, which return keys | It cannot be precompiled. Keep `compile()` for that script, behind a dynamic `import()`. |
+
+### Known at build time
+
+A factory is fine inside the file, as long as the build calls it.
+
+```ts title="supply.evs.ts" {17-18}
+import { evscript } from '@maxencerb/evs';
+import { erc20Abi, type Address } from 'viem';
+
+const supplyOf = (token: Address) =>
+  evscript({ name: 'supply' }, (s) => {
+    const supply = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'totalSupply',
+    });
+    return s.return({ supply });
+  })
+    .compile()
+    .toPrecompiled();
+
+// both calls run during the build: each export is a finished script (USDC, WETH)
+export const usdcSupply = supplyOf('0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48');
+export const wethSupply = supplyOf('0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2');
+```
+
+### Known at run time
+
+Before: a factory that the browser calls with the token the user picked. It compiles there, so
+it needs the compiler.
+
+```ts title="balance.ts" {5,10}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, type Address } from 'viem';
+
+// one compile per token, in the browser
+export const balanceOf = (token: Address) =>
+  evscript({ name: 'balance', args: [t.address] }, (s, owner) => {
+    const balance = s.read({
+      address: token, // a constant in the bytecode
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return s.return({ balance });
+  }).compile();
+```
+
+After: the token is an argument, and one script serves every token.
+
+```ts title="balance.evs.ts" {5-6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+export const balance = evscript(
+  { name: 'balance', args: [t.address, t.address] },
+  (s, token, owner) => {
+    const balance = s.read({
+      address: token, // read from the calldata
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    return s.return({ balance });
+  },
+)
+  .compile()
+  .toPrecompiled();
+```
+
+The call passes the token with the other arguments: `args: [token, owner]`.
+
+The change costs almost nothing. The script's code travels with every request, so a constant in
+the code and an argument in the calldata weigh about the same on the wire.
+
+## Rules for script files
+
+- **Named `*.evs.ts`.** Also `.evs.mts`, `.evs.js` and `.evs.mjs`.
+- **Runs in Node.** During the build and in the dev server, never in the browser: no `window`,
+  no `document`.
+- **Exports scripts or data.** Every export is a precompiled script or plain data: what JSON
+  holds, plus `bigint` and `undefined`.
+- **One export per script.** A script inside an object or an array is a build error. Separate
+  exports let the bundler drop the scripts a page does not use.
+- **No exported function.** A function cannot cross from the build to the browser. See
+  [values the build does not know](#values-the-build-does-not-know).
+- **Ends with `toPrecompiled()`.** Exporting a script that is not compiled, or a compiled
+  artifact, is a build error.
+- **Recompiled in dev.** Editing the file, or a file it imports, compiles it again.
+
+The [plugin reference](/reference/vite-plugin/#build-errors) lists every build error and its
+fix.
+
+## The compiler check
+
+After a client build, the plugin checks that the compiler is not in the output. It is there
+when another module still calls `compile` or `evscript` at run time, and then the whole
+compiler ships next to your precompiled scripts.
+
+```txt
+[plugin evs] The evs compiler is in the client bundle: about 185 kB before compression.
+
+1 script from 1 file was precompiled, but the compiler still ships in:
+  assets/index-CfljxV1r.js  loaded up front
+
+It comes in through the modules that import '@maxencerb/evs':
+  src/balance.ts
+
+To keep it out:
+  - move the scripts these modules compile into a *.evs.ts file
+  - import run-time helpers (decodeScriptError, ...) from '@maxencerb/evs/runtime'
+  - or set evs({ compilerInBundle: 'ignore' }) if compiling in the browser is intended
+```
+
+The warning names the chunk that holds the compiler, says whether it loads up front or on
+demand, and lists the modules of your app that import it. Here that module is the
+[`balance.ts` factory](#known-at-run-time) from above.
+
+```ts nocheck title="vite.config.ts" {5}
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [evs({ compilerInBundle: 'error' })],
+});
+```
+
+With `'error'` the same report fails the build: use it in CI. The
+[`compilerInBundle`](/reference/vite-plugin/#compilerinbundle-optional) option lists the three
+values.
+
+## Without Vite
+
+Any build step can do what the plugin does. Write the script's data to a generated file, and
+call [`hydrate`](/reference/precompiled/hydrate/) in the client.
+
+<Tabs syncKey="example">
+  <TabItem label="build.ts">
+    ```ts nocheck title="build.ts" {5-6}
+    import { writeFileSync } from 'node:fs';
+    import { poolTokens } from './pool.evs';
+
+    // without the plugin, importing pool.evs.ts compiles it
+    const data = JSON.stringify(poolTokens, null, 2);
+    const debug = JSON.stringify(await poolTokens.debug());
+
+    writeFileSync('pool-tokens.gen.ts', `export const data = ${data} as const;\n`);
+    writeFileSync('pool-tokens.debug.ts', `export default ${debug} as const;\n`);
+    ```
+  </TabItem>
+  <TabItem label="client.ts">
+    ```ts title="client.ts" {1,4-6}
+    import { hydrate } from '@maxencerb/evs/runtime';
+    import { data } from './pool-tokens.gen';
+
+    export const poolTokens = hydrate(data, {
+      debug: () => import('./pool-tokens.debug'), // fetched on the first explainRevert()
+    });
+    ```
+  </TabItem>
+  <TabItem label="pool-tokens.gen.ts">
+    ```ts title="pool-tokens.gen.ts"
+    // generated by build.ts, trimmed and reformatted here
+    export const data = {
+      version: 1,
+      abi: [
+        {
+          type: 'function',
+          name: 'poolTokens',
+          stateMutability: 'view',
+          inputs: [{ name: 'arg0', type: 'address' }],
+          outputs: [
+            {
+              name: 'result',
+              type: 'tuple',
+              components: [
+                { name: 'token0', type: 'address' },
+                { name: 'token1', type: 'address' },
+                { name: 'symbol0', type: 'string' },
+                { name: 'symbol1', type: 'string' },
+              ],
+            },
+          ],
+        },
+        // …the script's two error entries
+      ],
+      runtimeBytecode: '0x3661000657005b6101206040…', // 701 bytes
+      evmVersion: 'cancun',
+    } as const;
+    ```
+  </TabItem>
+  <TabItem label="pool-tokens.debug.ts">
+    ```ts title="pool-tokens.debug.ts"
+    // generated by build.ts, trimmed and reformatted here
+    export default {
+      version: 1,
+      ir: {
+        irVersion: 1,
+        name: 'poolTokens',
+        args: [{ name: 'arg0', type: 'address' }],
+        values: [], // …one entry per value
+        cells: [],
+        fns: [],
+        body: [], // …the four recorded reads
+        returns: [], // …the four returned values
+      },
+      sites: [
+        { id: 0, kind: 'decode', detail: 'decoding token0() returndata' },
+        // …one entry per statement
+      ],
+    } as const;
+    ```
+  </TabItem>
+</Tabs>
+
+- **`as const` keeps the types.** A `.json` import widens the ABI and loses them, and widens
+  `version` to `number`, which the type of `hydrate` rejects.
+- **The debug file is optional.** Without a `debug` loader, `explainRevert()` rejects with
+  [`DEBUG_DATA_MISSING`](/reference/diagnostics/#error-codes). Decoding still works.
+- **Write both files in one run.** The debug data describes one compilation.
+- **Regenerate after an upgrade.** Data written by another version of evs can be refused by
+  `hydrate`, with an error that says so.
+
+## Testing
+
+A `*.evs.ts` file is an ordinary module. Without the plugin, in a test runner or a Node script,
+importing it compiles it, and it exports the same scripts.
+
+```ts title="pool.test.ts" {2,7}
+import { createPublicClient, http } from 'viem';
+import { poolTokens } from './pool.evs';
+
+const client = createPublicClient({ transport: http('http://127.0.0.1:8545') });
+
+const result = await client.readContract({
+  ...poolTokens.toViem(),
+  functionName: 'poolTokens',
+  args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'],
+});
+```
+
+[`interpret`](/reference/utilities/interpret/) takes the script that `evscript` returns. To
+test the logic without a node, keep that script in a module of its own and compile it in the
+`*.evs.ts` file.
+
+<Tabs syncKey="example">
+  <TabItem label="double.ts">
+    ```ts title="double.ts"
+    import { evscript, t } from '@maxencerb/evs';
+
+    export const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+      s.return({ doubled: x.mul(2n) }),
+    );
+    ```
+  </TabItem>
+  <TabItem label="double.evs.ts">
+    ```ts title="double.evs.ts"
+    import { double as script } from './double';
+
+    export const double = script.compile().toPrecompiled();
+    ```
+  </TabItem>
+  <TabItem label="double.test.ts">
+    ```ts title="double.test.ts" {6}
+    import { interpret, type MockChain } from '@maxencerb/evs';
+    import { double } from './double';
+
+    const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+    const { outcome } = interpret(double, [21n], noCalls);
+    // outcome → { kind: 'return', data: '0x…2a', values: { doubled: 42n } }
+    ```
+  </TabItem>
+</Tabs>
+
+[Testing scripts](/guides/testing-scripts/) covers both ways to test.
+
+## Next steps
+
+- [Vite plugin](/reference/vite-plugin/): the option, the allowed exports and the build errors.
+- [Precompiled script](/reference/precompiled/): every member, and what the artifact has that it
+  lacks.
+- [`hydrate`](/reference/precompiled/hydrate/): the data it takes and the errors it throws.
+- [Overhead](/concepts/overhead/#precompile-at-build-time): what precompiling saves, measured.
