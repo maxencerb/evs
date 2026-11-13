@@ -716,9 +716,20 @@ on a package that exists, so a new package needs one manual publish before the w
 publish it. Publish a placeholder, never the package itself: the committed version of a new
 package is `0.0.0` and its `workspace:^` peer would be written against the library's last
 release, which may not have what it needs. From an empty folder holding only a `package.json`
-with the package's name and the version `0.0.0-placeholder.0`, run `npm publish --access public`,
-add the trusted publisher on npmjs.com, and let the workflow publish the first real version.
-Deprecate the placeholder afterwards (`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Also
+with the package's name and the version `0.0.0-placeholder.0`:
+
+```sh
+npm publish --access public --tag placeholder   # npm 11 refuses a prerelease without --tag
+npm trust github <name> --file release.yml --repository maxencerb/evs \
+  --allow-publish --allow-stage-publish         # the same relationship as @maxencerb/evs
+npm trust list <name>                           # check it
+```
+
+Then let the workflow publish the first real version, and deprecate the placeholder afterwards
+(`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Each command asks for 2FA. If the
+publish answers `404 Not Found - PUT` although you are logged in, the account's email is not
+verified: npm requires that for a new package and only says so on the staged path
+(`npm stage publish` answers "you must verify your email before publishing a new package"). Also
 done once: "Allow GitHub Actions to create and approve pull requests" in the repo settings.
 
 ## Docs site
