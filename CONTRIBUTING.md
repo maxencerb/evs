@@ -1,8 +1,9 @@
 # Contributing to evs
 
-Maintainer notes for the `@maxencerb/evs` monorepo: how the repository is laid out, how to run
-the toolchain and the test tiers, the design decisions worth knowing before touching the
-compiler, and how releases and the docs site ship. User documentation lives at
+What you need to change the `@maxencerb/evs` monorepo: how the repository is laid out, how to
+run the toolchain and the test tiers, the design decisions worth knowing before touching the
+compiler, how to [update the documentation](#documentation) in the style of the site, and how
+releases and the docs site ship. User documentation lives at
 <https://evs.maxencerb.com>; the [README](packages/evs/README.md) is the package's
 presentation page (npm, GitHub) and stays user-facing.
 
@@ -710,29 +711,158 @@ in the same "Version Packages" PR, so the pair is always published together. Do 
 release without releasing the plugin.
 
 Prereleases: `vp exec changeset pre enter beta` / `pre exit` (pre-mode releases publish under
-the pre tag). One-time setup, per published package: the npm trusted publisher is bound to
-workflow file `release.yml` (do not rename it). npm only lets you configure a trusted publisher
-on a package that exists, so a new package needs one manual publish before the workflow can
-publish it. Publish a placeholder, never the package itself: the committed version of a new
-package is `0.0.0` and its `workspace:^` peer would be written against the library's last
-release, which may not have what it needs. From an empty folder holding only a `package.json`
-with the package's name and the version `0.0.0-placeholder.0`:
+the pre tag). Each package's npm trusted publisher is bound to the workflow file `release.yml`:
+do not rename it. A PR that adds a published package says so in its description, because the
+maintainer has to register the package on npm once before the workflow can publish it.
+
+## Documentation
+
+A change a user can see updates the documentation in the same PR. There are three places, each
+with its own reader:
+
+| Where                                     | Reader                           | What goes there                                               |
+| ----------------------------------------- | -------------------------------- | ------------------------------------------------------------- |
+| `apps/docs` (<https://evs.maxencerb.com>) | someone using the library        | guides, examples, concepts, and a reference page per function |
+| `packages/*/README.md`                    | someone landing on npm or GitHub | the pitch, install, one quickstart, links to the site         |
+| this file                                 | someone changing the repository  | layout, toolchain, tests, design notes: nothing a user needs  |
+
+### What to update
+
+| Your change                                         | Update                                                                                                    |
+| --------------------------------------------------- | --------------------------------------------------------------------------------------------------------- |
+| a new function, method or option                    | its own reference page, an entry in `apps/docs/sidebar.mjs`, and the guide that covers the topic          |
+| a parameter, return value or default changes        | the function's page: `Parameters` / `Returns`, and the example that shows it                              |
+| a new error code or diagnostic                      | `reference/diagnostics.mdx`, and the `Errors` table of the page of what raises it                         |
+| a message the Vite plugin prints                    | the `txt` fences that quote it, word for word: `guides/precompiling.mdx`, `reference/vite-plugin.mdx`     |
+| what a provider or an execution mode supports       | the support matrix in `guides/execution.mdx`                                                              |
+| the compiler's passes, its speed or its output size | re-measure `concepts/compilation.mdx` and `concepts/overhead.mdx` (see [Measured pages](#measured-pages)) |
+| install, quickstart, what the package is            | the package's `README.md`, kept short, with a link to the site for the rest                               |
+| the repository: layout, toolchain, tests, release   | this file, and `CLAUDE.md` when an agent needs to know it too                                             |
+
+### Writing style
+
+The site reads like [viem.sh](https://viem.sh): a reader scans a page and finds an example for
+what they need. Open the nearest existing page next to yours and match it.
+
+- **Short paragraphs.** One or two sentences. A third sentence is a new paragraph, a bullet or a
+  table row.
+- **Example first.** Show the code, then say what it does in a sentence. Every statement a reader
+  could doubt has an example.
+- **Tables for enumerations.** Types, codes, modes, options, and "situation → what to do".
+- **Bullets with a bold lead-in** for rules and takeaways: `- **Runs in Node.** The module …`.
+- **A guide links, a reference lists.** A guide explains how to think about one topic and links
+  to the reference for parameters and tables. It never repeats them.
+- **Plain words.** Say what the thing does. No selling ("powerful", "seamless"), no filler, and
+  plain punctuation: the prose uses colons and full stops, never an em dash.
+- **One name per thing.** A _script_ is what `evscript` returns, the _artifact_ is what
+  `compile()` returns, a _precompiled script_ is its shippable form. Use the names the reference
+  uses, everywhere.
+- **Callouts are rare.** `:::caution` for a trap that gives a wrong result, `:::tip` for a
+  shortcut, `:::note` for context. The whole site has nine.
+- **Only measured numbers.** A size or a timing comes from a run and lives on the two measured
+  concept pages. Other pages link to them.
+- **Guides and concept pages end with `## Next steps`:** three or four links, each with what the
+  reader finds there.
+
+### Page shapes
+
+- **Function page** (`reference/builder/read.mdx`, `reference/compile.mdx`): a one-sentence lead,
+  `## Usage` (the smallest complete example, then a few scenario subsections), `## Returns`,
+  `## Parameters` (one `###` per parameter: type, default, a sentence, an example with the
+  relevant line marked), then optional `## Behavior` (short labelled bullets) and `## Errors` (a
+  table). A function imported on its own starts with `## Import`.
+  `reference/builder/select.mdx` is the model.
+- **Object page** (`reference/artifact/index.mdx`, `reference/precompiled/index.mdx`): how you get
+  one, a `## Methods` table that links to each method's page, then `## Properties` with one `###`
+  per property.
+- **Family page** (`reference/expr/*.mdx`): a summary table, then one `##` per method named
+  exactly as the method, so other pages can link to `#add` or `#touint`.
+- **Guide** (`guides/execution.mdx`): how to think about one topic, in a handful of "one
+  sentence, one example" sections.
+
+Frontmatter is `title` and a single-line `description` (the page's first sentence; quote it when
+it contains `: `, which is otherwise invalid YAML and stops the build at content sync).
+
+### Code fences
+
+Every ` ```ts ` fence must typecheck on its own against the built library: the examples are
+tested, not illustrative.
+
+- `{5}` or `{5-7}` marks focus lines: the rest of the block is dimmed until hovered. A range past
+  the end of the fence fails the gate.
+- `collapse={1-8}` folds boilerplate behind a toggle.
+- Code lines stay within 88 columns, the width that fits the article column without scrolling
+  (not enforced by the gate).
+- A fence titled with a file name (`title="abi.ts"`) can be imported by the other fences of the
+  same page (`import { poolAbi } from './abi'`), which is how a tabbed `script.ts` / `abi.ts`
+  example typechecks. Multi-file examples use Starlight's `<Tabs>`.
+- ` ```ts nocheck ` opts a fence out. Use it only when the fence imports something the docs app
+  does not depend on (`vite`, `@maxencerb/vite-plugin-evs`, `node:fs`), never to hide a type
+  error.
+- ` ```txt ` holds what a terminal prints, copied from a real run and never reworded.
+
+### Check your pages
 
 ```sh
-npm publish --access public --tag placeholder   # npm 11 refuses a prerelease without --tag
-npm trust github <name> --file release.yml --repository maxencerb/evs \
-  --allow-publish --allow-stage-publish         # the same relationship as @maxencerb/evs
-npm trust list <name>                           # check it
+vp run build                                 # the snippets typecheck against the built library
+cd apps/docs
+pnpm run check:snippets guides/precompiling  # only the pages whose path contains a filter
+pnpm run dev                                 # read the page in a browser, in both themes
+pnpm run build                               # the full gate: MDX, every internal link and anchor
 ```
 
-Then let the workflow publish the first real version, and deprecate the placeholder afterwards
-(`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Each command asks for 2FA. The registry takes a couple of minutes to show a new package, and lists a
-`0.0.0-stage` version next to yours: a stub it creates itself while the first publish waits for
-2FA. If the
-publish answers `404 Not Found - PUT` although you are logged in, the account's email is not
-verified: npm requires that for a new package and only says so on the staged path
-(`npm stage publish` answers "you must verify your email before publishing a new package"). Also
-done once: "Allow GitHub Actions to create and approve pull requests" in the repo settings.
+- **Run the full build before pushing.** The snippet gate does not render MDX or check links,
+  and the site build fails on a link to a page or a heading that does not exist.
+- **A new page needs a sidebar entry** in `apps/docs/sidebar.mjs`, which also holds the redirect
+  of a page you move.
+- **`{` starts an expression in MDX prose.** Keep braces and `${…}` inside a code span or a
+  fence.
+- **The build prints no warning.** Keep it that way.
+
+### Where things are
+
+| Path (under `apps/docs`)    | What                                                                                                  |
+| --------------------------- | ----------------------------------------------------------------------------------------------------- |
+| `sidebar.mjs`               | the sidebar tree and the redirects of moved pages: a new page must be added here                      |
+| `src/content/docs/**`       | the pages: `getting-started/`, `guides/`, `examples/`, `concepts/`, `reference/`                      |
+| `src/styles/tokens.css`     | design tokens (`--evs-*`), dark by default, light under `data-theme="light"`                          |
+| `src/styles/theme.css`      | maps the tokens onto Starlight's `--sl-*` variables and restyles its chrome                           |
+| `src/components/*.astro`    | Starlight overrides (header, sidebar, page title, right column, hero), listed in `astro.config.mjs`   |
+| `src/components/diagrams/`  | the animated concept diagrams; `captions.ts` holds the sentence each one shows as its caption         |
+| `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)           |
+| `src/pages/llms*.txt.ts`    | `/llms.txt`, `/llms-full.txt` and `/llms-small.txt`, assembled from that Markdown (`src/lib/llms.ts`) |
+| `src/pages/404.astro`       | the 404 page (Starlight's built-in one is disabled)                                                   |
+| `scripts/bench.ts`          | prints the record and compile timings quoted on the two measured concept pages (`pnpm run bench`)     |
+
+A diagram's animated stage is `aria-hidden` and is stripped from the Markdown outputs, so its
+caption has to state the mechanism on its own. The site exposes four machine-readable outputs:
+one `.md` file per page (which the "Copy page" button also uses), `/llms.txt` (a description
+plus a link to every page's `.md`), `/llms-full.txt` (every page) and `/llms-small.txt`
+(everything but the per-function reference). All four come from the raw MDX, not from the
+rendered HTML: rendering every page a second and third time for the two big files used to take
+a third of the site build.
+
+### Measured pages
+
+`concepts/compilation.mdx` and `concepts/overhead.mdx` quote measurements. The record and compile
+timings, and the per-pass split, come from `pnpm run bench` in `apps/docs` (library built first,
+on the repo's Node): take every table of both pages from one run, and keep the machine and
+versions they name current. The Overhead page's "How this was measured" section is the method
+for the rest (bundle sizes with esbuild, download and start-up in headless Chromium, per-call
+cost and gas against a local anvil), which needs tools the workspace does not install. Two
+traps when re-measuring: anvil's default Prague rules floor a transaction's gas by its calldata
+(EIP-7623), which hides the execution gas of a calldata-heavy call, so measure gas with
+`--hardfork cancun`; and a viem client with `batch.multicall` (wagmi's default) delays each
+multicall by a timer tick, which is not CPU time.
+
+The plugin figures of the Overhead page ("Precompile at build time": bundle sizes with and
+without the plugin, start-up, build time) come from `packages/vite-plugin-evs/scripts/bench.ts`,
+which builds the three apps of `scripts/bench-app` with Vite. Run it from the repo root, as
+`node packages/vite-plugin-evs/scripts/bench.ts`: inside the package, where `pnpm run bench`
+runs it, the `node` of Vite+ follows the package's `engines.node` and picks a newer Node than
+`.node-version`. The runtime-entry rows of the "Library size" table are esbuild bundles with
+`--external:*/explain.js`: without `--splitting` esbuild inlines the dynamic import of the
+explain code, and with it the shared chunk also holds code that only the explain chunk uses.
 
 ## Docs site
 
@@ -757,84 +887,7 @@ explicitly: wrangler syncs both flags on every deploy, and with `preview_urls` a
 follows the workers.dev flag, so each merge to `main` used to switch branch preview URLs back
 off. `wrangler` is a **root** devDependency on purpose: the deploy command runs `npx wrangler`
 from the repo root, and pnpm only links a workspace's binaries into that workspace's own
-`node_modules`. Every ` ```ts ` fence under `apps/docs/src/content/docs/` must typecheck
-standalone against the built package (`pnpm run check:snippets` in `apps/docs`);
-` ```ts nocheck ` opts out. `astro build` also validates every internal link.
-
-### Layout and writing conventions
-
-The site follows the shape of viem.sh: narrative groups first, then a reference with **one page
-per function**. Paragraphs are one or two sentences, every statement has an example, and tables
-carry the enumerations (types, codes, modes).
-
-| Path (under `apps/docs`)    | What                                                                                                  |
-| --------------------------- | ----------------------------------------------------------------------------------------------------- |
-| `sidebar.mjs`               | the sidebar tree and the redirects of moved pages: a new page must be added here                      |
-| `src/content/docs/**`       | the pages: `getting-started/`, `guides/`, `examples/`, `concepts/`, `reference/`                      |
-| `src/styles/tokens.css`     | design tokens (`--evs-*`), dark by default, light under `data-theme="light"`                          |
-| `src/styles/theme.css`      | maps the tokens onto Starlight's `--sl-*` variables and restyles its chrome                           |
-| `src/components/*.astro`    | Starlight overrides (header, sidebar, page title, right column, hero), listed in `astro.config.mjs`   |
-| `src/components/diagrams/`  | the animated concept diagrams; `captions.ts` holds the sentence each one shows as its caption         |
-| `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)           |
-| `src/pages/llms*.txt.ts`    | `/llms.txt`, `/llms-full.txt` and `/llms-small.txt`, assembled from that Markdown (`src/lib/llms.ts`) |
-| `src/pages/404.astro`       | the 404 page (Starlight's built-in one is disabled)                                                   |
-| `scripts/bench.ts`          | prints the record and compile timings quoted on the two measured concept pages (`pnpm run bench`)     |
-
-Page shapes:
-
-- **Function page** (`reference/builder/read.mdx`, `reference/compile.mdx`): a one-sentence lead,
-  `## Usage` (the smallest complete example, then a few scenario subsections), `## Returns`,
-  `## Parameters` (one `###` per parameter: type, default, a sentence, an example with the
-  relevant line marked), then optional `## Behavior` (short labelled bullets) and `## Errors` (a
-  table). `reference/builder/select.mdx` is the model.
-- **Family page** (`reference/expr/*.mdx`): a summary table, then one `##` per method named
-  exactly as the method, so other pages can link to `#add` or `#touint`.
-- **Guide**: how to think about one topic, in a handful of "one sentence, one example" sections.
-  It links to the reference for parameters and tables instead of repeating them.
-
-Fence conventions, all checked by `check:snippets`:
-
-- `{5}` or `{5-7}` marks focus lines: the rest of the block is dimmed until hovered. A range past
-  the end of the fence fails the gate.
-- `collapse={1-8}` folds boilerplate behind a toggle.
-- Code lines stay within 88 columns, the width that fits the article column without scrolling
-  (not enforced by the gate).
-- A fence titled with a file name (`title="abi.ts"`) can be imported by the other fences of the
-  same page (`import { poolAbi } from './abi'`), which is how a tabbed `script.ts` / `abi.ts`
-  example typechecks. Multi-file examples use Starlight's `<Tabs>`.
-- `pnpm run check:snippets <path-filter…>` checks only the pages whose path contains a filter
-  (`reference/builder guides/calls`) and can run next to other partial runs.
-
-Frontmatter is `title` and a single-line `description` (the page's first sentence; quote it when
-it contains `: `, which is otherwise invalid YAML and stops the build at content sync).
-
-A diagram's animated stage is `aria-hidden` and is stripped from the Markdown outputs, so its
-caption has to state the mechanism on its own. The site exposes four machine-readable outputs:
-one `.md` file per page (which the "Copy page" button also uses), `/llms.txt` (a description
-plus a link to every page's `.md`), `/llms-full.txt` (every page) and `/llms-small.txt`
-(everything but the per-function reference). All four come from the raw MDX, not from the
-rendered HTML: rendering every page a second and third time for the two big files used to take
-a third of the site build.
-
-`concepts/compilation.mdx` and `concepts/overhead.mdx` quote measurements. The record and compile
-timings, and the per-pass split, come from `pnpm run bench` in `apps/docs` (library built first,
-on the repo's Node): take every table of both pages from one run, and keep the machine and
-versions they name current. The Overhead page's "How this was measured" section is the method
-for the rest (bundle sizes with esbuild, download and start-up in headless Chromium, per-call
-cost and gas against a local anvil), which needs tools the workspace does not install. Two
-traps when re-measuring: anvil's default Prague rules floor a transaction's gas by its calldata
-(EIP-7623), which hides the execution gas of a calldata-heavy call, so measure gas with
-`--hardfork cancun`; and a viem client with `batch.multicall` (wagmi's default) delays each
-multicall by a timer tick, which is not CPU time.
-
-The plugin figures of the Overhead page ("Precompile at build time": bundle sizes with and
-without the plugin, start-up, build time) come from `packages/vite-plugin-evs/scripts/bench.ts`,
-which builds the three apps of `scripts/bench-app` with Vite. Run it from the repo root, as
-`node packages/vite-plugin-evs/scripts/bench.ts`: inside the package, where `pnpm run bench`
-runs it, the `node` of Vite+ follows the package's `engines.node` and picks a newer Node than
-`.node-version`. The runtime-entry rows of the "Library size" table are esbuild bundles with
-`--external:*/explain.js`: without `--splitting` esbuild inlines the dynamic import of the
-explain code, and with it the shared chunk also holds code that only the explain chunk uses.
+`node_modules`.
 
 The build should print no warning. `astro.config.mjs` filters one that rolldown would repeat
 for every page (Astro's own `use astro:head-inject` directive), and the `i18n` collection has an

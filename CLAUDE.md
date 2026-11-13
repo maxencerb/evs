@@ -18,7 +18,8 @@ modules at build time so a client bundle ships the bytecode and not the compiler
   like viem.sh: one- or two-sentence paragraphs, an example for everything, and a reference
   with **one page per function** (`Usage` / `Returns` / `Parameters`; model:
   `reference/builder/select.mdx`). A new page must be added to `apps/docs/sidebar.mjs`. The
-  conventions are in CONTRIBUTING.md ("Layout and writing conventions"). The provider support
+  conventions are in CONTRIBUTING.md ("Documentation": what to update for which change, the
+  writing style, page shapes, fences, and how to check a page). The provider support
   matrix lives in `guides/execution.mdx`.
 - The former `docs/design/**` / `docs/research/**` design and research documents were
   **retired on 2026-09-14** (essentials folded into what is now CONTRIBUTING.md, citations swept
@@ -151,8 +152,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   changesets → opens/updates the "Version Packages" PR (titled "chore(release): version
   packages"); otherwise publishes every package whose version is not on npm yet
   (`@maxencerb/evs`, `@maxencerb/vite-plugin-evs`) via npm **OIDC trusted publishing** (filename
-  must stay `release.yml`; each package has its own trusted publisher on npmjs.com, and a new
-  package needs one manual first publish before it can have one).
+  must stay `release.yml`; each package has its own trusted publisher on npmjs.com, which the
+  maintainer sets up once for a new package).
   Publishing is `changeset publish` → `pnpm publish` (pnpm ≥ 11 publishes natively, does the
   OIDC exchange itself and rewrites `catalog:`/`workspace:` specs) → git tag via
   `CHANGESETS_OUTPUT` (no post-publish provenance check: it only ever failed on registry lag). pnpm
