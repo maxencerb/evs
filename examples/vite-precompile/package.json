@@ -1,0 +1,17 @@
+{
+  "name": "@maxencerb/evs-example-vite-precompile",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vp dev",
+    "build": "vp build"
+  },
+  "dependencies": {
+    "@maxencerb/evs": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "@maxencerb/vite-plugin-evs": "workspace:*",
+    "vite": "catalog:"
+  }
+}

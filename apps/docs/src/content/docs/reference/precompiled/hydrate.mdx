@@ -1,0 +1,226 @@
+---
+title: hydrate
+description: Rebuilds a precompiled script from its serialized data, in a client that never loads the compiler.
+---
+
+import { Tabs, TabItem } from '@astrojs/starlight/components';
+
+Rebuilds a [precompiled script](/reference/precompiled/) from its serialized data, in a client
+that never loads the compiler.
+
+The [Vite plugin](/reference/vite-plugin/) writes this call for you. Use `hydrate` yourself with
+another bundler: see [without Vite](/guides/precompiling/#without-vite).
+
+## Import
+
+```ts
+import { hydrate } from '@maxencerb/evs/runtime';
+```
+
+Only the runtime entry exports `hydrate`, so importing it never loads the compiler.
+
+## Usage
+
+<Tabs syncKey="example">
+  <TabItem label="client.ts">
+    ```ts title="client.ts" {7}
+    import { hydrate } from '@maxencerb/evs/runtime';
+    import { createPublicClient, http } from 'viem';
+    import { mainnet } from 'viem/chains';
+    import { data } from './double.gen';
+
+    const client = createPublicClient({ chain: mainnet, transport: http() });
+    const double = hydrate(data);
+
+    const { doubled } = await client.readContract({
+      ...double.toViem(),
+      functionName: 'double',
+      args: [21n],
+    });
+    // doubled: bigint
+    ```
+  </TabItem>
+  <TabItem label="double.gen.ts">
+    ```ts title="double.gen.ts"
+    // written by a build step: JSON.stringify(compiled.toPrecompiled())
+    export const data = {
+      version: 1,
+      abi: [
+        {
+          type: 'function',
+          name: 'double',
+          stateMutability: 'view',
+          inputs: [{ name: 'arg0', type: 'uint256' }],
+          outputs: [
+            {
+              name: 'result',
+              type: 'tuple',
+              components: [{ name: 'doubled', type: 'uint256' }],
+            },
+          ],
+        },
+        { type: 'error', name: 'EvsInvalidCalldata', inputs: [] },
+        {
+          type: 'error',
+          name: 'EvsDecodeError',
+          inputs: [{ name: 'site', type: 'uint256' }],
+        },
+      ],
+      runtimeBytecode: '0x3661000657005b60c0604052…', // 138 bytes, trimmed here
+      evmVersion: 'cancun',
+    } as const;
+    ```
+  </TabItem>
+</Tabs>
+
+The data must keep its literal types for the call to be typed: a generated `.ts` file that
+ends with `as const` keeps them. A `.json` import widens the ABI and loses them.
+
+### Loading the debug data
+
+[`explainRevert`](/reference/precompiled/explain-revert/) needs the script's debug data. Pass a
+loader, and the data is fetched on the first call only.
+
+<Tabs syncKey="example">
+  <TabItem label="client.ts">
+    ```ts title="client.ts" {5}
+    import { hydrate } from '@maxencerb/evs/runtime';
+    import { data } from './double.gen';
+
+    const double = hydrate(data, {
+      debug: () => import('./double.debug'),
+    });
+
+    const explanation = await double.explainRevert(
+      '0x4e487b710000000000000000000000000000000000000000000000000000000000000011',
+    );
+    // explanation.kind: 'panic'
+    ```
+  </TabItem>
+  <TabItem label="double.debug.ts">
+    ```ts title="double.debug.ts"
+    // written by a build step: JSON.stringify(await compiled.toPrecompiled().debug())
+    export default {
+      version: 1,
+      ir: {
+        irVersion: 1,
+        name: 'double',
+        args: [{ name: 'arg0', type: 'uint256' }],
+        values: [
+          { type: 'uint256', debugName: 'args.arg0' },
+          { type: 'uint256' },
+          { type: 'uint256' },
+        ],
+        cells: [],
+        fns: [],
+        body: [
+          {
+            k: 'const',
+            out: 1,
+            data: {
+              kind: 'word',
+              hex: '0x0000000000000000000000000000000000000000000000000000000000000002',
+            },
+            type: 'uint256',
+            site: 0,
+          },
+          { k: 'bin', op: 'mul', a: 0, b: 1, out: 2, site: 1 },
+        ],
+        returns: [{ name: 'doubled', type: 'uint256', value: 2 }],
+      },
+      sites: [
+        { id: 0, kind: 'stmt', detail: 'const' },
+        {
+          id: 1,
+          kind: 'panic',
+          detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
+          panicCodes: [17],
+        },
+      ],
+    } as const;
+    ```
+  </TabItem>
+</Tabs>
+
+A bundler puts the dynamic import in a chunk of its own, so the debug data stays out of the
+bundle that holds the script.
+
+## Returns
+
+`PrecompiledScript`
+
+The [precompiled script](/reference/precompiled/), typed with the ABI of `data`.
+
+## Parameters
+
+### data
+
+- **Type:** `PrecompiledScriptData`
+
+What [`toJSON`](/reference/precompiled/to-json/) returns, and so what `JSON.stringify` writes
+for a precompiled script.
+
+| Field | Type | Holds |
+| --- | --- | --- |
+| `version` | `1` | The format version. |
+| `abi` | `ScriptAbi` | The script's ABI. |
+| `runtimeBytecode` | `Hex` | The code that runs. |
+| `evmVersion` | `'paris' \| 'shanghai' \| 'cancun'` | The EVM target it was compiled for. |
+
+```ts {5}
+import { hydrate } from '@maxencerb/evs/runtime';
+import { data } from './double.gen';
+
+const double = hydrate(
+  data,
+);
+```
+
+### debug (optional)
+
+- **Type:** `() => Promise<PrecompiledScriptDebug | { default: PrecompiledScriptDebug }>`
+
+Loads what [`debug`](/reference/precompiled/debug/) returned at build time. It may resolve to
+the data, or to a module whose default export is the data.
+
+```ts {6}
+import { hydrate } from '@maxencerb/evs/runtime';
+import { data } from './double.gen';
+
+const double = hydrate(
+  data,
+  { debug: () => import('./double.debug') },
+);
+```
+
+## Behavior
+
+- **Checked on entry.** The data is validated when you call `hydrate`, so data from another
+  version of evs fails there, before any call is sent.
+- **Lazy.** The loader runs on the first `explainRevert()` or `debug()`. A script that never
+  reverts never fetches its debug data.
+- **Once.** Calls made while the data loads share one load, and later calls reuse the result.
+- **Retried.** A load that fails is forgotten, so the next call runs the loader again.
+- **ABI kept as given.** `abi` is the array you passed, not a copy.
+- **Frozen result.** The script is frozen: its properties cannot be reassigned.
+
+## Errors
+
+Thrown by `hydrate`:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `data` has no `version`: it is not the data of a precompiled script |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `version` is not `1`: another version of evs wrote the data, so compile the script again |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `abi` is not an array |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `runtimeBytecode` is not `0x`-prefixed hex with an even number of digits |
+| `EvsCompileError` (`COMPILE_LIMIT`) | `runtimeBytecode` is longer than 65,535 bytes |
+| `EvsCompileError` (`EVM_VERSION`) | `evmVersion` is not `'paris'`, `'shanghai'` or `'cancun'` |
+
+A problem with the debug data shows later, as a rejection of `explainRevert()` and `debug()`:
+
+| Error | When |
+| --- | --- |
+| `EvsError` (`DEBUG_DATA_MISSING`) | the script was hydrated without a `debug` loader |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than the debug data, or to data of another version |
+| the loader's own error | the loader rejected: a chunk that failed to download, for example |

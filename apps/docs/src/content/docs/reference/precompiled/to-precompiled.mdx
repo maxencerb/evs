@@ -1,0 +1,102 @@
+---
+title: toPrecompiled
+description: Narrows a compiled artifact to a precompiled script, which holds the ABI, the bytecode and toViem and needs no compiler.
+---
+
+Narrows a compiled artifact to a [precompiled script](/reference/precompiled/): the ABI, the
+bytecode and `toViem()`, with nothing of the compiler.
+
+## Usage
+
+```ts {11}
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+const precompiled = symbolOf.compile().toPrecompiled();
+
+const { symbol } = await client.readContract({
+  ...precompiled.toViem(), // { abi, code }
+  functionName: 'symbolOf',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+});
+// symbol: string
+```
+
+The call is typed like the artifact's: `toViem()` takes the same options and returns the same
+parameters.
+
+### In a build-time module
+
+With the [Vite plugin](/reference/vite-plugin/), a `*.evs.ts` file exports precompiled scripts.
+The file runs during the build and the client receives the script without the compiler.
+
+```ts title="double.evs.ts" {5-6}
+import { evscript, t } from '@maxencerb/evs';
+
+export const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+)
+  .compile()
+  .toPrecompiled();
+```
+
+### Serializing
+
+`JSON.stringify` turns a precompiled script into the plain data that
+[`hydrate`](/reference/precompiled/hydrate/) takes.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+const json = JSON.stringify(precompiled);
+// '{"version":1,"abi":[…],"runtimeBytecode":"0x3661000657…","evmVersion":"cancun"}'
+```
+
+### Keeping the artifact
+
+`toPrecompiled()` leaves the artifact as it is. Keep it in a variable to use
+[`disassemble`](/reference/artifact/disassemble/) or the source map before you narrow.
+
+```ts {6-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const compiled = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+).compile();
+const listing = compiled.disassemble().format();
+const precompiled = compiled.toPrecompiled();
+```
+
+## Returns
+
+`PrecompiledScript`
+
+The [precompiled script](/reference/precompiled/), typed with the artifact's ABI.
+
+## Parameters
+
+None.
+
+## Behavior
+
+- **Same values.** `abi` is the artifact's own array, and `runtimeBytecode` and `initBytecode`
+  are its strings.
+- **Same call.** `toViem()` returns what the artifact's returns, for every option.
+- **Debug data included.** The script already holds what
+  [`explainRevert`](/reference/precompiled/explain-revert/) needs, so that call never rejects
+  for missing data.
+- **Options are dropped.** Only `evmVersion` is kept. `optimize` and `peephole` already shaped
+  the bytecode.
+- **Frozen result.** The script is frozen: its properties cannot be reassigned.

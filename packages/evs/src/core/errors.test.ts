@@ -32,6 +32,7 @@ describe('EvsError', () => {
       'ABI_SHAPE',
       'COMPILE_LIMIT',
       'EVM_VERSION',
+      'DEBUG_DATA_MISSING',
       'INTERNAL',
     ];
     for (const code of codes) expect(new EvsError(code, 'x').code).toBe(code);

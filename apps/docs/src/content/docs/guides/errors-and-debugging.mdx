@@ -157,6 +157,9 @@ A panic lists every site that can raise its code. A strict call also passes a ca
 through unchanged, so a `Panic` or an evs error can come from a contract you called.
 :::
 
+An app that [precompiles its scripts](/guides/precompiling/#errors) keeps both functions. There
+`explainRevert` returns a promise, because the data it reads loads on the first call.
+
 ## Failures without revert data
 
 Some failures leave nothing to decode.
@@ -203,3 +206,5 @@ execution trace.
 - [`explainRevert`](/reference/artifact/explain-revert/): every kind of explanation it returns.
 - [`matchScriptError`](/reference/utilities/match-script-error/): the handler record in detail.
 - [Testing scripts](/guides/testing-scripts/): reproduce a revert without a node.
+- [Precompiling scripts](/guides/precompiling/#errors): the same tools in an app that ships no
+  compiler.

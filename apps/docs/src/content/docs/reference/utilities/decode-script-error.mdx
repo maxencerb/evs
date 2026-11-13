@@ -12,6 +12,9 @@ switch on by `name`.
 import { decodeScriptError } from '@maxencerb/evs';
 ```
 
+`@maxencerb/evs/runtime` exports it too. Import it from there in a client that runs
+[precompiled scripts](/guides/precompiling/#errors), so the compiler stays out of the bundle.
+
 ## Usage
 
 ```ts {27-28}
@@ -75,6 +78,26 @@ const decoded = decodeScriptError(
 // { name: 'Panic', code: 18n, meaning: 'division or modulo by zero', raw: '0x4e48…' }
 ```
 
+### With a precompiled script
+
+A [precompiled script](/reference/precompiled/) has the ABI, which is all the function reads.
+
+```ts {2,10}
+import { evscript, t } from '@maxencerb/evs';
+import { decodeScriptError } from '@maxencerb/evs/runtime';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+const precompiled = ratio.compile().toPrecompiled();
+
+const decoded = decodeScriptError(
+  precompiled,
+  '0x4e487b710000000000000000000000000000000000000000000000000000000000000012',
+);
+// { name: 'Panic', code: 18n, meaning: 'division or modulo by zero', raw: '0x4e48…' }
+```
+
 ## Returns
 
 `DecodedScriptError | undefined`
@@ -98,7 +121,8 @@ payload in `raw`:
 
 - **Type:** `{ abi: Abi }`
 
-The script whose errors to decode against: an `evscript()` result or its compiled artifact.
+The script whose errors to decode against: an `evscript()` result, its compiled artifact or a
+[precompiled script](/reference/precompiled/).
 
 ```ts {10}
 import { compile, decodeScriptError, evscript, t } from '@maxencerb/evs';

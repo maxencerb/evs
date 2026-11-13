@@ -2,7 +2,8 @@
 
 This is a **pnpm workspaces monorepo** (driven by Vite+, scripts on Node) for `@maxencerb/evs`: a TypeScript callback-builder
 compiled to EVM runtime bytecode for `eth_call` read scripts, with a literal-typed ABI for
-viem inference.
+viem inference. The repo also publishes `@maxencerb/vite-plugin-evs`, which compiles `*.evs.ts`
+modules at build time so a client bundle ships the bytecode and not the compiler.
 
 ## Documentation
 
@@ -17,7 +18,8 @@ viem inference.
   like viem.sh: one- or two-sentence paragraphs, an example for everything, and a reference
   with **one page per function** (`Usage` / `Returns` / `Parameters`; model:
   `reference/builder/select.mdx`). A new page must be added to `apps/docs/sidebar.mjs`. The
-  conventions are in CONTRIBUTING.md ("Layout and writing conventions"). The provider support
+  conventions are in CONTRIBUTING.md ("Documentation": what to update for which change, the
+  writing style, page shapes, fences, and how to check a page). The provider support
   matrix lives in `guides/execution.mdx`.
 - The former `docs/design/**` / `docs/research/**` design and research documents were
   **retired on 2026-09-14** (essentials folded into what is now CONTRIBUTING.md, citations swept
@@ -52,10 +54,12 @@ Tests run on **vitest** through `vp test` (prool per-worker anvil via
 
 - Run them through `vp` / the package scripts, never a bare `vitest`/`node --test`, and from the
   repo root (the root `vite.config.ts` re-roots the `packages/evs` projects):
-  - `vp run test` (= `pnpm run test`) — unit + type tests (`vp test run --project unit --project types`)
-  - `vp run test:integration` — anvil via prool (foundry must be installed)
+  - `vp run test` (= `pnpm run test`) — unit + type tests and the plugin's tests
+    (`vp test run --project unit --project types --project plugin`)
+  - `vp run test:integration` — anvil via prool (foundry must be installed): the library's
+    `integration` project and the plugin's `plugin-integration`
   - `vp run test:all` — everything
-  - Single file: `vp test run <path> --project unit`
+  - Single file: `vp test run <path> --project unit` (plugin: `--project plugin`)
 
 ## Layout
 
@@ -66,13 +70,26 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   declaration maps, and `src/` is not published), ESM-only. The committed `version` is the **last released** one —
   only the changesets "Version Packages" PR (titled "chore(release): version packages")
   changes it.
+  It has two entries: `.` (`src/index.ts`) and `./runtime` (`src/runtime.ts`), the
+  compiler-free one a client imports to run precompiled scripts (`hydrate`, the error
+  decoders). Nothing `runtime.ts` reaches may import the compiler, and the compiler must not
+  import `explain.ts` dynamically: `src/runtime-graph.test.ts` checks both (reasons in
+  CONTRIBUTING.md, "The runtime entry").
+- `packages/vite-plugin-evs` — the published Vite plugin (peers: `vite`, `@maxencerb/evs` as
+  `workspace:^`, which must stay that way: see "Releasing" in CONTRIBUTING.md). It runs
+  `*.evs.ts` modules in Node with Vite's `runnerImport` and replaces them with `hydrate(...)`
+  calls; it imports `vite` by its real name (the `prefer-vite-plus-imports` lint rule is off for
+  its `src/`). Tests: `test/*.test.ts` drive Vite on `test/fixtures/` with the plugin from
+  source, `test/integration` runs a built bundle on anvil. Its user-facing messages are quoted
+  in `apps/docs` (`guides/precompiling.mdx`, `reference/vite-plugin.mdx`): change both together.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored; the barrel uses `.ts` specifiers so the examples
   can import it under plain Node). `forge-std` is a git submodule at
   `lib/forge-std` (never an npm dependency).
 - `examples/` — runnable example scripts (private workspaces), run with plain
-  `node examples/<name>/index.ts`.
+  `node examples/<name>/index.ts`. `examples/vite-precompile` is a Vite app instead: it builds
+  through the plugin's `dist` (`vp run build` in its folder, after the root `vp run build`).
 - `apps/docs` — Astro Starlight docs site → `evs.maxencerb.com`. Built/deployed by
   **Cloudflare Workers Builds**, NOT ci.yml (dashboard settings are recorded in
   CONTRIBUTING.md's "Docs site" section; its build command uses plain `pnpm …` and must not
@@ -111,7 +128,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 ## Key commands
 
 - `vp install` — install everything (workspaces + catalogs; = `pnpm install`)
-- `vp run build` — build `@maxencerb/evs` (`vp pack`: dist/ js + d.ts + maps)
+- `vp run build` — build `@maxencerb/evs`, then the Vite plugin (`vp pack`: dist/ js + d.ts + maps)
 - `vp check` — format + lint (type-aware) + tsgolint type-check, one pass (use in loops)
 - `vp run check` — `vp check` + per-workspace `tsc --noEmit` / `astro check`
 - `vp run typecheck` — `tsc --noEmit` / `astro check` across workspaces
@@ -126,14 +143,17 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 
 - `.github/workflows/ci.yml` — one serial job (`ci`): `voidzero-dev/setup-vp` (node from
   `.node-version`, pnpm from `packageManager`, cached pnpm store, `vp install --frozen-lockfile`) → forge
-  build + test + codegen → build library → fmt:check → lint:ci → typecheck → unit+type tests
-  → integration (anvil; foundry pinned `FOUNDRY_VERSION`) → publint + attw → informational
+  build + test + codegen → build library + plugin → fmt:check → lint:ci → typecheck → unit+type+plugin
+  tests → integration (anvil; foundry pinned `FOUNDRY_VERSION`) → example app build → publint +
+  attw for both packages → informational
   `changeset status`. `fork-tests` runs on `workflow_dispatch` only (`ANVIL_FORK_URL`).
   Every action is pinned to a commit SHA with the tag in a trailing comment — bump both.
 - `.github/workflows/release.yml` — **changesets** on every push to `main`: pending
   changesets → opens/updates the "Version Packages" PR (titled "chore(release): version
-  packages"); otherwise publishes the not-yet-
-  published version via npm **OIDC trusted publishing** (filename must stay `release.yml`).
+  packages"); otherwise publishes every package whose version is not on npm yet
+  (`@maxencerb/evs`, `@maxencerb/vite-plugin-evs`) via npm **OIDC trusted publishing** (filename
+  must stay `release.yml`; each package has its own trusted publisher on npmjs.com, which the
+  maintainer sets up once for a new package).
   Publishing is `changeset publish` → `pnpm publish` (pnpm ≥ 11 publishes natively, does the
   OIDC exchange itself and rewrites `catalog:`/`workspace:` specs) → git tag via
   `CHANGESETS_OUTPUT` (no post-publish provenance check: it only ever failed on registry lag). pnpm

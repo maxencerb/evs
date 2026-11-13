@@ -12,6 +12,9 @@ hit. The limits are described in [deployless limits](/guides/execution/#deployle
 import { explainDeploylessError } from '@maxencerb/evs';
 ```
 
+`@maxencerb/evs/runtime` exports it too. Import it from there in a client that runs
+[precompiled scripts](/reference/precompiled/), so the compiler stays out of the bundle.
+
 ## Usage
 
 ```ts {19-20}

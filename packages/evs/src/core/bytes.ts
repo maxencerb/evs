@@ -26,8 +26,9 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** The two lowercase hex digits of every byte value, indexed by the byte. */
-const HEX_PAIRS: readonly string[] = Array.from({ length: 256 }, (_, b) =>
+/** The two lowercase hex digits of every byte value, indexed by the byte. `@__PURE__`: a bundle
+ *  that never calls `bytesToHex` (the runtime entry's `hydrate`) drops the table. */
+const HEX_PAIRS: readonly string[] = /* @__PURE__ */ Array.from({ length: 256 }, (_, b) =>
   b.toString(16).padStart(2, '0'),
 );
 

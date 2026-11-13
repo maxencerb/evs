@@ -25,6 +25,7 @@ export const sidebar = [
       { label: 'Calling contracts', slug: 'guides/calls' },
       { label: 'Control flow', slug: 'guides/control-flow' },
       { label: 'Executing scripts', slug: 'guides/execution' },
+      { label: 'Precompiling scripts', slug: 'guides/precompiling' },
       { label: 'Errors & debugging', slug: 'guides/errors-and-debugging' },
       { label: 'Testing scripts', slug: 'guides/testing-scripts' },
       { label: 'EVM targets', slug: 'guides/evm-targets' },
@@ -52,6 +53,7 @@ export const sidebar = [
     items: [
       { label: 'evscript', slug: 'reference/evscript' },
       { label: 'compile', slug: 'reference/compile' },
+      { label: 'Vite plugin', slug: 'reference/vite-plugin' },
     ],
   },
   {
@@ -140,6 +142,19 @@ export const sidebar = [
       { label: 'toViem', slug: 'reference/artifact/to-viem' },
       { label: 'disassemble', slug: 'reference/artifact/disassemble' },
       { label: 'explainRevert', slug: 'reference/artifact/explain-revert' },
+    ],
+  },
+  {
+    label: 'Precompiled script',
+    collapsed: true,
+    items: [
+      { label: 'Overview', slug: 'reference/precompiled' },
+      { label: 'toPrecompiled', slug: 'reference/precompiled/to-precompiled' },
+      { label: 'hydrate', slug: 'reference/precompiled/hydrate' },
+      { label: 'explainRevert', slug: 'reference/precompiled/explain-revert' },
+      { label: 'debug', slug: 'reference/precompiled/debug' },
+      { label: 'toJSON', slug: 'reference/precompiled/to-json' },
+      { label: 'isPrecompiledScript', slug: 'reference/precompiled/is-precompiled-script' },
     ],
   },
   {

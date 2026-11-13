@@ -35,6 +35,8 @@ export type EvsErrorCode =
   | 'COMPILE_LIMIT'
   /** An unsupported `evmVersion` option. */
   | 'EVM_VERSION'
+  /** `explainRevert()` / `debug()` on a precompiled script hydrated without its debug data. */
+  | 'DEBUG_DATA_MISSING'
   /** A broken evs invariant or a failed bytecode verifier: a bug in evs (`EvsInternalError`). */
   | 'INTERNAL';
 

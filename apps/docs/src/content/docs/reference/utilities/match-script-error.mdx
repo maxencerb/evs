@@ -12,6 +12,9 @@ error and a `_` fallback for everything else.
 import { matchScriptError } from '@maxencerb/evs';
 ```
 
+`@maxencerb/evs/runtime` exports it too. Import it from there in a client that runs
+[precompiled scripts](/guides/precompiling/#errors), so the compiler stays out of the bundle.
+
 ## Usage
 
 ```ts {28-32}
@@ -105,7 +108,8 @@ Whatever the handler that ran returns. The type is the union of every handler's 
 
 - **Type:** `{ abi: Abi }`
 
-The script whose errors to match: an `evscript()` result or its compiled artifact.
+The script whose errors to match: an `evscript()` result, its compiled artifact or a
+[precompiled script](/reference/precompiled/).
 
 ```ts {7}
 import { compile, evscript, matchScriptError, t } from '@maxencerb/evs';

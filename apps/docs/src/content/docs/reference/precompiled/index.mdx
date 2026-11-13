@@ -1,0 +1,150 @@
+---
+title: Precompiled script
+description: What toPrecompiled returns. The ABI, the bytecode and toViem without the compiler, for a client that only runs the script.
+---
+
+[`toPrecompiled`](/reference/precompiled/to-precompiled/) returns a frozen `PrecompiledScript`:
+the ABI, the bytecode, and the methods to run the script with viem and explain a revert. It
+holds nothing of the compiler, so a client can ship it alone.
+
+```ts {11,14}
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const supplyOf = evscript({ name: 'supplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+const precompiled = supplyOf.compile().toPrecompiled();
+
+const { supply } = await client.readContract({
+  ...precompiled.toViem(),
+  functionName: 'supplyOf',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+});
+// supply: bigint
+```
+
+## Getting one
+
+| From | Call | Where |
+| --- | --- | --- |
+| a compiled artifact | [`compiled.toPrecompiled()`](/reference/precompiled/to-precompiled/) | a build step, a test, a Node script |
+| serialized data | [`hydrate(data)`](/reference/precompiled/hydrate/) | the client |
+| a `*.evs.ts` module | an import, with the [Vite plugin](/reference/vite-plugin/) | the client |
+
+[Precompiling scripts](/guides/precompiling/) walks through the three.
+
+## Methods
+
+| Method | Returns | Description |
+| --- | --- | --- |
+| [`toViem(options?)`](/reference/artifact/to-viem/) | `readContract` parameters | The artifact's `toViem`: same options, same results. |
+| [`explainRevert(data)`](/reference/precompiled/explain-revert/) | `Promise<RevertExplanation>` | Classifies revert data and points at the part of the script it came from. |
+| [`debug()`](/reference/precompiled/debug/) | `Promise<PrecompiledScriptDebug>` | The data behind `explainRevert`, for a build step to write to a file. |
+| [`toJSON()`](/reference/precompiled/to-json/) | `PrecompiledScriptData` | The plain data that `hydrate` takes. `JSON.stringify` calls it. |
+
+## Properties
+
+### abi
+
+- **Type:** `ScriptAbi`
+
+The artifact's [`abi`](/reference/artifact/#abi), literal-typed: the script's function, the two
+evs runtime errors, then your declared errors.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+precompiled.abi[0].name; // 'double'
+```
+
+### runtimeBytecode
+
+- **Type:** `Hex`
+
+The code that runs, the same bytes as the artifact's
+[`runtimeBytecode`](/reference/artifact/#runtimebytecode).
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+precompiled.runtimeBytecode; // '0x3661000657…', 138 bytes
+```
+
+### initBytecode
+
+- **Type:** `Hex`
+
+Creation bytecode: a 10-byte wrapper that returns `runtimeBytecode`. It is rebuilt from
+`runtimeBytecode` and `evmVersion`, so the serialized data holds the code once.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile().toPrecompiled();
+
+precompiled.initBytecode; // '0x61008a80600a5f395ff3' + the runtime bytecode, 148 bytes
+```
+
+### evmVersion
+
+- **Type:** `'paris' | 'shanghai' | 'cancun'`
+
+The [EVM target](/guides/evm-targets/) the script was compiled for.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const precompiled = double.compile({ evmVersion: 'paris' }).toPrecompiled();
+
+precompiled.evmVersion; // 'paris'
+```
+
+## Compared with the artifact
+
+| | [Compiled artifact](/reference/artifact/) | Precompiled script |
+| --- | --- | --- |
+| `abi`, `runtimeBytecode`, `initBytecode` | yes | yes, the same values |
+| `toViem()` | yes | yes, with the same options and results |
+| `explainRevert()` | synchronous | asynchronous: the first call loads the debug data |
+| `disassemble()`, `sourceMap`, `ir`, `options` | yes | no |
+| Serializes to JSON | no | yes, through `toJSON()` |
+| Needs the compiler | yes | no |
+
+## Types
+
+`@maxencerb/evs/runtime` and `@maxencerb/evs` both export the three types.
+
+```ts
+import type {
+  PrecompiledScript,
+  PrecompiledScriptData,
+  PrecompiledScriptDebug,
+} from '@maxencerb/evs/runtime';
+```
+
+| Type | Is |
+| --- | --- |
+| `PrecompiledScript<abi>` | the script: what `toPrecompiled` and `hydrate` return |
+| `PrecompiledScriptData<abi>` | its plain data: what [`toJSON`](/reference/precompiled/to-json/) returns and `hydrate` takes |
+| `PrecompiledScriptDebug` | its debug data: what [`debug`](/reference/precompiled/debug/) resolves to |

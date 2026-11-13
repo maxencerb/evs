@@ -25,11 +25,15 @@ import type {
   InterpValues,
   LabelCarrier,
   Mnemonic,
+  PrecompiledScript,
+  PrecompiledScriptData,
+  PrecompiledScriptDebug,
   ResolveArgName,
   SignatureName,
   SiteId,
   SubcallVerbOf,
   ToArgSpec,
+  ToViem,
   ToViemMode,
   Tried,
   TryCallVerb,
@@ -87,6 +91,10 @@ test('public-signature helper types are exported by name', () => {
   >().toEqualTypeOf<{ y: bigint }>();
   // the run-time mode accepted by toViem()'s catch-all overload
   expectTypeOf<ToViemMode>().toEqualTypeOf<'deployless' | 'stateOverride'>();
+  // the precompiled script (compiled.toPrecompiled()) and the toViem() it shares with the artifact
+  expectTypeOf<PrecompiledScript['toViem']>().toEqualTypeOf<ToViem<readonly unknown[]>>();
+  expectTypeOf<ReturnType<PrecompiledScript['toJSON']>>().toEqualTypeOf<PrecompiledScriptData>();
+  expectTypeOf<PrecompiledScriptDebug['sites'][number]['id']>().toEqualTypeOf<SiteId>();
   // the verb types are aliases of the shared strict/try shapes
   expectTypeOf<TryReadVerb>().toEqualTypeOf<SubcallVerbOf<ViewMutability, true>>();
   expectTypeOf<CallVerb>().toEqualTypeOf<CallVerbOf<false>>();

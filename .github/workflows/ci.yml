@@ -37,7 +37,7 @@ jobs:
         working-directory: packages/contracts
         run: forge build && forge test && vp run codegen
 
-      - name: Build library
+      - name: Build library + Vite plugin
         run: vp run build
 
       # type-aware lint + tsgolint type-check resolve workspace imports through the built
@@ -54,13 +54,18 @@ jobs:
       - name: Integration tests (anvil via prool)
         run: vp run test:integration
 
+      # the example resolves the plugin through its built dist, like an app that installed it
+      - name: Example app builds through the Vite plugin
+        working-directory: examples/vite-precompile
+        run: vp run build
+
       - name: Package health (publint + attw)
-        working-directory: packages/evs
         # esm-only profile: CJSResolvesToESM is the accepted cost of shipping ESM-only;
         # attw exits 1 on ANY problem without the profile.
         run: |
-          vp exec publint
-          vp exec attw --pack . --profile esm-only
+          for package in packages/evs packages/vite-plugin-evs; do
+            (cd "$package" && vp exec publint && vp exec attw --pack . --profile esm-only)
+          done
 
       # Informational (continue-on-error): tooling-only PRs legitimately have no changeset.
       - name: Changeset present?

@@ -126,10 +126,47 @@ provider supports it: see the
 > - In deployless mode, a caller-relative read such as `balanceOf(s.env('caller'))` reads the
 >   wrapper contract's balance, not yours. Use state override with `account`.
 
+## Precompile at build time
+
+An app that calls `compile()` ships the compiler: 67 kB of JavaScript (brotli). With the Vite
+plugin, a `*.evs.ts` file runs during the build and the app ships only the ABI and the bytecode of
+each script. TypeScript still reads the real file, so the call is typed as before.
+
+```sh
+npm install -D @maxencerb/vite-plugin-evs
+```
+
+```ts
+// vite.config.ts
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({ plugins: [evs()] });
+```
+
+```ts
+// src/pool.evs.ts: runs in Node, during the build
+export const poolTokens = evscript(/* … */).compile().toPrecompiled();
+
+// src/main.ts: no compiler in the bundle
+import { poolTokens } from './pool.evs';
+
+await client.readContract({
+  ...poolTokens.toViem(),
+  functionName: 'poolTokens',
+  args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'],
+});
+```
+
+Reverts stay readable: `decodeScriptError` works from the ABI, and `explainRevert()` loads its data
+on the first call. See [Precompiling scripts](https://evs.maxencerb.com/guides/precompiling/), which
+also covers builds without Vite.
+
 ## Documentation
 
 - [Quick start](https://evs.maxencerb.com/getting-started/quick-start/): a first script, end to end.
 - [Guides](https://evs.maxencerb.com/guides/writing-scripts/): calls, control flow, debugging.
+- [Precompiling scripts](https://evs.maxencerb.com/guides/precompiling/): compile during the build.
 - [Builder reference](https://evs.maxencerb.com/reference/builder/): every `s.*` method.
 - [Expr reference](https://evs.maxencerb.com/reference/expr/): arithmetic, comparisons, conversions.
 - [Types reference](https://evs.maxencerb.com/reference/types/): the `t.*` type constructors.
