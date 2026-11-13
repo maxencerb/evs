@@ -3,6 +3,9 @@
  * out, and what `explainRevert` needs in chunks that load on demand.
  */
 
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+
 import { encodeErrorResult, getAddress } from 'viem';
 import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
@@ -14,6 +17,7 @@ import {
   appRoot,
   buildApp,
   isCompilerModule,
+  packageRoot,
   renderedModules,
   upFrontChunks,
   type Built,
@@ -151,6 +155,38 @@ test('the module resolves its imports like the app: aliases and the mode', async
   expect(built.pluginInfo).toStrictEqual([
     'no script was precompiled: this build has no *.evs.ts module that exports one',
   ]);
+});
+
+test('the module resolves its imports like the app: the paths of the tsconfig', async () => {
+  const built = await buildApp('src/main.ts', {
+    root: join(packageRoot, 'test/fixtures/tsconfig-paths'),
+    write: true,
+    config: { resolve: { tsconfigPaths: true } },
+  });
+  // `@/limits.ts`, from the app's own code and from the build-time module
+  expect(await built.importEntry()).toMatchObject({ viaAppCode: 10n, min: 10n });
+});
+
+describe('an import of a build-time module with a query', () => {
+  const source = readFileSync(join(appRoot, 'scripts.evs.ts'), 'utf8');
+
+  test('?raw is the text of the file, next to the precompiled module', async () => {
+    const built = await buildApp('raw-import.ts', { write: true });
+    const module = await built.importEntry();
+    expect(module.source).toBe(source);
+    expect(isPrecompiledScript(module.sum)).toBe(true);
+    // the file is one build-time module, whatever the number of ways it is imported
+    expect(built.pluginInfo).toStrictEqual(['precompiled 3 scripts from 1 file']);
+    expect(built.logs.warnings).toStrictEqual([]);
+  });
+
+  test('alone, it precompiles nothing: the module is not run', async () => {
+    const built = await buildApp('raw-only.ts', { write: true });
+    expect((await built.importEntry()).source).toBe(source);
+    expect(built.pluginInfo).toStrictEqual([
+      'no script was precompiled: this build has no *.evs.ts module that exports one',
+    ]);
+  });
 });
 
 describe('a server build', () => {

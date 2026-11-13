@@ -187,3 +187,75 @@ describe('@maxencerb/evs/runtime is compiler-free', () => {
     },
   );
 });
+
+// The patterns above only know the compiler by the paths it has today: a compiler module added
+// at another path would pass them. So the modules a client loads are also pinned, one by one.
+describe('what a client of @maxencerb/evs/runtime loads is pinned', () => {
+  const ON_PURPOSE =
+    'This is an allowlist, compared by equality. A module added to it is code every client of ' +
+    'a precompiled script downloads: make that a decision. If the module belongs there, add ' +
+    'it to the list (and refresh the sizes the docs quote); if it does not, import what you ' +
+    'need from a module that is already listed, or keep the import type-only.';
+
+  /** `runtime.ts` and what it imports statically: the code a client downloads up front. */
+  const UP_FRONT: readonly string[] = [
+    'abi/artifact.ts',
+    'abi/layout.ts',
+    'abi/revert.ts',
+    'asm/forks.ts',
+    'core/bytes.ts',
+    'core/errors.ts',
+    'core/signature.ts',
+    'core/types.ts',
+    'core/types/args.ts',
+    'core/types/namespace.ts',
+    'core/types/predicates.ts',
+    'deployless.ts',
+    'hydrate.ts',
+    'ir/magnitude.ts',
+    'ir/nodes.ts',
+    'ir/nodes/json.ts',
+    'ir/nodes/schema.ts',
+    'ir/nodes/walk.ts',
+    'precompiled.ts',
+    'runtime.ts',
+    'viem.ts',
+  ];
+
+  /** `explain.ts` and what it imports statically: the code the first `explainRevert()` loads
+   *  (the modules already loaded up front are not downloaded again). */
+  const ON_DEMAND: readonly string[] = [
+    'abi/artifact.ts',
+    'abi/layout.ts',
+    'abi/revert.ts',
+    'asm/forks.ts',
+    'asm/ops.ts',
+    'asm/sourcemap.ts',
+    'core/bytes.ts',
+    'core/errors.ts',
+    'core/signature.ts',
+    'core/types.ts',
+    'core/types/args.ts',
+    'core/types/namespace.ts',
+    'core/types/predicates.ts',
+    'explain.ts',
+    'ir/nodes.ts',
+    'ir/nodes/json.ts',
+    'ir/nodes/schema.ts',
+    'ir/nodes/walk.ts',
+  ];
+
+  const modulesOf = (entry: string): string[] => [...closureOf(entry).importerOf.keys()].toSorted();
+
+  test('up front: the static import closure of runtime.ts, exactly', () => {
+    expect(modulesOf('runtime.ts'), `the modules loaded up front changed. ${ON_PURPOSE}`).toEqual(
+      UP_FRONT,
+    );
+  });
+
+  test('on demand: the static import closure of explain.ts, exactly', () => {
+    expect(modulesOf('explain.ts'), `the modules loaded on demand changed. ${ON_PURPOSE}`).toEqual(
+      ON_DEMAND,
+    );
+  });
+});

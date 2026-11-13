@@ -7,6 +7,8 @@ import { join } from 'node:path';
 
 import { expect, test } from 'vite-plus/test';
 
+// the example's script, run without the plugin
+import { poolTokens } from '../../../examples/vite-precompile/src/pool.evs.ts';
 import { buildApp, isCompilerModule, packageRoot, renderedModules } from './helpers.js';
 
 const exampleRoot = join(packageRoot, '../../examples/vite-precompile');
@@ -17,7 +19,6 @@ test('examples/vite-precompile builds clean', async () => {
   expect(built.pluginInfo).toStrictEqual(['precompiled 1 script from 1 file']);
   expect(built.logs.warnings).toStrictEqual([]);
   expect(renderedModules(built.chunks).filter(isCompilerModule)).toStrictEqual([]);
-  // the page's script is the precompiled one
-  expect(built.entry.code).toContain('poolTokens');
-  expect(built.entry.code).toMatch(/runtimeBytecode:`0x[0-9a-f]+`/);
+  // the page's script is the precompiled one: its bytecode is in the chunk as text
+  expect(built.entry.code).toContain(poolTokens.runtimeBytecode);
 });

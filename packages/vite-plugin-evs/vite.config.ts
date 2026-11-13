@@ -1,4 +1,20 @@
-import { defineConfig } from 'vite-plus';
+import { defineConfig, type Plugin } from 'vite-plus';
+
+/**
+ * `sourcemap: true` makes the bundler end every output file with a `sourceMappingURL` comment,
+ * the declaration files included, and `dts.sourcemap: false` then drops the declaration maps
+ * those comments name. This takes the comments out, so no published file points at a missing
+ * one. (packages/evs/vite.config.ts has the same plugin.)
+ */
+const noDeclarationMapComment: Plugin = {
+  name: 'no-declaration-map-comment',
+  generateBundle(_options, bundle) {
+    for (const file of Object.values(bundle)) {
+      if (file.type !== 'chunk' || !file.fileName.endsWith('.d.ts')) continue;
+      file.code = file.code.replace(/\n\/\/# sourceMappingURL=\S+\.d\.ts\.map\s*$/, '\n');
+    }
+  },
+};
 
 export default defineConfig({
   // Plugin build (`vp pack`, tsdown): same shape as the library's (packages/evs/vite.config.ts).
@@ -10,6 +26,7 @@ export default defineConfig({
     sourcemap: true,
     outputOptions: { sourcemapExcludeSources: false },
     dts: { sourcemap: false },
+    plugins: [noDeclarationMapComment],
   },
   test: {
     projects: [

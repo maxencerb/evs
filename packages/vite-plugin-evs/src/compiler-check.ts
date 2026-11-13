@@ -4,14 +4,18 @@
  * Precompiling a script only pays off when nothing else in the app imports the compiler: one
  * module that still calls `evscript()` or `compile()` at run time brings all of it along.
  *
- * "The compiler" is every module of `@maxencerb/evs` that its `runtime` entry does not reach
- * (`evs-package.ts`). A module counts once it has code in an output chunk: tree shaking drops
- * the compiler when an app takes only helpers from the main entry, and that is not reported.
+ * "The compiler" is every module of an `@maxencerb/evs` package that its `runtime` entry does
+ * not reach (`evs-package.ts`). A module counts once it has code in an output chunk: tree
+ * shaking drops the compiler when an app takes only helpers from the main entry, and that is
+ * not reported.
+ *
+ * A worker is a bundle of its own, checked like a page's. What is found in it is added to the
+ * report of the bundle that starts the worker (`mergeShippedCompilers`).
  */
 
 import type { Rolldown } from 'vite';
 
-import type { EvsPackage } from './evs-package.js';
+import { readEvsPackage, type EvsPackage, type EvsPackageLookup } from './evs-package.js';
 import { displayPath } from './paths.js';
 
 export interface ShippedCompiler {
@@ -25,24 +29,25 @@ export interface ShippedCompiler {
 
 interface CompilerChunk {
   readonly fileName: string;
-  /** Loaded with the page, or only when a dynamic import asks for it. */
-  readonly upFront: boolean;
+  /** With the page, only when a dynamic import asks for it, or by a worker the page starts. */
+  readonly loaded: 'up front' | 'on demand' | 'in a worker';
 }
 
 /** Looks for compiler code in `bundle`. `undefined` when there is none. */
-export function findShippedCompiler(
+export async function findShippedCompiler(
   context: Rolldown.PluginContext,
   bundle: Rolldown.OutputBundle,
-  evsPackage: EvsPackage,
-): ShippedCompiler | undefined {
-  // only the main entry exports the compiler: a build without that module holds none of it
-  const mainEntry = context.getModuleInfo(evsPackage.mainEntry);
-  if (mainEntry === null) return undefined;
-
-  const isCompiler = (id: string): boolean =>
-    id.startsWith(evsPackage.root) && !evsPackage.runtimeModules.has(id);
-
+  evsPackageOf: EvsPackageLookup,
+): Promise<ShippedCompiler | undefined> {
   const outputChunks = Object.values(bundle).filter((output) => output.type === 'chunk');
+  const evsPackages = await evsPackagesIn(outputChunks, evsPackageOf);
+  const isCompiler = (id: string): boolean => {
+    const root = evsPackageOf(id);
+    const evsPackage = root === undefined ? undefined : evsPackages.get(root);
+    return evsPackage !== undefined && !evsPackage.runtimeModules.has(id);
+  };
+
+  const inWorker = context.environment.getTopLevelConfig().isWorker;
   const upFront = chunksLoadedUpFront(outputChunks);
   const chunks: CompilerChunk[] = [];
   let bytes = 0;
@@ -50,11 +55,48 @@ export function findShippedCompiler(
     const size = compilerBytes(chunk, isCompiler);
     if (size === 0) continue;
     bytes += size;
-    chunks.push({ fileName: chunk.fileName, upFront: upFront.has(chunk.fileName) });
+    const loaded = upFront.has(chunk.fileName) ? 'up front' : 'on demand';
+    chunks.push({ fileName: chunk.fileName, loaded: inWorker ? 'in a worker' : loaded });
   }
   if (chunks.length === 0) return undefined;
 
-  return { bytes, chunks, importers: [...mainEntry.importers, ...mainEntry.dynamicImporters] };
+  const importers = Array.from(evsPackages.values(), ({ mainEntry }) => {
+    const info = mainEntry === undefined ? null : context.getModuleInfo(mainEntry);
+    return info === null ? [] : [...info.importers, ...info.dynamicImporters];
+  });
+  return { bytes, chunks, importers: importers.flat() };
+}
+
+/** What several bundles hold of the compiler, as one: a page's bundle and its workers'. */
+export function mergeShippedCompilers(
+  found: readonly (ShippedCompiler | undefined)[],
+): ShippedCompiler | undefined {
+  const compilers = found.filter((compiler) => compiler !== undefined);
+  if (compilers.length === 0) return undefined;
+  return {
+    bytes: compilers.reduce((total, { bytes }) => total + bytes, 0),
+    chunks: compilers.flatMap(({ chunks }) => chunks),
+    importers: [...new Set(compilers.flatMap(({ importers }) => importers))],
+  };
+}
+
+/** The evs packages with code in `chunks`, by directory. A build can hold more than one copy. */
+async function evsPackagesIn(
+  chunks: readonly Rolldown.OutputChunk[],
+  evsPackageOf: EvsPackageLookup,
+): Promise<ReadonlyMap<string, EvsPackage>> {
+  const roots = new Set<string>();
+  for (const chunk of chunks) {
+    for (const [id, module] of Object.entries(chunk.modules)) {
+      const root = module.renderedLength > 0 ? evsPackageOf(id) : undefined;
+      if (root !== undefined) roots.add(root);
+    }
+  }
+  return new Map(
+    await Promise.all(
+      Array.from(roots, async (root) => [root, await readEvsPackage(root)] as const),
+    ),
+  );
 }
 
 /**
@@ -121,10 +163,7 @@ export function describeShippedCompiler(
     `The evs compiler is in the client bundle: about ${kilobytes} kB before compression.`,
     '',
     outcome,
-    ...compiler.chunks.map(
-      (chunk) =>
-        `  ${chunk.fileName.padEnd(width)}  ${chunk.upFront ? 'loaded up front' : 'loaded on demand'}`,
-    ),
+    ...compiler.chunks.map((chunk) => `  ${chunk.fileName.padEnd(width)}  loaded ${chunk.loaded}`),
     '',
     `It comes in through the modules that import '@maxencerb/evs':`,
     ...compiler.importers.map((importer) => `  ${displayPath(importer, root)}`),

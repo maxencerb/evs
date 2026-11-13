@@ -63,11 +63,6 @@ describe('plain data', () => {
     expect(module.values).toStrictEqual([Number.NaN, Infinity, -Infinity, -0]);
   });
 
-  test('a hole in an array reads as undefined', async () => {
-    // oxlint-disable-next-line no-sparse-arrays -- the case under test
-    expect(await roundTrip({ sparse: [1, , 3] })).toStrictEqual({ sparse: [1, undefined, 3] });
-  });
-
   test('an own `__proto__` key stays a property', async () => {
     const data: unknown = JSON.parse('{ "__proto__": { "polluted": true }, "kept": 1 }');
     const module = await roundTrip({ data });
@@ -75,9 +70,17 @@ describe('plain data', () => {
     expect(Object.getPrototypeOf(module.data)).toBe(Object.prototype);
   });
 
-  test('an object without a prototype is plain data', async () => {
-    const bare: Record<string, unknown> = Object.assign(Object.create(null), { a: 1 });
-    expect(await roundTrip({ bare })).toStrictEqual({ bare: { a: 1 } });
+  test('a frozen value and a getter are written as the data they hold', async () => {
+    const frozen = Object.freeze({ fees: Object.freeze([500n]) });
+    const computed = {
+      get total() {
+        return 3;
+      },
+    };
+    expect(await roundTrip({ frozen, computed })).toStrictEqual({
+      frozen: { fees: [500n] },
+      computed: { total: 3 },
+    });
   });
 });
 
@@ -115,21 +118,25 @@ describe('precompiled scripts', () => {
     .compile()
     .toPrecompiled();
 
+  /** The ids of the debug modules written for `exports`. */
+  async function debugIds(exports: Record<string, unknown>, file = FILE): Promise<string[]> {
+    return [...(await renderPrecompiledModule(file, exports)).debugModules.keys()];
+  }
+
+  /** The part of a debug module id that changes with the debug data. */
+  const hashOf = (id: string): string => id.slice(0, id.indexOf('/'));
+
   test('each becomes a pure hydrate() call on its JSON, with a debug module of its own', async () => {
     const module = await renderPrecompiledModule(FILE, { one, FEE: 500n, default: two });
     expect(module.scripts).toBe(2);
 
-    const [oneDebug, twoDebug] = [...module.debugModules.keys()];
-    expect(oneDebug).toMatch(
-      /^\0virtual:evs-debug:[0-9a-f]{8}:\/app\/src\/scripts\.evs\.ts\.debug\.js$/,
-    );
-    expect(twoDebug).not.toBe(oneDebug);
+    const [oneDebug = '', twoDebug = ''] = [...module.debugModules.keys()];
     expect(module.code).toBe(
       [
         `import { hydrate } from '@maxencerb/evs/runtime';`,
-        `const _0 = /* @__PURE__ */ hydrate(${JSON.stringify(one)}, { debug: () => import(${JSON.stringify(oneDebug?.slice(1))}) });`,
+        `const _0 = /* @__PURE__ */ hydrate(${JSON.stringify(one)}, { debug: () => import(${JSON.stringify(oneDebug.slice(1))}) });`,
         `const _1 = 500n;`,
-        `const _2 = /* @__PURE__ */ hydrate(${JSON.stringify(two)}, { debug: () => import(${JSON.stringify(twoDebug?.slice(1))}) });`,
+        `const _2 = /* @__PURE__ */ hydrate(${JSON.stringify(two)}, { debug: () => import(${JSON.stringify(twoDebug.slice(1))}) });`,
         `export { _0 as one, _1 as FEE, _2 as default };`,
         '',
       ].join('\n'),
@@ -142,10 +149,59 @@ describe('precompiled scripts', () => {
     expect((await run(code)).default).toStrictEqual(await one.debug());
   });
 
-  test('the debug module is named after its content: it changes with the script only', async () => {
-    const first = await renderPrecompiledModule(FILE, { one, two });
-    const again = await renderPrecompiledModule(FILE, { one, renamed: two });
-    expect([...again.debugModules.keys()]).toStrictEqual([...first.debugModules.keys()]);
+  test('a debug module is named by a hash of its data, the file’s base name and the export', async () => {
+    const [oneDebug = '', twoDebug = ''] = await debugIds({ one, default: two });
+    expect(oneDebug).toMatch(/^\0virtual:evs-debug:[0-9a-f]{8}\/scripts\.evs\.one\.debug\.js$/);
+    expect(twoDebug).toMatch(/^\0virtual:evs-debug:[0-9a-f]{8}\/scripts\.evs\.default\.debug\.js$/);
+    expect(hashOf(twoDebug)).not.toBe(hashOf(oneDebug));
+  });
+
+  test('the hash changes with the script only, not with its file or its export', async () => {
+    const here = await debugIds({ one, two });
+    const elsewhere = await debugIds({ one, renamed: two }, '/elsewhere/other.evs.ts');
+    expect(elsewhere.map(hashOf)).toStrictEqual(here.map(hashOf));
+  });
+
+  test('the name holds no path: nothing of the directory the file is in', async () => {
+    const [id = ''] = await debugIds({ one }, '/home/me/app/src/pool.evs.mts');
+    expect(id).toBe(`${hashOf(id)}/pool.evs.one.debug.js`);
+  });
+
+  test('an export name is kept as far as it is safe in a file name and in a URL', async () => {
+    const [id = ''] = await debugIds({ '../a b?#%/é': one });
+    expect(id).toBe(`${hashOf(id)}/scripts.evs..._a_b_____.debug.js`);
+  });
+
+  test('a script exported under two names is written once, and is one object', async () => {
+    const module = await renderPrecompiledModule(FILE, {
+      one,
+      FEE: 500n,
+      alias: one,
+      default: one,
+    });
+    expect(module.scripts).toBe(1);
+    expect(module.debugModules.size).toBe(1);
+
+    const [debug = ''] = [...module.debugModules.keys()];
+    expect(debug).toContain('/scripts.evs.one.debug.js'); // labelled with its first name
+    expect(module.code).toBe(
+      [
+        `import { hydrate } from '@maxencerb/evs/runtime';`,
+        `const _0 = /* @__PURE__ */ hydrate(${JSON.stringify(one)}, { debug: () => import(${JSON.stringify(debug.slice(1))}) });`,
+        `const _1 = 500n;`,
+        `export { _0 as one, _1 as FEE, _0 as alias, _0 as default };`,
+        '',
+      ].join('\n'),
+    );
+  });
+
+  test('two scripts with the same content are two scripts', async () => {
+    const twin = evscript({ name: 'one' }, (s) => s.return({ one: s.lit(t.uint256, 1n) }))
+      .compile()
+      .toPrecompiled();
+    const module = await renderPrecompiledModule(FILE, { one, twin });
+    expect(module.scripts).toBe(2);
+    expect(module.code.match(/hydrate\(/g)).toHaveLength(2);
   });
 });
 
@@ -165,6 +221,57 @@ describe('values that are refused', () => {
     ],
   ] as const)('%s', async ([, exports, message]) => {
     expect(await failure(exports)).toContain(message);
+  });
+
+  // Each of these would be written as another value than the one the module exported: a client
+  // would run on other data than the build, so the build stops instead.
+  describe('data a literal would change', () => {
+    const WHY = ', which cannot be written into the bundle. A *.evs.ts module exports';
+
+    test('a hole in an array, which would read as undefined', async () => {
+      // oxlint-disable-next-line no-sparse-arrays -- the case under test
+      expect(await failure({ sparse: [1, , 3] })).toContain(
+        `the export \`sparse[1]\` is a hole in an array${WHY}`,
+      );
+    });
+
+    test('an object without a prototype, which would get one', async () => {
+      const bare: Record<string, unknown> = Object.assign(Object.create(null), { a: 1 });
+      expect(await failure({ config: { bare } })).toContain(
+        `the export \`config.bare\` is an object without a prototype${WHY}`,
+      );
+    });
+
+    test('a property with a symbol key, which would be dropped', async () => {
+      expect(await failure({ tagged: { kept: 1, [Symbol('tag')]: 2 } })).toContain(
+        `the export \`tagged[Symbol(tag)]\` is a property with a symbol key${WHY}`,
+      );
+    });
+
+    test('a property that is not enumerable, which would be dropped', async () => {
+      const hidden = Object.defineProperty({ kept: 1 }, 'secret', { value: 2, enumerable: false });
+      expect(await failure({ hidden })).toContain(
+        `the export \`hidden.secret\` is a property that is not enumerable${WHY}`,
+      );
+    });
+
+    test('a property added to an array, which would be dropped', async () => {
+      const list = Object.assign([1, 2], { unit: 'wei' });
+      expect(await failure({ list })).toContain(
+        `the export \`list.unit\` is a property added to an array${WHY}`,
+      );
+      const tagged = Object.assign([1], { [Symbol('tag')]: true });
+      expect(await failure({ tagged })).toContain(
+        `the export \`tagged[Symbol(tag)]\` is a property added to an array${WHY}`,
+      );
+    });
+
+    test('an instance of a subclass of Array, which would become an array', async () => {
+      class Fees extends Array<bigint> {}
+      expect(await failure({ fees: Fees.from([500n]) })).toContain(
+        `the export \`fees\` is an instance of Fees${WHY}`,
+      );
+    });
   });
 
   test('a circular reference', async () => {

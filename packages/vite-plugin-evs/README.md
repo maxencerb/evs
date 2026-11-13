@@ -12,7 +12,7 @@ only moves the compilation from the browser to the build.
 npm install -D @maxencerb/vite-plugin-evs
 ```
 
-Requires `vite` ≥ 8 and `@maxencerb/evs`, both as peers. ESM only.
+Requires `vite` ≥ 8.3 and `@maxencerb/evs`, both as peers. ESM only.
 
 ## Usage
 
@@ -80,6 +80,9 @@ try {
 
 If another module still compiles a script at run time, the compiler ends up in the bundle
 anyway. The build then warns, and names the chunk that holds it and the module that imports it.
+
+Web Workers need no setup: the plugin adds itself to `worker.plugins`, so a `*.evs.ts` module
+that a worker imports is precompiled too, and the worker's bundle is checked with the page's.
 
 ## Documentation
 

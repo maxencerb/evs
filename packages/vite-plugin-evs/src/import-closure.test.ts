@@ -51,21 +51,14 @@ describe('a tree of modules', () => {
   });
 
   test('imports, re-exports and dynamic imports of a string are followed', async () => {
-    const { files } = await importClosureOf(file('entry.js'));
+    const files = await importClosureOf(file('entry.js'));
     expect([...files].toSorted()).toStrictEqual(
       ['entry.js', 'a.js', 'lib/b.js', 'lib/c.js', 'lazy/d.js', 'lazy/e.js'].map(file).toSorted(),
     );
   });
 
-  test('the files a dynamic import names are the ones loaded on demand', async () => {
-    const { onDemand } = await importClosureOf(file('entry.js'));
-    expect([...onDemand].toSorted()).toStrictEqual(['lazy/d.js', 'lazy/e.js'].map(file));
-  });
-
   test('a module without imports reaches itself', async () => {
-    const closure = await importClosureOf(file('lib/c.js'));
-    expect([...closure.files]).toStrictEqual([file('lib/c.js')]);
-    expect([...closure.onDemand]).toStrictEqual([]);
+    expect([...(await importClosureOf(file('lib/c.js')))]).toStrictEqual([file('lib/c.js')]);
   });
 });
 
@@ -73,20 +66,19 @@ describe('the evs package', () => {
   const entryOf = (specifier: string): string =>
     normalizePath(createRequire(import.meta.url).resolve(specifier));
 
-  test('its runtime entry reaches no compiler, and loads the explain code on demand', async () => {
+  test('its runtime entry reaches the explain code, and no compiler', async () => {
     const runtime = entryOf('@maxencerb/evs/runtime');
     const dist = dirname(runtime);
-    const { files, onDemand } = await importClosureOf(runtime);
+    const files = await importClosureOf(runtime);
 
     expect(files).toContain(`${dist}/hydrate.js`);
+    expect(files).toContain(`${dist}/explain.js`); // behind a dynamic import
     expect(files).not.toContain(`${dist}/index.js`);
     expect(files).not.toContain(`${dist}/compile.js`);
-    expect([...onDemand]).toStrictEqual([`${dist}/explain.js`]);
   });
 
   test('its main entry reaches the compiler', async () => {
     const main = entryOf('@maxencerb/evs');
-    const { files } = await importClosureOf(main);
-    expect(files).toContain(`${dirname(main)}/compile.js`);
+    expect(await importClosureOf(main)).toContain(`${dirname(main)}/compile.js`);
   });
 });

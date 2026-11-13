@@ -18,58 +18,37 @@ import { posix } from 'node:path';
 
 import { parseSync } from 'vite';
 
-export interface ImportClosure {
-  /** The entry and every file it reaches. */
-  readonly files: ReadonlySet<string>;
-  /** Among them, the files a dynamic import names: what is loaded on demand. */
-  readonly onDemand: ReadonlySet<string>;
-}
-
-/** Walks the relative imports of `entry`, static and dynamic alike. */
-export async function importClosureOf(entry: string): Promise<ImportClosure> {
+/** The file `entry` and every file it reaches by a relative import, static or dynamic. */
+export async function importClosureOf(entry: string): Promise<ReadonlySet<string>> {
   const files = new Set<string>();
-  const onDemand = new Set<string>();
 
   async function visit(file: string): Promise<void> {
     if (files.has(file)) return;
     files.add(file);
-    const imports = await relativeImportsOf(file);
-    for (const imported of imports.dynamic) onDemand.add(imported);
-    await Promise.all([...imports.static, ...imports.dynamic].map(visit));
+    await Promise.all((await relativeImportsOf(file)).map(visit));
   }
 
   await visit(entry);
-  return { files, onDemand };
-}
-
-interface RelativeImports {
-  readonly static: readonly string[];
-  readonly dynamic: readonly string[];
+  return files;
 }
 
 /** The files `file` imports by a relative path. */
-async function relativeImportsOf(file: string): Promise<RelativeImports> {
+async function relativeImportsOf(file: string): Promise<string[]> {
   const code = await readFile(file, 'utf8');
   // `module` is the parser's own list of the imports and exports: no syntax tree to walk
   const { module } = parseSync(file, code);
-  const directory = posix.dirname(file);
-  const filesOf = (specifiers: readonly (string | undefined)[]): string[] =>
-    specifiers.filter(isRelative).map((specifier) => posix.join(directory, specifier));
-
-  return {
-    static: filesOf([
-      ...module.staticImports.map((statement) => statement.moduleRequest.value),
-      ...module.staticExports.flatMap((statement) =>
-        statement.entries.map((entry) => entry.moduleRequest?.value),
-      ),
-    ]),
-    // a dynamic import is listed with the position of its argument, which can be any expression
-    dynamic: filesOf(
-      module.dynamicImports.map(({ moduleRequest }) =>
-        stringLiteralValue(code.slice(moduleRequest.start, moduleRequest.end)),
-      ),
+  const specifiers = [
+    ...module.staticImports.map((statement) => statement.moduleRequest.value),
+    ...module.staticExports.flatMap((statement) =>
+      statement.entries.map((entry) => entry.moduleRequest?.value),
     ),
-  };
+    // a dynamic import is listed with the position of its argument, which can be any expression
+    ...module.dynamicImports.map(({ moduleRequest }) =>
+      stringLiteralValue(code.slice(moduleRequest.start, moduleRequest.end)),
+    ),
+  ];
+  const directory = posix.dirname(file);
+  return specifiers.filter(isRelative).map((specifier) => posix.join(directory, specifier));
 }
 
 function isRelative(specifier: string | undefined): specifier is string {

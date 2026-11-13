@@ -8,8 +8,13 @@
 
 import { runnerImport, type ResolvedConfig } from 'vite';
 
-/** `*.evs.ts`, `*.evs.mts`, `*.evs.js` and `*.evs.mjs`, whatever query the id carries. */
-export const BUILD_TIME_MODULE = /\.evs\.m?[jt]s(?:\?|$)/;
+import { displayPath } from './paths.js';
+
+/**
+ * `*.evs.ts`, `*.evs.mts`, `*.evs.js` and `*.evs.mjs`. An id with a query is not one: `?raw`,
+ * `?url` and the like ask for something else than the module's exports.
+ */
+export const BUILD_TIME_MODULE = /\.evs\.m?[jt]s$/;
 
 export interface BuildTimeModule {
   /** The module namespace: every export, `default` included. */
@@ -18,23 +23,32 @@ export interface BuildTimeModule {
   readonly dependencies: readonly string[];
 }
 
-/** Runs `file` in Node and returns what it exports. */
+/**
+ * Runs `file` in Node and returns what it exports. When the module throws, rejects with the
+ * error of the build: it names the file and says what was thrown.
+ */
 export async function runBuildTimeModule(
   file: string,
   config: ResolvedConfig,
 ): Promise<BuildTimeModule> {
+  // `runnerImport` starts from an empty config (`configFile: false`, so this plugin is not part
+  // of it) and decides itself how a package is loaded, for Node (`resolve.external`,
+  // `conditions`, `mainFields`). Forwarded: the mode behind `import.meta.env.MODE`, and what
+  // decides which file an import names, so the module gets the files the app's own code gets
+  // (aliases, tsconfig `paths` and the tsconfig they are read from, extensions, symlinks,
+  // deduped packages). The app's plugins, `define` and `.env` files do not apply.
+  const { root, mode, tsconfig } = config;
+  const { alias, dedupe, extensions, preserveSymlinks, tsconfigPaths } = config.resolve;
   try {
-    // `runnerImport` starts from an empty config (`configFile: false`, so this plugin is not
-    // part of it). Forwarded: what makes the module's imports and its `import.meta.env.MODE`
-    // match the app's. The app's plugins, `define` and `.env` files do not apply.
     const { module, dependencies } = await runnerImport<Record<string, unknown>>(file, {
-      root: config.root,
-      mode: config.mode,
-      resolve: { alias: config.resolve.alias },
+      root,
+      mode,
+      ...(tsconfig === undefined ? {} : { tsconfig }),
+      resolve: { alias, dedupe, extensions, preserveSymlinks, tsconfigPaths },
     });
     return { exports: module, dependencies };
-  } catch (error) {
-    throw moduleFailure(error);
+  } catch (thrown) {
+    throw moduleFailure(displayPath(file, root), thrown);
   }
 }
 
@@ -43,12 +57,12 @@ const MISSING_BROWSER_GLOBAL =
   /^(window|document|location|localStorage|sessionStorage) is not defined$/;
 
 /**
- * What a module threw, as the error of the build: the original message, and the original stack
- * frames under it (they point into the module).
+ * The error of a build whose build-time module threw: the module as a message names it (`name`),
+ * what it threw, and the original stack frames under it (they point into the module).
  */
-function moduleFailure(error: unknown): Error {
-  const thrown = error instanceof Error ? error : new Error(String(error));
-  const browserGlobal = MISSING_BROWSER_GLOBAL.exec(thrown.message)?.[1];
+function moduleFailure(name: string, thrown: unknown): Error {
+  const error = thrown instanceof Error ? thrown : new Error(String(thrown));
+  const browserGlobal = MISSING_BROWSER_GLOBAL.exec(error.message)?.[1];
   const hint =
     browserGlobal === undefined
       ? ''
@@ -56,9 +70,10 @@ function moduleFailure(error: unknown): Error {
         `time. Keep browser code out of it and out of the files it imports.`;
 
   const failure = new Error(
-    `the module threw while it ran at build time.\n${thrown.name}: ${thrown.message}${hint}`,
+    `${name}: the module threw while it ran at build time.\n` +
+      `${error.name}: ${error.message}${hint}`,
   );
-  const frames = /\n {4}at [^]*$/.exec(sourceMappedStack(thrown) ?? '')?.[0] ?? '';
+  const frames = /\n {4}at [^]*$/.exec(sourceMappedStack(error) ?? '')?.[0] ?? '';
   failure.stack = `${failure.name}: ${failure.message}${frames}`;
   return failure;
 }

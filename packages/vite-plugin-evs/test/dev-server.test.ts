@@ -1,11 +1,13 @@
 /**
  * The dev server: a build-time module is served precompiled, compiled again when a file it
- * imports changes, and its debug data is served on demand, also by a server that has not run
- * the module yet.
+ * imports changes, and its debug data is served on demand. A debug-module URL is only ever
+ * answered with what the plugin wrote: the server reads and runs nothing for one.
  */
 
 import {
   cpSync,
+  existsSync,
+  mkdirSync,
   mkdtempSync,
   readFileSync,
   realpathSync,
@@ -14,9 +16,10 @@ import {
   utimesSync,
   writeFileSync,
 } from 'node:fs';
-import { createServer as createHttpServer, type Server } from 'node:http';
+import { request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 import { createServer, type ViteDevServer } from 'vite-plus';
 import { afterAll, beforeAll, describe, expect, onTestFinished, test, vi } from 'vite-plus/test';
@@ -29,19 +32,22 @@ import * as direct from './fixtures/dev/watch.evs.ts';
 import { packageRoot, recordingLogger } from './helpers.js';
 
 /**
- * The app the servers serve: a copy of `fixtures/dev` the tests can edit, outside the
- * repository. It resolves packages like the plugin package does, through a link.
+ * A directory outside the repository. In it, `app` is what the servers serve: a copy of
+ * `fixtures/dev` the tests can edit, which resolves packages like the plugin package does,
+ * through a link. What is next to `app` is outside of what a server may serve.
  */
+let sandbox: string;
 let root: string;
 
 beforeAll(() => {
-  root = mkdtempSync(join(realpathSync(tmpdir()), 'vite-plugin-evs-'));
+  sandbox = mkdtempSync(join(realpathSync(tmpdir()), 'vite-plugin-evs-'));
+  root = join(sandbox, 'app');
   cpSync(join(packageRoot, 'test/fixtures/dev'), root, { recursive: true });
   symlinkSync(join(packageRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
 });
 
 afterAll(() => {
-  rmSync(root, { recursive: true, force: true });
+  rmSync(sandbox, { recursive: true, force: true });
 });
 
 interface DevServer {
@@ -49,9 +55,13 @@ interface DevServer {
   readonly errors: string[];
   /** GETs a URL of the dev server, the way a browser does. */
   get(url: string): Promise<Response>;
+  /** GETs a path sent exactly as written. `fetch` and a browser resolve `..` before they send
+   *  a request; someone who wants a file the server does not serve sends it as it is. */
+  getRaw(path: string): Promise<{ status: number; body: string }>;
 }
 
-/** A dev server with a plugin instance of its own (a new server session), closed with the test. */
+/** A listening dev server with a plugin instance of its own (a new server session), closed
+ *  with the test. */
 async function startDevServer(): Promise<DevServer> {
   const { logger } = recordingLogger();
   const errors: string[] = [];
@@ -62,20 +72,37 @@ async function startDevServer(): Promise<DevServer> {
     customLogger: logger,
     plugins: [evs()],
     appType: 'custom',
-    server: { middlewareMode: true, ws: false },
+    server: { host: '127.0.0.1', port: 0, ws: false },
+    // (a test writes a `.env` file into the app: with an `envDir`, that restarts the server)
+    envDir: false,
+    cacheDir: join(sandbox, '.vite'),
     // no dependency scan: the tests ask for single modules
     optimizeDeps: { noDiscovery: true },
   });
-  const http: Server = createHttpServer(vite.middlewares);
-  await new Promise<void>((resolve) => http.listen(0, '127.0.0.1', resolve));
-  const address = http.address();
-  if (address === null || typeof address === 'string') throw new TypeError('expected a TCP port');
+  await vite.listen();
+  onTestFinished(async () => vite.close());
+
+  const address = vite.httpServer?.address();
+  if (address === null || address === undefined || typeof address === 'string') {
+    throw new TypeError('expected a TCP port');
+  }
   const { port } = address;
-  onTestFinished(async () => {
-    http.close();
-    await vite.close();
-  });
-  return { vite, errors, get: (url) => fetch(`http://127.0.0.1:${port}${url}`) };
+  return {
+    vite,
+    errors,
+    get: async (url) => fetch(`http://127.0.0.1:${port}${url}`),
+    getRaw: async (path) =>
+      new Promise((resolve, reject) => {
+        const sent = request({ host: '127.0.0.1', port, path, agent: false }, (response) => {
+          let body = '';
+          response.setEncoding('utf8');
+          response.on('data', (chunk: string) => (body += chunk));
+          response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+        });
+        sent.on('error', reject);
+        sent.end();
+      }),
+  };
 }
 
 async function transform(server: DevServer, url: string): Promise<string> {
@@ -96,6 +123,10 @@ function debugDataIn(code: string): unknown {
   return JSON.parse(code.replace(/^export default /, '').replace(/;\s*$/, ''));
 }
 
+const RELOAD =
+  'the debug data a page asked for belongs to a version of a *.evs.ts module that is gone. ' +
+  'Reload the page.';
+
 describe('a build-time module on the dev server', () => {
   test('is served precompiled, with an empty source map', async () => {
     const server = await startDevServer();
@@ -106,6 +137,24 @@ describe('a build-time module on the dev server', () => {
     expect(result?.code).toContain('export { _0 as limit, _1 as aboveLimit };');
     expect(result?.code).not.toContain('evscript'); // the source is gone, and the compiler with it
     expect(result?.map).toStrictEqual({ mappings: '' });
+  });
+
+  test.for([
+    ['as an import of another module', '/watch.evs.ts?import'],
+    ['again after an update, under a new timestamp', '/watch.evs.ts?t=1700000000000'],
+  ] as const)('is served precompiled when the browser asks %s', async ([, url]) => {
+    // the server takes these queries off before a plugin sees the module's id
+    const server = await startDevServer();
+    const response = await server.get(url);
+    expect(response.status).toBe(200);
+    expect(await response.text()).toContain(direct.aboveLimit.runtimeBytecode);
+  });
+
+  test('is served as its source text to an import with ?raw', async () => {
+    const code = await transform(await startDevServer(), '/watch.evs.ts?raw');
+    expect(code).toContain('export default "');
+    expect(code).toContain("evscript({ name: 'aboveLimit'");
+    expect(code).not.toContain('hydrate(');
   });
 
   test('is compiled again when a file it imports changes', async () => {
@@ -134,6 +183,9 @@ describe('a build-time module on the dev server', () => {
     expect(after).not.toContain(direct.aboveLimit.runtimeBytecode); // other bytecode
     // and its debug data is another module, so the browser does not reuse the one it cached
     expect(debugUrlIn(after)).not.toBe(debugUrlIn(before));
+    // the module it replaces is not served any more
+    expect((await server.get(debugUrlIn(before))).status).toBe(500);
+    expect((await server.get(debugUrlIn(after))).status).toBe(200);
   });
 
   test('is served precompiled to the server environment too', async () => {
@@ -147,55 +199,149 @@ describe('a build-time module on the dev server', () => {
   });
 });
 
+describe('the runtime entry of evs, which only the served code imports', () => {
+  // (the dependency scan reads the source of a build-time module, which imports the compiler)
+  test('is pre-bundled from the start, so the page is not reloaded for it', async () => {
+    const { vite } = await startDevServer();
+    expect(vite.config.optimizeDeps.include).toContain('@maxencerb/evs/runtime');
+  });
+
+  test('is left to be found when the app’s root does not resolve evs', async () => {
+    const vite = await createServer({
+      root: sandbox, // no `node_modules` here: evs is a dependency of `app` alone
+      configFile: false,
+      logLevel: 'silent',
+      plugins: [evs()],
+      server: { middlewareMode: true, ws: false },
+      optimizeDeps: { noDiscovery: true },
+    });
+    onTestFinished(async () => vite.close());
+    expect(vite.config.optimizeDeps.include).toStrictEqual([]);
+  });
+});
+
 describe('the debug data of a script on the dev server', () => {
-  test('is served from the URL the module imports', async () => {
+  test('is served from the URL the module imports, which names no file', async () => {
     const server = await startDevServer();
     const url = debugUrlIn(await transform(server, '/watch.evs.ts'));
     expect(url).toMatch(
-      /^\/@id\/__x00__virtual:evs-debug:[0-9a-f]{8}:.*\/watch\.evs\.ts\.debug\.js$/,
+      /^\/@id\/__x00__virtual:evs-debug:[0-9a-f]{8}\/watch\.evs\.aboveLimit\.debug\.js$/,
     );
 
     const response = await server.get(url);
     expect(response.status).toBe(200);
     expect(response.headers.get('content-type')).toContain('javascript');
     expect(debugDataIn(await response.text())).toStrictEqual(await direct.aboveLimit.debug());
-  });
-
-  test('is served by a server that has not run the module in this session', async () => {
-    const url = debugUrlIn(await transform(await startDevServer(), '/watch.evs.ts'));
-
-    const restarted = await startDevServer(); // a page kept open across a restart asks it first
-    const response = await restarted.get(url);
-    expect(response.status).toBe(200);
-    expect(debugDataIn(await response.text())).toStrictEqual(await direct.aboveLimit.debug());
-  });
-
-  test('is not a way to make the server run a file it does not serve', async () => {
-    // The URL names the module to run. A file outside the app (`server.fs`) is never run.
-    const outside = mkdtempSync(join(realpathSync(tmpdir()), 'vite-plugin-evs-outside-'));
-    onTestFinished(() => rmSync(outside, { recursive: true, force: true }));
-    writeFileSync(join(outside, 'probe.evs.js'), 'globalThis.__evsProbeRan = true;\n');
-
-    const server = await startDevServer();
-    const url = `/@id/__x00__virtual:evs-debug:00000000:${outside}/probe.evs.js.debug.js`;
-    expect((await server.get(url)).ok).toBe(false);
-    expect(Reflect.get(globalThis, '__evsProbeRan')).toBeUndefined();
-
-    // and inside the app, only a build-time module is
-    const inside = `/@id/__x00__virtual:evs-debug:00000000:${root}/limit.ts.debug.js`;
-    expect((await server.get(inside)).ok).toBe(false);
-    expect(server.errors.join('\n')).not.toContain('limit.ts: ');
+    // (the same request, sent as written: what the tests below rely on)
+    expect((await server.getRaw(url)).status).toBe(200);
   });
 
   test('of a version of the module that is gone is an error that says to reload', async () => {
     const server = await startDevServer();
     const url = debugUrlIn(await transform(server, '/watch.evs.ts'));
-    const stale = url.replace(/evs-debug:[0-9a-f]{8}:/, 'evs-debug:00000000:');
-    // (in middleware mode the host application answers a failed request: here, nobody)
-    expect((await server.get(stale)).ok).toBe(false);
-    expect(server.errors.join('\n')).toContain(
-      'watch.evs.ts: the debug data a page asked for belongs to a version of this module that ' +
-        'is gone. Reload the page.',
+    const stale = url.replace(/evs-debug:[0-9a-f]{8}/, 'evs-debug:00000000');
+
+    const response = await server.get(stale);
+    expect(response.status).toBe(500);
+    expect(await response.text()).toContain(RELOAD);
+    expect(server.errors.join('\n')).toContain(RELOAD);
+  });
+
+  test('is not served to a page that outlived a restart, until the page reloads', async () => {
+    const url = debugUrlIn(await transform(await startDevServer(), '/watch.evs.ts'));
+
+    // The new session has not served the module yet. It does not run it to answer: the URL
+    // names no file, and running one for a URL is how a server ends up running any file.
+    const restarted = await startDevServer();
+    expect((await restarted.get(url)).status).toBe(500);
+    expect(restarted.errors.join('\n')).toContain(RELOAD);
+
+    // a reload asks for the module again, and its debug data is the same module as before
+    expect((await restarted.get('/watch.evs.ts')).status).toBe(200);
+    const response = await restarted.get(url);
+    expect(response.status).toBe(200);
+    expect(debugDataIn(await response.text())).toStrictEqual(await direct.aboveLimit.debug());
+  });
+});
+
+describe('a debug-module URL made up by someone who reaches the dev server', () => {
+  const SECRET = 'hunter2-not-to-be-seen';
+
+  /** A module that leaves `marker` behind when something runs it. */
+  const leavesMark = (marker: string): string =>
+    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\n`;
+
+  /**
+   * The files such a URL is after, each with the URL that reached it when the name of a debug
+   * module held the path of a file, and the server ran that file to answer.
+   */
+  function targets(): { file: string; marker: string; urls: string[] }[] {
+    const outside = join(sandbox, 'outside');
+    const ids = (path: string): string[] =>
+      // the id as it was, and the same path where the label is now
+      [`virtual:evs-debug:00000000:${path}`, `virtual:evs-debug:00000000/${path}`].map(
+        (id) => `/@id/__x00__${id}.debug.js`,
+      );
+    return [
+      {
+        // a build-time module by its name, outside of what the server serves: reached with `..`
+        file: join(outside, 'probe.evs.js'),
+        marker: join(sandbox, 'probe-ran'),
+        urls: [...ids(`${root}/../outside/probe.evs.js`), ...ids('../outside/probe.evs.js')],
+      },
+      {
+        // a file of the app that is no build-time module: a query made it look like one
+        file: join(root, 'scripts/maintenance.ts'),
+        marker: join(sandbox, 'maintenance-ran'),
+        urls: ids(`${root}/scripts/maintenance.ts?.evs.ts`),
+      },
+      {
+        // files the server denies, and no modules: running one failed, and the error quoted it
+        file: join(root, '.env'),
+        marker: join(sandbox, 'env-ran'),
+        urls: [
+          ...ids(`${root}/.env?.evs.js`),
+          ...ids(`${root}/../outside/secret.txt?import&.evs.js`),
+        ],
+      },
+    ];
+  }
+
+  beforeAll(() => {
+    for (const directory of [join(sandbox, 'outside'), join(root, 'scripts')]) {
+      mkdirSync(directory, { recursive: true });
+    }
+    writeFileSync(join(sandbox, 'outside/secret.txt'), `PASSWORD=${SECRET}\n`);
+    for (const { file, marker } of targets()) {
+      writeFileSync(file, file.endsWith('.env') ? `API_KEY=${SECRET}\n` : leavesMark(marker));
+    }
+  });
+
+  test('runs no file and shows none: the answer is the error that says to reload', async () => {
+    const server = await startDevServer();
+    await transform(server, '/watch.evs.ts'); // a session that has precompiled modules
+
+    const urls = targets().flatMap((target) => target.urls);
+    const answers = await Promise.all(
+      urls.map(async (url) => {
+        const { status, body } = await server.getRaw(url);
+        return { url, status, saysToReload: body.includes(RELOAD), shows: body.includes(SECRET) };
+      }),
     );
+    expect(answers).toStrictEqual(
+      urls.map((url) => ({ url, status: 500, saysToReload: true, shows: false })),
+    );
+
+    expect(targets().filter(({ marker }) => existsSync(marker))).toStrictEqual([]);
+    expect(server.errors).toHaveLength(urls.length);
+    expect(server.errors.join('\n')).not.toContain(SECRET);
+  });
+
+  test('(the files it was after do leave a mark when they run)', async () => {
+    const [probe] = targets();
+    if (probe === undefined) throw new TypeError('expected a target');
+    onTestFinished(() => rmSync(probe.marker, { force: true }));
+    await import(/* @vite-ignore */ pathToFileURL(probe.file).href);
+    expect(existsSync(probe.marker)).toBe(true);
   });
 });

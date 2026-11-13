@@ -3,11 +3,22 @@
  * says where it is and which module brought it.
  */
 
+import { cpSync, mkdtempSync, realpathSync, rmSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+
 import type { Plugin, Rolldown } from 'vite-plus';
-import { describe, expect, test } from 'vite-plus/test';
+import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evs } from '../src/index.js';
-import { buildApp, buildFailure, isCompilerModule, renderedModules } from './helpers.js';
+import {
+  buildApp,
+  buildFailure,
+  isCompilerModule,
+  packageRoot,
+  renderedModules,
+  upFrontChunks,
+} from './helpers.js';
 
 const FIXES = [
   'To keep it out:',
@@ -17,9 +28,16 @@ const FIXES = [
 ].join('\n');
 
 describe('an app that keeps the compiler out', () => {
-  test('one that only runs precompiled scripts is not warned', async () => {
+  test('one that only runs precompiled scripts is not warned, by the plugin or the bundler', async () => {
+    // (the plugin drops a log of the bundler: this build must not need that)
     const built = await buildApp('clean.ts');
-    expect(built.pluginWarnings).toStrictEqual([]);
+    expect(built.logs.warnings).toStrictEqual([]);
+
+    // and the explain code stays in a chunk of its own, which nothing loads up front
+    const isExplain = (id: string): boolean => id.endsWith('/evs/dist/explain.js');
+    const withExplain = built.chunks.filter((chunk) => renderedModules([chunk]).some(isExplain));
+    expect(withExplain).toHaveLength(1);
+    expect(upFrontChunks(built)).not.toContain(withExplain[0]);
   });
 
   test('taking a helper from the main entry is fine: tree shaking drops the compiler', async () => {
@@ -113,6 +131,40 @@ describe('an app that precompiles nothing', () => {
     expect(built.pluginWarnings[0]).toContain(
       'No script was precompiled, and the compiler ships in:\n' +
         `  ${built.entry.fileName}  loaded up front\n`,
+    );
+  });
+});
+
+describe('a monorepo whose app does not depend on evs itself', () => {
+  // The scripts are in a workspace package next to the app, and only that package has evs
+  // installed: `@maxencerb/evs` does not resolve from the app's root. The layout is copied out
+  // of the repository, where every directory finds the evs of the plugin package above it.
+  let monorepo: string;
+
+  beforeAll(() => {
+    monorepo = mkdtempSync(join(realpathSync(tmpdir()), 'vite-plugin-evs-monorepo-'));
+    cpSync(join(packageRoot, 'test/fixtures/monorepo'), monorepo, { recursive: true });
+    symlinkSync(join(packageRoot, 'node_modules'), join(monorepo, 'lib/node_modules'), 'dir');
+  });
+
+  afterAll(() => {
+    rmSync(monorepo, { recursive: true, force: true });
+  });
+
+  test('is told that the compiler ships: evs is found from the modules of the build', async () => {
+    const built = await buildApp('main.ts', { root: join(monorepo, 'app') });
+    expect(renderedModules(built.chunks).some(isCompilerModule)).toBe(true);
+    expect(built.pluginInfo).toStrictEqual(['precompiled 1 script from 1 file']);
+
+    // the report, and nothing from the bundler about the explain code of evs
+    expect(built.logs.warnings).toHaveLength(1);
+    expect(built.pluginWarnings).toHaveLength(1);
+    expect(built.pluginWarnings[0]).toContain(
+      '1 script from 1 file was precompiled, but the compiler still ships in:\n' +
+        `  ${built.entry.fileName}  loaded up front\n`,
+    );
+    expect(built.pluginWarnings[0]).toContain(
+      `It comes in through the modules that import '@maxencerb/evs':\n  ../lib/index.ts\n`,
     );
   });
 });

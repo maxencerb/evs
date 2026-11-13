@@ -36,6 +36,8 @@ export function recordingLogger(): { logger: Logger; logs: Logs } {
 
 export interface Built {
   readonly chunks: readonly Rolldown.OutputChunk[];
+  /** The other files of the output. A worker's bundle is here: Vite emits its files as assets. */
+  readonly assets: readonly Rolldown.OutputAsset[];
   /** The chunk of the entry. */
   readonly entry: Rolldown.OutputChunk;
   readonly logs: Logs;
@@ -101,6 +103,7 @@ export async function buildApp(entry: string, options: BuildOptions = {}): Promi
   if (entryChunk === undefined) throw new TypeError('the build has no entry chunk');
   return {
     chunks,
+    assets: output.output.filter((file) => file.type === 'asset'),
     entry: entryChunk,
     logs,
     pluginInfo: ofPlugin(logs.info),

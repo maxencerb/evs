@@ -1,78 +1,130 @@
 /**
- * `evs-package.ts` — the `@maxencerb/evs` package inside a build: where the bundler finds it,
- * and which of its modules make up its `runtime` entry.
+ * `evs-package.ts` — the `@maxencerb/evs` packages inside a build: which modules are theirs, and
+ * which of those make up their `runtime` entry.
  *
  * The package has two entries. The main one exports the compiler. `runtime` is what a
  * precompiled script runs on, and reaches no module of the compiler: every module of the
  * package outside of what `runtime` reaches is compiler code.
  *
+ * A module belongs to the package whose `package.json` is the nearest one above it. The
+ * packages of a build are found that way, from the modules the build holds, and not by
+ * resolving `@maxencerb/evs`: a specifier resolves from the module that imports it, which can
+ * sit in another workspace package than the app, and a build can hold two copies. The nearest
+ * manifest also keeps a dependency installed inside the package (`<evs>/node_modules/viem`)
+ * from being taken for a part of it.
+ *
  * What `runtime` reaches is read from the package's files (`import-closure.ts`), not from the
  * build's module graph. The graph only holds what the app imports, and an app that compiles
  * every script in the browser imports nothing from `runtime`.
  *
- * The entries are resolved by the bundler, like an import of the app. Their ids, and the ids
- * found from them, are therefore the ones the bundler gives the same files in its output: the
- * real path of a linked workspace package, a path under `node_modules` for an installed one.
+ * Every path here is cut from a module id or joined to one, and never rewritten (no real path):
+ * a module of the package is named the way the bundler names it, under `node_modules` or not.
  */
 
-import { posix } from 'node:path';
+import { readFileSync } from 'node:fs';
+import { dirname, isAbsolute, posix } from 'node:path';
 
 import type { Rolldown } from 'vite';
 
 import { importClosureOf } from './import-closure.js';
+import { fileOf } from './paths.js';
 
-export interface EvsPackage {
-  /** Its directory, with a trailing slash: what the id of each of its modules starts with. */
-  readonly root: string;
-  /** The module of the main entry, `@maxencerb/evs`: the compiler's way into a bundle. */
-  readonly mainEntry: string;
-  /** The module of the `runtime` entry, and every module it reaches. */
-  readonly runtimeModules: ReadonlySet<string>;
-  /** Among them, the modules loaded by a dynamic import: the code behind `explainRevert`. */
-  readonly onDemandModules: ReadonlySet<string>;
-}
+const EVS = '@maxencerb/evs';
 
 /**
- * Locates the evs package of the build `context` belongs to, once its module graph is complete.
- * `undefined` when the build bundles nothing of it: it is not imported, or left external.
+ * From a module id to the directory of the evs package the module belongs to. `undefined` for a
+ * module of anything else: the app, another package, a virtual module.
  */
-export async function locateEvsPackage(
-  context: Rolldown.PluginContext,
-): Promise<EvsPackage | undefined> {
-  const [manifest, main, runtime] = await Promise.all([
-    context.resolve('@maxencerb/evs/package.json'),
-    context.resolve('@maxencerb/evs'),
-    context.resolve('@maxencerb/evs/runtime'),
-  ]);
-  if (manifest === null || main === null || runtime === null) return undefined;
-  // every import of the package goes through one of its two entries
-  if (!isBundled(main, context) && !isBundled(runtime, context)) return undefined;
+export type EvsPackageLookup = (id: string) => string | undefined;
 
-  const closure = await importClosureOf(runtime.id);
-  return {
-    root: `${posix.dirname(manifest.id)}/`,
-    mainEntry: main.id,
-    runtimeModules: closure.files,
-    onDemandModules: closure.onDemand,
+/** A lookup that reads each directory's manifest once. */
+export function evsPackageLookup(): EvsPackageLookup {
+  const byDirectory = new Map<string, string | undefined>();
+
+  /** The evs package the files of `directory` belong to. */
+  function packageOf(directory: string): string | undefined {
+    if (byDirectory.has(directory)) return byDirectory.get(directory);
+    const manifest = readManifest(directory);
+    const parent = dirname(directory);
+    let found: string | undefined;
+    if (manifest !== undefined) found = manifest.name === EVS ? directory : undefined;
+    else if (parent !== directory) found = packageOf(parent);
+    byDirectory.set(directory, found);
+    return found;
+  }
+
+  return (id) => {
+    const file = fileOf(id);
+    // (a virtual module is no file, and in no package)
+    return isAbsolute(file) ? packageOf(dirname(file)) : undefined;
   };
 }
 
-function isBundled(resolved: Rolldown.ResolvedId, context: Rolldown.PluginContext): boolean {
-  return resolved.external === false && context.getModuleInfo(resolved.id) !== null;
+export interface EvsPackage {
+  /** The module of the main entry, `@maxencerb/evs`: the compiler's way into a bundle. */
+  readonly mainEntry: string | undefined;
+  /** The module of the `runtime` entry, and every module it reaches. Empty for a version of the
+   *  package without that entry: all of it is the compiler's. */
+  readonly runtimeModules: ReadonlySet<string>;
+}
+
+/** Reads the evs package in the directory `root`, which a lookup found. */
+export async function readEvsPackage(root: string): Promise<EvsPackage> {
+  const { exports } = readManifest(root) ?? {};
+  const entry = (subpath: string): string | undefined => {
+    const target = isRecord(exports) ? targetFile(exports[subpath]) : undefined;
+    return target === undefined ? undefined : posix.join(root, target);
+  };
+  const runtime = entry('./runtime');
+  return {
+    mainEntry: entry('.'),
+    runtimeModules: runtime === undefined ? new Set() : await importClosureOf(runtime),
+  };
 }
 
 /**
  * Whether `log` is the bundler saying that a dynamic import inside evs moves nothing to a chunk
- * of its own, because another module imports the same code statically. (`log.id` is the module
- * that is imported both ways.)
+ * of its own, because another module of evs imports the same code statically. (`log.id` is the
+ * module imported both ways, `log.ids` are the modules that import it.) An app that imports a
+ * module of evs both ways gets the log like any other: one of these modules is its own.
  */
-export function isIneffectiveImportInside(
-  evsPackage: EvsPackage,
+export function isIneffectiveImportInsideEvs(
   log: Rolldown.RolldownLog,
+  evsPackageOf: EvsPackageLookup,
 ): boolean {
   return (
     log.code === 'INEFFECTIVE_DYNAMIC_IMPORT' &&
     log.id !== undefined &&
-    evsPackage.onDemandModules.has(log.id)
+    [log.id, ...(log.ids ?? [])].every((id) => evsPackageOf(id) !== undefined)
   );
+}
+
+// ---------------------------------------------------------------------------
+// package.json
+// ---------------------------------------------------------------------------
+
+interface Manifest {
+  readonly name?: unknown;
+  readonly exports?: unknown;
+}
+
+/** The `package.json` of `directory`. `undefined` when there is none to read. */
+function readManifest(directory: string): Manifest | undefined {
+  try {
+    const manifest: unknown = JSON.parse(readFileSync(`${directory}/package.json`, 'utf8'));
+    return isRecord(manifest) ? manifest : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/** The file an `exports` target names for an `import`: a path, or what its `import` or
+ *  `default` condition names. */
+function targetFile(target: unknown): string | undefined {
+  if (typeof target === 'string') return target;
+  return isRecord(target) ? targetFile(target.import ?? target.default) : undefined;
+}
+
+function isRecord(value: unknown): value is Readonly<Record<string, unknown>> {
+  return typeof value === 'object' && value !== null;
 }
