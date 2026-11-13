@@ -1,7 +1,8 @@
 /**
- * `@maxencerb/evs` — the complete public surface.
- * Nothing else is exported from the package: single entry point, no subpath exports (the exports
- * map blocks deep imports, so every type named by a public signature must be re-exported here).
+ * `@maxencerb/evs` — the main entry: the complete public surface, compiler included.
+ * The package has one other entry, `@maxencerb/evs/runtime` (`runtime.ts`): the compiler-free
+ * subset a client needs to run precompiled scripts. The exports map blocks every other deep
+ * import, so each type named by a public signature must be re-exported here.
  */
 
 // core
@@ -189,6 +190,14 @@ export {
   explainDeploylessError, // node creation errors (0xEF result, size caps) → an explanation
 } from './deployless.js';
 export type { DeploylessLimitExplanation } from './deployless.js';
+// the precompiled script (compiled.toPrecompiled()): types only. `hydrate` and
+// `isPrecompiledScript` are exported by `@maxencerb/evs/runtime` alone, so getting them never
+// pulls the compiler in.
+export type {
+  PrecompiledScript,
+  PrecompiledScriptData,
+  PrecompiledScriptDebug,
+} from './precompiled.js';
 export { decodeScriptError, DEFAULT_SCRIPT_ADDRESS, matchScriptError } from './viem.js';
 export type {
   DecodedBuiltinError, // issue #15: the Panic/Error/unknown/empty decode arms
@@ -196,5 +205,6 @@ export type {
   ErrorArgsOf, // issue #15: one error entry's decoded args record
   HandlerResult, // the return type of matchScriptError
   ScriptErrorHandlers, // issue #15: the matchScriptError handler record (declared + `_`)
+  ToViem, // the toViem() overloads a compiled and a precompiled script share
   ToViemMode, // 'deployless' | 'stateOverride' — a run-time mode for toViem()'s catch-all overload
 } from './viem.js';

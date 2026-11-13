@@ -55,8 +55,14 @@ test('everything else in the tarball is the built library (no sources, no tests)
   const { paths } = pack();
   // `pnpm pack` runs no build (the only build hook is `prepublishOnly`), so without these the
   // test would pass on an unbuilt checkout whose tarball holds the four meta files alone. The
-  // entry points are the ones `exports["."]` resolves; run `vp run build` first.
-  for (const entry of ['dist/index.js', 'dist/index.d.ts']) {
+  // entry points are the ones `exports["."]` and `exports["./runtime"]` resolve; run
+  // `vp run build` first.
+  for (const entry of [
+    'dist/index.js',
+    'dist/index.d.ts',
+    'dist/runtime.js',
+    'dist/runtime.d.ts',
+  ]) {
     expect(paths, `${entry} missing from the tarball: build the library first`).toContain(entry);
   }
   const rest = paths.filter(

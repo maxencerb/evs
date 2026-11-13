@@ -52,6 +52,9 @@ export function lookupPc(map: SourceMap, pc: number): { note?: string } | undefi
 }
 
 /** Finds the site with id `id`, or `undefined`. */
-export function siteById(map: SourceMap, id: SiteId): SourceMap['sites'][number] | undefined {
+export function siteById(
+  map: Pick<SourceMap, 'sites'>,
+  id: SiteId,
+): SourceMap['sites'][number] | undefined {
   return map.sites.find((s) => s.id === id);
 }

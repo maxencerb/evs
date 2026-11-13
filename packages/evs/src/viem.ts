@@ -4,7 +4,9 @@
  * 1. the init-code wrapper (`toCreationBytecode`) that turns the runtime into the creation
  *    bytecode deployless mode needs;
  * 2. the two `toViem()` shapes (`ToViemMode`): deployless (`toViemDeployless`) and state
- *    override (`toViemStateOverride`, which also covers sender mode);
+ *    override (`toViemStateOverride`, which also covers sender mode), and the `toViem()` a
+ *    compiled and a precompiled script share: its overloads (`ToViem`) and the one
+ *    implementation behind them (`createToViem`);
  * 3. client-side error decoding (`decodeScriptError`, `matchScriptError`): the caught viem error
  *    or raw revert bytes → a `name`-discriminated value typed from the script ABI. Users call
  *    viem directly, so there are no call wrappers.
@@ -49,7 +51,13 @@ import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'vi
 
 import { describePanic, type EvsRuntimeErrorName } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';
-import { EVM_VERSIONS, forkAtLeast, isEvmVersion, OPS, type EvmVersion } from './asm/ops.js';
+import {
+  EVM_VERSIONS,
+  forkAtLeast,
+  isEvmVersion,
+  PUSH0_FORK,
+  type EvmVersion,
+} from './asm/forks.js';
 import { HEX_BYTES_RE, isHexString } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
 import type { Hex } from './core/types.js';
@@ -90,7 +98,9 @@ function runtimeByteLength(runtime: Hex, where: string): number {
 
 /** The 10-byte wrapper for a given runtime length (`61 RRRR 80 600A 5F 39 5F F3`). */
 function initWrapper(runtimeLength: number, evmVersion: EvmVersion): Hex {
-  const zero = forkAtLeast(evmVersion, OPS.PUSH0.since) ? '5f' : '3d';
+  // PUSH0_FORK, not `OPS.PUSH0.since`: this module is part of the compiler-free runtime entry,
+  // and a reference to the opcode table would keep all of it in every client bundle
+  const zero = forkAtLeast(evmVersion, PUSH0_FORK) ? '5f' : '3d';
   const len = runtimeLength.toString(16).padStart(4, '0');
   return `0x61${len}80600a${zero}39${zero}f3`;
 }
@@ -100,7 +110,7 @@ function initWrapper(runtimeLength: number, evmVersion: EvmVersion): Hex {
  * length `RRRR` (bytes 1–2) zeroed — `toCreationBytecode` patches the real length in. Exposed
  * for golden tests and inspection; prepending it verbatim only round-trips a 0-byte runtime.
  */
-export const INIT_CODE_PREFIX_SHANGHAI: Hex = initWrapper(0, 'shanghai');
+export const INIT_CODE_PREFIX_SHANGHAI: Hex = /* @__PURE__ */ initWrapper(0, 'shanghai');
 
 /**
  * `initBytecode = wrapper(len) ++ runtime`. The wrapper CODECOPYs
@@ -138,7 +148,7 @@ export const DEFAULT_SCRIPT_ADDRESS: Address = '0xcD360FfAC9818c4396Aa6F4807EBfA
  * limits apply (result ≤ 24,576 bytes and not starting with 0xEF, creation data ≤ 49,152
  * bytes): see `deployless.ts`.
  */
-export function toViemDeployless<const abi extends Abi>(s: {
+export function toViemDeployless<const abi extends Abi | readonly unknown[]>(s: {
   abi: abi;
   initBytecode: Hex;
 }): { abi: abi; code: Hex } {
@@ -154,7 +164,7 @@ export function toViemDeployless<const abi extends Abi>(s: {
 export type ToViemMode = 'deployless' | 'stateOverride';
 
 /** The options object of `toViem()`'s implementation (the union of every overload's input). */
-export interface ToViemOptions {
+interface ToViemOptions {
   mode?: ToViemMode | undefined;
   address?: Address | undefined;
   sender?: Address | undefined;
@@ -165,14 +175,16 @@ export interface ToViemOptions {
  * mutable (not `readonly`) because viem's `StateOverride` is a mutable `Array` type — a
  * readonly tuple would not spread into `readContract`.
  */
-interface ViemStateOverrideShape<abi extends Abi> {
+interface ViemStateOverrideShape<abi extends Abi | readonly unknown[]> {
   abi: abi;
   address: Address;
   stateOverride: [{ address: Address; code: Hex }];
 }
 
 /** The sender-mode shape (issue #36): state override AT the sender address plus `account`. */
-interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
+interface ViemSenderShape<
+  abi extends Abi | readonly unknown[],
+> extends ViemStateOverrideShape<abi> {
   account: Address;
 }
 
@@ -193,19 +205,19 @@ interface ViemSenderShape<abi extends Abi> extends ViemStateOverrideShape<abi> {
  * throws. A `sender` or `address` that is not a 20-byte 0x address throws `EvsTypeError`
  * (`TYPE_MISMATCH`).
  */
-export function toViemStateOverride<const abi extends Abi>(
+export function toViemStateOverride<const abi extends Abi | readonly unknown[]>(
   s: { abi: abi; runtimeBytecode: Hex },
   opts: { address?: Address; sender: Address },
 ): ViemSenderShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
+export function toViemStateOverride<const abi extends Abi | readonly unknown[]>(
   s: { abi: abi; runtimeBytecode: Hex },
   opts?: { address?: Address; sender?: undefined },
 ): ViemStateOverrideShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
+export function toViemStateOverride<const abi extends Abi | readonly unknown[]>(
   s: { abi: abi; runtimeBytecode: Hex },
   opts?: { address?: Address | undefined; sender?: Address | undefined },
 ): ViemStateOverrideShape<abi> | ViemSenderShape<abi>;
-export function toViemStateOverride<const abi extends Abi>(
+export function toViemStateOverride<const abi extends Abi | readonly unknown[]>(
   s: { abi: abi; runtimeBytecode: Hex },
   opts?: { address?: Address | undefined; sender?: Address | undefined },
 ): ViemStateOverrideShape<abi> | ViemSenderShape<abi> {
@@ -246,6 +258,78 @@ export function toViemStateOverride<const abi extends Abi>(
 
 function isAddressLike(value: unknown): value is Address {
   return typeof value === 'string' && /^0x[0-9a-fA-F]{40}$/.test(value);
+}
+
+/**
+ * The `toViem()` of a script whose ABI is `abi`: one overload per execution shape, each result
+ * made to be spread into viem's `readContract`. A compiled script (`CompiledEvsScript`) and a
+ * precompiled one (`PrecompiledScript`) expose this same member.
+ *
+ * deployless (default): a contract-creation eth_call, so the result must fit 24,576 bytes and
+ * not start with 0xEF, and viem's creation data (args included) must fit 49,152 bytes — see
+ * deploylessDataSize / explainDeploylessError; stateOverride mode has none of these limits.
+ */
+export interface ToViem<abi extends Abi | readonly unknown[]> {
+  (): { abi: abi; code: Hex };
+  (o: { mode: 'deployless' }): { abi: abi; code: Hex };
+  // NOTE: the stateOverride tuple is mutable (not `readonly`) because viem's `StateOverride`
+  // is a mutable `Array` type — a readonly tuple would not spread into `readContract`.
+  (o: { mode: 'stateOverride'; address?: Address }): {
+    abi: abi;
+    address: Address;
+    stateOverride: [{ address: Address; code: Hex }];
+  };
+  // sender mode (issue #36): the runtime is installed AT `sender` and `account` is set to it, so
+  // every sub-call target sees `msg.sender = sender` (the script self-calls through that address).
+  // `address` may restate `sender` (same knob); a different value throws.
+  (o: { mode: 'stateOverride'; sender: Address; address?: Address }): {
+    abi: abi;
+    address: Address;
+    stateOverride: [{ address: Address; code: Hex }];
+    account: Address;
+  };
+  // catch-all for a mode chosen at run time (`mode: ToViemMode`): the union of the shapes above.
+  // `address` / `sender` apply only when the mode turns out to be 'stateOverride' (deployless
+  // ignores them). The mode may also be optional or `| undefined` (a config field that defaults
+  // to deployless, as at run time). The intersection is `never` unless `m` minus `undefined` is
+  // the whole union, which keeps a literal mode on its own overload: e.g.
+  // `{ mode: 'deployless', address }` stays a type error. The `never` default covers a missing
+  // `mode` key (no inference candidate), so `{}` / `{ address }` stay type errors too.
+  <m extends ToViemMode | undefined = never>(
+    o: {
+      mode?: m;
+      address?: Address | undefined;
+      sender?: Address | undefined;
+    } & ([ToViemMode] extends [Exclude<m, undefined>] ? unknown : never),
+  ):
+    | { abi: abi; code: Hex }
+    | {
+        abi: abi;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+      }
+    | {
+        abi: abi;
+        address: Address;
+        stateOverride: [{ address: Address; code: Hex }];
+        account: Address;
+      };
+}
+
+/**
+ * The one implementation behind every {@link ToViem} overload: the mode picks the shape, and
+ * `toViemStateOverride` owns the address default and the `address` / `sender` checks.
+ */
+export function createToViem<const abi extends Abi | readonly unknown[]>(s: {
+  abi: abi;
+  runtimeBytecode: Hex;
+  initBytecode: Hex;
+}): ToViem<abi> {
+  const toViem = (o?: ToViemOptions) =>
+    o?.mode === 'stateOverride' ? toViemStateOverride(s, o) : toViemDeployless(s);
+  // the overloads narrow the implementation's union return per input shape
+  // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- see above
+  return toViem as ToViem<abi>;
 }
 
 // ---------------------------------------------------------------------------

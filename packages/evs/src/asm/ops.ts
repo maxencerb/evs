@@ -12,32 +12,15 @@
  * That convention lets the stack verifier check both underflow and the 16-item reach with the
  * same numbers.
  *
- * The module also owns the facts every consumer of the table would otherwise restate: the
- * supported fork list and its order, the PUSH encoding (opcode range, immediate widths) and the
- * set of opcodes that end straight-line execution. It has no imports, so anything can use it.
+ * The module also owns the facts every consumer of the table would otherwise restate: the PUSH
+ * encoding (opcode range, immediate widths) and the set of opcodes that end straight-line
+ * execution. The supported fork list and its order live in `asm/forks.ts` (re-exported here), its
+ * only import, so anything can use this module.
  */
 
-// ---------------------------------------------------------------------------
-// forks
-// ---------------------------------------------------------------------------
+import { forkAtLeast, PUSH0_FORK, type EvmVersion } from './forks.js';
 
-/** Every supported `evmVersion`, oldest first (the order `forkAtLeast` ranks by). */
-export const EVM_VERSIONS = ['paris', 'shanghai', 'cancun'] as const;
-
-export type EvmVersion = (typeof EVM_VERSIONS)[number];
-
-/** Narrows an unchecked string (a JS caller's option) to a supported fork. */
-export function isEvmVersion(value: string): value is EvmVersion {
-  return (EVM_VERSIONS as readonly string[]).includes(value);
-}
-
-/**
- * Whether `evmVersion` includes everything introduced at `since`. `'frontier'` stands for any
- * fork older than the `paris` floor, so it is always available.
- */
-export function forkAtLeast(evmVersion: EvmVersion, since: EvmVersion | 'frontier'): boolean {
-  return since === 'frontier' || EVM_VERSIONS.indexOf(evmVersion) >= EVM_VERSIONS.indexOf(since);
-}
+export { EVM_VERSIONS, forkAtLeast, isEvmVersion, type EvmVersion } from './forks.js';
 
 // ---------------------------------------------------------------------------
 // opcode table
@@ -132,7 +115,7 @@ export const OPS: Readonly<Record<Mnemonic, OpInfo>> = Object.freeze({
   GAS: { code: 0x5a, pops: 0, pushes: 1, since: 'frontier' },
   JUMPDEST: { code: 0x5b, pops: 0, pushes: 0, since: 'frontier' },
   MCOPY: { code: 0x5e, pops: 3, pushes: 0, since: 'cancun' },
-  PUSH0: { code: 0x5f, pops: 0, pushes: 1, since: 'shanghai' },
+  PUSH0: { code: 0x5f, pops: 0, pushes: 1, since: PUSH0_FORK },
   PUSH1: { code: 0x60, pops: 0, pushes: 1, since: 'frontier' },
   PUSH2: { code: 0x61, pops: 0, pushes: 1, since: 'frontier' },
   PUSH3: { code: 0x62, pops: 0, pushes: 1, since: 'frontier' },
@@ -253,7 +236,7 @@ export function immediateWidth(code: number): number {
  * `PUSH1 00` (2 bytes) on paris; any other value is `PUSHn` with the fewest bytes that hold it.
  */
 export function encodedPushWidth(value: bigint, evmVersion: EvmVersion): number {
-  if (value === 0n) return forkAtLeast(evmVersion, OPS.PUSH0.since) ? 1 : 2;
+  if (value === 0n) return forkAtLeast(evmVersion, PUSH0_FORK) ? 1 : 2;
   return 1 + Math.ceil(value.toString(16).length / 2);
 }
 

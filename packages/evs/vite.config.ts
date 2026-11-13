@@ -6,9 +6,10 @@ export default defineConfig({
   // `.js` + `.d.ts` names (`exports` / `main` / `types` point at them), and JS source maps that
   // embed the TypeScript sources (`sourcesContent`) so stack traces and debuggers map to the
   // original code without src/ in the tarball (`files` does not ship it). No declaration maps:
-  // go-to-definition lands on the `.d.ts`, which keeps the JSDoc.
+  // go-to-definition lands on the `.d.ts`, which keeps the JSDoc. Two entries: the main one and
+  // the compiler-free `@maxencerb/evs/runtime` (src/runtime.ts).
   pack: {
-    entry: ['src/index.ts'],
+    entry: ['src/index.ts', 'src/runtime.ts'],
     format: 'esm',
     unbundle: true,
     fixedExtension: false,
