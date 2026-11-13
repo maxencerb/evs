@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "bench": "node scripts/bench.ts",
     "build": "astro build",
     "check:snippets": "node scripts/check-snippets.ts",
     "deploy": "pnpm run build && wrangler deploy",

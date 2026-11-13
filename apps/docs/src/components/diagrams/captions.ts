@@ -16,6 +16,10 @@ export const captions = {
     'A callee revert bubbles through a strict verb unchanged and fails the whole eth_call; a try verb catches it and returns success = false with a zero value.',
   CellSnapshots:
     'A Cell is mutable state written with set(); get() returns an Expr, an immutable snapshot that keeps its value when the cell is set again.',
+  CompilePasses:
+    'compile() reads the program several times, in three forms: it validates the IR and drops its dead statements, lowers what is left to instructions, assembles them into bytecode and verifies the bytes; optimize: true adds the fuse and peephole passes over the instructions.',
+  OnceVsEveryCall:
+    'Importing the library, recording a script and compiling it happen once: about 13 ms, 2 ms and 4 ms in a fresh Node process on the benchmark machine. Every call after that encodes the arguments with the bytecode, makes one eth_call round trip and decodes the result, for about 0.015 ms of CPU.',
   LoopCollect:
     's.for walks a runtime array, makes one call per element and writes each result into an s.newArray buffer that is returned at the end.',
 } as const;

@@ -107,7 +107,8 @@ const compiled = compile(double, {
 - **Default:** `false`
 
 Turns on the built-in optimizer passes. The script returns the same result; only the bytecode
-and its gas cost change.
+and its gas cost change. [Compilation](/concepts/compilation/#what-optimize-adds) shows what
+the passes do and what they save.
 
 ```ts {13}
 import { compile, evscript, t } from '@maxencerb/evs';

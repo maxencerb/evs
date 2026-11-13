@@ -646,6 +646,7 @@ carry the enumerations (types, codes, modes).
 | `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)           |
 | `src/pages/llms*.txt.ts`    | `/llms.txt`, `/llms-full.txt` and `/llms-small.txt`, assembled from that Markdown (`src/lib/llms.ts`) |
 | `src/pages/404.astro`       | the 404 page (Starlight's built-in one is disabled)                                                   |
+| `scripts/bench.ts`          | prints the record and compile timings quoted on the two measured concept pages (`pnpm run bench`)     |
 
 Page shapes:
 
@@ -682,6 +683,17 @@ plus a link to every page's `.md`), `/llms-full.txt` (every page) and `/llms-sma
 (everything but the per-function reference). All four come from the raw MDX, not from the
 rendered HTML: rendering every page a second and third time for the two big files used to take
 a third of the site build.
+
+`concepts/compilation.mdx` and `concepts/overhead.mdx` quote measurements. The record and compile
+timings, and the per-pass split, come from `pnpm run bench` in `apps/docs` (library built first,
+on the repo's Node): take every table of both pages from one run, and keep the machine and
+versions they name current. The Overhead page's "How this was measured" section is the method
+for the rest (bundle sizes with esbuild, download and start-up in headless Chromium, per-call
+cost and gas against a local anvil), which needs tools the workspace does not install. Two
+traps when re-measuring: anvil's default Prague rules floor a transaction's gas by its calldata
+(EIP-7623), which hides the execution gas of a calldata-heavy call, so measure gas with
+`--hardfork cancun`; and a viem client with `batch.multicall` (wagmi's default) delays each
+multicall by a timer tick, which is not CPU time.
 
 The build should print no warning. `astro.config.mjs` filters one that rolldown would repeat
 for every page (Astro's own `use astro:head-inject` directive), and the `i18n` collection has an
