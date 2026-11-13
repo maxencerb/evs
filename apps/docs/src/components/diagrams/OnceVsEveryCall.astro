@@ -1,0 +1,222 @@
+---
+// Overhead: what is paid once per script and what is paid on every call. Two lanes, each a row
+// of three steps: import, record, compile (with the cold time of each underneath), then encode,
+// eth_call, decode. The highlight walks the first lane once, then the second lane three times, so one
+// loop is "set up, then call, call, call". The lane title sits on the left (above the steps
+// below 520px). Loop: 12s, 1s per step.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="OnceVsEveryCall">
+  <div class="evs-oc">
+    <div class="evs-dg-region evs-oc-lane evs-oc-once">
+      <div class="evs-oc-head">
+        <span class="evs-dg-title">once per script</span>
+        <span class="evs-dg-note">about 19 ms, cold</span>
+      </div>
+      <div class="evs-oc-steps">
+        <div class="evs-oc-step evs-oc-s1">
+          <span class="evs-dg-node">import</span>
+          <span class="evs-dg-note">13 ms</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-oc-step evs-oc-s2">
+          <span class="evs-dg-node">record</span>
+          <span class="evs-dg-note">2 ms</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-oc-step evs-oc-s3">
+          <span class="evs-dg-node">compile</span>
+          <span class="evs-dg-note">4 ms</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="evs-dg-region evs-oc-lane evs-oc-call">
+      <div class="evs-oc-head">
+        <span class="evs-dg-title">every call</span>
+        <span class="evs-dg-note">0.015 ms of CPU</span>
+      </div>
+      <div class="evs-oc-steps">
+        <div class="evs-oc-step evs-oc-s1">
+          <span class="evs-dg-node">encode</span>
+          <span class="evs-dg-note">args + code</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-oc-step evs-oc-s2">
+          <span class="evs-dg-node">eth_call</span>
+          <span class="evs-dg-note">one round trip</span>
+        </div>
+        <span class="evs-dg-wire"></span>
+        <div class="evs-oc-step evs-oc-s3">
+          <span class="evs-dg-node">decode</span>
+          <span class="evs-dg-note">typed result</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  .evs-oc {
+    display: flex;
+    flex-direction: column;
+    row-gap: 10px;
+    max-width: 620px;
+    margin: 0 auto;
+  }
+
+  /* Narrow: the title above its steps. */
+  .evs-oc-lane {
+    display: flex;
+    flex-direction: column;
+    row-gap: 10px;
+    padding: 12px;
+  }
+
+  .evs-oc-head {
+    display: flex;
+    align-items: baseline;
+    column-gap: 10px;
+  }
+
+  .evs-oc-steps {
+    display: flex;
+    align-items: flex-start;
+    min-width: 0;
+  }
+
+  /* Narrow: the three steps share the row, and a cost that does not fit wraps under its node. */
+  .evs-oc-step {
+    display: flex;
+    flex: 1 1 0;
+    flex-direction: column;
+    align-items: center;
+    row-gap: 4px;
+    min-width: 0;
+  }
+
+  .evs-oc-step .evs-dg-node {
+    width: 100%;
+    padding-right: 6px;
+    padding-left: 6px;
+  }
+
+  .evs-oc-step .evs-dg-note {
+    text-align: center;
+  }
+
+  /* A step's node is 28px tall: the wire runs through its middle. */
+  .evs-oc-steps .evs-dg-wire {
+    flex: 0 0 14px;
+    min-width: 14px;
+    margin: 14px 4px 0;
+  }
+
+  /* Wide: the title in a column on the left, both lanes' steps aligned. */
+  @container evs-dg (min-width: 520px) {
+    .evs-oc-lane {
+      flex-direction: row;
+      align-items: center;
+      column-gap: 16px;
+      padding: 14px 16px;
+    }
+
+    .evs-oc-head {
+      flex: 0 0 128px;
+      flex-direction: column;
+      row-gap: 2px;
+    }
+
+    .evs-oc-steps {
+      flex: 1 1 0;
+    }
+
+    .evs-oc-step {
+      flex: 0 0 auto;
+    }
+
+    .evs-oc-step .evs-dg-node {
+      width: auto;
+      min-width: 72px;
+      padding-right: 10px;
+      padding-left: 10px;
+    }
+
+    .evs-oc-step .evs-dg-note {
+      white-space: nowrap;
+    }
+
+    .evs-oc-steps .evs-dg-wire {
+      flex: 1 1 0;
+      min-width: 16px;
+      margin: 14px 6px 0;
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-oc-once .evs-dg-node::after {
+      animation: evs-oncevseverycall-once 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-oc-call .evs-dg-node::after {
+      animation: evs-oncevseverycall-call 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* Within a lane, each step runs 1s after the one before it. */
+    .evs-oc-s2 {
+      --evs-dg-delay: 1s;
+    }
+
+    .evs-oc-s3 {
+      --evs-dg-delay: 2s;
+    }
+  }
+
+  /* The first lane's steps are lit once per loop, during its first 3s. */
+  @keyframes evs-oncevseverycall-once {
+    0% {
+      opacity: 0;
+    }
+    1.2%,
+    7% {
+      opacity: 1;
+    }
+    8.3%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The second lane's steps are lit three times: from 3s, 6s and 9s. */
+  @keyframes evs-oncevseverycall-call {
+    0%,
+    25% {
+      opacity: 0;
+    }
+    26.2%,
+    32% {
+      opacity: 1;
+    }
+    33.3%,
+    50% {
+      opacity: 0;
+    }
+    51.2%,
+    57% {
+      opacity: 1;
+    }
+    58.3%,
+    75% {
+      opacity: 0;
+    }
+    76.2%,
+    82% {
+      opacity: 1;
+    }
+    83.3%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

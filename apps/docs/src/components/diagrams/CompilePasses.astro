@@ -1,0 +1,342 @@
+---
+// Compilation: compile() reads the program several times, in three forms. Three panels in a row
+// (a column below 620px): the IR, the instructions, the bytecode, five lines each. A scan line
+// sweeps a panel once per pass on it while that pass's chip lights up; the unused statement
+// dims when dead-code elimination reaches it; a packet crosses each translation arrow. Dashed
+// chips are the passes `optimize: true` adds. Loop: 12s (five sweeps of 1.5s, two hops of 1s).
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="CompilePasses">
+  <div class="evs-cp">
+    <div class="evs-cp-panel evs-cp-p1">
+      <span class="evs-dg-title">IR</span>
+      <div class="evs-dg-region evs-cp-rows">
+        <span class="evs-cp-row">cellnew total</span>
+        <span class="evs-cp-row">len values</span>
+        <span class="evs-cp-row evs-cp-dead">mul (unused)</span>
+        <span class="evs-cp-row">while i &lt; len</span>
+        <span class="evs-cp-row">cellget total</span>
+        <i class="evs-cp-scan evs-cp-t1"></i>
+        <i class="evs-cp-scan evs-cp-t2"></i>
+      </div>
+      <div class="evs-cp-passes">
+        <span class="evs-dg-node evs-cp-pass evs-cp-t1">validate</span>
+        <span class="evs-dg-node evs-cp-pass evs-cp-t2">dead code</span>
+      </div>
+    </div>
+
+    <div class="evs-cp-link evs-cp-l1">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-cp-verb">lower</span>
+    </div>
+
+    <div class="evs-cp-panel evs-cp-p2">
+      <span class="evs-dg-title">instructions</span>
+      <div class="evs-dg-region evs-cp-rows">
+        <span class="evs-cp-row">PUSH1 0xa0</span>
+        <span class="evs-cp-row">MLOAD</span>
+        <span class="evs-cp-row">DUP2</span>
+        <span class="evs-cp-row">ADD</span>
+        <span class="evs-cp-row">MSTORE</span>
+        <i class="evs-cp-scan evs-cp-t4"></i>
+        <i class="evs-cp-scan evs-cp-t5"></i>
+      </div>
+      <div class="evs-cp-passes">
+        <span class="evs-dg-node evs-cp-pass is-optional evs-cp-t4">fuse</span>
+        <span class="evs-dg-node evs-cp-pass is-optional evs-cp-t5">peephole</span>
+      </div>
+    </div>
+
+    <div class="evs-cp-link evs-cp-l2">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note evs-cp-verb">assemble</span>
+    </div>
+
+    <div class="evs-cp-panel evs-cp-p3">
+      <span class="evs-dg-title">bytecode</span>
+      <div class="evs-dg-region evs-cp-rows">
+        <span class="evs-cp-row">36 61 00 06 57 00</span>
+        <span class="evs-cp-row">5b 61 01 e0 60 40</span>
+        <span class="evs-cp-row">52 60 04 36 10 61</span>
+        <span class="evs-cp-row">01 32 57 5f 35 60</span>
+        <span class="evs-cp-row">e0 1c 63 01 94 db</span>
+        <i class="evs-cp-scan evs-cp-t7"></i>
+      </div>
+      <div class="evs-cp-passes">
+        <span class="evs-dg-node evs-cp-pass evs-cp-t7">verify</span>
+      </div>
+    </div>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  /* Column layout (narrow): the three panels stacked, arrows pointing down. */
+  .evs-cp {
+    display: flex;
+    flex-direction: column;
+  }
+
+  .evs-cp-panel {
+    display: flex;
+    flex-direction: column;
+    row-gap: 8px;
+    min-width: 0;
+  }
+
+  /* Five 18px lines in a 6px inset: the panel is 102px tall, its middle 51px down. */
+  .evs-cp-rows {
+    padding: 6px 0;
+    overflow: hidden;
+  }
+
+  .evs-cp-row {
+    display: block;
+    height: 18px;
+    padding: 1px 10px;
+    overflow: hidden;
+    font-size: 11px;
+    line-height: 16px;
+    color: var(--evs-text-2);
+    white-space: nowrap;
+  }
+
+  /* The line a pass is reading. It has one row's box, so 400% carries it to the fifth row. */
+  .evs-cp-scan {
+    position: absolute;
+    top: 6px;
+    right: 0;
+    left: 0;
+    height: 18px;
+    border-left: 2px solid var(--evs-accent);
+    background: var(--evs-accent-soft);
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .evs-cp-passes {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+  }
+
+  .evs-cp-pass {
+    min-height: 24px;
+    padding: 3px 8px;
+    font-size: 11px;
+    line-height: 16px;
+  }
+
+  .evs-cp-pass.is-optional {
+    border-style: dashed;
+  }
+
+  .evs-cp-link {
+    position: relative;
+    display: flex;
+    align-items: center;
+    column-gap: 12px;
+    height: 28px;
+    margin: 6px 0;
+    padding-left: 20px;
+  }
+
+  .evs-cp-link .evs-dg-wire {
+    flex: 0 0 auto;
+    width: 1px;
+    min-width: 0;
+    height: 100%;
+  }
+
+  .evs-cp-link .evs-dg-wire::after {
+    top: auto;
+    right: auto;
+    bottom: 1px;
+    left: 50%;
+    transform: translateX(-50%) rotate(135deg);
+  }
+
+  /* Row layout: the arrows sit level with the middle of the panels, their verbs above them. */
+  @container evs-dg (min-width: 620px) {
+    .evs-cp {
+      flex-direction: row;
+      align-items: flex-start;
+    }
+
+    .evs-cp-panel {
+      flex: 1 1 0;
+    }
+
+    .evs-cp-link {
+      flex: 0 0 68px;
+      height: 28px;
+      /* title (16px) + gap (8px) + half a panel (51px) − half the link (14px) */
+      margin: 61px 0 0;
+      padding: 0 6px;
+    }
+
+    .evs-cp-link .evs-dg-wire {
+      flex: 1 1 0;
+      width: auto;
+      height: 1px;
+    }
+
+    .evs-cp-link .evs-dg-wire::after {
+      top: 50%;
+      right: 1px;
+      bottom: auto;
+      left: auto;
+      transform: translateY(-50%) rotate(45deg);
+    }
+
+    .evs-cp-verb {
+      position: absolute;
+      bottom: calc(50% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+    }
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-cp-scan {
+      animation: evs-compilepasses-scan 12s linear var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cp-pass::after {
+      animation: evs-compilepasses-pass 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cp-dead {
+      animation: evs-compilepasses-dead 12s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cp-link .evs-dg-run {
+      animation: evs-compilepasses-run-y 12s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    @container evs-dg (min-width: 620px) {
+      .evs-diagram[data-anim] .evs-cp-link .evs-dg-run {
+        animation-name: evs-compilepasses-run-x;
+      }
+    }
+
+    /* The schedule: validate 0s, dead code 1.5s, lower 3s, fuse 4s, peephole 5.5s, assemble 7s,
+       verify 8s, then a 2.5s rest. */
+    .evs-cp-t2 {
+      --evs-dg-delay: 1.5s;
+    }
+
+    .evs-cp-l1 {
+      --evs-dg-delay: 3s;
+    }
+
+    .evs-cp-t4 {
+      --evs-dg-delay: 4s;
+    }
+
+    .evs-cp-t5 {
+      --evs-dg-delay: 5.5s;
+    }
+
+    .evs-cp-l2 {
+      --evs-dg-delay: 7s;
+    }
+
+    .evs-cp-t7 {
+      --evs-dg-delay: 8s;
+    }
+  }
+
+  /* One sweep: 1.5s of the 12s loop, top row to bottom row. */
+  @keyframes evs-compilepasses-scan {
+    0% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    1% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    11.5% {
+      opacity: 1;
+      transform: translateY(400%);
+    }
+    12.5%,
+    100% {
+      opacity: 0;
+      transform: translateY(400%);
+    }
+  }
+
+  /* A pass's chip is lit for the length of its sweep. */
+  @keyframes evs-compilepasses-pass {
+    0% {
+      opacity: 0;
+    }
+    1.5%,
+    11% {
+      opacity: 1;
+    }
+    12.5%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  /* The unused statement dims when the dead-code sweep reaches it (third row, 2.2s in) and
+     comes back for the next loop. */
+  @keyframes evs-compilepasses-dead {
+    0%,
+    18% {
+      opacity: 1;
+    }
+    21%,
+    94% {
+      opacity: 0.3;
+    }
+    99%,
+    100% {
+      opacity: 1;
+    }
+  }
+
+  @keyframes evs-compilepasses-run-x {
+    0% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    1% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    7.3% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    8.3%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  @keyframes evs-compilepasses-run-y {
+    0% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    1% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    7.3% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    8.3%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+</style>

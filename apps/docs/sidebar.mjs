@@ -42,6 +42,8 @@ export const sidebar = [
     label: 'Concepts',
     items: [
       { label: 'How it works', slug: 'concepts/how-it-works' },
+      { label: 'Compilation', slug: 'concepts/compilation' },
+      { label: 'Overhead', slug: 'concepts/overhead' },
       { label: 'Why trust the bytecode?', slug: 'concepts/trust-and-testing' },
     ],
   },

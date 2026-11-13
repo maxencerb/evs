@@ -1,0 +1,198 @@
+---
+title: Compilation
+description: What compile() starts from, the passes it runs, what each one removes from the bytecode, and how long it takes.
+---
+
+import CompilePasses from '~/components/diagrams/CompilePasses.astro';
+
+[`compile`](/reference/compile/) turns a recorded script into verified bytecode. This page
+follows a script through the passes: what each one reads, what it removes, and how long it
+takes.
+
+<CompilePasses />
+
+The examples on this page use this script:
+
+```ts title="script.ts"
+import { evscript, t } from '@maxencerb/evs';
+
+export const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, values) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(values, (value) => {
+    total.set(total.get().add(value));
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+## Where it starts
+
+`compile` starts from `script.ir`, the statements your callback
+[recorded](/concepts/how-it-works/#record). It never runs the callback again.
+
+```ts
+import { sum } from './script';
+
+sum.ir.body.map((statement) => statement.k);
+// ['const', 'cellnew', 'len', 'cellnew', 'const', 'while', 'cellget']
+```
+
+The IR is recorded as written. One thing is already done: math on literals is
+[folded while recording](/reference/expr/arithmetic/#build-time-folding), so
+`s.lit(t.uint256, 30n).mul(2n)` is the constant `60`.
+
+## The passes
+
+Times are for the [pool metadata example](/examples/pool-metadata/) and its eight reads, once
+the compiler is warm. The whole compile takes 0.13 ms, or 0.20 ms with `optimize`.
+
+| Pass | Works on | What it does | Time (µs) |
+| --- | --- | --- | --- |
+| Validate | IR | Checks types, scopes and that every value is defined before use. | 6 |
+| Dead code | IR | Drops the statements nothing reads. | 2 |
+| Lower | IR → instructions | Gives each value a memory slot and emits the opcodes of each statement. | 38 |
+| Slot reuse, fuse | instructions | With `optimize`: reuses memory slots and keeps single-use values on the stack. | +27 |
+| Peephole | instructions | With `optimize`: folds constants and cancels opcode pairs. | +49 |
+| Assemble | instructions → bytes | Picks the shortest pushes, resolves jump labels, enforces the size limit. | 38 |
+| Verify | bytes, instructions | [Checks the output](/concepts/trust-and-testing/#checks-on-every-compile): jump targets, stack heights, opcodes. | 35 |
+
+The few microseconds left encode the bytes as hex. [Overhead](/concepts/overhead/) has the
+timings of other scripts, and of a first compile.
+
+## What every compile removes
+
+These run on every compile, with or without `optimize`.
+
+### Dead code
+
+A statement stays when something observable depends on it: a returned value, a call, a loop
+or an [`s.throw`](/reference/builder/throw/). The rest is dropped.
+
+```ts {5}
+import { compile, dce, evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, values) => {
+  const total = s.let(t.uint256, 0n);
+  values.length().mul(2n); // nothing reads this
+  s.forEach(values, (value) => {
+    total.set(total.get().add(value));
+  });
+  return s.return({ total: total.get() });
+});
+
+sum.ir.body.length; // 10 statements recorded
+dce(sum.ir).body.length; // 7 compiled
+(compile(sum).runtimeBytecode.length - 2) / 2; // 321 bytes, as without the line
+```
+
+The checks of a dropped statement go with it: see [`dce`](/reference/utilities/dce/).
+
+### Repeated code
+
+Code that would be emitted several times is emitted once and jumped to.
+
+| What repeats | Emitted once as | Example |
+| --- | --- | --- |
+| The body of [`s.for`](/reference/builder/for/), `s.forEach`, `s.while` | a loop | 200 reads: [488 bytes, not 26,450](/reference/compile/#size-limit) |
+| The body of an [`s.fn`](/reference/builder/fn/) | a subroutine | called from every call site |
+| A struct or struct-array codec used by several calls | a subroutine | table below |
+| `mulDiv`, panics, decode failures | a shared tail | only the ones the script can reach |
+
+Reading the same 8-field struct several times:
+
+| Reads | Codec at every read | Shared codec (what you get) |
+| --- | --- | --- |
+| 2 | 1,103 bytes | 848 bytes |
+| 4 | 2,017 bytes | 1,120 bytes |
+| 8 | 3,850 bytes | 1,669 bytes |
+
+A codec is shared only when that makes the bytecode smaller. A struct that is read once is
+decoded in place.
+
+### Checks a loop already proves
+
+`s.forEach` stops at the array's length, so its element read needs no bounds check, and its
+counter cannot overflow. The listing of `sum` marks both:
+
+```txt
+0x00ac  610100      PUSH2 0x0100  ; index (guarded)
+…
+0x00e2  6001        PUSH1 0x01  ; add uint256 (guarded: cannot overflow)
+```
+
+The same holds for `array.at(i)` inside an `s.for` that runs until that array's length.
+
+## What optimize adds
+
+`compile(script, { optimize: true })` runs three more passes. The script returns the same
+values, and the output is verified the same way.
+
+| Pass | What it does |
+| --- | --- |
+| Slot reuse | Hands a memory slot to a new value once its last reader has run. The memory `sum` reserves goes from 480 to 352 bytes. |
+| Fuse | Leaves a value on the stack when its only reader is the next statement. |
+| [Peephole](/reference/utilities/evs-peephole/#what-it-rewrites) | Folds constant pushes and removes pairs that cancel out. |
+
+Without `optimize`, every statement stores its result in memory and the next one loads it
+back. Here the loop of `sum` stores the new total:
+
+```txt
+0x00d3  610119      PUSH2 0x0119 → @panic_overflow
+0x00d6  57          JUMPI
+0x00d7  610180      PUSH2 0x0180
+0x00da  52          MSTORE
+0x00db  610180      PUSH2 0x0180  ; cell 0 ←
+0x00de  51          MLOAD
+0x00df  60a0        PUSH1 0xa0
+0x00e1  52          MSTORE
+```
+
+With `optimize`, the result goes straight from the stack into the cell:
+
+```txt
+0x00c0  6100f4      PUSH2 0x00f4 → @panic_overflow
+0x00c3  57          JUMPI
+0x00c4  60a0        PUSH1 0xa0  ; cell 0 ←
+0x00c6  52          MSTORE
+```
+
+### What it saves
+
+Gas is the script's own execution, measured on anvil.
+
+| Script | Bytes | With `optimize` | Gas | With `optimize` |
+| --- | --- | --- | --- | --- |
+| `sum` of 100 values | 321 | 284 | 21,425 | 16,296 (-24%) |
+| [Balances](/examples/token-balances/) of 100 tokens | 586 | 557 | 159,079 | 155,144 (-2.5%) |
+| [Pool metadata](/examples/pool-metadata/), 8 reads | 1,196 | 1,196 | 28,101 | 28,082 |
+| 100 reads recorded by a JavaScript loop | 13,350 | 11,348 | 149,255 | 145,011 (-2.8%) |
+
+- **Arithmetic and loops gain the most.** `sum` spends its gas on stack and memory work, which
+  is what the passes remove.
+- **Calls dominate everything else.** A script that mostly calls contracts barely changes.
+- **Compiling takes 50% to 85% longer.** That is 0.07 ms more for the pool metadata script.
+
+## How long it takes
+
+Measured on a MacBook Pro (Apple M5 Pro) with Node 24. "First" is the first compile of a fresh
+process, before the JavaScript engine has optimized the compiler.
+
+| Script | Statements | First compile | Warm | Warm, `optimize` |
+| --- | --- | --- | --- | --- |
+| [`supplyOf`](/concepts/how-it-works/): 1 read | 1 | 2.8 ms | 0.03 ms | 0.04 ms |
+| [Pool metadata](/examples/pool-metadata/): 8 reads | 10 | 3.9 ms | 0.13 ms | 0.20 ms |
+| [Balances](/examples/token-balances/): a loop | 15 | 3.9 ms | 0.07 ms | 0.13 ms |
+| 100 reads recorded by a JavaScript loop | 602 | 12.3 ms | 1.77 ms | 3.10 ms |
+
+- **Time follows the program's size.** The 602-statement script takes about 14 times as
+  long as the 10-statement one.
+- **A loop is one body.** The balances script handles any number of tokens with 15 statements.
+- **Compile once.** Keep the result in a module-level constant: see
+  [reducing the overhead](/concepts/overhead/#reducing-it).
+
+## Next steps
+
+- [`compile`](/reference/compile/): every option and error.
+- [Overhead](/concepts/overhead/): what evs adds end to end, from the import to each call.
+- [Why trust the bytecode?](/concepts/trust-and-testing/): the checks behind the verify pass.
+- [`disassemble`](/reference/artifact/disassemble/): read the listing of your own script.

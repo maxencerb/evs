@@ -74,6 +74,9 @@ branches on a chain value: see [Writing scripts](/guides/writing-scripts/).
 4. Assemble the bytes and enforce the 24,576-byte code size limit.
 5. [Verify the bytecode](/concepts/trust-and-testing/) before returning it.
 
+[Compilation](/concepts/compilation/) goes through each step, what it removes and how long it
+takes.
+
 ```ts
 import { compile } from '@maxencerb/evs';
 import { supplyOf } from './script';
@@ -169,6 +172,8 @@ The ABI also lists the script's errors, which is how viem names a revert: see
 
 ## Next steps
 
+- [Compilation](/concepts/compilation/)
+- [Overhead](/concepts/overhead/)
 - [Why trust the bytecode?](/concepts/trust-and-testing/)
 - [The compiled artifact](/reference/artifact/)
 - [`disassemble`](/reference/artifact/disassemble/)
