@@ -1,0 +1,259 @@
+---
+// Shared frame of the eight explanatory diagrams: the `<figure>` / stage / caption markup, the
+// drawing vocabulary every diagram uses (node, slot, region, wire, packet, note) and the
+// play/pause logic.
+//
+// Contract with the rest of the site:
+//   - `.evs-diagram` (border, radius, surface, padding) and `.evs-diagram__caption` are styled by
+//     the theme; everything inside `.evs-diagram__stage` is styled here and in each diagram.
+//   - The stage is `aria-hidden` and dropped from the Markdown outputs, so the caption (from
+//     `captions.ts`) is the text alternative.
+//   - Colours, fonts and radii come only from `src/styles/tokens.css`.
+//
+// Motion model, the same for every diagram:
+//   - The base styles ARE the static frame: the complete drawing, no packet in flight. It is what
+//     shows before the script runs, without JavaScript, and under `prefers-reduced-motion`.
+//   - The script below sets `data-anim="paused" | "running"` on each figure from an
+//     IntersectionObserver. Diagrams declare their animations under `.evs-diagram[data-anim]`
+//     inside `@media screen and (prefers-reduced-motion: no-preference)` (so print gets the
+//     static frame too), and only ever animate `transform` and `opacity`.
+//   - Phase shifts go through `--evs-dg-delay` (read by every `animation` shorthand), so one
+//     set of keyframes serves several elements whatever the selectors' specificity.
+//   - Styles are global (class names are prefixed `evs-dg-` here and `evs-<diagram>-` in each
+//     diagram, keyframes `evs-<diagram>-…`), so what a diagram writes is what the browser gets.
+//
+// The inner `.evs-dg` wrapper carries Starlight's `not-content` opt-out (no prose margins on the
+// drawing's elements) and is the size container the diagrams query to reflow.
+import { captions, type DiagramName } from './captions.ts';
+
+interface Props {
+  name: DiagramName;
+}
+
+const { name } = Astro.props;
+---
+
+<figure class="evs-diagram" data-diagram={name}>
+  <div class="evs-diagram__stage" aria-hidden="true">
+    <div class="evs-dg not-content"><slot /></div>
+  </div>
+  <figcaption class="evs-diagram__caption">{captions[name]}</figcaption>
+</figure>
+
+<style is:global>
+  .evs-dg {
+    /* A size container has no intrinsic width: take the stage's, whatever its layout. */
+    container: evs-dg / inline-size;
+    width: 100%;
+    min-width: 0;
+    font-family: var(--evs-font-mono);
+    font-size: 12px;
+    font-weight: 400;
+    line-height: 16px;
+    letter-spacing: 0;
+    font-variant-ligatures: none;
+    color: var(--evs-text);
+    text-align: start;
+    -webkit-text-size-adjust: 100%;
+    text-size-adjust: 100%;
+
+    /* The one stroke of the line work: node borders, wires, arrowheads, dashed slots. A notch
+       stronger than the page's hairlines, which wash out on the light frame. */
+    --evs-dg-stroke: color-mix(in oklch, var(--evs-border-strong) 65%, var(--evs-text-3));
+
+    /* Fill of a region. The theme puts the figure on `--evs-code-bg`, so a region is one step
+       lighter (`--evs-surface`) and a node one more (`--evs-surface-2`). */
+    --evs-dg-region: var(--evs-surface);
+  }
+
+  .evs-dg *,
+  .evs-dg *::before,
+  .evs-dg *::after {
+    box-sizing: border-box;
+  }
+
+  :where(.evs-dg) :where(div, span, i, b, em) {
+    margin: 0;
+    padding: 0;
+    font-style: normal;
+    font-weight: inherit;
+  }
+
+  /* Text roles: a title names a lane or panel, a note annotates. Nothing goes below 11px. */
+  .evs-dg-title {
+    font-weight: 500;
+    color: var(--evs-heading);
+  }
+
+  .evs-dg-note {
+    font-size: 11px;
+    line-height: 15px;
+    color: var(--evs-text-2);
+  }
+
+  /* Tones. The accent marks what moves or is active; ok and danger are success and revert. */
+  .evs-dg-ok {
+    --evs-dg-tone: var(--evs-ok);
+    --evs-dg-tone-soft: color-mix(in oklch, var(--evs-ok) 14%, transparent);
+  }
+
+  .evs-dg-danger {
+    --evs-dg-tone: var(--evs-danger);
+    --evs-dg-tone-soft: color-mix(in oklch, var(--evs-danger) 14%, transparent);
+  }
+
+  /* Node: a rounded rectangle. Its `::after` is the highlight, shown by animating opacity. */
+  .evs-dg-node {
+    position: relative;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 28px;
+    padding: 5px 10px;
+    border: 1px solid var(--evs-dg-stroke);
+    border-radius: var(--evs-radius-sm);
+    background: var(--evs-surface-2);
+    color: var(--evs-text);
+    white-space: nowrap;
+  }
+
+  .evs-dg-node::after {
+    content: '';
+    position: absolute;
+    inset: -1px;
+    border: 1px solid var(--evs-dg-tone, var(--evs-accent));
+    border-radius: inherit;
+    background: var(--evs-dg-tone-soft, var(--evs-accent-soft));
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  /* Slot: the dashed outline of something that is not there yet (an address without code, an
+     array element not written). The node inside covers it when it fades in. */
+  .evs-dg-slot {
+    display: block;
+    border-radius: var(--evs-radius-sm);
+    outline: 1px dashed var(--evs-dg-stroke);
+    outline-offset: -1px;
+  }
+
+  /* Region: a boundary that holds nodes (a node, a panel of code). */
+  .evs-dg-region {
+    position: relative;
+    border: 1px solid var(--evs-border);
+    border-radius: var(--evs-radius);
+    background: var(--evs-dg-region);
+  }
+
+  /* Wire: a 1px line with an open arrowhead. Horizontal and pointing right by default. */
+  .evs-dg-wire {
+    position: relative;
+    display: block;
+    flex: 1 1 0;
+    min-width: 16px;
+    height: 1px;
+    background: var(--evs-dg-line, var(--evs-dg-stroke));
+  }
+
+  .evs-dg-wire::after {
+    content: '';
+    position: absolute;
+    top: 50%;
+    right: 1px;
+    width: 6px;
+    height: 6px;
+    border: solid var(--evs-dg-line, var(--evs-dg-stroke));
+    border-width: 1px 1px 0 0;
+    transform: translateY(-50%) rotate(45deg);
+  }
+
+  .evs-dg-wire.is-left::after {
+    right: auto;
+    left: 1px;
+    transform: translateY(-50%) rotate(-135deg);
+  }
+
+  .evs-dg-wire.is-down,
+  .evs-dg-wire.is-up {
+    flex: 0 0 auto;
+    width: 1px;
+    min-width: 0;
+    height: var(--evs-dg-len, 20px);
+  }
+
+  .evs-dg-wire.is-down::after {
+    top: auto;
+    right: auto;
+    bottom: 1px;
+    left: 50%;
+    transform: translateX(-50%) rotate(135deg);
+  }
+
+  .evs-dg-wire.is-up::after {
+    top: 1px;
+    right: auto;
+    left: 50%;
+    transform: translateX(-50%) rotate(-45deg);
+  }
+
+  .evs-dg-wire.is-plain::after {
+    content: none;
+  }
+
+  /* Packet: the runner has the wire's box, so translating it by 100% carries the dot from one
+     end of the wire to the other at any width. Hidden in the static frame. */
+  .evs-dg-run {
+    position: absolute;
+    inset: 0;
+    opacity: 0;
+    pointer-events: none;
+  }
+
+  .evs-dg-run::before {
+    content: '';
+    position: absolute;
+    top: -3px;
+    left: -3px;
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    background: var(--evs-dg-tone, var(--evs-accent));
+    box-shadow: 0 0 0 3px var(--evs-dg-tone-soft, var(--evs-accent-soft));
+  }
+
+  /* Off screen, every animation of the diagram holds its frame. */
+  .evs-diagram[data-anim='paused'] .evs-dg *,
+  .evs-diagram[data-anim='paused'] .evs-dg *::before,
+  .evs-diagram[data-anim='paused'] .evs-dg *::after {
+    animation-play-state: paused !important;
+  }
+</style>
+
+<script>
+  // One observer for every diagram on the page: a diagram animates only while it is on screen.
+  // Without this script, and under prefers-reduced-motion (a CSS guard in each diagram), the
+  // figures stay on their static frame.
+  const observer =
+    'IntersectionObserver' in window
+      ? new IntersectionObserver(
+          (entries) => {
+            for (const entry of entries) {
+              entry.target.setAttribute('data-anim', entry.isIntersecting ? 'running' : 'paused');
+            }
+          },
+          { threshold: 0.25 },
+        )
+      : null;
+
+  function watch() {
+    if (!observer) return;
+    for (const figure of document.querySelectorAll('.evs-diagram:not([data-anim])')) {
+      figure.setAttribute('data-anim', 'paused');
+      observer.observe(figure);
+    }
+  }
+
+  watch();
+  // Starlight does not use the client router today; this keeps the diagrams alive if it ever does.
+  document.addEventListener('astro:page-load', watch);
+</script>

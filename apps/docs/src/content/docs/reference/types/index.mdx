@@ -1,0 +1,90 @@
+---
+title: Types
+description: The t namespace holds the type descriptors that declare script arguments, cells, arrays, structs and custom errors.
+---
+
+The `t` namespace holds the type descriptors that declare script arguments, cells, arrays, structs
+and custom errors. Each primitive is its own name as a string: `t.uint256` is `'uint256'`, so a raw
+type string works wherever a `t.*` value does.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Balance = t.struct({ token: t.address, amount: t.uint256 });
+
+const balances = evscript(
+  { name: 'balances', args: [t.array(t.address), t.address] },
+  (s, tokens, holder) => {
+    const out = s.newArray(Balance, tokens.length());
+    s.forEach(tokens, (token, i) => {
+      const amount = s.read({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [holder],
+      });
+      out.set(i, { token, amount });
+    });
+    return s.return({ balances: out });
+  },
+);
+```
+
+You pass a type to a script's `args`, to [`s.let`](/reference/builder/let/),
+[`s.newArray`](/reference/builder/new-array/), [`s.lit`](/reference/builder/lit/),
+[`s.tuple`](/reference/builder/tuple/), [`s.fn`](/reference/builder/fn/) params and
+[`t.error`](/reference/types/error/) params.
+
+## Primitives
+
+| Type | Sizes | Literal in a script | viem type |
+| --- | --- | --- | --- |
+| `t.address` | 20 bytes | `0x` string of 20 bytes | `Address` |
+| `t.bool` | | `true` or `false` | `boolean` |
+| `t.uint8` … `t.uint256` | 8 to 256 bits, every multiple of 8 | `bigint` or `number` | `number` up to 48 bits, `bigint` above |
+| `t.int8` … `t.int256` | 8 to 256 bits, every multiple of 8 | `bigint` or `number` | `number` up to 48 bits, `bigint` above |
+| `t.bytes1` … `t.bytes32` | 1 to 32 bytes | `0x` string of exactly N bytes | `Hex` |
+| `t.string` | any length | `string` | `string` |
+| `t.bytes` | any length | `0x` string | `Hex` |
+
+The literal is what you write inside a script, such as `x.add(1n)`. The viem type is what you
+pass in `args` and what the decoded result holds.
+
+Literals are checked against their type while the script is built. The rules are in
+[literals](/reference/expr/#literals).
+
+## Composite types
+
+| Constructor | Builds |
+| --- | --- |
+| [`t.array(elem, length?)`](/reference/types/array/) | a dynamic `T[]` or fixed-size `T[N]` array |
+| [`t.struct(spec)`](/reference/types/struct/) | a struct with named members |
+| [`t.tuple(...items)`](/reference/types/tuple/) | a tuple with positional members |
+| [`t.error(name, params?)`](/reference/types/error/) | a custom error for [`s.throw`](/reference/builder/throw/) |
+| [`t.fromOutputs(abi, name)`](/reference/types/from-outputs/) | the type of an ABI function's outputs |
+| [`t.fromAbiParameter(param)`](/reference/types/from-outputs/#tfromabiparameter) | the type of one ABI parameter |
+| [`namedArg(name, type)`](/reference/types/named-arg/) | a named script or function argument |
+
+## TypeScript types
+
+Every descriptor has an exported TypeScript type, for helpers that take a type as a parameter.
+
+```ts
+import { t } from '@maxencerb/evs';
+import type { EvsType, TupleType, UintType } from '@maxencerb/evs';
+
+const width: UintType = t.uint128; // 'uint128'
+const Position: TupleType = t.struct({ owner: t.address, liquidity: width });
+const all: readonly EvsType[] = [t.address, t.array(width), Position];
+```
+
+| Type | Covers |
+| --- | --- |
+| `EvsType` | every value type |
+| `WordType` | `uintN`, `intN`, `address`, `bool` and `bytesN` |
+| `UintType`, `IntType`, `BytesNType` | one primitive family each |
+| `NumericType` | `uintN` and `intN` |
+| `DynType` | `string` and `bytes` |
+| `ArrayType` | array type strings, such as `'uint256[]'` and `'address[3]'` |
+| `TupleType` | a struct or tuple descriptor, also the type of an array of structs |

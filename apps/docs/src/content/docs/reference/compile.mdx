@@ -1,0 +1,255 @@
+---
+title: compile
+description: Compiles a script to EVM runtime bytecode and returns the artifact you run with viem.
+---
+
+Compiles a script to EVM runtime bytecode and returns the
+[artifact](/reference/artifact/) you run with viem.
+
+## Import
+
+```ts
+import { compile } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {9}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const supplyOf = evscript({ name: 'supplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+
+const compiled = compile(supplyOf);
+```
+
+Spread [`compiled.toViem()`](/reference/artifact/to-viem/) into `readContract` to run it.
+
+### Method form
+
+`script.compile(options)` is the same call.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+
+const compiled = double.compile({ evmVersion: 'shanghai' });
+```
+
+## Returns
+
+`CompiledEvsScript`
+
+The [compiled artifact](/reference/artifact/): the ABI, the bytecode, and the methods to run and
+debug it. `CompiledOf<typeof script>` names its exact type.
+
+```ts
+import { evscript, t, type CompiledOf } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+
+const compiled: CompiledOf<typeof double> = double.compile();
+```
+
+## Parameters
+
+`compile(script, options?)`. Every option below is an optional field of `CompileOptions`.
+
+### script
+
+- **Type:** `EvsScript`
+
+The script returned by [`evscript`](/reference/evscript/).
+
+```ts {8}
+import { compile, evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+
+const compiled = compile(
+  double,
+);
+```
+
+### evmVersion (optional)
+
+- **Type:** `'paris' | 'shanghai' | 'cancun'`
+- **Default:** `'cancun'`
+
+The fork whose opcodes the bytecode may use. Lower it for a chain, or a pinned block, that
+predates the default: see [EVM targets](/guides/evm-targets/).
+
+```ts {8}
+import { compile, evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+
+const compiled = compile(double, {
+  evmVersion: 'paris', // no PUSH0, no MCOPY
+});
+```
+
+### optimize (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Turns on the built-in optimizer passes. The script returns the same result; only the bytecode
+and its gas cost change.
+
+```ts {13}
+import { compile, evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, values) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(values, (value) => {
+    total.set(total.get().add(value));
+  });
+  return s.return({ total: total.get() });
+});
+
+const plain = compile(sum); // 321 bytes of runtime bytecode
+const optimized = compile(sum, {
+  optimize: true, // 284 bytes
+});
+```
+
+### peephole (optional)
+
+- **Type:** `(nodes: readonly AsmNode[]) => AsmNode[]`
+- **Default:** returns the nodes unchanged
+
+Your own pass over the instruction stream, run before the bytecode is assembled. With
+`optimize: true` it runs after the built-in passes and sees their output.
+
+```ts {9-12}
+import { compile, evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+
+let opcodes = 0;
+const compiled = compile(double, {
+  peephole: (nodes) => {
+    opcodes = nodes.filter((node) => node.k === 'op').length;
+    return [...nodes];
+  },
+});
+```
+
+Each node is an `AsmNode`: an opcode, a push, a label or raw data. The
+[node kinds](/reference/utilities/evs-peephole/#nodes) are listed on the
+[`evsPeephole`](/reference/utilities/evs-peephole/) page, with how to reuse the built-in pass
+inside your own.
+
+### onDiagnostic (optional)
+
+- **Type:** `(diagnostic: EvsDiagnostic) => void`
+- **Default:** does nothing
+
+Receives each compile [warning](/reference/diagnostics/#warnings) as
+`{ severity, code, message, site? }`.
+
+```ts {16}
+import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
+  const balance = s.read({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [s.env('caller')],
+  });
+  return s.return({ balance });
+});
+
+const warnings: EvsDiagnostic[] = [];
+compile(myBalance, {
+  onDiagnostic: (diagnostic) => warnings.push(diagnostic),
+});
+// warnings[0].code: 'ENV_FRAME_DEPENDENT'
+// warnings[1].code: 'DEPLOYLESS_RESULT_PREFIX'
+```
+
+:::caution[Warnings are silent by default]
+`compile` never logs. Without `onDiagnostic` you do not learn that `s.env('caller')` above is
+viem's wrapper contract in a deployless call, not your account.
+:::
+
+## Size limit
+
+The runtime bytecode is capped at 24,576 bytes (EIP-170). Over the cap, `compile` throws, and
+the message gives the size of each region of the bytecode.
+
+```ts {8-16,21}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balances = evscript(
+  { name: 'balances', args: [t.array(t.address, 200), t.address] },
+  (s, tokens, holder) => {
+    const total = s.let(t.uint256, 0n);
+    for (let i = 0; i < 200; i++) {
+      const balance = s.read({
+        address: tokens.at(i),
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [holder],
+      });
+      total.set(total.get().add(balance));
+    }
+    return s.return({ total: total.get() });
+  },
+);
+
+compile(balances); // throws EvsCompileError (COMPILE_LIMIT)
+```
+
+The message, one line wrapped here:
+
+```txt
+runtime bytecode is 26450 bytes — exceeds the EIP-170 limit of 24576 by 1874 bytes
+(dispatcher 40, body 24788, fns 0, tails 1622, data segments 0); split the script or
+move large literals off-chain
+```
+
+The JavaScript loop records its body 200 times. With
+[`s.forEach`](/reference/builder/for-each/) the same script compiles to 488 bytes.
+
+| Large region | How to shrink it |
+| --- | --- |
+| `body` | Loop with [`s.for`](/reference/builder/for/) or `s.forEach`, not a JavaScript loop: the body is compiled once. |
+| `body` | Move repeated logic into an [`s.fn`](/reference/builder/fn/). It is compiled once, however often you call it. |
+| `data segments` | Pass a large `string`, `bytes` or array as a script argument, not as a literal. |
+
+## Behavior
+
+- **Always verified.** Jump targets and stack depth are checked on the final bytecode, with or
+  without `optimize` and `peephole`. A failed check throws; no bytecode is returned.
+- **Unused values dropped.** A value nothing reads is not compiled, and its overflow or
+  bounds check goes with it. See [`dce`](/reference/utilities/dce/).
+- **Frozen result.** The artifact is frozen: its properties cannot be reassigned.
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsCompileError` (`EVM_VERSION`) | `evmVersion` is not `'paris'`, `'shanghai'` or `'cancun'` |
+| `EvsCompileError` (`COMPILE_LIMIT`) | the runtime bytecode is over 24,576 bytes: see [size limit](#size-limit) |
+| `EvsCompileError` (`UNSUPPORTED_V0`) | a type nests structs and arrays too deep for the EVM stack: flatten it |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `script` is not a value returned by `evscript` |
+| `EvsInternalError` (`INTERNAL`) | a `peephole` hook returns nodes that fail assembly or verification, such as an `op` node named `PUSH1` to `PUSH32` (use a `push` node) |

@@ -1,0 +1,207 @@
+---
+title: s.return
+description: Declares the result of the script as a record of named values. Call it once, at the end of the callback.
+---
+
+Declares the result of the script as a record of named values. Call it once, at the end of the
+callback, and return what it gives you.
+
+## Usage
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tokenInfo = evscript({ name: 'tokenInfo', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const decimals = s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ symbol, decimals });
+});
+```
+
+Reading this script with viem gives one object, typed `{ symbol: string; decimals: number }`.
+
+### A struct
+
+Pass a [`Tuple`](/reference/builder/tuple/#tuple) handle as it is. The result holds an object.
+
+```ts {11}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const Meta = t.struct({ symbol: t.string, decimals: t.uint8 });
+
+const tokenMeta = evscript({ name: 'tokenMeta', args: [t.address] }, (s, token) => {
+  const meta = s.tuple(Meta, {
+    symbol: s.read({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+    decimals: s.read({ address: token, abi: erc20Abi, functionName: 'decimals' }),
+  });
+  return s.return({ meta }); // { meta: { symbol: string; decimals: number } }
+});
+```
+
+### An array
+
+Pass a [`MutArray`](/reference/builder/new-array/#mutarray) handle, or an array `Expr`, as it
+is.
+
+```ts {17}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balances = evscript(
+  { name: 'balances', args: [t.address, t.array(t.address)] },
+  (s, token, owners) => {
+    const out = s.newArray(t.uint256, owners.length());
+    s.forEach(owners, (owner, i) => {
+      const balance = s.read({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [owner],
+      });
+      out.set(i, balance);
+    });
+    return s.return({ owners, balances: out }); // balances: readonly bigint[]
+  },
+);
+```
+
+### A call that can fail
+
+The result of a `try*` verb is a JavaScript object, not a value. Return its two parts under
+their own keys.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const tryDecimals = evscript({ name: 'tryDecimals', args: [t.address] }, (s, token) => {
+  const result = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  return s.return({ ok: result.success, decimals: result.value });
+});
+```
+
+### Nothing to return
+
+The record needs at least one value. A script that only checks something returns a flag.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+
+const NotAContract = t.error('NotAContract');
+
+const requireContract = evscript(
+  { name: 'requireContract', args: [t.address], errors: [NotAContract] },
+  (s, target) => {
+    s.if(s.codeSize(target).eq(0n), () => s.throw(NotAContract));
+    return s.return({ ok: s.lit(t.bool, true) });
+  },
+);
+```
+
+## Returns
+
+`ScriptReturn<ret>`
+
+A token to return from the callback. `ret` is the type of your record.
+
+## ScriptReturn
+
+An opaque token, with no property and no method. It carries the type of your record to
+`evscript`, which builds the ABI of the script from it. viem infers the result type from that
+ABI.
+
+```ts {18,22}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, type ReadContractReturnType } from 'viem';
+
+const Meta = t.struct({ symbol: t.string, decimals: t.uint8 });
+
+const report = evscript(
+  { name: 'report', args: [t.address, t.array(t.address)] },
+  (s, token, owners) => {
+    const erc20 = { address: token, abi: erc20Abi } as const;
+    const meta = s.tuple(Meta, {
+      symbol: s.read({ ...erc20, functionName: 'symbol' }),
+      decimals: s.read({ ...erc20, functionName: 'decimals' }),
+    });
+    const balances = s.newArray(t.uint256, owners.length());
+    s.forEach(owners, (owner, i) => {
+      balances.set(i, s.read({ ...erc20, functionName: 'balanceOf', args: [owner] }));
+    });
+    return s.return({ token, meta, balances });
+  },
+);
+
+type Report = ReadContractReturnType<typeof report.abi, 'report'>;
+// {
+//   token: `0x${string}`;
+//   meta: { symbol: string; decimals: number };
+//   balances: readonly bigint[];
+// }
+```
+
+Each value of the record becomes one field of the result:
+
+| A value of the record | Its field in the result |
+| --- | --- |
+| `Expr<'uint256'>` | `bigint` |
+| `Expr<'uint8'>`, `Expr<'int24'>` | `number` |
+| `Expr<'address'>` | `Address`, a `0x` string |
+| `Expr<'bool'>` | `boolean` |
+| `Expr<'string'>` | `string` |
+| a struct, as a `Tuple` handle | an object with the fields of the struct |
+| an array, as a `MutArray` or an `Expr` | a `readonly` array |
+
+The [primitives table](/reference/types/#primitives) lists every type.
+
+## Parameters
+
+### values
+
+- **Type:** `Record<string, Expr | Tuple | MutArray>`
+
+The result record. Each key names a field of the result, and each value is a handle: an `Expr`,
+a `Tuple` or a `MutArray`.
+
+```ts {6-9}
+import { evscript, t } from '@maxencerb/evs';
+
+const blockInfo = evscript({ name: 'blockInfo' }, (s) => {
+  const number = s.env('blocknumber');
+  const timestamp = s.env('timestamp');
+  return s.return({
+    number,
+    timestamp,
+  });
+});
+```
+
+## Behavior
+
+- **Called once.** At the top level: not in an `s.if` branch, a loop or an `s.fn` body. Put
+  conditional results in [cells](/reference/builder/let/#cell), then return at the end.
+- **Seals the script.** After it, every call on the builder or on a handle throws
+  `RECORDING_CLOSED`.
+- **Named fields.** viem returns one object whose keys are yours, in the order you wrote them.
+  A key is an identifier, and cannot be `__proto__`.
+- **Handles only.** A literal has no type here. Give it one with
+  [`s.lit`](/reference/builder/lit/).
+- **Never empty.** A record without any key is a type error.
+- **Must be returned.** The callback returns the token of its own `s.return` call.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | called in an `s.if` branch, a loop or an `s.fn` body |
+| `EvsScopeError` (`RECORDING_CLOSED`) | called a second time, or the builder is used after it |
+| `EvsTypeError` (`ABI_SHAPE`) | the record is empty |
+| `EvsTypeError` (`ABI_SHAPE`) | a key is empty, is not an identifier, or is `__proto__` |
+| `EvsTypeError` (`ABI_SHAPE`) | a returned struct has a member named `__proto__` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a literal, a `Cell`, a `Field`, a `try*` result or a JavaScript array of handles |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the argument is an array, or a spread copy of a handle |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the callback ends without `s.return`, or returns something else |

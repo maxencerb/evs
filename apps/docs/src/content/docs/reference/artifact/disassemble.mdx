@@ -1,0 +1,147 @@
+---
+title: disassemble
+description: Lists the instructions of the artifact's runtime bytecode, annotated with labels, jump targets and notes.
+---
+
+Lists the instructions of the artifact's runtime bytecode, annotated with labels, jump targets
+and notes.
+
+## Usage
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const listing = compiled.disassemble().format();
+```
+
+The part of `listing` that computes `x.mul(2n)`:
+
+```txt
+@main:
+0x0027  5b          JUMPDEST  ; @main
+0x0028  6024        PUSH1 0x24  ; calldata floor 36
+0x002a  36          CALLDATASIZE
+0x002b  10          LT
+0x002c  61007b      PUSH2 0x007b → @badcd
+0x002f  57          JUMPI
+0x0030  6004        PUSH1 0x04  ; arg #0 head
+0x0032  35          CALLDATALOAD
+0x0033  6080        PUSH1 0x80
+0x0035  52          MSTORE
+0x0036  6080        PUSH1 0x80  ; checked mul uint256
+0x0038  51          MLOAD
+0x0039  80          DUP1
+0x003a  6002        PUSH1 0x02  ; max uint256 / c
+0x003c  5f          PUSH0
+0x003d  19          NOT
+0x003e  04          DIV
+0x003f  10          LT
+0x0040  610062      PUSH2 0x0062 → @panic_overflow
+0x0043  57          JUMPI
+0x0044  6002        PUSH1 0x02
+0x0046  02          MUL
+```
+
+Each line is the program counter, the raw bytes and the instruction. `→ @label` is a jump
+target and `; text` a note on what the code is for.
+
+### Reading the lines
+
+`lines` holds the same listing as data.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const { lines } = compiled.disassemble();
+
+lines[1];
+// {
+//   pc: 1,
+//   raw: '0x610006',
+//   mnemonic: 'PUSH2',
+//   pushValue: '0x0006',
+//   targetLabel: 'dispatch',
+// }
+const usesPush0 = lines.some((line) => line.mnemonic === 'PUSH0'); // true on 'cancun'
+```
+
+## Returns
+
+`Disassembly`
+
+The listing, as [`lines`](#lines) and as text through [`format`](#format).
+
+## Disassembly
+
+### format
+
+- **Type:** `() => string`
+
+Renders the listing: one line per instruction, with an `@label:` line before each labeled
+one.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const disassembly = double.compile().disassemble();
+
+const firstLine = disassembly.format().split('\n')[0];
+// '0x0000  36          CALLDATASIZE'
+```
+
+### lines
+
+- **Type:** `readonly DisasmLine[]`
+
+One entry per instruction, in order.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pc` | `number` | The byte offset of the instruction. |
+| `raw` | `Hex` | Its exact bytes. Joined in order, they give back the bytecode. |
+| `mnemonic` | `string` | The opcode name. A byte evs has no name for reads `UNKNOWN_0x` plus the byte. |
+| `pushValue` | `Hex` (optional) | The value pushed by a `PUSH1` to `PUSH32`. |
+| `targetLabel` | `string` (optional) | The label whose `pc` equals a small pushed value. |
+| `label` | `string` (optional) | The label defined at this `pc`. |
+| `note` | `string` (optional) | What the code is for, such as `free-ptr init`. |
+
+```ts {8-10}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const { lines } = double.compile().disassemble();
+
+const labels = lines
+  .filter((line) => line.label !== undefined)
+  .map((line) => line.label);
+// ['dispatch', 'main', 'panic_overflow', 'panic', 'badcd']
+```
+
+## Parameters
+
+None.
+
+## Behavior
+
+- **Byte-exact.** Every byte of `runtimeBytecode` belongs to exactly one line.
+- **Data reads as code.** Literal data stored after the code is listed as instructions too, or
+  as `UNKNOWN_0x…` bytes.
+- **Guessed targets.** Any small pushed value equal to a label's `pc` gets `→ @label`. Only a
+  push that feeds `JUMP` or `JUMPI` is a real jump.
+- **Other bytecode.** The standalone [`disassemble`](/reference/utilities/disassemble/) takes
+  any bytecode, with or without a source map.

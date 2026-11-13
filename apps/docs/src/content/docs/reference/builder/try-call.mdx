@@ -1,0 +1,227 @@
+---
+title: s.tryCall
+description: Calls a nonpayable or payable function and returns a success flag with the result, instead of reverting the script when the call fails.
+---
+
+Calls a `nonpayable` or `payable` function like [`s.call`](/reference/builder/call/), and
+returns a `success` flag with the result instead of reverting the script when the call fails.
+
+[Calling contracts](/guides/calls/) compares the calling verbs.
+
+## Usage
+
+```ts {11-16}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi([
+  'function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)',
+]);
+
+const tryQuote = evscript(
+  { name: 'tryQuote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
+    const quote = s.tryCall({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quoteExactInput',
+      args: [path, amountIn],
+    });
+    // amountOut is 0n when ok is false
+    return s.return({ ok: quote.success, amountOut: quote.value });
+  },
+);
+```
+
+### Default on failure
+
+[`s.select`](/reference/builder/select/) replaces a failed result, here with the quote of
+another route.
+
+```ts {16-18}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi([
+  'function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)',
+]);
+
+const bestQuote = evscript(
+  { name: 'bestQuote', args: [t.address, t.bytes, t.bytes, t.uint256] },
+  (s, quoter, direct, viaWeth, amountIn) => {
+    const quote = {
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quoteExactInput',
+    } as const;
+    const first = s.tryCall({ ...quote, args: [direct, amountIn] });
+    const second = s.tryCall({ ...quote, args: [viaWeth, amountIn] });
+    const amountOut = s.select(first.success, first.value, second.value);
+    return s.return({ amountOut });
+  },
+);
+```
+
+Both quotes run: `s.select` only picks one. To skip the second call, guard it with
+[`s.if`](/reference/builder/if/).
+
+### Results returned by reverting
+
+With [`revertReturns`](/reference/builder/call/#revertreturns-optional), a revert is the
+success.
+
+```ts {14}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi(['function quote(bytes path, uint256 amountIn)']);
+
+const tryQuote = evscript(
+  { name: 'tryQuote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
+    const quote = s.tryCall({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quote',
+      args: [path, amountIn],
+      revertReturns: [t.uint256],
+    });
+    return s.return({ ok: quote.success, amountOut: quote.value });
+  },
+);
+```
+
+`success` is `true` when the target reverts with data that decodes as the listed types. It is
+`false` when the target returns normally, or reverts with data that does not decode.
+
+## Returns
+
+`{ success: Expr<'bool'>; value }`
+
+- `success` is `true` when the call returned and its data decoded.
+  [Behavior](#behavior) lists what makes it `false`.
+- `value` is what [`s.call`](/reference/builder/call/#returns) returns for the same parameters.
+  After a failure it is zeroed, so it is always safe to use:
+
+| Output type | `value` after a failure |
+| --- | --- |
+| `uintN`, `intN` | `0` |
+| `bool` | `false` |
+| `address`, `bytesN` | zero bytes |
+| `string`, `bytes`, `T[]` | empty |
+| struct, `T[N]` | every member or element zeroed |
+
+## Parameters
+
+The parameters of [`s.call`](/reference/builder/call/#parameters), where each one has its
+full section and example.
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call. See [`address`](/reference/builder/call/#address).
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. See [`abi`](/reference/builder/call/#abi).
+
+### functionName
+
+- **Type:** `string`
+
+A `nonpayable` or `payable` function of `abi`, by name or by signature. See
+[`functionName`](/reference/builder/call/#functionname).
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+The function's arguments. See [`args`](/reference/builder/call/#args-optional).
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that uses it all makes `success` `false`, and the
+script goes on with the gas it kept.
+
+Without a cap, the EVM still holds back 1/64 of the gas left. A target that burns all it
+receives leaves the script only that: set `gas` when the script must finish.
+
+```ts {16}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const quoterAbi = parseAbi([
+  'function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)',
+]);
+
+const tryQuote = evscript(
+  { name: 'tryQuote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
+    const quote = s.tryCall({
+      address: quoter,
+      abi: quoterAbi,
+      functionName: 'quoteExactInput',
+      args: [path, amountIn],
+      gas: 1_000_000n,
+    });
+    return s.return({ ok: quote.success, amountOut: quote.value });
+  },
+);
+```
+
+### value (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** `0`
+
+The wei sent to a `payable` function. When the script's balance is below it, `success` is
+`false`. See [`value`](/reference/builder/call/#value-optional).
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Makes `value` one `Tuple` keyed by output name. See
+[`struct`](/reference/builder/call/#struct-optional).
+
+### revertReturns (optional)
+
+- **Type:** `readonly EvsType[]`
+
+The types held by the target's revert data: see
+[results returned by reverting](#results-returned-by-reverting) and
+[`revertReturns`](/reference/builder/call/#revertreturns-optional).
+
+## Behavior
+
+`success` is `false` when:
+
+- the target reverts, whatever its revert data;
+- the target runs out of gas, including the [`gas`](#gas-optional) you allow it;
+- the return data does not decode against the ABI: too short, or with offsets that are out of
+  bounds or overlap heavily;
+- the address has no code and the function has outputs: the empty return data does not decode;
+- the script's balance is below [`value`](/reference/builder/call/#value-optional).
+
+`success` is still `true` when:
+
+- a returned word is out of range for its type. It is masked: a `uint8` holding 300 reads as 44;
+- the address has no code and the function has no outputs. Nothing ran: check
+  [`s.codeSize`](/reference/builder/balance/#scodesize) first.
+
+A successful call is not rolled back: later calls in the script see its state changes.
+
+With `revertReturns` the first rule is inverted: see
+[results returned by reverting](#results-returned-by-reverting).
+
+## Errors
+
+The build-time errors of [`s.call`](/reference/builder/call/#errors). When the script runs, a
+failed call sets `success` to `false` and the script continues.

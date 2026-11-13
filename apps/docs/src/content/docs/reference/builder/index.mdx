@@ -1,0 +1,133 @@
+---
+title: Builder
+description: The builder is the s object that evscript passes to your callback. Every member is listed here with a link to its page.
+---
+
+The builder is the `s` object that [`evscript`](/reference/evscript/) passes to your callback.
+Each call on it records one step of the script, and nothing touches the chain until you run the
+compiled result.
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balanceOf = evscript(
+  { name: 'balanceOf', args: [t.address, t.address] },
+  (s, token, user) => {
+    const balance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [user],
+    });
+    return s.return({ balance });
+  },
+);
+```
+
+Script arguments follow `s` as callback parameters: here `token` and `user`, both
+`Expr<'address'>`.
+
+## Values
+
+| Member | Description |
+| --- | --- |
+| [`s.lit`](/reference/builder/lit/) | Types a JavaScript literal as an `Expr`. |
+| [`s.let`](/reference/builder/let/) | Declares a mutable cell, a variable the script can reassign at run time. |
+| [`s.newArray`](/reference/builder/new-array/) | Allocates a zero-filled array you can write to. |
+| [`s.tuple`](/reference/builder/tuple/) | Allocates a struct or tuple value. |
+| [`s.env`](/reference/builder/env/) | Reads the script's address, its caller or the current block. |
+| [`s.balance`](/reference/builder/balance/) | Reads the native balance of any address, in wei. |
+| [`s.codeSize`](/reference/builder/balance/#scodesize) | Reads the size of an account's code, in bytes. |
+| [`s.codeHash`](/reference/builder/balance/#scodehash) | Reads the hash of an account's code. |
+
+## Calls
+
+| Member | Description |
+| --- | --- |
+| [`s.read`](/reference/builder/read/) | Calls a `view` or `pure` function and returns its decoded result. |
+| [`s.tryRead`](/reference/builder/try-read/) | Like `s.read`, but returns `success` and `value` instead of reverting. |
+| [`s.call`](/reference/builder/call/) | Calls a `nonpayable` or `payable` function. Later calls see its state changes. |
+| [`s.tryCall`](/reference/builder/try-call/) | Like `s.call`, but returns `success` and `value` instead of reverting. |
+| [`s.simulate`](/reference/builder/simulate/) | Dry-runs a `nonpayable` or `payable` function, returns its result and rolls its state changes back. |
+| [`s.trySimulate`](/reference/builder/try-simulate/) | Like `s.simulate`, but returns `success` and `value` instead of reverting. |
+
+## Control flow
+
+| Member | Description |
+| --- | --- |
+| [`s.if`](/reference/builder/if/) | Runs one of two branches depending on a runtime condition. |
+| [`s.select`](/reference/builder/select/) | Picks one of two values by a runtime condition, like a ternary. |
+| [`s.for`](/reference/builder/for/) | Runs a body once per value of a counter, from `from` up to `until`. |
+| [`s.forEach`](/reference/builder/for-each/) | Runs a body once per element of an array. |
+| [`s.while`](/reference/builder/while/) | Repeats a body while a condition holds. |
+| [`s.fn`](/reference/builder/fn/) | Defines a reusable function, compiled once however many times you call it. |
+| [`s.throw`](/reference/builder/throw/) | Reverts the script with one of its declared custom errors. |
+| [`s.return`](/reference/builder/return/) | Declares the result of the script as a record of named values. |
+
+## Encoding
+
+| Member | Description |
+| --- | --- |
+| [`s.encode`](/reference/builder/encode/) | ABI-encodes values into `bytes`, like `abi.encode`. |
+| [`s.encodePacked`](/reference/builder/encode-packed/) | Packs values into `bytes` without padding, like `abi.encodePacked`. |
+| [`s.keccak256`](/reference/builder/keccak256/) | Hashes values with Keccak-256. |
+
+## Operators
+
+The arithmetic, comparison, logic and bitwise methods of an [`Expr`](/reference/expr/) also
+exist as functions on `s`: `s.add(a, b)` is `a.add(b)`. Use the function when the left operand
+is a literal.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const remaining = evscript({ name: 'remaining', args: [t.uint256] }, (s, used) =>
+  s.return({ left: s.sub(10_000n, used) }),
+);
+```
+
+The type comes from an `Expr` operand, so `s.add(1n, 2n)` throws: type one side with
+[`s.lit`](/reference/builder/lit/). The first operand of `s.pow`, `s.shl`, `s.shr` and
+`s.bitNot` is always an `Expr`.
+
+| Function | Method | Computes |
+| --- | --- | --- |
+| `s.add(a, b)` | [`a.add(b)`](/reference/expr/arithmetic/#add) | `a + b` |
+| `s.sub(a, b)` | [`a.sub(b)`](/reference/expr/arithmetic/#sub) | `a - b` |
+| `s.mul(a, b)` | [`a.mul(b)`](/reference/expr/arithmetic/#mul) | `a * b` |
+| `s.div(a, b)` | [`a.div(b)`](/reference/expr/arithmetic/#div) | `a / b` |
+| `s.mod(a, b)` | [`a.mod(b)`](/reference/expr/arithmetic/#mod) | `a % b` |
+| `s.pow(base, exponent)` | [`base.pow(exponent)`](/reference/expr/arithmetic/#pow) | `base ** exponent` |
+| `s.wrappingAdd(a, b)` | [`a.wrappingAdd(b)`](/reference/expr/wrapping/#wrappingadd) | `a + b`, wrapping on overflow |
+| `s.wrappingSub(a, b)` | [`a.wrappingSub(b)`](/reference/expr/wrapping/#wrappingsub) | `a - b`, wrapping on underflow |
+| `s.wrappingMul(a, b)` | [`a.wrappingMul(b)`](/reference/expr/wrapping/#wrappingmul) | `a * b`, wrapping on overflow |
+| `s.mulDiv(a, b, denominator)` | [`a.mulDiv(b, denominator)`](/reference/expr/full-precision/#muldiv) | `a * b / denominator` at full precision, rounded down |
+| `s.mulDivRoundingUp(a, b, denominator)` | [`a.mulDivRoundingUp(b, denominator)`](/reference/expr/full-precision/#muldivroundingup) | `a * b / denominator` at full precision, rounded up |
+| `s.addmod(a, b, modulus)` | [`a.addmod(b, modulus)`](/reference/expr/full-precision/#addmod) | `(a + b) % modulus`, the sum never overflows |
+| `s.mulmod(a, b, modulus)` | [`a.mulmod(b, modulus)`](/reference/expr/full-precision/#mulmod) | `(a * b) % modulus`, the product never overflows |
+| `s.lt(a, b)` | [`a.lt(b)`](/reference/expr/comparison/#lt) | `a < b` |
+| `s.gt(a, b)` | [`a.gt(b)`](/reference/expr/comparison/#gt) | `a > b` |
+| `s.lte(a, b)` | [`a.lte(b)`](/reference/expr/comparison/#lte) | `a <= b` |
+| `s.gte(a, b)` | [`a.gte(b)`](/reference/expr/comparison/#gte) | `a >= b` |
+| `s.eq(a, b)` | [`a.eq(b)`](/reference/expr/comparison/#eq) | `a == b` |
+| `s.neq(a, b)` | [`a.neq(b)`](/reference/expr/comparison/#neq) | `a != b` |
+| `s.and(a, b)` | [`a.and(b)`](/reference/expr/logic/#and) | both are true |
+| `s.or(a, b)` | [`a.or(b)`](/reference/expr/logic/#or) | at least one is true |
+| `s.not(a)` | [`a.not()`](/reference/expr/logic/#not) | the opposite boolean |
+| `s.bitAnd(a, b)` | [`a.bitAnd(b)`](/reference/expr/bitwise/#bitand) | bitwise AND |
+| `s.bitOr(a, b)` | [`a.bitOr(b)`](/reference/expr/bitwise/#bitor) | bitwise OR |
+| `s.bitXor(a, b)` | [`a.bitXor(b)`](/reference/expr/bitwise/#bitxor) | bitwise XOR |
+| `s.bitNot(a)` | [`a.bitNot()`](/reference/expr/bitwise/#bitnot) | bitwise NOT |
+| `s.shl(a, bits)` | [`a.shl(bits)`](/reference/expr/bitwise/#shl) | `a << bits` |
+| `s.shr(a, bits)` | [`a.shr(bits)`](/reference/expr/bitwise/#shr) | `a >> bits` |
+
+## Errors
+
+Every member checks its inputs while the callback runs and throws at the offending line. The
+classes and codes are listed in [Errors & diagnostics](/reference/diagnostics/#error-codes).
+
+| Error | When |
+| --- | --- |
+| `EvsScopeError` (`RECORDING_CLOSED`) | the builder, or a handle it produced, is used after `s.return` |
+| `EvsScopeError` (`FOREIGN_HANDLE`) | a handle from another script is passed in |

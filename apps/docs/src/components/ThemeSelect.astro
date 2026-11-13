@@ -1,0 +1,120 @@
+---
+// Colour-scheme switch: three buttons (light, dark, system) in one pill. It keeps Starlight's
+// storage contract (`localStorage['starlight-theme']`, empty for "system") so the inline
+// ThemeProvider script in <head> still restores the choice before first paint.
+import { Icon } from '@astrojs/starlight/components';
+
+const options = [
+  { value: 'light', icon: 'sun', label: Astro.locals.t('themeSelect.light') },
+  { value: 'dark', icon: 'moon', label: Astro.locals.t('themeSelect.dark') },
+  { value: 'auto', icon: 'laptop', label: Astro.locals.t('themeSelect.auto') },
+] as const;
+---
+
+<evs-theme-switch role="group" aria-label={Astro.locals.t('themeSelect.accessibleLabel')}>
+  {
+    options.map(({ value, icon, label }) => (
+      <button type="button" data-theme-value={value} aria-pressed="false" title={label}>
+        <Icon name={icon} />
+        <span class="sr-only">{label}</span>
+      </button>
+    ))
+  }
+</evs-theme-switch>
+
+{/* Inlined so the pressed state is right on first paint, before the module script loads. */}
+<script is:inline>
+  (() => {
+    let stored = null;
+    try {
+      stored = localStorage.getItem('starlight-theme');
+    } catch {}
+    const theme = stored === 'light' || stored === 'dark' ? stored : 'auto';
+    for (const button of document.querySelectorAll('evs-theme-switch button')) {
+      button.setAttribute('aria-pressed', String(button.dataset.themeValue === theme));
+    }
+  })();
+</script>
+
+<script>
+  type Theme = 'auto' | 'dark' | 'light';
+
+  const STORAGE_KEY = 'starlight-theme';
+  const systemLight = matchMedia('(prefers-color-scheme: light)');
+
+  const parse = (value: unknown): Theme => (value === 'dark' || value === 'light' ? value : 'auto');
+
+  function load(): Theme {
+    try {
+      return parse(localStorage.getItem(STORAGE_KEY));
+    } catch {
+      return 'auto';
+    }
+  }
+
+  function apply(theme: Theme, persist: boolean) {
+    document.documentElement.dataset.theme =
+      theme === 'auto' ? (systemLight.matches ? 'light' : 'dark') : theme;
+    for (const button of document.querySelectorAll<HTMLButtonElement>('evs-theme-switch button')) {
+      button.setAttribute('aria-pressed', String(button.dataset.themeValue === theme));
+    }
+    if (!persist) return;
+    try {
+      localStorage.setItem(STORAGE_KEY, theme === 'auto' ? '' : theme);
+    } catch {
+      /* storage unavailable (private mode): the choice lasts for this page only */
+    }
+  }
+
+  systemLight.addEventListener('change', () => {
+    if (load() === 'auto') apply('auto', false);
+  });
+
+  class EvsThemeSwitch extends HTMLElement {
+    connectedCallback() {
+      apply(load(), false);
+      for (const button of this.querySelectorAll<HTMLButtonElement>('button')) {
+        button.addEventListener('click', () => apply(parse(button.dataset.themeValue), true));
+      }
+    }
+  }
+  customElements.define('evs-theme-switch', EvsThemeSwitch);
+</script>
+
+<style>
+  evs-theme-switch {
+    display: inline-flex;
+    gap: 0.125rem;
+    border: 1px solid var(--evs-border);
+    border-radius: 999px;
+    padding: 0.125rem;
+    background: var(--evs-surface);
+  }
+
+  button {
+    display: grid;
+    place-items: center;
+    width: 1.625rem;
+    height: 1.625rem;
+    border: 0;
+    border-radius: 999px;
+    padding: 0;
+    background: transparent;
+    color: var(--evs-text-2);
+    font-size: 0.875rem;
+    cursor: pointer;
+    transition:
+      background-color 120ms ease,
+      color 120ms ease;
+  }
+
+  button:hover {
+    color: var(--evs-heading);
+  }
+
+  button[aria-pressed='true'] {
+    background: var(--evs-surface-2);
+    color: var(--evs-heading);
+    box-shadow: inset 0 0 0 1px var(--evs-border);
+  }
+</style>

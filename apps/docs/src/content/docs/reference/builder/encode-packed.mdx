@@ -1,0 +1,118 @@
+---
+title: s.encodePacked
+description: Packs one or more values into bytes without padding, exactly like Solidity's abi.encodePacked.
+---
+
+Packs one or more values into `bytes` without padding, exactly like Solidity's
+`abi.encodePacked`.
+
+## Usage
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const packed = evscript(
+  { name: 'packed', args: [t.uint8, t.string, t.address] },
+  (s, version, name, owner) => {
+    const blob = s.encodePacked(version, name, owner);
+    return s.return({ blob }); // 1 byte + the UTF-8 of `name` + 20 bytes
+  },
+);
+```
+
+### Hashing the packed bytes
+
+Pass the result to [`s.keccak256`](/reference/builder/keccak256/), which hashes one `bytes`
+value as it is.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const pairKey = evscript(
+  { name: 'pairKey', args: [t.address, t.address, t.uint24] },
+  (s, tokenA, tokenB, fee) => {
+    const key = s.keccak256(s.encodePacked(tokenA, tokenB, fee)); // hashes 43 bytes
+    return s.return({ fee, key });
+  },
+);
+```
+
+### Joining strings
+
+Packed strings have no length prefix, so packing two of them concatenates them.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const join = evscript({ name: 'join', args: [t.string, t.string] }, (s, a, b) => {
+  const joined = s.encodePacked(a, b).asString();
+  return s.return({ joined });
+});
+```
+
+## Returns
+
+`Expr<'bytes'>`
+
+A new `bytes` value holding the packed encoding.
+
+## Parameters
+
+### values
+
+- **Type:** `(Expr | MutArray)[]`, at least one
+
+The values to pack, in order. Only these types can be packed:
+
+| Type | Packed as |
+| --- | --- |
+| `uintN`, `intN` | N / 8 bytes |
+| `address` | 20 bytes |
+| `bool` | 1 byte |
+| `bytesN` | N bytes |
+| `string`, `bytes` | the raw bytes, without a length |
+| an array of one of the word types above | each element padded to 32 bytes, without a length |
+
+Structs and tuples, nested arrays, `string[]` and `bytes[]` are rejected, as in Solidity. A plain
+literal needs [`s.lit`](/reference/builder/lit/).
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const ids = evscript(
+  { name: 'ids', args: [t.bytes4, t.array(t.uint16)] },
+  (s, selector, xs) => {
+    const blob = s.encodePacked(selector, xs); // 4 bytes + 32 bytes per element
+    return s.return({ blob });
+  },
+);
+```
+
+## Behavior
+
+- **No padding, no lengths.** The output is the concatenation of the packed values, with
+  nothing in between.
+- **Arrays pad their elements.** A `uint16[]` packs each element as a 32-byte word, like
+  Solidity.
+- **Standard encoding instead.** For a struct or a nested array, use
+  [`s.encode`](/reference/builder/encode/).
+- **Never reverts.** Packing cannot fail at run time.
+- **Allocation in loops.** Each call allocates a new `bytes` value. Inside a loop body,
+  `compile` warns with `LOOP_ALLOCATION`.
+
+:::caution[Adjacent dynamic values are ambiguous]
+`encodePacked("ab", "c")` and `encodePacked("a", "bc")` give the same bytes. Do not hash packed
+strings or bytes that a user controls: [`s.keccak256(a, b)`](/reference/builder/keccak256/)
+uses the standard encoding, which has no such collision.
+:::
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | no value is given |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a struct, a nested array, a `string[]` or a `bytes[]` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a plain literal |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a `Cell` or a `Field` |

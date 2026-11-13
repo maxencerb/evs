@@ -1,0 +1,198 @@
+---
+title: s.let
+description: Declares a mutable cell, a variable the script can reassign at run time. A cell is how a value gets out of a branch or a loop body.
+---
+
+Declares a mutable cell, a variable the script can reassign at run time. A cell is how a value
+gets out of an [`s.if`](/reference/builder/if/) branch or a loop body.
+
+## Usage
+
+```ts {4,6,8}
+import { evscript, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(xs, (x) => {
+    total.set(total.get().add(x));
+  });
+  return s.return({ total: total.get() });
+});
+```
+
+### Starting from an Expr
+
+With an `Expr` as the only argument, the cell takes its type.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const log2 = evscript({ name: 'log2', args: [t.uint256] }, (s, x) => {
+  const v = s.let(x); // Cell<'uint256'>
+  const bits = s.let(t.uint256, 0n);
+  s.while(
+    () => v.get().gt(1n),
+    () => {
+      v.set(v.get().div(2n));
+      bits.set(bits.get().add(1n));
+    },
+  );
+  return s.return({ bits: bits.get() });
+});
+```
+
+### Getting a value out of a branch
+
+Declare the cell before the branch, set it inside, read it after.
+
+```ts {5,12,14}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const decimalsOf = evscript({ name: 'decimalsOf', args: [t.address] }, (s, token) => {
+  const decimals = s.let(t.uint8, 18);
+  s.if(s.codeSize(token).gt(0n), () => {
+    const read = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'decimals',
+    });
+    decimals.set(read); // runs only when `token` has code
+  });
+  return s.return({ decimals: decimals.get() });
+});
+```
+
+### Cells of arrays, strings and structs
+
+Such a cell holds a reference. `set` points it at another value and copies nothing.
+
+```ts {6,7}
+import { evscript, t } from '@maxencerb/evs';
+
+const pick = evscript(
+  { name: 'pick', args: [t.bool, t.array(t.address), t.array(t.address)] },
+  (s, useFirst, first, second) => {
+    const chosen = s.let(second);
+    s.if(useFirst, () => chosen.set(first));
+    return s.return({ chosen: chosen.get() });
+  },
+);
+```
+
+## Returns
+
+`Cell<t>`
+
+A handle to the cell. A `Cell` is not an `Expr`: read its value with `get()`.
+
+## Cell
+
+### get
+
+- **Type:** `() => Expr<t>`
+
+Reads the cell. The result is a snapshot of the value at that point of the script: a later
+`set` does not change it.
+
+```ts {5,7}
+import { evscript, t } from '@maxencerb/evs';
+
+const snapshot = evscript({ name: 'snapshot', args: [t.uint256] }, (s, x) => {
+  const cell = s.let(x);
+  const before = cell.get();
+  cell.set(before.add(1n));
+  return s.return({ before, after: cell.get() }); // x, x + 1
+});
+```
+
+### set
+
+- **Type:** `(value: IntoExpr<t>) => void`
+
+Writes the cell. `value` is an `Expr<t>` or a literal of the cell's type.
+
+```ts {5,6}
+import { evscript, t } from '@maxencerb/evs';
+
+const clamp = evscript({ name: 'clamp', args: [t.uint256] }, (s, x) => {
+  const out = s.let(t.uint256, 0n);
+  out.set(x);
+  s.if(x.gt(100n), () => out.set(100n));
+  return s.return({ clamped: out.get() });
+});
+```
+
+### type
+
+- **Type:** `t`
+
+The cell's type, readable while the callback runs: `'uint256'` for `s.let(t.uint256, 0n)`.
+
+## Parameters
+
+### type (optional)
+
+- **Type:** `EvsType`
+
+The type of the cell: any type of the [`t` namespace](/reference/types/). Required when `init`
+is a literal. Leave it out to take the type of an `Expr`.
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+
+const count = evscript({ name: 'count', args: [t.array(t.address)] }, (s, xs) => {
+  const n = s.let(
+    t.uint32,
+    0,
+  );
+  s.forEach(xs, () => n.set(n.get().add(1)));
+  return s.return({ n: n.get() });
+});
+```
+
+### init
+
+- **Type:** `IntoExpr<t>` with a `type`, `Expr<t>` without
+
+The starting value. There is no form without one.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const count = evscript({ name: 'count', args: [t.array(t.address)] }, (s, xs) => {
+  const n = s.let(
+    t.uint32,
+    0,
+  );
+  s.forEach(xs, () => n.set(n.get().add(1)));
+  return s.return({ n: n.get() });
+});
+```
+
+## Behavior
+
+- **Explicit reads.** A cell is not a value. An operator or `s.return` given a `Cell` throws:
+  call `get()`.
+- **Snapshot reads.** `get()` returns the value at that point. Call it again after a `set` to
+  see the new one.
+- **Block scope.** A cell belongs to the block that declared it. Declare it outside an `s.if` or
+  a loop to read it afterwards.
+- **Reference types.** For a `string`, `bytes`, array or struct, the cell stores a reference. A
+  write through one alias is visible through the others.
+- **No `s.fn` capture.** A function body cannot use a cell of the enclosing script. Pass the
+  value as a parameter.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `s.let(5n)`: a literal `init` without a `type` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `s.let(t.uint256)`: a `type` without an `init` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `init`, or the value given to `set`, is an `Expr` of another type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a `Cell` is used where an `Expr` is expected |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal `init` or `set` value does not fit the type |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | the cell is used after the block that declared it has ended |
+| `EvsScopeError` (`SCOPE_VIOLATION`) | an `s.fn` body uses a cell of the enclosing script |

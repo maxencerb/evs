@@ -13,8 +13,12 @@ viem inference.
 - `CONTRIBUTING.md` (repo root, not published to npm) is the **maintainer document**: repository
   map, toolchain, test tiers, design notes, release flow, docs-site deploy settings. Keep it
   accurate when you change any of those.
-- `apps/docs/src/content/docs/**` — the user documentation site (evs.maxencerb.com). The
-  provider support matrix lives in `guides/execution.mdx`.
+- `apps/docs/src/content/docs/**` — the user documentation site (evs.maxencerb.com), shaped
+  like viem.sh: one- or two-sentence paragraphs, an example for everything, and a reference
+  with **one page per function** (`Usage` / `Returns` / `Parameters`; model:
+  `reference/builder/select.mdx`). A new page must be added to `apps/docs/sidebar.mjs`. The
+  conventions are in CONTRIBUTING.md ("Layout and writing conventions"). The provider support
+  matrix lives in `guides/execution.mdx`.
 - The former `docs/design/**` / `docs/research/**` design and research documents were
   **retired on 2026-09-14** (essentials folded into what is now CONTRIBUTING.md, citations swept
   from code comments). Do not add references to them; the code and CONTRIBUTING.md are the
@@ -77,8 +81,14 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   beta: `cf build`/`cf deploy` cannot ship a static Astro build without the Cloudflare adapter
   (details in CONTRIBUTING.md) — do not run `cf migrate` on it.
   Every ` ```ts ` fence in `src/content/docs/` must typecheck standalone (gate:
-  `pnpm run check:snippets` in `apps/docs`, needs the library built first); ` ```ts nocheck `
-  opts out. Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).
+  `pnpm run check:snippets` in `apps/docs`, needs the library built first; pass path filters
+  to check only some pages); ` ```ts nocheck ` opts out. A fence titled `title="abi.ts"` can be
+  imported by the other fences of its page. Frontmatter is `title` + a single-line
+  `description` (quote it when it contains `: `). The theme is `src/styles/tokens.css` +
+  `theme.css` over the Starlight overrides in `src/components/`; `src/components/diagrams/`
+  holds the animated concept diagrams. Every page is also served as Markdown at `<path>.md`
+  (`src/pages/[...slug].md.ts`) and indexed in `/llms.txt` (`llms-index.mjs`).
+  Lint ignores `apps/docs/**`; the formatter ignores its `src/content/**` (MDX).
 - `.github/assets/` — repository artwork (`evs-banner.svg`, the animated README banner; the
   docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).
 - Dependency versions are pinned via **catalogs** in `pnpm-workspace.yaml` (default +

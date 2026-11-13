@@ -1,111 +1,135 @@
 ---
 title: EVM targets
-description: Pick a compile target — paris, shanghai, or cancun — to match the chain's active fork, and stay under the EIP-170 runtime size cap.
+description: Choose the EVM fork a script is compiled for with evmVersion, so it runs on older chains and at historical blocks.
 ---
 
-Different chains run different EVM forks. A script compiled with opcodes the target chain has
-not activated fails at run time — an unsupported opcode aborts the whole `eth_call` — so
-`compile()` takes an `evmVersion` and selects instructions accordingly.
+`compile()` builds for one EVM fork, `cancun` by default. A chain or a historical block that
+lacks that fork's opcodes needs an older target.
 
-## `evmVersion`
+## Setting the target
 
-`CompileOptions.evmVersion` accepts `'paris'`, `'shanghai'`, or `'cancun'`. The default is
-`'cancun'`. The union is exported as the type `EvmVersion`:
+```ts {9}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
 
-```ts
-import { compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
 
-const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) =>
-  s.return({ x }),
-);
-
-const target: EvmVersion = 'paris';
-const compiled = compile(echo, { evmVersion: target });
-
-// compiled.options.evmVersion → 'paris'
-// compiled.initBytecode begins with the paris wrapper: 0x61RRRR80600a3d393df3
+const compiled = compile(symbolOf, { evmVersion: 'paris' });
+compiled.options.evmVersion; // 'paris'
 ```
 
-Any other string throws `EvsCompileError` with code `'EVM_VERSION'` before any work happens.
-The chosen target is recorded on the artifact under `options.evmVersion`.
+`evmVersion` is `'paris'`, `'shanghai'` or `'cancun'`, exported as the `EvmVersion` type. Any
+other value throws `EvsCompileError` (`EVM_VERSION`).
 
-## What changes per target
+## What each target changes
 
-The same script compiles to behaviorally identical bytecode on all three targets; only the
-instruction selection differs:
+```ts {9-10, 14-16}
+import { compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
 
-| Construct      | `cancun` (default)     | `shanghai`                       | `paris`                                                |
-| -------------- | ---------------------- | -------------------------------- | ------------------------------------------------------ |
-| zero constants | `PUSH0`                | `PUSH0`                          | `PUSH1 0x00`                                           |
-| memory copies  | `MCOPY`                | `@memcpy` word-loop subroutine   | `@memcpy` word-loop subroutine                         |
-| init wrapper   | `61RRRR80600A5F395FF3` | `61RRRR80600A5F395FF3`           | `61RRRR80600A3D393DF3` (`3D` = RETURNDATASIZE-as-zero) |
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
 
-- `PUSH0` is EIP-3855, activated in Shanghai. On `paris` every zero push widens to
-  `PUSH1 0x00`, and the deployless init wrapper swaps its two `PUSH0` bytes for
-  `RETURNDATASIZE`, which is guaranteed zero at the start of an init frame.
-- `MCOPY` is EIP-5656, activated in Cancun. On older targets memory copies go through a shared
-  `@memcpy` word-loop subroutine (about 35 bytes, 67 gas per copied word), emitted once per
-  pre-Cancun build, and only when the script copies memory. The one exception is the decode of
-  a fixed-size word array (`uint256[3]`, …), which happens mid-template: before Cancun it copies
-  with a short inline word loop instead.
+function forkOpcodes(evmVersion: EvmVersion) {
+  const lines = compile(symbolOf, { evmVersion }).disassemble().lines;
+  return ['PUSH0', 'MCOPY'].filter((op) => lines.some((line) => line.mnemonic === op));
+}
 
-The assembler's verifier enforces the gate as a backstop: no opcode newer than the chosen
-target can survive into the bytecode (a stray `MCOPY` in a `paris` build is an internal error,
-not a silently broken artifact).
+forkOpcodes('cancun'); // ['PUSH0', 'MCOPY']
+forkOpcodes('shanghai'); // ['PUSH0']
+forkOpcodes('paris'); // []
+```
 
-Because instruction selection differs, bytecode size differs slightly per target — compile one
-artifact per chain family rather than reusing bytes across targets.
+The script returns the same result on every target. Only two instructions change:
 
-## Picking a target
+| Target | Pushing zero | Copying memory | Runs from |
+| --- | --- | --- | --- |
+| `cancun` (default) | `PUSH0` | `MCOPY` | Cancun |
+| `shanghai` | `PUSH0` | a copy loop | Shanghai |
+| `paris` | `PUSH1 0x00` | a copy loop | Constantinople |
 
-| Target      | Use for                                                                                       |
-| ----------- | ---------------------------------------------------------------------------------------------- |
-| `cancun`    | Ethereum mainnet and L2s/sidechains on current forks — the default, smallest output             |
-| `shanghai`  | chains that have PUSH0 (EIP-3855) but not MCOPY (EIP-5656)                                      |
-| `paris`     | chains that have not activated Shanghai — no PUSH0; this is the compiler's oldest supported fork |
+- **Istanbul for two reads.** With `paris`, a script that reads `s.env('chainid')` or its own
+  balance needs Istanbul.
+- **One artifact per target.** Bytecode differs between targets, and an older target is
+  slightly larger.
 
-When in doubt about an older chain or L2, step down: everything `paris` emits has been
-available since the Merge, so it is the safe floor. If a script that works on mainnet fails on
-another chain with an invalid-opcode-style error, suspect `PUSH0`/`MCOPY` and recompile with an
-older target.
+## Which target to use
 
-Historical reads follow the same rule: the target must match the fork active **at the pinned
-block**, not the chain's current one. On Ethereum mainnet the default `cancun` build runs from
-block 19,426,587, `shanghai` from 17,034,870, and `paris` covers the blocks before that back
-to Constantinople (block 7,280,000; Istanbul, block 9,069,000, for a script that reads
-`s.env('chainid')`) — older blocks lack the `SHL`/`SHR` every build uses. In the
-default deployless mode a mismatch surfaces as a bare "execution reverted" with no revert data —
-see [block pinning](/guides/execution/#block-pinning).
+| Where the call runs | Target |
+| --- | --- |
+| A chain on Cancun or later, such as Ethereum mainnet today | `cancun` |
+| A chain with Shanghai but not Cancun | `shanghai` |
+| A chain without Shanghai, or one you are unsure about | `paris` |
+| Mainnet, block 19,426,587 or later | `cancun` |
+| Mainnet, blocks 17,034,870 to 19,426,586 | `shanghai` |
+| Mainnet, blocks 7,280,000 to 17,034,869 | `paris` |
+| Mainnet, before block 7,280,000 | none: no evs script runs there |
 
-## The EIP-170 size cap
+Other chains activated these forks at their own block heights. On mainnet, Istanbul starts at
+block 9,069,000.
 
-Runtime bytecode is capped at **24,576 bytes** (EIP-170, the limit on deployed code). The
-protocol applies it in deployless mode, where viem's wrapper deploys the script inside the call;
-state-override mode installs the code without a deployment. `compile()` enforces the cap for
-every artifact, so one artifact runs in either mode: exceeding the cap throws
-`EvsCompileError` with code `'COMPILE_LIMIT'`, and the message breaks the size down by region —
-dispatcher, body, fns, tails, data segments, plus a `trampoline` bucket when the script has an
-`s.simulate` site and a `codecs` bucket when it shares codec subroutines (a struct or array
-encoded or decoded at several sites) — ending with the advice to "split the script or move large
-literals off-chain".
+## Historical blocks
 
-Practical levers when you hit it:
+The target must match the fork active at the block you read, not the chain's current fork.
 
-- **Data segments** hold your dynamic literals (`s.lit` strings, bytes, literal arrays; an
-  all-zero literal is zero-filled at run time instead and takes none, and a sparse one is
-  zero-filled plus a store per nonzero word when that is smaller) —
-  large ones are often better passed as script *args* at call time, which costs calldata instead of
-  bytecode. In deployless mode that calldata still counts toward the creation payload limit
-  below, so args beyond roughly 48 KB need state-override mode.
-- **Body** size scales with recorded statements; remember that JS loops unroll at recording
-  time, while `s.for`/`s.while` emit one body — see [control flow](/guides/control-flow/).
-- Repeated logic can be factored into an `s.fn` subroutine, which is emitted once regardless of
-  call count — see [functions](/guides/functions/).
+```ts {10-11, 17, 20}
+import { compile, evscript, t, type EvmVersion } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
 
-In deployless mode the runtime cap is not the only budget. The node runs the call as a contract
-creation, so EIP-3860 caps the whole creation payload — viem's 398-byte wrapper, the
-`initBytecode` (the 10-byte init wrapper plus the runtime) and the encoded call, args included,
-plus 128 bytes of ABI framing and the 32-byte padding of both blobs — at 49,152 bytes, and the
-script's *result* is deployed as the wrapper's code, so EIP-170 caps it at 24,576 bytes too. None of these apply in state-override mode; the details and workarounds are
-in [deployless limits](/guides/execution/#deployless-limits). How the regions fit together is
-covered in [how it works](/concepts/how-it-works/).
+const supplyOf = evscript({ name: 'supplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+
+const targetAt = (block: bigint): EvmVersion =>
+  block >= 19_426_587n ? 'cancun' : block >= 17_034_870n ? 'shanghai' : 'paris';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+function supplyAt(blockNumber: bigint) {
+  return client.readContract({
+    ...compile(supplyOf, { evmVersion: targetAt(blockNumber) }).toViem(),
+    functionName: 'supplyOf',
+    args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+    blockNumber,
+  });
+}
+```
+
+## Spotting a wrong target
+
+A target that is too new fails at run time, with no hint of the cause in the default mode:
+
+| Mode | What you see |
+| --- | --- |
+| Deployless | a bare `execution reverted`, with no revert data |
+| State override | the node's invalid-opcode error (`NotActivated` on anvil) |
+
+`explainRevert` on the empty payload names the opcodes to suspect:
+
+```ts {9}
+import { compile, evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+
+compile(symbolOf).explainRevert('0x').message;
+// '… the runtime uses MCOPY (cancun) and PUSH0 (shanghai) (evmVersion 'cancun'); for
+//  a block or chain before that fork, recompile with an older evmVersion ('paris' runs
+//  everywhere)'
+```
+
+## Next steps
+
+- [`compile`](/reference/compile/#evmversion-optional): `evmVersion` and the other options.
+- [Executing scripts](/guides/execution/): pin a block in either execution mode.
+- [`explainRevert`](/reference/artifact/explain-revert/): everything an empty revert can mean.

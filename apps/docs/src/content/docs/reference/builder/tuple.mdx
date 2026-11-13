@@ -1,0 +1,320 @@
+---
+title: s.tuple
+description: Allocates a struct or tuple value in memory and returns a handle to its members.
+---
+
+Allocates a struct or tuple value in memory and returns a handle to its members.
+
+## Usage
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const mkPosition = evscript({ name: 'mkPosition', args: [t.address] }, (s, owner) => {
+  const position = s.tuple(Position, { liquidity: 1000n, owner });
+  return s.return({ position }); // { liquidity: bigint; owner: `0x${string}` }
+});
+```
+
+### Filling members later
+
+`init` is partial. A member you leave out starts at zero, and you write it through its field.
+
+```ts {6,7}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const mkPosition = evscript({ name: 'mkPosition', args: [t.address] }, (s, owner) => {
+  const position = s.tuple(Position);
+  position.owner.set(owner);
+  return s.return({ position }); // liquidity is 0n
+});
+```
+
+### Positional tuples
+
+A [`t.tuple`](/reference/types/tuple/) has no member names: `init` is an array and members are
+read with `at(i)`.
+
+```ts {8,9}
+import { evscript, t } from '@maxencerb/evs';
+
+const Range = t.tuple(t.int24, t.int24);
+
+const widen = evscript(
+  { name: 'widen', args: [t.int24, t.int24] },
+  (s, lower, upper) => {
+    const range = s.tuple(Range, [lower, upper]);
+    range.at(1).set(range.at(1).get().add(60));
+    return s.return({ range }); // readonly [number, number]
+  },
+);
+```
+
+### Nested structs
+
+A nested member takes a literal in `init`, and its field returns a handle to the inner struct.
+
+```ts {9,10}
+import { evscript, t } from '@maxencerb/evs';
+
+const Token = t.struct({ addr: t.address, decimals: t.uint8 });
+const Pool = t.struct({ token0: Token, token1: Token, fee: t.uint24 });
+
+const mkPool = evscript(
+  { name: 'mkPool', args: [t.address, t.address] },
+  (s, weth, usdc) => {
+    const pool = s.tuple(Pool, { token0: { addr: weth, decimals: 18 }, fee: 500 });
+    const token1 = pool.token1.get(); // Tuple handle
+    token1.addr.set(usdc);
+    token1.decimals.set(6);
+    return s.return({ pool });
+  },
+);
+```
+
+### Reusing a struct across calls
+
+A call argument takes the handle, so you can change one member and call again.
+
+```ts {13,15,16,17}
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+const abi = parseAbi([
+  'struct QuoteParams { address tokenIn; uint24 fee; uint256 amountIn; }',
+  'function quote(QuoteParams params) view returns (uint256 amountOut)',
+]);
+const QuoteParams = t.fromAbiParameter(abi[0].inputs[0]);
+
+const quotes = evscript(
+  { name: 'quotes', args: [t.address, t.address, t.uint256] },
+  (s, quoter, tokenIn, amountIn) => {
+    const params = s.tuple(QuoteParams, { tokenIn, fee: 500, amountIn });
+    const quote = { address: quoter, abi, functionName: 'quote' } as const;
+    const low = s.read({ ...quote, args: [params] });
+    params.fee.set(3000);
+    const mid = s.read({ ...quote, args: [params] });
+    return s.return({ low, mid });
+  },
+);
+```
+
+## Returns
+
+`Tuple<c>`
+
+A handle to the new value. It is not an `Expr`: read and write its members through fields.
+
+## Tuple
+
+A handle to a struct or tuple value. `s.tuple` is one source. The others are:
+
+- a struct-typed script argument or `s.fn` parameter;
+- a struct output of [`s.read`](/reference/builder/read/) or another calling verb, and a struct
+  result of an [`s.fn`](/reference/builder/fn/);
+- an element of an array of structs: `.at(i)`, `MutArray.get(i)`, `s.forEach`;
+- a nested struct member, through `Field.get()`.
+
+### Named members
+
+- **Type:** [`Field<t>`](#field), one property per named member
+
+Each named member is a property of the handle.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const ownerOf = evscript({ name: 'ownerOf', args: [Position] }, (s, position) => {
+  const owner = position.owner.get(); // Expr<'address'>
+  return s.return({ owner });
+});
+```
+
+### at
+
+- **Type:** `(i: number) => Field<t>`
+
+The member at position `i`, named or not. `i` is a plain number, not an `Expr`. The field is
+typed as the union of all member types, so prefer names when the types differ.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Range = t.tuple(t.int24, t.int24);
+
+const rangeWidth = evscript({ name: 'rangeWidth', args: [Range] }, (s, range) => {
+  const width = range.at(1).get().sub(range.at(0).get());
+  return s.return({ width });
+});
+```
+
+### expr
+
+- **Type:** `() => Expr<c>`
+
+The value as an `Expr`, for the places that require one, such as
+[`s.select`](/reference/builder/select/) or [`s.let`](/reference/builder/let/). It is the same
+value, not a copy.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const larger = evscript({ name: 'larger', args: [Position, Position] }, (s, a, b) => {
+  const aIsLarger = a.liquidity.get().gt(b.liquidity.get());
+  const winner = s.select(aIsLarger, a.expr(), b.expr());
+  return s.return({ winner });
+});
+```
+
+### Members named like a method
+
+A member called `at`, `expr`, `then`, `toJSON`, or like an `Object.prototype` member
+(`toString`, `valueOf`, `constructor`, …) gets no property. Read it with `at(i)`.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const Order = t.struct({ at: t.uint64, size: t.uint128 });
+
+const readOrder = evscript({ name: 'readOrder', args: [Order] }, (s, order) => {
+  return s.return({
+    at: order.at(0).get(), // the `at` member, by position
+    size: order.size.get(),
+  });
+});
+```
+
+A member cannot be named `__proto__`: [`t.struct`](/reference/types/struct/) rejects it, and a
+struct from an ABI that has one cannot be a script argument or result.
+
+## Field
+
+A handle to one member, returned by a named property or by `at(i)`.
+
+### get
+
+- **Type:** `() => Expr<t>`, or `Tuple<t>` for a nested struct
+
+Reads the member. For a word, the result is a snapshot of the value at that point of the
+script.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const double = evscript({ name: 'double', args: [Position] }, (s, position) => {
+  const field = position.liquidity;
+  const liquidity = field.get(); // Expr<'uint128'>
+  field.set(liquidity.mul(2n));
+  return s.return({ before: liquidity, position });
+});
+```
+
+### set
+
+- **Type:** `(value: IntoMember<t>) => void`
+
+Writes the member. `value` is an `Expr<t>` or a literal, and also a `Tuple` for a nested struct
+or a `MutArray` for an array member.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const double = evscript({ name: 'double', args: [Position] }, (s, position) => {
+  const field = position.liquidity;
+  const liquidity = field.get(); // Expr<'uint128'>
+  field.set(liquidity.mul(2n));
+  return s.return({ before: liquidity, position });
+});
+```
+
+### type
+
+- **Type:** `t`
+
+The member's type, readable while the callback runs: `'uint128'` for `position.liquidity`.
+
+## Parameters
+
+### type
+
+- **Type:** `TupleType`
+
+A [`t.struct`](/reference/types/struct/) or [`t.tuple`](/reference/types/tuple/), or a struct
+type derived from an ABI with
+[`t.fromOutputs` or `t.fromAbiParameter`](/reference/types/from-outputs/).
+
+```ts {3,6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Snapshot = t.struct({ block: t.uint256, time: t.uint256 });
+
+const snapshot = evscript({ name: 'snapshot' }, (s) => {
+  const now = s.tuple(Snapshot, {
+    block: s.env('blocknumber'),
+    time: s.env('timestamp'),
+  });
+  return s.return({ now });
+});
+```
+
+### init (optional)
+
+- **Type:** an object keyed by member name, or an array when a member is unnamed
+- **Default:** every member zero
+
+The members to set. Each one takes an `Expr` or a literal of its type.
+
+```ts {7,8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Snapshot = t.struct({ block: t.uint256, time: t.uint256 });
+
+const snapshot = evscript({ name: 'snapshot' }, (s) => {
+  const now = s.tuple(Snapshot, {
+    block: s.env('blocknumber'),
+    time: s.env('timestamp'),
+  });
+  return s.return({ now });
+});
+```
+
+## Behavior
+
+- **Zero defaults.** A member left out of `init` is `0`, an empty string, bytes or array, or a
+  zeroed nested struct.
+- **One value.** The handle is a reference. A copy of the handle, `expr()` and a call argument
+  all share the value, so a `set` is visible through each of them.
+- **Object or array.** A type whose members are all named takes an object. One unnamed member
+  makes `init` positional, as in viem.
+- **Checked members.** An unknown key or an extra element throws. It is never ignored.
+- **No spread.** `{ ...position, owner }` copies no member from a handle and throws. Read each
+  member with `get()`.
+- **Allocation in loops.** Inside a loop body, `s.tuple` allocates on every iteration and
+  `compile` warns with `LOOP_ALLOCATION`.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a struct or tuple type. For an array of structs, use [`s.newArray`](/reference/builder/new-array/) |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `init` has an unknown key or too many elements |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `init` is an array for a struct, or an object for a tuple with an unnamed member |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `init` is a handle, or a spread copy of one that leaves a member out |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a member value, or the value given to `set`, is an `Expr` of another type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal member does not fit its type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `at(i)` with an `Expr`, or an index outside the members |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a `Tuple` or a `Field` is used where an `Expr` is expected |

@@ -1,0 +1,194 @@
+---
+title: disassemble
+description: Turns EVM bytecode into a list of instructions, with labels and notes when you pass a script's source map.
+---
+
+Turns EVM bytecode into a list of instructions, with labels and notes when you pass a script's
+source map.
+
+For a compiled script, [`compiled.disassemble()`](/reference/artifact/disassemble/) does the
+same and passes the source map for you.
+
+## Import
+
+```ts
+import { disassemble } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {3}
+import { disassemble } from '@maxencerb/evs';
+
+const listing = disassemble('0x600160005260206000f3');
+
+listing.format();
+```
+
+`format()` returns one line per instruction: the pc, the raw bytes, the mnemonic and its
+immediate.
+
+```txt
+0x0000  6001        PUSH1 0x01
+0x0002  6000        PUSH1 0x00
+0x0004  52          MSTORE
+0x0005  6020        PUSH1 0x20
+0x0007  6000        PUSH1 0x00
+0x0009  f3          RETURN
+```
+
+### With a source map
+
+The source map of a compiled script adds jump targets, labels and notes to the listing.
+
+```ts {6}
+import { compile, disassemble, evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+const compiled = compile(echo);
+
+const listing = disassemble(compiled.runtimeBytecode, compiled.sourceMap);
+
+listing.format();
+```
+
+The first lines of that listing. `→ @dispatch` is a jump target, `@dispatch:` a label, and the
+text after `;` a note.
+
+```txt
+0x0000  36          CALLDATASIZE
+0x0001  610006      PUSH2 0x0006 → @dispatch
+0x0004  57          JUMPI
+0x0005  00          STOP  ; empty calldata: receive
+@dispatch:
+0x0006  5b          JUMPDEST  ; @dispatch
+0x0007  60a0        PUSH1 0xa0  ; frameEnd
+0x0009  6040        PUSH1 0x40
+0x000b  52          MSTORE  ; free-ptr init
+```
+
+### Reading the lines
+
+`lines` holds the same instructions as data, to filter or search.
+
+```ts {7-9}
+import { compile, disassemble, evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+const compiled = compile(echo);
+
+const listing = disassemble(compiled.runtimeBytecode);
+const selectors = listing.lines
+  .filter((line) => line.mnemonic === 'PUSH4')
+  .map((line) => line.pushValue);
+// ['0x6279e43c', '0xf43fed56']: echo(uint256) and EvsInvalidCalldata()
+```
+
+## Returns
+
+`Disassembly`
+
+The instructions as data, and a method that prints them.
+
+## Disassembly
+
+### lines
+
+- **Type:** `readonly DisasmLine[]`
+
+One entry per instruction, in order.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `pc` | `number` | The byte offset of the instruction. |
+| `raw` | `Hex` | Its exact bytes, pushed value included. |
+| `mnemonic` | `string` | The opcode name. A byte evs has no name for reads `UNKNOWN_0x` plus the byte. |
+| `pushValue` | `Hex` (optional) | The value pushed by a `PUSH1` to `PUSH32`. |
+| `targetLabel` | `string` (optional) | The label whose `pc` equals a small pushed value. |
+| `label` | `string` (optional) | The label defined at this `pc`. |
+| `note` | `string` (optional) | What the code is for, such as `free-ptr init`. |
+
+The last three fields need a source map.
+
+### format
+
+- **Type:** `() => string`
+
+Returns the listing as text, one instruction per line. A label gets its own `@name:` line above
+its instruction.
+
+## Parameters
+
+### bytecode
+
+- **Type:** `Hex | Uint8Array`
+
+The bytecode to read, as a `0x` hex string or as bytes. It does not have to come from evs.
+
+```ts {4}
+import { disassemble } from '@maxencerb/evs';
+
+const listing = disassemble(
+  new Uint8Array([0x5f, 0x5f, 0xf3]),
+);
+listing.lines.map((line) => line.mnemonic); // ['PUSH0', 'PUSH0', 'RETURN']
+```
+
+### sourceMap (optional)
+
+- **Type:** `SourceMap`
+
+The `sourceMap` of the [compiled script](/reference/artifact/#properties) the bytecode belongs
+to. Without it, lines have no label, jump target or note.
+
+```ts {8}
+import { compile, disassemble, evscript, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+const compiled = compile(echo);
+
+const listing = disassemble(
+  compiled.runtimeBytecode,
+  compiled.sourceMap,
+);
+listing.lines[5];
+// { pc: 7, raw: '0x60a0', mnemonic: 'PUSH1', pushValue: '0xa0', note: 'frameEnd' }
+```
+
+## Behavior
+
+- **Lossless.** Joining every line's `raw` gives back the input, byte for byte.
+- **Truncated push.** A `PUSH` cut short by the end of the input keeps the bytes that are there.
+- **Label hints.** Any small push value equal to a label's pc is shown as a target. Only a push
+  that feeds `JUMP` or `JUMPI` is a real jump.
+
+:::caution[Only the opcodes evs emits have names]
+Other opcodes, such as `SLOAD`, `SSTORE` or `LOG1`, print as `UNKNOWN_0x54`, `UNKNOWN_0x55`,
+`UNKNOWN_0xa1`. So do data bytes. On bytecode from another compiler the listing is incomplete.
+:::
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `bytecode` is a string that is not `0x`-prefixed, even-length hex |
+
+## lookupPc
+
+Finds the source-map segment that covers a program counter and returns its note. Use it to
+annotate an execution trace from a node or a debugger.
+
+```ts {6-8}
+import { compile, evscript, lookupPc, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+const compiled = compile(echo);
+
+lookupPc(compiled.sourceMap, 0x07); // { note: 'frameEnd' }
+lookupPc(compiled.sourceMap, 0x00); // {}: code without a note
+lookupPc(compiled.sourceMap, 0xffff); // undefined: past the end of the code
+```
+
+- **Type:** `(map: SourceMap, pc: number) => { note?: string } | undefined`
+- **Returns:** the note of the instructions at `pc`, an empty object when they have none, or
+  `undefined` when `pc` is outside the code.

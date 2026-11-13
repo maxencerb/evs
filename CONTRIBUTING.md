@@ -629,6 +629,56 @@ from the repo root, and pnpm only links a workspace's binaries into that workspa
 standalone against the built package (`pnpm run check:snippets` in `apps/docs`);
 ` ```ts nocheck ` opts out. `astro build` also validates every internal link.
 
+### Layout and writing conventions
+
+The site follows the shape of viem.sh: narrative groups first, then a reference with **one page
+per function**. Paragraphs are one or two sentences, every statement has an example, and tables
+carry the enumerations (types, codes, modes).
+
+| Path (under `apps/docs`)    | What                                                                                                |
+| --------------------------- | --------------------------------------------------------------------------------------------------- |
+| `sidebar.mjs`               | the sidebar tree and the redirects of moved pages: a new page must be added here                    |
+| `llms-index.mjs`            | builds the page index of `/llms.txt` from the sidebar and each page's frontmatter                   |
+| `src/content/docs/**`       | the pages: `getting-started/`, `guides/`, `examples/`, `concepts/`, `reference/`                    |
+| `src/styles/tokens.css`     | design tokens (`--evs-*`), dark by default, light under `data-theme="light"`                        |
+| `src/styles/theme.css`      | maps the tokens onto Starlight's `--sl-*` variables and restyles its chrome                         |
+| `src/components/*.astro`    | Starlight overrides (header, sidebar, page title, right column, hero), listed in `astro.config.mjs` |
+| `src/components/diagrams/`  | the animated concept diagrams; `captions.ts` holds the sentence each one shows as its caption       |
+| `src/pages/[...slug].md.ts` | serves every page as Markdown at `<path>.md` (the conversion is `src/lib/page-markdown.ts`)         |
+
+Page shapes:
+
+- **Function page** (`reference/builder/read.mdx`, `reference/compile.mdx`): a one-sentence lead,
+  `## Usage` (the smallest complete example, then a few scenario subsections), `## Returns`,
+  `## Parameters` (one `###` per parameter: type, default, a sentence, an example with the
+  relevant line marked), then optional `## Behavior` (short labelled bullets) and `## Errors` (a
+  table). `reference/builder/select.mdx` is the model.
+- **Family page** (`reference/expr/*.mdx`): a summary table, then one `##` per method named
+  exactly as the method, so other pages can link to `#add` or `#touint`.
+- **Guide**: how to think about one topic, in a handful of "one sentence, one example" sections.
+  It links to the reference for parameters and tables instead of repeating them.
+
+Fence conventions, all checked by `check:snippets`:
+
+- `{5}` or `{5-7}` marks focus lines: the rest of the block is dimmed until hovered. A range past
+  the end of the fence fails the gate.
+- `collapse={1-8}` folds boilerplate behind a toggle.
+- Code lines stay within 88 columns, the width that fits the article column without scrolling
+  (not enforced by the gate).
+- A fence titled with a file name (`title="abi.ts"`) can be imported by the other fences of the
+  same page (`import { poolAbi } from './abi'`), which is how a tabbed `script.ts` / `abi.ts`
+  example typechecks. Multi-file examples use Starlight's `<Tabs>`.
+- `pnpm run check:snippets <path-filter…>` checks only the pages whose path contains a filter
+  (`reference/builder guides/calls`) and can run next to other partial runs.
+
+Frontmatter is `title` and a single-line `description` (the page's first sentence; quote it when
+it contains `: `, which is otherwise invalid YAML and stops the build at content sync).
+
+A diagram's animated stage is `aria-hidden` and is stripped from the Markdown outputs, so its
+caption has to state the mechanism on its own. The site exposes four machine-readable outputs:
+`/llms.txt` (description plus the page index), `/llms-full.txt`, `/llms-small.txt`, and one
+`.md` file per page, which the "Copy page" button also uses.
+
 Deployment deliberately stays on **wrangler**, not Cloudflare's `cf` CLI (evaluated with
 `cf@1.0.0-beta.6` on 2026-09-30; wrangler stays supported for 18 months after the `cf` beta
 ends). `cf migrate` maps every `wrangler.jsonc` setting faithfully (name, compatibility date,

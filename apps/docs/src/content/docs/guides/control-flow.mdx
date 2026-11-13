@@ -1,312 +1,176 @@
 ---
-title: Control flow & cells
-description: Branch and loop over runtime EVM values with s.if, s.while, s.for, s.forEach, cells, and mutable arrays — native JS control flow cannot.
+title: Control flow
+description: Branch and loop on chain values with s.if, s.select, s.for, s.forEach and s.while, and reuse code with s.fn.
 ---
 
-The builder callback runs **once, at recording time** — before any bytecode exists, before any
-RPC is touched. Chain values are branded `Expr` handles with no runtime value yet, so native JS
-control flow cannot branch on them. This page covers the combinators that can, and the `Cell`
-and `MutArray` primitives that carry state across them.
+import LoopCollect from '~/components/diagrams/LoopCollect.astro';
 
-## JS branches run at recording time
+A JS `if` or `for` runs once, [while the script is built](/guides/writing-scripts/), so it cannot
+depend on a chain value. The `s.*` combinators record branches and loops that run on-chain.
 
-```ts nocheck
-const positive = balance.gt(0n); // Expr<'bool'> — a recording-time handle, not a boolean
+## Branching with s.if
 
-if (positive) {
-  // ALWAYS taken: `positive` is an object, and objects are truthy in JS.
-  // The branch body is recorded into the script unconditionally.
-}
+[`s.if`](/reference/builder/if/) runs a block only when its condition holds. Results leave the
+block through a [cell](/reference/builder/let/#cell).
+
+```ts {5-7}
+import { evscript, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  const bps = s.let(t.uint256, 0n);
+  s.if(b.gt(0n), () => {
+    bps.set(a.mul(10_000n).div(b)); // skipped when b is 0
+  });
+  return s.return({ bps: bps.get() });
+});
 ```
 
-This compiles fine — that is exactly what makes it dangerous. Most staging misuses (`x + 1`,
-`` `${x}` ``, `JSON.stringify(x)`) throw `EvsStagingError` at the offending line, but JS
-provides no trap for `if (x)` truthiness.
+- A third callback is the `else` branch.
+- An `Expr` created inside a branch cannot be used after it. Store it in a cell.
 
-:::caution
-`if (someExpr)` is the one misuse evs cannot catch at runtime. Enable the
-`typescript/strict-boolean-expressions` lint rule to close the gap, and reach for `s.if` /
-`s.while` / `s.for` / `s.select` whenever the condition involves an EVM value. Plain JS
-`if`/`for` is still fine — and useful — over build-time values; see
-[writing scripts](/guides/writing-scripts/) for the full two-timeline model and
-[values and types](/guides/values-and-types/) for the other staging-misuse errors.
+:::caution[Branch callbacks run at build time]
+Both callbacks of `s.if` run once while the script is built, whatever the condition. A JS
+assignment inside one (`fee = 5n`) always happens. Write to a cell with `set` instead.
 :::
 
-## s.if
+## Picking a value with s.select
 
-`s.if(cond, then, otherwise?)` evaluates `cond` once, before the branch. Both callbacks run at
-recording time — they record both branches into the script — and exactly one recorded branch
-executes on-chain. Branches produce values through cells:
+[`s.select`](/reference/builder/select/) is a ternary over two values that already exist.
 
-```ts
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const clamp = evscript({ name: 'clamp', args: [t.uint256, t.uint256] }, (s, x, max) => {
+  const clamped = s.select(x.gt(max), max, x);
+  return s.return({ clamped });
+});
+```
+
+Both sides are computed first, so it cannot skip a call or a division by zero. Use `s.if` for
+that.
+
+## Looping over an array
+
+The batch pattern: allocate the output with `s.newArray`, write one result per element, return
+the array.
+
+<LoopCollect />
+
+```ts {8-16}
 import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const holderRatio = evscript(
-  { name: 'holderRatio', args: [t.address, t.address, t.address] },
-  (s, token, a, b) => {
-    const balA = s.read({
-      address: token,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [a],
+const balances = evscript(
+  { name: 'balances', args: [t.array(t.address), t.address] },
+  (s, tokens, owner) => {
+    const out = s.newArray(t.uint256, tokens.length());
+    s.for({ from: 0n, until: tokens.length() }, (i) => {
+      const balance = s.read({
+        address: tokens.at(i),
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [owner],
+      });
+      out.set(i, balance);
     });
-    const balB = s.read({
-      address: token,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [b],
-    });
-    const ratioBps = s.let(t.uint256, 0n);
-    s.if(
-      balB.gt(0n),
-      () => ratioBps.set(balA.mul(10_000n).div(balB)), // checked: Panic 0x11 on overflow
-      () => ratioBps.set(0n),
-    );
-    return s.return({ ratioBps: ratioBps.get() });
+    return s.return({ balances: out });
   },
 );
 ```
 
-The arithmetic inside the branch is checked like everything else — see
-[arithmetic](/guides/arithmetic/).
+`s.forEach` is the same loop with the element handed to you:
 
-:::caution
-`s.return` must run exactly once, unconditionally — calling it inside an `s.if` branch or a
-loop body is a recording-time error, and after it runs the recorder is sealed
-(`RECORDING_CLOSED` on any later builder call). Compute conditional results into cells, then
-return once at the end.
-:::
+```ts {6-8}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
 
-## s.select
-
-`s.select(cond, a, b)` picks one of two already-computed values and returns an `Expr` directly
-— no cell needed. Both `a` and `b` are evaluated **eagerly**, before the selection; it is a
-value pick, not conditional execution (it compiles to a few branch-free opcodes, no jump). If
-one side must not execute (an expensive call, math that could panic), use `s.if` with a cell
-instead. A condition known at recording (`true`, or a comparison of constants) picks its side
-right away; the other side is still checked as if the condition were a runtime value, then
-dropped from the bytecode.
-
-## Cells: s.let
-
-A `const` binding holds an immutable `Expr` — a snapshot of one computed value. To mutate
-across statements, branches, and loop iterations, allocate a `Cell`:
-
-| Member        | Meaning                                                       |
-| ------------- | ------------------------------------------------------------- |
-| `cell.type`   | The declared `EvsType`                                        |
-| `cell.get()`  | A fresh `Expr` snapshot of the cell at this program point     |
-| `cell.set(v)` | Store an `Expr` or literal of the cell's type                 |
-
-`s.let` has two forms: `s.let(t.uint256, 0n)` (explicit type, literal or `Expr` initializer)
-and `s.let(someExpr)` (type inferred from the initializer). The explicit type can be any value
-type, structs and `tuple[]` included: `s.let(Pos, { liquidity: 0n, owner: ZERO })`.
-
-A `Cell` is deliberately **not** an `Expr` — passing one where an `Expr` is expected is a
-recording-time `EvsTypeError` telling you to call `.get()`. Every read is an explicit
-snapshot, so "value at this point" versus "current value" is visible at each use site:
-a snapshot taken before a `.set` does not change afterwards. For dynamic types (`string`,
-`bytes`, arrays) the cell holds a memref pointer and `.set` is pointer assignment — reference,
-not copy, semantics.
-
-Cells are also the **only** way values escape a block. An `Expr` recorded inside an `s.if`
-branch or a loop body is invalid once that block finishes recording:
-
-```ts nocheck
-let leaked: Expr<'uint256'> | undefined;
-s.if(cond, () => {
-  leaked = s.read({ address: pool, abi: erc20Abi, functionName: 'totalSupply' });
+const totals = evscript({ name: 'totals', args: [t.array(t.address)] }, (s, tokens) => {
+  const out = s.newArray(t.uint256, tokens.length());
+  s.forEach(tokens, (token, i) => {
+    out.set(i, s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' }));
+  });
+  return s.return({ totals: out });
 });
-leaked!.add(1n);
-// EvsScopeError (SCOPE_VIOLATION): this value was recorded in a block that has
-// finished recording — values escape blocks only through cells (s.let)
 ```
 
-Declare a cell outside the block, `.set` it inside, `.get()` after.
+| Loop | Use it to | The body receives |
+| --- | --- | --- |
+| [`s.for`](/reference/builder/for/) | count from `from` up to `until` | `(i, loop)` |
+| [`s.forEach`](/reference/builder/for-each/) | walk an array | `(elem, i, loop)` |
+| [`s.while`](/reference/builder/while/) | repeat while a condition holds | `(loop)` |
 
-## s.while
+## Looping on a condition
 
-`s.while(cond, body)` takes the condition as a **thunk**: `() => IntoExpr<'bool'>`. Everything
-the thunk records lands in the loop header and re-executes on every iteration — which is what
-lets `i.get()` observe the updated counter each time around. Values recorded in the header are
-visible in the body; nothing recorded inside the loop is visible after it (use cells).
+`s.while` takes its condition as a callback, evaluated before every iteration.
 
-```ts
+```ts {6}
 import { evscript, t } from '@maxencerb/evs';
 
-const uniswapV3FactoryAbi = [
-  {
-    type: 'function',
-    name: 'getPool',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'tokenA', type: 'address' },
-      { name: 'tokenB', type: 'address' },
-      { name: 'fee', type: 'uint24' },
-    ],
-    outputs: [{ name: 'pool', type: 'address' }],
-  },
-] as const;
+const log2 = evscript({ name: 'log2', args: [t.uint256] }, (s, x) => {
+  const rest = s.let(x);
+  const bits = s.let(t.uint256, 0n);
+  s.while(() => rest.get().gt(1n), () => {
+    rest.set(rest.get().shr(1n));
+    bits.set(bits.get().add(1n));
+  });
+  return s.return({ bits: bits.get() });
+});
+```
 
-const UNISWAP_V3_FACTORY = '0x1F98431c8aD98523631AE4a59f267346ea31F984';
-const ZERO = '0x0000000000000000000000000000000000000000';
+:::caution[Read cells inside the condition]
+A snapshot taken before the loop never changes. `s.while(() => done, …)` with `done` computed
+outside either never runs or runs until the call is out of gas.
+:::
 
-const firstPool = evscript(
-  { name: 'firstPool', args: [t.address, t.address] },
-  (s, a, b) => {
-    const fees = s.lit(t.array(t.uint24), [100n, 500n, 3000n, 10000n]); // data segment
-    const found = s.let(t.address, ZERO);
-    const feeOut = s.let(t.uint24, 0n);
-    const i = s.let(t.uint256, 0n);
-    s.while(
-      () => i.get().lt(fees.length()), // header: re-evaluated every iteration
-      (loop) => {
-        const fee = fees.at(i.get());
-        const pool = s.read({
-          address: UNISWAP_V3_FACTORY,
-          abi: uniswapV3FactoryAbi,
-          functionName: 'getPool',
-          args: [a, b, fee],
-        });
-        s.if(pool.neq(ZERO), () => {
-          found.set(pool);
-          feeOut.set(fee);
-          loop.break(); // jump past the loop; the cells keep their values
-        });
-        i.set(i.get().add(1n));
-      },
-    );
-    return s.return({ pool: found.get(), fee: feeOut.get() });
+## Leaving a loop early
+
+Every loop body receives a [`LoopCtl`](/reference/builder/while/#loopctl) as its last parameter.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+
+const indexOf = evscript(
+  { name: 'indexOf', args: [t.array(t.address), t.address] },
+  (s, xs, x) => {
+    const index = s.let(xs.length()); // the length means "not found"
+    s.forEach(xs, (elem, i, loop) => {
+      s.if(elem.eq(x), () => {
+        index.set(i);
+        loop.break();
+      });
+    });
+    return s.return({ index: index.get() });
   },
 );
 ```
 
-This is the probe pattern: try fee tiers in order, stop at the first deployed pool, and carry
-the answer out through cells.
+- `loop.break()` leaves the loop.
+- `loop.continue()` starts the next iteration. In `s.for` and `s.forEach` the counter still
+  advances.
 
-## s.for
+## Reusing code with s.fn
 
-`s.for({ type?, from, until, step? }, body)` is sugar over `s.while` plus an internal counter
-cell. It iterates while `i < until`; `step` defaults to 1; the counter arithmetic is checked
-like all evs arithmetic. `type` is optional — omit it and the counter is a `uint256`:
+[`s.fn`](/reference/builder/fn/) declares a function inside the script. Its body is compiled
+once, however many times you call it.
 
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const sumTo = evscript({ name: 'sumTo', args: [t.uint256] }, (s, n) => {
-  const total = s.let(t.uint256, 0n);
-  s.for({ from: 0n, until: n }, (i) => {
-    total.set(total.get().add(i)); // i: Expr<'uint256'>; add is checked (Panic 0x11)
-  });
-  return s.return({ total: total.get() });
-});
-```
-
-Pass an explicit `type` to count in any other numeric word type, signed included:
-`s.for({ type: t.int24, from: -10n, until: 10n }, (i) => …)` gives an `Expr<'int24'>` counter.
-
-:::note
-`until` and `step` are snapshot **once**, before the loop starts — mutating what they were
-computed from mid-loop does not change the iteration bounds. The loop variable `i` is a fresh
-read-only `Expr` each iteration.
-:::
-
-## s.forEach
-
-`s.forEach(array, (elem, i, loop) => { ... })` iterates an array value directly — no manual
-`until: array.length()` + `array.at(i)` pairing. The body receives the current element, the
-`uint256` index, and the usual `LoopCtl`; the array's length is snapshot once before the loop,
-and each element read is the same bounds-checked `array.at(i)`. A body that never uses `elem`
-(`s.forEach(xs, () => { ... })`) costs nothing for it: the unused element load is dead code and
-`compile()` removes it (see [How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)).
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, xs) => {
-  const total = s.let(t.uint256, 0n);
-  s.forEach(xs, (x) => {
-    total.set(total.get().add(x)); // add is checked: Panic 0x11 on overflow
-  });
-  return s.return({ total: total.get() });
-});
-```
-
-It works over any `T[]` array value, composite elements included — iterating a `tuple[]` hands
-the body a [`Tuple` element handle](/guides/values-and-types/#composite-arrays-tuple-t-string)
-with named field access:
-
-```ts
+```ts {5-7}
 import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const Query = t.struct({ token: t.address, owner: t.address });
-
-const balances = evscript({ name: 'balances', args: [t.array(Query)] }, (s, queries) => {
-  const out = s.newArray(t.uint256, queries.length());
-  s.forEach(queries, (q, i) => {
-    const bal = s.read({
-      address: q.token.get(),
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [q.owner.get()],
-    });
-    out.set(i, bal);
-  });
-  return s.return({ balances: out });
+const pair = evscript({ name: 'pair', args: [t.address, t.address] }, (s, a, b) => {
+  const symbolOf = s.fn('symbolOf', [t.address], (token) =>
+    s.read({ address: token, abi: erc20Abi, functionName: 'symbol' }),
+  );
+  return s.return({ symbolA: symbolOf(a), symbolB: symbolOf(b) });
 });
 ```
 
-The array must be a staged `Expr` handle (a script arg, a decoded call output, an `s.lit` data
-segment, …). A `MutArray` iterates through its `.expr()` memref: `s.forEach(arr.expr(), …)`.
+- The body cannot use handles of the enclosing script: pass them as parameters.
+- A plain JS helper that calls `s.*` also works. It is inlined at every call.
 
-## break and continue
+## Next steps
 
-Loop bodies receive a `LoopCtl` handle with two methods — the last callback parameter in all
-three loop forms (`(loop)` in `s.while`, `(i, loop)` in `s.for`, `(elem, i, loop)` in
-`s.forEach`):
-
-- `loop.break()` — jump past the owning loop.
-- `loop.continue()` — jump to the owning loop's header; in `s.for` and `s.forEach`, to the
-  step, so the counter still advances.
-
-`LoopCtl` is scoped to its own loop's body recording. Using it outside — including using an
-outer loop's handle inside an inner loop in place of the inner loop's own — throws
-`EvsScopeError` at recording, naming the owning loop.
-
-## Mutable arrays: s.newArray
-
-`s.newArray(elem, length)` allocates a zero-filled runtime array — the building block for "loop
-over inputs, collect outputs". The element may be any value type — a word type, `string`/`bytes`,
-a struct/tuple (a `tuple[]`), or an array (`uint256[]`, `t.array(t.uint256, 2)`, `t.array(Position)`);
-`s.newArray(elem, N, { fixed: true })` with a literal `N` builds a fixed-size `elem[N]` instead. A
-composite element makes the array an array of pointers
-whose `get(i)` returns the element handle (a `Tuple` for a tuple element). See
-[composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string):
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const squares = evscript({ name: 'squares', args: [t.uint256] }, (s, n) => {
-  const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
-  s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-    out.set(i, i.mul(i)); // bounds-checked → Panic 0x32 if out of range
-  });
-  return s.return({ squares: out.expr() });
-});
-```
-
-| Member          | Meaning                                                          |
-| --------------- | ---------------------------------------------------------------- |
-| `arr.elemType`  | The element type (a word type, `string`/`bytes`, `T[]`, or a `tuple`) |
-| `arr.length`    | `Expr<'uint256'>`                                                |
-| `arr.get(i)`    | Element read, bounds-checked (Panic `0x32`)                      |
-| `arr.set(i, v)` | Element write, bounds-checked (Panic `0x32`)                     |
-| `arr.expr()`    | An `Expr` array handle over the **same** buffer (returnable)     |
-
-`arr.expr()` has reference semantics: later `set` calls are visible through it. A runtime
-length of `2**32` or more is Panic `0x41`; a literal length that large is rejected at
-recording. See [batch token balances](/examples/token-balances/) for the full multicall
-replacement built on this, and the [ScriptBuilder reference](/reference/builder/) for frozen
-signatures.
+- [Calling contracts](/guides/calls/): `try*` verbs for loops that must survive a bad element.
+- [Batch token balances](/examples/token-balances/): the collect pattern as a full program.
+- [Values & types](/guides/values-and-types/): cells, arrays and structs.
+- [`s.throw`](/reference/builder/throw/): revert with a custom error from a branch.

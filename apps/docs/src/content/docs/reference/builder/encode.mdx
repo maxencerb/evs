@@ -1,0 +1,113 @@
+---
+title: s.encode
+description: ABI-encodes one or more values into bytes, exactly like Solidity's abi.encode.
+---
+
+ABI-encodes one or more values into `bytes`, exactly like Solidity's `abi.encode`.
+
+## Usage
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const encodeOrder = evscript(
+  { name: 'encodeOrder', args: [t.uint256, Pair, t.array(t.uint128)] },
+  (s, id, pair, amounts) => {
+    const blob = s.encode(id, pair, amounts);
+    return s.return({ blob });
+  },
+);
+```
+
+`blob` holds the same bytes as `abi.encode(id, pair, amounts)` in Solidity, or viem's
+`encodeAbiParameters`.
+
+### Literal values
+
+A plain literal has no ABI type. Give it one with [`s.lit`](/reference/builder/lit/).
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const tagged = evscript({ name: 'tagged', args: [t.address] }, (s, owner) => {
+  const blob = s.encode(s.lit(t.string, 'owner'), owner);
+  return s.return({ blob });
+});
+```
+
+### Structs and arrays built in the script
+
+A [`Tuple`](/reference/builder/tuple/#tuple) or
+[`MutArray`](/reference/builder/new-array/#mutarray) handle goes in directly, without `expr()`.
+
+```ts {8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const built = evscript({ name: 'built', args: [t.address] }, (s, token) => {
+  const pair = s.tuple(Pair, { token, fee: 500 });
+  const amounts = s.newArray(t.uint256, 2n);
+  const blob = s.encode(pair, amounts);
+  return s.return({ blob });
+});
+```
+
+## Returns
+
+`Expr<'bytes'>`
+
+A new `bytes` value holding the encoding.
+
+## Parameters
+
+### values
+
+- **Type:** `(Expr | Tuple | MutArray)[]`, at least one
+
+The values to encode, in order. Each one is encoded as the type of its handle.
+
+| Value | Accepted |
+| --- | --- |
+| `Expr` of any type: word, `string`, `bytes`, array, struct | yes |
+| `Tuple` handle | yes |
+| `MutArray` handle | yes |
+| plain literal (`1n`, `'text'`, `'0x…'`) | no, type it with `s.lit` |
+| `Cell`, `Field` | no, read it with `get()` |
+
+```ts {7,8}
+import { evscript, t } from '@maxencerb/evs';
+
+const slotKey = evscript(
+  { name: 'slotKey', args: [t.address, t.uint256] },
+  (s, owner, slot) => {
+    const blob = s.encode(
+      owner,
+      slot,
+    );
+    return s.return({ blob }); // 64 bytes
+  },
+);
+```
+
+## Behavior
+
+- **Standard layout.** Static values are padded to 32-byte words. A dynamic value is an offset
+  in the head and its data in the tail.
+- **Width does not matter.** A `uint8` and a `uint256` both take a full word. For compact bytes,
+  use [`s.encodePacked`](/reference/builder/encode-packed/).
+- **Never reverts.** Encoding cannot fail at run time.
+- **Allocation in loops.** Each call allocates a new `bytes` value. Inside a loop body,
+  `compile` warns with `LOOP_ALLOCATION`.
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | no value is given |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a plain literal |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a `Cell` or a `Field` |

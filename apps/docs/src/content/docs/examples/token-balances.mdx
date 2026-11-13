@@ -1,148 +1,93 @@
 ---
 title: Batch token balances
-description: Loop balanceOf over a runtime address[] argument and return every balance from one eth_call — a drop-in multicall replacement.
+description: Reads balanceOf for every token in a runtime address[] and returns the balances as one array, in one eth_call.
 ---
 
-The multicall replacement: one compiled script takes an `address[]` of tokens as a **runtime**
-argument, loops `balanceOf` over it, and returns all balances as one typed array. Compile
-once; every batch — 5 tokens or 50 — is the same bytecode with different `args`.
+import { Tabs, TabItem } from '@astrojs/starlight/components';
 
-## The script
+Reads `balanceOf` for every token in a runtime `address[]` and returns the balances as one
+array, in one `eth_call`. Use it where you would reach for a multicall.
+
+## Program
+
+<Tabs syncKey="example">
+  <TabItem label="script.ts">
+    ```ts title="script.ts" {7-9, 15}
+    import { evscript, t } from '@maxencerb/evs';
+    import { erc20Abi } from 'viem';
+
+    export const balances = evscript(
+      { name: 'balances', args: [t.array(t.address), t.address] },
+      (s, tokens, owner) => {
+        const out = s.newArray(t.uint256, tokens.length());
+        s.forEach(tokens, (token, i) => {
+          const balance = s.tryRead({
+            address: token,
+            abi: erc20Abi,
+            functionName: 'balanceOf',
+            args: [owner],
+          });
+          out.set(i, balance.value); // 0n when the call fails
+        });
+        return s.return({ balances: out });
+      },
+    );
+    ```
+  </TabItem>
+  <TabItem label="client.ts">
+    ```ts title="client.ts" {16}
+    import { createPublicClient, http } from 'viem';
+    import { mainnet } from 'viem/chains';
+    import { balances } from './script';
+
+    const client = createPublicClient({ chain: mainnet, transport: http() });
+
+    const tokens = [
+      '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
+      '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
+      '0x000000000000000000000000000000000000dEaD', // not a token: reports 0n
+    ] as const;
+
+    const result = await client.readContract({
+      ...balances.compile().toViem(),
+      functionName: 'balances',
+      args: [tokens, '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'],
+    });
+    ```
+  </TabItem>
+</Tabs>
+
+## Result
+
+One balance per token, in input order:
 
 ```ts
-import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-
-export const balances = evscript(
-  { name: 'balances', args: [t.array(t.address), t.address] },
-  (s, tokens, owner) => {
-    const n = tokens.length();
-    const out = s.newArray(t.uint256, n); // zero-filled uint256[n]
-    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = tokens.at(i); // bounds-checked
-      const r = s.tryRead({
-        address: token,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [owner],
-      });
-      out.set(i, s.select(r.success, r.value, 0n)); // non-token addresses → 0, no revert
-    });
-    return s.return({ balances: out.expr() });
-  },
-);
+declare const result: {
+  balances: readonly bigint[];
+};
 ```
 
-Three pieces do the work:
+## What to notice
 
-- `tokens.length()` is a runtime value — the loop bound is whatever array the caller
-  sends, with no recompilation. `s.for` is a real on-chain loop, not an unrolled one; see
-  [control flow](/guides/control-flow/) for why native JS `for` cannot do this.
-- `s.newArray(t.uint256, n)` allocates a zero-filled mutable output array;
-  `out.expr()` hands the same buffer back as an `Expr` for `s.return`.
-- `s.tryRead` plus `s.select` makes the batch fault-tolerant: an EOA or non-token address in
-  the list yields `success = false` and a zeroed `value`, so that slot reports `0n` instead of
-  reverting the entire batch. See [calls](/guides/calls/) for the exact zeroing semantics.
+- **The list is an argument.** [`evscript`](/reference/evscript/) declares `tokens` with
+  [`t.array`](/reference/types/array/) and the client passes it in `args`, so one compiled script
+  serves 3 tokens or 300.
+- **The loop runs on-chain.** [`s.forEach`](/reference/builder/for-each/) iterates at run time,
+  over whatever [`length`](/reference/expr/bytes-and-arrays/#length) the caller sends.
+- **Results collect in an array.** [`s.newArray`](/reference/builder/new-array/) allocates a
+  zero-filled `uint256[]`, [`out.set`](/reference/builder/new-array/#mutarray) fills it, and
+  [`s.return`](/reference/builder/return/) takes it as is.
+- **A bad token costs one slot.** [`s.tryRead`](/reference/builder/try-read/) never reverts and
+  its `value` is zero when the call fails, so the other balances still come back.
+- **A hostile token can burn the gas.** `s.tryRead` forwards all the gas by default: cap each
+  call with [`gas`](/reference/builder/try-read/#gas-optional).
 
-## Execution
+:::caution[Deployless stops at 765 balances]
+The default mode caps the encoded result at 24,576 bytes, which is 765 balances here: one more
+and the node rejects the call. Split the list, or use
+[`toViem({ mode: 'stateOverride' })`](/reference/artifact/to-viem/), which has no cap. See
+[deployless limits](/guides/execution/#deployless-limits).
+:::
 
-```ts
-import { evscript, t } from '@maxencerb/evs';
-import { createPublicClient, erc20Abi, http } from 'viem';
-
-// --- the script from the previous section, unchanged ---
-
-const balances = evscript(
-  { name: 'balances', args: [t.array(t.address), t.address] },
-  (s, tokens, owner) => {
-    const n = tokens.length();
-    const out = s.newArray(t.uint256, n);
-    s.for({ type: t.uint256, from: 0n, until: n }, (i) => {
-      const token = tokens.at(i);
-      const r = s.tryRead({
-        address: token,
-        abi: erc20Abi,
-        functionName: 'balanceOf',
-        args: [owner],
-      });
-      out.set(i, s.select(r.success, r.value, 0n));
-    });
-    return s.return({ balances: out.expr() });
-  },
-);
-
-// --- one eth_call for the whole batch ---
-
-const client = createPublicClient({ transport: http('https://ethereum-rpc.publicnode.com') });
-
-const tokens = [
-  '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48', // USDC
-  '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2', // WETH
-  '0x6B175474E89094C44Da98b954EedeAC495271d0F', // DAI
-  '0xdAC17F958D2ee523a2206206994597C13D831ec7', // USDT
-  '0x2260FAC5E5542a773Aa44fBCfeDf7C193bc2C599', // WBTC
-  '0x514910771AF9Ca656af840dff83E8264EcF986CA', // LINK
-  '0x1f9840a85d5aF5bf1D1762F925BDADdC4201F984', // UNI
-  '0x7Fc66500c84A76Ad7e9c93437bFc5Ac33E2DDaE9', // AAVE
-  '0x9f8F72aA9304c8B593d555F12eF6589cC3A579A2', // MKR
-  '0xD533a949740bb3306d119CC777fa900bA034cd52', // CRV
-] as const;
-
-const owner = '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045';
-
-const res = await client.readContract({
-  ...balances.compile().toViem(), // { abi, code } — deployless
-  functionName: 'balances',
-  args: [tokens, owner],
-});
-
-// res: { balances: readonly bigint[] } — one entry per input token, same order
-export const byToken = Object.fromEntries(tokens.map((token, i) => [token, res.balances[i]]));
-```
-
-A 50-token batch is this exact call with a longer `tokens` array — the array is calldata, not
-code, so nothing about the script changes. `res.balances` decodes as
-`readonly bigint[]` in input order, and tolerant slots come back as `0n`:
-
-```txt
-{
-  '0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48': 20126724012543n,
-  '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2': 4108579460116529341n,
-  '0x6B175474E89094C44Da98b954EedeAC495271d0F': 19265880506953696862947n,
-  ...
-}
-```
-
-## Limits for large batches
-
-Batch size never touches the compiled bytecode (the loop is fixed-size code, so the runtime
-size cap is irrelevant here). The real budgets are:
-
-- **The deployless result cap.** The default `toViem()` runs the script as a contract creation,
-  so its result is capped at 24,576 bytes (EIP-170 applies to it). `{ balances: uint256[] }`
-  encodes to `96 + 32 × n` bytes, so a deployless call handles at most **765 tokens**; at 766
-  the node rejects it (`max code size exceeded`, or `CreateContractSizeLimit` on anvil). For
-  larger batches use `toViem({ mode: 'stateOverride' })`, which has no such cap, or split the
-  token list into chunks of at most 765. See
-  [deployless limits](/guides/execution/#deployless-limits).
-- **Gas.** Each iteration costs one `STATICCALL` into the token — the subcalls dominate —
-  plus loop bookkeeping: an empty `s.for` iteration costs about 100 gas by default and about
-  70 with `optimize: true`. The ceiling is your node's `eth_call`
-  gas cap, not a block limit: anvil defaults to 30M, geth's default cap is 50M. A 50-token
-  batch sits far inside either; in state-override mode thousands of tokens per call are
-  realistic before the cap matters. Deployless mode also spends about 200 gas per byte of
-  result (about 6,400 per token) on the creation.
-- **A misbehaving target.** `s.tryRead` forwards all remaining gas by default; if a listed
-  address could burn the whole budget, pass the per-call `gas` option to cap it — see
-  [calls](/guides/calls/).
-- **Allocation.** `s.newArray` reverts with Panic `0x41` if the runtime length is at or above
-  `2^32` — you hit the gas cap long before that bound.
-
-## Run it from the repo
-
-A runnable version —
-[examples/token-balances](https://github.com/maxencerb/evs/tree/main/examples/token-balances)
-— spawns a local anvil, deploys mock ERC-20s, appends an EOA to the batch to demonstrate the
-`s.tryRead` zero default, and prints every balance. For dependent (not just parallel) reads, see
-the flagship [pool metadata](/examples/pool-metadata/) example; for more loop and subroutine
-recipes, see [patterns](/examples/patterns/).
+The repository runs a variant of this example against a local anvil:
+[examples/token-balances](https://github.com/maxencerb/evs/tree/main/examples/token-balances).

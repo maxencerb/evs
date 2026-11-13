@@ -1,0 +1,115 @@
+---
+title: t.tuple
+description: Builds a tuple type with positional, unnamed members. The script reads members by index and viem decodes the value to an array.
+---
+
+Builds a tuple type with positional, unnamed members. The script reads members by index and viem
+decodes the value to an array.
+
+## Usage
+
+```ts {3}
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.tuple(t.address, t.uint24);
+
+const pair = evscript({ name: 'pair', args: [t.address] }, (s, token) => {
+  const value = s.tuple(Pair, [token, 3000]);
+  return s.return({ value });
+});
+// result: { value: readonly [`0x${string}`, number] }
+```
+
+A tuple literal is an array, in member order. [`s.tuple`](/reference/builder/tuple/) allocates the
+value.
+
+### As a script argument
+
+A tuple argument arrives as a [`Tuple`](/reference/builder/tuple/#tuple) handle. Read a member
+with `.at(i)`, where `i` is a plain number.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+import type { Expr } from '@maxencerb/evs';
+
+const Pair = t.tuple(t.address, t.uint24);
+
+const feeOf = evscript({ name: 'feeOf', args: [Pair] }, (s, pair) => {
+  const fee = pair.at(1).get() as Expr<'uint24'>;
+  return s.return({ doubled: fee.mul(2) });
+});
+```
+
+`.at(i)` is typed as the union of all member types, so narrow it with a cast before you compute
+with it. From viem, the argument is an array: `args: [['0x…', 3000]]`.
+
+### t.tuple or t.struct
+
+Both encode to the same ABI tuple. Only the names differ.
+
+| | [`t.struct`](/reference/types/struct/) | `t.tuple` |
+| --- | --- | --- |
+| Members | named | positional |
+| Read in a script | `position.owner.get()` | `pair.at(0).get()` |
+| Literal | object | array |
+| viem type | object | `readonly [...]` array |
+
+Prefer `t.struct` when you choose the shape. Use `t.tuple` to match an ABI tuple that has no
+member names.
+
+## Returns
+
+`TupleType`
+
+A frozen descriptor with one unnamed component per member.
+
+```ts
+import { t } from '@maxencerb/evs';
+
+const Pair = t.tuple(t.address, t.uint24);
+// {
+//   type: 'tuple',
+//   components: [
+//     { name: '', type: 'address' },
+//     { name: '', type: 'uint24' },
+//   ],
+// }
+```
+
+## Parameters
+
+### items
+
+- **Type:** `EvsType[]`
+
+The member types, passed as separate arguments, in order. A member can be any type, another tuple
+or a struct included.
+
+```ts {4-6}
+import { t } from '@maxencerb/evs';
+
+const Range = t.tuple(
+  t.int24,
+  t.int24,
+  t.struct({ owner: t.address, liquidity: t.uint128 }),
+);
+```
+
+## Behavior
+
+- **Literal index.** `.at(i)` takes a plain number from 0 to the member count minus one, not an
+  `Expr`. Anything else throws `TYPE_MISMATCH`.
+- **Partly named tuples.** A tuple taken from an ABI with any unnamed member is positional as a
+  whole, the rule viem follows.
+- **At least one.** `t.tuple()` with no member throws.
+
+## Errors
+
+Thrown by the `t.tuple` call:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | no member is given |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a member is not a type |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | a member nests arrays more than four levels deep |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the ABI static size is 2^32 bytes or more |

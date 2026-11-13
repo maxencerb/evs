@@ -1,0 +1,149 @@
+---
+title: evsPeephole
+description: 'Rewrites a list of assembly nodes into a shorter, equivalent one. It is the peephole pass behind compile({ optimize: true }).'
+---
+
+Rewrites a list of assembly nodes into a shorter, equivalent one. It is the peephole pass behind
+`compile({ optimize: true })`.
+
+You rarely call it yourself. It is exported so you can run it alone, or inside your own
+`peephole` hook.
+
+## Import
+
+```ts
+import { evsPeephole } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {9}
+import { evsPeephole, type AsmNode } from '@maxencerb/evs';
+
+const nodes: AsmNode[] = [
+  { k: 'push', value: 2n },
+  { k: 'push', value: 3n },
+  { k: 'op', op: 'ADD' },
+];
+
+evsPeephole(nodes); // [{ k: 'push', value: 5n }]
+```
+
+Two pushes and an `ADD` fold into one push of the result.
+
+### With compile
+
+`optimize` and `peephole` are two options of [`compile`](/reference/compile/#parameters). Which
+one you set decides when this pass runs.
+
+| Options | What runs |
+| --- | --- |
+| neither | no optimizer pass. [Dead-code elimination](/reference/utilities/dce/) still runs |
+| `optimize: true` | every built-in optimizer pass, `evsPeephole` included |
+| `peephole: evsPeephole` | this pass alone |
+| `optimize: true` and a `peephole` hook | the built-in passes, then your hook on their output |
+
+```ts {11-12}
+import { compile, evscript, evsPeephole, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, values) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(values, (value) => {
+    total.set(total.get().add(value));
+  });
+  return s.return({ total: total.get() });
+});
+
+const optimized = compile(sum, { optimize: true });
+const peepholeOnly = compile(sum, { peephole: evsPeephole });
+```
+
+### Inside your own hook
+
+Call it from a `peephole` hook to combine it with your own pass, or to measure it.
+
+```ts {15-20}
+import { compile, evscript, evsPeephole, t } from '@maxencerb/evs';
+
+const sum = evscript({ name: 'sum', args: [t.array(t.uint256)] }, (s, values) => {
+  const total = s.let(t.uint256, 0n);
+  s.forEach(values, (value) => {
+    total.set(total.get().add(value));
+  });
+  return s.return({ total: total.get() });
+});
+
+let before = 0;
+let after = 0;
+
+compile(sum, {
+  peephole: (nodes) => {
+    const out = evsPeephole(nodes);
+    before = nodes.length;
+    after = out.length;
+    return out;
+  },
+});
+// after is smaller than before
+```
+
+## Returns
+
+`AsmNode[]`
+
+A new list of nodes. The input is not modified.
+
+## Parameters
+
+### nodes
+
+- **Type:** `readonly AsmNode[]`
+
+The nodes to rewrite: what a `peephole` hook receives. A node is one of:
+
+| `k` | Other fields | Emits |
+| --- | --- | --- |
+| `'op'` | `op` | one opcode that takes no immediate, named by its mnemonic |
+| `'push'` | `value` | the shortest `PUSH` that holds a `bigint` |
+| `'pushBytes'` | `bytes` | a `PUSH` of exactly those bytes |
+| `'pushLabel'` | `label` | a `PUSH2` of that label's pc |
+| `'label'` | `label`, `stack`, `name` | a `JUMPDEST` |
+| `'dataLabel'` | `label`, `name` | nothing: it marks a position in data |
+| `'data'` | `bytes` | raw bytes |
+
+- `PUSH1` to `PUSH32` are never `op` nodes: use `push` or `pushBytes`.
+- A label's `stack` is the stack height the verifier expects there, or `'any'`. Its `name` is
+  optional.
+- Every node but the two labels also takes an optional `note`, shown in the disassembly.
+
+```ts {4-5}
+import { evsPeephole, type AsmNode } from '@maxencerb/evs';
+
+const nodes: AsmNode[] = [
+  { k: 'op', op: 'SWAP1' },
+  { k: 'op', op: 'SWAP1' },
+  { k: 'op', op: 'STOP' },
+];
+
+evsPeephole(nodes); // [{ k: 'op', op: 'STOP' }]
+```
+
+## What it rewrites
+
+| Pattern | Becomes |
+| --- | --- |
+| a store to a slot, then a load of the same slot | `DUP1`, then the store |
+| two loads of the same slot in a row | one load, then `DUP1` |
+| pushes of constants, then an operation on them | one push of the result |
+| a pair that cancels out: `SWAP1 SWAP1`, `DUP1 POP`, a push then `POP`, adding zero | nothing |
+
+## Behavior
+
+- **Pure.** It returns a new list and never changes the nodes you pass.
+- **Idempotent.** Running it on its own output changes nothing.
+- **Labels are barriers.** No rewrite spans a label, and a node that carries a label or a jump
+  target is left alone.
+- **Notes survive.** A rewritten node keeps the note of the nodes it replaces, so the source map
+  stays annotated.
+- **Checked by `compile()`.** The final node list is verified, whatever hook produced it. An
+  invalid list throws `EvsInternalError` (`INTERNAL`).

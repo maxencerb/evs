@@ -1,0 +1,164 @@
+---
+title: Bitwise
+description: Bit operations and shifts on uintN and bytesN values. Shifts also take intN, and nothing here reverts.
+---
+
+Bit operations and shifts on `uintN` and `bytesN` values. Shifts also take `intN`, and nothing
+here reverts.
+
+| Method | Signature | Receiver | Description |
+| --- | --- | --- | --- |
+| [`bitAnd`](#bitand) | `bitAnd(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise AND |
+| [`bitOr`](#bitor) | `bitOr(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise OR |
+| [`bitXor`](#bitxor) | `bitXor(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise XOR |
+| [`bitNot`](#bitnot) | `bitNot(): Expr<t>` | `uintN`, `bytesN` | bitwise NOT |
+| [`shl`](#shl) | `shl(bits: IntoExpr<'uint256'>): Expr<t>` | `uintN`, `intN`, `bytesN` | shift left |
+| [`shr`](#shr) | `shr(bits: IntoExpr<'uint256'>): Expr<t>` | `uintN`, `intN`, `bytesN` | shift right |
+
+`t` is the receiver's type, and an `IntoExpr<t>` is an `Expr<t>` or a
+[literal](/reference/expr/#literals).
+
+## bitAnd
+
+Keeps the bits set on both sides.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const LOW_160 = (1n << 160n) - 1n;
+
+const low = evscript({ name: 'low', args: [t.uint256] }, (s, word) => {
+  const sqrtPriceX96 = word.bitAnd(LOW_160); // keep the low 160 bits
+  return s.return({ sqrtPriceX96 });
+});
+```
+
+## bitOr
+
+Keeps the bits set on either side.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const pause = evscript({ name: 'pause', args: [t.uint8] }, (s, flags) => {
+  const paused = flags.bitOr(0x04); // set bit 2
+  return s.return({ paused });
+});
+```
+
+## bitXor
+
+Keeps the bits that differ between the two sides.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const diff = evscript({ name: 'diff', args: [t.bytes32, t.bytes32] }, (s, a, b) => {
+  const changed = a.bitXor(b); // a 1 wherever the two words differ
+  return s.return({ changed });
+});
+```
+
+## bitNot
+
+Flips every bit of the receiver, within its width.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const clear = evscript(
+  { name: 'clear', args: [t.uint8, t.uint8] },
+  (s, flags, mask) => {
+    const cleared = flags.bitAnd(mask.bitNot()); // on a uint8, the NOT of 0 is 255
+    return s.return({ cleared });
+  },
+);
+```
+
+## shl
+
+Shifts the receiver left by `bits`. Bits that leave the type's width are dropped.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const isSet = evscript(
+  { name: 'isSet', args: [t.uint256, t.uint256] },
+  (s, bitmap, index) => {
+    const mask = s.lit(t.uint256, 1n).shl(index); // 1 << index
+    return s.return({ set: bitmap.bitAnd(mask).neq(0n) });
+  },
+);
+```
+
+## shr
+
+Shifts the receiver right by `bits`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const unpack = evscript({ name: 'unpack', args: [t.uint256] }, (s, slot0) => {
+  const upper = slot0.shr(160n); // drop the low 160 bits
+  return s.return({ upper });
+});
+```
+
+### Signed values
+
+On an `intN`, `shr` keeps the sign and rounds toward negative infinity, like Solidity's `>>`.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const wordOf = evscript({ name: 'wordOf', args: [t.int24] }, (s, tick) => {
+  const wordPos = tick.shr(8n); // -1 >> 8 is -1, not 0
+  return s.return({ wordPos });
+});
+```
+
+## Behavior
+
+- **Never reverts.** Shifts are unchecked and the result always fits `t`: on a `uint8`,
+  `200 << 1` is `144`.
+- **`bytesN` shifts.** Bytes move inside the N-byte value: `0x11223344` shifted left by 8 is
+  `0x22334400`, and right by 8 is `0x00112233`.
+- **Signed `shl`.** The low N bits are kept and read as signed: on an `int8`, `127 << 1` is `-2`.
+- **`intN` takes shifts only.** `bitAnd`, `bitOr`, `bitXor` and `bitNot` are typed for `uintN`
+  and `bytesN`: on an `intN` they are a TypeScript error (below).
+- **Literals fold.** A bit operation on literals
+  [folds](/reference/expr/arithmetic/#build-time-folding) at build time.
+- **Builder mirrors.** `s.bitAnd(a, b)`, `s.bitOr`, `s.bitXor`, `s.bitNot(a)`, `s.shl(a, bits)`
+  and `s.shr(a, bits)`. In the last three, `a` must be an `Expr`.
+
+### Masking an intN
+
+To mask an `intN`, go through the `uintN` of the same width, with
+[`asUint`](/reference/expr/conversions/#asuint) and
+[`asInt`](/reference/expr/conversions/#asint):
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const lowByte = evscript({ name: 'lowByte', args: [t.int24] }, (s, tick) => {
+  const low = tick.asUint().bitAnd(0xff).asInt(); // Expr<'int24'>: -2 gives 254
+  return s.return({ low });
+});
+```
+
+Only the types enforce this. Called from plain JavaScript, the four methods build on an `intN`
+too, and work on its two's-complement bits.
+
+## Errors
+
+Nothing here reverts at run time. Thrown at build time, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an operand is an `address`, a `bool`, a `string`, `bytes`, an array or a struct |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the two sides of `bitAnd`, `bitOr` or `bitXor` have different types |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the shift amount is an `Expr` of another type than `uint256` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a builder mirror has no `Expr` to take a type from: `s.shl(1n, 8n)`, `s.bitAnd(1n, 2n)` |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal does not fit its type |
+
+See [error codes](/reference/diagnostics/#error-codes).

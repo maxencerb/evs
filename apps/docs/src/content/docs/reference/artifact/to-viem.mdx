@@ -1,0 +1,311 @@
+---
+title: toViem
+description: Returns the parameters to spread into viem's readContract, for a deployless call or a state-override call.
+---
+
+Returns the parameters to spread into viem's `readContract`, for a deployless call or a
+state-override call. [Executing scripts](/guides/execution/) explains which mode to pick.
+
+## Usage
+
+With no argument the call is deployless: a plain `eth_call` that every provider accepts.
+
+```ts {14}
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+const compiled = symbolOf.compile();
+
+const { symbol } = await client.readContract({
+  ...compiled.toViem(), // { abi, code }
+  functionName: 'symbolOf',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+});
+// symbol: string
+```
+
+### State override
+
+`mode: 'stateOverride'` installs the script at an address, so `account` sets the `msg.sender`
+the script sees.
+
+```ts {19,22}
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const myBalance = evscript({ name: 'myBalance', args: [t.address] }, (s, token) => {
+  const balance = s.read({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'balanceOf',
+    args: [s.env('caller')],
+  });
+  return s.return({ balance });
+});
+const compiled = myBalance.compile();
+
+const { balance } = await client.readContract({
+  ...compiled.toViem({ mode: 'stateOverride' }), // { abi, address, stateOverride }
+  functionName: 'myBalance',
+  args: ['0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48'],
+  account: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+});
+```
+
+Not every provider accepts state overrides: see
+[provider support](/guides/execution/#provider-support).
+
+### Sender
+
+`sender` runs the script as that address, so the contracts it calls see `msg.sender = sender`.
+Here `withdraw` only succeeds when the owner of the shares calls it.
+
+```ts {25}
+import { evscript, t } from '@maxencerb/evs';
+import { createPublicClient, erc4626Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const previewWithdraw = evscript(
+  { name: 'previewWithdraw', args: [t.address, t.uint256] },
+  (s, vault, assets) => {
+    const caller = s.env('caller');
+    const shares = s.simulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'withdraw',
+      args: [assets, caller, caller],
+    });
+    return s.return({ shares });
+  },
+);
+const compiled = previewWithdraw.compile();
+
+const owner = '0x1715a3E4A142d8b698131108995174F37aEBA10D'; // must hold sDAI shares
+
+const { shares } = await client.readContract({
+  ...compiled.toViem({ mode: 'stateOverride', sender: owner }),
+  functionName: 'previewWithdraw',
+  args: ['0x83F20F44975D03b1b09e64809B757c47f942BEeA', 1_000_000n], // the sDAI vault
+});
+```
+
+### Custom address
+
+`address` moves the script off the default address.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const params = compiled.toViem({
+  mode: 'stateOverride',
+  address: '0x00000000000000000000000000000000000E5c21',
+});
+// params.address:       '0x00000000000000000000000000000000000E5c21'
+// params.stateOverride: [{ address: '0x0000…5c21', code: compiled.runtimeBytecode }]
+```
+
+### Mode chosen at run time
+
+Type the mode as `ToViemMode` to pick it per provider. The result is the union of the shapes and
+still spreads into `readContract`.
+
+```ts {12}
+import { evscript, t, type ToViemMode } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const compiled = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+).compile();
+
+async function run(mode: ToViemMode): Promise<bigint> {
+  const { doubled } = await client.readContract({
+    ...compiled.toViem({ mode }),
+    functionName: 'double',
+    args: [21n],
+  });
+  return doubled;
+}
+```
+
+## Returns
+
+`{ abi, code }` or `{ abi, address, stateOverride, account? }`
+
+An object to spread into `readContract`. Its shape depends on the call:
+
+| Call | Returns |
+| --- | --- |
+| `toViem()`, `toViem({ mode: 'deployless' })` | `{ abi, code }` |
+| `toViem({ mode: 'stateOverride' })` | `{ abi, address, stateOverride }` |
+| `toViem({ mode: 'stateOverride', sender })` | `{ abi, address, stateOverride, account }` |
+| `toViem({ mode })` with a `ToViemMode` | the union of the three |
+
+| Field | Type | Value |
+| --- | --- | --- |
+| `abi` | `ScriptAbi` | The artifact's [`abi`](/reference/artifact/#properties). |
+| `code` | `Hex` | The artifact's `initBytecode`. |
+| `address` | `Address` | Where the script runs: `address`, `sender`, or the default. |
+| `stateOverride` | `[{ address, code }]` | One entry that puts `runtimeBytecode` at `address`. |
+| `account` | `Address` | The `sender`. |
+
+## Parameters
+
+### mode (optional)
+
+- **Type:** `'deployless' | 'stateOverride'`
+- **Default:** `'deployless'`
+
+How the script reaches the node. Deployless sends creation bytecode in a plain `eth_call`. State
+override installs the runtime bytecode at an address and calls it.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const params = compiled.toViem({
+  mode: 'stateOverride',
+});
+```
+
+Deployless calls have size limits that state override does not: see
+[deployless limits](/guides/execution/#deployless-limits).
+
+### address (optional)
+
+- **Type:** `Address`
+- **Default:** [`DEFAULT_SCRIPT_ADDRESS`](#default_script_address)
+
+The address the script is installed at. Only with `mode: 'stateOverride'`. Pick one with no
+state on the target chain.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const params = compiled.toViem({
+  mode: 'stateOverride',
+  address: '0x00000000000000000000000000000000000E5c21',
+});
+```
+
+### sender (optional)
+
+- **Type:** `Address`
+
+Installs the script at this address and sets `account` to it. Only with `mode: 'stateOverride'`.
+Every contract the script calls sees it as `msg.sender`, and `s.env('caller')` and
+`s.env('address')` both return it.
+
+```ts {10}
+import { evscript, t } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const compiled = double.compile();
+
+const params = compiled.toViem({
+  mode: 'stateOverride',
+  sender: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045',
+});
+// params.address and params.account: '0xd8dA6BF26964aF9D7eEd9e03E53415D37aA96045'
+```
+
+:::caution[The sender's code is replaced]
+For the duration of the call the script is the code at `sender`. Its balance, nonce and storage
+stay. A contract sender, such as a Safe, cannot answer a callback from the target, so that call
+reverts.
+:::
+
+What else the swap changes, and what it does not:
+
+- `s.codeSize(sender)` and `s.codeHash(sender)` describe the script, so an EOA sender looks
+  like a contract. `s.balance(sender)` is still its real balance.
+- A plain ETH payment to the sender, such as `WETH.withdraw`, still succeeds.
+- An `account` written after the spread changes only who calls the script, and so
+  `s.env('caller')`. The contracts it calls still see `sender`.
+
+## DEFAULT_SCRIPT_ADDRESS
+
+The address state-override mode uses when you pass neither `address` nor `sender`. It has no
+code, storage or balance on any major chain.
+
+```ts
+import { DEFAULT_SCRIPT_ADDRESS } from '@maxencerb/evs';
+
+DEFAULT_SCRIPT_ADDRESS; // '0xcD360FfAC9818c4396Aa6F4807EBfA72C4B3f530'
+```
+
+## Behavior
+
+- **Deployless is the default.** It needs nothing from the provider, but `s.env('caller')` and
+  `s.env('address')` are not yours to choose there.
+- **State stays.** Overriding the code of an address keeps its balance, nonce and storage. Over
+  a funded address, `s.balance(s.env('address'))` reads that balance.
+- **One knob.** `address` and `sender` both place the script. Pass one; passing both is accepted
+  only when they are the same address.
+- **Typed per mode.** With a literal `mode: 'deployless'`, `address` and `sender` are type
+  errors. With a run-time `ToViemMode` they are ignored when the mode is deployless.
+- **Extra overrides.** A `stateOverride` key written after the spread replaces the script's
+  entry. Keep it: `[...params.stateOverride, yourEntry]`.
+
+### Funding the script
+
+A script that sends ETH pays from its own balance. Add a `balance` to the override entry:
+
+```ts {12,16}
+import { evscript } from '@maxencerb/evs';
+import { createPublicClient, http, parseEther } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+const selfBalance = evscript({ name: 'selfBalance' }, (s) =>
+  s.return({ wei: s.balance(s.env('address')) }),
+).compile();
+
+const params = selfBalance.toViem({ mode: 'stateOverride' });
+const [entry] = params.stateOverride;
+const { wei } = await client.readContract({
+  ...params,
+  functionName: 'selfBalance',
+  stateOverride: [{ ...entry, balance: parseEther('1') }],
+});
+// wei: 1000000000000000000n
+```
+
+A deployless script cannot be funded. In sender mode the sender's own balance pays.
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `address` or `sender` is not a 20-byte `0x` address |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `address` and `sender` are two different addresses |

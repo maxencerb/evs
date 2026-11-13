@@ -1,99 +1,101 @@
 ---
-title: Why evs?
-description: Dependent on-chain reads in one eth_call — the problem evs solves, what it is and is not, and how it compares to multicall3.
+title: Why evs
+description: evs runs reads that depend on earlier reads in one eth_call. A multicall needs one round trip per dependency level.
 ---
 
-## The dependent-read problem
+import RoundTrips from '~/components/diagrams/RoundTrips.astro';
 
-You want a Uniswap V3 pool's token addresses and each token's metadata. The reads depend on
-each other: you cannot ask for `symbol()` until you know which token to ask.
+evs runs reads that depend on earlier reads in one `eth_call`. A multicall needs one round trip
+per dependency level.
 
-```txt
-trip 1   pool.token0()       → 0xA0b8…eB48
-trip 2   token0.symbol()     → "USDC"      (needs trip 1's result)
-trip 3   token0.decimals()   → 6           (needs trip 1's result)
+<RoundTrips />
+
+## The problem
+
+To read the symbol of a pool's token, you first need the token's address.
+
+```ts {16}
+import { createPublicClient, erc20Abi, http, parseAbi } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const poolAbi = parseAbi(['function token0() view returns (address)']);
+
+// Round trip 1
+const token0 = await client.readContract({
+  address: '0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640',
+  abi: poolAbi,
+  functionName: 'token0',
+});
+
+// Round trip 2: this request cannot be built before the first one answers.
+const symbol = await client.readContract({
+  address: token0,
+  abi: erc20Abi,
+  functionName: 'symbol',
+});
 ```
 
-Three sequential round trips — a waterfall. Batching helps only within a dependency level:
-trips 2 and 3 can share a request, but nothing removes the wait between trip 1 and trip 2,
-because the second request's calldata cannot be built until the first response arrives.
+A multicall does not remove the wait. It encodes every call before the request leaves, so one
+call's output cannot be another call's target.
 
-Multicall3 does not change this. It packs many calls into one `eth_call`, but every call in
-the batch is encoded client-side **before** the request is sent — the output of one call can
-never become the input of another. Dependent reads still cost one full round trip per
-dependency level, plus client-side glue between the levels.
+## One script, one call
 
-## One script, one eth_call
+The same two reads as a script. Here `token0` is a placeholder for a value that exists only
+inside the `eth_call`.
 
-evs moves the data flow on-chain. You write a TypeScript callback against a small builder
-API; evs compiles it to EVM bytecode and runs the whole thing through a single `eth_call`:
-
-```ts
+```ts {8}
 import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
+import { erc20Abi, parseAbi } from 'viem';
 
-const uniswapV3PoolAbi = [
-  {
-    type: 'function',
-    name: 'token0',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'address' }],
-  },
-] as const;
+const poolAbi = parseAbi(['function token0() view returns (address)']);
 
-export const poolToken0 = evscript(
-  { name: 'poolToken0', args: [t.address] },
-  (s, pool) => {
-    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-    // token0 is Expr<'address'> — it feeds the next two calls ON-CHAIN
-    const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const decimals = s.read({ address: token0, abi: erc20Abi, functionName: 'decimals' });
-    return s.return({ token0, symbol, decimals });
-  },
-);
+export const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, pool) => {
+  const token0 = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+  const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ token0, symbol });
+});
 ```
 
-`token0` is not an address yet — it is a typed handle (`Expr<'address'>`) for a value that
-will only exist when the script runs on the node. The compiled bytecode performs all three
-calls inside one `eth_call`, threading values between them, and returns one ABI-encoded
-result. The script is its own literal-typed ABI, so viem infers the argument tuple and the
-result shape end-to-end — no `as const` on the script, no codegen step. The
-[quick start](/getting-started/quick-start/) shows how to compile and execute one.
-
-Because a script is real bytecode, it is not limited to straight-line call chains: it has
-checked arithmetic, runtime conditionals, and loops over runtime arrays — see
-[control flow](/guides/control-flow/) and the
-[token balances example](/examples/token-balances/).
-
-:::caution[What evs is not]
-evs is strictly **read-only**. Scripts execute via `eth_call`: any state changes inside the
-call are discarded by the node, and nothing is ever deployed — the bytecode travels in the
-request itself. evs is not a smart-contract language: no persistent storage, no events, no
-transactions. If you need to *commit* state, you need a contract and a transaction.
-
-Within that `eth_call`, sub-calls come in three verbs: `s.read` (`STATICCALL` view reads),
-`s.call` (a real `CALL` frame — e.g. a Uniswap quoter), and `s.simulate` (dry-run a write and read
-its return value, rolled back). The `CALL` verbs touch state only *inside* the call; nothing ever
-reaches the chain. See [calling contracts](/guides/calls/).
-:::
+evs compiles the script to EVM bytecode and viem runs it: see the
+[quick start](/getting-started/quick-start/).
 
 ## Compared to the alternatives
 
-| | Sequential `eth_call`s | Multicall3 | evs |
+| | Multicall | Helper contract | evs |
 | --- | --- | --- | --- |
-| Round trips for dependent reads | one per read | one per dependency level | one |
-| Output of one call feeds another | in your app, between trips | not expressible | on-chain, via `Expr` values |
-| Runtime loops and branches | in your app, between trips | no | `s.if`, `s.for`, `s.while` |
-| Per-call failure handling | try/catch per request | `allowFailure` per call | `s.tryRead` with typed `{ success, value }` |
-| Requires a deployed contract | no | yes (per-chain deployment) | no |
-| Typed results | per call, via viem | via viem `multicall` | end-to-end; the script is its own ABI |
+| Round trips for dependent reads | one per dependency level | one | one |
+| A result feeds the next call | no | yes | yes |
+| Loops and branches on chain data | no | yes | yes |
+| Per-call failure handling | `allowFailure` | `try` / `catch` | [`s.tryRead`](/reference/builder/try-read/) |
+| Language | TypeScript | Solidity | TypeScript |
+| Deployment | uses the chain's Multicall3 | your contract, on each chain | none |
+| Result types | per call | from the contract's ABI | inferred from the script |
 
-Both execution modes — deployless and state override — are plain `eth_call`s, so historical
-reads via block pinning work (compile for the fork active at the pinned block) and gas is
-bounded by the node's call cap. The default deployless mode runs as a contract creation, which
-adds gas and caps the result at 24,576 bytes; state-override mode has neither. Details in
-[execution](/guides/execution/#deployless-limits).
+## What you get
 
-Next: [install the package](/getting-started/installation/), then run the
-[quick start](/getting-started/quick-start/).
+- **Types from viem.** `readContract` infers the arguments and the result object from the script.
+- **Nothing to deploy.** The bytecode travels in the request. No contract, no transaction.
+- **Runtime control flow.** [`s.if`](/reference/builder/if/), [`s.for`](/reference/builder/for/)
+  and [`s.while`](/reference/builder/while/) branch and loop on chain data.
+- **Solidity 0.8 semantics.** Arithmetic is checked, and a callee's revert reaches you unchanged.
+- **Any block.** `blockNumber` works as in any `eth_call`. For an old block, compile for its
+  [EVM target](/guides/evm-targets/).
+- **Verified bytecode.** Every compile [checks its own output](/concepts/trust-and-testing/).
+
+## When not to use evs
+
+- **Writes.** A script is read-only: the node discards every state change when the call ends.
+  Send a transaction.
+- **Independent reads.** A multicall already batches them in one round trip.
+- **A single read.** Call `readContract` directly.
+- **A provider without state overrides**, when the script reads `msg.sender` or returns more
+  than 24,576 bytes. See [deployless limits](/guides/execution/#deployless-limits) and
+  [provider support](/guides/execution/#provider-support).
+
+## Next steps
+
+- [Installation](/getting-started/installation/)
+- [Quick start](/getting-started/quick-start/)
+- [Calling contracts](/guides/calls/)
+- [How it works](/concepts/how-it-works/)

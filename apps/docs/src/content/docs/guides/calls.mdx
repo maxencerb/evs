@@ -1,1100 +1,172 @@
 ---
 title: Calling contracts
-description: Read and dry-run other contracts — s.read (STATICCALL view reads), s.call (CALL, e.g. Uniswap quoters), and s.simulate (write dry-run, rolled back) — with viem-style typing and verbatim revert bubbling.
+description: Choose between s.read, s.call and s.simulate, feed one call's result into the next, and handle failures with the try variants.
 ---
 
-Sub-calls reach another contract from inside your script. They come in **three verbs**, split by
-the callee's mutability and the call frame they run in. All three share the *same* parameter
-object — deliberately shaped like viem's `readContract`, except that `address` and every argument
-can also be an `Expr` produced earlier in the script — and each has a `try*` companion returning
-`{ success, value }`:
+import CallVerbs from '~/components/diagrams/CallVerbs.astro';
 
-| Verb | Opcode | Mutability | State semantics | Use it for |
-| --- | --- | --- | --- | --- |
-| [`s.read`](#sread--stryread) / `s.tryRead` | `STATICCALL` | `view` / `pure` | static — no state change possible | normal view reads |
-| [`s.call`](#mutable-calls-scall--strycall) / `s.tryCall` | `CALL` (value 0 unless you [send ETH](#sending-eth-value)) | `nonpayable` / `payable` | a real non-static frame; the write is **not** rolled back — it persists to later sub-calls in the same `eth_call` (the `eth_call` itself never commits) | non-view functions that need a real frame but don't usefully keep state — the canonical case is a Uniswap quoter |
-| [`s.simulate`](#simulating-writes-ssimulate--strysimulate) / `s.trySimulate` | `CALL` (value 0 unless you [send ETH](#sending-eth-value)) via a self-call trampoline | `nonpayable` / `payable` | the write is **rolled back** and isolated from later reads, yet its return value is read back | dry-run a true write and read what it would return |
+A script calls other contracts with three verbs, chosen by what the target function does to
+state. Each has a `try*` variant that reports a failure instead of reverting.
 
-The verb you pick is enforced at the `functionName` **type** level: a `nonpayable` function under
-`s.read` is a compile error (steered to `s.call`/`s.simulate`), and a `view`/`pure` function under
-`s.call`/`s.simulate` is a compile error (steered to `s.read`). This holds even when the ABI has
-no function at all in the verb's bucket (an all-`nonpayable` ABI under `s.read`): with an
-`as const` ABI the accepted names are then none. The runtime recorder mirrors this with a steering
-`EvsTypeError`.
+<CallVerbs />
 
-That data flow between calls is the whole point: outputs of one call feed the next call on-chain,
-in a single `eth_call`.
+## Choosing a verb
 
-## s.read / s.tryRead
+| Verb | Try variant | Target function | The target's writes |
+| --- | --- | --- | --- |
+| [`s.read`](/reference/builder/read/) | [`s.tryRead`](/reference/builder/try-read/) | `view`, `pure` | are impossible (`STATICCALL`) |
+| [`s.call`](/reference/builder/call/) | [`s.tryCall`](/reference/builder/try-call/) | `nonpayable`, `payable` | stay visible to later calls |
+| [`s.simulate`](/reference/builder/simulate/) | [`s.trySimulate`](/reference/builder/try-simulate/) | `nonpayable`, `payable` | are rolled back, the result is kept |
 
-`s.read` reads a `view`/`pure` function from inside your script via `STATICCALL`:
+- All six take the object viem's `readContract` takes: `address`, `abi`, `functionName`, `args`.
+  Each verb's page lists the other options: `gas`, `struct`, `value`, `revertReturns`.
+- The types enforce the verb: a `nonpayable` function under `s.read` does not compile.
+- Nothing reaches the chain. The whole script runs inside one `eth_call`.
 
-```ts
-import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
+## Feeding one call into the next
 
-const uniswapV3PoolAbi = [
-  {
-    type: 'function',
-    name: 'token0',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'address' }],
-  },
-] as const;
-
-const tokenInfo = evscript(
-  { name: 'tokenInfo', args: [t.address, t.address] },
-  (s, pool, user) => {
-    const token0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'token0' });
-    //    ^? Expr<'address'> — feeds the next two calls on-chain
-    const symbol = s.read({ address: token0, abi: erc20Abi, functionName: 'symbol' });
-    const balance = s.read({
-      address: token0,
-      abi: erc20Abi,
-      functionName: 'balanceOf',
-      args: [user],
-    });
-    return s.return({ token0, symbol, balance });
-  },
-);
-```
-
-`functionName` autocompletes from the ABI, filtered to `pure` and `view` functions —
-`nonpayable`/`payable` names are type errors at the `functionName` level (use [`s.call`](#mutable-calls-scall--strycall)
-or [`s.simulate`](#simulating-writes-ssimulate--strysimulate) for those). Each entry of `args`
-independently accepts either the plain JS literal viem would take (`bigint`, `number`,
-`0x` strings, ...) or an `Expr` of that exact parameter type, so literals and runtime values mix
-freely in one call. See [values and types](/guides/values-and-types/) for the coercion rules.
-
-### Parameters
-
-These keys are the **same for all six verbs** (only the `functionName` mutability filter changes),
-except `value`, which only the four `CALL` verbs accept (for a `payable` function), and
-`revertReturns`, which only `s.call` / `s.tryCall` accept. Any other key is an `EvsTypeError` at
-recording, so a typo never silently does nothing. TypeScript also flags a key written in the
-object literal itself (an excess-property error), but not one that arrives through a spread: a
-viem/wagmi-style contract config carrying extra keys, such as
-`{ address, abi, chainId }`, typechecks when spread into a call and then throws at recording.
-Spread only the keys evs takes (`const { address, abi } = usdc`).
-
-| Key            | Type                                  | Notes                                                              |
-| -------------- | ------------------------------------- | ------------------------------------------------------------------ |
-| `address`      | `IntoExpr<'address'>`                 | A `0x` literal or an `Expr<'address'>` from an earlier statement   |
-| `abi`          | `Abi`                                 | Inline or `as const`, exactly as with viem. Each function entry is validated and its selector computed once, then reused by every call site that names it: do not mutate an ABI entry after a script used it |
-| `functionName` | name union                            | Restricted per verb — `pure`/`view` for `s.read`, `nonpayable`/`payable` for `s.call`/`s.simulate` |
-| `args`         | per-parameter literal-or-`Expr` tuple | Omit for zero-arg functions                                        |
-| `gas`          | `IntoExpr<'uint256'>` (optional)      | Gas cap for the target call — see [capping a target's gas](#capping-a-targets-gas); by default all available gas is forwarded |
-| `value`        | `IntoExpr<'uint256'>` (optional, **`payable` functions under `s.call` / `s.simulate` and their `try*` forms**) | Wei sent with the call (`msg.value`), paid from the script's own balance — see [sending ETH](#sending-eth-value); default 0 |
-| `struct`       | `boolean` (optional)                  | Opt in to decode a function's **multiple named** outputs into one named [`Tuple`](/reference/builder/#tuple) (ABI order) instead of the default positional tuple; every output must be named, each name once — see [below](#decoding-multiple-outputs-into-a-struct) |
-| `revertReturns` | `readonly EvsType[]` (optional, **`s.call` / `s.tryCall` only**) | The output types carried by the target's **revert data** (the QuoterV1 pattern); replaces the ABI outputs as the decode schema — see [decoding revert data](#decoding-revert-data-as-the-result-revertreturns) |
-
-Every `s.read` sub-call executes as a `STATICCALL`, so the callee runs in a read-only frame: even a
-function mislabeled as `view` in its ABI cannot mutate state — an attempted write makes that
-call fail. The script as a whole can never write state or deploy anything; `s.call`/`s.simulate`
-make a real `CALL` frame but their effects are still confined to the `eth_call` and never committed
-on-chain.
-
-### Return shapes
-
-`s.read` mirrors viem's output unwrapping:
-
-| ABI outputs                | Recorded result                                                    |
-| -------------------------- | ------------------------------------------------------------------ |
-| none                       | `void`                                                             |
-| exactly one (scalar)       | `Expr` of that type (unwrapped)                                    |
-| exactly one (`tuple`)      | a [`Tuple` handle](/reference/builder/#tuple) (unwrapped)         |
-| exactly one (`tuple[]`)    | an array `Expr` — `.at(i)` returns a [`Tuple`](/reference/builder/#tuple) element |
-| several                    | readonly tuple of `Expr`/`Tuple` handles, in ABI order            |
+`address` and every argument accept an `Expr`, so a call can use the result of an earlier one.
+With viem alone, each step is a round trip.
 
 ```ts
 import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi, parseAbi } from 'viem';
 
-const uniswapV3PoolAbi = [
-  {
-    type: 'function',
-    name: 'slot0',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [
-      { name: 'sqrtPriceX96', type: 'uint160' },
-      { name: 'tick', type: 'int24' },
-      { name: 'observationIndex', type: 'uint16' },
-      { name: 'observationCardinality', type: 'uint16' },
-      { name: 'observationCardinalityNext', type: 'uint16' },
-      { name: 'feeProtocol', type: 'uint8' },
-      { name: 'unlocked', type: 'bool' },
-    ],
-  },
-] as const;
+const poolAbi = parseAbi(['function token0() view returns (address)']);
 
-const poolPrice = evscript({ name: 'poolPrice', args: [t.address] }, (s, pool) => {
-  const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0' });
-  //    ^? readonly [Expr<'uint160'>, Expr<'int24'>, Expr<'uint16'>, ...]
-  return s.return({ sqrtPriceX96: slot0[0], tick: slot0[1], unlocked: slot0[6] });
-});
-```
-
-Here `slot0` returns **seven flat outputs**, so it unwraps to a readonly tuple of `Expr`s
-accessed positionally. A getter that returns a single Solidity *struct* (one `'tuple'` output)
-instead unwraps to a `Tuple` handle with named field access — see
-[struct arguments and outputs](#struct-and-array-arguments-and-outputs) below.
-
-### Decoding multiple outputs into a struct
-
-For a function with **multiple named** outputs like `slot0`, the positional tuple is the default,
-but passing **`struct: true`** instead composes all the outputs into **one named
-[`Tuple` handle](/reference/builder/#tuple)** (in ABI declaration order), so you read them by name:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const uniswapV3PoolAbi = [
-  {
-    type: 'function',
-    name: 'slot0',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [
-      { name: 'sqrtPriceX96', type: 'uint160' },
-      { name: 'tick', type: 'int24' },
-      { name: 'unlocked', type: 'bool' },
-    ],
-  },
-] as const;
-
-const poolPrice = evscript({ name: 'poolPrice', args: [t.address] }, (s, pool) => {
-  const slot0 = s.read({ address: pool, abi: uniswapV3PoolAbi, functionName: 'slot0', struct: true });
-  //    ^? Tuple<{ sqrtPriceX96: 'uint160'; tick: 'int24'; unlocked: 'bool' }> — named, ABI order
-  return s.return({
-    sqrtPriceX96: slot0.sqrtPriceX96.get(), // Expr<'uint160'>, by name
-    tick: slot0.tick.get(), // Expr<'int24'>
-    slot0, // the whole struct flows out as one object
-  });
-});
-```
-
-Every output must be **named**, and no two outputs may share a name — an unnamed output throws
-`EvsTypeError` at recording (an unnamed component would silently degrade viem's result to a
-positional array), and a repeated name throws `EvsTypeError` with code `ABI_SHAPE` (viem's decoded
-object keeps one value per name, so the other would be lost). Because the struct is in ABI
-order, it unifies with a `t.struct` declared in the same order and with
-[`t.fromOutputs(abi, name)`](/guides/values-and-types/#deriving-types-from-an-abi). `s.tryRead({ …,
-struct: true })` mirrors this on its `.value` (and so do `s.call`/`s.simulate` and their `try*`
-variants). The default (`struct` omitted) positional shape is unchanged; a non-literal `boolean`
-widens the result to the union of both shapes, so the caller must narrow.
-
-The struct is not free: it is a fresh block of one word per output, allocated after the outputs
-are decoded. Inside a loop that is one more allocation per iteration, reported as a
-[`LOOP_ALLOCATION`](/reference/diagnostics/#diagnostics--the-compile-time-warning-channel)
-diagnostic of its own on top of whatever the call itself allocates. In a hot loop, read the
-outputs positionally instead.
-
-A few typing behaviors carried over from viem, all enforced at recording time rather than as
-hard type errors where viem is also permissive:
-
-- **Graceful widening** — an ABI without `as const` (typed `Abi`, imported from JSON) degrades to
-  `functionName: string` and `args: readonly unknown[]` instead of erroring. The types cannot see
-  the output count, so the result is typed as every shape it can take at run time:
-  `Expr | Tuple | readonly (Expr | Tuple)[] | undefined` — `undefined` for no output, a single
-  handle for one, a readonly array for several. Cast it to the shape the function has (or declare
-  the ABI `as const`) before use; `struct: true` is always one `Tuple`. See
-  [widened ABIs](#widened-abis) below.
-- **Overloaded names** resolve by the `args` — see
-  [overloaded functions](#overloaded-functions) below.
-- **Every array shape up to four levels deep** is supported in arguments and outputs —
-  structs/tuples, arrays of structs (`tuple[]`, `tuple[][]`), nested arrays (`uint256[][][]`),
-  dynamic-leaf arrays (`string[]`, `bytes[][]`), and fixed-size arrays (`uint256[2]`,
-  `Position[3]`, `string[2]`) — see
-  [struct and array arguments and outputs](#struct-and-array-arguments-and-outputs). A deeper
-  array (`uint256[][][][][]`) or a static type of 2^32 bytes or more
-  (`uint256[100000000][100000000]`, see [values and types](/guides/values-and-types/)) throws
-  `EvsTypeError` (`UNSUPPORTED_V0`) at recording and a malformed type (`uint256[0]`, `tuple[0]`)
-  `TYPE_MISMATCH`/`ABI_SHAPE`, naming the parameter.
-
-### Widened ABIs
-
-The result of a call on a widened ABI is exported as `WideSubcallResult`. It is neither iterable nor
-numeric, so narrow it with a cast to the shape the function really has: a bare `Expr` is not enough
-for arithmetic or `toUint`/`toInt`, which need a numeric type.
-
-```ts
-import { evscript, t, type Expr } from '@maxencerb/evs';
-import type { Abi } from 'viem';
-
-declare const poolAbi: Abi; // e.g. imported from a JSON artifact
-declare const tokenAbi: Abi;
-
-const widePool = evscript({ name: 'widePool', args: [t.address, t.address] }, (s, pool, token) => {
-  // slot0 has three outputs: a readonly array at run time
-  const [sqrtPriceX96, tick] = s.read({ address: pool, abi: poolAbi, functionName: 'slot0' }) as readonly [
-    Expr<'uint160'>,
-    Expr<'int24'>,
-    Expr<'bool'>,
-  ];
-  // decimals has one output: the handle itself
-  const decimals = s.read({ address: token, abi: tokenAbi, functionName: 'decimals' }) as Expr<'uint8'>;
-  return s.return({ sqrtPriceX96, tick, decimals: decimals.toUint(t.uint256) });
-});
-```
-
-Nothing checks the cast against the ABI, so it must match the function's real outputs. Declaring
-the ABI `as const` gives exact types with no cast.
-
-## Overloaded functions
-
-When an ABI declares several functions with the same name (Solidity overloads), a bare
-`functionName` is resolved by the **types of the `args`** — the same approach as viem's
-`readContract` — and the result is typed from the overload that was picked. Only overloads in the
-verb's mutability bucket compete: a `nonpayable` overload is never a candidate under `s.read`, and
-a `view` one never under `s.call`/`s.simulate`.
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const vaultAbi = [
-  {
-    type: 'function',
-    name: 'balanceOf',
-    stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    type: 'function',
-    name: 'balanceOf',
-    stateMutability: 'view',
-    inputs: [
-      { name: 'owner', type: 'address' },
-      { name: 'id', type: 'uint256' },
-    ],
-    outputs: [{ name: '', type: 'uint128' }],
-  },
-  {
-    type: 'function',
-    name: 'price',
-    stateMutability: 'view',
-    inputs: [{ name: 'id', type: 'uint256' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-  {
-    type: 'function',
-    name: 'price',
-    stateMutability: 'view',
-    inputs: [{ name: 'decimals', type: 'uint8' }],
-    outputs: [{ name: '', type: 'int256' }],
-  },
-] as const;
-
-const balances = evscript(
-  { name: 'balances', args: [t.address, t.address, t.uint256] },
-  (s, vault, owner, id) => {
-    const total = s.read({ address: vault, abi: vaultAbi, functionName: 'balanceOf', args: [owner] });
-    //    ^? Expr<'uint256'> — balanceOf(address)
-    const ofId = s.read({ address: vault, abi: vaultAbi, functionName: 'balanceOf', args: [owner, id] });
-    //    ^? Expr<'uint128'> — balanceOf(address,uint256)
-    const byId = s.read({ address: vault, abi: vaultAbi, functionName: 'price', args: [id] });
-    //    ^? Expr<'uint256'> — the Expr<'uint256'> handle picks price(uint256)
-    const scaled = s.read({ address: vault, abi: vaultAbi, functionName: 'price(uint8)', args: [18] });
-    //    ^? Expr<'int256'> — `18` fits both price overloads: name one by signature
-    return s.return({ total, ofId, byId, scaled });
-  },
-);
-
-void balances;
-```
-
-The rules, applied identically by the types and at recording:
-
-- **Arity first**: when a single overload takes that many arguments, it is chosen and the
-  arguments are then checked against it as for any call. Otherwise each argument must fit:
-  - a handle (`Expr`, `Tuple`, `MutArray`) must carry **exactly** the parameter's type: a
-    `MutArray` from `s.newArray(t.uint256, n)` is a `uint256[]` (not an `address[]`, nor a struct
-    array), one from `s.newArray(t.uint256, 2, { fixed: true })` a `uint256[2]`, and a struct
-    handle must have the same members with the same types (the types compare a struct's members by
-    name, since a `t.struct`'s key order is not visible to them; the recorder also checks the order);
-  - a literal only needs the right **JS kind**: `number`/`bigint` for every `uintN`/`intN`, a `0x…`
-    string for `address`/`bytesN`/`bytes`, any string for `string`, a boolean for `bool`, a
-    name-keyed object for a struct (an array for an unnamed tuple), and an array for an array type,
-    whose elements (literals or handles, e.g. `[x, 2n]`) must fit the element type, at any depth. A
-    fixed-size `T[N]` takes exactly N elements, so `[1n, 2n, 3n]` fits `uint256[]` but not
-    `uint256[2]`, and `5n` fits `uint256` but not `uint256[2]`. A struct literal fits only if every
-    key names a member (an unnamed tuple's array: exactly its length), so `{ a: 1n, b: 2n }` fits
-    `(uint256 a, uint256 b)` but not `(uint256 a)`. Value ranges and byte lengths are not
-    considered, so `1n` fits both `uint8` and `uint256`.
-- **Exactly one** overload must fit. Arguments that fit several are a compile error
-  (`'evs: ambiguous overload'`) and, when types are bypassed, an `EvsTypeError` with code
-  `ABI_SHAPE` at recording naming the candidates; arguments that fit none are a compile error too
-  (`'evs: no overload matches'`) and a `TYPE_MISMATCH` at recording.
-- To settle an ambiguity, **type the literal** (`s.lit(t.uint8, 18)`) or pass the overload's
-  **canonical signature** as `functionName`: the name, then the parameter types without names or
-  spaces, tuples written as their component list — `'price(uint8)'`,
-  `'submit((uint256,address)[])'`. A signature selects exactly that entry (argument-based
-  resolution is skipped), is offered in the `functionName` autocomplete, and works for
-  non-overloaded functions too. With an `as const` ABI the signature must be spelled exactly in
-  canonical form: `'price(uint8, address)'` (with a space) is a compile error. Only the recorder
-  tolerates spaces, i.e. with a non-`const` ABI or when the types are bypassed.
-
-`t.fromOutputs(abi, name)` has no arguments to resolve by, so for an overloaded function it takes
-the signature (`t.fromOutputs(vaultAbi, 'price(uint8)')`).
-
-## Struct and array arguments and outputs
-
-When a `view` function takes or returns a Solidity struct (an ABI `'tuple'` parameter), evs
-handles it as a composite value — see [composite types](/guides/values-and-types/#composite-types-structs-and-tuples)
-for the full model. The same handling applies to `s.call`/`s.simulate`. Two cases:
-
-**A struct output decodes into a [`Tuple` handle](/reference/builder/#tuple)** — read members by
-name with `.field.get()`, or return the whole struct by handing the handle back directly (`.expr()`
-also works, for the bare memref `Expr`):
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const positionsAbi = [
-  {
-    type: 'function',
-    name: 'positions',
-    stateMutability: 'view',
-    inputs: [{ name: 'tokenId', type: 'uint256' }],
-    outputs: [
-      {
-        name: '',
-        type: 'tuple',
-        components: [
-          { name: 'nonce', type: 'uint96' },
-          { name: 'operator', type: 'address' },
-          { name: 'liquidity', type: 'uint128' },
-        ],
-      },
-    ],
-  },
-] as const;
-
-const positionInfo = evscript(
-  { name: 'positionInfo', args: [t.address, t.uint256] },
-  (s, manager, tokenId) => {
-    const pos = s.read({ address: manager, abi: positionsAbi, functionName: 'positions', args: [tokenId] });
-    //    ^? Tuple<…>
-    return s.return({ operator: pos.operator.get(), liquidity: pos.liquidity.get(), position: pos });
-  },
-);
-```
-
-**A struct argument accepts a `Tuple` handle, a `s.tuple(...)` result, or an object literal.**
-The literal names every member, and each member may be a constant or a runtime value (an `Expr`,
-or a `Tuple` handle / nested literal for a struct member); it records the same struct as the
-`s.tuple` form. Reach for [`s.tuple`](/reference/builder/#stuple) to leave members at zero or to
-build the struct once and pass it to several calls:
-
-```ts
-import { evscript } from '@maxencerb/evs';
-
-// Declaring the tuple type as a raw `as const` descriptor matches the ABI's component order
-// exactly — `s.tuple` and a raw `readonly AbiParameter[]` are accepted anywhere a tuple type is.
-const SwapParams = {
-  type: 'tuple',
-  components: [
-    { name: 'tokenIn', type: 'address' },
-    { name: 'fee', type: 'uint24' },
-    { name: 'amountIn', type: 'uint256' },
-  ],
-} as const;
-
-const poolStateAbi = [
-  {
-    type: 'function',
-    name: 'previewSwap',
-    stateMutability: 'view',
-    inputs: [{ name: 'p', ...SwapParams }],
-    outputs: [{ name: 'amountOut', type: 'uint256' }],
-  },
-] as const;
-
-const previewSwap = evscript(
-  { name: 'previewSwap', args: ['address', 'address', 'uint24', 'uint256'] },
-  (s, pool, tokenIn, fee, amountIn) => {
-    const params = s.tuple(SwapParams, { tokenIn, fee, amountIn });
-    const amountOut = s.read({ address: pool, abi: poolStateAbi, functionName: 'previewSwap', args: [params] });
-    // the same call with an object literal: same calldata
-    const sameOut = s.read({
-      address: pool,
-      abi: poolStateAbi,
-      functionName: 'previewSwap',
-      args: [{ tokenIn, fee, amountIn }],
-    });
-    return s.return({ amountOut, sameOut });
-  },
-);
-```
-
-A `TupleType` script argument arrives the same way as a decoded output — as a `Tuple` handle —
-so a struct can flow straight from calldata into a sub-call.
-
-**Arrays of structs (`tuple[]`) work the same way.** A `'tuple[]'` output is an array handle —
-`.at(i)` returns the i-th element as a `Tuple` you read by field name; a `'tuple[]'` argument
-accepts an array handle (`arr.expr()`) or an array literal whose elements are struct literals
-(runtime members allowed) or `Tuple` handles. One-level nested
-arrays (`uint256[][]`) and dynamic-leaf arrays (`string[]`/`bytes[]`) are supported in the same
-positions. See [composite arrays](/guides/values-and-types/#composite-arrays-tuple-t-string)
-for read/build/pass examples.
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const registryAbi = [
-  {
-    type: 'function',
-    name: 'positionsOf',
-    stateMutability: 'view',
-    inputs: [{ name: 'owner', type: 'address' }],
-    outputs: [
-      {
-        name: '',
-        type: 'tuple[]',
-        components: [
-          { name: 'liquidity', type: 'uint128' },
-          { name: 'tickLower', type: 'int24' },
-        ],
-      },
-    ],
-  },
-] as const;
-
-const firstPosition = evscript(
-  { name: 'firstPosition', args: [t.address, t.address] },
-  (s, registry, owner) => {
-    const positions = s.read({
-      address: registry,
-      abi: registryAbi,
-      functionName: 'positionsOf',
-      args: [owner],
-    });
-    //    ^? Expr<'tuple[]'> — the array handle
-    const first = positions.at(0n); // Tuple element — Panic(0x32) if empty
-    return s.return({ liquidity: first.liquidity.get(), positions });
-  },
-);
-```
-
-## Revert behavior: verbatim bubbling
-
-When a callee reverts under `s.read` (and likewise `s.call`/`s.simulate`), the **entire script
-reverts with the callee's revert data, byte-exact** — `Error(string)`, `Panic(uint256)`, and
-custom errors alike. Your viem call site sees exactly the error it would have seen calling the
-contract directly.
-
-Two failure modes are distinguished:
-
-- **The callee reverted** — its revert data bubbles verbatim out of the script.
-- **The call succeeded but the returndata does not decode** against the ABI (too short,
-  out-of-bounds offsets, a length word the returndata cannot back, a nested struct whose head is
-  cut short, a non-contract address returning nothing, offsets that exhaust the
-  [decode-work budget](#overlapping-offsets-and-the-decode-work-budget)) — the script reverts with
-  the `EvsDecodeError(site)` custom error. This error is part of the script's own ABI, so viem
-  names it, and `explainRevert` maps the site id back to the offending
-  call. See [errors and debugging](/guides/errors-and-debugging/).
-
-Dirty bits in word-typed outputs are **normalized, not reverted**: a `uintN`, `address` or
-`bytesN` output is masked to its declared width, an `intN` output is sign-extended from its
-width, and any nonzero `bool` word reads as `true`. A `uint8` output whose word holds 300 comes
-back as 44, and an `int8` word of `0x1f6` as −10. This is how Solidity's legacy ABI coder v1
-cleans returndata; coder v2, the default since 0.8, reverts instead. viem's decoder sits in
-between: it masks `address` and `bytesN` the same way, but returns a `uintN`/`intN` word unmasked
-(300 stays 300) and throws on a `bool` word other than 0 or 1, so a misbehaving callee can read differently through evs and through a plain
-`readContract`. Every output is decoded from the original returndata, so even non-canonical data
-whose offsets make two outputs share bytes decodes each of them exactly as if it were alone,
-within one shared [decode-work budget](#overlapping-offsets-and-the-decode-work-budget): the
-outputs of a call draw on the same budget, so several outputs aliasing one large charged tail (a
-`uint8[][]`, a struct array) are charged once each and can exhaust it together.
-
-### Overlapping offsets and the decode-work budget
-
-The ABI encodes an array of dynamic elements (`uint256[][]`, `string[]`, a struct array) as a
-list of offsets, and nothing in the format stops a hostile callee from pointing every offset at
-the same element. Decoding such data naively costs far more than its size: 600 offsets at
-one 600-element `uint8[]` is 38 KB of returndata but 600 copies of the inner array, and 1500
-offsets at one 101-field struct is 51 KB but 1500 copies of the struct, enough to run the whole
-`eth_call` out of gas from inside a `try*` verb (the cost is paid in the script's own frame
-after the callee returned, so the call's `gas` cap does not help). evs bounds that work two
-ways:
-
-- **Full-word inner arrays are never copied.** A `uint256[]`, `int256[]` or `bytes32[]` needs no
-  normalization, so wherever it sits (an output, a struct member, an element of an outer array)
-  it points straight into the returndata. Overlapping offsets at one `uint256[]` cost one bounds
-  check each, and the data decodes.
-- **Everything else draws on a decode-work budget.** Each block the decoder builds is charged
-  the returndata bytes it mirrors, out of a per-call budget of the returndata size plus 8192
-  words (256 KiB):
-  - a dynamic array (`uint8[]`, `address[]`, … normalized into a fresh copy, or an array of
-    arrays, strings or structs): its length word plus its body, `32 + length × element size`
-    (32 bytes per element, or the full size of a static struct / static `T[N]` element);
-  - inside an element of an array, where offsets can make it decode many times: a struct with
-    a dynamic member, charged its head (32 bytes per dynamic member plus the size of every
-    static one), and a fixed-size `T[N]` of dynamic elements, charged its `N` offset words.
-
-  Static structs and static `T[N]` are charged with the block that holds them. A well-formed
-  encoding is never charged more than its own size, so only overlapping offsets can exhaust the
-  budget; when they do, the call fails like any other malformed returndata: `success = false`
-  under `s.tryRead` / `s.tryCall` / `s.trySimulate`, `EvsDecodeError(site)` under the strict
-  verbs. A word array that is itself one of the call's outputs, and structs and `T[N]` outside
-  every array, are not charged: a call decodes them a fixed number of times. Every block's memory
-  is within a factor fixed by its type of what it is charged, so decode work stays linear in the
-  returndata size.
-
-  A call whose outputs hold a single charged block, decoded once (a lone `string[]`, `bytes[]`,
-  `uint256[][]` or static-struct array output such as `(uint256,address)[]`, or a struct output
-  holding exactly one such array, or one normalized word array such as the `uint64[]` of
-  `(uint64[])`), compiles without the budget: like a word-array output, that block is decoded
-  exactly once, and it lies inside the returndata, so its one charge can never exceed the
-  returndata size, let alone the budget. Such a call site is about 40 to 55 bytes smaller (the
-  `try*` verbs save the most) and about 100 gas cheaper.
-
-The 8192-word slack matches viem's decoder, which throws `RecursiveReadLimitExceededError` once
-it has re-read already-visited positions 8192 times (its default `recursiveReadLimit`): for
-overlapping `uint8[][]` returndata evs and viem give up at the same amount of overlap, to within
-one word. Script arguments are
-your own calldata and are not budgeted. The [interpreter](/guides/testing-scripts/) applies the
-same budget, so it agrees with the compiled script on every payload.
-
-## s.tryRead
-
-`s.tryRead` takes the exact same parameter object as `s.read` and never reverts the script on
-callee failure. It records `{ success, value }`:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-
-const tokenDecimals = evscript({ name: 'tokenDecimals', args: [t.address] }, (s, token) => {
-  const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
-  // d.success: Expr<'bool'>   d.value: Expr<'uint8'> — 0 when the call failed
-  return s.return({ decimals: s.select(d.success, d.value, 18) });
-});
-```
-
-- `success` is `Expr<'bool'>` — false when the call failed **or** when the returndata is
-  structurally malformed. Both cases fold into the same flag.
-- `value` has the same shape `s.read` would produce (single output unwrapped, several as a
-  tuple). On failure every output is a safe default: zero for numeric and word types, `false`
-  for `bool`, the zero address, empty `string`/`bytes`, empty arrays. `value` is always safe
-  to use — guard with `success` (or [`s.select`](/guides/control-flow/)) when zero is a valid
-  real-world reading.
-
-:::caution[Success is not a range check]
-`success` only says the call returned and its returndata had a decodable shape. An out-of-range
-word is [normalized](#revert-behavior-verbatim-bubbling) like under `s.read` and still reports
-`success = true`: a `decimals()` that returns 300 reads as `{ success: true, value: 44 }`. When a
-callee might return garbage, declare the output wider in your own ABI fragment (`uint256` instead
-of `uint8`, the wire format is the same word) and check the range in the script.
-:::
-
-:::note
-This is deliberately stronger than Solidity's `try`/`catch`: malformed returndata from a
-"successful" call does not revert either — it just makes `success` false and zeroes `value`.
-:::
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-
-const cappedSymbol = evscript({ name: 'cappedSymbol', args: [t.address] }, (s, token) => {
-  const r = s.tryRead({
+const token0 = evscript({ name: 'token0', args: [t.address] }, (s, pool) => {
+  const token = s.read({ address: pool, abi: poolAbi, functionName: 'token0' });
+  // token: Expr<'address'>, the target of the next two calls
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  const reserve = s.read({
     address: token,
     abi: erc20Abi,
-    functionName: 'symbol',
-    gas: 200_000n, // cap; without it the sub-call forwards all available gas
+    functionName: 'balanceOf',
+    args: [pool],
   });
-  return s.return({ ok: r.success, symbol: r.value }); // symbol is '' when the call failed
+  return s.return({ token, symbol, reserve });
 });
 ```
 
-The `gas` cap pairs naturally with `s.tryRead`: it bounds how much a misbehaving callee can
-burn before the script moves on. Decoding what the callee returned happens in the script's own
-frame, outside that cap; the [decode-work budget](#overlapping-offsets-and-the-decode-work-budget)
-keeps that part linear in the returndata size (with a factor fixed by the output types).
+A function with one output returns its handle. Several outputs come back as an array you
+destructure, or as one struct with `struct: true`: see [`s.read`](/reference/builder/read/).
 
-## Mutable calls (s.call / s.tryCall)
+## Calling a function that is not view
 
-`s.call` is `s.read` with the `CALL` opcode instead of `STATICCALL`. Same arg-encode, same
-returndata-decode, same verbatim-revert-bubble, same `try*`-zeroing — but it runs in a **real,
-non-static frame**, so it accepts `nonpayable`/`payable` functions that cannot run under
-`STATICCALL`. There is **no rollback machinery**: a write performed via `s.call` is visible to a
-later `s.read` in the same script (it is the same `eth_call` frame). The `eth_call` result itself
-is still never committed on-chain.
+Some functions only compute a result but are not marked `view`, and `s.read` rejects them. Call
+them with `s.call`: a Uniswap quoter is the usual case.
 
-A script also **receives ETH**: a bare call into it (empty calldata, any value) succeeds with no
-output for 15 gas, inside the 2,300-gas stipend of Solidity's `transfer`/`send`. So a target that pays
-its caller — `WETH.withdraw`, a swap out to native ETH — works under `s.call` and `s.simulate` in
-every execution mode, [sender mode](/guides/execution/#sender-mode) included. Calldata of 1–3 bytes
-still reverts `EvsInvalidCalldata()`.
-
-The flagship case is a **Uniswap quoter**. Quoter functions are `nonpayable` (not `view`), so they
-cannot run under `STATICCALL` — which is exactly why `s.call` exists. A QuoterV2-style function
-returns its quote normally:
-
-```ts
+```ts {11}
 import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
 
-// Build the struct arg with `s.tuple` (runtime Exprs flow in by name) — see the struct section above.
-const QuoteParams = {
-  type: 'tuple',
-  components: [
-    { name: 'tokenIn', type: 'address' },
-    { name: 'tokenOut', type: 'address' },
-    { name: 'amountIn', type: 'uint256' },
-    { name: 'fee', type: 'uint24' },
-    { name: 'sqrtPriceLimitX96', type: 'uint160' },
-  ],
-} as const;
+const quoterAbi = parseAbi([
+  'function quoteExactInput(bytes path, uint256 amountIn) returns (uint256 amountOut)',
+]);
 
-const quoterV2Abi = [
-  {
-    type: 'function',
-    name: 'quoteExactInputSingle',
-    stateMutability: 'nonpayable', // not view → s.read would be a compile error here
-    inputs: [{ name: 'params', ...QuoteParams }],
-    outputs: [
-      { name: 'amountOut', type: 'uint256' },
-      { name: 'sqrtPriceX96After', type: 'uint160' },
-      { name: 'initializedTicksCrossed', type: 'uint32' },
-      { name: 'gasEstimate', type: 'uint256' },
-    ],
-  },
-] as const;
-
-const quoteV2 = evscript(
-  { name: 'quoteV2', args: [t.address, t.address, t.address, t.uint256, t.uint24] },
-  (s, quoter, tokenIn, tokenOut, amountIn, fee) => {
-    const params = s.tuple(QuoteParams, { tokenIn, tokenOut, amountIn, fee, sqrtPriceLimitX96: 0n });
-    const out = s.call({
-      address: quoter,
-      abi: quoterV2Abi,
-      functionName: 'quoteExactInputSingle',
-      args: [params],
-    });
-    //    ^? readonly [Expr<'uint256'>, Expr<'uint160'>, Expr<'uint32'>, Expr<'uint256'>]
-    return s.return({ amountOut: out[0], gasEstimate: out[3] });
-  },
-);
-```
-
-### Decoding revert data as the result (`revertReturns`)
-
-A **QuoterV1**-style function instead *reverts* with the ABI-encoded result — its ABI declares no
-outputs at all. Pass `revertReturns`, the list of output types carried by the revert payload, and
-the call decodes **that payload** as its result. The list replaces the ABI outputs as the decode
-schema (any outputs the ABI does declare are ignored), and the two branches swap: the **revert is
-the value path**, and a normal return is the failure.
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const quoterV1Abi = [
-  {
-    type: 'function',
-    name: 'quoteExactInputSingle',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'tokenIn', type: 'address' },
-      { name: 'tokenOut', type: 'address' },
-      { name: 'fee', type: 'uint24' },
-      { name: 'amountIn', type: 'uint256' },
-      { name: 'sqrtPriceLimitX96', type: 'uint160' },
-    ],
-    outputs: [], // QuoterV1 reverts with the quote — nothing is returned normally
-  },
-] as const;
-
-const quoteV1 = evscript(
-  { name: 'quoteV1', args: [t.address, t.address, t.address, t.uint24, t.uint256] },
-  (s, quoter, tokenIn, tokenOut, fee, amountIn) => {
+const quote = evscript(
+  { name: 'quote', args: [t.address, t.bytes, t.uint256] },
+  (s, quoter, path, amountIn) => {
     const amountOut = s.call({
       address: quoter,
-      abi: quoterV1Abi,
-      functionName: 'quoteExactInputSingle',
-      args: [tokenIn, tokenOut, fee, amountIn, 0n],
-      revertReturns: [t.uint256], // the quote arrives in the revert data
+      abi: quoterAbi,
+      functionName: 'quoteExactInput',
+      args: [path, amountIn],
     });
-    //    ^? Expr<'uint256'> — typed from `revertReturns`, not from the ABI outputs
     return s.return({ amountOut });
   },
 );
 ```
 
-The result is shaped like any other call result, but from the `revertReturns` list: `[]` →
-`void`, `[t.uint256]` → `Expr<'uint256'>`, `[t.uint256, t.string]` → a positional tuple of
-handles, and a `t.struct(...)` entry → a [`Tuple` handle](/reference/builder/#tuple). The revert
-payload goes through exactly the same decode sequence as returndata — the `rds ≥ 32·n` head guard
-and the `2^64` bounds on dynamic outputs — so a malformed payload is a decode failure, never a
-misread.
+Whatever the target writes stays visible to later calls, until the `eth_call` ends.
 
-`s.tryCall` takes the same option. `success` is `true` when the target **reverted** with a payload
-that decodes under `revertReturns`, and `false` — with `value` zeroed as usual — when it returned
-normally or the revert payload is structurally malformed:
+## Previewing a write
 
-```ts
+`s.simulate` runs a real write, hands you what it returned, then undoes it. Later calls see the
+state from before.
+
+```ts title="preview-withdraw.ts" {7}
 import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
 
-const quoterV1Abi = [
-  {
-    type: 'function',
-    name: 'quoteExactInput',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'amountIn', type: 'uint256' }],
-    outputs: [],
-  },
-] as const;
-
-const tryQuoteV1 = evscript({ name: 'tryQuoteV1', args: [t.address, t.uint256] }, (s, quoter, amountIn) => {
-  const r = s.tryCall({
-    address: quoter,
-    abi: quoterV1Abi,
-    functionName: 'quoteExactInput',
-    args: [amountIn],
-    revertReturns: [t.uint256],
-  });
-  // r.success: the target reverted with a decodable quote; r.value: Expr<'uint256'>
-  return s.return({ ok: r.success, amountOut: r.value });
-});
-```
-
-:::note
-- `revertReturns` is an `s.call` / `s.tryCall` option only. `s.read` never carries its result in
-  revert data, and `s.simulate` frames the target's revert itself — both reject it at recording.
-  It cannot be combined with `struct: true`; declare a single `t.struct(...)` type instead.
-- A strict `s.call` whose target returns *normally* reverts `EvsDecodeError(site)` — there is no
-  revert payload to bubble — and `explainRevert` reports it as `decoding call … revert data failed`
-  at the recording line.
-- A *genuine* error revert whose payload is at least as long as the declared head (an
-  `Error(string)` is ≥ 100 bytes) decodes as data rather than failing, exactly as QuoterV1's own
-  Solidity callers would misread it. If the target can revert for other reasons, keep the schema
-  minimal and sanity-check the value (or its `length()`) in the script.
-:::
-
-## Simulating writes (s.simulate / s.trySimulate)
-
-`s.simulate` **dry-runs a true write and reads back what it would return**, then throws the write
-away. Use it to answer "what *would* this state-changing function return / mint / compute?" without
-letting the change leak into the rest of your script.
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const vaultAbi = [
-  {
-    type: 'function',
-    name: 'deposit',
-    stateMutability: 'nonpayable',
-    inputs: [
-      { name: 'assets', type: 'uint256' },
-      { name: 'receiver', type: 'address' },
-    ],
-    outputs: [{ name: 'shares', type: 'uint256' }],
-  },
-] as const;
-
-const previewDeposit = evscript(
-  { name: 'previewDeposit', args: [t.address, t.uint256, t.address] },
-  (s, vault, assets, receiver) => {
-    // Dry-run deposit(): read the shares it would mint, then roll the write back so a later
-    // read of the vault sees the un-mutated state.
+export const previewWithdraw = evscript(
+  { name: 'previewWithdraw', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, owner) => {
     const shares = s.simulate({
       address: vault,
-      abi: vaultAbi,
-      functionName: 'deposit',
-      args: [assets, receiver],
+      abi: erc4626Abi,
+      functionName: 'withdraw',
+      args: [assets, owner, owner],
     });
-    //    ^? Expr<'uint256'>
-    return s.return({ shares });
-  },
-);
-```
-
-### How the rollback works
-
-`s.simulate` lowers to a **self-call plus a revert trampoline**. The compiler builds the target
-calldata like a normal call, wraps it as `[trampolineSelector][target address][target calldata]`,
-and issues a `CALL` to `ADDRESS()` — the script's own address, where the script's code is present
-in both `toViem()` modes. A reserved second dispatcher entrypoint (the *trampoline*) decodes the
-target and payload, performs the real `CALL` to the write target, and then **`REVERT`s** with a
-magic-tagged payload `[MAGIC][innerSuccess][target returndata]`.
-
-That `REVERT` unwinds the sub-frame, discarding **every** state change the write made — that is the
-rollback. The outer frame recognizes the magic word, branches on `innerSuccess` (strict: bubble the
-target's revert verbatim; `try`: `success = false`, zeroed value), and decodes the carried
-returndata through the same in-memory tuple decoder every other verb uses.
-
-`s.trySimulate` is the `{ success, value }` companion — use it when the simulated write might revert
-and you want a flag instead of bubbling. The trampoline self-call to `ADDRESS()` works in both
-execution modes.
-
-### Nesting and composition
-
-The trampoline is an ordinary dispatcher entrypoint that runs in its own call frame, so simulate
-sites compose without restriction: put one inside an [`s.fn`](/guides/functions/) body (called as
-often as you like, from the script or from another `s.fn`), feed the result of one dry-run into the
-next, or interleave them with `s.call` and `s.read`. Every hop rolls back independently — a dry-run
-of a dry-run's result still leaves the target's state untouched.
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const vaultAbi = [
-  {
-    type: 'function',
-    name: 'deposit',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'assets', type: 'uint256' }],
-    outputs: [{ name: 'shares', type: 'uint256' }],
-  },
-  {
-    type: 'function',
-    name: 'totalShares',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const;
-
-const previewTwice = evscript(
-  { name: 'previewTwice', args: [t.address, t.uint256] },
-  (s, vault, assets) => {
-    // a dry-run inside a reusable fn (fn bodies take what they need as params)
-    const preview = s.fn('preview', [t.address, t.uint256], (v, a) =>
-      s.simulate({ address: v, abi: vaultAbi, functionName: 'deposit', args: [a] }),
-    );
-    const first = preview(vault, assets);
-    const second = preview(vault, first); // the first dry-run's result feeds the second
-    // both writes were rolled back: totalShares is what it was before the script ran
-    const total = s.read({ address: vault, abi: vaultAbi, functionName: 'totalShares' });
-    return s.return({ first, second, total });
-  },
-);
-```
-
-### Capping a target's gas
-
-Every verb accepts an optional `gas` (a literal or an `Expr<'uint256'>`) that caps what the target
-may spend; without it the sub-call forwards all available gas. Under `s.simulate` / `s.trySimulate`
-the cap bounds the **inner** target call: the self-call hop itself always forwards all gas, so the
-trampoline can always report the outcome — a target that exhausts its cap surfaces as a failed
-dry-run (empty revert under `s.simulate`, `success = false` under `s.trySimulate`), never as a lost
-result. This is how you contain a misbehaving target without failing the whole `eth_call`:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const vaultAbi = [
-  {
-    type: 'function',
-    name: 'deposit',
-    stateMutability: 'nonpayable',
-    inputs: [{ name: 'assets', type: 'uint256' }],
-    outputs: [{ name: 'shares', type: 'uint256' }],
-  },
-] as const;
-
-const boundedPreview = evscript(
-  { name: 'boundedPreview', args: [t.address, t.uint256] },
-  (s, vault, assets) => {
-    const r = s.trySimulate({
+    // rolled back: this is still the supply from before the withdrawal
+    const supply = s.read({
       address: vault,
-      abi: vaultAbi,
-      functionName: 'deposit',
-      args: [assets],
-      gas: 300_000n, // the dry-run may burn at most this much; the script goes on either way
+      abi: erc4626Abi,
+      functionName: 'totalSupply',
     });
-    return s.return({ ok: r.success, shares: r.value });
+    return s.return({ shares, supply });
   },
 );
 ```
 
-Two EVM rules shape what `gas` means:
+With `s.call` in its place, `supply` would be the supply after the withdrawal.
 
-- **The 63/64 rule (EIP-150).** A `CALL` can hand its callee at most 63/64 of the caller's
-  remaining gas, whatever the cap says — so `gas` is an upper bound, never a guarantee. Size the
-  `eth_call`'s own gas (the node's cap, typically 30–50M) with your caps in mind.
-- **Out-of-gas is an empty revert.** A target that exhausts its cap fails with no revert data.
-  `s.read`/`s.call`/`s.simulate` bubble that empty revert; the `try*` variants report
-  `success = false` with a zeroed `value`.
+## Defaults on failure
 
-### Sending ETH (`value`)
+`s.read`, `s.call` and `s.simulate` revert the whole script with the target's revert data. A
+`try*` verb returns `success` and `value` instead, and [`s.select`](/reference/builder/select/)
+picks the default.
 
-`s.call`, `s.simulate` and their `try*` forms take an optional `value` — a literal or an
-`Expr<'uint256'>`, in wei — that the target receives as `msg.value`. It is accepted for a
-**`payable`** function only: a `nonpayable` target reverts on any ETH, and `s.read`'s `STATICCALL`
-cannot carry any, so both are compile errors (and an `EvsTypeError` at recording when the types are
-bypassed). For an overloaded name, the overload the `args` resolve to decides.
-
-The ETH comes from **the script's own balance**: the script makes the call, not the `eth_call`'s
-`account`. Run it in [state-override mode](/guides/execution/#state-override-mode) and give the
-script address a `balance` in the same override entry:
-
-```ts
-import { compile, evscript, t } from '@maxencerb/evs';
-import { createPublicClient, http, parseEther, zeroAddress } from 'viem';
-
-const lidoAbi = [
-  {
-    type: 'function',
-    name: 'submit',
-    stateMutability: 'payable',
-    inputs: [{ name: '_referral', type: 'address' }],
-    outputs: [{ name: '', type: 'uint256' }],
-  },
-] as const;
-
-const previewStake = evscript(
-  { name: 'previewStake', args: [t.address, t.uint256] },
-  (s, lido, amount) => {
-    // stake `amount` ETH, read the stETH shares it mints, then roll the deposit back
-    const shares = s.simulate({
-      address: lido,
-      abi: lidoAbi,
-      functionName: 'submit',
-      args: [zeroAddress],
-      value: amount,
-    });
-    return s.return({ shares });
-  },
-);
-
-const compiled = compile(previewStake);
-const client = createPublicClient({ transport: http('https://eth.merkle.io') });
-const params = compiled.toViem({ mode: 'stateOverride' });
-
-const result = await client.readContract({
-  ...params,
-  // fund the script: same address and code, plus a balance
-  stateOverride: [{ ...params.stateOverride[0], balance: parseEther('32') }],
-  functionName: 'previewStake',
-  args: ['0xae7ab96520DE3A18E5e111B5EaAb095312D7fE84', parseEther('32')], // Lido stETH
-});
-// result: { shares: bigint }
-```
-
-- **Sender mode** runs the script at the sender's address, so the sender's own ETH pays; override
-  its `balance` the same way to dry-run more than it holds.
-- **Deployless mode** cannot fund the script: it runs at a counterfactual address created during
-  the call, which holds no ETH. Use state-override mode for scripts that send value.
-- **An unfunded script** fails the `CALL` before the target runs: `s.call` reverts with empty data,
-  `s.simulate` reverts `EvsDecodeError(site)` (its self-call hop, which carries the value, is what
-  fails), so does an `s.call` with `revertReturns` (the empty revert data cannot decode), and the
-  `try*` forms report `success = false` with a zeroed `value`. `explainRevert` names the unpaid
-  `value` as a candidate cause for each of these strict reverts, and `compile` warns
-  [`ENV_FRAME_DEPENDENT`](/reference/diagnostics/) for every site that sends one.
-- Under `s.simulate` the ETH is rolled back with the rest of the write; under `s.call` it stays with
-  the target for the rest of the `eth_call` (nothing is ever committed on-chain).
-
-### Choosing `msg.sender`: sender mode
-
-There is no EVM primitive to change `msg.sender` inside a frame: whatever verb you use, the target
-sees the address the script runs at. To give `msg.sender`-sensitive targets (permit-style checks,
-`onlyOwner` views, ERC-4626 `maxWithdraw(owner)` patterns, `balanceOf(msg.sender)` inside a
-write) a chosen sender, run the script **at** that address with
-[`toViem({ mode: 'stateOverride', sender })`](/guides/execution/#sender-mode): the runtime is
-installed at `sender` through `stateOverride` and the script self-calls through it, so every
-sub-call — including the simulated write — sees `msg.sender = sender`, and `s.env('caller')` /
-`s.env('address')` read `sender` too.
-
-The complete example — previewing an ERC-4626 `withdraw` that burns the owner's shares — is in
-[executing scripts: sender mode](/guides/execution/#sender-mode).
-
-:::caution[Frame dependence: `msg.sender` is the script]
-`s.call` and `s.simulate` make a real call in which the **target sees `msg.sender` = the script's
-address** — a per-script counterfactual `CREATE2` address in the default deployless `toViem()` mode,
-the override address (`DEFAULT_SCRIPT_ADDRESS` by default) in `stateOverride` mode, or the chosen
-`sender` in [sender mode](/guides/execution/#sender-mode). The `account` call parameter alone only
-changes the script's *own* caller (`s.env('caller')`), never what the targets see. This mirrors the
-[`s.env('caller')`](/reference/builder/#senv) frame-dependence warning. See
-[execution modes](/guides/execution/).
-:::
-
-## Native balances and legacy metadata
-
-Two reads need less than they seem to: an ETH balance needs no contract call at all, and legacy
-`bytes32` metadata needs no client-side decoding step.
-
-### Native ETH balances
-
-An account's ETH balance is not a contract call: [`s.balance(address)`](/reference/builder/#sbalance--scodesize--scodehash)
-reads it with the `BALANCE` opcode, on any chain and with no target contract. In a batch loop:
-
-```ts
-import { evscript, t } from '@maxencerb/evs';
-
-const nativeBalances = evscript({ name: 'nativeBalances', args: [t.array(t.address)] }, (s, wallets) => {
-  const balances = s.newArray(t.uint256, wallets.length());
-  s.forEach(wallets, (wallet, i) => {
-    balances.set(i, s.balance(wallet));
-  });
-  return s.return({ balances });
-});
-```
-
-### Legacy `bytes32` metadata
-
-A few early tokens (MKR, SAI) return `bytes32` from `name()` and `symbol()` instead of `string`.
-Reading a real `string` through the `string` ABI succeeds; reading a `bytes32` through it fails to
-decode (the word is not a valid offset), so `s.tryRead`'s `success` tells the two apart. When it
-is false, read the same function through a `bytes32` ABI and convert the word in-script with
-`asString()`, which drops its trailing zero padding:
-
-```ts
+```ts {5-6}
 import { evscript, t } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const bytes32MetadataAbi = [
-  {
-    type: 'function',
-    name: 'symbol',
-    stateMutability: 'view',
-    inputs: [],
-    outputs: [{ name: '', type: 'bytes32' }],
-  },
-] as const;
-
-const tokenSymbol = evscript({ name: 'tokenSymbol', args: [t.address] }, (s, token) => {
-  const asString = s.tryRead({ address: token, abi: erc20Abi, functionName: 'symbol' });
-  const symbol = s.let(t.string, asString.value);
-  s.if(asString.success.not(), () => {
-    const raw = s.tryRead({ address: token, abi: bytes32MetadataAbi, functionName: 'symbol' });
-    symbol.set(raw.value.asString()); // 'MKR' + 29 zero bytes → 'MKR'
-  });
-  return s.return({ symbol: symbol.get() });
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const value = s.select(d.success, d.value, 18); // 18 when the call fails
+  return s.return({ value, known: d.success });
 });
 ```
 
-The `bytes32` read only runs for the tokens whose `string` read failed; see
-[the legacy-symbol pattern](/examples/patterns/#legacy-bytes32-symbol).
+- `success` is `false` when the target reverts or returns data that does not decode.
+- Use a `try*` verb for optional data, unknown tokens, or one bad item in a batch.
+- Reverts and how to decode them are covered in
+  [errors & debugging](/guides/errors-and-debugging/).
 
-## When to use which
+:::caution[Zero is also a real value]
+After a failure, `value` is the zero of its type: `0`, `false`, an empty string. A call that
+really returned `0` looks the same, so read `success` before you trust a zero.
+:::
 
-Pick the verb by the callee's mutability first, then by what you need from the result:
+## What msg.sender the target sees
 
-- **`s.read` / `s.tryRead`** — `view`/`pure` reads. Reach for `s.read` when the read is expected to
-  succeed and a failure should abort the whole script (the verbatim bubble means nothing is lost in
-  translation); reach for `s.tryRead` when:
-  - the data is optional (`decimals()` on nonstandard tokens, with a default via `s.select`);
-  - you are probing addresses that may not implement the function — or may not be contracts at
-    all. A `STATICCALL` to an address without code "succeeds" with empty returndata. If the
-    function declares outputs, `s.read` reverts as `EvsDecodeError` and `s.tryRead` reports
-    `success = false`. For a function with **no outputs** there is nothing to decode, so `s.read`
-    and `s.call` succeed and the `try*` verbs report `success = true` — that proves nothing about
-    whether the target is a contract (unlike Solidity ≥ 0.8.10, evs adds no `extcodesize` check —
-    guard with [`s.codeSize(target).gt(0n)`](/reference/builder/#sbalance--scodesize--scodehash)
-    when it matters);
-  - one bad element must not kill a batch loop — see
-    [batch token balances](/examples/token-balances/).
-- **`s.call` / `s.tryCall`** — a `nonpayable`/`payable` function you need a real frame for but whose
-  state effect you don't care to discard (a Uniswap quoter, a function that touches transient state
-  a later `s.read` should see). The write persists within the `eth_call`; nothing reaches the chain.
-  Add `revertReturns` when the target reports its result by **reverting** (QuoterV1).
-- **`s.simulate` / `s.trySimulate`** — a `nonpayable`/`payable` write whose **return value** you want
-  but whose **state change** must not leak into later reads in the same script (an ERC-4626
-  `deposit`/`mint` preview, any `previewX` that doesn't exist as a `view`).
+Whatever the verb, the target sees the script's own address as `msg.sender`. The vault above
+lets only the owner or an approved spender withdraw, so the script must run at the owner's
+address:
 
-For more composed examples, see the [Uniswap V3 flagship](/examples/pool-metadata/) and
-[patterns](/examples/patterns/). The frozen signatures live in the
-[ScriptBuilder reference](/reference/builder/).
+```ts {5}
+import { previewWithdraw } from './preview-withdraw';
+
+const owner = '0x1715a3E4A142d8b698131108995174F37aEBA10D';
+const compiled = previewWithdraw.compile();
+const params = compiled.toViem({ mode: 'stateOverride', sender: owner });
+// spread `params` into client.readContract: every target sees msg.sender = owner
+```
+
+| `toViem` mode | `msg.sender` seen by targets |
+| --- | --- |
+| deployless (default) | the script's address, different for each compiled script |
+| `stateOverride` | the override address |
+| `stateOverride` with `sender` | `sender` |
+
+:::caution[The script is the caller]
+viem's `account` parameter sets who calls the script. It never changes the `msg.sender` of the
+calls the script makes. See [executing scripts](/guides/execution/).
+:::
+
+## Next steps
+
+- [`s.read`](/reference/builder/read/): every parameter, return shape and error of a call.
+- [`s.tryRead`](/reference/builder/try-read/): the `success` and `value` pair in detail.
+- [Executing scripts](/guides/execution/): modes, providers and limits.
+- [Batch token balances](/examples/token-balances/): `s.tryRead` inside a loop.

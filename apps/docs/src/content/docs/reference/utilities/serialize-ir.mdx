@@ -1,0 +1,96 @@
+---
+title: serializeIr
+description: Converts a script's IR, the recorded program, to a stable JSON string. deserializeIr parses one back.
+---
+
+Converts a script's IR, the recorded program in `script.ir`, to a stable JSON string.
+`deserializeIr` parses one back.
+
+Use the pair to snapshot a script in a test, to store it, or to run it in another process.
+
+## Import
+
+```ts
+import { deserializeIr, serializeIr } from '@maxencerb/evs';
+```
+
+## Usage
+
+```ts {9-10}
+import { deserializeIr, evscript, interpret, serializeIr, t } from '@maxencerb/evs';
+import type { MockChain } from '@maxencerb/evs';
+
+const double = evscript({ name: 'double', args: [t.uint256] }, (s, x) =>
+  s.return({ doubled: x.mul(2n) }),
+);
+const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+const json = serializeIr(double.ir);
+const ir = deserializeIr(json);
+
+const result = interpret(ir, [21n], noCalls);
+if (result.outcome.kind === 'return') result.outcome.values['doubled']; // 42n
+```
+
+The restored IR runs under [`interpret`](/reference/utilities/interpret/) like the original.
+
+## serializeIr
+
+Returns the IR as one JSON string with sorted keys. Two scripts that record the same program
+give the same string.
+
+```ts {6}
+import { evscript, serializeIr, t } from '@maxencerb/evs';
+
+const first = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+const second = evscript({ name: 'echo', args: [t.uint256] }, (s, x) => s.return({ x }));
+
+serializeIr(first.ir) === serializeIr(second.ir); // true
+```
+
+- **Type:** `(ir: ScriptIr) => string`
+
+The string for `echo`, one line wrapped here:
+
+```json
+{"args":[{"name":"arg0","type":"uint256"}],"body":[],"cells":[],"fns":[],
+"irVersion":1,"name":"echo","returns":[{"name":"x","type":"uint256","value":0}],
+"values":[{"debugName":"args.arg0","type":"uint256"}]}
+```
+
+## deserializeIr
+
+Parses a string made by `serializeIr` into a frozen `ScriptIr`, after checking its shape and
+version.
+
+```ts {4}
+import { deserializeIr, EvsTypeError } from '@maxencerb/evs';
+
+try {
+  deserializeIr('{"irVersion":2}');
+} catch (error) {
+  if (error instanceof EvsTypeError) {
+    error.message;
+    // 'deserializeIr: ir.irVersion: unsupported ScriptIr version 2 (expected 1)'
+  }
+}
+```
+
+- **Type:** `(json: string) => ScriptIr`
+
+## Behavior
+
+- **Stable output.** Keys are sorted and unset optional fields are left out, so the string suits
+  snapshot tests.
+- **Versioned.** `irVersion` is `1`. `deserializeIr` rejects any other version.
+- **Shape check only.** `deserializeIr` checks structure. `interpret()` and `compile()` check
+  that the program makes sense, and throw `EvsInternalError` (`INTERNAL`) when it does not.
+- **No ABI.** A restored IR is untyped: `interpret` takes its arguments as `unknown[]`.
+- **Frozen.** The returned IR is deeply frozen.
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `deserializeIr`: the string is not JSON, has another `irVersion`, or has the wrong shape. The message names the JSON path |
+| `EvsInternalError` (`INTERNAL`) | `serializeIr`: the IR holds a value JSON cannot represent. A recorded IR never does |

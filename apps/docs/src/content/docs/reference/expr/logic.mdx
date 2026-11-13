@@ -1,0 +1,85 @@
+---
+title: Logic
+description: Combines bool values with and, or and not. Both sides are always evaluated, so there is no short-circuit.
+---
+
+Combines `bool` values with `and`, `or` and `not`. Both sides are always evaluated, so there is
+no short-circuit.
+
+| Method | Signature | Description |
+| --- | --- | --- |
+| [`and`](#and) | `and(rhs: IntoExpr<'bool'>): Expr<'bool'>` | true when both sides are true |
+| [`or`](#or) | `or(rhs: IntoExpr<'bool'>): Expr<'bool'>` | true when either side is true |
+| [`not`](#not) | `not(): Expr<'bool'>` | the opposite value |
+
+The receiver is an `Expr<'bool'>`. An `IntoExpr<'bool'>` is an `Expr<'bool'>`, `true` or `false`.
+
+:::caution[No short-circuit]
+`a.and(b)` and `a.or(b)` combine two values that already exist. A call that produced `b` has
+already run, whatever `a` is. To skip work, use [`s.if`](/reference/builder/if/).
+:::
+
+## and
+
+Returns true when the receiver and `rhs` are both true.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const inRange = evscript(
+  { name: 'inRange', args: [t.int24, t.int24, t.int24] },
+  (s, tick, lower, upper) => {
+    const active = tick.gte(lower).and(tick.lt(upper));
+    return s.return({ active });
+  },
+);
+```
+
+## or
+
+Returns true when the receiver or `rhs` is true.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const empty = evscript(
+  { name: 'empty', args: [t.uint256, t.uint256] },
+  (s, reserve0, reserve1) => {
+    const isEmpty = reserve0.eq(0n).or(reserve1.eq(0n)); // both comparisons run
+    return s.return({ isEmpty });
+  },
+);
+```
+
+## not
+
+Returns true when the receiver is false.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const probe = evscript({ name: 'probe', args: [t.address] }, (s, token) => {
+  const read = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const failed = read.success.not();
+  return s.return({ failed });
+});
+```
+
+## Behavior
+
+- **`bool` only.** A number is not a condition: compare it first, as in `x.neq(0n)`.
+- **Literals fold.** `and`, `or` and `not` on literals
+  [fold](/reference/expr/arithmetic/#build-time-folding) at build time.
+- **Builder mirrors.** `s.and(a, b)`, `s.or(a, b)` and `s.not(a)` do the same.
+
+## Errors
+
+Nothing here reverts at run time. Thrown at build time, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | an operand is not a `bool` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `s.and` or `s.or` gets two plain booleans: type one with [`s.lit`](/reference/builder/lit/) |
+
+See [error codes](/reference/diagnostics/#error-codes).

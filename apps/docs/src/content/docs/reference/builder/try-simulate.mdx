@@ -1,0 +1,178 @@
+---
+title: s.trySimulate
+description: Dry-runs a nonpayable or payable function and returns a success flag with the result, instead of reverting the script when the call fails.
+---
+
+Dry-runs a `nonpayable` or `payable` function like
+[`s.simulate`](/reference/builder/simulate/), and returns a `success` flag with the result
+instead of reverting the script when the call fails.
+
+[Calling contracts](/guides/calls/) compares the calling verbs.
+
+## Usage
+
+```ts {7-12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const canDeposit = evscript(
+  { name: 'canDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const deposit = s.trySimulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+    });
+    // shares is 0n when ok is false
+    return s.return({ ok: deposit.success, shares: deposit.value });
+  },
+);
+```
+
+### Default on failure
+
+[`s.select`](/reference/builder/select/) replaces a failed result, here with the vault's own
+estimate.
+
+```ts {19}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const sharesFor = evscript(
+  { name: 'sharesFor', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const deposit = s.trySimulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+    });
+    const estimate = s.read({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'previewDeposit',
+      args: [assets],
+    });
+    const shares = s.select(deposit.success, deposit.value, estimate);
+    return s.return({ exact: deposit.success, shares });
+  },
+);
+```
+
+## Returns
+
+`{ success: Expr<'bool'>; value }`
+
+- `success` is `true` when the call returned and its data decoded.
+  [Behavior](#behavior) lists what makes it `false`.
+- `value` is what [`s.simulate`](/reference/builder/simulate/#returns) returns for the same
+  parameters. After a failure it is zeroed, so it is always safe to use:
+
+| Output type | `value` after a failure |
+| --- | --- |
+| `uintN`, `intN` | `0` |
+| `bool` | `false` |
+| `address`, `bytesN` | zero bytes |
+| `string`, `bytes`, `T[]` | empty |
+| struct, `T[N]` | every member or element zeroed |
+
+## Parameters
+
+The parameters of [`s.simulate`](/reference/builder/simulate/#parameters), where each one has its
+full section and example.
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call. See [`address`](/reference/builder/simulate/#address).
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. See [`abi`](/reference/builder/simulate/#abi).
+
+### functionName
+
+- **Type:** `string`
+
+A `nonpayable` or `payable` function of `abi`, by name or by signature. See
+[`functionName`](/reference/builder/simulate/#functionname).
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+The function's arguments. See [`args`](/reference/builder/simulate/#args-optional).
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that uses it all makes `success` `false`, and the
+script goes on with the gas it kept.
+
+Without a cap, the EVM still holds back 1/64 of the gas left. A target that burns all it
+receives leaves the script only that: set `gas` when the script must finish.
+
+```ts {12}
+import { evscript, t } from '@maxencerb/evs';
+import { erc4626Abi } from 'viem';
+
+const canDeposit = evscript(
+  { name: 'canDeposit', args: [t.address, t.uint256, t.address] },
+  (s, vault, assets, receiver) => {
+    const deposit = s.trySimulate({
+      address: vault,
+      abi: erc4626Abi,
+      functionName: 'deposit',
+      args: [assets, receiver],
+      gas: 500_000n,
+    });
+    return s.return({ ok: deposit.success, shares: deposit.value });
+  },
+);
+```
+
+### value (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** `0`
+
+The wei sent to a `payable` function. When the script's balance is below it, `success` is
+`false`. See [`value`](/reference/builder/simulate/#value-optional).
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Makes `value` one `Tuple` keyed by output name. See
+[`struct`](/reference/builder/simulate/#struct-optional).
+
+## Behavior
+
+`success` is `false` when:
+
+- the target reverts, whatever its revert data;
+- the target runs out of gas, including the [`gas`](#gas-optional) you allow it;
+- the return data does not decode against the ABI: too short, or with offsets that are out of
+  bounds or overlap heavily;
+- the address has no code and the function has outputs: the empty return data does not decode;
+- the script's balance is below [`value`](/reference/builder/simulate/#value-optional).
+
+`success` is still `true` when:
+
+- a returned word is out of range for its type. It is masked: a `uint8` holding 300 reads as 44;
+- the address has no code and the function has no outputs. Nothing ran: check
+  [`s.codeSize`](/reference/builder/balance/#scodesize) first.
+
+The target's state changes are rolled back in both cases.
+
+## Errors
+
+The build-time errors of [`s.simulate`](/reference/builder/simulate/#errors). When the script
+runs, a failed call sets `success` to `false` and the script continues.

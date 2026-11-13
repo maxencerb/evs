@@ -1,0 +1,73 @@
+/*
+ * Design tokens for the docs site: the one place colours, fonts and radii are defined.
+ * `theme.css` maps them onto Starlight's `--sl-*` variables; the diagram components under
+ * `src/components/diagrams/` read them directly. Dark is the default; Starlight sets
+ * `data-theme="light"` on <html> for the light scheme.
+ */
+
+:root {
+  --evs-font-sans: 'Geist Variable', ui-sans-serif, system-ui, sans-serif;
+  /* The system monospace: its 0.6em advance is what lets an 88-column code line fit the article. */
+  --evs-font-mono:
+    ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', monospace;
+
+  /* Surfaces: the page and sidebar sit on `bg`, the content panel on `surface`. */
+  --evs-bg: oklch(0.195 0 0);
+  --evs-surface: oklch(0.223 0 0);
+  --evs-surface-2: oklch(0.255 0 0);
+  --evs-code-bg: oklch(0.195 0 0);
+  --evs-border: oklch(0.29 0 0);
+  --evs-border-strong: oklch(0.37 0 0);
+
+  /* Text. `text-3` is for placeholders and icons only: it does not reach 4.5:1. */
+  --evs-heading: oklch(1 0 0);
+  --evs-text: oklch(0.933 0 0);
+  --evs-text-2: oklch(0.72 0 0);
+  --evs-text-3: oklch(0.56 0 0);
+
+  /* Accent: the sand of the hero ridges. */
+  --evs-accent: oklch(0.84 0.105 72);
+  --evs-accent-soft: oklch(0.84 0.105 72 / 0.12);
+  --evs-accent-contrast: oklch(0.2 0.02 72);
+
+  /* Semantic colours (callouts, diagram states). */
+  --evs-ok: oklch(0.8 0.14 155);
+  --evs-warn: oklch(0.83 0.13 85);
+  --evs-danger: oklch(0.72 0.17 25);
+  --evs-info: oklch(0.78 0.1 240);
+
+  --evs-radius-sm: 4px;
+  --evs-radius-md: 6px;
+  --evs-radius: 8px;
+  --evs-radius-lg: 12px;
+
+  /* Floating layers (search dialog, mobile table of contents). */
+  --evs-backdrop: oklch(0.12 0 0 / 0.5);
+  --evs-shadow-float: 0 16px 48px oklch(0 0 0 / 0.45), 0 2px 6px oklch(0 0 0 / 0.3);
+}
+
+:root[data-theme='light'] {
+  --evs-bg: oklch(0.985 0 0);
+  --evs-surface: oklch(1 0 0);
+  --evs-surface-2: oklch(0.965 0 0);
+  --evs-code-bg: oklch(0.985 0 0);
+  --evs-border: oklch(0.925 0 0);
+  --evs-border-strong: oklch(0.86 0 0);
+
+  --evs-heading: oklch(0 0 0);
+  --evs-text: oklch(0.29 0 0);
+  --evs-text-2: oklch(0.549 0 0);
+  --evs-text-3: oklch(0.68 0 0);
+
+  --evs-accent: oklch(0.53 0.13 55);
+  --evs-accent-soft: oklch(0.53 0.13 55 / 0.1);
+  --evs-accent-contrast: oklch(1 0 0);
+
+  --evs-ok: oklch(0.52 0.14 155);
+  --evs-warn: oklch(0.52 0.12 75);
+  --evs-danger: oklch(0.55 0.2 25);
+  --evs-info: oklch(0.52 0.13 245);
+
+  --evs-backdrop: oklch(0.3 0 0 / 0.35);
+  --evs-shadow-float: 0 16px 48px oklch(0 0 0 / 0.12), 0 2px 6px oklch(0 0 0 / 0.06);
+}

@@ -1,159 +1,41 @@
 ---
 title: Why trust the bytecode?
-description: Three differential-testing axes pin evs codegen against an independent interpreter, viem's codecs, and real solc output — enforced by CI on every change.
+description: Every compile verifies its own output, and the test suite pins the bytecode against an interpreter, viem's codecs and solc.
 ---
 
-evs is a compiler. A compiler bug does not throw — it silently returns wrong data from a call
-that *looks* successful. So evs is built and tested with compiler discipline: machine-checked
-invariants on every compile, and a differential test suite that never trusts the codegen to
-grade its own homework. Three independent reference implementations — an IR interpreter,
-viem's ABI codecs, and real solc — must agree with the compiled bytecode, byte for byte.
+A compiler bug does not throw: it returns wrong data from a call that looks successful. evs
+guards against that twice, with checks inside every `compile()` and with tests against
+independent references.
 
-## Axis 1: an independent interpreter as the oracle
+## Checks on every compile
 
-The package exports [`interpret()`](/guides/testing-scripts/), a reference interpreter that
-executes a script's IR directly in TypeScript — over bigints and byte arrays, with no
-assembler and no EVM involved. It implements the same normative specification the codegen
-implements (the checked-arithmetic tables, the call decode bounds, the ABI shapes), so a
-codegen bug and an interpreter bug would have to make the *same* mistake to slip through.
+[`compile`](/reference/compile/) runs all of these on every call, with or without `optimize`.
 
-The differential suite runs a corpus of scripts covering every operation family, control flow,
-calls against mocks, the `try*` verbs, and dynamic returns through both sides: `interpret()` on one,
-and the compiled `runtimeBytecode` executed on an in-process EVM (`@ethereumjs/evm`) on the
-other. Both sides see identical callee behavior — the mock chain and the EVM fixtures are
-generated from the same table — and must agree **byte for byte** on:
+| Check | What it guarantees |
+| --- | --- |
+| IR validation | The [recorded program](/concepts/how-it-works/) has consistent types and scopes, before and after dead code is removed. |
+| Size limit | The runtime bytecode fits 24,576 bytes (EIP-170). |
+| `JUMPDEST` scan | Every jump lands on a real `JUMPDEST`, never in push data or a data segment. |
+| Stack simulation | No underflow, one known height at every label, a depth of 16 at most. |
+| Fork lint | No opcode newer than the chosen [`evmVersion`](/guides/evm-targets/). |
+| Forbidden opcodes | No storage, transient storage, log, `CREATE`, `CREATE2`, `CALLCODE`, `DELEGATECALL` or `SELFDESTRUCT` opcode. |
+| Returndata lint | Every `RETURNDATACOPY` copies the whole returndata, so it cannot read out of bounds. |
 
-- returndata, and
-- revert payloads: `Panic(code)` bytes, `EvsDecodeError(site)` ids, callee reverts bubbled
-  verbatim, and `try*` zeroing.
+A failed check throws, so you never receive unverified bytecode. The size limit throws
+`EvsCompileError` (`COMPILE_LIMIT`). A failed bytecode check throws `EvsInternalError`
+(`INTERNAL`): a bug in evs to report.
 
-The same corpus gates the dead-code elimination pass `compile()` runs
-([How it works](/concepts/how-it-works/#stage-3-dead-code-elimination)). `interpret()` runs
-that pass too, so the oracle executes the program that ships; the suite additionally runs the
-recorded IR (`interpret(script.ir, args, chain, { dce: false })`) and requires it to agree,
-byte for byte, for every script whose dead code cannot revert. The pass output must
-re-validate, and applying the pass twice must be a no-op.
+## What the tests compare against
 
-The one place where the recorded IR and the bytecode legitimately differ is a revert guard
-whose result nothing reads, such as an unused checked `sub` that would underflow: the pass
-drops it, so the bytecode and `interpret()` return where the recorded IR (and Solidity) would
-revert. A dedicated slice of the corpus pins that case for each kind of guard the pass drops:
-checked arithmetic, checked conversions, array bounds and length checks, and calls to pure
-`s.fn`s (see [Unused results do not revert](/guides/testing-scripts/#unused-results-do-not-revert)).
-For the arg sets that do not trip the guard, the recorded IR must still agree byte for byte.
+The test suite compares the compiled bytecode with independent references.
 
-Every script goes through the EVM side twice: the default output and its `optimize: true` twin,
-so the opt-in [optimizer](/concepts/how-it-works/) (the liveness-based frame allocator,
-store–reload fusion and the peephole pass) is held to the same oracle — and must additionally never be larger, never use a
-larger frame, and never cost more gas.
+| Reference | What must match |
+| --- | --- |
+| [`interpret`](/reference/utilities/interpret/), which runs the recorded program in TypeScript | Returndata and revert payloads, byte for byte, for the default and the `optimize: true` output. |
+| viem's ABI codecs | The encoded result, the decoded arguments and the calldata of every call, byte for byte. |
+| solc 0.8.30 reference contracts | Arithmetic results and `Panic` payloads on boundary values. |
+| Hostile callees | Malformed returndata reverts with `EvsDecodeError`, or returns `success = false` from a `try*` verb. Never an out-of-gas halt. |
+| A real node (anvil) | The same decoded result in deployless mode, in state-override mode and as deployed code. |
 
-A second variant repeats this in the *deployless* frame: the `initBytecode` wrapper is
-actually CREATEd and called from a wrapper address, and `interpret()` with matching
-environment overrides must agree byte-exactly — so the frame-dependence of
-`s.env('caller')`/`s.env('address')` (see [Executing scripts](/guides/execution/)) is inside
-the oracle's coverage, not a blind spot. Any divergence on any axis is a release blocker; the
-reference pages' normative tables adjudicate which side is wrong.
-
-## Axis 2: ABI encoding and decoding vs viem
-
-Everything evs encodes or decodes is differentially checked against viem's codecs:
-
-- **Return encoding**: for a fuzzed matrix of return shapes (every word-width class,
-  `string`/`bytes`, arrays, mixed orders), the script's `RETURN` bytes must equal
-  `encodeAbiParameters` over the result tuple.
-- **Argument decoding**: scripts that echo their arguments back must round-trip
-  `encodeFunctionData` exactly, including dynamic arguments.
-- **Sub-call calldata**: a mock callee returns its calldata verbatim, and the bytes the script
-  built on-chain are compared against `encodeFunctionData` for literal, runtime, and mixed
-  arguments.
-
-## Axis 3: checked arithmetic vs real solc
-
-Solidity 0.8 checked arithmetic has genuinely sharp edges — sub-word multiplication can wrap
-past 2^256 back into range, and `int256(-2**255) / -1` silently wraps at the EVM level. evs
-does not test its `Panic` semantics against its own understanding of solc; it tests against
-**solc itself**. `EvsReference.sol` (compiled with solc 0.8.30 exactly, optimizer off) defines
-one external pure function per operation and width class:
-
-```solidity
-function mulU192(uint192 a, uint192 b) external pure returns (uint192) {
-    return a * b;
-}
-```
-
-The integration suite drives the deployed reference contract and the equivalent evs script
-with the same seeded boundary corpus — `0`, `1`, `max-1`, `max`, `min`, `-1`, the uint192
-wrap-back case `2**191 * (2**65 + 1)`, `int256: -2**255 / -1`, `intN: minN / -1` — on anvil,
-and asserts identical success values and **byte-identical** `Panic(code)` revert payloads.
-Two more reference contracts cover the rest of the arithmetic surface the same way:
-`EvsMathReference.sol` for `pow`, `addmod` / `mulmod` and the signed shifts, and
-`EvsFullMathReference.sol` for the wrapping methods (solc `unchecked` blocks) and
-`mulDiv` / `mulDivRoundingUp` (the FullMath algorithm). The reference contracts also carry
-their own forge test suite, which runs in CI.
-
-## Verified on every compile, not just in CI
-
-Independently of the test suite, [three mandatory verifier passes](/concepts/how-it-works/)
-run inside every `compile()` call: a consensus-identical JUMPDEST scan, a full stack-height
-simulation (every label at its annotated height, the operand stack at its baseline between
-statements except for the one value `optimize: true` may keep on the stack between two adjacent
-statements, depth at most 16 inside templates), and
-shape lints that make the dangerous constructs unrepresentable — only the two intrinsically
-safe `RETURNDATACOPY` shapes, no opcode newer than the target `evmVersion`, and no storage,
-log or contract-creation opcode in the script's own code. The only `CALL` frames are the ones
-`s.call`/`s.simulate` emit, and their effects are never committed because the whole execution is
-an `eth_call`. A verifier failure throws `EvsInternalError` instead of shipping the bytecode.
-
-## Adversarial returndata
-
-Decode soundness is tested against attacker-shaped callees, not just well-behaved ones:
-hand-assembled fixtures (and a `Malformed.sol` mirror on anvil) return huge head offsets, huge
-lengths, off-by-one truncations, and empty returndata. The suite asserts the script reverts
-with `EvsDecodeError(site)` — attributable to the exact `s.read` call by its site id — and **never** hits an
-exceptional halt that would consume all gas (gas usage is sanity-checked). Dirty high bits in
-word-typed outputs are the deliberate exception: they are normalized (masked, sign-extended or
-booleanized, as Solidity's legacy ABI coder v1 does; viem's decoder masks `address` and `bytesN`
-the same way but returns a dirty `uintN`/`intN` word unmasked and throws on a `bool` word other
-than 0 or 1), not reverted — see [Calls](/guides/calls/#revert-behavior-verbatim-bubbling).
-A real solc `Reverter` contract covers the bubbling path end to end: `Error(string)`, `Panic`,
-custom errors, and empty reverts must all surface through the script unchanged.
-
-## The honesty rule
-
-Every bytecode listing in this documentation was generated from real compiler output at the
-time of writing, not written by hand. No documented example shows an optimization the compiler
-does not perform.
-
-## What CI gates on every pull request
-
-CI (the repo's `ci.yml`) is one serial job, run on every push to `main` and every pull
-request, after a single cached `vp install --frozen-lockfile` (viem is exact-pinned — its types
-move in patches). Its steps, in order:
-
-| Step                                                     | What it proves                                                                                          |
-| -------------------------------------------------------- | ------------------------------------------------------------------------------------------------------- |
-| `forge build && forge test && vp run codegen`            | the solc 0.8.30 reference and mock contracts compile, pass their own tests, and emit codegen artifacts   |
-| `vp run build`                                           | the library builds with `vp pack` (tsdown: unbundled ESM + `.d.ts`, JS maps with embedded sources)      |
-| `vp run fmt:check` + `vp run lint:ci`                    | formatting and type-aware lint                                                                          |
-| `vp run typecheck`                                       | strict typecheck of every workspace, including the docs site (`astro check`)                            |
-| `vp run test`                                            | unit tests (differential oracle, codecs, verifiers) + type-level tests                                  |
-| `vp run test:integration`                                | the anvil suite (foundry pinned for determinism)                                                        |
-| `publint` + `@arethetypeswrong/cli --pack`               | the published package shape resolves correctly (ESM-only profile)                                       |
-
-The integration tier executes compiled scripts through every supported path on a real node:
-`setCode` plus a plain `readContract`, the state-override mode, and the deployless `code`
-path — plus a canary asserting that passing *runtime* bytecode where init code belongs fails
-with an empty `0x` revert carrying no diagnostic data, which is why `toViem()` always hands
-out `initBytecode`. A manually dispatched (`workflow_dispatch`) job additionally runs a
-fork-mode smoke test that reads real mainnet state.
-
-## Test tiers
-
-| Tier        | What runs                                          | EVM                          |
-| ----------- | -------------------------------------------------- | ---------------------------- |
-| unit        | per-module tests + the differential oracle suites  | `@ethereumjs/evm` in-process |
-| types       | type-level assertions (`expectTypeOf`) on the ABI and builder inference | none — `tsc` semantics |
-| integration | end-to-end execution, checked-math-vs-solc, bubbling, flagship scenario | anvil (one instance per worker) |
-
-The same oracle that gates releases is exported for your own tests — see
-[Testing scripts](/guides/testing-scripts/).
+CI runs these suites on every pull request. `interpret` is exported, so your own tests can use
+the same reference: see [Testing scripts](/guides/testing-scripts/).

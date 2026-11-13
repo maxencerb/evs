@@ -1,0 +1,307 @@
+---
+// Values & types: a Cell changes, an Expr read from it does not. Top row: the cell `total` over
+// time, 0, then set(5), then set(12); the accent marks its current value. Bottom row: the
+// snapshot taken with get() while the cell held 5, still 5 once the cell is 12. Values to come
+// are dashed slots. One layout at every width (the wires stretch). Loop: 10s.
+import DiagramFrame from './DiagramFrame.astro';
+---
+
+<DiagramFrame name="CellSnapshots">
+  <div class="evs-cs">
+    <div class="evs-cs-name evs-cs-cell">
+      <span>total</span>
+      <span class="evs-dg-note">Cell</span>
+    </div>
+    <span class="evs-dg-node evs-cs-v evs-cs-v0">0</span>
+    <div class="evs-cs-link evs-cs-l1">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note">set(5)</span>
+    </div>
+    <span class="evs-dg-slot evs-cs-c1"><span class="evs-dg-node evs-cs-v evs-cs-v1">5</span></span>
+    <div class="evs-cs-link evs-cs-l2">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note">set(12)</span>
+    </div>
+    <span class="evs-dg-slot evs-cs-c2"><span class="evs-dg-node evs-cs-v evs-cs-v2">12</span></span>
+
+    <div class="evs-cs-get">
+      <span class="evs-dg-wire is-down"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note">get()</span>
+    </div>
+
+    <div class="evs-cs-name evs-cs-snap">
+      <span>snapshot</span>
+      <span class="evs-dg-note">Expr</span>
+    </div>
+    <span class="evs-dg-slot evs-cs-d1"><span class="evs-dg-node evs-cs-v evs-cs-s1">5</span></span>
+    <div class="evs-cs-link evs-cs-l3">
+      <span class="evs-dg-wire"><i class="evs-dg-run"></i></span>
+      <span class="evs-dg-note">still 5</span>
+    </div>
+    <span class="evs-dg-slot evs-cs-d2"><span class="evs-dg-node evs-cs-v evs-cs-s2">5</span></span>
+  </div>
+</DiagramFrame>
+
+<style is:global>
+  /* name | value, wire, value, wire, value. The cell on row 1, get() on row 2, the snapshot on
+     row 3, under the value it was read from. */
+  .evs-cs {
+    display: grid;
+    grid-template-columns: 62px 40px minmax(0, 1fr) 40px minmax(0, 1fr) 40px;
+    grid-template-rows: 28px 32px 28px;
+    max-width: 440px;
+    margin: 0 auto;
+    padding-top: 14px;
+  }
+
+  .evs-cs-name {
+    display: flex;
+    flex-direction: column;
+    justify-content: center;
+    line-height: 14px;
+    white-space: nowrap;
+  }
+
+  .evs-cs-name .evs-dg-note {
+    line-height: 14px;
+  }
+
+  .evs-cs .evs-cs-v {
+    padding: 5px 4px;
+  }
+
+  .evs-cs-link {
+    position: relative;
+    display: flex;
+    align-items: center;
+  }
+
+  .evs-cs-link .evs-dg-note {
+    position: absolute;
+    bottom: calc(50% + 6px);
+    left: 50%;
+    white-space: nowrap;
+    transform: translateX(-50%);
+  }
+
+  .evs-cs-get {
+    position: relative;
+    display: flex;
+    grid-row: 2;
+    grid-column: 4;
+    justify-content: center;
+  }
+
+  .evs-cs-get .evs-dg-wire {
+    --evs-dg-len: 100%;
+  }
+
+  .evs-cs-get .evs-dg-note {
+    position: absolute;
+    top: 50%;
+    left: calc(50% + 10px);
+    transform: translateY(-50%);
+  }
+
+  .evs-cs-snap {
+    grid-row: 3;
+    grid-column: 1;
+  }
+
+  .evs-cs-d1 {
+    grid-row: 3;
+    grid-column: 4;
+  }
+
+  .evs-cs-l3 {
+    grid-row: 3;
+    grid-column: 5;
+  }
+
+  .evs-cs-d2 {
+    grid-row: 3;
+    grid-column: 6;
+  }
+
+  @media screen and (prefers-reduced-motion: no-preference) {
+    .evs-diagram[data-anim] .evs-cs-link .evs-dg-run {
+      animation: evs-cellsnapshots-run-x 10s ease-in-out var(--evs-dg-delay, 0s) infinite both;
+    }
+
+    /* set(12) runs 4.2s after set(5); the snapshot is carried along a second after the cell
+       has moved. */
+    .evs-cs-l2 {
+      --evs-dg-delay: 4.2s;
+    }
+
+    .evs-cs-l3 {
+      --evs-dg-delay: 6s;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-get .evs-dg-run {
+      animation: evs-cellsnapshots-run-y 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-v1 {
+      animation: evs-cellsnapshots-on-17 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-s1 {
+      animation: evs-cellsnapshots-on-38 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-v2 {
+      animation: evs-cellsnapshots-on-59 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-s2 {
+      animation: evs-cellsnapshots-on-77 10s ease-in-out infinite both;
+    }
+
+    /* The accent follows the cell's current value: 0, then 5, then 12 (lit as long as it shows),
+       and ends on the snapshot that did not follow. */
+    .evs-diagram[data-anim] .evs-cs-v0::after {
+      animation: evs-cellsnapshots-current-0 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-v1::after {
+      animation: evs-cellsnapshots-current-5 10s ease-in-out infinite both;
+    }
+
+    .evs-diagram[data-anim] .evs-cs-v2::after,
+    .evs-diagram[data-anim] .evs-cs-s2::after {
+      opacity: 1;
+    }
+  }
+
+  /* set(): the new value travels to the cell, 0.9s to 1.7s. */
+  @keyframes evs-cellsnapshots-run-x {
+    0%,
+    8% {
+      opacity: 0;
+      transform: translateX(0);
+    }
+    9.5% {
+      opacity: 1;
+      transform: translateX(0);
+    }
+    17% {
+      opacity: 1;
+      transform: translateX(100%);
+    }
+    18.5%,
+    100% {
+      opacity: 0;
+      transform: translateX(100%);
+    }
+  }
+
+  /* get(): the value is copied out of the cell, 3.1s to 3.8s. */
+  @keyframes evs-cellsnapshots-run-y {
+    0%,
+    30% {
+      opacity: 0;
+      transform: translateY(0);
+    }
+    31.5% {
+      opacity: 1;
+      transform: translateY(0);
+    }
+    38% {
+      opacity: 1;
+      transform: translateY(100%);
+    }
+    39.5%,
+    100% {
+      opacity: 0;
+      transform: translateY(100%);
+    }
+  }
+
+  /* Values: each fills its slot when its packet lands and stays until the loop ends. */
+  @keyframes evs-cellsnapshots-on-17 {
+    0%,
+    16.5% {
+      opacity: 0;
+    }
+    19%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-cellsnapshots-on-38 {
+    0%,
+    37.5% {
+      opacity: 0;
+    }
+    40%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-cellsnapshots-on-59 {
+    0%,
+    58.5% {
+      opacity: 0;
+    }
+    61%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-cellsnapshots-on-77 {
+    0%,
+    76.5% {
+      opacity: 0;
+    }
+    79%,
+    91% {
+      opacity: 1;
+    }
+    95%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-cellsnapshots-current-0 {
+    0%,
+    1% {
+      opacity: 0;
+    }
+    3.5%,
+    16.5% {
+      opacity: 1;
+    }
+    19%,
+    100% {
+      opacity: 0;
+    }
+  }
+
+  @keyframes evs-cellsnapshots-current-5 {
+    0%,
+    58.5% {
+      opacity: 1;
+    }
+    61%,
+    100% {
+      opacity: 0;
+    }
+  }
+</style>

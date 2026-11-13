@@ -1,0 +1,45 @@
+---
+// Wordmark for the top bar: a two-crest glyph cut from the hero ridges, then the site title.
+const { siteTitle, siteTitleHref } = Astro.locals.starlightRoute;
+---
+
+<a href={siteTitleHref} class="wordmark" aria-label={`${siteTitle} home`}>
+  <svg class="glyph" viewBox="0 0 24 24" width="22" height="22" aria-hidden="true" focusable="false">
+    <path class="crest crest--far" d="M2 8.5c3.6-1.6 6.6-.4 9.6 1.6s6.2 2.2 10.4-.9"></path>
+    <path class="crest" d="M2 17.2c3-4.6 6.2-5.2 9.4-2.2s6.6 3.4 10.6-3.6"></path>
+  </svg>
+  <span translate="no">{siteTitle}</span>
+</a>
+
+<style>
+  .wordmark {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border-radius: var(--evs-radius-md);
+    color: var(--evs-heading);
+    font-size: 1.125rem;
+    font-weight: 600;
+    letter-spacing: -0.04em;
+    line-height: 1;
+    text-decoration: none;
+    white-space: nowrap;
+  }
+
+  .glyph {
+    flex: none;
+    overflow: visible;
+  }
+
+  .crest {
+    fill: none;
+    stroke: var(--evs-accent);
+    stroke-width: 2;
+    stroke-linecap: round;
+  }
+
+  .crest--far {
+    stroke-opacity: 0.45;
+    stroke-width: 1.5;
+  }
+</style>

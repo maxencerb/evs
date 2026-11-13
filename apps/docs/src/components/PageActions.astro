@@ -1,0 +1,130 @@
+---
+// "Copy page" and "View as Markdown": both act on the page's Markdown rendition
+// (`<page>.md`, see src/pages/[...slug].md.ts). Rendered in the right column on wide screens
+// and under the page title elsewhere. Renders nothing for a page without a rendition. The
+// block sits inside <main>, hence `data-pagefind-ignore`: its labels are not page content.
+import { hasMarkdown, markdownPath } from '../lib/page-markdown.ts';
+
+const { id } = Astro.locals.starlightRoute.entry;
+const href = markdownPath(id);
+---
+
+{
+  hasMarkdown(id) && (
+    <div class="actions print:hidden" data-pagefind-ignore>
+      <button type="button" data-copy-page={href}>
+        <svg class="icon icon--idle" viewBox="0 0 24 24" aria-hidden="true">
+          <rect x="9" y="9" width="11" height="11" rx="2" />
+          <path d="M5 15V6a2 2 0 0 1 2-2h9" />
+        </svg>
+        <svg class="icon icon--done" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="m5 12.5 4.5 4.5L19 7.5" />
+        </svg>
+        <span data-copy-label aria-live="polite">Copy page</span>
+      </button>
+      <a {href}>
+        <svg class="icon" viewBox="0 0 24 24" aria-hidden="true">
+          <path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z" />
+          <path d="M14 3v5h5M9 13h6M9 17h4" />
+        </svg>
+        View as Markdown
+      </a>
+    </div>
+  )
+}
+
+<script>
+  const RESET_AFTER_MS = 1600;
+
+  function flash(button: HTMLButtonElement, text: string, ok: boolean) {
+    const label = button.querySelector<HTMLElement>('[data-copy-label]');
+    if (!label) return;
+    const original = label.dataset.original ?? label.textContent ?? '';
+    label.dataset.original = original;
+    label.textContent = text;
+    button.toggleAttribute('data-copied', ok);
+    window.setTimeout(() => {
+      label.textContent = original;
+      button.removeAttribute('data-copied');
+    }, RESET_AFTER_MS);
+  }
+
+  async function copyPage(button: HTMLButtonElement) {
+    const markdown = fetch(button.dataset.copyPage ?? '').then((response) => {
+      if (!response.ok) throw new Error(`HTTP ${response.status}`);
+      return response.text();
+    });
+    try {
+      // Safari only allows a clipboard write inside the click's own task, which the fetch
+      // would outlive: a ClipboardItem takes the pending text and keeps the gesture valid.
+      if (typeof ClipboardItem !== 'undefined' && navigator.clipboard?.write) {
+        const blob = markdown.then((text) => new Blob([text], { type: 'text/plain' }));
+        await navigator.clipboard.write([new ClipboardItem({ 'text/plain': blob })]);
+      } else {
+        await navigator.clipboard.writeText(await markdown);
+      }
+      flash(button, 'Copied', true);
+    } catch {
+      flash(button, 'Copy failed', false);
+    }
+  }
+
+  for (const button of document.querySelectorAll<HTMLButtonElement>('[data-copy-page]')) {
+    button.addEventListener('click', () => void copyPage(button));
+  }
+</script>
+
+<style>
+  .actions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 0.5rem 1.25rem;
+  }
+
+  button,
+  a {
+    display: inline-flex;
+    align-items: center;
+    gap: 0.5rem;
+    border: 0;
+    border-radius: var(--evs-radius-sm);
+    padding: 0;
+    background: none;
+    color: var(--evs-text-2);
+    font-size: 0.8125rem;
+    font-weight: 450;
+    line-height: 1.25rem;
+    text-decoration: none;
+    cursor: pointer;
+    transition: color 120ms ease;
+  }
+
+  button:hover,
+  a:hover {
+    color: var(--evs-heading);
+  }
+
+  button[data-copied] {
+    color: var(--evs-accent);
+  }
+
+  .icon {
+    flex: none;
+    width: 0.9375rem;
+    height: 0.9375rem;
+    fill: none;
+    stroke: currentColor;
+    stroke-width: 1.75;
+    stroke-linecap: round;
+    stroke-linejoin: round;
+  }
+
+  .icon--done,
+  button[data-copied] .icon--idle {
+    display: none;
+  }
+
+  button[data-copied] .icon--done {
+    display: block;
+  }
+</style>

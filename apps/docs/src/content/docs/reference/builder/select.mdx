@@ -1,0 +1,134 @@
+---
+title: s.select
+description: Picks one of two values by a runtime condition, like a ternary. Both sides are always evaluated.
+---
+
+Picks one of two values by a runtime condition, like a ternary. Both sides are already computed,
+so nothing is skipped.
+
+## Usage
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const d = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const value = s.select(d.success, d.value, 18); // 18 when the call fails
+  return s.return({ value });
+});
+```
+
+## Returns
+
+`Expr<t>`
+
+`a` when `cond` is true, otherwise `b`. `t` is the type both branches share.
+
+## Parameters
+
+### cond
+
+- **Type:** `IntoExpr<'bool'>`
+
+The condition: an `Expr<'bool'>`, or a `boolean` known at build time.
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+
+const max = evscript({ name: 'max', args: [t.uint256, t.uint256] }, (s, a, b) => {
+  const larger = s.select(
+    a.gt(b),
+    a,
+    b,
+  );
+  return s.return({ larger });
+});
+```
+
+### a
+
+- **Type:** `IntoExpr<t>`
+
+The value returned when `cond` is true. An `Expr`, or a literal of the other branch's type.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const fee = evscript({ name: 'fee', args: [t.bool] }, (s, stable) => {
+  const bps = s.select(
+    stable,
+    s.lit(t.uint24, 100),
+    3000,
+  );
+  return s.return({ bps });
+});
+```
+
+### b
+
+- **Type:** `IntoExpr<t>`
+
+The value returned when `cond` is false.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const fee = evscript({ name: 'fee', args: [t.bool] }, (s, stable) => {
+  const bps = s.select(
+    stable,
+    s.lit(t.uint24, 100),
+    3000,
+  );
+  return s.return({ bps });
+});
+```
+
+## Behavior
+
+- **Eager.** `a` and `b` are values that already exist, so a call on either side has already
+  run. To skip work, use [`s.if`](/reference/builder/if/) with a cell (below).
+- **Same type on both sides.** `Expr<'uint8'>` and `Expr<'uint256'>` do not unify: convert one
+  first with [`toUint`](/reference/expr/conversions/#touint).
+- **One side must be an `Expr`.** The result type comes from it, and a literal on the other side
+  is range-checked against that type.
+- **Build-time condition.** With a plain `true` or `false`, the result is the chosen branch and
+  the other one is dropped from the bytecode.
+
+### Skipping work
+
+`s.select` cannot guard a call. `s.if` can:
+
+```ts {8-15}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balanceIf = evscript(
+  { name: 'balanceIf', args: [t.bool, t.address, t.address] },
+  (s, enabled, token, user) => {
+    const balance = s.let(t.uint256, 0n);
+    s.if(enabled, () => {
+      const read = s.read({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [user],
+      });
+      balance.set(read); // runs only when `enabled` is true
+    });
+    return s.return({ balance: balance.get() });
+  },
+);
+```
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `cond` is not a `bool` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the branches have different types |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a literal is the wrong kind of value for the other branch's type |
+| `EvsTypeError` (`LITERAL_RANGE`) | a literal is out of range for the other branch's type |
+| `EvsTypeError` (`TYPE_MISMATCH`) | both branches are literals: type one with [`s.lit`](/reference/builder/lit/) |

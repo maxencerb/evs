@@ -1,0 +1,170 @@
+---
+title: s.tryRead
+description: Calls a view or pure function and returns a success flag with the result, instead of reverting the script when the call fails.
+---
+
+Calls a `view` or `pure` function like [`s.read`](/reference/builder/read/), and returns a
+`success` flag with the result instead of reverting the script when the call fails.
+
+[Calling contracts](/guides/calls/) compares the calling verbs.
+
+## Usage
+
+```ts {5}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbol = evscript({ name: 'symbol', args: [t.address] }, (s, token) => {
+  const result = s.tryRead({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  // symbol is '' when ok is false
+  return s.return({ ok: result.success, symbol: result.value });
+});
+```
+
+### Default on failure
+
+`value` is zero after a failure, and zero can be a real answer.
+[`s.select`](/reference/builder/select/) picks your own default.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) => {
+  const result = s.tryRead({ address: token, abi: erc20Abi, functionName: 'decimals' });
+  const decimals = s.select(result.success, result.value, 18);
+  return s.return({ decimals });
+});
+```
+
+### Skipping failures in a loop
+
+One failing token does not revert the batch.
+
+```ts {9-15}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const balances = evscript(
+  { name: 'balances', args: [t.array(t.address), t.address] },
+  (s, tokens, owner) => {
+    const balances = s.newArray(t.uint256, tokens.length());
+    s.forEach(tokens, (token, i) => {
+      const result = s.tryRead({
+        address: token,
+        abi: erc20Abi,
+        functionName: 'balanceOf',
+        args: [owner],
+      });
+      balances.set(i, result.value); // 0n for a token that fails
+    });
+    return s.return({ balances });
+  },
+);
+```
+
+The full program is in [token balances](/examples/token-balances/).
+
+## Returns
+
+`{ success: Expr<'bool'>; value }`
+
+- `success` is `true` when the call returned and its data decoded.
+  [Behavior](#behavior) lists what makes it `false`.
+- `value` is what [`s.read`](/reference/builder/read/#returns) returns for the same parameters.
+  After a failure it is zeroed, so it is always safe to use:
+
+| Output type | `value` after a failure |
+| --- | --- |
+| `uintN`, `intN` | `0` |
+| `bool` | `false` |
+| `address`, `bytesN` | zero bytes |
+| `string`, `bytes`, `T[]` | empty |
+| struct, `T[N]` | every member or element zeroed |
+
+## Parameters
+
+The parameters of [`s.read`](/reference/builder/read/#parameters), where each one has its
+full section and example.
+
+### address
+
+- **Type:** `IntoExpr<'address'>`
+
+The contract to call. See [`address`](/reference/builder/read/#address).
+
+### abi
+
+- **Type:** `Abi`
+
+The contract's ABI. See [`abi`](/reference/builder/read/#abi).
+
+### functionName
+
+- **Type:** `string`
+
+A `view` or `pure` function of `abi`, by name or by signature. See
+[`functionName`](/reference/builder/read/#functionname).
+
+### args (optional)
+
+- **Type:** inferred from the ABI
+
+The function's arguments. See [`args`](/reference/builder/read/#args-optional).
+
+### gas (optional)
+
+- **Type:** `IntoExpr<'uint256'>`
+- **Default:** all the gas left
+
+The most gas the target may use. A target that uses it all makes `success` `false`, and the
+script goes on with the gas it kept.
+
+Without a cap, the EVM still holds back 1/64 of the gas left. A target that burns all it
+receives leaves the script only that: set `gas` when the script must finish.
+
+```ts {9}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+const symbol = evscript({ name: 'symbol', args: [t.address] }, (s, token) => {
+  const result = s.tryRead({
+    address: token,
+    abi: erc20Abi,
+    functionName: 'symbol',
+    gas: 100_000n,
+  });
+  return s.return({ ok: result.success, symbol: result.value });
+});
+```
+
+### struct (optional)
+
+- **Type:** `boolean`
+- **Default:** `false`
+
+Makes `value` one `Tuple` keyed by output name. See
+[`struct`](/reference/builder/read/#struct-optional).
+
+## Behavior
+
+`success` is `false` when:
+
+- the target reverts, whatever its revert data;
+- the target runs out of gas, including the [`gas`](#gas-optional) you allow it;
+- the return data does not decode against the ABI: too short, or with offsets that are out of
+  bounds or overlap heavily;
+- the address has no code: the call returns empty data, which does not decode.
+
+`success` is still `true` when a returned word is out of range for its type.
+
+:::caution[Success is not a range check]
+An out-of-range word is masked to its type: a `decimals()` that returns 300 gives
+`success: true` and `value: 44`. To catch it, declare the output as `uint256` in your own ABI
+and check the range in the script.
+:::
+
+## Errors
+
+The build-time errors of [`s.read`](/reference/builder/read/#errors). When the script runs, a
+failed call sets `success` to `false` and the script continues.

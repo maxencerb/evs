@@ -1,0 +1,140 @@
+---
+title: s.keccak256
+description: Hashes values with Keccak-256. One bytes or string value is hashed as it is, anything else is ABI-encoded first.
+---
+
+Hashes values with Keccak-256. One `bytes` or `string` value is hashed as it is. Anything else
+is ABI-encoded first.
+
+## Usage
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const labelHash = evscript({ name: 'labelHash', args: [t.string] }, (s, label) => {
+  const hash = s.keccak256(label); // keccak256(bytes(label))
+  return s.return({ length: label.length(), hash });
+});
+```
+
+What gets hashed depends on what you pass:
+
+| Call | Hashes | Solidity |
+| --- | --- | --- |
+| `s.keccak256(b)`, with `b` a `bytes` or a `string` | the bytes of `b` | `keccak256(b)` |
+| `s.keccak256(x)`, with `x` of any other type | the ABI encoding of `x` | `keccak256(abi.encode(x))` |
+| `s.keccak256(a, b)`, two values or more | their ABI encoding | `keccak256(abi.encode(a, b))` |
+
+### Several values
+
+Two values or more are ABI-encoded together, whatever their types.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const pairId = evscript({ name: 'pairId', args: [t.address, t.address] }, (s, a, b) => {
+  const id = s.keccak256(a, b); // keccak256(abi.encode(a, b))
+  return s.return({ sorted: a.lt(b), id });
+});
+```
+
+### A struct or an array
+
+A struct, an array or a [`Tuple`](/reference/builder/tuple/#tuple) handle hashes its ABI
+encoding.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const Pair = t.struct({ token: t.address, fee: t.uint24 });
+
+const pairHash = evscript({ name: 'pairHash', args: [Pair] }, (s, pair) => {
+  const hash = s.keccak256(pair); // keccak256(abi.encode(pair))
+  return s.return({ fee: pair.fee.get(), hash });
+});
+```
+
+### A packed hash
+
+Packing is never implicit. Compose with
+[`s.encodePacked`](/reference/builder/encode-packed/), whose `bytes` result is hashed as it is.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+
+const pairKey = evscript(
+  { name: 'pairKey', args: [t.address, t.address, t.uint24] },
+  (s, tokenA, tokenB, fee) => {
+    const key = s.keccak256(s.encodePacked(tokenA, tokenB, fee));
+    return s.return({ fee, key });
+  },
+);
+```
+
+### The hash as a number
+
+The result is a `bytes32`. Convert it with
+[`asUint256`](/reference/expr/conversions/#asuint256) to do arithmetic.
+
+```ts {4}
+import { evscript, t } from '@maxencerb/evs';
+
+const bucket = evscript({ name: 'bucket', args: [t.string] }, (s, name) => {
+  const index = s.keccak256(name).asUint256().mod(16n);
+  return s.return({ index });
+});
+```
+
+## Returns
+
+`Expr<'bytes32'>`
+
+The 32-byte hash.
+
+## Parameters
+
+### values
+
+- **Type:** `(Expr | Tuple | MutArray)[]`, at least one
+
+The values to hash. It accepts what [`s.encode`](/reference/builder/encode/#values) accepts:
+an `Expr` of any type, a `Tuple` or a `MutArray`. A plain literal needs
+[`s.lit`](/reference/builder/lit/).
+
+```ts {5,6}
+import { evscript, t } from '@maxencerb/evs';
+
+const tagged = evscript({ name: 'tagged', args: [t.address] }, (s, owner) => {
+  const hash = s.keccak256(
+    s.lit(t.string, 'owner'),
+    owner,
+  );
+  return s.return({ owner, hash });
+});
+```
+
+## Behavior
+
+- **One `bytes` or `string`.** Hashed as it is: no encoding, no length word. That is why
+  `s.keccak256(s.encode(a, b))` equals `s.keccak256(a, b)`.
+- **One word.** A single `uint8` is hashed as its full 32-byte encoding, so it gives the same
+  hash as the same value in a `uint256`.
+- **Never reverts.** Hashing cannot fail at run time.
+- **Allocation in loops.** Hashing one `bytes` or `string` allocates nothing. Every other form
+  allocates the encoding, and inside a loop body `compile` warns with `LOOP_ALLOCATION`.
+
+:::caution[Do not return a hash first in deployless mode]
+In deployless mode, a script whose first result is a `bytes32` fails when that value starts with
+`0xEF`: about one hash in 256. Return another value first, or use state-override mode. See
+[deployless limits](/guides/execution/#deployless-limits).
+:::
+
+## Errors
+
+Thrown while the callback records, at the offending line:
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | no value is given |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a plain literal |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a value is a `Cell` or a `Field` |

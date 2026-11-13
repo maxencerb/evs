@@ -1,276 +1,229 @@
 ---
-title: Errors and diagnostics
-description: The EvsError hierarchy, every EvsErrorCode, the EvsDiagnostic warning channel, and the runtime panic table.
+title: Errors & diagnostics
+description: Every error class and code evs throws, the warnings compile() reports, and the panics and built-in errors a script reverts with.
 ---
 
-evs fails on three distinct timelines, with a different mechanism on each:
+Every error class and code evs throws, the warnings `compile()` reports, and the panics and
+built-in errors a script reverts with.
 
-| Timeline | Mechanism | Where to look |
+| When | What you get | Where to look |
 | --- | --- | --- |
-| Recording time | A subclass of `EvsError` is thrown while your builder callback runs | This page |
-| Compile time | `compile()` throws — `EvsCompileError` for whole-program limits and types too deeply nested to decode, `EvsInternalError` for verifier failures — and reports warnings via `onDiagnostic` | This page |
-| Run time | The script reverts on-chain — panics, the evs error ABI, or bubbled callee reverts | [Compiled artifact](/reference/artifact/), [errors and debugging](/guides/errors-and-debugging/) |
+| while the `evscript` callback runs | a thrown `EvsError`, at the offending line | [Error codes](#error-codes) |
+| in `compile()` | a thrown `EvsError`, or a warning | [Error codes](#error-codes), [Warnings](#warnings) |
+| when the script runs | a revert | [Panic codes](#panic-codes), [Built-in errors](#built-in-errors) |
 
-The policy is to validate at recording wherever the information already exists there — which is
-almost everywhere — so most mistakes surface as an exception thrown synchronously from the
-offending builder call inside your `evscript` callback, before any bytecode exists. The error's
-ordinary JavaScript stack trace therefore points at your line. Compile time is reserved for facts
-only code generation knows: whole-program ones (code size, option gating) and the stack depth a
-deeply nested type needs (see `UNSUPPORTED_V0` below).
+## Error classes
 
-## The `EvsError` hierarchy
+Every error evs throws extends `EvsError` and carries a `code`.
 
-Every evs failure is an instance of `EvsError` (which extends `Error`). What it carries:
-
-```ts
-import type { EvsError } from '@maxencerb/evs';
-
-declare const error: EvsError;
-error.code; // EvsErrorCode — stable, machine-checkable
-error.message; // user-vocabulary text with actionable guidance
-error.name; // the concrete class name, e.g. 'EvsTypeError'
-```
-
-To find where a recording-time error came from, read its `stack`: the error is thrown while
-your callback runs, so your call site is on it. Diagnostics are **not** attached to errors; they travel on a separate warning channel (below).
-
-Five subclasses partition the failures:
-
-| Class | Codes it uses | Thrown when |
-| --- | --- | --- |
-| `EvsStagingError` | `STAGING_MISUSE` | A staged `Expr` handle is used as a host value — the `valueOf`, `Symbol.toPrimitive`, `toString`, and `toJSON` traps all throw. See [values and types](/guides/values-and-types/) |
-| `EvsTypeError` | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` | Type and literal validation at recording; also malformed host inputs to `compile`, `toViem`, `interpret`, `disassemble`, `explainRevert`, `deserializeIr` |
-| `EvsScopeError` | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` | A handle or cell is used outside the scope it belongs to |
-| `EvsCompileError` | `COMPILE_LIMIT`, `EVM_VERSION`, `UNSUPPORTED_V0` | Whole-program limits and option gating at compile time; a struct/array type nested too deeply for the decoder's 16-slot stack window |
-| `EvsInternalError` | `INTERNAL` | An internal invariant or verifier failed; the message always contains the phrase `bug in evs, please report`. Also semantically invalid IR handed to `interpret()` / `compile()` (see `INTERNAL` below) |
-
-```ts
-import { evscript, EvsTypeError, t } from '@maxencerb/evs';
+```ts {8-11}
+import { evscript, EvsError, t } from '@maxencerb/evs';
 
 try {
-  evscript({ name: 'bad', args: [] }, (s) => {
-    return s.return({ y: s.sub(s.lit(t.uint256, 1n), 2n) });
+  evscript({ name: 'bump', args: [t.uint8] }, (s, x) => {
+    return s.return({ y: x.add(300n) }); // 300 does not fit uint8
   });
-} catch (e) {
-  if (e instanceof EvsTypeError) {
-    e.code; // 'CERTAIN_PANIC' — 1 − 2 underflows uint256, so it would always revert
-    e.stack; // includes the line of the s.sub call
+} catch (error) {
+  if (error instanceof EvsError) {
+    error.name; // 'EvsTypeError'
+    error.code; // 'LITERAL_RANGE'
+    error.message; // 'uint8 literal 300n is out of range [0, 255]'
   }
 }
 ```
 
-## `EvsErrorCode` — the complete union
+| Class | Thrown when | Codes |
+| --- | --- | --- |
+| `EvsError` | never directly: it is the base class of the five below | any |
+| `EvsStagingError` | a handle is used as a plain JS value | `STAGING_MISUSE` |
+| `EvsTypeError` | a type, literal, ABI or error declaration is wrong, or a function gets a malformed input | `TYPE_MISMATCH`, `LITERAL_RANGE`, `CERTAIN_PANIC`, `UNSUPPORTED_V0`, `ABI_SHAPE`, `ERROR_DECL`, `ERROR_UNDECLARED` |
+| `EvsScopeError` | a value, cell, loop control or builder is used where it is not valid | `SCOPE_VIOLATION`, `FOREIGN_HANDLE`, `RECORDING_CLOSED` |
+| `EvsCompileError` | the whole program breaks a limit, or an option is not supported | `COMPILE_LIMIT`, `EVM_VERSION`, `UNSUPPORTED_V0` |
+| `EvsInternalError` | an evs invariant failed. The message contains `bug in evs, please report` | `INTERNAL` |
 
-| Code | Class | Meaning | Timeline |
-| --- | --- | --- | --- |
-| `STAGING_MISUSE` | `EvsStagingError` | A handle was coerced to a host value: `x + 1`, a template literal, `JSON.stringify(x)` | Recording |
-| `TYPE_MISMATCH` | `EvsTypeError` | An operand or argument has the wrong type for the operation (including call args that fit no overload of an overloaded function, a struct literal key that names no member, and a `Cell` or `MutArray` where a tuple is expected); a handle method called without its handle — passed as a callback or stored and called bare, as in `xs.map(x.add)` or `s.if(done, loop.break)` (the message names the method and the arrow to write instead, `(v) => x.add(v)`); also structurally invalid host inputs to the public API entry points | Recording / API entry |
-| `LITERAL_RANGE` | `EvsTypeError` | A literal fails validation for its type: numeric value out of range or not a safe integer, hex of the wrong length or odd length | Recording |
-| `CERTAIN_PANIC` | `EvsTypeError` | An all-literal operation provably panics at run time, so recording refuses it: literal overflow/underflow, a literal cast that does not fit, division by a literal zero, a literal `s.newArray` length of 2^32 or more | Recording |
-| `SCOPE_VIOLATION` | `EvsScopeError` | A value or cell recorded inside an `s.if`/loop block is used after the block finished; an `s.fn` body captures enclosing values or cells; `LoopCtl` used outside its owning loop; `s.return` misplaced; an `s.fn` calls itself; a caught `s.fn` failure after its body defined a nested `s.fn` | Recording |
-| `FOREIGN_HANDLE` | `EvsScopeError` | An `Expr` belonging to another script — or forged / from a duplicate evs install — was passed to this builder | Recording |
-| `RECORDING_CLOSED` | `EvsScopeError` | A builder method was called after `s.return` sealed the script | Recording |
-| `UNSUPPORTED_V0` | `EvsTypeError` (recording) / `EvsCompileError` (compile) | A type or ABI feature outside the v0 surface. At recording: arrays nested more than four levels deep (`uint256[][][][][]` — the message says "nests arrays N levels deep — at most 4 levels are supported", [#4](https://github.com/maxencerb/evs/issues/4)), or a static type of 2^32 bytes or more, alone or as an array's element (`uint256[65536][65536][]`) — the message says "has an ABI static size of N bytes — at most 2^32 − 1 bytes are supported". The same `EvsTypeError` comes from `compile()` and `interpret()` instead when only a raw ABI tuple's total is too large, and for such a type anywhere in IR loaded with `deserializeIr`. At compile time, as `EvsCompileError`: a script argument, call output or zero value whose structs and arrays nest too deeply for the EVM's 16-slot stack window (about a dozen nested structs, or four to five levels of structs inside arrays of structs — the message says "nests structs and arrays too deeply" and names the value; flatten the type, see [values and types](/guides/values-and-types/#the-type-vocabulary)). Every other array shape is supported: fixed-size `T[N]`, `tuple[][]`, `string[][]`/`bytes[][]`, `uint256[][][]`, … | Recording / Compile |
-| `ABI_SHAPE` | `EvsTypeError` | Malformed ABI material: invalid struct field names, a member name repeated within one tuple (viem decodes a named tuple into a name-keyed object and would drop a value — a hand-written ABI passed to `s.read`/`s.call`, or `struct: true` over outputs sharing a name), duplicate or invalid script arg names, duplicate or invalid return component names, an empty `s.return({})` record, or a malformed ABI fragment passed to `s.read`; a `functionName` that selects no function in the verb's mutability bucket (unknown name or signature, wrong bucket), or an overloaded one the args cannot settle — the args fit several overloads (settle it with a typed literal or a signature `functionName`), or `t.fromOutputs` given an overloaded bare name. (An invalid script *name* given to `evscript()` is caught at the entry point as `TYPE_MISMATCH`.) | Recording |
-| `ERROR_DECL` | `EvsTypeError` | An invalid custom-error declaration: a bad `t.error(...)` name or params, a non-`t.error` entry in the def's `errors: [...]`, a reserved name (`Error`, `Panic`, `EvsDecodeError`, `EvsInvalidCalldata`, `empty`, `unknown`, `_`), a duplicate name, a 4-byte selector clash, or a script `name` equal to an error name in its ABI (a declared error, `EvsDecodeError` or `EvsInvalidCalldata`) | Recording |
-| `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` names an error that is not in the script's declared `errors` (or is declared under the same name with different params) | Recording |
-| `COMPILE_LIMIT` | `EvsCompileError` | Runtime bytecode exceeds the EIP-170 limit of 24,576 bytes (the message includes a per-region breakdown); also `interpret()` exceeding its `maxSteps` budget (statements, loop iterations and zero-filled array elements) | Compile / interpret |
-| `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'`, or `'cancun'` | Compile |
-| `INTERNAL` | `EvsInternalError` | An evs invariant or bytecode verifier failed — a bug in evs, not in your script. The one exception is IR you load yourself: `deserializeIr` only checks its shape, and `interpret()` / `compile()` reject IR that is semantically invalid (a value used before it is defined, an unknown value id, an operand of the wrong type) with this error. Then the bug is in whatever produced that IR, even though the message still says to report it to evs | Any |
+| Property | Type | Holds |
+| --- | --- | --- |
+| `code` | `EvsErrorCode` | one of the [error codes](#error-codes). Stable, safe to compare |
+| `name` | `string` | the class name, such as `'EvsTypeError'` |
+| `message` | `string` | what went wrong and how to fix it |
+| `stack` | `string`, optional | for a recording error, it includes your line: the error is thrown inside your callback |
 
-## Diagnostics — the compile-time warning channel
+## Error codes
 
-Warnings never throw and are never logged. They are delivered exclusively through the
-`onDiagnostic` compile option; the default sink discards them, and the artifact is unaffected
-either way.
+| Code | Class | Thrown when |
+| --- | --- | --- |
+| `STAGING_MISUSE` | `EvsStagingError` | a handle is used as a JS value: `x + 1`, a template literal, `JSON.stringify(x)` |
+| `TYPE_MISMATCH` | `EvsTypeError` | an operand or argument has the wrong type, or an evs function receives a malformed input |
+| `LITERAL_RANGE` | `EvsTypeError` | a literal, or an `interpret()` argument, does not fit its type: out of range, not a safe integer, hex of the wrong length |
+| `CERTAIN_PANIC` | `EvsTypeError` | an operation on literals would always panic: an overflow, a division by zero, a conversion that does not fit, an array length of 2^32 or more |
+| `SCOPE_VIOLATION` | `EvsScopeError` | a value or cell is used after its `s.if` or loop block ended, an `s.fn` body uses an outer value, a `LoopCtl` is used outside its loop, or `s.return` is not at the top level |
+| `FOREIGN_HANDLE` | `EvsScopeError` | a handle comes from another script, or from a second copy of evs |
+| `RECORDING_CLOSED` | `EvsScopeError` | a builder method is called after `s.return` |
+| `UNSUPPORTED_V0` | `EvsTypeError`, `EvsCompileError` | a type nests arrays more than 4 levels deep or has a static size of 2^32 bytes or more. From `compile()`: its structs and arrays nest too deep for the EVM stack |
+| `ABI_SHAPE` | `EvsTypeError` | ABI material is malformed: an invalid or repeated name, an empty `s.return`, a `functionName` the ABI does not have, an ambiguous overload |
+| `ERROR_DECL` | `EvsTypeError` | an error declaration is invalid: a bad, reserved or duplicate name, a selector clash, a script named like one of its errors |
+| `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` gets an error that is not in the script's `errors` |
+| `COMPILE_LIMIT` | `EvsCompileError` | the runtime bytecode is over 24,576 bytes, or `interpret()` goes over `maxSteps` |
+| `EVM_VERSION` | `EvsCompileError` | `evmVersion` is not `'paris'`, `'shanghai'` or `'cancun'` |
+| `INTERNAL` | `EvsInternalError` | an evs invariant or bytecode check failed: a bug in evs, unless you loaded the IR with [`deserializeIr`](/reference/utilities/serialize-ir/) or passed a `peephole` hook |
 
-```ts
+Reserved error names, rejected with `ERROR_DECL`: `Error`, `Panic`, `EvsDecodeError`,
+`EvsInvalidCalldata`, `empty`, `unknown` and `_`.
+
+## Warnings
+
+`compile()` never logs. A warning is passed to the `onDiagnostic` option, and dropped when you do
+not set it.
+
+```ts {8}
 import { compile, evscript, type EvsDiagnostic } from '@maxencerb/evs';
 
-const script = evscript({ name: 'whoami', args: [] }, (s) => {
+const whoami = evscript({ name: 'whoami', args: [] }, (s) => {
   return s.return({ me: s.env('caller') });
 });
 
 const warnings: EvsDiagnostic[] = [];
-compile(script, { onDiagnostic: (d) => warnings.push(d) });
+compile(whoami, { onDiagnostic: (warning) => warnings.push(warning) });
 
-for (const w of warnings) {
-  w.code; // 'ENV_FRAME_DEPENDENT' here — raised by the s.env('caller') call
-  w.message; // names the construct that triggered it
-}
+warnings[0]?.code; // 'ENV_FRAME_DEPENDENT'
+warnings[0]?.site; // 0
 ```
 
-The shapes:
-
-```ts
-import type { EvsDiagnostic } from '@maxencerb/evs';
-
-declare const diagnostic: EvsDiagnostic;
-diagnostic.severity; // 'warning' — every diagnostic is a warning; hard failures throw instead
-diagnostic.code; // 'LOOP_ALLOCATION' | 'LARGE_FRAME' | 'ENV_FRAME_DEPENDENT' | 'DEPLOYLESS_RESULT_PREFIX' | 'DEPLOYLESS_RESULT_SIZE'
-diagnostic.message; // human-readable explanation with concrete guidance
-diagnostic.site; // number | undefined — the statement that raised it (absent on LARGE_FRAME and DEPLOYLESS_RESULT_SIZE)
-```
-
-`site` is the id of the recorded statement behind a `LOOP_ALLOCATION` or `ENV_FRAME_DEPENDENT`
-warning, and behind a `DEPLOYLESS_RESULT_PREFIX` one the statement that computes the first
-returned value (absent when that value is a script argument): the `site` of that statement in
-`compiled.ir`, with an entry (its kind and a short description) in `compiled.sourceMap.sites`. Every recorded statement has its own id, so two
-look-alike statements — the same read written twice in one loop — produce two warnings with the
-same message and different sites.
-
-| Code | Triggers when | Why it matters |
+| Code | Raised when | What to do |
 | --- | --- | --- |
-| `LOOP_ALLOCATION` | An allocating statement sits inside a loop body or header: `s.newArray` or an array literal, `s.tuple(...)`, a struct literal or a `struct: true` read (a flat-block allocation), an `s.read`/`s.call` (or `try*` form) with a `string`, `bytes`, array or tuple output (the returndata snapshot it aliases or decodes from), any `s.simulate`/`s.trySimulate` (the trampoline payload snapshot), `s.encode`/`s.encodePacked` and `s.keccak256` over values that need encoding (a fresh bytes memref), a `.slice(…)` copy or a `.asString()` of a `bytesN` (a fresh string), a dynamic literal materialization, or a call to an `s.fn` whose body transitively allocates. A read whose outputs are all words (`uint256`, `address`, `bool`, …) allocates nothing and does not warn, unless encoding its arguments advances the free pointer: an argument that needs encoder state (a fixed-size array, an array of structs, strings, bytes or arrays, or a struct nested three or more dynamic levels deep) has it reserved there, and when any argument is a struct, a fixed-size array or an array of structs, strings, bytes or arrays, every literal `string` or `bytes` argument and every all-literal word-array argument (inline or `s.lit`, wherever it was recorded) is copied into a block allocated there | evs never resets the free memory pointer, so memory — and memory-expansion gas — grows monotonically with every iteration for the lifetime of the call |
-| `LARGE_FRAME` | The script's static frame exceeds 32,768 bytes (`0x8000`); the message reports the byte and slot counts | Memory-expansion gas grows quadratically; consider splitting the script |
-| `ENV_FRAME_DEPENDENT` | The script records `s.env('caller')` or `s.env('address')`, reads its own balance with `s.balance(s.env('address'))` (one more warning), or sends a `value` (not a literal 0) with `s.call` / `s.simulate` or their `try*` forms (one warning per call site) | The value depends on the execution frame, and the two `toViem()` modes run the script in different frames — see [execution](/guides/execution/). A `value` is paid from the script's own balance, which deployless mode cannot fund: there the `CALL` always fails before the target runs. Use `toViem({ mode: 'stateOverride' })` with a `balance` in the script's override entry, or sender mode — see [sending ETH](/guides/calls/#sending-eth-value) |
-| `DEPLOYLESS_RESULT_PREFIX` | The result is ABI-static and its first word (directly or as the first member of a static struct or fixed array) is a `bytesN`, or a `uint256`/`int256` that evs cannot bound away from the values that start with `0xEF` (see [which integers warn](#which-integers-warn)); the message names it, e.g. `` `pos.id` (bytes32) ``, and `site` is the statement that computes the first returned value | Deployless mode deposits the result as contract code, which must not start with `0xEF` (EIP-3541): the call fails whenever that value's first byte is `0xEF` — about 1 time in 256 for a hash. Use `toViem({ mode: 'stateOverride' })`, or return an `address`, `bool`, narrower integer or any dynamic value first. For an amount or a count that warns anyway (a call output, say), acknowledge the warning by its `site`. See [deployless limits](/reference/artifact/#deployless-limits) |
-| `DEPLOYLESS_RESULT_SIZE` | The encoded result is always over 24,576 bytes: exactly, for a static result, or with every dynamic part empty | Every deployless call fails (EIP-170 applies to the deposited result); use `toViem({ mode: 'stateOverride' })` or return less |
+| `LOOP_ALLOCATION` | a statement in a loop allocates memory, such as `s.newArray`, `s.tuple`, a struct or array literal, `s.encode`, `.slice`, any `s.simulate`, or a call that returns a `string`, `bytes`, array or struct | memory and its gas grow on every iteration. Move the statement out of the loop when you can |
+| `LARGE_FRAME` | the memory the script reserves for its values is over 32,768 bytes | memory gas grows quadratically. Split the script |
+| `ENV_FRAME_DEPENDENT` | the script reads `s.env('caller')`, `s.env('address')` or its own balance, or sends `value` with a call | the result differs between the two `toViem()` modes. See [Executing scripts](/guides/execution/) |
+| `DEPLOYLESS_RESULT_PREFIX` | the result can start with byte `0xEF`: its first value is a `bytesN`, or a `uint256` or `int256` evs cannot bound | deployless mode rejects such a result. See [deployless limits](/guides/execution/#deployless-limits) |
+| `DEPLOYLESS_RESULT_SIZE` | the encoded result is always over 24,576 bytes | every deployless call fails. Use state-override mode, or return less |
 
-Each `LOOP_ALLOCATION` message names the builder call that allocates — `s.read(symbol)`,
-`s.read(pair) struct` for a `struct: true` read, `s.keccak256(…) encoded bytes`,
-`s.newArray((uint256,address))`, `s.tuple(a, b)`, or the type of the literal it builds
-(`(uint256,address) literal` for a struct literal, `uint256[] literal` for an array literal
-with a runtime element, `a uint256[3] literal (materialized in memory)` for one whose elements
-are all constants) — and says what to do about it:
+A warning is an `EvsDiagnostic`:
 
-```ts
+| Field | Type | Holds |
+| --- | --- | --- |
+| `severity` | `'warning'` | always `'warning'`: a hard failure throws instead |
+| `code` | string | one of the five codes above |
+| `message` | `string` | what was found and what to do |
+| `site` | `number`, optional | the id of the statement that raised it, in `compiled.sourceMap.sites` |
+
+`site` is set on `LOOP_ALLOCATION`, `ENV_FRAME_DEPENDENT` and `DEPLOYLESS_RESULT_PREFIX`. It is
+absent on `LARGE_FRAME` and `DEPLOYLESS_RESULT_SIZE`, and on a `DEPLOYLESS_RESULT_PREFIX` about
+a script argument.
+
+### Which results raise DEPLOYLESS_RESULT_PREFIX
+
+Only the first returned value matters, or its first member for a struct or fixed array, and
+only when the whole result is static.
+
+| First returned value | Warns |
+| --- | --- |
+| a `bytesN`, such as a hash | always |
+| a `uint256` or `int256` from an argument, a call output or a hash | yes |
+| a length, a counter, a timestamp, a balance, a widened narrower integer | no |
+| an `address`, a `bool`, an integer narrower than 256 bits | no |
+| anything, when some returned value is dynamic (`string`, `bytes`, `T[]`) | no |
+
+### Ignoring a warning
+
+There is no suppression switch. Filter in your callback, by `code`, or by `code` and `site` for
+one statement.
+
+```ts {20-22}
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
-const symbols = evscript({ name: 'symbols', args: [t.array(t.address)] }, (s, tokens) => {
-  const total = s.let(t.uint256, 0n);
-  s.forEach(tokens, (token) => {
-    // a word output (decimals) allocates nothing; a string output keeps its returndata
-    s.read({ address: token, abi: erc20Abi, functionName: 'decimals' });
-    const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
-    total.set(total.get().add(symbol.length()));
-  });
-  return s.return({ total: total.get() });
-});
-
-const loopWarnings: EvsDiagnostic[] = [];
-const compiled = compile(symbols, {
-  onDiagnostic: (d) => {
-    if (d.code === 'LOOP_ALLOCATION') loopWarnings.push(d);
-  },
-});
-// one warning, for the symbol read; its site resolves in the source map
-const site = compiled.sourceMap.sites.find((x) => x.id === loopWarnings[0]?.site);
-site?.detail; // 'decoding symbol() returndata'
-```
-
-The warning reads:
-
-```txt
-s.read(symbol) (returndata snapshot) allocates memory on every loop iteration; evs never resets the free pointer, so memory grows monotonically for the lifetime of the call and each iteration pays more memory-expansion gas than the last. Hoist it out of the loop when it does not depend on the iteration; for a short, bounded loop the cost is small — filter this warning on its code and site (site ids are positional: re-check the filter after editing the script)
-```
-
-The `ENV_FRAME_DEPENDENT` warning for the first example reads:
-
-```txt
-s.env('caller') is execution-frame-dependent: in the default deployless toViem() mode msg.sender is viem's internal wrapper contract — NOT the eth_call `account`; caller-relative reads require toViem({ mode: 'stateOverride' }) plus the `account` call parameter
-```
-
-### Which integers warn
-
-A `uint256` starts with byte `0xEF` only from `0xEF·2^248` (about 1.08·10^77), and an `int256`
-only below `-2^252` (about -7.2·10^75), so amounts and counts never do. `DEPLOYLESS_RESULT_PREFIX`
-therefore always warns for a leading `bytesN`, but for a leading `uint256` or `int256` only when
-evs cannot bound the value away from that range. It bounds the value's bit width over the
-whole script, loops and `s.fn` calls included:
-
-- **A returned literal** is decided by its first byte: it warns only when that byte is `0xEF`,
-  and then every deployless call fails.
-- **Bounded, no warning**: `s.env('chainid')`, `s.env('blocknumber')` and
-  `s.env('timestamp')` (64 bits), `.length()` (64 bits), `s.balance` (128 bits) and
-  `s.codeSize` (32 bits); a narrower integer widened with `toUint`/`toInt`; checked
-  arithmetic over bounded values (`mul` and `mulDiv` add the operands' bits; `div` or `shr`
-  by a literal, `mod`, `addmod` and `mulmod` shrink them; `shr` by any amount keeps them);
-  `bitAnd`, `bitOr` and `bitXor` on unsigned values (bounded by their operands); `select`
-  over bounded branches. An addition chain, such as a loop counter or a running sum, adds at
-  most 64 bits, because the gas of one call cannot run 2^64 additions.
-- **Unbounded, warns**: a script argument, a call output, an array element or a struct
-  member other than the first, and a fixed array or struct whose first member is written
-  with one of these; a `bytesN` reinterpreted as an integer (`s.keccak256(…).asUint()`);
-  `bitNot`, a bit operation on signed values, a wrapping op that can wrap, `shl` by a
-  runtime amount, `pow` by a runtime exponent; anything computed from these, and a value
-  that doubles in a loop.
-
-The warning on a value evs cannot bound carries the `site` of the statement that computes it.
-When that value is an amount or a count, which never gets that large, accept that one site:
-
-```ts
-import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
-import { erc20Abi } from 'viem';
-
-const total = evscript(
-  { name: 'total', args: [t.address, t.array(t.address)] },
-  (s, token, holders) => {
-    const sum = s.let(t.uint256, 0n);
-    s.forEach(holders, (holder) => {
-      const balance = s.read({ address: token, abi: erc20Abi, functionName: 'balanceOf', args: [holder] });
-      sum.set(sum.get().add(balance));
+const symbols = evscript(
+  { name: 'symbols', args: [t.array(t.address)] },
+  (s, tokens) => {
+    const total = s.let(t.uint256, 0n);
+    s.forEach(tokens, (token) => {
+      const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+      total.set(total.get().add(symbol.length()));
     });
-    return s.return({ sum: sum.get(), holders: holders.length() });
+    return s.return({ total: total.get() });
   },
 );
 
 const warnings: EvsDiagnostic[] = [];
-const compiled = compile(total, { onDiagnostic: (d) => warnings.push(d) });
-const prefix = warnings.find((d) => d.code === 'DEPLOYLESS_RESULT_PREFIX');
-// the site of `sum.get()`: a sum of balances is an amount, so this one warning is safe to accept
-compiled.sourceMap.sites.find((x) => x.id === prefix?.site)?.detail; // 'cellget'
+const ignored: EvsDiagnostic[] = [];
+
+const compiled = compile(symbols, {
+  onDiagnostic: (warning) => {
+    (warning.code === 'LOOP_ALLOCATION' ? ignored : warnings).push(warning);
+  },
+});
+
+compiled.sourceMap.sites.find((site) => site.id === ignored[0]?.site)?.detail;
+// 'decoding symbol() returndata'
 ```
 
-:::note
-There is no built-in suppression mechanism. Diagnostics are opt-in: if you do not pass
-`onDiagnostic`, you never see them; to ignore a category, filter on `code` inside your
-callback, and to accept one specific statement (a short loop you have measured), filter on
-`code` and `site` together. A site id is positional — statements are numbered in recording
-order — so it is stable only while the script's statements stay the same: adding or removing a
-statement before the one you filtered shifts its id, and the filter then silences a different
-statement. Re-check such a filter after every edit, or match on the site's `detail` in
-`compiled.sourceMap.sites` instead of a bare number. `s.env('timestamp')`,
-`s.env('blocknumber')`, and `s.env('chainid')` are block context — identical across both modes —
-and do not warn. The two `DEPLOYLESS_RESULT_*` warnings concern only the default deployless
-mode; filter them out when you always run state-override.
+:::caution[Site ids move when you edit the script]
+Statements are numbered in recording order. Add one before the statement you filtered, and the
+same `site` now silences a different statement. Check the filter again after each edit.
 :::
 
-## Runtime panics
+## Panic codes
 
-Checked operations revert with the standard Solidity `Panic(uint256)` encoding, byte-exact with
-solc: the 4-byte selector `0x4e487b71` followed by one 32-byte code word — 36 bytes total. evs
-emits exactly four panic codes:
+A failed check reverts with Solidity's `Panic(uint256)`: the selector `0x4e487b71`, then the
+code as one 32-byte word. A script raises four codes itself.
 
-| Code | Meaning (solc semantics) | Emitted by |
+| Code | Meaning | Raised by |
 | --- | --- | --- |
-| `0x11` | Arithmetic overflow or underflow | Checked `add`/`sub`/`mul`/`pow`; signed `div` (the minimum value divided by −1); `mulDiv`/`mulDivRoundingUp` when the quotient exceeds `uint256`; range-checked conversions (narrowing `toUint`/`toInt`, `uintN` to an `intM` with M ≤ N, any `intN` to a `uint`, `asAddress` on a `uint256` or `bytes32`) |
-| `0x12` | Division or modulo by zero | `div`/`mod`/`addmod`/`mulmod`/`mulDiv`/`mulDivRoundingUp` with a runtime zero divisor, modulus or denominator |
-| `0x32` | Array index out of bounds | `Expr.at(i)` on arrays; `MutArray` `get`/`set`; `byteAt(i)` and `slice(start, end)` on `string`/`bytes` |
-| `0x41` | Allocation too large | `s.newArray` with a runtime length of 2^32 or more |
+| `0x11` | arithmetic overflow or underflow | [`add`, `sub`, `mul`, `pow`](/reference/expr/arithmetic/); signed `div` of the minimum value by -1; [`mulDiv`, `mulDivRoundingUp`](/reference/expr/full-precision/) when the result does not fit `uint256`; [`toUint`, `toInt`, `asAddress`](/reference/expr/conversions/) when the value does not fit the target |
+| `0x12` | division or modulo by zero | `div`, `mod`, `addmod`, `mulmod`, `mulDiv`, `mulDivRoundingUp` with a zero divisor, modulus or denominator |
+| `0x32` | array index out of bounds | [`.at(i)`, `.byteAt(i)`, `.slice(start, end)`](/reference/expr/bytes-and-arrays/), and `get` or `set` on a [`MutArray`](/reference/builder/new-array/#mutarray) |
+| `0x41` | allocation too large (out of memory) | [`s.newArray`](/reference/builder/new-array/) with a length of 2^32 or more |
 
-`mod` never raises `0x11` (unlike `div`, the remainder of the minimum value by −1 is 0), and
-neither do free conversions: widenings, `uintN` to a wider `intM`, the `asUint256` /
-`asBytes32` reinterprets, `asUint160`, `asAddress` on a `uint160`, and the same-width `asUint` /
-`asBytesN`. Folded literals remove checks too: a division by a nonzero literal has
-no zero check (for `mulDiv`, a nonzero literal denominator drops the `0x12` check but not the
-`0x11` one), a signed division by a literal other than −1 cannot overflow, and `pow` with a
-literal exponent of 0 or 1 (or a literal base of 0, 1 or −1) is unchecked.
+`s.read`, `s.call` and `s.simulate` pass a called contract's revert through unchanged, so a
+script can also revert with a code that only the contract raises:
 
-Callee reverts bubble through the script byte-exactly, so any other solc panic code can still
-appear in a script's revert payload — bubbled verbatim from a contract you called.
-`explainRevert` decodes the full solc table (`0x00` generic compiler panic, `0x01` failed
-`assert`, `0x21` invalid enum conversion, `0x22` corrupted storage byte array, `0x31` pop on an
-empty array, `0x51` call to a zero-initialized internal function) and, for the four codes above,
-lists the candidate sites in your script: exactly the sites whose code can raise that panic
-(each site's `panicCodes` in the source map), with their operands, e.g.
-`checked div args.amount / args.shares (int256) — Panic 0x12/0x11`. When no site can raise it,
-the panic was bubbled from a callee, and the message names the strict call sites it could have
-come through.
+| Code | Meaning |
+| --- | --- |
+| `0x00` | generic compiler panic |
+| `0x01` | assertion failure (assert) |
+| `0x21` | invalid enum conversion |
+| `0x22` | corrupted storage byte array |
+| `0x31` | pop on an empty array |
+| `0x51` | call to a zero-initialized internal function |
 
-Beyond panics, a script can revert with the two evs-owned errors — `EvsInvalidCalldata()` and
-`EvsDecodeError(uint256 site)` — or with a callee's payload bubbled verbatim. The exact ABI
-entries and selectors are documented in [the artifact reference](/reference/artifact/); the
-end-to-end debugging workflow, including `explainRevert` and `disassemble`, is in
-[errors and debugging](/guides/errors-and-debugging/).
+Each meaning is the `meaning` text that
+[`decodeScriptError`](/reference/utilities/decode-script-error/) returns. Any other code reads
+`unknown panic code`.
+
+- **No check, no panic.** A check that cannot fail is not compiled: dividing by a nonzero
+  literal has no `0x12` check.
+- **Unused results do not panic.** An operation whose result nothing reads is removed with its
+  check. See [`dce`](/reference/utilities/dce/).
+- **Wrapping never panics.** The [wrapping operations](/reference/expr/wrapping/) and wrapping
+  conversions skip the check on purpose.
+
+## Built-in errors
+
+Two custom errors belong to evs. Both are in every script's `abi`, so viem decodes them by name.
+
+| Error | Selector | Raised when |
+| --- | --- | --- |
+| `EvsInvalidCalldata()` | `0xf43fed56` | the calldata is not a call to the script's function: wrong selector, truncated, or malformed arguments |
+| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | `s.read`, `s.call` or `s.simulate` gets returndata it cannot decode. `site` is the call's id in `compiled.sourceMap.sites` |
+
+`EvsDecodeError` is also raised by an [`s.call`](/reference/builder/call/) with `revertReturns`
+that returns instead of reverting, and by an `s.simulate` whose `value` the script cannot pay.
+
+The two entries are exported as `EVS_ERROR_ABI`:
+
+```ts
+import { EVS_ERROR_ABI } from '@maxencerb/evs';
+
+EVS_ERROR_ABI[0]; // { type: 'error', name: 'EvsInvalidCalldata', inputs: [] }
+EVS_ERROR_ABI[1].name; // 'EvsDecodeError'
+EVS_ERROR_ABI[1].inputs; // [{ name: 'site', type: 'uint256' }]
+```
+
+## Reading a failure
+
+| Tool | Use it to |
+| --- | --- |
+| [`decodeScriptError`](/reference/utilities/decode-script-error/) | turn a caught error into a typed value |
+| [`matchScriptError`](/reference/utilities/match-script-error/) | run one handler per declared error |
+| [`compiled.explainRevert`](/reference/artifact/explain-revert/) | find the statement in your script that reverted |
+| [`explainDeploylessError`](/reference/utilities/explain-deployless-error/) | recognize a deployless limit, which is not a revert |
