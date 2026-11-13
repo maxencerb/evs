@@ -9,9 +9,9 @@
  */
 
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { afterAll, expect, test } from 'vite-plus/test';
@@ -71,6 +71,18 @@ test('everything else in the tarball is the built library (no sources, no tests)
   for (const path of rest) {
     expect(path).toMatch(/^dist\//);
     expect(path).not.toMatch(/\.test(-d)?\./);
+  }
+});
+
+// The build writes JS source maps but no declaration maps; up to 0.4.1 the declaration files
+// still ended with the comment that names one, which editors then failed to load.
+test('every sourceMappingURL names a file that is in the tarball', () => {
+  const { paths } = pack();
+  for (const path of paths.filter((p) => p.endsWith('.js') || p.endsWith('.d.ts'))) {
+    const source = readFileSync(join(pkgDir, path), 'utf8');
+    const map = /\/\/# sourceMappingURL=(\S+)\s*$/.exec(source)?.[1];
+    if (map === undefined) continue;
+    expect(paths, `${path} points at ${map}`).toContain(posix.join(posix.dirname(path), map));
   }
 });
 

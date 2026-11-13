@@ -144,9 +144,14 @@ A module is compiled at build time when its file name ends with one of four suff
   exports do not change.
 - **Recompiled in dev.** Editing the file, or a file of your app that it imports, compiles it
   again. A package it imports is loaded by Node and is not watched.
-- **Loaded apart from the app.** The module sees your `resolve.alias` and your `mode`. Your
-  other plugins, `define` and `.env` files do not apply to it, so a variable that comes from a
-  `.env` file is `undefined` there.
+- **Resolved like the app.** Its imports follow your `resolve.alias` and
+  `resolve.tsconfigPaths`, and it sees your `mode`.
+- **Loaded apart from the app.** Your other plugins, `define` and `.env` files do not apply to
+  it, so a variable that comes from a `.env` file is `undefined` there.
+- **Only a plain import.** An import with a query, such as `./pool.evs.ts?raw`, is left to
+  Vite: it asks for something else than the module's exports.
+- **In Web Workers too.** The plugin adds itself to `worker.plugins`, so a build-time module
+  that a worker imports is precompiled, and the worker's bundle is checked with the page's.
 - **Debug data apart.** Each script's debug data goes in a chunk of its own, downloaded on the
   first [`explainRevert()`](/reference/precompiled/explain-revert/).
 - **Optional.** Without the plugin, in a test or a Node script, the same file compiles when it
@@ -167,6 +172,10 @@ Every export of a build-time module must be able to cross from the build to the 
 | any other value that is not plain data: a class instance, a symbol, a circular reference | no |
 
 Each script has an export of its own, so the bundler drops the scripts a page does not use.
+
+Data is written into the bundle exactly or not at all. A value the client would receive changed
+is a build error: an array with a hole, an object without a prototype, a property with a symbol
+key or that is not enumerable.
 
 ```ts title="tokens.evs.ts" {4,7,19-20}
 import { evscript, t } from '@maxencerb/evs';
@@ -275,7 +284,7 @@ To keep it out:
 | --- | --- |
 | the first line | how many scripts were precompiled, on every client build |
 | `about 185 kB` | how much compiler code is shipped, before compression |
-| the chunk list | which chunks hold it, and whether each loads up front or on demand |
+| the chunk list | which chunks hold it, and whether each is loaded up front, on demand or in a worker |
 | the module list | which of your modules import `@maxencerb/evs` |
 
 - **Client builds only.** A server build is not checked: nobody downloads it.
@@ -287,6 +296,6 @@ To keep it out:
 
 | Requirement | Version | Notes |
 | --- | --- | --- |
-| `vite` | `>=8` | Peer dependency. |
+| `vite` | `>=8.3` | Peer dependency. |
 | `@maxencerb/evs` | a version with [`toPrecompiled`](/reference/precompiled/to-precompiled/) | Peer dependency. |
 | Node.js | `>=20.19` | The build runs your scripts in Node. |

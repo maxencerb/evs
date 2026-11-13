@@ -157,12 +157,12 @@ replaces it with the values it exports. One module per job:
 
 | Module                  | What                                                                                            |
 | ----------------------- | ----------------------------------------------------------------------------------------------- |
-| `index.ts`              | the plugin: hooks and the public option                                                         |
+| `index.ts`              | the plugin: hooks, the public option, the worker plugin                                         |
 | `build-time-module.ts`  | which files run at build time, and running one with Vite's `runnerImport`                       |
 | `precompiled-module.ts` | the replacement module: each export as code, and the error for an export that cannot be written |
-| `debug-module.ts`       | the virtual modules that hold each script's debug data                                          |
+| `debug-module.ts`       | the ids of the virtual modules that hold each script's debug data                               |
 | `compiler-check.ts`     | whether compiler code is in the client output, and the report                                   |
-| `evs-package.ts`        | where the installed `@maxencerb/evs` is, and what its runtime entry reaches                     |
+| `evs-package.ts`        | which modules of a build belong to `@maxencerb/evs`, and what its runtime entry reaches         |
 | `import-closure.ts`     | the import closure of a file on disk                                                            |
 
 What is worth knowing before changing it:
@@ -170,23 +170,47 @@ What is worth knowing before changing it:
 - **The work happens in `transform`, not `load`.** In the dev server, Vite drops the watch
   files a `load` hook registers on a module's first request, so edits to an imported file were
   not picked up.
-- **The plugin does not know the precompiled format.** It calls `isPrecompiledScript`,
+- **Only an id without a query is a build-time module.** `./pool.evs.ts?raw` asks for the
+  source text and is left to Vite. Vite strips `?import` and `?t=` before plugins see the id.
+- **The plugin does not know the precompiled data format.** It calls `isPrecompiledScript`,
   `JSON.stringify(script)` and `script.debug()`, and emits a call to `hydrate`. The format
-  belongs to the library alone.
-- **A build-time module sees only `root`, `mode` and `resolve.alias`.** `runnerImport` starts
-  from an empty config (which is what prevents the plugin from running inside itself); the app's
+  belongs to the library alone. (It does recognize an uncompiled script and a compiled artifact
+  by a public method, only to word the build error.)
+- **Plain data is written exactly or refused.** A value that would reach the client changed (a
+  hole in an array, an object without a prototype, a symbol-keyed or non-enumerable property)
+  is a build error, never a silent difference.
+- **A build-time module resolves like the app and loads apart from it.** `runnerImport` starts
+  from an empty config (which is what prevents the plugin from running inside itself). The
+  plugin forwards `root`, `mode` and the `resolve` options that decide which file a specifier
+  maps to (`alias`, `tsconfigPaths`, `preserveSymlinks`, `dedupe`, `extensions`); the app's
   other plugins, `define` and `.env` files do not apply. Bare imports are loaded by Node.
-- **"Compiler code" is defined by the library's own files.** It is every module of the installed
-  `@maxencerb/evs` outside the import closure of its runtime entry, computed by reading the
-  package on disk (`import-closure.ts`), that has rendered code in an output chunk
+- **A debug module id holds no path.** It is a content hash plus a label
+  (`virtual:evs-debug:<hash>/<file>.<export>.debug.js`), and `load` only returns code a
+  `transform` of the same session wrote. An id it does not know gets the "reload the page" error
+  and runs nothing. An earlier version read a file path out of the id and ran it on a cache
+  miss, which let a request to the dev server run or read local files; `test/dev-server.test.ts`
+  sends those requests as raw HTTP (`fetch` normalizes `..` and would hide the hole).
+- **"Compiler code" is defined by the library's own files.** A module belongs to the evs package
+  whose `package.json` is the nearest one above it, so the library is found from the modules the
+  build holds, wherever it is installed and however many copies there are (resolving the
+  specifier from the app root misses a library that only a sibling workspace package depends
+  on). Compiler code is every such module outside the import closure of that package's runtime
+  entry, read from disk (`import-closure.ts`), that has rendered code in an output chunk
   (`chunk.modules[id].renderedLength > 0`). A module the bundler tree-shook away does not count,
   so importing `decodeScriptError` from the main entry is not reported.
+- **Workers are bundled apart.** Vite applies `worker.plugins`, not `plugins`, to a worker
+  bundle. The `config` hook adds an `evs:worker` plugin there (Vite merges it with the app's
+  own list): it precompiles like the page's plugin and records what the worker bundle holds, and
+  the plugin of the bundle that starts the worker reports it. An `evs()` the app lists in
+  `worker.plugins` by hand stands down when `evs:worker` is present.
+- **The runtime entry is pre-bundled in dev.** The generated code imports
+  `@maxencerb/evs/runtime`, which Vite's dependency scanner cannot see in the source, so the
+  `config` hook adds it to `optimizeDeps.include` when the app root resolves it. Without that, a
+  cold dev start re-optimizes and reloads the page once.
 - **One bundler log is dropped** (`onLog`): Rolldown's `INEFFECTIVE_DYNAMIC_IMPORT` about the
-  library's explain module, which appears when an app holds a precompiled script and the
-  compiler in the same chunk. The user cannot act on it, and the compiler report already says
-  what to do.
-- **The dev server only runs files it may serve.** A debug-module URL names a file; the plugin
-  runs it only when it is a `*.evs.*` file that `server.fs` allows.
+  library's explain module, when every module it names is the library's own. It appears when an
+  app holds a precompiled script and the compiler in the same chunk; the user cannot act on it,
+  and the compiler report already says what to do.
 
 Releases: see [Releasing](#releasing) below.
 
@@ -688,8 +712,13 @@ release without releasing the plugin.
 Prereleases: `vp exec changeset pre enter beta` / `pre exit` (pre-mode releases publish under
 the pre tag). One-time setup, per published package: the npm trusted publisher is bound to
 workflow file `release.yml` (do not rename it). npm only lets you configure a trusted publisher
-on a package that exists, so a new package needs one manual first publish (from its folder,
-after `vp run build`: `pnpm publish --access public`) before the workflow can publish it. Also
+on a package that exists, so a new package needs one manual publish before the workflow can
+publish it. Publish a placeholder, never the package itself: the committed version of a new
+package is `0.0.0` and its `workspace:^` peer would be written against the library's last
+release, which may not have what it needs. From an empty folder holding only a `package.json`
+with the package's name and the version `0.0.0-placeholder.0`, run `npm publish --access public`,
+add the trusted publisher on npmjs.com, and let the workflow publish the first real version.
+Deprecate the placeholder afterwards (`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Also
 done once: "Allow GitHub Actions to create and approve pull requests" in the repo settings.
 
 ## Docs site

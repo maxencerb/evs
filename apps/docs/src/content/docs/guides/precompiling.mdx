@@ -37,7 +37,7 @@ app ships only each script's ABI and bytecode.
   </TabItem>
 </Tabs>
 
-The plugin needs Vite 8 or later. With another bundler, see [without Vite](#without-vite).
+The plugin needs Vite 8.3 or later. With another bundler, see [without Vite](#without-vite).
 
 ## Add the plugin
 
@@ -330,6 +330,8 @@ the code and an argument in the calldata weigh about the same on the wire.
 - **Named `*.evs.ts`.** Also `.evs.mts`, `.evs.js` and `.evs.mjs`.
 - **Runs in Node.** During the build and in the dev server, never in the browser: no `window`,
   no `document`.
+- **Imported from a page or a worker.** A Web Worker that imports the file gets the precompiled
+  scripts too, with no extra setup.
 - **Exports scripts or data.** Every export is a precompiled script or plain data: what JSON
   holds, plus `bigint` and `undefined`.
 - **One export per script.** A script inside an object or an array is a build error. Separate
