@@ -726,7 +726,9 @@ npm trust list <name>                           # check it
 ```
 
 Then let the workflow publish the first real version, and deprecate the placeholder afterwards
-(`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Each command asks for 2FA. If the
+(`npm deprecate <name>@0.0.0-placeholder.0 placeholder`). Each command asks for 2FA. The registry takes a couple of minutes to show a new package, and lists a
+`0.0.0-stage` version next to yours: a stub it creates itself while the first publish waits for
+2FA. If the
 publish answers `404 Not Found - PUT` although you are logged in, the account's email is not
 verified: npm requires that for a new package and only says so on the staged path
 (`npm stage publish` answers "you must verify your email before publishing a new package"). Also
