@@ -20,17 +20,24 @@ export const appRoot: string = join(packageRoot, 'test/fixtures/app');
 export interface Logs {
   readonly info: string[];
   readonly warnings: string[];
+  /** What Vite reports as an error itself, such as the "Build failed" line of a failed build. */
+  readonly errors: string[];
 }
 
-/** A Vite logger that records instead of printing. */
+/**
+ * A Vite logger that records instead of printing. Errors too: a build that a test expects to
+ * fail would otherwise print Vite's "✗ Build failed" line into the test run's output, where it
+ * reads like a failing test. The failure itself is the rejection the test asserts on.
+ */
 export function recordingLogger(): { logger: Logger; logs: Logs } {
-  const logs: Logs = { info: [], warnings: [] };
+  const logs: Logs = { info: [], warnings: [], errors: [] };
   const logger = createLogger('info');
   const warn = (message: string): void =>
     void logs.warnings.push(stripVTControlCharacters(message));
   logger.info = (message) => void logs.info.push(stripVTControlCharacters(message));
   logger.warn = warn;
   logger.warnOnce = warn;
+  logger.error = (message) => void logs.errors.push(stripVTControlCharacters(message));
   return { logger, logs };
 }
 
