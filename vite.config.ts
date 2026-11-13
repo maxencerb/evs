@@ -131,6 +131,13 @@ export default defineConfig({
         },
       },
       {
+        // The plugin's benchmark prints its tables.
+        files: ['packages/vite-plugin-evs/scripts/**'],
+        rules: {
+          'no-console': 'off',
+        },
+      },
+      {
         files: ['packages/evs/test/integration/**'],
         plugins: ['vitest'],
         rules: {

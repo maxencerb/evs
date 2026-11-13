@@ -785,6 +785,15 @@ traps when re-measuring: anvil's default Prague rules floor a transaction's gas 
 `--hardfork cancun`; and a viem client with `batch.multicall` (wagmi's default) delays each
 multicall by a timer tick, which is not CPU time.
 
+The plugin figures of the Overhead page ("Precompile at build time": bundle sizes with and
+without the plugin, start-up, build time) come from `packages/vite-plugin-evs/scripts/bench.ts`,
+which builds the three apps of `scripts/bench-app` with Vite. Run it from the repo root, as
+`node packages/vite-plugin-evs/scripts/bench.ts`: inside the package, where `pnpm run bench`
+runs it, the `node` of Vite+ follows the package's `engines.node` and picks a newer Node than
+`.node-version`. The runtime-entry rows of the "Library size" table are esbuild bundles with
+`--external:*/explain.js`: without `--splitting` esbuild inlines the dynamic import of the
+explain code, and with it the shared chunk also holds code that only the explain chunk uses.
+
 The build should print no warning. `astro.config.mjs` filters one that rolldown would repeat
 for every page (Astro's own `use astro:head-inject` directive), and the `i18n` collection has an
 empty `src/content/i18n/en.yml` because Astro warns about an empty collection.

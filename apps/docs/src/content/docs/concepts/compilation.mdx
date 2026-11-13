@@ -44,17 +44,17 @@ The IR is recorded as written. One thing is already done: math on literals is
 ## The passes
 
 Times are for the [pool metadata example](/examples/pool-metadata/) and its eight reads, once
-the compiler is warm. The whole compile takes 0.13 ms, or 0.20 ms with `optimize`.
+the compiler is warm. The whole compile takes 0.13 ms, or 0.21 ms with `optimize`.
 
 | Pass | Works on | What it does | Time (µs) |
 | --- | --- | --- | --- |
 | Validate | IR | Checks types, scopes and that every value is defined before use. | 6 |
 | Dead code | IR | Drops the statements nothing reads. | 2 |
-| Lower | IR → instructions | Gives each value a memory slot and emits the opcodes of each statement. | 38 |
-| Slot reuse, fuse | instructions | With `optimize`: reuses memory slots and keeps single-use values on the stack. | +27 |
-| Peephole | instructions | With `optimize`: folds constants and cancels opcode pairs. | +49 |
-| Assemble | instructions → bytes | Picks the shortest pushes, resolves jump labels, enforces the size limit. | 38 |
-| Verify | bytes, instructions | [Checks the output](/concepts/trust-and-testing/#checks-on-every-compile): jump targets, stack heights, opcodes. | 35 |
+| Lower | IR → instructions | Gives each value a memory slot and emits the opcodes of each statement. | 36 |
+| Slot reuse, fuse | instructions | With `optimize`: reuses memory slots and keeps single-use values on the stack. | +31 |
+| Peephole | instructions | With `optimize`: folds constants and cancels opcode pairs. | +48 |
+| Assemble | instructions → bytes | Picks the shortest pushes, resolves jump labels, enforces the size limit. | 36 |
+| Verify | bytes, instructions | [Checks the output](/concepts/trust-and-testing/#checks-on-every-compile): jump targets, stack heights, opcodes. | 36 |
 
 The few microseconds left encode the bytes as hex. [Overhead](/concepts/overhead/) has the
 timings of other scripts, and of a first compile.
@@ -170,7 +170,7 @@ Gas is the script's own execution, measured on anvil.
 - **Arithmetic and loops gain the most.** `sum` spends its gas on stack and memory work, which
   is what the passes remove.
 - **Calls dominate everything else.** A script that mostly calls contracts barely changes.
-- **Compiling takes 50% to 85% longer.** That is 0.07 ms more for the pool metadata script.
+- **Compiling takes 60% to 75% longer.** That is 0.08 ms more for the pool metadata script.
 
 ## How long it takes
 
@@ -180,19 +180,22 @@ process, before the JavaScript engine has optimized the compiler.
 | Script | Statements | First compile | Warm | Warm, `optimize` |
 | --- | --- | --- | --- | --- |
 | [`supplyOf`](/concepts/how-it-works/): 1 read | 1 | 2.8 ms | 0.03 ms | 0.04 ms |
-| [Pool metadata](/examples/pool-metadata/): 8 reads | 10 | 3.9 ms | 0.13 ms | 0.20 ms |
-| [Balances](/examples/token-balances/): a loop | 15 | 3.9 ms | 0.07 ms | 0.13 ms |
-| 100 reads recorded by a JavaScript loop | 602 | 12.3 ms | 1.77 ms | 3.10 ms |
+| [Pool metadata](/examples/pool-metadata/): 8 reads | 10 | 4.1 ms | 0.13 ms | 0.21 ms |
+| [Balances](/examples/token-balances/): a loop | 15 | 4.0 ms | 0.08 ms | 0.13 ms |
+| 100 reads recorded by a JavaScript loop | 602 | 12.6 ms | 1.80 ms | 3.15 ms |
 
 - **Time follows the program's size.** The 602-statement script takes about 14 times as
   long as the 10-statement one.
 - **A loop is one body.** The balances script handles any number of tokens with 15 statements.
 - **Compile once.** Keep the result in a module-level constant: see
   [reducing the overhead](/concepts/overhead/#reducing-it).
+- **Or compile during the build.** A [precompiled](/concepts/overhead/#precompile-at-build-time)
+  script takes 0.12 ms to load, and the app ships no compiler.
 
 ## Next steps
 
 - [`compile`](/reference/compile/): every option and error.
 - [Overhead](/concepts/overhead/): what evs adds end to end, from the import to each call.
+- [Precompiling scripts](/guides/precompiling/): compile during the build with the Vite plugin.
 - [Why trust the bytecode?](/concepts/trust-and-testing/): the checks behind the verify pass.
 - [`disassemble`](/reference/artifact/disassemble/): read the listing of your own script.
