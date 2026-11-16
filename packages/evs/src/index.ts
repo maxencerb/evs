@@ -191,6 +191,8 @@ export {
   explainDeploylessError, // node creation errors (0xEF result, size caps) → an explanation
 } from './deployless.js';
 export type { DeploylessLimitExplanation } from './deployless.js';
+export { explainUnsupportedOpcode } from './evm-target.js'; // the node's "invalid opcode" error → the evmVersion to recompile with
+export type { UnsupportedOpcodeExplanation } from './evm-target.js';
 // the precompiled script (compiled.toPrecompiled()): types only. `hydrate` and
 // `isPrecompiledScript` are exported by `@maxencerb/evs/runtime` alone, so getting them never
 // pulls the compiler in.

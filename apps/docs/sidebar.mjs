@@ -165,6 +165,10 @@ export const sidebar = [
       { label: 'decodeScriptError', slug: 'reference/utilities/decode-script-error' },
       { label: 'matchScriptError', slug: 'reference/utilities/match-script-error' },
       { label: 'explainDeploylessError', slug: 'reference/utilities/explain-deployless-error' },
+      {
+        label: 'explainUnsupportedOpcode',
+        slug: 'reference/utilities/explain-unsupported-opcode',
+      },
       { label: 'disassemble', slug: 'reference/utilities/disassemble' },
       { label: 'serializeIr', slug: 'reference/utilities/serialize-ir' },
       { label: 'dce', slug: 'reference/utilities/dce' },

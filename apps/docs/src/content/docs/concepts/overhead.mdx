@@ -94,7 +94,7 @@ Bundled and minified with esbuild. viem is a peer dependency and is not counted.
 | Import | Minified | gzip | brotli |
 | --- | --- | --- | --- |
 | `compile`, `evscript`, `t` | 260 kB | 78 kB | 67 kB |
-| Everything the package exports | 299 kB | 89 kB | 75 kB |
+| Everything the package exports | 302 kB | 90 kB | 76 kB |
 | `hydrate`, from `@maxencerb/evs/runtime` | 4.2 kB | 1.8 kB | 1.6 kB |
 | `hydrate`, `decodeScriptError`, `matchScriptError` | 8.9 kB | 3.7 kB | 3.3 kB |
 
@@ -274,8 +274,8 @@ the same source files, with the plugin off and on. Sizes are what loads up front
 | App | Size | Added |
 | --- | --- | --- |
 | viem, 2 multicalls | 71.5 kB | |
-| evs, compiled in the browser | 135.0 kB | 63.6 kB |
-| evs, precompiled by the plugin | 75.5 kB | 4.0 kB |
+| evs, compiled in the browser | 135.3 kB | 63.8 kB |
+| evs, precompiled by the plugin | 75.6 kB | 4.1 kB |
 
 What each evs app does when it starts, timed in Node. The precompiled app imports
 `@maxencerb/evs/runtime`, which holds no compiler.
@@ -305,7 +305,7 @@ The work moves to the build. One `vite build` of each app:
   [`decodeScriptError`](/reference/utilities/decode-script-error/) and
   [`matchScriptError`](/reference/utilities/match-script-error/) read the ABI, which is
   shipped. Import them from `@maxencerb/evs/runtime`: see [library size](#library-size).
-- **`explainRevert` loads on demand.** Its first call downloads the explain code, 4.0 kB, and
+- **`explainRevert` loads on demand.** Its first call downloads the explain code, 3.4 kB, and
   the script's debug data, 0.7 kB.
 
 [Precompiling scripts](/guides/precompiling/) has the rules for script files, the build errors

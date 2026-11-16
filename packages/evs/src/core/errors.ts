@@ -1,5 +1,6 @@
 /**
- * `core/errors.ts` — EvsError hierarchy, error codes, diagnostics.
+ * `core/errors.ts` — EvsError hierarchy, error codes, diagnostics, and the texts of a caught
+ * error that is not one of ours (`errorTexts`).
  */
 
 /**
@@ -96,4 +97,37 @@ export interface EvsDiagnostic {
    * whole-program ones (`LARGE_FRAME`, `DEPLOYLESS_RESULT_SIZE`).
    */
   site?: number;
+}
+
+// ---------------------------------------------------------------------------
+// caught errors of any origin
+// ---------------------------------------------------------------------------
+
+/**
+ * The message-like strings of a caught value and its `cause` chain, outermost first (cycle-safe);
+ * a string is its own only text. Duck-typed, so the error tree of any copy or version of viem
+ * reads the same: a node's own text is usually the `details` of the innermost error, while
+ * `shortMessage` is viem's generic wording ("Missing or invalid parameters").
+ */
+export function errorTexts(input: unknown): string[] {
+  if (typeof input === 'string') return [input];
+  const texts: string[] = [];
+  const seen = new Set<object>();
+  let current: unknown = input;
+  while (typeof current === 'object' && current !== null && !seen.has(current)) {
+    seen.add(current);
+    const e = current as { details?: unknown; shortMessage?: unknown; message?: unknown };
+    for (const text of [e.details, e.shortMessage, e.message]) {
+      if (typeof text === 'string') texts.push(text);
+    }
+    current = (current as { cause?: unknown }).cause;
+  }
+  return texts;
+}
+
+/** The line of `text` that holds offset `at`, trimmed (viem's messages are multi-line). */
+export function lineAt(text: string, at: number): string {
+  const start = text.lastIndexOf('\n', at) + 1;
+  const end = text.indexOf('\n', at);
+  return text.slice(start, end === -1 ? undefined : end).trim();
 }

@@ -168,9 +168,13 @@ Some failures leave nothing to decode.
   or a result that starts with `0xEF`.
   [`explainDeploylessError`](/reference/utilities/explain-deployless-error/) names the
   [limit](/guides/execution/#deployless-limits).
-- **Out of gas, or a missing opcode.** Deployless mode shows a bare `execution reverted`. Run
-  the call again with `toViem({ mode: 'stateOverride' })` to see the node's own error, and
-  check the [EVM target](/guides/evm-targets/).
+- **A missing opcode.** The script was compiled for a fork the chain does not have at that
+  block. In state-override mode the node says so, and
+  [`explainUnsupportedOpcode`](/reference/utilities/explain-unsupported-opcode/) names the
+  [EVM target](/guides/evm-targets/#spotting-a-wrong-target) to use. Deployless mode shows a
+  bare `execution reverted`.
+- **Out of gas.** Deployless mode shows a bare `execution reverted` here too. Run the call
+  again with `toViem({ mode: 'stateOverride' })` to see the node's own error.
 - **An unfunded `value`.** A `value` is paid from the script's balance. When it falls short,
   `s.call` reverts with no data and `s.simulate` with `EvsDecodeError`. Deployless mode cannot
   fund the script: use a `balance` in the state-override entry.
