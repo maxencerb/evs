@@ -30,7 +30,7 @@ import {
 import { describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../../test/harness/evm.js';
-import { evscript } from '../builder/script.js';
+import { evscript, type PackedValue } from '../builder/script.js';
 import { compile } from '../compile.js';
 import { t, type EvsType, type Expr, type Hex } from '../core/types.js';
 import { interpret, type MockChain } from '../ir/interp.js';
@@ -262,8 +262,10 @@ function buildCaseScript(c: EncodeCase) {
         he: s.keccak256(s.encode(...args)),
       };
       if (c.packedTypes !== undefined) {
-        rets['p'] = s.encodePacked(...args);
-        rets['hp'] = s.keccak256(s.encodePacked(...args)); // the explicit packed hash (#24)
+        // the packed cases hold only packable types
+        const packed = args as unknown as [PackedValue, ...PackedValue[]];
+        rets['p'] = s.encodePacked(...packed);
+        rets['hp'] = s.keccak256(s.encodePacked(...packed)); // the explicit packed hash (#24)
       }
       return s.return(rets);
     },

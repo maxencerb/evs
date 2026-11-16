@@ -7,12 +7,16 @@
 import type {
   EvsType,
   IntoExpr,
+  LitOf,
   TupleType,
   StringType,
   NamedType,
   ArrayType,
   OuterArraySize,
   PeelArraySuffix,
+  SizedLiteral,
+  WordType,
+  DynType,
 } from '../../core/types.js';
 import type { AllMembersNamed } from '../../core/types/derive.js';
 import type { Expr } from '../../core/types/expr.js';
@@ -22,10 +26,19 @@ import type { ArgHandle } from './evscript.js';
 // cells, mutable arrays, loop control
 // ---------------------------------------------------------------------------
 
+/**
+ * A cell (`s.let`). `get()` is a fresh snapshot at this program point, in the handle the value's
+ * type gets everywhere ({@link ArgHandle}): a struct is a {@link Tuple} with its members, anything
+ * else an {@link Expr}. `set` takes what the recorder coerces for the cell's type
+ * ({@link IntoMember}).
+ */
 export interface Cell<t extends EvsType> {
   readonly type: t;
-  get(): Expr<t>; // fresh snapshot at this program point
-  set(value: IntoExpr<t>): void;
+  // a struct cell first: a cell of any other type (a type parameter bounded by the word types
+  // included) gets the `Expr` signature, which needs no conditional type to resolve
+  get<c extends TupleType & { readonly type: 'tuple' }>(this: Cell<c>): Tuple<c>;
+  get(): Expr<t>;
+  set(value: IntoValue<t>): void;
 }
 
 /** The array value type of a `MutArray<e, n>`: a string element → `${e}[]` (or `${e}[n]` for a
@@ -92,10 +105,11 @@ export type ComponentToType<c extends NamedType> = c['type'] extends `tuple${str
  * The value a composite (plain `tuple`) member accepts on write/init: a precise {@link Tuple}
  * handle of that member type, ANY {@link Tuple} handle (issue #5 ask #3 — the erased
  * {@link tupleBrand} makes every `Tuple` handle assignable into a struct-typed slot; the runtime
- * `typesEqual` is the guard, member order included), or a {@link StructLiteral} (whose members
- * may themselves be staged).
+ * `typesEqual` is the guard, member order included), an {@link Expr} of that type (another
+ * tuple's `.expr()`, which the recorder takes as the tuple), or a {@link StructLiteral} (whose
+ * members may themselves be staged).
  */
-export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | StructLiteral<t>;
+export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | Expr<t> | StructLiteral<t>;
 
 /**
  * A complete literal of the plain `tuple` type `t` whose members may be staged — the value the
@@ -124,18 +138,10 @@ type PositionalLiteral<comps extends readonly NamedType[]> = {
  *  for a `tuple[]`, a row literal or handle for a `tuple[][]`). A fixed outer `[N]` suffix takes
  *  exactly N elements (a readonly N-tuple, as abitype's host arm types it), so a wrong-length
  *  `tuple[N]` literal is a compile error, not only a recording-time `TYPE_MISMATCH`. */
-export type TupleArrayLiteral<t extends TupleType> =
-  OuterArraySize<t['type']> extends `${infer n extends number}`
-    ? FixedLengthLiteral<IntoMember<PeelTupleArray<t>>, n>
-    : readonly IntoMember<PeelTupleArray<t>>[];
-
-/** A readonly tuple of exactly `n` `e`s (tail-recursive; abitype's `Tuple` builds its fixed-array
- *  host type the same way). */
-type FixedLengthLiteral<
-  e,
-  n extends number,
-  acc extends readonly e[] = readonly [],
-> = acc['length'] extends n ? acc : FixedLengthLiteral<e, n, readonly [e, ...acc]>;
+export type TupleArrayLiteral<t extends TupleType> = SizedLiteral<
+  IntoMember<PeelTupleArray<t>>,
+  OuterArraySize<t['type']>
+>;
 
 /** What an ARRAY-typed slot accepts: an {@link Expr}/literal of the array type, or a bare
  *  {@link MutArray} handle (issue #5 ask #5 — runtime `typesEqual` enforces the element match,
@@ -143,10 +149,12 @@ type FixedLengthLiteral<
 export type IntoArray<t extends EvsType> = IntoExpr<t> | AnyMutArray;
 
 /**
- * What `Field.set(v)` / a `s.tuple(...)` init slot / `MutArray.set` accepts for a member of type
- * `t`: a plain `tuple` member → {@link IntoTuple}; a `tuple[]`/`tuple[][]` member →
- * {@link IntoArray} or a {@link TupleArrayLiteral} with staged elements; a string-array member →
- * {@link IntoArray} (array Expr/literal/`MutArray`); a scalar member → {@link IntoExpr}.
+ * What the recorder's coercion takes for a value of type `t`, the type-level mirror of
+ * `coerceToId`: `Field.set(v)`, a `s.tuple(...)` init slot, `MutArray.set`, `Cell.set`,
+ * `s.let(type, init)`, a struct or array `s.lit`, an `s.fn` argument. A plain `tuple` →
+ * {@link IntoTuple}; a `tuple[]`/`tuple[][]` → {@link IntoArray} or a {@link TupleArrayLiteral}
+ * with staged elements; a string array → {@link IntoArray} (array Expr/literal/`MutArray`); a
+ * scalar → {@link IntoExpr}.
  */
 export type IntoMember<t extends EvsType> = t extends TupleType
   ? t['type'] extends 'tuple'
@@ -155,6 +163,66 @@ export type IntoMember<t extends EvsType> = t extends TupleType
   : t extends ArrayType
     ? IntoArray<t>
     : IntoExpr<t>;
+
+/**
+ * What `s.lit(type, value)` takes: the host literal of a word, `string` or `bytes`, which is a
+ * constant; for a struct or an array, what the coercion takes ({@link IntoMember}): members and
+ * elements may be staged, and a handle or an `Expr` of the type stands for itself.
+ */
+export type LitValue<t extends EvsType> = t extends TupleType | ArrayType ? IntoValue<t> : LitOf<t>;
+
+/** A `Tuple` or `MutArray` handle whose memref (`expr()`) is of type `t`. */
+export type MemrefHandle<t extends EvsType> = (AnyTuple | AnyMutArray) & { expr(): Expr<t> };
+
+/**
+ * A literal of type `t` as the coercion takes it: a complete {@link StructLiteral} for a struct,
+ * a {@link TupleArrayLiteral} for a tuple array (members and elements may be staged), the host
+ * literal otherwise (a word array literal already takes `Expr` elements).
+ */
+export type StagedLiteral<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple'
+    ? StructLiteral<t>
+    : TupleArrayLiteral<t>
+  : LitOf<t>;
+
+/**
+ * The operand checked against the type `t` of the other one, where the operand may be a memref:
+ * `s.eq` / `s.neq` and the method form `x.eq(v)`, and the branches of `s.select`. A word is an
+ * {@link IntoExpr}; any other type also takes a `Tuple` / `MutArray` handle of exactly that type
+ * and a {@link StagedLiteral}, as the recorder does. Not distributive: an `Expr<n>` of a generic
+ * `n` fits both branches, so it fits before `n` is known.
+ */
+export type MemrefOperand<t extends EvsType> = [t] extends [WordType]
+  ? IntoExpr<t>
+  : Expr<t> | MemrefHandle<t> | StagedLiteral<t>;
+
+// `x.eq(v)` / `x.neq(v)` on a memref `Expr` take what `s.eq` takes there ({@link MemrefOperand}
+// beyond `IntoExpr`); a word takes nothing more, so its parameter stays `IntoExpr<t>`.
+declare module '../../core/types/expr.js' {
+  interface EqOperands<t extends EvsType> {
+    readonly memref: [t] extends [WordType] ? never : MemrefHandle<t> | StagedLiteral<t>;
+  }
+}
+
+/**
+ * {@link IntoMember} with {@link IntoExpr} outside the conditional: the same values, and an
+ * `Expr<n>` of a type parameter `n` fits before `n` is known, as it did when these positions took
+ * an `IntoExpr` (`Cell.set` and `s.let(type, init)` in a generic helper): the conditional is not
+ * distributive, and the `Expr<n>` fits both of its branches. A scalar resolves to `IntoExpr<t>`,
+ * the name tsc prints.
+ */
+export type IntoValue<t extends EvsType> = [t] extends [WordType | DynType]
+  ? IntoExpr<t>
+  : IntoExpr<t> | CompositeOnly<t>;
+
+/** What a struct or an array value takes beyond {@link IntoExpr} (see {@link IntoMember}). */
+type CompositeOnly<t extends EvsType> = t extends TupleType
+  ? t['type'] extends 'tuple'
+    ? Tuple<t> | AnyTuple | StructLiteral<t>
+    : AnyMutArray | TupleArrayLiteral<t>
+  : t extends ArrayType
+    ? AnyMutArray
+    : never;
 
 /**
  * A field handle over one tuple member (Cell-like). A composite (plain `tuple`) member's `.get()`
@@ -298,11 +366,17 @@ export type EncodeValue = Expr | AnyTuple | AnyMutArray;
 
 /**
  * What `s.encodePacked(...)` accepts per value (issue #17): an {@link Expr} or a bare
- * {@link MutArray}. Packed mode carries Solidity's `abi.encodePacked` restrictions —
- * words, `string`/`bytes`, and word-element arrays only; structs, nested arrays, and
- * `string[]`/`bytes[]` are rejected at record time (matching solc's compile error).
+ * {@link MutArray} of a type Solidity's `abi.encodePacked` takes — a word, `string`/`bytes`, or a
+ * word-element array (`T[]` or `T[N]`); structs, nested arrays, and `string[]`/`bytes[]` are
+ * refused here and at record time (matching solc's compile error).
  */
-export type PackedValue = Expr | AnyMutArray;
+export type PackedValue = Expr<PackedType> | MemrefHandle<PackedWordArray>;
+
+/** A word-element array, dynamic or fixed-size: the arrays `abi.encodePacked` takes. */
+type PackedWordArray = `${WordType}[]` | `${WordType}[${number}]`;
+
+/** The types `abi.encodePacked` takes. */
+type PackedType = WordType | DynType | PackedWordArray;
 
 /**
  * What `s.return(...)` accepts per component: an {@link Expr} (the scalar/array/raw-memref form),

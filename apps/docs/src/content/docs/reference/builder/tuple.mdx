@@ -249,11 +249,12 @@ The member's type, readable while the callback runs: `'uint128'` for `position.l
 
 ### type
 
-- **Type:** `TupleType`
+- **Type:** `TupleType` of a struct or tuple (`type: 'tuple'`)
 
 A [`t.struct`](/reference/types/struct/) or [`t.tuple`](/reference/types/tuple/), or a struct
 type derived from an ABI with
-[`t.fromOutputs` or `t.fromAbiParameter`](/reference/types/from-outputs/).
+[`t.fromOutputs` or `t.fromAbiParameter`](/reference/types/from-outputs/). An array of structs
+is not one: build it with [`s.newArray`](/reference/builder/new-array/) or give it as a literal.
 
 ```ts {3,6}
 import { evscript, t } from '@maxencerb/evs';
@@ -274,7 +275,8 @@ const snapshot = evscript({ name: 'snapshot' }, (s) => {
 - **Type:** an object keyed by member name, or an array when a member is unnamed
 - **Default:** every member zero
 
-The members to set. Each one takes an `Expr` or a literal of its type.
+The members to set. Each one takes what a call argument of its type takes: an `Expr` or a
+literal, and for a nested struct a `Tuple` handle, its `expr()` or a complete struct literal.
 
 ```ts {7,8}
 import { evscript, t } from '@maxencerb/evs';

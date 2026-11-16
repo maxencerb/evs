@@ -80,6 +80,27 @@ const pick = evscript(
 );
 ```
 
+### Reading a member of a struct cell
+
+`get()` on a struct cell returns a [`Tuple`](/reference/builder/tuple/) handle, so its members
+read like any struct's.
+
+```ts {8,9,11}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ owner: t.address, amount: t.uint256 });
+
+const larger = evscript(
+  { name: 'larger', args: [Position, Position] },
+  (s, a, b) => {
+    const best = s.let(Position, a);
+    s.if(b.amount.get().gt(a.amount.get()), () => best.set(b));
+    const winner = best.get(); // Tuple<typeof Position>
+    return s.return({ owner: winner.owner.get(), amount: winner.amount.get() });
+  },
+);
+```
+
 ## Returns
 
 `Cell<t>`
@@ -90,10 +111,11 @@ A handle to the cell. A `Cell` is not an `Expr`: read its value with `get()`.
 
 ### get
 
-- **Type:** `() => Expr<t>`
+- **Type:** `() => Tuple<t>` for a struct, `() => Expr<t>` for any other type
 
 Reads the cell. The result is a snapshot of the value at that point of the script: a later
-`set` does not change it.
+`set` does not change it. A struct comes back as a `Tuple` handle, as it does from a field, an
+array element or a call.
 
 ```ts {5,7}
 import { evscript, t } from '@maxencerb/evs';
@@ -108,9 +130,11 @@ const snapshot = evscript({ name: 'snapshot', args: [t.uint256] }, (s, x) => {
 
 ### set
 
-- **Type:** `(value: IntoExpr<t>) => void`
+- **Type:** `(value: IntoMember<t>) => void`
 
-Writes the cell. `value` is an `Expr<t>` or a literal of the cell's type.
+Writes the cell. `value` is an `Expr<t>` or a literal of the cell's type. For a struct or an
+array it may also be a `Tuple` or `MutArray` handle, or a literal whose members are `Expr`s:
+what a call argument of that type takes.
 
 ```ts {5,6}
 import { evscript, t } from '@maxencerb/evs';
@@ -153,9 +177,9 @@ const count = evscript({ name: 'count', args: [t.array(t.address)] }, (s, xs) =>
 
 ### init
 
-- **Type:** `IntoExpr<t>` with a `type`, `Expr<t>` without
+- **Type:** `IntoMember<t>` with a `type`; an `Expr`, `Tuple` or `MutArray` handle without
 
-The starting value. There is no form without one.
+The starting value. There is no form without one. With a `type`, it takes what `set` takes.
 
 ```ts {6}
 import { evscript, t } from '@maxencerb/evs';

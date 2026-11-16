@@ -138,7 +138,13 @@ test('LitOf maps every kind to its host literal type', () => {
   expectTypeOf<LitOf<'bytes'>>().toEqualTypeOf<`0x${string}`>();
   // an array literal's elements may be host literals or staged Exprs of the element type (#4)
   expectTypeOf<LitOf<'uint24[]'>>().toEqualTypeOf<readonly (bigint | number | Expr<'uint24'>)[]>();
-  expectTypeOf<LitOf<'uint24[2]'>>().toEqualTypeOf<readonly (bigint | number | Expr<'uint24'>)[]>();
+  // a fixed-size one has exactly N elements (up to 99; past that recording checks the length)
+  expectTypeOf<LitOf<'uint24[2]'>>().toEqualTypeOf<
+    readonly [bigint | number | Expr<'uint24'>, bigint | number | Expr<'uint24'>]
+  >();
+  expectTypeOf<LitOf<'uint24[100]'>>().toEqualTypeOf<
+    readonly (bigint | number | Expr<'uint24'>)[]
+  >();
   expectTypeOf<LitOf<'string[][]'>>().toEqualTypeOf<
     readonly (readonly (string | Expr<'string'>)[] | Expr<'string[]'>)[]
   >();

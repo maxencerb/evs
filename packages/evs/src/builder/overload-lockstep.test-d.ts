@@ -249,12 +249,12 @@ test('the compile errors name the candidate signatures', () => {
 });
 
 test('LitOf element-checks multi-level chains with a fixed outer suffix (findings 15/21)', () => {
-  expectTypeOf<LitOf<'uint256[2][3]'>>().toEqualTypeOf<
-    readonly (readonly (bigint | number | Expr<'uint256'>)[] | Expr<'uint256[2]'>)[]
-  >();
-  expectTypeOf<LitOf<'uint256[][2]'>>().toEqualTypeOf<
-    readonly (readonly (bigint | number | Expr<'uint256'>)[] | Expr<'uint256[]'>)[]
-  >();
+  type Row2 =
+    | readonly [bigint | number | Expr<'uint256'>, bigint | number | Expr<'uint256'>]
+    | Expr<'uint256[2]'>;
+  expectTypeOf<LitOf<'uint256[2][3]'>>().toEqualTypeOf<readonly [Row2, Row2, Row2]>();
+  type Row = readonly (bigint | number | Expr<'uint256'>)[] | Expr<'uint256[]'>;
+  expectTypeOf<LitOf<'uint256[][2]'>>().toEqualTypeOf<readonly [Row, Row]>();
   // @ts-expect-error — a string is not a uint256 element
   const bad: LitOf<'uint256[2][3]'> = [['nope']];
   // @ts-expect-error — a bigint is not a bool element

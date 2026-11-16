@@ -102,7 +102,7 @@ const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => 
 
 ### then
 
-- **Type:** `() => void`
+- **Type:** `() => void`, synchronous
 
 Records the statements that run when `cond` is true.
 
@@ -122,7 +122,7 @@ const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => 
 
 ### otherwise (optional)
 
-- **Type:** `() => void`
+- **Type:** `() => void`, synchronous
 
 Records the statements that run when `cond` is false.
 
@@ -146,7 +146,8 @@ const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => 
   use [`s.while`](/reference/builder/while/).
 - **Recorded once.** Each callback is called one time,
   [while building](/guides/writing-scripts/). At run time only the chosen branch executes.
-- **Synchronous.** A branch is a plain function. An `async` function or a generator throws: see
+- **Synchronous.** A branch is a plain function. An `async` function or a generator is a type
+  error, and throws while recording: see
   [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Scoped values.** An `Expr` or a cell created in a branch cannot be used after it (below).
 - **No `s.return` inside.** [`s.return`](/reference/builder/return/) is called once, at the top

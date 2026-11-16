@@ -16,6 +16,7 @@ import {
   type IntoExpr,
   type NumericType,
   type ScriptBuilder,
+  type Tuple,
 } from '@maxencerb/evs';
 
 import { expectType, type Same } from './assert.js';
@@ -113,7 +114,8 @@ export const untyped = evscript({ name: 'untyped', args: [t.bool] }, (s, flag) =
   return s.return({ typed });
 });
 
-/** `s.eq` / `s.neq` take a bare handle for its memref, and the others do not. */
+/** `s.eq` / `s.neq` and `s.select`'s branches take a bare handle for its memref, and the others
+ *  do not. */
 export const handles = evscript(
   { name: 'handles', args: [Pair, t.array(t.uint256)] },
   (s, pair, arr) => {
@@ -139,11 +141,12 @@ export const handles = evscript(
       cell,
       1n,
     );
-    s.select(
-      true,
-      // @ts-expect-error -- a bare handle is not a branch
-      pair,
-      pair,
+    const picked = s.select(true, pair, pair);
+    expectType<Same<typeof picked, Tuple<typeof Pair>>>();
+    s.add(
+      // @ts-expect-error -- a bare handle is not an operand
+      mut,
+      1n,
     );
     return s.return({ ok: s.eq(pair, pair) });
   },

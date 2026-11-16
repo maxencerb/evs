@@ -170,6 +170,11 @@ const balances = evscript({ name: 'balances', args: [t.address] }, (s, owner) =>
 
 An `async` callback would record only what comes before its first `await`, and a generator
 function would record nothing. Both throw `EvsTypeError` (`TYPE_MISMATCH`), naming the callback.
+TypeScript refuses them first: the error names the problem in a property key.
+
+```txt
+error TS2345: Argument of type '() => Promise<void>' is not assignable to parameter of type '(() => Promise<void>) & { readonly 'evs: the callback returns a Promise (an async function). The builder runs it once, synchronously, so nothing after its first await is recorded: await your data before evscript() and use a plain function': never; }'.
+```
 
 ## Branching on a chain value
 

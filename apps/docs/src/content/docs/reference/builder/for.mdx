@@ -209,7 +209,7 @@ const everyOther = evscript(
 
 ### body
 
-- **Type:** `(i: Expr<t>, loop: LoopCtl) => void`
+- **Type:** `(i: Expr<t>, loop: LoopCtl) => void`, synchronous
 
 Records one iteration. `i` is the counter for that iteration, read-only. `loop` is the
 [`LoopCtl`](/reference/builder/while/#loopctl) of this loop.
@@ -242,7 +242,8 @@ const everyOther = evscript(
   came from does not move them.
 - **Recorded once.** The callback is called one time while building. The recorded body repeats
   at run time.
-- **Synchronous.** `body` is a plain function. An `async` function or a generator throws: see
+- **Synchronous.** `body` is a plain function. An `async` function or a generator is a type
+  error, and throws while recording: see
   [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Checked range.** An unknown range key, a `null` step and a literal step of `0` throw.
 - **Checked step.** `i + step` reverts with `Panic(0x11)` when it overflows the counter type.

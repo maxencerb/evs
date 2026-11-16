@@ -389,7 +389,7 @@ export class CellImpl {
     return i.owner.typeOfCell(i.id);
   }
 
-  get(): Expr {
+  get(): Expr | object {
     const i = cellInternalsOf(this, 'get');
     return i.owner.cellGet(i.id, 'Cell.get()');
   }

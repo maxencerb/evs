@@ -142,7 +142,7 @@ const isListed = evscript({ name: 'isListed', args: [t.address] }, (s, token) =>
 
 ### body
 
-- **Type:** `(elem, i: Expr<'uint256'>, loop: LoopCtl) => void`
+- **Type:** `(elem, i: Expr<'uint256'>, loop: LoopCtl) => void`, synchronous
 
 Records one iteration. `i` is the index and `loop` is the
 [`LoopCtl`](/reference/builder/while/#loopctl) of this loop. The type of `elem` follows the
@@ -174,7 +174,8 @@ const weighted = evscript({ name: 'weighted', args: [t.array(t.uint256)] }, (s, 
   `MutArray.set` made earlier in the loop.
 - **Recorded once.** The callback is called one time while building. The recorded body repeats
   at run time.
-- **Synchronous.** `body` is a plain function. An `async` function or a generator throws: see
+- **Synchronous.** `body` is a plain function. An `async` function or a generator is a type
+  error, and throws while recording: see
   [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Continue moves on.** `loop.continue()` goes to the next element.
 - **Scoped values.** Nothing created in the body, `elem` and `i` included, can be used after

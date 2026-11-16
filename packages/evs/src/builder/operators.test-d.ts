@@ -13,7 +13,7 @@
 import { expectTypeOf, test } from 'vite-plus/test';
 
 import { t, type Expr, type IntoExpr, type NumericType } from '../core/types.js';
-import { evscript, type Cell, type EvsScript, type ScriptBuilder } from './script.js';
+import { evscript, type Cell, type EvsScript, type ScriptBuilder, type Tuple } from './script.js';
 import type { ExprNeeded, FirstOperand, SecondOperand } from './script/builder.js';
 
 const Pair = t.struct({ fee: t.uint24, pool: t.address });
@@ -265,14 +265,16 @@ test('s.eq / s.neq take a bare Tuple or MutArray handle for its memref, like the
     );
     expectTypeOf(s.eq(cell.get(), 1n)).toEqualTypeOf<Expr<'bool'>>();
     expectTypeOf(s.eq(pair.fee.get(), 500)).toEqualTypeOf<Expr<'bool'>>();
+    // a branch of s.select is a bare handle too, and a struct result is a Tuple handle
+    expectTypeOf(s.select(true, pair, pair)).toEqualTypeOf<Tuple<typeof Pair>>();
+    expectTypeOf(s.select(true, pair.expr(), pair.expr())).toEqualTypeOf<Tuple<typeof Pair>>();
+    expectTypeOf(s.select(true, mut, arr)).toEqualTypeOf<Expr<'uint256[]'>>();
     // the other operators take the memref itself
-    s.select(
-      true,
-      // @ts-expect-error — a bare handle is not a branch
-      pair,
-      pair,
+    s.add(
+      // @ts-expect-error — a bare handle is not an operand
+      mut,
+      n,
     );
-    expectTypeOf(s.select(true, pair.expr(), pair.expr())).toEqualTypeOf<Expr<typeof Pair>>();
     return s.return({ ok: s.lit(t.bool, true) });
   });
 });

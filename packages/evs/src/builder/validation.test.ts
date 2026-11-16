@@ -3792,8 +3792,8 @@ describe('checklist: a copy of a handle is not a tuple literal', () => {
     });
   });
 
-  test('a partial copy of an Expr / Cell / Field of tuple type → TYPE_MISMATCH naming the lost member', () => {
-    // all four type-check: the weak-type check passes once `a` is shared
+  test('a partial copy of an Expr / Cell / Field / Tuple of tuple type → TYPE_MISMATCH naming the lost member', () => {
+    // the Expr, Cell and Field copies type-check: the weak-type check passes once `a` is shared
     const lost = (kind: string) =>
       new RegExp(
         `copy of ${kind} handle, which copies none of its members — "b" would be zero-filled`,
@@ -3803,13 +3803,15 @@ describe('checklist: a copy of a handle is not a tuple literal', () => {
       evscript({ name: 'cp', args: [Outer, t.uint256] }, (s, o, x) => {
         const c = s.let(P, o.inner.get().expr());
         if (kind === 'expr') s.tuple(P, { ...o.inner.get().expr(), a: x });
-        if (kind === 'get') s.tuple(P, { ...c.get(), a: x });
+        // a struct cell's snapshot is a Tuple handle, whose copy the types already refuse (its
+        // member `b` is a Field there)
+        if (kind === 'get') s.tuple(P, { ...c.get(), a: x } as never);
         if (kind === 'cell') s.tuple(P, { ...c, a: x });
         if (kind === 'field') s.tuple(P, { ...o.inner, a: x });
         return s.return({ x });
       });
     expectEvs(copyOf('expr'), EvsTypeError, 'TYPE_MISMATCH', lost('an Expr'));
-    expectEvs(copyOf('get'), EvsTypeError, 'TYPE_MISMATCH', lost('an Expr'));
+    expectEvs(copyOf('get'), EvsTypeError, 'TYPE_MISMATCH', lost('a Tuple'));
     expectEvs(copyOf('cell'), EvsTypeError, 'TYPE_MISMATCH', lost('a Cell'));
     expectEvs(copyOf('field'), EvsTypeError, 'TYPE_MISMATCH', lost('a Field'));
   });

@@ -35,6 +35,11 @@ import type {
   AnyTuple,
   AnyMutArray,
   IntoMember,
+  IntoValue,
+  LitValue,
+  MemrefHandle,
+  MemrefOperand,
+  StagedLiteral,
   Cell,
   MutArray,
   TupleInit,
@@ -141,15 +146,17 @@ export type EvsFn<
  *
  * With no `Expr` at all (`a` and `b` both `never`) the operand meets {@link ExprNeeded}. The
  * two branches are spelled out, not one union with an optional member: the checker prints the
- * result of a conditional type in full, where it would print a union by this alias's name.
+ * result of a conditional type in full, where it would print a union by this alias's name. The
+ * bare handle is left out of that branch, where it could only be `MemrefHandle<never>`: the
+ * inference of `a` reads both branches, so a handle still gives `a` its type.
  */
 export type FirstOperand<
   a extends EvsType,
   b extends EvsType,
   kind extends OperandKind = 'operand',
 > = [a | b] extends [never]
-  ? Expr<a> | BareHandle<a, kind> | ExprNeeded<kind>
-  : Expr<a> | BareHandle<a, kind> | LitOf<NoInfer<b>>;
+  ? Expr<a> | ExprNeeded<kind>
+  : Expr<a> | BareHandle<a, kind> | OperandLiteral<b, kind>;
 
 /**
  * The second operand, see {@link FirstOperand}: checked against the first operand's type when
@@ -162,28 +169,64 @@ export type SecondOperand<
   kind extends OperandKind = 'operand',
 > = [a] extends [never]
   ? [b] extends [never]
-    ? Expr<b> | BareHandle<b, kind> | ExprNeeded<kind>
+    ? Expr<b> | ExprNeeded<kind>
     : Expr<b> | BareHandle<b, kind>
-  : IntoExpr<NoInfer<a>> | BareHandle<NoInfer<a>, kind>;
+  : CheckedOperand<a, kind>;
 
 /**
  * What the operands belong to: a `'branch'` of `s.select` is named as such in
- * {@link ExprNeeded}, and `s.eq` / `s.neq` (`'equality'`) also take a bare handle
- * ({@link BareHandle}).
+ * {@link ExprNeeded}; `s.eq` / `s.neq` (`'equality'`) and `s.select`'s branches also take a bare
+ * handle ({@link BareHandle}) and a struct or array literal with staged members
+ * ({@link StagedLiteral}), as the recorder does.
  */
 export type OperandKind = 'operand' | 'branch' | 'equality';
 
 /**
- * The bare `Tuple` / `MutArray` handles `s.eq` / `s.neq` take for their memref, as the recorder
- * does: a handle types the comparison like the `Expr` of its `expr()`. `never` for every other
- * operator, which takes the memref itself (`handle.expr()`).
+ * The bare `Tuple` / `MutArray` handles `s.eq` / `s.neq` and `s.select`'s branches take for
+ * their memref, as the recorder does: a handle types the operation like the `Expr` of its
+ * `expr()`. `never` for every other operator, which takes the memref itself (`handle.expr()`).
  */
-export type BareHandle<t extends EvsType, kind extends OperandKind> = kind extends 'equality'
-  ? MemrefHandle<t>
-  : never;
+export type BareHandle<t extends EvsType, kind extends OperandKind> = kind extends 'operand'
+  ? never
+  : MemrefHandle<t>;
 
-/** A `Tuple` or `MutArray` handle whose memref (`expr()`) is of type `t`. */
-export type MemrefHandle<t extends EvsType> = (AnyTuple | AnyMutArray) & { expr(): Expr<t> };
+/**
+ * The operand checked against the other operand's type `t` ({@link SecondOperand}): an
+ * {@link IntoExpr} for an arithmetic, ordering or logic operator, a {@link MemrefOperand} for
+ * equality and `s.select`. `t` is behind `NoInfer`, and around the whole memref operand, not
+ * inside it: inference stops there instead of walking the branches of its conditional types
+ * (struct literals, tuple arrays), which cost a word `s.select` some 8,000 instantiations.
+ */
+type CheckedOperand<t extends EvsType, kind extends OperandKind> = kind extends 'operand'
+  ? IntoExpr<NoInfer<t>>
+  : NoInfer<MemrefOperand<t>>;
+
+/** The literal first operand checked against the second's type `t` ({@link FirstOperand}): a
+ *  host literal, or for equality and `s.select` a struct or array literal whose members may be
+ *  staged. `NoInfer` as in {@link CheckedOperand}. */
+type OperandLiteral<t extends EvsType, kind extends OperandKind> = kind extends 'operand'
+  ? LitOf<NoInfer<t>>
+  : NoInfer<StagedLiteral<t>>;
+
+/**
+ * The check on a callback the builder runs while it records (`s.if`, `s.while`, `s.for`,
+ * `s.forEach`), the type-level mirror of `assertSyncCallback`: a callback that returns a promise
+ * (an async function) or an iterator (a generator function) gets the message as a required key,
+ * since nothing after its first `await` is recorded and a generator's body does not run. Every
+ * other result (nothing, `undefined`, an `Expr`, a handle, `any`) is `unknown`, a no-op in the
+ * `(() => r) & SyncCallback<r>` parameter, so the callback infers as before.
+ */
+export type SyncCallback<r> = 0 extends 1 & r
+  ? unknown
+  : [Extract<r, { then(...args: never): unknown }>] extends [never]
+    ? [Extract<r, { next(...args: never): unknown }>] extends [never]
+      ? unknown
+      : {
+          readonly 'evs: the callback returns an iterator (a generator function). The builder runs it once, synchronously, and a generator body does not run when called: use a plain function': never;
+        }
+    : {
+        readonly 'evs: the callback returns a Promise (an async function). The builder runs it once, synchronously, so nothing after its first await is recorded: await your data before evscript() and use a plain function': never;
+      };
 
 /**
  * What an operand is checked against when no operand is an `Expr`: the recording-time
@@ -204,10 +247,15 @@ export interface ScriptBuilder<
   errs extends readonly EvsErrorType[] = readonly EvsErrorType[],
 > {
   // values & state
-  lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
+  // a word, `string` or `bytes` takes a constant; a struct or an array what the coercion takes
+  // (staged members and elements, a handle of the type). A struct comes back as a `Tuple`.
+  // `value` is checked against `type`, never used to infer it: `NoInfer` around the whole type
+  // stops inference before the branches of `LitValue` (see `CheckedOperand`)
+  lit<const t extends EvsType>(type: t, value: NoInfer<LitValue<t>>): ArgHandle<t>;
   // the cell's type is `type`: `init` is checked against it, never used to infer it
-  let<const t extends EvsType>(type: t, init: IntoExpr<NoInfer<t>>): Cell<t>;
-  let<t extends EvsType>(init: Expr<t>): Cell<t>;
+  let<const t extends EvsType>(type: t, init: NoInfer<IntoValue<t>>): Cell<t>;
+  // a bare `Tuple` / `MutArray` handle types the cell like the `Expr` of its `expr()`
+  let<t extends EvsType>(init: Expr<t> | MemrefHandle<t>): Cell<t>;
   // `e` is any value type: a word, `string`/`bytes`, an array (dynamic or fixed-size, any
   // depth), or a `tuple`/tuple-array descriptor. `{ fixed: true }` with a LITERAL length `n`
   // allocates a fixed-size `e[n]` (its length is part of the type — `expr()` is `Expr<e[n]>`).
@@ -219,7 +267,11 @@ export interface ScriptBuilder<
   ): MutArray<e, n>;
   // tuple/struct allocator: `init` is a partial, name-keyed (struct) or positional
   // (t.tuple) record of members; omitted members default to zero. Returns a `Tuple` handle.
-  tuple<const c extends TupleType>(type: c, init?: TupleInit<c>): Tuple<c>;
+  // (a tuple ARRAY is built with s.newArray or given as a literal: `type` is a plain tuple)
+  tuple<const c extends TupleType & { readonly type: 'tuple' }>(
+    type: c,
+    init?: TupleInit<c>,
+  ): Tuple<c>;
   env<const k extends EnvKind>(kind: k): Expr<EnvTypeOf<k>>;
   // address/caller → Expr<'address'>; others → Expr<'uint256'>
   // account state of any address (Solidity's `a.balance` / `a.code.length` / `a.codehash`):
@@ -355,29 +407,37 @@ export interface ScriptBuilder<
   encodePacked(...values: [PackedValue, ...PackedValue[]]): Expr<'bytes'>;
   keccak256(...values: [EncodeValue, ...EncodeValue[]]): Expr<'bytes32'>;
 
-  // control flow (combinators)
-  if(cond: IntoExpr<'bool'>, then: () => void, otherwise?: () => void): void;
-  while(cond: () => IntoExpr<'bool'>, body: (loop: LoopCtl) => void): void;
+  // control flow (combinators). A callback runs once, synchronously, while the script records:
+  // an async or generator callback is refused (`SyncCallback`)
+  if<r1 = void, r2 = void>(
+    cond: IntoExpr<'bool'>,
+    then: (() => r1) & SyncCallback<r1>,
+    otherwise?: (() => r2) & SyncCallback<r2>,
+  ): void;
+  while<r = void>(
+    cond: () => IntoExpr<'bool'>,
+    body: ((loop: LoopCtl) => r) & SyncCallback<r>,
+  ): void;
   // `range.type` is optional (issue #12): the first overload matches a type-less range and
   // types the counter as uint256; the explicit-type overload keeps the pre-#12 behaviour.
-  for(
+  for<r = void>(
     range: {
       type?: undefined;
       from: IntoExpr<'uint256'>;
       until: IntoExpr<'uint256'>;
       step?: IntoExpr<'uint256'>;
     },
-    body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
+    body: ((i: Expr<'uint256'>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
   // (the counter's type is `range.type`: the bounds are checked against it)
-  for<const t extends NumericType>(
+  for<const t extends NumericType, r = void>(
     range: {
       type: t;
       from: IntoExpr<NoInfer<t>>;
       until: IntoExpr<NoInfer<t>>;
       step?: IntoExpr<NoInfer<t>>;
     },
-    body: (i: Expr<t>, loop: LoopCtl) => void,
+    body: ((i: Expr<t>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
   // forEach over an array value (issue #12): the counter loop with `until` = the array's
   // length (snapshot ONCE) and `elem` = the bounds-checked `array.at(i)` — a `tuple[]` array
@@ -387,21 +447,23 @@ export interface ScriptBuilder<
   // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
   // load is always recorded; a body that never reads `elem` leaves it dead and the compile-time
   // DCE pass (ir/dce.ts) drops it, bounds check included.
-  forEach<C extends TupleType & { readonly type: TupleArrayTag }>(
+  forEach<C extends TupleType & { readonly type: TupleArrayTag }, r = void>(
     array: Expr<C>,
-    body: (elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+    body: ((elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => r) &
+      SyncCallback<r>,
   ): void;
-  forEach<a extends ArrayType>(
+  forEach<a extends ArrayType, r = void>(
     array: Expr<a>,
-    body: (elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
+    body: ((elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
-  // the result's type is the branch's that is an Expr (≥1 is), the first when both are: the
-  // other branch is checked against it (see {@link FirstOperand})
+  // the result's type is the branch's that is an Expr or a bare handle (≥1 is), the first when
+  // both are: the other branch is checked against it (see {@link FirstOperand}). A struct result
+  // is a `Tuple` handle, like every struct value ({@link ArgHandle}).
   select<a extends EvsType = never, b extends EvsType = never>(
     cond: IntoExpr<'bool'>,
     a: FirstOperand<a, b, 'branch'>,
     b: SecondOperand<a, b, 'branch'>,
-  ): Expr<NoInfer<a | b>>;
+  ): ArgHandle<NoInfer<a | b>>;
 
   // calls — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
   // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the
