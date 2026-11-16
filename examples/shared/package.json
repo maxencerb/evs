@@ -6,7 +6,6 @@
     "./run-anvil": "./run-anvil.ts"
   },
   "dependencies": {
-    "prool": "catalog:testing",
     "viem": "catalog:"
   }
 }

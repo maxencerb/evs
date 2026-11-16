@@ -9,13 +9,13 @@ presentation page (npm, GitHub) and stays user-facing.
 
 ## Repository map
 
-| Path                                                                                              | What                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)                         | the published library: builder, IR + interpreter, codegen, assembler, viem glue                                                                                                               |
-| [`packages/vite-plugin-evs`](https://github.com/maxencerb/evs/tree/main/packages/vite-plugin-evs) | the published Vite plugin: compiles `*.evs.ts` modules at build time (see [Vite plugin](#vite-plugin-packagesvite-plugin-evs))                                                                |
-| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts)             | Foundry fixtures: mocks + the solc reference contracts for differential tests                                                                                                                 |
-| [`packages/type-tests`](https://github.com/maxencerb/evs/tree/main/packages/type-tests)           | private: the published types used as an app would, checked by every supported type checker (see [Testing](#testing))                                                                          |
-| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                                | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) and `vite-precompile`, a Vite app built through the plugin (`vp run build` in its folder) |
+| Path                                                                                              | What                                                                                                                                                                          |
+| ------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)                         | the published library: builder, IR + interpreter, codegen, assembler, viem glue                                                                                               |
+| [`packages/vite-plugin-evs`](https://github.com/maxencerb/evs/tree/main/packages/vite-plugin-evs) | the published Vite plugin: compiles `*.evs.ts` modules at build time (see [Vite plugin](#vite-plugin-packagesvite-plugin-evs))                                                |
+| [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts)             | Foundry fixtures: mocks + the solc reference contracts for differential tests                                                                                                 |
+| [`packages/type-tests`](https://github.com/maxencerb/evs/tree/main/packages/type-tests)           | private: the published types used as an app would, checked by every supported type checker (see [Testing](#testing))                                                          |
+| [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                                | runnable example scripts (`node examples/<name>/index.ts` after `vp run bootstrap`) and `vite-precompile`, a Vite app built through the plugin (`vp run build` in its folder) |
 
 ### Library sources (`packages/evs/src`)
 
@@ -60,15 +60,21 @@ library build (tsdown via `vp pack`) and the task runner. Vite+ 1.0 needs Node
 **Node** runs every TypeScript script directly through type stripping (`node scripts/x.ts`:
 erasable syntax only, explicit `.ts` import specifiers).
 
+The repository also needs [Foundry](https://getfoundry.sh) on the `PATH`: `forge` compiles the
+fixture contracts that every test tier imports, and `anvil` runs the integration tests and the
+examples. CI pins its version (`FOUNDRY_VERSION` in `ci.yml`).
+
+On a fresh checkout, top to bottom:
+
 ```sh
 curl -fsSL https://vite.plus | bash   # once: the global `vp` CLI (provisions Node + pnpm)
 vp install                # workspaces + pinned catalogs (= pnpm install)
-vp run build              # build @maxencerb/evs, then the Vite plugin (vp pack → dist/, see below)
+vp run bootstrap          # fixture contracts + codegen (forge), then the library and plugin builds
 vp run test               # unit + type tests, and the plugin's tests (vitest via vp test)
-vp run test:integration   # anvil integration tests of the library and the plugin (requires foundry)
+vp run test:integration   # anvil integration tests of the library and the plugin
 vp check                  # format + lint + type-check (tsgolint) in one pass
 vp run check              # vp check + tsc/astro typecheck across workspaces (= CI)
-vp run typecheck:checkers # the other type checkers: TypeScript 5.5 and 7, bun check, tsrs (after a build)
+vp run typecheck:checkers # the other type checkers: TypeScript 5.5 and 7, bun check, tsrs
 vp fmt                    # oxfmt (writes)
 vp run changeset          # add a changeset when a change should ship in the next release
 ```
@@ -76,7 +82,28 @@ vp run changeset          # add a changeset when a change should ship in the nex
 Without the global CLI, `pnpm install` then `pnpm run <script>` works the same (the scripts call
 the project-local `vp` from `vite-plus`).
 
-Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
+`vp run bootstrap` writes what the commands after it read. None of it is committed:
+
+| Step | Command                                  | Writes                                                                                    | Read by                                                                                          |
+| ---- | ---------------------------------------- | ----------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| 1    | `vp run codegen` in `packages/contracts` | `packages/evs/test/generated/`: one `as const` TypeScript module per fixture contract     | the unit, type and integration tests, `vp check`, `vp run typecheck`, the examples               |
+| 2    | `vp run build`                           | the library's `dist/` (`vp pack`, see [below](#library-build-vp-pack)), then the plugin's | the plugin's tests, `vp check`, `vp run typecheck`, `typecheck:checkers`, the docs, the examples |
+
+Step 1 runs `forge build` first, which fetches the `forge-std` submodule on its first run. Run a
+step again when its input changes: step 1 after editing a contract, step 2 after editing the
+library when what you run next reads its `dist/` (the plugin's tests do).
+
+A test run checks what it needs before its first test, so a missing prerequisite is one line
+that names the command to run, not a failure per file:
+
+| Missing                        | Stops                                             | The line names                                               |
+| ------------------------------ | ------------------------------------------------- | ------------------------------------------------------------ |
+| `packages/evs/test/generated/` | the `unit`, `types` and `integration` projects    | `vp run codegen` in `packages/contracts`, `vp run bootstrap` |
+| `packages/evs/dist/`           | the `plugin` and `plugin-integration` projects    | `vp run build`, `vp run bootstrap`                           |
+| `anvil` on the `PATH`          | the two integration projects, the example scripts | Foundry and where to get it                                  |
+| `forge` on the `PATH`          | `vp run codegen`, and so `vp run bootstrap`       | Foundry and where to get it                                  |
+
+Contracts on their own: `cd packages/contracts && forge build / forge test / vp run codegen`.
 
 ### Workspace configuration (`pnpm-workspace.yaml`)
 
@@ -722,8 +749,9 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   `EvsFullMathReference`, and the address / fixed-bytes conversions and string/bytes byte
   access (`byteAt`, `slice`, `asString`) vs `EvsCastReference` (all codegen'd from
   `packages/contracts`, whose own forge tests run in CI's contracts step); an env-gated
-  mainnet-fork suite (`ANVIL_FORK_URL`, an empty value counts as unset and skips it) covers
-  the flagship scenario. CI's manual `fork-tests` job fails up front when the secret is missing.
+  mainnet-fork suite covers the flagship scenario: `ANVIL_FORK_URL` switches it on and no other
+  variable does (an empty value counts as unset and skips it). CI's manual `fork-tests` job
+  fails up front when the secret is missing.
 
 - **plugin** (`packages/vite-plugin-evs`: `src/**/*.test.ts`, `test/*.test.ts`) — drives Vite
   programmatically on the fixtures in `test/fixtures/`, with the plugin taken from source: the
@@ -740,12 +768,32 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
 
 Tests run on vitest through `vp test` (prool's per-worker anvil and typecheck tests need
 vitest); test files import from `vite-plus/test`. The integration project's global setup
-(`test/global-setup.ts`) keeps a prool `Pool` of anvils keyed on `VITEST_POOL_ID` behind a small
-registry (`GET /<poolId>` → that worker's anvil URL, started on first use); each worker then
+(`test/global-setup.ts`) keeps one anvil per `VITEST_POOL_ID` behind a small registry
+(`GET /<poolId>` → that worker's anvil URL, started on first use); each worker then
 talks to its anvil directly over keep-alive connections. Not through prool's proxy `Server`: it
 closes the connection after every request on both hops, and the resulting TIME_WAIT churn
 (~17,000 loopback sockets per run) reset fresh connections at connect, failing whole files on an
 unretried `eth_sendRawTransaction` (`connect ECONNRESET`).
+
+Every anvil in the repository is started and stopped by `spawnAnvil`
+(`packages/evs/test/harness/anvil-process.ts`): the two integration global setups, the fork
+suite and the examples, which import it by relative path. Start one only through it. It wraps
+prool's anvil instance for three reasons:
+
+- **A missing binary is an error.** prool never settles `start()` when `anvil` cannot be
+  spawned, which leaves an integration run waiting forever and ends an example on an unsettled
+  top-level await. The helper runs `anvil --version` first (`requireFoundryTool` in
+  `packages/contracts/scripts/foundry.ts`, which the codegen uses for `forge`) and bounds every
+  start with a timeout that kills the child.
+- **anvil binds its own port.** It starts on port 0 and the helper reads the port from the
+  "Listening on" line, so there is no free-port probe and no window in which another process
+  takes the port.
+- **A stopped anvil lets the process exit.** prool's `stop()` removes every listener of the
+  child before killing it, the ones of execa (which it spawns through) included. execa then
+  never sees the exit and leaves its force-kill timer armed, which keeps a test run or an
+  example alive for 5 seconds after its last line. The helper kills the child and waits for
+  its exit before it calls `stop()`; `test/integration/anvil-process.test.ts` measures the
+  idle time of a process that stopped its anvil.
 
 ## Releasing
 
