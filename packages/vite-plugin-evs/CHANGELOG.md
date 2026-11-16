@@ -1,5 +1,13 @@
 # @maxencerb/vite-plugin-evs
 
+## 0.1.3
+
+### Patch Changes
+
+- [#189](https://github.com/maxencerb/evs/pull/189) [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462) Thanks [@maxencerb](https://github.com/maxencerb)! - Requires `@maxencerb/evs` 0.7.0: the peer range moves to `^0.7.0`, so a project that keeps `@maxencerb/evs` on `^0.6.0` gets a peer conflict (`ERESOLVE` from npm) with this release. Upgrade both, or stay on 0.1.2 with `@maxencerb/evs` 0.6.0. The plugin's own code does not change. The chunk a client loads on its first `explainRevert()` grows, since it now carries what computes the keys of debug data written without them: from 8.7 to 11.4 kB minified (3.2 to 4.1 kB brotli) in `examples/vite-precompile`. The chunks a client loads up front do not change.
+- Updated dependencies [[`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`d37a8b3`](https://github.com/maxencerb/evs/commit/d37a8b37d7c3d332efefbacd975416b967b5b092), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`44707c7`](https://github.com/maxencerb/evs/commit/44707c792a96f0a96441009efd1aec6e47a8ae84), [`193d73a`](https://github.com/maxencerb/evs/commit/193d73aa2ffc5fc2b4726b5a6d081e0b1274c1bd), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`7c37ac9`](https://github.com/maxencerb/evs/commit/7c37ac9246458141720d3a0bbaf6079d6e4d27cc), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`ed8a754`](https://github.com/maxencerb/evs/commit/ed8a75433734244d245a0fc316ebbe12256f9462), [`7c37ac9`](https://github.com/maxencerb/evs/commit/7c37ac9246458141720d3a0bbaf6079d6e4d27cc), [`ae86cd8`](https://github.com/maxencerb/evs/commit/ae86cd86db49fe9786929b6140652dce3284db0d), [`44707c7`](https://github.com/maxencerb/evs/commit/44707c792a96f0a96441009efd1aec6e47a8ae84), [`44707c7`](https://github.com/maxencerb/evs/commit/44707c792a96f0a96441009efd1aec6e47a8ae84), [`7c37ac9`](https://github.com/maxencerb/evs/commit/7c37ac9246458141720d3a0bbaf6079d6e4d27cc)]:
+  - @maxencerb/evs@0.7.0
+
 ## 0.1.2
 
 ### Patch Changes
