@@ -291,6 +291,20 @@ describe('the causes of an EvsDecodeError, by what its site decodes', () => {
     );
   });
 
+  test('EvsInvalidCalldata counts an out-of-range argument word among its causes', () => {
+    const script = evscript({ name: 'echo', args: [t.uint8] }, (s, x) => s.return({ x }));
+    const compiled = compile(script);
+    const explained = compiled.explainRevert(
+      encodeErrorResult({ abi: compiled.abi, errorName: 'EvsInvalidCalldata' }),
+    );
+    expect(explained.kind).toBe('evs-invalid-calldata');
+    expect(explained.message).toBe(
+      'calldata does not match echo(uint8) — the script reverted EvsInvalidCalldata() (wrong ' +
+        'selector, truncated calldata, malformed dynamic arguments, or an argument word out of ' +
+        'range for its type)',
+    );
+  });
+
   test('a revertReturns site: the call returned, or the revert data does not decode', () => {
     const script = evscript({ name: 'q', args: [t.address] }, (s, quoter) => {
       const amount = s.call({

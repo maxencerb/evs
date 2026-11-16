@@ -351,7 +351,8 @@ function explainInvalidCalldata(raw: Hex, ctx: ExplainContext): RevertExplanatio
     kind: 'evs-invalid-calldata',
     message:
       `calldata does not match ${signature} — the script reverted EvsInvalidCalldata() ` +
-      `(wrong selector, truncated calldata, or malformed dynamic arguments)${hedge}`,
+      `(wrong selector, truncated calldata, malformed dynamic arguments, or an argument ` +
+      `word out of range for its type)${hedge}`,
     raw,
   };
 }
