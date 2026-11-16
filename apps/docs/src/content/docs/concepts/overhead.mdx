@@ -16,7 +16,7 @@ For the [pool metadata example](/examples/pool-metadata/) and its eight reads:
 
 | Cost | Paid | How much |
 | --- | --- | --- |
-| Load the library | once per page or process | 68 kB of JavaScript (brotli), 15 ms to import in Node |
+| Load the library | once per page or process | 70 kB of JavaScript (brotli), 15 ms to import in Node |
 | Record the script | once per script | 1.8 ms the first time, 0.02 ms warm |
 | Compile it | once per script | 4.3 ms the first time, 0.13 ms warm |
 | Encode and decode | every call | 0.015 ms |
@@ -93,8 +93,8 @@ Bundled and minified with esbuild. viem is a peer dependency and is not counted.
 
 | Import | Minified | gzip | brotli |
 | --- | --- | --- | --- |
-| `compile`, `evscript`, `t` | 265 kB | 80 kB | 68 kB |
-| Everything the package exports | 308 kB | 92 kB | 78 kB |
+| `compile`, `evscript`, `t` | 270 kB | 82 kB | 70 kB |
+| Everything the package exports | 315 kB | 95 kB | 80 kB |
 | `hydrate`, from `@maxencerb/evs/runtime` | 4.5 kB | 2.0 kB | 1.7 kB |
 | `hydrate`, `decodeScriptError`, `matchScriptError` | 10.3 kB | 4.2 kB | 3.8 kB |
 
@@ -107,7 +107,7 @@ brotli.
 
 ### Download
 
-The extra time to download those 68 kB, measured in Chromium with a throttled connection:
+The extra time to download those 70 kB, measured in Chromium with a throttled connection:
 
 | Connection | Extra download time |
 | --- | --- |
@@ -207,7 +207,7 @@ export const compiled = compile(poolTokens);
 
 ### Load it later
 
-Import that module dynamically and the bundler moves evs out of your main bundle. The 68 kB
+Import that module dynamically and the bundler moves evs out of your main bundle. The 70 kB
 load the first time the function runs.
 
 ```ts {9}
@@ -274,8 +274,8 @@ the same source files, with the plugin off and on. Sizes are what loads up front
 | App | Size | Added |
 | --- | --- | --- |
 | viem, 2 multicalls | 71.5 kB | |
-| evs, compiled in the browser | 136.6 kB | 65.1 kB |
-| evs, precompiled by the plugin | 75.6 kB | 4.2 kB |
+| evs, compiled in the browser | 138.2 kB | 66.7 kB |
+| evs, precompiled by the plugin | 75.7 kB | 4.2 kB |
 
 What each evs app does when it starts, timed in Node. The precompiled app imports
 `@maxencerb/evs/runtime`, which holds no compiler.
@@ -297,7 +297,7 @@ The work moves to the build. One `vite build` of each app:
 | evs, compiled in the browser | 79 ms |
 | evs, precompiled by the plugin | 88 ms, 42 ms of it to run the `*.evs.ts` file |
 
-- **4 kB instead of 65 kB.** The app loads the script's ABI, its 1,160 bytes of bytecode and
+- **4 kB instead of 67 kB.** The app loads the script's ABI, its 1,160 bytes of bytecode and
   the code that makes them callable.
 - **Each call costs the same.** The bytecode is identical with and without the plugin, so the
   [per-call figures](#each-call) do not change.
@@ -305,8 +305,8 @@ The work moves to the build. One `vite build` of each app:
   [`decodeScriptError`](/reference/utilities/decode-script-error/) and
   [`matchScriptError`](/reference/utilities/match-script-error/) read the ABI, which is
   shipped. Import them from `@maxencerb/evs/runtime`: see [library size](#library-size).
-- **`explainRevert` loads on demand.** Its first call downloads the explain code, 4.6 kB, and
-  the script's debug data, 0.7 kB.
+- **`explainRevert` loads on demand.** Its first call downloads the explain code, 5.1 kB, and
+  the script's debug data, 0.8 kB.
 
 [Precompiling scripts](/guides/precompiling/) has the rules for script files, the build errors
 and the route [without Vite](/guides/precompiling/#without-vite).
