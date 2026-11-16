@@ -68,7 +68,7 @@ A script reverts with one of these payloads:
 | --- | --- |
 | `Panic(uint256)` | a checked operation failed: an overflow, a division by zero, an index out of bounds. See [panic codes](/reference/diagnostics/#panic-codes) |
 | An error you declared | your own [`s.throw`](/reference/builder/throw/) |
-| `EvsDecodeError(uint256 site)` | a strict call returned data that does not decode |
+| `EvsDecodeError(uint256 site)` | a strict call returned data that does not decode, or its address has no code |
 | `EvsInvalidCalldata()` | the calldata does not match the script's function |
 | The callee's payload | a contract called through a strict verb reverted |
 | No data | see [failures without revert data](#failures-without-revert-data) |

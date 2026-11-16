@@ -16,12 +16,12 @@ For the [pool metadata example](/examples/pool-metadata/) and its eight reads:
 
 | Cost | Paid | How much |
 | --- | --- | --- |
-| Load the library | once per page or process | 67 kB of JavaScript (brotli), 14 ms to import in Node |
-| Record the script | once per script | 1.7 ms the first time, 0.02 ms warm |
-| Compile it | once per script | 4.1 ms the first time, 0.13 ms warm |
+| Load the library | once per page or process | 70 kB of JavaScript (brotli), 15 ms to import in Node |
+| Record the script | once per script | 1.8 ms the first time, 0.02 ms warm |
+| Compile it | once per script | 4.3 ms the first time, 0.13 ms warm |
 | Encode and decode | every call | 0.015 ms |
-| Send the bytecode | every call | a 3.8 kB request |
-| Create the script on the node | every deployless call | 468,000 gas, against 50,000 in state-override mode |
+| Send the bytecode | every call | a 3.7 kB request |
+| Create the script on the node | every deployless call | 460,000 gas, against 50,000 in state-override mode |
 
 The first three rows move to the build when you
 [precompile](#precompile-at-build-time): the app then loads 4 kB more than plain viem and gets
@@ -66,10 +66,10 @@ The first call in a fresh Node process, which is what an app pays:
 
 | Script | Statements | Bytecode | Record | Compile |
 | --- | --- | --- | --- | --- |
-| [`supplyOf`](/concepts/how-it-works/): 1 read | 1 | 194 bytes | 1.1 | 2.8 |
-| [Pool metadata](/examples/pool-metadata/): 8 reads | 10 | 1,196 bytes | 1.7 | 4.1 |
-| [Balances](/examples/token-balances/): a loop | 15 | 586 bytes | 1.8 | 4.0 |
-| 100 reads recorded by a JavaScript loop | 602 | 13,350 bytes | 3.0 | 12.6 |
+| [`supplyOf`](/concepts/how-it-works/): 1 read | 1 | 180 bytes | 1.1 | 3.1 |
+| [Pool metadata](/examples/pool-metadata/): 8 reads | 10 | 1,160 bytes | 1.8 | 4.3 |
+| [Balances](/examples/token-balances/): a loop | 15 | 555 bytes | 2.0 | 4.4 |
+| 100 reads recorded by a JavaScript loop | 602 | 13,322 bytes | 3.1 | 13.1 |
 
 The same calls once the JavaScript engine has optimized the compiler:
 
@@ -77,14 +77,14 @@ The same calls once the JavaScript engine has optimized the compiler:
 | --- | --- | --- | --- |
 | `supplyOf` | 0.003 | 0.03 | 0.04 |
 | Pool metadata | 0.02 | 0.13 | 0.21 |
-| Balances | 0.01 | 0.08 | 0.13 |
-| 100 reads | 0.32 | 1.80 | 3.15 |
+| Balances | 0.01 | 0.07 | 0.13 |
+| 100 reads | 0.32 | 1.92 | 3.26 |
 
 - **You pay the first table.** An app records and compiles each script once, cold. A
   [precompiled](#precompile-at-build-time) script skips both steps.
 - **It warms up fast.** Compiling the pool metadata script a second time took 0.9 ms.
-- **The import costs more than the compile.** Importing evs took 14 ms, after 68 ms for viem.
-- **`optimize` adds 30% to 75%** to the compile: see
+- **The import costs more than the compile.** Importing evs took 15 ms, after 70 ms for viem.
+- **`optimize` adds 30% to 85%** to the compile: see
   [what it saves](/concepts/compilation/#what-it-saves).
 
 ## Library size
@@ -93,8 +93,8 @@ Bundled and minified with esbuild. viem is a peer dependency and is not counted.
 
 | Import | Minified | gzip | brotli |
 | --- | --- | --- | --- |
-| `compile`, `evscript`, `t` | 262 kB | 79 kB | 67 kB |
-| Everything the package exports | 305 kB | 91 kB | 77 kB |
+| `compile`, `evscript`, `t` | 270 kB | 82 kB | 70 kB |
+| Everything the package exports | 315 kB | 95 kB | 80 kB |
 | `hydrate`, from `@maxencerb/evs/runtime` | 4.5 kB | 2.0 kB | 1.7 kB |
 | `hydrate`, `decodeScriptError`, `matchScriptError` | 10.3 kB | 4.2 kB | 3.8 kB |
 
@@ -107,7 +107,7 @@ brotli.
 
 ### Download
 
-The extra time to download those 67 kB, measured in Chromium with a throttled connection:
+The extra time to download those 70 kB, measured in Chromium with a throttled connection:
 
 | Connection | Extra download time |
 | --- | --- |
@@ -153,12 +153,12 @@ return.
 | --- | --- | --- |
 | Round trips | 2 | 1 |
 | CPU in your app | 0.089 ms | 0.015 ms |
-| Request size | 1.8 kB + 1.9 kB | 3.8 kB |
+| Request size | 1.8 kB + 1.9 kB | 3.7 kB |
 | Response size | 1.8 kB + 1.7 kB | 0.8 kB |
 | Against a local anvil | 0.38 ms | 0.16 ms |
 
 - **The request carries the script.** Here it weighs as much as the two multicalls together.
-- **The setup pays for itself.** A cold record and compile cost 5.8 ms, usually less than
+- **The setup pays for itself.** A cold record and compile cost 6.0 ms, usually less than
   one round trip to a hosted node.
 - **wagmi costs the same.** Its `readContract` hands the call to viem's: 0.015 ms measured.
 - **wagmi's default config waits before a multicall.** Its `batch.multicall` setting sends
@@ -207,7 +207,7 @@ export const compiled = compile(poolTokens);
 
 ### Load it later
 
-Import that module dynamically and the bundler moves evs out of your main bundle. The 67 kB
+Import that module dynamically and the bundler moves evs out of your main bundle. The 70 kB
 load the first time the function runs.
 
 ```ts {9}
@@ -274,7 +274,7 @@ the same source files, with the plugin off and on. Sizes are what loads up front
 | App | Size | Added |
 | --- | --- | --- |
 | viem, 2 multicalls | 71.5 kB | |
-| evs, compiled in the browser | 136.0 kB | 64.5 kB |
+| evs, compiled in the browser | 138.2 kB | 66.7 kB |
 | evs, precompiled by the plugin | 75.7 kB | 4.2 kB |
 
 What each evs app does when it starts, timed in Node. The precompiled app imports
@@ -282,9 +282,9 @@ What each evs app does when it starts, timed in Node. The precompiled app import
 
 | Step | Compiled in the browser | Precompiled |
 | --- | --- | --- |
-| Import the library | 14 ms | 3.4 ms |
-| Get the script, first time | 5.8 ms to record and compile | 0.12 ms to hydrate |
-| Get the script, warm | 0.16 ms | 0.002 ms |
+| Import the library | 15 ms | 3.7 ms |
+| Get the script, first time | 6.0 ms to record and compile | 0.12 ms to hydrate |
+| Get the script, warm | 0.15 ms | 0.002 ms |
 
 In Chromium the precompiled app starts within 1 ms of the viem app: see
 [start-up](#start-up).
@@ -293,11 +293,11 @@ The work moves to the build. One `vite build` of each app:
 
 | App | Build time |
 | --- | --- |
-| viem, 2 multicalls | 57 ms |
+| viem, 2 multicalls | 60 ms |
 | evs, compiled in the browser | 79 ms |
-| evs, precompiled by the plugin | 90 ms, 41 ms of it to run the `*.evs.ts` file |
+| evs, precompiled by the plugin | 88 ms, 42 ms of it to run the `*.evs.ts` file |
 
-- **4 kB instead of 64 kB.** The app loads the script's ABI, its 1,196 bytes of bytecode and
+- **4 kB instead of 67 kB.** The app loads the script's ABI, its 1,160 bytes of bytecode and
   the code that makes them callable.
 - **Each call costs the same.** The bytecode is identical with and without the plugin, so the
   [per-call figures](#each-call) do not change.
@@ -305,8 +305,8 @@ The work moves to the build. One `vite build` of each app:
   [`decodeScriptError`](/reference/utilities/decode-script-error/) and
   [`matchScriptError`](/reference/utilities/match-script-error/) read the ABI, which is
   shipped. Import them from `@maxencerb/evs/runtime`: see [library size](#library-size).
-- **`explainRevert` loads on demand.** Its first call downloads the explain code, 4.3 kB, and
-  the script's debug data, 0.7 kB.
+- **`explainRevert` loads on demand.** Its first call downloads the explain code, 5.1 kB, and
+  the script's debug data, 0.8 kB.
 
 [Precompiling scripts](/guides/precompiling/) has the rules for script files, the build errors
 and the route [without Vite](/guides/precompiling/#without-vite).

@@ -14,10 +14,10 @@ import {
   headOffsets,
   headOffsetAt,
   usesRecursiveCodec,
-  emitNormalizeWord,
   isRecursiveArray,
   wordNeedsNormalize,
-  emitCopyNormalizeWordArray,
+  emitCopyCheckedWordArray,
+  WordRunChecks,
   needsDecodeBudget,
   emitInitDecodeBudget,
   effectiveDecodeBudget,
@@ -44,6 +44,8 @@ import {
   pushSnapEnd,
   pushSnap,
   emitTryEpilogue,
+  checksTargetCode,
+  emitTargetCodeCheck,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -88,6 +90,8 @@ export function emitStaticCall(
   const failPre = makeDecodeFail(w, plan, tryMode, 'call');
   const fail = restore === null ? failPre : makeDecodeFail(w, plan, tryMode, 'call', restore);
 
+  // -- 0. a function without outputs: the target must have code ---------------------------------
+  if (checksTargetCode(stmt)) emitTargetCodeCheck(w, plan, `target of ${fnAbi.name}`);
   // -- 1. calldata template into transient scratch (free pointer NOT bumped) -------------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
   // -- 2. the subcall and its failure arm ------------------------------------------------------
@@ -98,7 +102,7 @@ export function emitStaticCall(
   ); // [success, buf]
   emitCallOutcome(w, plan); // [buf]
 
-  // -- 3. decode (guard BEFORE any head read; snapshot; normalize/validate). Under revertReturns
+  // -- 3. decode (guard BEFORE any head read; snapshot; range checks). Under revertReturns
   //       the returndata IS the revert payload — the sequence is byte-identical. ----------------
   if (outputs.length > 0) {
     emitDecodeOutputs(w, plan, outputs, {
@@ -191,10 +195,11 @@ function emitCallOutcome(w: AsmWriter, plan: CallSitePlan): void {
 /**
  * Decodes a call's outputs from its returndata, `[buf] → [buf]`, each into its out slot: the
  * head-size guard (`rds ≥ headBytes(outputs)`, before any head read), the snapshot at `buf`,
- * then per output a normalized word, a recursive-codec value through
- * {@link emitDecodeFromRegion}, or a leaf `string` / `bytes` / word array
- * ({@link emitLeafDynOutput}). `failPre` routes the guard's failure (before the snapshot), `fail`
- * every later one.
+ * then per output a range-checked word (a word out of range for its type is a decode failure,
+ * never masked: {@link WordRunChecks}, one branch per run of consecutive word outputs), a
+ * recursive-codec value through {@link emitDecodeFromRegion}, or a leaf `string` / `bytes` / word
+ * array ({@link emitLeafDynOutput}). `failPre` routes the guard's failure (before the snapshot),
+ * `fail` every later one.
  */
 function emitDecodeOutputs(
   w: AsmWriter,
@@ -233,6 +238,8 @@ function emitDecodeOutputs(
   }); // [buf]
   if (budgeted) emitInitDecodeBudget(w, () => pushSnapEnd(w), 0); // [buf]
 
+  const layouts = outputs.map((p) => layoutOfType(abiParamToType(p)));
+  const words = new WordRunChecks(w, layouts, fail, 1);
   outputs.forEach((out, j) => {
     const ref = plan.outRefs[j];
     if (ref === undefined) throw internal(`missing out ref #${j}`);
@@ -241,15 +248,16 @@ function emitDecodeOutputs(
     const headOffset = headOffsetAt(outOffsets, j);
 
     if (layout.kind === 'word') {
-      w.op('DUP1');
+      w.op(words.pending ? 'DUP2' : 'DUP1'); // buf, beneath a run's accumulated check
       if (headOffset !== 0) {
         w.push(headOffset);
         w.op('ADD');
       }
       w.op('MLOAD'); // [raw, buf]
-      emitNormalizeWord(w, layout.abi); // normalize-don't-revert
-      w.push(ref.slot);
-      w.op('MSTORE', { note: `out #${j} ${out.type}` }); // [buf]
+      words.checkAndStore(j, layout.abi, () => {
+        w.push(ref.slot);
+        w.op('MSTORE', { note: `out #${j} ${out.type}` });
+      }); // [buf]   (beneath the run's accumulated check, until its last word)
       return;
     }
 
@@ -288,7 +296,7 @@ function emitDecodeOutputs(
     const copied = emitLeafDynOutput(w, layout, headOffset, fail); // [ptr, buf]
     w.push(ref.slot);
     w.op('MSTORE', {
-      note: `out #${j} ${out.type} (${copied ? 'normalized copy' : 'memref aliases snapshot'})`,
+      note: `out #${j} ${out.type} (${copied ? 'checked copy' : 'memref aliases snapshot'})`,
     }); // [buf]
   });
 }
@@ -338,7 +346,7 @@ export function emitDecodeReturnOutput(
  * The leaf-dynamic fast path for a `string` / `bytes` / dynamic word-array output, `[buf] →
  * [ptr, buf]`: reads its offset straight off the snapshot on the stack (`off ≤ 2^64−1`,
  * `off + 32 ≤ rds`, `len ≤ 2^64−1`, `ptr + 32 + nbytes ≤ buf + rds`) and aliases the snapshot —
- * or, for narrow elements, a normalized copy (returns true then).
+ * or, for narrow elements, a copy with every element range-checked (returns true then).
  */
 function emitLeafDynOutput(
   w: AsmWriter,
@@ -388,14 +396,12 @@ function emitLeafDynOutput(
 
   if (layout.kind !== 'array') return false;
   // dynamic word-element array (every other array is a recursive-codec value): full-word elements
-  // alias the snapshot; narrow ones are normalized into a copy.
+  // alias the snapshot; narrow ones are copied, each element range-checked.
   if (layout.elem.kind !== 'word' || isRecursiveArray(layout)) {
     throw internal('recursive-codec array reached the word-array decode path');
   }
   const elemAbi = layout.elem.abi;
   if (!wordNeedsNormalize(elemAbi)) return false;
-  // narrow elements: normalize into a fresh copy, never in place — another output may alias the
-  // same snapshot bytes (overlapping offsets in non-canonical returndata)
-  emitCopyNormalizeWordArray(w, elemAbi, 1); // [copy, buf]
+  emitCopyCheckedWordArray(w, elemAbi, 1, fail); // [copy, buf]
   return true;
 }

@@ -155,14 +155,17 @@ Makes `value` one `Tuple` keyed by output name. See
 - the target runs out of gas, including the [`gas`](#gas-optional) you allow it;
 - the return data does not decode against the ABI: too short, or with offsets that are out of
   bounds or overlap heavily;
-- the address has no code: the call returns empty data, which does not decode.
+- a returned word is out of range for its type: a `uint8` holding 300, a `bool` holding 2. See
+  [out-of-range words](/reference/diagnostics/#out-of-range-words);
+- the address has no code. A function with outputs gets empty return data, which does not
+  decode. A function without outputs is not called: the script checks the address first.
 
-`success` is still `true` when a returned word is out of range for its type.
+A Solidity caller reverts in each of these cases. `success: true` means the call ran and every
+returned word fits its type.
 
-:::caution[Success is not a range check]
-An out-of-range word is masked to its type: a `decimals()` that returns 300 gives
-`success: true` and `value: 44`. To catch it, declare the output as `uint256` in your own ABI
-and check the range in the script.
+:::note[Stricter than viem]
+viem decodes a `decimals()` that returns 300 as `300`. Here the call fails: `success` is `false`
+and `value` is `0`. To read the raw word, declare the output as `uint256` in your own ABI.
 :::
 
 ## Errors

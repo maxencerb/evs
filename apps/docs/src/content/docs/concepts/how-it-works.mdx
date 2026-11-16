@@ -89,19 +89,19 @@ The `s.read` is a `STATICCALL`. When the callee reverts, the script reverts with
 
 ```txt
 …
-0x0060  6080        PUSH1 0x80
-0x0062  51          MLOAD  ; target
-0x0063  5a          GAS
-0x0064  fa          STATICCALL  ; strict read totalSupply (site 0)
-0x0065  610070      PUSH2 0x0070 → @call_ok_0
-0x0068  57          JUMPI
-0x0069  3d          RETURNDATASIZE
-0x006a  5f          PUSH0
-0x006b  5f          PUSH0
-0x006c  3e          RETURNDATACOPY
-0x006d  3d          RETURNDATASIZE
-0x006e  5f          PUSH0
-0x006f  fd          REVERT  ; bubble callee revert
+0x0052  6080        PUSH1 0x80
+0x0054  51          MLOAD  ; target
+0x0055  5a          GAS
+0x0056  fa          STATICCALL  ; strict read totalSupply (site 0)
+0x0057  610062      PUSH2 0x0062 → @call_ok_0
+0x005a  57          JUMPI
+0x005b  3d          RETURNDATASIZE
+0x005c  5f          PUSH0
+0x005d  5f          PUSH0
+0x005e  3e          RETURNDATACOPY
+0x005f  3d          RETURNDATASIZE
+0x0060  5f          PUSH0
+0x0061  fd          REVERT  ; bubble callee revert
 …
 ```
 

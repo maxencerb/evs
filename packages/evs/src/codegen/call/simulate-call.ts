@@ -41,6 +41,8 @@ import {
   emitTryEpilogue,
   emitSelectorWord,
   literalBytes,
+  checksTargetCode,
+  emitTargetCodeCheck,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -102,6 +104,9 @@ export function emitSimulateCall(
   const failPre = makeDecodeFail(w, plan, tryMode, 'sim');
   const fail = restore === null ? failPre : makeDecodeFail(w, plan, tryMode, 'sim', restore);
 
+  // -- 0. a function without outputs: the target must have code. Checked here, in the outer
+  // frame, before the hop: the trampoline serves every simulate site and cannot know ------------
+  if (checksTargetCode(stmt)) emitTargetCodeCheck(w, plan, `target of ${fnAbi.name}`);
   // -- 1. build the target calldata (the payload) — identical to the call/read path -----------
   const template = emitCalldataFor(w, plan, tails, opts, dataSeg);
 

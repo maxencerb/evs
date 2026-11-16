@@ -1,6 +1,7 @@
 /**
  * `ir/interp/decode.ts` — the returndata decode of a sub-call's outputs: exact bounds checks,
- * normalization and the decode-work budget, the byte-for-byte mirror of the compiled decoder.
+ * the range check of every word and the decode-work budget, the byte-for-byte mirror of the
+ * compiled decoder.
  */
 
 import {
@@ -26,7 +27,7 @@ import { headWords, abiIsDynamic } from './encode.js';
 import { type Value, readWord, U64_MAX, isPlainTuple, asArrayType } from './values.js';
 
 // ---------------------------------------------------------------------------
-// returndata decode (steps 3–5 — exact bounds + normalization)
+// returndata decode (steps 3–5 — exact bounds + word range checks)
 // ---------------------------------------------------------------------------
 
 /**
@@ -45,7 +46,8 @@ function charge(budget: DecodeBudget, bytes: number | null): boolean {
   return budget.left >= 0;
 }
 
-/** `null` = structural decode failure (the per-site `EvsDecodeError` / tryCall-zero trigger). */
+/** `null` = decode failure: a structural one, or a word out of range for its type (the per-site
+ *  `EvsDecodeError` / tryCall-zero trigger). */
 export function decodeOutputs(
   outputs: PlainAbiFunction['outputs'],
   data: Uint8Array,
@@ -63,8 +65,9 @@ function abiHeadBytes(params: readonly NamedType[]): number {
 /**
  * Decodes one ABI head/tail block (`components`) from `data` at `[base, end)`, where dynamic
  * offsets are relative to `base`. Returns the member values (dynamic members own fresh buffers /
- * nested flat blocks, never aliasing). `null` on any structural failure. Mirrors the codegen
- * memory decoder byte-for-byte; static word outputs normalize-don't-revert. `outputs`: this block
+ * nested flat blocks, never aliasing). `null` on any structural failure and on a word out of
+ * range for its type (never masked: solc's decoder reverts on one). Mirrors the codegen memory
+ * decoder byte-for-byte. `outputs`: this block
  * is the call's output list (its members are top-level outputs); `repeated`: it sits inside an
  * element of an ABI-dynamic array (see `arrayDecodeCharge`).
  */
@@ -104,7 +107,8 @@ function decodeBlock(
   return decoded;
 }
 
-/** Decodes a static member: word → normalized canonical; static plain tuple → inlined recurse;
+/** Decodes a static member: word → itself when canonical for its type, a failure otherwise;
+ *  static plain tuple → inlined recurse;
  *  static fixed-size array `T[N]` → N elements inlined at `at + i·staticSize(T)` (the caller's
  *  head guard already proved the whole static region fits). Never charges the decode-work budget:
  *  a static value is inlined, charged with the block that holds it. */
@@ -133,7 +137,9 @@ function decodeStatic(type: EvsType, data: Uint8Array, at: number, end: number):
       `interpret: decodeStatic over non-word '${stringifyType(type)}'`,
     );
   }
-  return canonWord(type, readWord(data, at));
+  // a word the script did not compute is refused when out of range, never wrapped into range
+  const word = readWord(data, at);
+  return canonWord(type, word) === word ? word : null;
 }
 
 /** Decodes a dynamic member at `ptr` (dynamic plain tuple → recurse; string/bytes → fresh buffer;

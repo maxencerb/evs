@@ -8,8 +8,9 @@ pragma solidity 0.8.30;
 ///         assembly that violates the ABI shape its Solidity signature declares: wrong
 ///         lengths, returndata shorter than the head, absurd/huge head offsets, huge
 ///         lengths, off-by-one tail truncations, and non-canonical (dirty-word) values.
-///         evs strict calls must revert `EvsDecodeError(site)` on the structural cases and
-///         must NORMALIZE (not revert) the dirty-word cases; tryCall must zero on failure.
+///         evs strict calls must revert `EvsDecodeError(site)` on every one of them, the
+///         dirty-word cases included (solc's ABI decoder reverts on those too: it never
+///         masks a word into range); tryCall must zero on failure.
 contract Malformed {
     // ------------------------------------------------ returndata shorter than the head
     /// @dev Declared `string` but returns ZERO bytes — rds < 32 * nOutputs.
@@ -116,7 +117,7 @@ contract Malformed {
     }
 
     // ------------------------------------------------ non-canonical word values
-    /// @dev Declared `bool` but the word is 2 — evs must normalize (ISZERO ISZERO) to true.
+    /// @dev Declared `bool` but the word is 2 — out of range, a decode failure.
     function dirtyBool() external pure returns (bool) {
         assembly {
             mstore(0x00, 2)
@@ -124,7 +125,7 @@ contract Malformed {
         }
     }
 
-    /// @dev Declared `uint8` but every bit of the word is set — evs must mask to 0xff.
+    /// @dev Declared `uint8` but every bit of the word is set — out of range, a decode failure.
     function dirtyUint8() external pure returns (uint8) {
         assembly {
             mstore(0x00, not(0))
@@ -132,7 +133,7 @@ contract Malformed {
         }
     }
 
-    /// @dev Declared `address` but the high 96 bits are dirty — evs must mask to 160 bits.
+    /// @dev Declared `address` but the high 96 bits are dirty — out of range, a decode failure.
     function dirtyAddress() external pure returns (address) {
         assembly {
             mstore(0x00, not(0))
@@ -141,10 +142,19 @@ contract Malformed {
     }
 
     /// @dev Declared `int8`; word is 0x80 (NOT sign-extended) — canonical int8 -128 is the
-    ///      all-high-bits word; evs must SIGNEXTEND-normalize.
+    ///      all-high-bits word, so this one is out of range, a decode failure.
     function dirtyInt8() external pure returns (int8) {
         assembly {
             mstore(0x00, 0x80)
+            return(0x00, 0x20)
+        }
+    }
+
+    /// @dev Declared `bytes4` but the low byte of the word is set — out of range, a decode
+    ///      failure (a `bytesN` is left-aligned, its low `32 - N` bytes zero).
+    function dirtyBytes4() external pure returns (bytes4) {
+        assembly {
+            mstore(0x00, or(shl(224, 0x11223344), 1))
             return(0x00, 0x20)
         }
     }

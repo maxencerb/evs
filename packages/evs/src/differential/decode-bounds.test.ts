@@ -13,8 +13,8 @@
  * - **Deep nesting.** Struct / array chains at the deepest shape that fits the stack window
  *   decode byte-exact; one level deeper is a coded `UNSUPPORTED_V0` compile error, never an
  *   INTERNAL asm-verifier crash.
- * - **Aliased tails.** Two outputs whose offsets share the same bytes: normalizing a narrow
- *   word array must not rewrite the bytes another decoded value reads.
+ * - **Aliased tails.** Two outputs whose offsets share the same bytes: each decodes its own value
+ *   from them, and an element out of range for the narrow reader fails the whole decode.
  * - **Overlapping element offsets.** N offsets of a nested array pointing at one inner block:
  *   full-word inner arrays alias it (linear work, the payload decodes), anything copied or
  *   re-materialized (narrow copies, pointer blocks, wide struct blocks, fixed-size `T[N]`
@@ -708,36 +708,56 @@ describe('deep struct / array nesting (review finding 5)', () => {
 // aliased tails (review finding 17)
 // ---------------------------------------------------------------------------
 
-describe('aliased tails: normalizing a narrow word array never rewrites shared bytes (review finding 17)', () => {
+describe('aliased tails: two values decoded from the same bytes (review finding 17)', () => {
   const AB = [
     { name: 'a', type: 'uint8[]' },
     { name: 'b', type: 'uint256[]' },
   ] as const;
-  // both offsets point at the same [len=1][0x1ff] tail
-  const flat = words(0x40n, 0x40n, 1n, 0x1ffn);
-  const tupled = words(0x20n, 0x40n, 0x40n, 1n, 0x1ffn);
-  // (string s, uint8[] a) sharing [len=1][0x41…01ff]: masking a's element in place would zero
-  // s's only byte ('A')
+  // both offsets point at the same [len=1][elem] tail
+  const flat = (elem: bigint): Hex => words(0x40n, 0x40n, 1n, elem);
+  const tupled = (elem: bigint): Hex => words(0x20n, 0x40n, 0x40n, 1n, elem);
+  // (string s, uint8[] a) sharing [len=1][word]: s is the word's first byte, a[0] the whole word
   const SA = [
     { name: 's', type: 'string' },
     { name: 'a', type: 'uint8[]' },
   ] as const;
-  const shared = concatHex(words(0x40n, 0x40n, 1n), `0x41${'00'.repeat(29)}01ff`);
+  const shared = (elem: Hex): Hex => concatHex(words(0x40n, 0x40n, 1n), elem);
 
+  // `data` holds an element in range for both readers: each decodes its own value from the
+  // shared bytes. `dirty` holds one that is out of range for the narrow reader only: the whole
+  // decode fails, whatever the other reader would have made of it.
   const CASES: readonly {
     label: string;
     outputs: readonly AbiParameter[];
     data: Hex;
     v: Readonly<Record<string, unknown>>;
+    dirty: Hex;
+    zero: Readonly<Record<string, unknown>>;
   }[] = [
-    { label: '(uint8[] a, uint256[] b)', outputs: AB, data: flat, v: { v0: [255], v1: [511n] } },
+    {
+      label: '(uint8[] a, uint256[] b)',
+      outputs: AB,
+      data: flat(0xffn),
+      v: { v0: [255], v1: [255n] },
+      dirty: flat(0x1ffn),
+      zero: { v0: [], v1: [] },
+    },
     {
       label: 'tuple(uint8[] a, uint256[] b)',
       outputs: [{ name: 'r', type: 'tuple', components: AB }],
-      data: tupled,
-      v: { v: { a: [255], b: [511n] } },
+      data: tupled(0xffn),
+      v: { v: { a: [255], b: [255n] } },
+      dirty: tupled(0x1ffn),
+      zero: { v: { a: [], b: [] } },
     },
-    { label: '(string s, uint8[] a)', outputs: SA, data: shared, v: { v0: 'A', v1: [255] } },
+    {
+      label: '(string s, uint8[] a)',
+      outputs: SA,
+      data: shared(word(0x41n)),
+      v: { v0: '\u0000', v1: [0x41] },
+      dirty: shared(`0x41${'00'.repeat(29)}01ff`), // 'A' as a string, far above 255 as a uint8
+      zero: { v0: '', v1: [] },
+    },
   ];
 
   for (const c of CASES) {
@@ -745,13 +765,19 @@ describe('aliased tails: normalizing a narrow word array never rewrites shared b
       for (const evmVersion of EVM_VERSIONS) {
         test(`${c.label} × ${verb} [${evmVersion}]`, async () => {
           const script = callScript(c.outputs, verb);
-          const [o] = await expectAgreement(
+          const [o, bad] = await expectAgreement(
             script,
-            [[addr(1)]],
-            { [addr(1)]: { kind: 'return', data: c.data } },
+            [[addr(1)], [addr(2)]],
+            {
+              [addr(1)]: { kind: 'return', data: c.data },
+              [addr(2)]: { kind: 'return', data: c.dirty },
+            },
             evmVersion,
           );
           expect(decodeOut(script, o)).toEqual(isTry(verb) ? { ok: true, ...c.v } : c.v);
+          expect(failureOf(script, verb, bad)).toEqual(
+            isTry(verb) ? { ok: false, ...c.zero } : { kind: 'revert', selector: DECODE_ERROR },
+          );
         });
       }
     }
@@ -760,27 +786,29 @@ describe('aliased tails: normalizing a narrow word array never rewrites shared b
   for (const evmVersion of EVM_VERSIONS) {
     test(`script args: tuple(uint8[] a, uint256[] b) and (uint8[] a, uint256[] b) with shared tails [${evmVersion}]`, async () => {
       const tupleScript = argScript(t.struct({ a: 'uint8[]', b: 'uint256[]' }));
-      const tupleRun = await execRuntime(
-        compile(tupleScript, { evmVersion }).runtimeBytecode,
-        concatHex(toFunctionSelector('y((uint8[],uint256[]))'), tupled),
-      );
+      const tupleRuntime = compile(tupleScript, { evmVersion }).runtimeBytecode;
+      const tupleSelector = toFunctionSelector('y((uint8[],uint256[]))');
+      const tupleRun = await execRuntime(tupleRuntime, concatHex(tupleSelector, tupled(0xffn)));
       expect(tupleRun.success).toBe(true);
       expect(decodeOut(tupleScript, { kind: 'return', data: tupleRun.data })).toEqual({
-        a: { a: [255], b: [511n] },
+        a: { a: [255], b: [255n] },
       });
+      const tupleDirty = await execRuntime(tupleRuntime, concatHex(tupleSelector, tupled(0x1ffn)));
+      expect(tupleDirty).toMatchObject({ success: false, data: INVALID_CALLDATA });
 
       const flatScript = evscript({ name: 'y', args: ['uint8[]', 'uint256[]'] }, (s, a, b) =>
         s.return({ a, b }),
       );
-      const flatRun = await execRuntime(
-        compile(flatScript, { evmVersion }).runtimeBytecode,
-        concatHex(toFunctionSelector('y(uint8[],uint256[])'), flat),
-      );
+      const flatRuntime = compile(flatScript, { evmVersion }).runtimeBytecode;
+      const flatSelector = toFunctionSelector('y(uint8[],uint256[])');
+      const flatRun = await execRuntime(flatRuntime, concatHex(flatSelector, flat(0xffn)));
       expect(flatRun.success).toBe(true);
       expect(decodeOut(flatScript, { kind: 'return', data: flatRun.data })).toEqual({
         a: [255],
-        b: [511n],
+        b: [255n],
       });
+      const flatDirty = await execRuntime(flatRuntime, concatHex(flatSelector, flat(0x1ffn)));
+      expect(flatDirty).toMatchObject({ success: false, data: INVALID_CALLDATA });
     });
   }
 });

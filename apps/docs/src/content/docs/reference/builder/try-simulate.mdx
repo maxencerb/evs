@@ -162,16 +162,15 @@ Makes `value` one `Tuple` keyed by output name. See
 - the target runs out of gas, including the [`gas`](#gas-optional) you allow it;
 - the return data does not decode against the ABI: too short, or with offsets that are out of
   bounds or overlap heavily;
-- the address has no code and the function has outputs: the empty return data does not decode;
+- a returned word is out of range for its type: a `uint8` holding 300, a `bool` holding 2. See
+  [out-of-range words](/reference/diagnostics/#out-of-range-words);
+- the address has no code. A function with outputs gets empty return data, which does not
+  decode. A function without outputs is not called: the script checks the address first;
 - the script's balance is below [`value`](/reference/builder/simulate/#value-optional).
 
-`success` is still `true` when:
+A Solidity caller reverts in each of these cases.
 
-- a returned word is out of range for its type. It is masked: a `uint8` holding 300 reads as 44;
-- the address has no code and the function has no outputs. Nothing ran: check
-  [`s.codeSize`](/reference/builder/balance/#scodesize) first.
-
-The target's state changes are rolled back in both cases.
+The target's state changes are rolled back whether the call succeeds or not.
 
 ## Errors
 

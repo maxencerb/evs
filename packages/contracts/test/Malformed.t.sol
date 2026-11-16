@@ -117,6 +117,12 @@ contract MalformedTest is Test {
         assertEq(_word(data, 0), 0x80); // not sign-extended on purpose
     }
 
+    function testDirtyBytes4() public view {
+        bytes memory data = _raw("dirtyBytes4()");
+        assertEq(data.length, 32);
+        assertEq(_word(data, 0), (uint256(0x11223344) << 224) | 1); // low byte set on purpose
+    }
+
     /// @dev External self-call wrappers: the typed decode runs (and reverts) inside THEIR
     ///      frame, so `vm.expectRevert` observes it as a call revert.
     function decodeTruncatedArrayTyped() external view returns (uint256[] memory) {

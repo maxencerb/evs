@@ -324,6 +324,10 @@ const chain: MockChain = {
 Answers `s.balance`, `s.codeSize` and `s.codeHash`. A missing field reads as zero or `'0x'`, and
 `undefined` means the account does not exist. Without this method, every account is empty.
 
+A call through a function without outputs reads it too. The script checks that the address has
+code before such a call, so the mock must report `code` there, or the call fails without
+reaching `staticcall` or `call`.
+
 ```ts {11-12}
 import { evscript, interpret, t, type MockChain } from '@maxencerb/evs';
 

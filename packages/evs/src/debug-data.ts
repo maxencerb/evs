@@ -111,13 +111,20 @@ function every(list: unknown, test: (item: unknown) => boolean): boolean {
   return true;
 }
 
-/** A statement list, and the lists nested in it: what `walkStmts` goes through. */
+/** A statement list, and the lists nested in it: what `walkStmts` goes through. Of a statement
+ *  itself only a call is read further (the function it calls, for the cause of a decode error). */
 function isBlock(block: unknown): boolean {
   return every(block, (stmt) => {
     if (!isObject(stmt) || typeof stmt['k'] !== 'string') return false;
     if (stmt['k'] === 'if') return isBlock(stmt['then']) && isBlock(stmt['else']);
+    if (stmt['k'] === 'call') return isCalledFunction(stmt['fnAbi']);
     return stmt['k'] !== 'while' || (isBlock(stmt['header']) && isBlock(stmt['body']));
   });
+}
+
+/** The function a call statement calls: its name, and how many outputs it declares. */
+function isCalledFunction(fnAbi: unknown): boolean {
+  return isObject(fnAbi) && typeof fnAbi['name'] === 'string' && Array.isArray(fnAbi['outputs']);
 }
 
 /** An argument type: a type string, or a tuple with its components. */

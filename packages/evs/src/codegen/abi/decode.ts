@@ -34,11 +34,12 @@ import {
   emitSubTupleBase,
 } from './encode.js';
 import {
-  emitNormalizeWord,
+  type DecodeFail,
+  emitWordOutOfRange,
   isRecursiveArray,
   wordElemAbi,
   wordNeedsNormalize,
-  emitCopyNormalizeWordArray,
+  emitCopyCheckedWordArray,
   emitCopyWordsLoop,
   isStackDecodedArray,
   ELEM_BASE,
@@ -65,12 +66,7 @@ import {
 
 type ArrayLayout = Extract<TypeLayout, { kind: 'array' }>;
 
-/**
- * @internal Shared with `codegen/call/`. A decode failure router: stack on entry `[bad, …live]`
- * → on the continue path `[…live]` (`liveDepth` items). Strict/calldata callers jump straight to
- * a checked stub; try-mode callers invert the branch, clean the stack, and jump to the zero block.
- */
-export type DecodeFail = (liveDepth: number) => void;
+export type { DecodeFail };
 
 /**
  * @internal Shared with `codegen/call/`. The source region a list of top-level ABI values is
@@ -362,12 +358,12 @@ function emitChargeArrayBlock(
  * Decodes one ABI tuple located in memory at `pushBase()` (offsets inside the tuple are relative
  * to that base) into a freshly-allocated flat-pointer block, and leaves the block pointer on the
  * stack. `pushEnd()` pushes the one-past-last valid source byte (bounds). Mirrors the interpreter's
- * `decodeOutputs` byte-for-byte: static word → normalized canonical word; static inner tuple →
- * inlined recurse; dynamic member (string/bytes/full-word T[]) → a memref **aliasing** the source;
- * narrow-element T[] → a normalized copy (never normalized in place: other values may alias the
- * same bytes); dynamic inner tuple → its whole head bounded (`ptr + headBytes ≤ end`), then a
- * recurse into its own block. Net stack +1 (the flat pointer); one live word (`flat`) per tuple
- * nesting level. No `emitMemCopy`, so the element-normalize loops are the only checked regions.
+ * `decodeOutputs` byte-for-byte: static word → range-checked (`fail` on a word out of range for
+ * its type, never a mask); static inner tuple → inlined recurse; dynamic member
+ * (string/bytes/full-word T[]) → a memref **aliasing** the source; narrow-element T[] → a
+ * range-checked copy; dynamic inner tuple → its whole head bounded (`ptr + headBytes ≤ end`), then
+ * a recurse into its own block. Net stack +1 (the flat pointer); one live word (`flat`) per tuple
+ * nesting level. No `emitMemCopy`, so the element-copy loops are the only checked regions.
  *
  * `opts.budget` charges the decode-work budget for the blocks it materializes (see
  * {@link DecodeBudget}): under `'repeated'` a dynamic tuple charges its head size before it
@@ -445,7 +441,10 @@ export function emitDecodeTupleToMem(
         w.op('ADD');
       }
       w.op('MLOAD'); // [raw, flat, …]
-      emitNormalizeWord(w, layout.abi); // normalize-don't-revert
+      if (wordNeedsNormalize(layout.abi)) {
+        emitWordOutOfRange(w, layout.abi, { keep: true }); // [bad, raw, flat, …]
+        fail(belowFlat + 2); // [raw, flat, …]
+      }
       emitStoreFlatSlot(w, j); // [flat, …]
       return;
     }
@@ -558,7 +557,8 @@ export function emitDecodeTupleToMem(
     w.op('LT'); // [end < ptr+32, ptr, flat, …]
     fail(belowFlat + 2); // [ptr, flat, …]
 
-    // leaf dynamic (string/bytes/word-array): bounds on len + payload, normalize array elems, alias ptr
+    // leaf dynamic (string/bytes/word-array): bounds on len + payload, then alias ptr (a narrow
+    // word array is copied, each element range-checked)
     const isArray = layout.kind === 'array';
     const elemAbi = isArray ? wordElemAbi(layout) : null;
     w.op('DUP1');
@@ -580,8 +580,7 @@ export function emitDecodeTupleToMem(
     fail(belowFlat + 2); // [ptr, flat, …]
 
     if (elemAbi !== null && wordNeedsNormalize(elemAbi)) {
-      // narrow elements: normalize into a fresh copy — never in place, since another decoded
-      // value may alias the same source bytes (overlapping offsets in non-canonical data)
+      // narrow elements: a fresh copy, each element range-checked on the way
       const c =
         budget !== 'off' && layout.kind === 'array'
           ? arrayDecodeCharge(layout, outputsBlock, budget === 'repeated')
@@ -592,10 +591,10 @@ export function emitDecodeTupleToMem(
         emitChargeArrayBlock(w, pushEnd, fail, belowFlat + 2, c);
         w.op('POP'); // [ptr, flat, …]
       }
-      emitCopyNormalizeWordArray(w, elemAbi, belowFlat + 1); // [copy, flat, …]
+      emitCopyCheckedWordArray(w, elemAbi, belowFlat + 1, fail); // [copy, flat, …]
     }
 
-    emitStoreFlatSlot(w, j); // [flat, …]   (the alias, or the normalized copy)
+    emitStoreFlatSlot(w, j); // [flat, …]   (the alias, or the checked copy)
   });
 }
 
@@ -823,10 +822,10 @@ function emitDup(w: AsmWriter, n: number): void {
  * bound (`base + 32·N ≤ end`, the heap path's check, before anything is allocated) the block is
  * allocated and the body copied in bulk:
  *
- * - a full-word element (`uint256`/`int256`/`bytes32`, nothing to normalize) on cancun: one `MCOPY`
+ * - a full-word element (`uint256`/`int256`/`bytes32`, every word in range) on cancun: one `MCOPY`
  *   (about 3 gas per element);
- * - otherwise the fused copy-and-normalize loop of {@link emitCopyWordsLoop} (fork-independent,
- *   any stack depth; it normalizes a narrow element on the way, about 70 gas per element).
+ * - otherwise the copy loop of {@link emitCopyWordsLoop} (fork-independent, any stack depth; it
+ *   range-checks a narrow element on the way: about 70 gas per element, 86 with the check).
  *
  * The heap-frame element loop this replaces costs about 205 gas per element. Never
  * `CALLDATACOPY`: the source is a memory snapshot (of the calldata or of the returndata). The
@@ -887,7 +886,7 @@ function emitDecodeFixedWordArray(
   w.op('SUB'); // [src, …]
   emitAllocBlock(); // [arr, src, …]
   w.push(32 * n); // [k = 32·N, arr, src, …]
-  emitCopyWordsLoop(w, elem, belowFlat); // [arr, …]
+  emitCopyWordsLoop(w, elem, belowFlat, fail); // [arr, …]
 }
 
 /**
@@ -900,7 +899,7 @@ function emitDecodeFixedWordArray(
  * - static element `E` (a STATIC tuple, or a word — `string[]`/`bytes[]` are dynamic): the body is
  *   contiguous, bound `D + len·staticSize ≤ end` up front, then each element decodes at
  *   `D + i·staticSize`. A static tuple element decodes to a fresh flat block (its pointer stored
- *   into `arr + 32 + 32·i`); a word element is normalized inline and stored as the slot value.
+ *   into `arr + 32 + 32·i`); a word element is range-checked inline and stored as the slot value.
  * - dynamic element (dynamic tuple, inner `T[]`, `string`/`bytes`): the offset-word region
  *   (`len` words at `[D, D+32·len)`) must fit first; then each `offᵢ` at `D+32·i` (relative to `D`,
  *   bound `offᵢ ≤ 2^64−1`), `elemPtr = D + offᵢ` (bound `elemPtr + 32 ≤ end`, the whole head for a
@@ -1030,7 +1029,7 @@ function emitDecodeArrayToMemStack(
  * - static element `E` (a word, a static tuple, or a static fixed array): the body is contiguous,
  *   bound `D + len·staticSize ≤ end` up front, then each element decodes at `D + i·staticSize`. A
  *   composite element decodes to a fresh block (its pointer stored into `arr + 32 + 32·i`); a word
- *   element is normalized inline and stored as the slot value.
+ *   element is range-checked inline and stored as the slot value.
  * - dynamic element (dynamic tuple, inner array, `string`/`bytes`, dynamic `T[N]`): the offset-word
  *   region (`len` words at `[D, D+32·len)`) must fit first; then each `offᵢ` at `D+32·i` (relative
  *   to `D`, bound `offᵢ ≤ 2^64−1`), `elemPtr = D + offᵢ` (bound `elemPtr + 32 ≤ end`, the whole
@@ -1281,8 +1280,8 @@ function emitDFrameStore(w: AsmWriter, k: number): void {
 /**
  * Decodes one array element whose source block starts at `pushBase()` (the owning array loop
  * wrote it to scratch — the element base itself on the stack path, word 0 of the current heap
- * frame on the heap-frame path), pushing the decoded element value (a normalized word for a word
- * element, otherwise a fresh block pointer, or a pointer aliasing the source for `string` /
+ * frame on the heap-frame path), pushing the decoded element value (a range-checked word for a
+ * word element, otherwise a fresh block pointer, or a pointer aliasing the source for `string` /
  * `bytes` / a full-word `T[]`). Net stack +1. The caller already validated the per-element
  * bounds (dynamic) / body bounds (static). `belowElem` is the number of live items on the stack
  * on entry (the array loop state).
@@ -1300,10 +1299,13 @@ function emitDecodeElement(
   opts: DecodeOptions,
 ): void {
   if (elemLayout.kind === 'word') {
-    // word element: base points at the inline word; normalize and push it.
+    // word element: base points at the inline word; push it, range-checked.
     pushBase();
     w.op('MLOAD'); // [raw, …]
-    emitNormalizeWord(w, elemLayout.abi); // [word, …]
+    if (wordNeedsNormalize(elemLayout.abi)) {
+      emitWordOutOfRange(w, elemLayout.abi, { keep: true }); // [bad, raw, …]
+      fail(belowElem + 1); // [raw, …]
+    }
     return;
   }
 
@@ -1323,7 +1325,7 @@ function emitDecodeElement(
   }
 
   // leaf element aliased in place: base points at `[len][payload]` — `string`/`bytes`
-  // (`string[]`/`bytes[]`) or a full-word `T[]` (`uint256[][]`, …), which needs no normalization,
+  // (`string[]`/`bytes[]`) or a full-word `T[]` (`uint256[][]`, …), whose every word is in range,
   // so it aliases the source exactly like a top-level output or a struct member does (no copy:
   // N offsets at one inner array cost N bounds checks, not N copies). len ≤ 2^64−1;
   // ptr + 32 + nbytes ≤ end (nbytes = len, or 32·len for an array). The decoded value IS base.

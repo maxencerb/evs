@@ -439,9 +439,10 @@ Releases: see [Releasing](#releasing) below.
   shapes (`T[]`, `T[][]`, `tuple[]`, `string[]`/`bytes[]`) keeps five loop words per level on the
   stack, the **fixed-word path** for a fixed-size word array (`uint256[N]`, `address[N]`,
   `uint8[N]`, …) copies the wire body in bulk (its decoded block is that body behind a length
-  word): one `MCOPY` on cancun for a full-word element, else a fused copy-and-normalize loop
-  (inline, not `@memcpy`, whose calling convention needs an empty stack beneath it) — ~3 / ~70
-  gas per element against ~205 for the heap loop, and the **heap-frame path** for everything
+  word): one `MCOPY` on cancun for a full-word element, else a copy loop that range-checks a
+  narrow element on the way (inline, not `@memcpy`, whose calling convention needs an empty
+  stack beneath it) — ~3 / ~70 gas per element (~86 with the range check) against ~205 for the
+  heap loop, and the **heap-frame path** for everything
   else (any other `T[N]`, `uint256[][][]`, `string[][]`, `tuple[][]`, …) keeps the loop words in
   a heap frame chained through scratch `0x20` (one stack word per level). Both fast paths are
   emitted speculatively (`AsmWriter.checkpoint` / `rollback`) and replaced by the heap path when
@@ -461,8 +462,8 @@ Releases: see [Releasing](#releasing) below.
   not-yet-bumped free pointer to keep the prologue's stack peak low. A dynamic tuple's WHOLE head
   (`headBytes`) must fit before it is read, at every level, matching `ir/interp/decode.ts`.
   Dynamic members alias the source snapshot, except narrow word arrays (`uint8[]`, …), which are
-  normalized into a fresh copy — normalizing in place would rewrite bytes another decoded value
-  may alias. The interpreter decodes fresh copies instead, so `validateIr` only admits an
+  copied into a block of their own, each element range-checked on the way. The interpreter
+  decodes fresh copies instead, so `validateIr` only admits an
   `arrset` whose target is an `arrnew` result (all the builder emits: `MutArray` handles exist
   only for `s.newArray`); tuples are always decoded into their own block, so `tupleset` stays
   legal on any tuple.
@@ -513,6 +514,36 @@ Releases: see [Releasing](#releasing) below.
   array of an oversized static element (`uint256[1e8][1e8][]`) is too. The interpreter charges
   zero-filled array elements to `maxSteps` before allocating them, so a huge zero is
   `COMPILE_LIMIT`, not a host OOM.
+- **Decoding is strict, as solc's** (`emitWordOutOfRange` and `WordRunChecks` in
+  `codegen/abi/shared.ts`, `emitTargetCodeCheck` in `codegen/call/shared.ts`). A word the script
+  did not compute (a call's returndata, a `revertReturns` payload, the script's own arguments)
+  is refused when it is out of range for its type, at every position a decoder reads one: a
+  top-level value, a struct member, an array element, at any depth. Returndata takes the site's
+  decode failure (`EvsDecodeError(site)`, or a try form's `success = 0`), arguments
+  `EvsInvalidCalldata`. Nothing is masked into range: `emitNormalizeWord` is for the words the
+  script computes (wrapping operations, shifts, wrapping conversions), whose wrapped value is the
+  defined result. The test is one shift per word (`word >> N` for `uintN` and `address`,
+  `word >> 1` for `bool`, `word << 8N` for the low bytes of a `bytesN`: 4 bytes) or
+  `signextend(word) ^ word` for `intN` (6 bytes), where a mask-and-compare pushes the mask (up
+  to 21 bytes), `EQ` and `ISZERO`. Like `emitAboveU64`, it yields nonzero-means-bad, not a
+  boolean, so it only feeds a branch or an `OR`. A run of consecutive top-level words (a call's
+  word outputs, the script's word arguments) is checked with one branch, `WordRunChecks` ORing
+  their tests; the recursive decoders branch per word, which keeps their stack peak where it
+  was (an accumulated word would take two more slots of the 16-item window at every struct
+  level). Against the mask it replaces, a strict `address` word is 14 bytes smaller and a
+  `uint8` word 5 bytes larger, for 16 more gas per narrow word. A call through a function that
+  declares no outputs decodes nothing, so the site first reads `EXTCODESIZE` of its target and
+  takes its decode failure when it is zero, as solc does before a high-level call that decodes
+  no return data. The check comes before the call, where the stack is still empty (one sequence
+  for strict and try): the call is not made, so no `value` moves, and the check warms the
+  address for the call, which makes it about 120 gas over the call it guards. `s.simulate` checks
+  in the outer frame, before the hop: the trampoline's revert drops the address from the warm
+  set again, so a check after it would pay the cold access a second time. A function with
+  outputs needs no check (empty returndata fails its head-size guard), and a `revertReturns`
+  site neither (a call that returns is already its failure). The interpreter mirrors both
+  (`ir/interp/decode.ts`; `MockChain.account` gives the code), and `StrictDecodeReference`
+  (solc 0.8.30) decodes the same payloads in the differential suite and on anvil: a payload
+  that one accepts and the other refuses fails the test.
 - **Checked arithmetic** follows solc ≥ 0.8 `Panic(uint256)` codes (0x11 overflow and checked
   narrowing, 0x12 division by zero, 0x32 out-of-bounds, 0x41 over-allocation), verified
   differentially against solc-compiled reference contracts. `pow` has three templates, all
@@ -914,8 +945,10 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
   arithmetic vs the solc 0.8.30 `EvsReference` contract, `pow` / `addmod` / `mulmod` /
   signed shifts vs `EvsMathReference`, wrapping arithmetic / `mulDiv` vs
-  `EvsFullMathReference`, and the address / fixed-bytes conversions and string/bytes byte
-  access (`byteAt`, `slice`, `asString`) vs `EvsCastReference` (all codegen'd from
+  `EvsFullMathReference`, the address / fixed-bytes conversions and string/bytes byte
+  access (`byteAt`, `slice`, `asString`) vs `EvsCastReference`, and what the ABI decoder
+  refuses (a word out of range for its type, a call without outputs to an address without code)
+  vs `StrictDecodeReference` (all codegen'd from
   `packages/contracts`, whose own forge tests run in CI's contracts step), and the bitwise
   operators on `intN` vs the interpreter, the folded constants and a host-side two's-complement
   reference (`test/harness/signed-bitwise.ts`, shared with the unit differential test); an env-gated
@@ -1144,9 +1177,14 @@ a third of the site build.
 ### Measured pages
 
 `concepts/compilation.mdx` and `concepts/overhead.mdx` quote measurements. The record and compile
-timings, and the per-pass split, come from `pnpm run bench` in `apps/docs` (library built first,
-on the repo's Node): take every table of both pages from one run, and keep the machine and
-versions they name current. The Overhead page's "How this was measured" section is the method
+timings, the per-pass split and the byte counts of the shared-codec table come from
+`pnpm run bench` in `apps/docs` (library built first, on the repo's Node): take every table of
+both pages from one run, and keep the machine and versions they name current. A change to the
+emitted bytecode also moves the byte counts and listings other pages quote for their example
+scripts (`concepts/how-it-works.mdx`, `reference/compile.mdx`, `guides/precompiling.mdx`):
+compile each example again and compare. The gas column of "What it saves" is the script's
+execution gas: the gas used by a transaction that calls the deployed runtime, minus its
+intrinsic gas, with the 100 tokens of the loop scripts spread over five contracts. The Overhead page's "How this was measured" section is the method
 for the rest (bundle sizes with esbuild, download and start-up in headless Chromium, per-call
 cost and gas against a local anvil), which needs tools the workspace does not install. Two
 traps when re-measuring: anvil's default Prague rules floor a transaction's gas by its calldata

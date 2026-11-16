@@ -36,11 +36,14 @@
  *   at `MLOAD(0x40)`. The free pointer is bumped past it only when an output is a memref
  *   (`callSiteAllocates`) or its decode is budgeted: word-only outputs are copied out at once, so
  *   their snapshot stays transient and a loop of word reads does not grow memory.
- * - word outputs normalize-don't-revert; `string` / `bytes` / word-array outputs validate in
- *   place (2^64 guards, overflow-free bounds) and alias the snapshot, a narrow-element array
- *   being normalized into a fresh copy (never in place — another output may alias the same
- *   bytes); tuple and recursive-codec array outputs decode from the snapshot through
+ * - a word output out of range for its type is a decode failure, as in solc's decoder, never a
+ *   mask; `string` / `bytes` / word-array outputs validate in place (2^64 guards, overflow-free
+ *   bounds) and alias the snapshot, a narrow-element array being copied with every element
+ *   range-checked; tuple and recursive-codec array outputs decode from the snapshot through
  *   `emitDecodeFromRegion` (`codegen/abi/decode.ts`), budgeted when they can charge.
+ * - a site whose function declares no outputs decodes nothing, so it first checks that the
+ *   target has code (`emitTargetCodeCheck`): without it the call is not made and the site takes
+ *   its decode failure, as a Solidity high-level call reverts.
  * - `s.simulate` decodes the carried returndata as one tuple (`emitDecodeTupleToMem` over the
  *   outputs block) and copies each word into its out slot.
  * - try mode: `plan.dfailLabel` IS the zero block, emitted inline here as a *checked* label
@@ -48,7 +51,7 @@
  *   it; it zeroes `successOut`/word outs and points memref outs at the `0x60` zero slot, then
  *   falls through to the join.
  * - `revertReturns` (issue #35, `kind: 'call'` only): the CALL success flag is inverted — a
- *   REVERT is the value path and the SAME decode sequence (guard, snapshot, normalize/validate)
+ *   REVERT is the value path and the SAME decode sequence (guard, snapshot, range checks)
  *   runs over the revert payload with `callOutputs(stmt)` as the schema; a normal RETURN is the
  *   failure and jumps to `plan.dfailLabel` (strict: the `EvsDecodeError(site)` stub — nothing is
  *   bubbled; try: the zero block).

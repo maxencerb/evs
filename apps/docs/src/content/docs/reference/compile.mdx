@@ -227,13 +227,13 @@ compile(balances); // throws EvsCompileError (COMPILE_LIMIT)
 The message, one line wrapped here:
 
 ```txt
-runtime bytecode is 26450 bytes — exceeds the EIP-170 limit of 24576 by 1874 bytes
-(dispatcher 40, body 24788, fns 0, tails 1622, data segments 0); split the script or
+runtime bytecode is 26422 bytes — exceeds the EIP-170 limit of 24576 by 1846 bytes
+(dispatcher 40, body 24760, fns 0, tails 1622, data segments 0); split the script or
 move large literals off-chain
 ```
 
 The JavaScript loop records its body 200 times. With
-[`s.forEach`](/reference/builder/for-each/) the same script compiles to 488 bytes.
+[`s.forEach`](/reference/builder/for-each/) the same script compiles to 460 bytes.
 
 | Large region | How to shrink it |
 | --- | --- |

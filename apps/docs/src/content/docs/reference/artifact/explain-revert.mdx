@@ -76,6 +76,10 @@ try {
 The call returned nothing to decode, so the script reverted with `EvsDecodeError`. `site` is
 the `s.read` that failed.
 
+The message names the causes the call allows. For a function with outputs: return data that is
+too short, an offset or a length outside it, or a word out of range for its type. For a
+function without outputs there is one: the address has no code.
+
 Log `site.key`, not `site.id`: the id is the number in the payload and moves when a statement
 is added above the read. The key stays `s.read(symbol)#0`.
 

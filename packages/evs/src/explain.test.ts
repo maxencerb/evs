@@ -1,7 +1,8 @@
 /**
  * Unit tests — `explain.ts`: the empty-revert explanation, which is the one message that lists
  * causes instead of naming one. First the fork-gated opcode scan behind its first cause, then
- * the order and the length of the list.
+ * the order and the length of the list. Then the causes an `EvsDecodeError(site)` is given, by
+ * what its site decodes.
  * (`explainRevert` itself is covered through the artifact in `compile.test.ts`, against the
  * classifier in `abi/revert.test.ts`, and through a precompiled script in `precompiled.test.ts`.)
  *
@@ -10,7 +11,7 @@
  * disassembly up to the first `data_*` label.
  */
 
-import { erc20Abi, parseAbi } from 'viem';
+import { encodeErrorResult, erc20Abi, parseAbi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { evscript } from './builder/script.js';
@@ -208,5 +209,119 @@ describe('the causes of an empty revert, in the order the message lists them', (
     for (const site of explained.candidateSites ?? []) {
       expect(explained.message).toContain(`(site ${site.id})`);
     }
+  });
+});
+
+describe('the causes of an EvsDecodeError, by what its site decodes', () => {
+  const abi = parseAbi([
+    'function symbol() view returns (string)',
+    'function checkSignatures(bytes32 hash) view',
+    'function quote(uint256 amount)',
+    'function deposit() payable',
+  ]);
+  /** The explanation of `EvsDecodeError(site)` at the script's one strict call site. */
+  const explain = (
+    compiled: CompiledEvsScript,
+  ): { message: string; detail: string | undefined; id: number } => {
+    const site = compiled.sourceMap.sites.find((x) => x.kind === 'decode');
+    if (site === undefined) throw new Error('no decode site');
+    const explained = compiled.explainRevert(
+      encodeErrorResult({
+        abi: compiled.abi,
+        errorName: 'EvsDecodeError',
+        args: [BigInt(site.id)],
+      }),
+    );
+    expect(explained.kind).toBe('evs-decode');
+    expect(explained.site?.id).toBe(site.id);
+    return { message: explained.message, detail: explained.site?.detail, id: site.id };
+  };
+  const HEDGE =
+    ' — note: the script has strict call sites that bubble callee reverts, and a callee may ' +
+    'have reverted with this selector verbatim (bubbled byte-exactly), in which case the ' +
+    'failure originated off-script';
+  const UNDECODABLE =
+    'an offset or a length points outside it, or a word is out of range for its type (a uint8 ' +
+    'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended)';
+
+  test('a function with outputs: the returndata does not decode, an out-of-range word included', () => {
+    const script = evscript({ name: 'sym', args: [t.address] }, (s, token) =>
+      s.return({ symbol: s.read({ address: token, abi, functionName: 'symbol' }) }),
+    );
+    const { message, detail, id } = explain(compile(script));
+    expect(detail).toBe('decoding symbol() returndata');
+    expect(message).toBe(
+      `decoding symbol() returndata failed (EvsDecodeError site ${id}): the returndata does not ` +
+        `decode as the outputs of symbol() — it is shorter than they need (a call to an address ` +
+        `without code returns none), ${UNDECODABLE}${HEDGE}`,
+    );
+  });
+
+  test.each(['read', 'call', 'simulate'] as const)(
+    'a function without outputs (s.%s): the one cause is a target without code',
+    (verb) => {
+      const script = evscript({ name: 'valid', args: [t.address, t.bytes32] }, (s, safe, hash) => {
+        if (verb === 'read') {
+          s.read({ address: safe, abi, functionName: 'checkSignatures', args: [hash] });
+        } else {
+          s[verb]({ address: safe, abi, functionName: 'quote', args: [1n] });
+        }
+        return s.return({ valid: s.lit(t.bool, true) });
+      });
+      const name = verb === 'read' ? 'checkSignatures' : 'quote';
+      const { message, id } = explain(compile(script));
+      expect(message).toBe(
+        `decoding ${verb === 'read' ? '' : `${verb} `}${name}() returndata failed ` +
+          `(EvsDecodeError site ${id}): the target address has no code — ${name}() declares no ` +
+          `outputs, so the script checks that its target has code before the call, as Solidity ` +
+          `does${HEDGE}`,
+      );
+      expect(message).not.toContain('out of range');
+    },
+  );
+
+  test('a simulate without outputs that sends value: no code, or an unfunded script', () => {
+    const script = evscript({ name: 'pay', args: [t.address, t.uint256] }, (s, vault, amount) => {
+      s.simulate({ address: vault, abi, functionName: 'deposit', value: amount });
+      return s.return({ ok: s.lit(t.bool, true) });
+    });
+    const { message } = explain(compile(script));
+    expect(message).toMatch(
+      /^decoding simulate deposit\(\) returndata failed \(EvsDecodeError site \d+\): the target address has no code — .*as Solidity does; or the script's balance was below the `value` this site sends, so its CALL failed before the target ran — fund the script /,
+    );
+  });
+
+  test('EvsInvalidCalldata counts an out-of-range argument word among its causes', () => {
+    const script = evscript({ name: 'echo', args: [t.uint8] }, (s, x) => s.return({ x }));
+    const compiled = compile(script);
+    const explained = compiled.explainRevert(
+      encodeErrorResult({ abi: compiled.abi, errorName: 'EvsInvalidCalldata' }),
+    );
+    expect(explained.kind).toBe('evs-invalid-calldata');
+    expect(explained.message).toBe(
+      'calldata does not match echo(uint8) — the script reverted EvsInvalidCalldata() (wrong ' +
+        'selector, truncated calldata, malformed dynamic arguments, or an argument word out of ' +
+        'range for its type)',
+    );
+  });
+
+  test('a revertReturns site: the call returned, or the revert data does not decode', () => {
+    const script = evscript({ name: 'q', args: [t.address] }, (s, quoter) => {
+      const amount = s.call({
+        address: quoter,
+        abi,
+        functionName: 'quote',
+        args: [1n],
+        revertReturns: [t.uint256],
+      });
+      return s.return({ amount });
+    });
+    const { message, id } = explain(compile(script));
+    // such a site bubbles nothing, so nothing can forge the payload: no hedge
+    expect(message).toBe(
+      `decoding call quote() revert data failed (EvsDecodeError site ${id}): the call returned ` +
+        `instead of reverting, or its revert data does not decode as the revertReturns types — ` +
+        `it is shorter than they need, ${UNDECODABLE}`,
+    );
   });
 });

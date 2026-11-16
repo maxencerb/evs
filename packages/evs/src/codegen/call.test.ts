@@ -10,7 +10,7 @@
  *   a calldata-reverting callee (strict mode bubbles the exact bytes back);
  * - returndata decode: success, byte-exact revert bubbling, the staticMinSize guard, the
  *   attacker payload fixtures (huge offsets/lengths, off-by-one truncation, short/empty
- *   returndata) → `EvsDecodeError(site)` with a sane gas bill, dirty-word normalization;
+ *   returndata, a word out of range for its type) → `EvsDecodeError(site)` with a sane gas bill;
  * - tryCall: success flag, zeroing block defaults (word outs = 0, memrefs = empty), rejoining
  *   the program;
  * - pre-cancun memcpy path for dynamic args.
@@ -432,9 +432,9 @@ describe('strict decode success paths', () => {
     }
   });
 
-  test('word outputs normalize dirty high bits instead of reverting', async () => {
+  test('a word output out of range for its type is EvsDecodeError(site), never masked', async () => {
     const outs: readonly EvsType[] = ['uint8', 'address', 'bool', 'bytes4'];
-    const payload = concatHex(word(-1n), word(-1n), word(-1n), word(-1n));
+    const clean = [word(255n), word((1n << 160n) - 1n), word(1n), word(0xffffffffn << 224n)];
     const built = buildCallRuntime({
       evmVersion: 'cancun',
       fnName: 'dirty',
@@ -442,9 +442,10 @@ describe('strict decode success paths', () => {
       outs,
       mode: 'strict',
     });
-    const res = await execRuntime(built.runtime, '0x', fixtureWith(returner(payload)));
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(
+    // the extreme word of each type is in range
+    const ok = await execRuntime(built.runtime, '0x', fixtureWith(returner(concatHex(...clean))));
+    expect(ok.success).toBe(true);
+    expect(ok.data).toBe(
       tuple(outComps(outs, false), {
         o0: 255,
         o1: '0xffffffffffffffffffffffffffffffffffffffff',
@@ -452,6 +453,19 @@ describe('strict decode success paths', () => {
         o3: '0xffffffff',
       }),
     );
+    // one bit past it, at each position of the run of word outputs, fails the whole decode
+    const dirty = [word(256n), word(1n << 160n), word(2n), word((0xffffffffn << 224n) | 1n)];
+    const results = await Promise.all(
+      dirty.map(async (bad, at) => {
+        const payload = concatHex(...clean.map((x, i) => (i === at ? bad : x)));
+        return execRuntime(built.runtime, '0x', fixtureWith(returner(payload)));
+      }),
+    );
+    for (const [at, res] of results.entries()) {
+      expect(res.success, `output #${at}`).toBe(false);
+      expect(res.data, `output #${at}`).toBe(DECODE_ERROR);
+      expect(res.gasUsed).toBeLessThan(DEFAULT_GAS_LIMIT / 100n);
+    }
   });
 
   test('single dirty word output (uint8) — the research fixture', async () => {
@@ -467,12 +481,11 @@ describe('strict decode success paths', () => {
       '0x',
       fixtureWith(ATTACKER_RETURNERS.dirtyHighBits),
     );
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(tuple(outComps(['uint8'], false), { o0: 255 }));
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(DECODE_ERROR);
   });
 
-  test('array outputs normalize elements eagerly (bool[] with element word 5)', async () => {
-    const payload = concatHex(word(32n), word(2n), word(5n), word(0n));
+  test('a dirty element of an array output (bool[] with element word 5)', async () => {
     const built = buildCallRuntime({
       evmVersion: 'cancun',
       fnName: 'flags',
@@ -480,9 +493,14 @@ describe('strict decode success paths', () => {
       outs: ['bool[]'],
       mode: 'strict',
     });
-    const res = await execRuntime(built.runtime, '0x', fixtureWith(returner(payload)));
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(tuple(outComps(['bool[]'], false), { o0: [true, false] }));
+    const dirty = concatHex(word(32n), word(2n), word(5n), word(0n));
+    const res = await execRuntime(built.runtime, '0x', fixtureWith(returner(dirty)));
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(DECODE_ERROR);
+    const clean = concatHex(word(32n), word(2n), word(1n), word(0n));
+    const ok = await execRuntime(built.runtime, '0x', fixtureWith(returner(clean)));
+    expect(ok.success).toBe(true);
+    expect(ok.data).toBe(tuple(outComps(['bool[]'], false), { o0: [true, false] }));
   });
 
   test('byte-exact minimal returndata accepted (off-by-one boundary, len 5, rds 69)', async () => {
@@ -723,7 +741,7 @@ describe('tryCall', () => {
     expect(res.data).toBe(tuple(outComps(outs, true), { ok: false, o0: [], o1: '0x', o2: false }));
   });
 
-  test('zero-output try call against an EOA-shaped target succeeds (empty call is fine)', async () => {
+  test('zero-output try call: success = false on a target without code, true with code', async () => {
     const built = buildCallRuntime({
       evmVersion: 'cancun',
       fnName: 'ping',
@@ -731,9 +749,28 @@ describe('tryCall', () => {
       outs: [],
       mode: 'try',
     });
+    // nothing decodes, so the site checks the target's code before the call, as solc does
     const res = await execRuntime(built.runtime, '0x'); // no code planted at TARGET
     expect(res.success).toBe(true);
-    expect(res.data).toBe(tuple(outComps([], true), { ok: true }));
+    expect(res.data).toBe(tuple(outComps([], true), { ok: false }));
+    const withCode = await execRuntime(built.runtime, '0x', fixtureWith(returner('0x')));
+    expect(withCode.success).toBe(true);
+    expect(withCode.data).toBe(tuple(outComps([], true), { ok: true }));
+  });
+
+  test('zero-output strict call: EvsDecodeError(site) on a target without code', async () => {
+    const built = buildCallRuntime({
+      evmVersion: 'cancun',
+      fnName: 'ping',
+      args: [],
+      outs: [],
+      mode: 'strict',
+    });
+    const res = await execRuntime(built.runtime, '0x'); // no code planted at TARGET
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(DECODE_ERROR);
+    const withCode = await execRuntime(built.runtime, '0x', fixtureWith(returner('0x')));
+    expect(withCode.success).toBe(true);
   });
 
   test('with outputs, an EOA-shaped target zeroes via the staticMinSize guard', async () => {

@@ -640,7 +640,7 @@ describe('call value (payable targets)', () => {
       const sim = viaSim.explainRevert(simRes.data);
       expect(sim.kind).toBe('evs-decode');
       expect(sim.message).toMatch(
-        /^decoding simulate submit\(\) returndata failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
+        /^decoding simulate submit\(\) returndata failed \(EvsDecodeError site \d+\): .*; or the script's balance was below the `value` this site sends/,
       );
     }
   });
@@ -704,7 +704,7 @@ describe('call value (payable targets)', () => {
       const explained = viaRevert.explainRevert(res.data);
       expect(explained.kind).toBe('evs-decode');
       expect(explained.message).toMatch(
-        /^decoding call submit\(\) revert data failed \(EvsDecodeError site \d+\), or the script's balance was below the `value` this site sends/,
+        /^decoding call submit\(\) revert data failed \(EvsDecodeError site \d+\): the call returned instead of reverting, .*; or the script's balance was below the `value` this site sends/,
       );
     }
   });

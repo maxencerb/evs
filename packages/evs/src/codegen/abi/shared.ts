@@ -1,8 +1,8 @@
 /**
  * `codegen/abi/shared.ts` — what every ABI emitter shares: the contract types handed in by the
  * program lowering (`SharedTails`, `SlotRef`), the scratch-slot and loop-frame layout constants
- * of the encoder and the decoder, word normalization, the tuple-layout helpers, and the
- * fork-portable `emitMemCopy` / `emitCeil32` primitives.
+ * of the encoder and the decoder, the range check of a decoded word and the wrap of a computed
+ * one, the tuple-layout helpers, and the fork-portable `emitMemCopy` / `emitCeil32` primitives.
  */
 
 import { type TypeLayout, layoutOf } from '../../abi/layout.js';
@@ -200,7 +200,7 @@ export function fmtType(t: EvsType): string {
  * - encode: a call whose args hold one is built by the recursive head/tail encoder, not the
  *   const-folding calldata template.
  *
- * A word, `string` / `bytes` and a dynamic word array keep their direct alias-and-normalize
+ * A word, `string` / `bytes` and a dynamic word array keep their direct check-and-alias
  * (decode) and leaf-tail (encode) paths.
  */
 export function usesRecursiveCodec(l: TypeLayout): boolean {
@@ -253,17 +253,23 @@ export function wordElemAbi(layout: Extract<TypeLayout, { kind: 'array' }>): Wor
 }
 
 /**
- * @internal Shared with `codegen/call/` and `codegen/lower/`. True when a decoded word of `type` can carry dirty
- * bits that normalization must clean — false only for the three full-word types.
+ * @internal Shared with `codegen/call/` and `codegen/lower/`. True when `type` is narrower than
+ * its 32-byte word, so a word can be out of range for it — false only for the three full-word
+ * types. Such a word is refused when it is decoded ({@link emitWordOutOfRange}) and wrapped back
+ * into range after a conversion or a wrapping operation ({@link emitNormalizeWord}).
  */
 export function wordNeedsNormalize(type: WordType): boolean {
   return type !== 'uint256' && type !== 'int256' && type !== 'bytes32';
 }
 
 /**
- * @internal Shared with `codegen/call/` and `codegen/lower/`. Normalizes the word on top of the stack to the
- * canonical form of `type`: `uintN`/`address` masked, `intN` sign-extended,
- * `bool` collapsed to 0/1 (`ISZERO ISZERO`), `bytesN` masked left-aligned. Net stack 0.
+ * @internal Shared with `codegen/lower/`. Wraps the word on top of the stack into the canonical
+ * form of `type`: `uintN`/`address` masked, `intN` sign-extended, `bool` collapsed to 0/1
+ * (`ISZERO ISZERO`), `bytesN` masked left-aligned. Net stack 0.
+ *
+ * For a word the script computed itself (a conversion, a wrapping operation, a shift), whose
+ * wrapped value is the defined result. A word the script did not compute (returndata, its own
+ * arguments) is never wrapped: it goes through {@link emitWordOutOfRange} and is refused.
  */
 export function emitNormalizeWord(w: AsmWriter, type: WordType): void {
   if (type === 'bool') {
@@ -286,17 +292,159 @@ export function emitNormalizeWord(w: AsmWriter, type: WordType): void {
 }
 
 /**
- * @internal Eager element-normalization loop over an array memref payload (the script's
- * word-array arguments).
+ * @internal Shared with `codegen/call/`. A decode failure router: stack on entry `[bad, …live]`
+ * → on the continue path `[…live]` (`liveDepth` items). Strict/calldata callers jump straight to
+ * a checked stub; try-mode callers invert the branch, clean the stack, and jump to the zero block.
+ */
+export type DecodeFail = (liveDepth: number) => void;
+
+/**
+ * @internal Shared with `codegen/call/`. The range check of a decoded word, one the script did
+ * not compute (a call's returndata, the script's own arguments): `[word] → [bad, word]`, or
+ * `[word] → [bad]` with `keep: false`. `bad` is nonzero exactly when `word` is not the canonical
+ * form of `type`, which is when solc's ABI decoder reverts:
+ *
+ * | type              | `bad`                       | bytes (`keep`) |
+ * | ----------------- | --------------------------- | -------------- |
+ * | `uintN`, `address`| `word >> N`                 | 4              |
+ * | `bool`            | `word >> 1`                 | 4              |
+ * | `bytesN`          | `word << 8N` (the low bytes)| 4              |
+ * | `intN`            | `signextend(word) ^ word`   | 6              |
+ *
+ * Each is the shortest test of its family: one shift where a mask-and-compare takes a `PUSH` of
+ * the mask (up to 21 bytes for `address`), `EQ` and `ISZERO`. Like {@link emitAboveU64}, `bad` is
+ * not a boolean, so it may only feed a branch (a {@link DecodeFail} router) or an `OR` of such
+ * words ({@link WordRunChecks}). Only for a type that {@link wordNeedsNormalize}.
+ */
+export function emitWordOutOfRange(
+  w: AsmWriter,
+  type: WordType,
+  opts: { readonly keep: boolean },
+): void {
+  if (!wordNeedsNormalize(type)) throw internal(`a ${type} word is never out of range`);
+  const note = { note: `${type} out of range?` };
+  if (type === 'bool') {
+    if (opts.keep) w.op('DUP1');
+    w.push(1);
+    w.op('SHR', note);
+    return;
+  }
+  const layout = wordLayoutOf(type);
+  if (layout.signed) {
+    w.op('DUP1');
+    w.push(layout.bits / 8 - 1);
+    w.op('SIGNEXTEND'); // [signextend(word), word]
+    if (opts.keep) w.op('DUP2');
+    w.op('XOR', note);
+    return;
+  }
+  if (opts.keep) w.op('DUP1');
+  w.push(layout.bits);
+  w.op(layout.leftAligned ? 'SHL' : 'SHR', note);
+}
+
+function isWord(l: TypeLayout | undefined): l is Extract<TypeLayout, { kind: 'word' }> {
+  return l !== undefined && l.kind === 'word';
+}
+
+/**
+ * @internal Shared with `codegen/call/static-call.ts`. Range-checks the words of a list of
+ * top-level values (a call's outputs, the script's arguments) with one failure branch per RUN of
+ * consecutive words where it can, instead of one per word.
+ *
+ * A run with a single narrow word branches on it directly. A run with several keeps the `OR` of
+ * their `bad` words ({@link emitWordOutOfRange}) on top of the stack and branches once, after its
+ * last word: 2 bytes and 6 gas per word for the `SWAP1` / `OR` against the 4 bytes and 13 gas of
+ * a strict branch, or the 11 bytes and more of a try-mode one. Every word of the run is stored
+ * before that branch, which is harmless: the failure reverts (strict, arguments) or overwrites
+ * every output with its zero value (try).
+ *
+ * While {@link pending}, the accumulated word sits on top of the caller's `live` items, so a
+ * stack-relative read of the caller reaches one item deeper. The decoders of the values between
+ * two runs never see it: the run is closed before they are emitted.
+ */
+export class WordRunChecks {
+  private readonly w: AsmWriter;
+  private readonly fail: DecodeFail;
+  private readonly live: number;
+  /** Per value: how many narrow words its run of consecutive words holds (0 for a non-word). */
+  private readonly narrowInRun: readonly number[];
+  /** Per value: whether the run it belongs to ends with it. */
+  private readonly endsRun: readonly boolean[];
+  private accumulated = false;
+
+  constructor(w: AsmWriter, layouts: readonly TypeLayout[], fail: DecodeFail, live: number) {
+    this.w = w;
+    this.fail = fail;
+    this.live = live;
+    const counts: number[] = layouts.map(() => 0);
+    let start = 0;
+    layouts.forEach((l, j) => {
+      if (!isWord(l)) {
+        start = j + 1;
+        return;
+      }
+      if (!wordNeedsNormalize(l.abi)) return;
+      for (let k = start; k <= j; k++) counts[k] = (counts[k] ?? 0) + 1;
+      for (let k = j + 1; isWord(layouts[k]); k++) counts[k] = (counts[k] ?? 0) + 1;
+    });
+    this.narrowInRun = counts;
+    this.endsRun = layouts.map((l, j) => isWord(l) && !isWord(layouts[j + 1]));
+  }
+
+  /** Whether an accumulated word sits on top of the caller's live items. */
+  get pending(): boolean {
+    return this.accumulated;
+  }
+
+  /**
+   * `[raw, acc?, …live] → [acc?, …live]`: range-checks `raw` as the word of value `j`, of `type`,
+   * and stores it through `store` (`[value, …] → […]`, which must not read the stack below its
+   * value). After the last word of a run the accumulated check branches: `[…live]`.
+   */
+  checkAndStore(j: number, type: WordType, store: () => void): void {
+    const { w } = this;
+    const narrow = wordNeedsNormalize(type);
+    if (narrow && this.narrowInRun[j] === 1) {
+      emitWordOutOfRange(w, type, { keep: true }); // [bad, raw, …live]
+      this.fail(this.live + 1); // [raw, …live]
+      store(); // […live]
+      return;
+    }
+    if (narrow) {
+      emitWordOutOfRange(w, type, { keep: true }); // [bad, raw, acc?, …live]
+      w.op('SWAP1');
+      store(); // [bad, acc?, …live]
+      if (this.accumulated) w.op('OR'); // [acc, …live]
+      this.accumulated = true;
+    } else {
+      store(); // [acc?, …live]
+    }
+    if (this.accumulated && this.endsRun[j] === true) {
+      this.fail(this.live); // […live]
+      this.accumulated = false;
+    }
+  }
+}
+
+/**
+ * @internal The range-check loop over the elements of a word-array memref payload (the script's
+ * word-array arguments, already copied out of the calldata): every element must be canonical for
+ * `elem`, or `fail` is taken.
  *
  * Stack contract: entry `[cur, end, …depthBelow items]` → exit `[cur, end, …]` with
  * `cur == end`; the loop labels are checked at absolute height `depthBelow + 2`, so the
  * caller must pass the exact number of live items beneath `[cur, end]`.
  */
-export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow: number): void {
+export function emitCheckElemsLoop(
+  w: AsmWriter,
+  elem: WordType,
+  depthBelow: number,
+  fail: DecodeFail,
+): void {
   const height = depthBelow + 2;
-  const head = w.newLabel(`elemnorm_${elem}`);
-  const done = w.newLabel(`elemnorm_${elem}_done`);
+  const head = w.newLabel(`elemcheck_${elem}`);
+  const done = w.newLabel(`elemcheck_${elem}_done`);
   w.label(head, height);
   w.op('DUP2'); // [end, cur, end, …]
   w.op('DUP2'); // [cur, end, cur, end, …]
@@ -306,9 +454,8 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
   w.op('JUMPI'); // [cur, end, …]
   w.op('DUP1');
   w.op('MLOAD'); // [word, cur, end, …]
-  emitNormalizeWord(w, elem);
-  w.op('DUP2');
-  w.op('MSTORE'); // [cur, end, …]
+  emitWordOutOfRange(w, elem, { keep: false }); // [bad, cur, end, …]
+  fail(height); // [cur, end, …]
   w.push(32);
   w.op('ADD'); // [cur+32, end, …]
   w.pushLabel(head);
@@ -318,19 +465,23 @@ export function emitNormalizeElemsLoop(w: AsmWriter, elem: WordType, depthBelow:
 
 /**
  * @internal Shared with `codegen/call/static-call.ts`. Copies a (bounds-checked) word-array memref `[len][e…]`
- * into a freshly-allocated block, normalizing every element on the way: `[src, …] → [dst, …]`.
+ * of narrow elements into a freshly-allocated block, range-checking every element on the way
+ * (`fail` on one out of range): `[src, …] → [dst, …]`.
  *
- * The decoders alias `string`/`bytes`/`T[]` members straight into the source snapshot, so a
- * narrow-element array must never be normalized IN PLACE: non-canonical data may point two
- * decoded values at the same bytes (overlapping offsets), and masking one would change the
- * other. Copying keeps the snapshot pristine, so every decoded value reads the original bytes —
- * exactly the interpreter's fresh-copy decode. Full-word element types need no normalization and
- * keep aliasing.
+ * Unlike a full-word `T[]`, which the decoders alias straight into the source snapshot, a
+ * narrow-element array is materialized: each element is read once, checked, and written to a
+ * block of its own (the block `arrayDecodeCharge` charges where overlapping offsets can decode
+ * the same source bytes again).
  *
  * One fused loop ({@link emitCopyWordsLoop}; no `emitMemCopy`, so it is fork-independent and
  * works at any stack depth). Loop labels are checked at absolute height `depthBelow + 3`.
  */
-export function emitCopyNormalizeWordArray(w: AsmWriter, elem: WordType, depthBelow: number): void {
+export function emitCopyCheckedWordArray(
+  w: AsmWriter,
+  elem: WordType,
+  depthBelow: number,
+  fail: DecodeFail,
+): void {
   w.push(FREE_PTR);
   w.op('MLOAD'); // [dst, src, …]
   w.op('DUP2');
@@ -347,17 +498,23 @@ export function emitCopyNormalizeWordArray(w: AsmWriter, elem: WordType, depthBe
   w.op('ADD'); // [dst+32+32·len, k, dst, src, …]
   w.push(FREE_PTR);
   w.op('MSTORE'); // [k, dst, src, …]   freePtr bumped
-  emitCopyWordsLoop(w, elem, depthBelow); // [dst, …]
+  emitCopyWordsLoop(w, elem, depthBelow, fail); // [dst, …]
 }
 
 /**
- * The word-copy loop of {@link emitCopyNormalizeWordArray}, shared with the fixed-size word-array
+ * The word-copy loop of {@link emitCopyCheckedWordArray}, shared with the fixed-size word-array
  * decode: `[k, dst, src, …] → [dst, …]`. `k` walks the byte offset `k … 32` down to 0 and copies
- * `norm(src[k])` to `dst[k]` (so `src` / `dst` point one word before the first element, at the
- * length word of a `[len][e…]` block). Loop labels are checked at absolute height
- * `depthBelow + 3` (`[k, dst, src]` above `depthBelow`).
+ * `src[k]` to `dst[k]` (so `src` / `dst` point one word before the first element, at the
+ * length word of a `[len][e…]` block), taking `fail` on a word out of range for a narrow `elem`.
+ * Loop labels are checked at absolute height `depthBelow + 3` (`[k, dst, src]` above
+ * `depthBelow`).
  */
-export function emitCopyWordsLoop(w: AsmWriter, elem: WordType, depthBelow: number): void {
+export function emitCopyWordsLoop(
+  w: AsmWriter,
+  elem: WordType,
+  depthBelow: number,
+  fail: DecodeFail,
+): void {
   const height = depthBelow + 3;
   const head = w.newLabel(`elemcopy_${elem}`);
   const done = w.newLabel(`elemcopy_${elem}_done`);
@@ -370,7 +527,10 @@ export function emitCopyWordsLoop(w: AsmWriter, elem: WordType, depthBelow: numb
   w.op('DUP2');
   w.op('ADD');
   w.op('MLOAD'); // [src[k], k, dst, src, …]
-  emitNormalizeWord(w, elem); // [word, k, dst, src, …]
+  if (wordNeedsNormalize(elem)) {
+    emitWordOutOfRange(w, elem, { keep: true }); // [bad, word, k, dst, src, …]
+    fail(height + 1); // [word, k, dst, src, …]
+  }
   w.op('DUP3');
   w.op('DUP3');
   w.op('ADD'); // [dst+k, word, k, dst, src, …]

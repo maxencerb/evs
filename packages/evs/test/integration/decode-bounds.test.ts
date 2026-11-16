@@ -8,7 +8,8 @@
  *   reads revert `EvsDecodeError(site)`, try reads return `success = false` + the zero value —
  *   never an out-of-gas halt;
  * - nested dynamic structs whose head is cut short: rejected like any malformed returndata;
- * - two outputs sharing bytes (aliased tails): each decodes as if it were alone;
+ * - two outputs sharing bytes (aliased tails): each decodes as if it were alone, and an element
+ *   out of range for one of them fails the whole decode;
  * - N element offsets at one inner array (overlapping offsets, ~38 KB of returndata that used to
  *   cost ~290M gas to decode): a full-word `uint256[][]` aliases its inner arrays and decodes,
  *   copied or re-decoded shapes (narrow copies, wide structs, fixed-size `T[N]` blocks) exhaust
@@ -189,9 +190,13 @@ describe.each(['stateOverride', 'deployless'] as const)('decode bounds on anvil 
       { name: 'a', type: 'uint8[]' },
       { name: 'b', type: 'uint256[]' },
     ]);
-    const payload = words(0x40n, 0x40n, 1n, 0x1ffn);
-    expect(await run(strict, 'strict', payload)).toEqual({ v0: [255], v1: [511n] });
-    expect(await run(attempt, 'attempt', payload)).toEqual({ ok: true, v0: [255], v1: [511n] });
+    const payload = words(0x40n, 0x40n, 1n, 0xffn);
+    expect(await run(strict, 'strict', payload)).toEqual({ v0: [255], v1: [255n] });
+    expect(await run(attempt, 'attempt', payload)).toEqual({ ok: true, v0: [255], v1: [255n] });
+    // an element out of range for the narrow reader fails the decode, whatever the other reads
+    const dirty = words(0x40n, 0x40n, 1n, 0x1ffn);
+    await expectStrictDecodeError(strict, dirty);
+    expect(await run(attempt, 'attempt', dirty)).toEqual({ ok: false, v0: [], v1: [] });
   });
 
   /** Like {@link scripts}, but returning only the decoded array's length (`n`). */

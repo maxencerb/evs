@@ -112,6 +112,50 @@ function strictCallSites(
   return ctx.sites.filter((s) => ids.has(s.id));
 }
 
+/** The recorded `call` statement of site `id`, when the site is a call. */
+function callAt(ctx: ExplainContext, id: SiteId): Extract<Stmt, { k: 'call' }> | undefined {
+  let found: Extract<Stmt, { k: 'call' }> | undefined;
+  const look = (s: Stmt): void => {
+    if (s.k === 'call' && s.site === id) found = s;
+  };
+  walkStmts(ctx.ir.body, look);
+  for (const fn of ctx.ir.fns) walkStmts(fn.body, look);
+  return found;
+}
+
+/** What makes a payload undecodable, whatever it is decoded as. */
+const UNDECODABLE =
+  'an offset or a length points outside it, or a word is out of range for its type (a uint8 ' +
+  'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended)';
+
+/**
+ * Why a strict call site reverted `EvsDecodeError(site)`, from what the site decodes:
+ *
+ * - a function without outputs decodes nothing, so its one cause is the check the script makes
+ *   before the call: the target has no code;
+ * - a `revertReturns` site decodes the revert data, and fails as well when the call returns;
+ * - any other site decodes the returndata, which an address without code leaves empty.
+ */
+function decodeFailureCause(call: Extract<Stmt, { k: 'call' }> | undefined): string {
+  if (call === undefined) return '';
+  if (call.revertReturns !== undefined) {
+    return (
+      ': the call returned instead of reverting, or its revert data does not decode as the ' +
+      `revertReturns types — it is shorter than they need, ${UNDECODABLE}`
+    );
+  }
+  if (call.fnAbi.outputs.length === 0) {
+    return (
+      `: the target address has no code — ${call.fnAbi.name}() declares no outputs, so the ` +
+      'script checks that its target has code before the call, as Solidity does'
+    );
+  }
+  return (
+    `: the returndata does not decode as the outputs of ${call.fnAbi.name}() — it is shorter ` +
+    `than they need (a call to an address without code returns none), ${UNDECODABLE}`
+  );
+}
+
 /** How to fund a script that sends `value` (the deployless one cannot be funded). */
 const FUND_THE_SCRIPT =
   "fund the script with a `balance` in its toViem({ mode: 'stateOverride' }) entry (or run it " +
@@ -273,12 +317,13 @@ function explainDecodeError(raw: Hex, siteArg: unknown, ctx: ExplainContext): Re
     // pay: the CALL (for s.simulate, the self-call hop that carries the value) fails and nothing
     // decodes. A plain strict s.call bubbles an empty revert instead, never this error.
     const unfunded = unfundedDecodeSite(ctx, site.id)
-      ? `, or the script's balance was below the \`value\` this site sends, so its CALL ` +
+      ? `; or the script's balance was below the \`value\` this site sends, so its CALL ` +
         `failed before the target ran — ${FUND_THE_SCRIPT}`
       : '';
+    const cause = decodeFailureCause(callAt(ctx, site.id));
     return {
       kind: 'evs-decode',
-      message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${unfunded}${hedge}`,
+      message: `${ref.detail} failed (EvsDecodeError site ${ref.id})${cause}${unfunded}${hedge}`,
       site: ref,
       raw,
     };
@@ -308,7 +353,8 @@ function explainInvalidCalldata(raw: Hex, ctx: ExplainContext): RevertExplanatio
     kind: 'evs-invalid-calldata',
     message:
       `calldata does not match ${signature} — the script reverted EvsInvalidCalldata() ` +
-      `(wrong selector, truncated calldata, or malformed dynamic arguments)${hedge}`,
+      `(wrong selector, truncated calldata, malformed dynamic arguments, or an argument ` +
+      `word out of range for its type)${hedge}`,
     raw,
   };
 }

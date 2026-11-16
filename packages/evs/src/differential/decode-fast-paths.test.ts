@@ -368,19 +368,34 @@ describe('fixed-size word arrays decode with one bulk copy', () => {
     }
   }
 
-  test('narrow elements with dirty high bits are normalized like the interpreter [every fork]', async () => {
+  test('a narrow element out of range for its type fails the decode [every fork]', async () => {
     const output: AbiParameter = { name: 'r', type: 'uint8[3]' };
-    const dirty = concatHex(word((1n << 200n) | 5n), word((1n << 255n) | 0xffn), word(1n << 8n));
+    const clean = concatHex(word(5n), word(0xffn), word(0n));
+    const dirty = [
+      concatHex(word((1n << 200n) | 5n), word(0xffn), word(0n)), // first copied word
+      concatHex(word(5n), word((1n << 255n) | 0xffn), word(0n)),
+      concatHex(word(5n), word(0xffn), word(1n << 8n)), // last
+    ];
     for (const evmVersion of EVM_VERSIONS) {
       const script = callScript(output, 'read');
+      const table: Record<string, CalleeTable[string]> = {
+        [addr(1)]: { kind: 'return', data: clean },
+      };
+      dirty.forEach((data, i) => {
+        table[addr(2 + i)] = { kind: 'return', data };
+      });
       // oxlint-disable-next-line no-await-in-loop -- sequential: deterministic labels
-      const [o] = await expectAgreement(
+      const [o, ...bad] = await expectAgreement(
         script,
-        [[addr(1)]],
-        { [addr(1)]: { kind: 'return', data: dirty } },
+        [[addr(1)], [addr(2)], [addr(3)], [addr(4)]],
+        table,
         evmVersion,
       );
       expect(decodeOut(script, o)).toEqual({ v: [5, 0xff, 0] });
+      for (const outcome of bad) {
+        expect(outcome.kind).toBe('revert');
+        expect(outcome.data.slice(0, 10)).toBe('0x20cf27b7'); // EvsDecodeError(uint256)
+      }
     }
   });
 
