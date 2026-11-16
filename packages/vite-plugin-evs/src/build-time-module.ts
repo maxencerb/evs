@@ -4,17 +4,57 @@
  * A `*.evs.ts` module is evaluated in Node, by the module runner Vite loads its own config with
  * (`runnerImport`): the module and its relative imports go through Vite, packages are imported
  * by Node itself. Each run is a fresh evaluation, so an edited import is picked up.
+ *
+ * Running a module is running code on the machine that builds or serves the app, so which
+ * modules run is decided here, from the whole id and from the file it names, and nowhere else.
  */
+
+import { realpathSync } from 'node:fs';
 
 import { runnerImport, type ResolvedConfig } from 'vite';
 
 import { displayPath } from './paths.js';
 
 /**
- * `*.evs.ts`, `*.evs.mts`, `*.evs.js` and `*.evs.mjs`. An id with a query is not one: `?raw`,
- * `?url` and the like ask for something else than the module's exports.
+ * The name of a build-time module, as a whole id: `*.evs.ts`, `*.evs.mts`, `*.evs.js` or
+ * `*.evs.mjs`, and nothing after it. An id with a query or a hash is not one, wherever the
+ * suffix is in it: `?raw`, `?url` and the like ask for something else than the module's
+ * exports, and a dev server is sent any query by whoever reaches it. Nor is an id with a NUL:
+ * that is the virtual module of another plugin, and no file.
+ *
+ * The name alone does not make a build-time module: see {@link isBuildTimeModule}.
  */
-export const BUILD_TIME_MODULE = /\.evs\.m?[jt]s$/;
+export const BUILD_TIME_MODULE_NAME = /^[^?#\0]*\.evs\.m?[jt]s$/;
+
+/** A path with a `node_modules` directory in it. */
+const INSIDE_NODE_MODULES = /(?:^|[\\/])node_modules[\\/]/;
+
+/**
+ * Whether the module `id` runs at build time: it has the name of a build-time module, and it
+ * is a file of the app or of a package of its workspace.
+ *
+ * A file of an installed package never is, whatever its name. Such a package is the code of
+ * someone else, written to run in the app: running it at build time would hand it the machine
+ * that builds, and its environment. It is told by the real path of the file, which is under
+ * `node_modules` for an installed package under every package manager, and outside of it for a
+ * workspace package, which is only linked there. (The id does not tell: a dev server adds a
+ * query to the id of a dependency and a build does not, and `resolve.preserveSymlinks` keeps
+ * the link in the id of a workspace package.)
+ */
+export function isBuildTimeModule(id: string): boolean {
+  if (!BUILD_TIME_MODULE_NAME.test(id)) return false;
+  const file = realPathOf(id);
+  return file !== undefined && !INSIDE_NODE_MODULES.test(file);
+}
+
+/** The real path of the file `path`. `undefined` when there is no such file. */
+function realPathOf(path: string): string | undefined {
+  try {
+    return realpathSync(path);
+  } catch {
+    return undefined;
+  }
+}
 
 export interface BuildTimeModule {
   /** The module namespace: every export, `default` included. */

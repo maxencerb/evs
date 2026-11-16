@@ -69,6 +69,8 @@ const feeTier = evscript({ name: 'feeTier', args: [t.uint256] }, (s, volume) => 
 });
 ```
 
+Each `else if` written this way nests one level deeper. See the [nesting limit](#nesting-limit).
+
 ## Returns
 
 `void`
@@ -165,6 +167,29 @@ return s.return({ doubled }); // EvsScopeError (SCOPE_VIOLATION)
 Declare a cell before the `s.if`, `set` it in the branch and `get` it after, as in
 [Usage](#usage).
 
+### Nesting limit
+
+Blocks nest at most 256 levels deep. A block is an `s.if` branch, a loop body or an `s.fn` body
+that is recorded inside another one.
+
+A script written by hand nests a few levels. Generated code can reach the limit, for example an
+else-if ladder with one case per level. Record the cases one after another instead:
+
+```ts {6-8}
+import { evscript, t } from '@maxencerb/evs';
+
+const tierOf = evscript({ name: 'tierOf', args: [t.uint256] }, (s, volume) => {
+  const tier = s.let(t.uint256, 0n);
+  // 300 cases, each at the top level: no case is nested in another
+  for (let i = 1n; i <= 300n; i++) {
+    s.if(volume.gte(i * 1000n), () => tier.set(i));
+  }
+  return s.return({ tier: tier.get() });
+});
+```
+
+The 257th level throws `EvsTypeError` (`UNSUPPORTED_V0`) from the call that opens it.
+
 ## Errors
 
 Thrown while the callback records, at the offending line:
@@ -175,3 +200,4 @@ Thrown while the callback records, at the offending line:
 | `EvsTypeError` (`TYPE_MISMATCH`) | `then` or `otherwise` is not a function |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value or a cell created in a branch is used after it |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | `s.return` is called inside a branch |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the branch would be nested more than 256 levels deep: see [nesting limit](#nesting-limit) |

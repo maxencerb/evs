@@ -15,6 +15,7 @@ import {
   type EvsType,
 } from '../../core/types.js';
 import { type ValueId, type FnId, type ScriptIr, type FnIr, deepFreeze } from '../../ir/nodes.js';
+import { markEvsIr } from '../../ir/nodes/origin.js';
 import { RecorderCalls } from './calls.js';
 import {
   CELL_INTERNALS,
@@ -97,6 +98,8 @@ export class Recorder extends RecorderCalls {
     // recording (the body or a result check throws) releases the reservation, so a script that
     // catches the error and carries on still finishes; the failed body's statements were only
     // ever in its own scope and are dropped with it.
+    // the body callback is one more block level on the host stack, like an `s.if` branch
+    this.enterBlock(`s.fn("${name}")`);
     const fnId = this.fnIrs.length;
     this.fnIrs.push(null);
     this.openFns.add(fnId);
@@ -145,6 +148,7 @@ export class Recorder extends RecorderCalls {
       if (saved !== undefined) this.stack = saved;
       this.fnCtx.pop();
       this.openFns.delete(fnId);
+      this.exitBlock();
     }
     return (...callArgs: unknown[]) => this.fnCall(fnId, name, shape, callArgs);
   }
@@ -338,6 +342,8 @@ export class Recorder extends RecorderCalls {
       ...(this.errorDecls.length === 0 ? {} : { errors: this.errorDecls.map((d) => d.ir) }),
     };
     deepFreeze(ir);
+    // deep-frozen and built by this recorder: `validateIr` treats a failure on it as a bug in evs
+    markEvsIr(ir);
     return { ir, returns: this.returnsList };
   }
 }

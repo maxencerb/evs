@@ -8,8 +8,8 @@
  *
  * Args arrive as positional callback params after `s` — no `s.args`.
  *
- * Run: node examples/pool-meta/index.ts   (spawns a local anvil; needs foundry + `vp run codegen`
- *      in packages/contracts first — see README.md)
+ * Run: node examples/pool-meta/index.ts   (spawns a local anvil; needs foundry, and
+ *      `vp run bootstrap` at the repo root first — see README.md)
  */
 
 import { erc20Abi, parseEther } from 'viem';

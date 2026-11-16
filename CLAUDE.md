@@ -52,6 +52,15 @@ Tests run on **vitest** through `vp test` (prool per-worker anvil via
 `VITEST_POOL_ID`/globalSetup, vitest `typecheck` type tests). Test files import from
 `vite-plus/test` (a re-export of vitest), never from `vitest` directly.
 
+- A fresh checkout needs `vp run bootstrap` once after `vp install`: the contracts codegen
+  (`packages/evs/test/generated/`, gitignored, needs Foundry's `forge`), then the library and
+  plugin builds. Every test tier, `vp check` and `vp run typecheck` read one or both; a test run
+  that misses one stops before its first test with the command to run.
+- Start and stop anvil only through `spawnAnvil` (`packages/evs/test/harness/anvil-process.ts`,
+  also used by the plugin's tests and the examples): it checks the binary, bounds the start, lets
+  anvil bind its own port, and stops it so the process can exit (reasons in CONTRIBUTING.md,
+  "Testing").
+
 - Run them through `vp` / the package scripts, never a bare `vitest`/`node --test`, and from the
   repo root (the root `vite.config.ts` re-roots the `packages/evs` projects):
   - `vp run test` (= `pnpm run test`) — unit + type tests and the plugin's tests
@@ -84,7 +93,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `workspace:^`, which must stay that way: see "Releasing" in CONTRIBUTING.md). It runs
   `*.evs.ts` modules in Node with Vite's `runnerImport` and replaces them with `hydrate(...)`
   calls; it imports `vite` by its real name (the `prefer-vite-plus-imports` lint rule is off for
-  its `src/`). Tests: `test/*.test.ts` drive Vite on `test/fixtures/` with the plugin from
+  its `src/`). Which modules it runs is decided by `isBuildTimeModule`
+  (`src/build-time-module.ts`) alone: no query, hash or NUL in the id, and a real path outside
+  `node_modules`. Running a module is running code on the build machine, so do not widen it
+  (reasons in CONTRIBUTING.md, "Vite plugin"). Tests: `test/*.test.ts` drive Vite on
+  `test/fixtures/` with the plugin from
   source, `test/integration` runs a built bundle on anvil. Its user-facing messages are quoted
   in `apps/docs` (`guides/precompiling.mdx`, `reference/vite-plugin.mdx`): change both together.
 - `packages/type-tests` — private. `src/` holds fixtures that use the published types as an app
@@ -92,6 +105,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   and the two packages, under each type checker. It installs the extra checkers (the `checkers`
   catalog: `typescript-5.5` and `typescript-7` are aliases, so call them by path, never through
   `.bin/tsc`). No test runner there: assertions are `@ts-expect-error` and `expectType`.
+  `node10/` with `tsconfig.node10.json` is a second project: the two entries under TypeScript's
+  legacy `moduleResolution: "node"`, which only TypeScript 5.5 still runs.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored; the barrel uses `.ts` specifiers so the examples
@@ -139,6 +154,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 ## Key commands
 
 - `vp install` — install everything (workspaces + catalogs; = `pnpm install`)
+- `vp run bootstrap` — once on a fresh checkout: contracts build + codegen, then `vp run build`
 - `vp run build` — build `@maxencerb/evs`, then the Vite plugin (`vp pack`: dist/ js + d.ts + maps)
 - `vp check` — format + lint (type-aware) + tsgolint type-check, one pass (use in loops)
 - `vp run check` — `vp check` + per-workspace `tsc --noEmit` / `astro check`

@@ -26,8 +26,10 @@ export function hexToBytes(hex: string): Uint8Array {
   return out;
 }
 
-/** The two lowercase hex digits of every byte value, indexed by the byte. `@__PURE__`: a bundle
- *  that never calls `bytesToHex` (the runtime entry's `hydrate`) drops the table. */
+/** The two lowercase hex digits of every byte value, indexed by the byte. The call is marked
+ *  pure, so a bundle that never calls `bytesToHex` (the runtime entry's `hydrate`) drops the
+ *  table. The marker is spelled only on the call: Rollup reads it in any comment, and warns about
+ *  one it cannot attach to a call, in every app that bundles this file. */
 const HEX_PAIRS: readonly string[] = /* @__PURE__ */ Array.from({ length: 256 }, (_, b) =>
   b.toString(16).padStart(2, '0'),
 );

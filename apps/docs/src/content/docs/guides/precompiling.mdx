@@ -329,8 +329,14 @@ the code and an argument in the calldata weigh about the same on the wire.
 ## Rules for script files
 
 - **Named `*.evs.ts`.** Also `.evs.mts`, `.evs.js` and `.evs.mjs`.
+- **In your project.** A file of your app, or of a package of your workspace. A file inside
+  `node_modules` is not compiled at build time: a library
+  [publishes precompiled output](/reference/vite-plugin/#in-a-published-package) instead.
 - **Runs in Node.** During the build and in the dev server, never in the browser: no `window`,
   no `document`.
+- **Runs when it is requested.** The dev server runs a script file when a request asks for its
+  URL, whether or not your app imports it. Keep the suffix for script files:
+  [when a module runs](/reference/vite-plugin/#when-a-module-runs).
 - **Imported from a page or a worker.** A Web Worker that imports the file gets the precompiled
   scripts too, with no extra setup.
 - **Exports scripts or data.** Every export is a precompiled script or plain data: what JSON
@@ -478,8 +484,7 @@ call [`hydrate`](/reference/precompiled/hydrate/) in the client.
 
 ## Testing
 
-A `*.evs.ts` file is an ordinary module. Without the plugin, in a test runner or a Node script,
-importing it compiles it, and it exports the same scripts.
+A `*.evs.ts` file is an ordinary module. A test imports it like the app does.
 
 ```ts title="pool.test.ts" {2,7}
 import { createPublicClient, http } from 'viem';
@@ -493,6 +498,18 @@ const result = await client.readContract({
   args: ['0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640'],
 });
 ```
+
+Who compiles the file depends on the test runner. It exports the same scripts either way.
+
+| Test runner | The import |
+| --- | --- |
+| Vitest, in the same project | Vitest reads your `vite.config.ts`, so the plugin runs: the scripts are precompiled, as in the app |
+| a runner that does not read the Vite config, or a Node script | importing the file compiles it |
+
+- **Compiled on every run.** Under Vitest, the plugin compiles a script file again on each run.
+  Its output is never read from Vitest's module cache on disk (`fsModuleCache`), so an edit to
+  a file it imports is always seen.
+- **Debug data included.** `explainRevert()` and `debug()` work in a test as in the app.
 
 [`interpret`](/reference/utilities/interpret/) takes the script that `evscript` returns. To
 test the logic without a node, keep that script in a module of its own and compile it in the

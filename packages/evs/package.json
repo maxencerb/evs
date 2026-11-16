@@ -2,6 +2,19 @@
   "name": "@maxencerb/evs",
   "version": "0.5.0",
   "description": "Typed EVM read scripts in plain TypeScript: a callback builder compiled to runtime bytecode, executed via eth_call (deployless or state-override) with full viem inference",
+  "keywords": [
+    "abi",
+    "bytecode",
+    "eth_call",
+    "ethereum",
+    "evm",
+    "multicall",
+    "solidity",
+    "typescript",
+    "viem"
+  ],
+  "homepage": "https://evs.maxencerb.com",
+  "bugs": "https://github.com/maxencerb/evs/issues",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -17,6 +30,13 @@
   "sideEffects": false,
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
+  "typesVersions": {
+    "*": {
+      "runtime": [
+        "./dist/runtime.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",

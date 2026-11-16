@@ -61,7 +61,8 @@
  * throws `EvsTypeError`; exceeding `maxSteps` (default 1,000,000; one step per executed
  * statement + one per loop iteration + one per zero-filled array element) throws
  * `EvsCompileError(COMPILE_LIMIT)`. Neither is a chain outcome. `validateIr` runs on entry
- * (before DCE), so garbage IR fails loudly instead of diverging.
+ * (before DCE), so garbage IR fails loudly instead of diverging: as an `EvsTypeError` when the
+ * IR came from outside (deserialized, written by hand), as it is then the caller's input.
  */
 
 export { interpret } from './interp/interpreter.js';

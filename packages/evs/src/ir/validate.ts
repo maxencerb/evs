@@ -8,8 +8,9 @@
  * the scope rule (a `while` header dominates its body; `if`/`else` branches are isolated; `fn`
  * bodies see params only), unknown ids, single static assignment of every ValueId, cell
  * creation/typing/scoping, `break`/`continue` only inside a loop body, call-graph acyclicity,
- * return names, fnAbi type validity, `successOut` ⇔ try mode, and in-place writes only where the
- * builder emits them (`arrset` on an `arrnew`).
+ * return names, fnAbi type validity, `successOut` ⇔ try mode, in-place writes only where the
+ * builder emits them (`arrset` on an `arrnew`), and blocks nested at most `MAX_BLOCK_DEPTH` deep
+ * (so that neither this walk nor any later pass recurses past the host stack).
  *
  * One builder rule is deliberately NOT an IR rule: `returns` may be empty. The builder refuses
  * `s.return({})` because viem cannot decode empty returndata, but an empty-returns program is
@@ -20,14 +21,17 @@
  * (ValueIds `0 … args.length-1`) — the only binding the `ScriptIr` shape admits, since
  * `args` entries carry no explicit ValueId and no "load arg" statement kind exists.
  *
- * All failures throw `EvsInternalError` (compiler-produced IR is supposed to be valid — a
- * failure here means a bug in whichever producer built the IR), except the `MAX_STATIC_SIZE`
- * gate: the builder records a raw-ABI tuple param whose members each fit but whose total does
- * not, so that gate throws the `EvsTypeError` (`UNSUPPORTED_V0`) of the `t` constructors and
- * `abi/layout`.
+ * Who gets the blame depends on where the IR came from (`ir/nodes/origin.ts`). An IR this copy
+ * of evs produced (the recorder's output, a pass's output over one) is valid by construction, so
+ * a failure is a bug in evs: `EvsInternalError`. Any other IR (deserialized, written by hand,
+ * from another evs install) is the caller's input, so the same failure, with the same IR path,
+ * is an `EvsTypeError` (`TYPE_MISMATCH`). Two gates are user errors whatever the origin, as
+ * `EvsTypeError` (`UNSUPPORTED_V0`): `MAX_STATIC_SIZE` (the builder records a raw-ABI tuple param
+ * whose members each fit but whose total does not; the code of the `t` constructors and
+ * `abi/layout`) and `MAX_BLOCK_DEPTH` (the recorder's own gate).
  */
 
-import { EvsInternalError } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import {
   abiParamToType,
   arrayDepthOf,
@@ -64,7 +68,9 @@ import {
   type WordType,
 } from '../core/types.js';
 import {
+  blockDepthMessage,
   callOutputs,
+  MAX_BLOCK_DEPTH,
   type CellId,
   type FnId,
   type PlainAbiFunction,
@@ -73,7 +79,13 @@ import {
   type Stmt,
   type ValueId,
 } from './nodes.js';
+import { isEvsIr } from './nodes/origin.js';
 
+/**
+ * Throws when `ir` is not a program the builder could have recorded. The error class follows
+ * the IR's origin (see the module doc): `EvsInternalError` for an IR evs produced, a coded
+ * `EvsTypeError` naming the IR path for any other.
+ */
 export function validateIr(ir: ScriptIr): void {
   new IrValidator(ir).run();
 }
@@ -118,6 +130,8 @@ class IrValidator {
   private readonly arrnewOuts = new Set<ValueId>();
   private scopes: Scope[] = [];
   private loopDepth = 0;
+  /** how many `if` / `while` statements enclose the statement being checked, in its region */
+  private blockDepth = 0;
   private currentFn: FnId | null = null;
 
   constructor(ir: ScriptIr) {
@@ -138,8 +152,17 @@ class IrValidator {
   // failure
   // -------------------------------------------------------------------------
 
+  /**
+   * An IR evs produced cannot be invalid unless evs is wrong; any other IR is the caller's input,
+   * and the same failure is theirs to fix.
+   */
   private fail(msg: string): never {
-    throw new EvsInternalError(`INTERNAL`, `invalid ScriptIr "${this.ir.name}": ${msg}`);
+    const text = `invalid ScriptIr "${this.ir.name}": ${msg}`;
+    if (isEvsIr(this.ir)) throw new EvsInternalError('INTERNAL', text);
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${text} — this IR was not recorded by evscript() here (it was deserialized or written by hand): fix it where it was produced, or record the script again`,
+    );
   }
 
   // -------------------------------------------------------------------------
@@ -218,6 +241,7 @@ class IrValidator {
     const { ir } = this;
     this.scopes = [newScope()];
     this.loopDepth = 0;
+    this.blockDepth = 0;
     this.currentFn = null;
     for (let i = 0; i < ir.args.length; i++) {
       this.define(i, null, `args[${i}]`);
@@ -251,6 +275,7 @@ class IrValidator {
     this.ir.fns.forEach((fn, f) => {
       this.currentFn = f;
       this.loopDepth = 0;
+      this.blockDepth = 0;
       this.scopes = [newScope()];
       fn.params.forEach((p, i) => {
         this.define(p.value, p.type, `fns[${f}].params[${i}] ("${p.name}")`);
@@ -886,15 +911,18 @@ class IrValidator {
     switch (s.k) {
       case 'if': {
         this.use(s.cond, 'bool', `${path} (if)`);
+        this.enterBlock(path, s.k);
         this.scopes.push(newScope());
         this.walkBlock(s.then, `${path}.then`);
         this.scopes.pop();
         this.scopes.push(newScope());
         this.walkBlock(s.else, `${path}.else`);
         this.scopes.pop();
+        this.blockDepth -= 1;
         return;
       }
       case 'while': {
+        this.enterBlock(path, s.k);
         // the body scope is a child of the header scope: header values dominate the body
         this.scopes.push(newScope());
         this.walkBlock(s.header, `${path}.header`);
@@ -905,6 +933,7 @@ class IrValidator {
         this.loopDepth -= 1;
         this.scopes.pop();
         this.scopes.pop();
+        this.blockDepth -= 1;
         return;
       }
       case 'break':
@@ -917,6 +946,22 @@ class IrValidator {
       default:
         return this.unknownStmt(s, path);
     }
+  }
+
+  /**
+   * Steps into the blocks of the `if` / `while` at `path`, unless they would sit past
+   * {@link MAX_BLOCK_DEPTH}: this walk and every pass after it recurse once per nested block, so
+   * the gate comes before the recursion. A user error whatever the IR's origin: the recorder
+   * enforces the same bound, so only an IR from outside can break it.
+   */
+  private enterBlock(path: string, kind: 'if' | 'while'): void {
+    if (this.blockDepth >= MAX_BLOCK_DEPTH) {
+      throw new EvsTypeError(
+        'UNSUPPORTED_V0',
+        blockDepthMessage(`invalid ScriptIr "${this.ir.name}": ${elidePath(path)} (${kind})`),
+      );
+    }
+    this.blockDepth += 1;
   }
 
   private checkThrow(s: StmtOf<'throw'>, path: string): void {
@@ -985,6 +1030,17 @@ class IrValidator {
       if (p === undefined) return; // unreachable: lengths checked above
       this.use(a, abiParamToType(p), `${what} arg ${i} ("${p.name}")`);
     });
+    // every operand is checked before the outs are defined below: the call reads `gas` and
+    // `value` before it writes anything, so neither may be one of its own outputs
+    if (s.gas !== undefined) this.use(s.gas, 'uint256', `${what} gas`);
+    if (s.value !== undefined) {
+      if (s.kind !== 'call' && s.kind !== 'simulate') {
+        this.fail(
+          `${what}: value is only legal when kind is 'call' or 'simulate' (STATICCALL sends no value), got kind ${s.kind === undefined ? "'static' (absent)" : `'${s.kind}'`}`,
+        );
+      }
+      this.use(s.value, 'uint256', `${what} value`);
+    }
     // revert-data-as-result (issue #35): `revertReturns` replaces the ABI outputs as the decode
     // schema. It is a `kind: 'call'` feature only (STATICCALL reads have no reverting-quoter use;
     // the simulate trampoline carries its own revert framing). `callOutputs` reads each entry, so
@@ -1019,15 +1075,6 @@ class IrValidator {
       this.define(s.successOut, 'bool', `${what} successOut`);
     } else if (s.successOut !== undefined) {
       this.fail(`${what}: successOut is only legal when mode === 'try'`);
-    }
-    if (s.gas !== undefined) this.use(s.gas, 'uint256', `${what} gas`);
-    if (s.value !== undefined) {
-      if (s.kind !== 'call' && s.kind !== 'simulate') {
-        this.fail(
-          `${what}: value is only legal when kind is 'call' or 'simulate' (STATICCALL sends no value), got kind ${s.kind === undefined ? "'static' (absent)" : `'${s.kind}'`}`,
-        );
-      }
-      this.use(s.value, 'uint256', `${what} value`);
     }
   }
 
@@ -1225,6 +1272,17 @@ class IrValidator {
 // ---------------------------------------------------------------------------
 // type-table helpers
 // ---------------------------------------------------------------------------
+
+/**
+ * The path of a block nested past the limit, cut to its first and last characters: hundreds of
+ * `.then[0]` segments that all read the same say less than where the chain starts and ends.
+ */
+function elidePath(path: string): string {
+  const HEAD = 48;
+  const TAIL = 32;
+  if (path.length <= HEAD + TAIL) return path;
+  return `${path.slice(0, HEAD)} … ${path.slice(-TAIL)}`;
+}
 
 function isArrayType(s: EvsType): s is ArrayType {
   return typeof s === 'string' && s.endsWith(']');

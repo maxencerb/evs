@@ -6,6 +6,36 @@
 
 import { type ArgType, type EvsType, type Hex, typeToAbiParam } from '../../core/types.js';
 
+/**
+ * The deepest block nesting of a script: a statement sits inside at most this many `if` / `while`
+ * statements (`s.if`, `s.while`, `s.for`, `s.forEach`), counted from the top of the main body or
+ * of an `s.fn` body. Every pass over the statement tree recurses once per nested block
+ * (validation, dead-code elimination, lowering, the interpreter, the walkers) and so do the
+ * builder's callbacks, so the bound is what keeps them all off the end of the host stack: the
+ * recorder, `validateIr` and `deserializeIr` enforce it with `UNSUPPORTED_V0` before anything
+ * else walks the tree. Hand-written scripts nest 3 to 6 deep; the room above that is for
+ * generated ones (an else-if ladder nests one level per case). The recorder counts every open
+ * callback, an `s.fn` body included, since it is the callbacks that nest on the host stack: its
+ * bound implies this one.
+ */
+export const MAX_BLOCK_DEPTH = 256;
+
+/**
+ * The `UNSUPPORTED_V0` text for a block past {@link MAX_BLOCK_DEPTH}, shared by the three layers
+ * that enforce it; `where` names the block (a builder call, an IR path, a JSON path).
+ */
+export function blockDepthMessage(where: string): string {
+  return `${where}: blocks (an s.if branch, a loop body, an s.fn body) nest more than ${MAX_BLOCK_DEPTH} levels deep — flatten the script: record the blocks one after another instead of inside each other (an else-if ladder can be a sequence of s.if calls)`;
+}
+
+/**
+ * The deepest tuple nesting `deserializeIr` decodes in one type: at most this many tuple levels
+ * inside one another (a struct member that is a struct, and so on). Its type decoder recurses
+ * once per level, so the bound keeps a hostile document off the end of the host stack
+ * (`UNSUPPORTED_V0`, with the JSON path). Array suffixes do not count: they are one string.
+ */
+export const MAX_TUPLE_DEPTH = 256;
+
 export type ValueId = number;
 export type CellId = number;
 export type FnId = number;
