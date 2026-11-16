@@ -55,6 +55,10 @@ jobs:
 
       - name: Unit + type tests
         run: vp run test
+      # the error decoders read the errors of the app's viem: run them on the oldest version
+      # the peer range admits (packages/viem-floor installs exactly that one)
+      - name: Error decoders at the viem peer floor
+        run: vp run test:viem-floor
       - name: Integration tests (anvil via prool)
         run: vp run test:integration
 

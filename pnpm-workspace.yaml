@@ -33,6 +33,11 @@ catalogs:
     typescript-5.5: npm:typescript@~5.5.4
     typescript-7: npm:typescript@~7.0.2
     tsrs: 0.25.0-ts7.1.0-beta
+  # The oldest viem the library's peer range admits, for packages/viem-floor (the error decoders
+  # on the errors that version throws). Always the lower bound of `peerDependencies.viem` in
+  # packages/evs/package.json: the check fails when the two differ.
+  floor:
+    viem: 2.22.12
 
 # pnpm >= 11 refuses versions younger than a day (minimumReleaseAge 1440) at resolution time;
 # pnpm writes an exact-version exclude here when a pinned version is newer than that, and prunes

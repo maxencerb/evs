@@ -15,6 +15,7 @@ presentation page (npm, GitHub) and stays user-facing.
 | [`packages/vite-plugin-evs`](https://github.com/maxencerb/evs/tree/main/packages/vite-plugin-evs) | the published Vite plugin: compiles `*.evs.ts` modules at build time (see [Vite plugin](#vite-plugin-packagesvite-plugin-evs))                                                |
 | [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts)             | Foundry fixtures: mocks + the solc reference contracts for differential tests                                                                                                 |
 | [`packages/type-tests`](https://github.com/maxencerb/evs/tree/main/packages/type-tests)           | private: the published types used as an app would, checked by every supported type checker (see [Testing](#testing))                                                          |
+| [`packages/viem-floor`](https://github.com/maxencerb/evs/tree/main/packages/viem-floor)           | private: the error decoders run on the errors of the oldest viem the peer range admits (see [Testing](#testing))                                                              |
 | [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                                | runnable example scripts (`node examples/<name>/index.ts` after `vp run bootstrap`) and `vite-precompile`, a Vite app built through the plugin (`vp run build` in its folder) |
 
 ### Library sources (`packages/evs/src`)
@@ -76,6 +77,7 @@ vp run test:integration   # anvil integration tests of the library and the plugi
 vp check                  # format + lint + type-check (tsgolint) in one pass
 vp run check              # vp check + tsc/astro typecheck across workspaces (= CI)
 vp run typecheck:checkers # the other type checkers: TypeScript 5.5 and 7, bun check, tsrs
+vp run test:viem-floor    # the error decoders on the oldest viem of the peer range
 vp fmt                    # oxfmt (writes)
 vp run changeset          # add a changeset when a change should ship in the next release
 ```
@@ -112,7 +114,9 @@ Contracts on their own: `cd packages/contracts && forge build / forge test / vp 
   `vite-plus` exact, the `vite` → `@voidzero-dev/vite-plus-core` alias), `testing` and `docs`
   the rest. setup-vp reads the `vite-plus` entry to install CI's `vp`. `checkers` holds the
   extra type checkers of `packages/type-tests`: two more TypeScript versions under alias names
-  and tsrs, pinned exactly because it is a prerelease.
+  and tsrs, pinned exactly because it is a prerelease. `floor` holds the oldest viem the
+  library's peer range admits, for `packages/viem-floor`: move it together with the lower bound
+  of `peerDependencies.viem` in `packages/evs/package.json` (the check fails when they differ).
 - **overrides** `vite@*` / `vitest@*`: required by Vite+ under pnpm so every package shares the
   Vite+ core and the Vitest `vp test` bundles; bump them together with `vite-plus`.
   `peerDependencyRules.allowedVersions.vite` accepts the core alias's own version (1.0.0) for
@@ -653,6 +657,27 @@ Releases: see [Releasing](#releasing) below.
   reserved fails to compile. The built-in selectors and `BUILTIN_ERROR_SIGNATURES` (the selectors
   a declared error may not reuse) live in `abi/artifact.ts`, and codegen's revert tails import
   them from there.
+- **What is a revert is decided in one place**: `revertDataOf` (`viem.ts`), behind
+  `decodeScriptError` and `matchScriptError`. Its doc comment is the rule. A caught error is a
+  revert only when its `cause` chain shows a sign of one: viem's `ExecutionRevertedError`, an RPC
+  error with code 3 or a message that says "execution reverted", revert bytes under the
+  internal-error code -32603, `data: "Reverted 0x…"`, or a `ContractFunctionRevertedError` with a
+  hex `raw`. Two things look like signs and are not. The name `ContractFunctionRevertedError`
+  alone: viem builds one for every -32603 answer ("Internal error", an upstream timeout). A hex
+  `data` alone: avalanchego puts rejected creation code there, and viem's `AbiDecoding*` errors
+  a successful result. Everything else is `undefined`, which `matchScriptError` rethrows. The
+  tree is read by field names, never `instanceof`, since the error may come from another copy
+  of viem, and by what each viem version keeps: before 2.47.5 the
+  `ContractFunctionRevertedError` has no `cause`, so the node's message, kept as `reason`, is
+  the only sign of a revert without data. `matchScriptError` then calls the handler named
+  after the revert as `(args, error)`. A declared error always has one. `Panic`,
+  `Error(string)` and the two evs runtime errors have an optional one, and reach `_` without it;
+  what a `Panic` or `Error` handler receives first is built from the decoded arm (`code`, `kind`
+  and `meaning`, or `reason`), since those two carry no ABI arguments (`handlerArgsOf`). The
+  `unknown` and `empty` arms always reach `_`. The handlers type rejects every other key
+  (`OnlyKnownHandlers`, in the type parameter's own constraint: an intersection on the parameter
+  would cost the handlers their inferred arguments), and `HandlerResult` drops the optionality of
+  the built-in keys, or a table typed ahead of the call would return `undefined` too.
 - **Overload resolution** (the call verbs, `t.fromOutputs`) happens at recording: the recorded
   `call` statement carries one concrete ABI entry, so codegen never sees an overload. The rules
   exist twice and must stay in lockstep: `Recorder.resolveOverload` / `argFits`
@@ -794,6 +819,17 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   `expectType`, which need no test runner. `bun check` needs Bun 1.4.3 or later on the `PATH`:
   without it the run skips that checker locally and fails in CI. Add a fixture there whenever a
   type has to mean the same thing for a user on every checker.
+- **viem floor** (`vp run test:viem-floor`, `packages/viem-floor/check.ts`, a Node script) — the
+  error decoders (`decodeScriptError`, `matchScriptError`) on the errors of the oldest viem the
+  peer range admits. `test/harness/rpc-errors.ts` is a table of what nodes, wallets and proxies
+  answer to an `eth_call`, each with the outcome the decoders owe, and a mock JSON-RPC server
+  that gives those answers. The unit tests (`src/viem.test.ts`) run the table through the
+  pinned viem's `readContract` and `call`, the check through the floor version's, so both read
+  errors viem really built. The two differ: before viem 2.47.5 a
+  `ContractFunctionRevertedError` has no `cause` (the table's `expectedWithoutCause` column).
+  The check covers only what the decoders take from the app's viem, the errors: the library is
+  linked from the workspace, so its own `viem` imports resolve to the pinned version. Run it
+  after a build. A new provider answer goes in the table, with its outcome.
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
   arithmetic vs the solc 0.8.30 `EvsReference` contract, `pow` / `addmod` / `mulmod` /

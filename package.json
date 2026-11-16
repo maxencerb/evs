@@ -10,6 +10,7 @@
     "test": "vp test run --project unit --project types --project plugin",
     "test:integration": "vp test run --project integration --project plugin-integration",
     "test:all": "vp test run",
+    "test:viem-floor": "node packages/viem-floor/check.ts",
     "lint": "vp lint",
     "lint:fix": "vp lint --fix --fix-suggestions",
     "lint:ci": "vp lint --deny-warnings --format github",

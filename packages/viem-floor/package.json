@@ -1,0 +1,16 @@
+{
+  "name": "@maxencerb/evs-viem-floor",
+  "private": true,
+  "description": "The error decoders of @maxencerb/evs run on the errors of the oldest viem its peer range admits",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@maxencerb/evs": "workspace:*",
+    "viem": "catalog:floor"
+  },
+  "devDependencies": {
+    "typescript": "catalog:"
+  }
+}

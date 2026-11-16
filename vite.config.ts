@@ -145,6 +145,15 @@ export default defineConfig({
         },
       },
       {
+        // The peer-floor check prints one line per answer, and asks its one mock server for
+        // them in turn.
+        files: ['packages/viem-floor/**'],
+        rules: {
+          'no-console': 'off',
+          'no-await-in-loop': 'off',
+        },
+      },
+      {
         files: ['packages/evs/test/integration/**'],
         plugins: ['vitest'],
         rules: {

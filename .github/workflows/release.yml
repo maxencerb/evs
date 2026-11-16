@@ -81,6 +81,7 @@ jobs:
           vp run check
           vp run typecheck:checkers
           vp run test
+          vp run test:viem-floor
           vp run test:integration
           (cd examples/vite-precompile && vp run build)
           for package in packages/evs packages/vite-plugin-evs; do

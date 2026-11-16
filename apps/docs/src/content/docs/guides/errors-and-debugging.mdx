@@ -115,7 +115,9 @@ try {
 
 - **Exhaustive.** Each declared error needs a handler, or the call does not typecheck. `_`
   takes every other revert.
-- **Reverts only.** A network failure is rethrown, never sent to `_`.
+- **Reverts only.** A network failure, a rate limit or a provider's internal error is
+  rethrown, never sent to `_`. See
+  [what counts as a revert](/reference/utilities/decode-script-error/#what-counts-as-a-revert).
 - **As a value.** [`decodeScriptError`](/reference/utilities/decode-script-error/) returns
   the decoded revert for you to `switch` on.
 
@@ -174,7 +176,8 @@ Some failures leave nothing to decode.
   [EVM target](/guides/evm-targets/#spotting-a-wrong-target) to use. Deployless mode shows a
   bare `execution reverted`.
 - **Out of gas.** Deployless mode shows a bare `execution reverted` here too. Run the call
-  again with `toViem({ mode: 'stateOverride' })` to see the node's own error.
+  again with `toViem({ mode: 'stateOverride' })` to see the node's own error. Most nodes do not
+  report it as a revert, so `matchScriptError` rethrows it.
 - **An unfunded `value`.** A `value` is paid from the script's balance. When it falls short,
   `s.call` reverts with no data and `s.simulate` with `EvsDecodeError`. Deployless mode cannot
   fund the script: use a `balance` in the state-override entry.

@@ -169,28 +169,28 @@ same `site` now silences a different statement. Check the filter again after eac
 A failed check reverts with Solidity's `Panic(uint256)`: the selector `0x4e487b71`, then the
 code as one 32-byte word. A script raises four codes itself.
 
-| Code | Meaning | Raised by |
-| --- | --- | --- |
-| `0x11` | arithmetic overflow or underflow | [`add`, `sub`, `mul`, `pow`](/reference/expr/arithmetic/); signed `div` of the minimum value by -1; [`mulDiv`, `mulDivRoundingUp`](/reference/expr/full-precision/) when the result does not fit `uint256`; [`toUint`, `toInt`, `asAddress`](/reference/expr/conversions/) when the value does not fit the target |
-| `0x12` | division or modulo by zero | `div`, `mod`, `addmod`, `mulmod`, `mulDiv`, `mulDivRoundingUp` with a zero divisor, modulus or denominator |
-| `0x32` | array index out of bounds | [`.at(i)`, `.byteAt(i)`, `.slice(start, end)`](/reference/expr/bytes-and-arrays/), and `get` or `set` on a [`MutArray`](/reference/builder/new-array/#mutarray) |
-| `0x41` | allocation too large (out of memory) | [`s.newArray`](/reference/builder/new-array/) with a length of 2^32 or more |
+| Code | `kind` | Meaning | Raised by |
+| --- | --- | --- | --- |
+| `0x11` | `'overflow'` | arithmetic overflow or underflow | [`add`, `sub`, `mul`, `pow`](/reference/expr/arithmetic/); signed `div` of the minimum value by -1; [`mulDiv`, `mulDivRoundingUp`](/reference/expr/full-precision/) when the result does not fit `uint256`; [`toUint`, `toInt`, `asAddress`](/reference/expr/conversions/) when the value does not fit the target |
+| `0x12` | `'division-by-zero'` | division or modulo by zero | `div`, `mod`, `addmod`, `mulmod`, `mulDiv`, `mulDivRoundingUp` with a zero divisor, modulus or denominator |
+| `0x32` | `'out-of-bounds'` | array index out of bounds | [`.at(i)`, `.byteAt(i)`, `.slice(start, end)`](/reference/expr/bytes-and-arrays/), and `get` or `set` on a [`MutArray`](/reference/builder/new-array/#mutarray) |
+| `0x41` | `'out-of-memory'` | allocation too large (out of memory) | [`s.newArray`](/reference/builder/new-array/) with a length of 2^32 or more |
 
 `s.read`, `s.call` and `s.simulate` pass a called contract's revert through unchanged, so a
 script can also revert with a code that only the contract raises:
 
-| Code | Meaning |
-| --- | --- |
-| `0x00` | generic compiler panic |
-| `0x01` | assertion failure (assert) |
-| `0x21` | invalid enum conversion |
-| `0x22` | corrupted storage byte array |
-| `0x31` | pop on an empty array |
-| `0x51` | call to a zero-initialized internal function |
+| Code | `kind` | Meaning |
+| --- | --- | --- |
+| `0x00` | `'generic'` | generic compiler panic |
+| `0x01` | `'assert'` | assertion failure (assert) |
+| `0x21` | `'enum-conversion'` | invalid enum conversion |
+| `0x22` | `'storage-encoding'` | corrupted storage byte array |
+| `0x31` | `'empty-pop'` | pop on an empty array |
+| `0x51` | `'zero-function'` | call to a zero-initialized internal function |
 
-Each meaning is the `meaning` text that
-[`decodeScriptError`](/reference/utilities/decode-script-error/) returns. Any other code reads
-`unknown panic code`.
+[`decodeScriptError`](/reference/utilities/decode-script-error/) returns the `kind` and the
+`meaning` of a code. Switch on `kind`, show `meaning`. Any other code has the kind `'unknown'`
+and reads `unknown panic code`.
 
 - **No check, no panic.** A check that cannot fail is not compiled: dividing by a nonzero
   literal has no `0x12` check.

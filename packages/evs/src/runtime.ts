@@ -26,7 +26,10 @@ export type {
   DecodedBuiltinError,
   DecodedScriptError,
   ErrorArgsOf,
+  ErrorStringArgs,
   HandlerResult,
+  PanicArgs,
+  PanicKind,
   ScriptErrorHandlers,
   ToViem, // the toViem() overloads of a compiled and a precompiled script
   ToViemMode,

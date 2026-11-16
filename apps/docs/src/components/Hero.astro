@@ -59,7 +59,7 @@ const agentPrompt = `I want to use @maxencerb/evs ("evs") in this project.
 
 evs is a TypeScript library for typed, read-only EVM scripts. You write a callback against a small builder API (s.read / s.call / s.simulate for calls, s.if / s.for / s.select for runtime control flow, checked arithmetic), it compiles to EVM runtime bytecode, and viem executes it as one deployless eth_call. Reads whose target depends on an earlier read (pool.token0() then token0.symbol()) batch into a single round trip, which a multicall cannot do, and the script's literal ABI gives readContract full argument and result inference.
 
-Install: ${managers[0]?.command} (peer viem >= 2.14.1, ESM only, TypeScript >= 5.5 in strict mode).
+Install: ${managers[0]?.command} (peer viem >= 2.22.12 and < 3, ESM only, TypeScript >= 5.5 in strict mode).
 
 Read the documentation before writing code:
 - Index: ${site}/llms.txt
