@@ -1035,3 +1035,120 @@ describe('through compile()', () => {
     expect(compiled.disassemble().format()).toContain('ADD');
   });
 });
+
+// ---------------------------------------------------------------------------
+// long dependency chains: liveness follows them with a worklist, never the host stack
+// ---------------------------------------------------------------------------
+
+describe('a long def-use chain does not use the host stack', () => {
+  // Long enough that a marker recursing once per link overflows whatever the JIT has made of
+  // its frames, on a worker thread's stack too: the chains must not pass by luck in a warm run.
+  const LINKS = 20_000;
+  const HAND_BUILT_LINKS = 400_000;
+  const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+  test('a value chain: every link stays, the pass returns the IR itself', () => {
+    const script = evscript({ name: 'chain', args: [t.uint256] }, (s, x) => {
+      let acc = x;
+      for (let i = 0; i < LINKS; i++) acc = acc.wrappingAdd(1n);
+      return s.return({ acc });
+    });
+    expect(eliminateDeadCode(script.ir)).toBe(script.ir);
+    const result = interpret(script, [5n], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.acc).toBe(5n + BigInt(LINKS));
+  });
+
+  test('a dead value chain is dropped whole', () => {
+    const script = evscript({ name: 'dead', args: [t.uint256] }, (s, x) => {
+      let acc = x;
+      for (let i = 0; i < LINKS; i++) acc = acc.wrappingAdd(1n);
+      return s.return({ x });
+    });
+    expect(script.ir.body.length).toBeGreaterThan(LINKS);
+    expect(eliminateDeadCode(script.ir).body).toEqual([]);
+  });
+
+  test('a cell chain: each cell is initialised from the one before', () => {
+    const script = evscript({ name: 'cells', args: [t.uint256] }, (s, x) => {
+      let v = x;
+      for (let i = 0; i < LINKS; i++) v = s.let(t.uint256, v).get();
+      return s.return({ v });
+    });
+    expect(eliminateDeadCode(script.ir)).toBe(script.ir);
+    const result = interpret(script, [9n], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.v).toBe(9n);
+  });
+
+  test('an alias chain: each array is written with an element of the one before', () => {
+    const script = evscript({ name: 'aliases', args: [t.uint256] }, (s, x) => {
+      let v = x;
+      for (let i = 0; i < LINKS; i++) {
+        const arr = s.newArray(t.uint256, 1n);
+        arr.set(0n, v);
+        v = arr.get(0n);
+      }
+      return s.return({ v });
+    });
+    // every `arrset` is kept through its array's alias class, link after link; only the length
+    // read `s.newArray` records for each array is dead
+    const pruned = allStmts(eliminateDeadCode(script.ir));
+    const count = (k: Stmt['k']): number => pruned.filter((s) => s.k === k).length;
+    expect(count('arrset')).toBe(LINKS);
+    expect(count('index')).toBe(LINKS);
+    expect(count('arrnew')).toBe(LINKS);
+    expect(count('len')).toBe(0);
+    const result = interpret(script, [9n], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.v).toBe(9n);
+  });
+
+  test('an `if` chain climbs through every enclosing `if`', () => {
+    // hand-built: a live statement at the bottom of nested `if`s marks each owner in turn
+    const depth = 200;
+    let inner: Stmt[] = [mk({ k: 'cellset', cell: 0, value: 1 })];
+    for (let i = 0; i < depth; i++) inner = [mk({ k: 'if', cond: 2, then: inner, else: [] })];
+    const x = ir({
+      values: [vi('uint256'), vi('uint256'), vi('bool'), vi('uint256')],
+      cells: [{ type: 'uint256' }],
+      body: [
+        constU(0, 0n),
+        constU(1, 1n),
+        mk({ k: 'const', out: 2, data: { kind: 'word', hex: wordHex(1n) }, type: 'bool' }),
+        mk({ k: 'cellnew', cell: 0, init: 0 }),
+        ...inner,
+        mk({ k: 'cellget', cell: 0, out: 3 }),
+      ],
+      returns: [{ name: 'c', type: 'uint256', value: 3 }],
+    });
+    expect(check(x)).toBe(x);
+  });
+
+  test('a hand-built chain of 400,000 links', () => {
+    const values: ValueInfo[] = [vi('uint256'), vi('uint256')];
+    const body: Stmt[] = [constU(1, 1n)];
+    for (let i = 0; i < HAND_BUILT_LINKS; i++) {
+      values.push(vi('uint256'));
+      body.push(mk({ k: 'bin', op: 'wrapadd', a: i === 0 ? 0 : i + 1, b: 1, out: i + 2 }));
+    }
+    const x = ir({
+      args: [{ name: 'x', type: 'uint256' }],
+      values,
+      body,
+      returns: [{ name: 'acc', type: 'uint256', value: HAND_BUILT_LINKS + 1 }],
+    });
+    expect(eliminateDeadCode(x)).toBe(x);
+  });
+
+  test('compile() reports the size of a chain that is too long, and compiles one that fits', () => {
+    const chain = (links: number) =>
+      evscript({ name: 'chain', args: [t.uint256] }, (s, x) => {
+        let acc = x;
+        for (let i = 0; i < links; i++) acc = acc.wrappingAdd(1n);
+        return s.return({ acc });
+      });
+    expect(() => compile(chain(LINKS), { optimize: true })).toThrowError(
+      expect.objectContaining({ name: 'EvsCompileError', code: 'COMPILE_LIMIT' }),
+    );
+    const fits = compile(chain(4500), { optimize: true });
+    expect((fits.runtimeBytecode.length - 2) / 2).toBeLessThanOrEqual(24_576);
+  });
+});

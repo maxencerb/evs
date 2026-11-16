@@ -40,7 +40,7 @@ import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { deploylessResultDiagnostics } from './deployless.js';
 import { explainRevert, type RevertExplanation } from './explain.js';
-import { eliminateDeadCode } from './ir/dce.js';
+import { pruneDeadCode } from './ir/dce.js';
 import type { ScriptIr } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
 import { createPrecompiledScript, type PrecompiledScript } from './precompiled.js';
@@ -145,7 +145,7 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   // result nothing observable reads) → lowerProgram, which re-validates the DCE output as a
   // self-check of the pass. The artifact keeps exposing the recorded `script.ir` unchanged.
   validateIr(ir);
-  const lowered = lowerWithCodecFallback(eliminateDeadCode(ir), {
+  const lowered = lowerWithCodecFallback(pruneDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     optimize: resolved.optimize,
   });

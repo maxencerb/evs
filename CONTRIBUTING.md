@@ -304,6 +304,31 @@ Releases: see [Releasing](#releasing) below.
   kinds and defer the rest to `isObservable` or keep them as is, so a new kind that holds nested
   blocks or mutates memory needs a case there), the codegen switches (`codegen/program.ts`,
   `codegen/lower/`) and the op sets in `ir/nodes/schema.ts` (`BIN_OPS`, …).
+- **IR from outside, and how deep a script goes.** `validateIr` is the boundary for IR the
+  recorder did not produce, and it reports the same failure in two ways. `ir/nodes/origin.ts`
+  holds a module-private `WeakSet` of the IR objects this copy of evs made: the recorder registers
+  its sealed output, and the dead-code pass registers what it derives from a registered IR. A
+  validation failure on one of those is a bug in evs (`EvsInternalError`). On any other object (a
+  `deserializeIr` result, an object written by hand, a copy, the IR of a second evs install) it
+  is the caller's input, so it is an `EvsTypeError` (`TYPE_MISMATCH`) with the same IR path. The
+  registry holds identities, so only deep-frozen IR goes in, and the `ir/nodes.ts` barrel does
+  not re-export it (the barrel is part of the runtime entry's graph). The exported
+  `eliminateDeadCode` validates an unregistered IR before it runs; `compile()` and `interpret()`
+  validate, then call `pruneDeadCode`, the pass without the check. Two gates of `validateIr` are
+  user errors whatever the origin, both `UNSUPPORTED_V0`: `MAX_STATIC_SIZE` and the block depth.
+  **Depth.** Every pass over the statement tree recurses once per nested block, and the
+  builder's callbacks nest on the host stack the same way, so blocks nest at most
+  `MAX_BLOCK_DEPTH` (256, `ir/nodes/schema.ts`). Three layers enforce it before anything else
+  walks the tree: the recorder (it counts every open callback, an `s.fn` body included, and
+  throws from the verb that would open one more), `validateIr` (per body) and `deserializeIr`
+  (with the JSON path). With the gate lifted, a fresh Node 26 process overflows near 760 nested
+  `s.for` while recording, the shallowest of all, and past 1,000 levels in every pass, so the
+  bound leaves a factor of three or more; measure again before raising it. A new pass may
+  recurse per block. It may not recurse per statement or per def-use link: a chain is as long
+  as the script (a host loop unrolls thousands of dependent statements), which is why the
+  dead-code mark phase is a worklist. `deserializeIr` also stops at `MAX_TUPLE_DEPTH` (256)
+  tuple levels in one type, since its type decoder recurses per level, and builds the JSON path
+  of a node only when a check fails. The `t` constructors have no tuple depth limit of their own.
 - **Memory model** is Solidity's: `0x00–0x3f` scratch, `0x40` free-memory pointer, `0x60` the
   zero slot (the canonical empty value `try*` failures, unset `s.newArray` elements and omitted
   `s.tuple` members point at — a zero-filled pointer slot would alias scratch, so memref slots

@@ -96,3 +96,12 @@ dce(echo.ir) === echo.ir; // true: nothing to remove, same object back
 - **Same object when clean.** With nothing to remove, the input IR is returned as is.
 - **Frozen output.** The returned IR is frozen, and running the pass on it again changes
   nothing.
+- **Outside IR is checked.** An IR that evs did not record in this process, such as the result
+  of [`deserializeIr`](/reference/utilities/serialize-ir/), is validated first.
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the IR was deserialized or written by hand, and is invalid. The message names the statement |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | such an IR nests blocks more than 256 levels deep |
