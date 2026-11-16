@@ -367,6 +367,37 @@ test('a generic helper keeps its type parameter', () => {
   expectTypeOf(pick<'uint8'>).returns.toEqualTypeOf<Expr<'uint8'>>();
 });
 
+test('a generic helper forwards an IntoExpr operand of its type parameter next to an Expr', () => {
+  // a threshold or an offset given by the caller, a literal or an Expr: the method form takes
+  // it, and so does recording
+  const isAbove = <n extends NumericType>(s: ScriptBuilder, x: Expr<n>, threshold: IntoExpr<n>) =>
+    s.gt(x, threshold);
+  const offset = <n extends NumericType>(s: ScriptBuilder, x: Expr<n>, by: IntoExpr<n>): Expr<n> =>
+    s.add(x, by);
+  const below = <n extends NumericType>(s: ScriptBuilder, limit: IntoExpr<n>, x: Expr<n>) =>
+    s.gt(limit, x);
+  const either = <n extends 'bool'>(s: ScriptBuilder, x: Expr<n>, y: IntoExpr<n>) => s.or(x, y);
+  const masked = <n extends 'uint8' | 'bytes4'>(s: ScriptBuilder, x: Expr<n>, mask: IntoExpr<n>) =>
+    s.bitAnd(x, mask);
+  expectTypeOf(isAbove<'uint256'>).returns.toEqualTypeOf<Expr<'bool'>>();
+  expectTypeOf(offset<'int24'>).returns.toEqualTypeOf<Expr<'int24'>>();
+  expectTypeOf(below<'uint8'>).returns.toEqualTypeOf<Expr<'bool'>>();
+  expectTypeOf(either<'bool'>).returns.toEqualTypeOf<Expr<'bool'>>();
+  expectTypeOf(masked<'bytes4'>).returns.toEqualTypeOf<Expr<'bytes4'>>();
+  // next to a literal it is refused, as for a concrete type: `x` may be a literal too
+  const twice = <n extends NumericType>(s: ScriptBuilder, x: IntoExpr<n>) =>
+    // @ts-expect-error — nothing types the product when `x` is a literal
+    s.mul(x, 2n);
+  // a literal of the helper's own is not: the checker cannot tell it fits `n` before `n` is known
+  const plusOne = <n extends NumericType>(s: ScriptBuilder, x: Expr<n>) =>
+    // @ts-expect-error — `1n` against `LitOf<n>`, a type not resolved yet
+    s.add(x, 1n);
+  void [twice, plusOne];
+  evscript({ name: 'generic', args: [t.uint256, t.int24] }, (s, amount, tick) =>
+    s.return({ above: isAbove(s, amount, 10n), shifted: offset(s, tick, -60) }),
+  );
+});
+
 test('the type expected of the result never types an operand', () => {
   // the callback's return is contextually typed by EvsScript (any return record): the literal
   // branch must not take its type from there

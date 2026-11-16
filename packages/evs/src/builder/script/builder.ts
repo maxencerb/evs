@@ -149,28 +149,33 @@ export type EvsFn<
  * result of a conditional type in full, where it would print a union by this alias's name. The
  * bare handle is left out of that branch, where it could only be `MemrefHandle<never>`: the
  * inference of `a` reads both branches, so a handle still gives `a` its type.
+ *
+ * The first branch also holds {@link GenericLiteral}, `never` there once the types are known: it
+ * is for a type parameter `n` of the caller (a generic helper), where the checker cannot tell
+ * whether `n` is `never` and checks the operand against both branches.
  */
 export type FirstOperand<
   a extends EvsType,
   b extends EvsType,
   kind extends OperandKind = 'operand',
 > = [a | b] extends [never]
-  ? Expr<a> | ExprNeeded<kind>
+  ? Expr<a> | ExprNeeded<kind> | GenericLiteral<b, kind>
   : Expr<a> | BareHandle<a, kind> | OperandLiteral<b, kind>;
 
 /**
  * The second operand, see {@link FirstOperand}: checked against the first operand's type when
  * that one is an `Expr` (an `Expr` of another type is an error here, as `rhs` is in the method
- * form), else the `Expr` that types the operation.
+ * form), else the `Expr` that types the operation. The first branch also holds
+ * {@link GenericLiteral}, as in {@link FirstOperand}.
  */
 export type SecondOperand<
   a extends EvsType,
   b extends EvsType,
   kind extends OperandKind = 'operand',
 > = [a] extends [never]
-  ? [b] extends [never]
-    ? Expr<b> | ExprNeeded<kind>
-    : Expr<b> | BareHandle<b, kind>
+  ?
+      | ([b] extends [never] ? Expr<b> | ExprNeeded<kind> : Expr<b> | BareHandle<b, kind>)
+      | GenericLiteral<a, kind>
   : CheckedOperand<a, kind>;
 
 /**
@@ -201,6 +206,21 @@ type CheckedOperand<t extends EvsType, kind extends OperandKind> = kind extends 
   ? IntoExpr<NoInfer<t>>
   : NoInfer<MemrefOperand<t>>;
 
+/**
+ * The literal half of `IntoExpr<t>`, in the branch of {@link FirstOperand} and
+ * {@link SecondOperand} taken when `t`, the other operand's type, is `never`: a literal there is
+ * `LitOf<never>`, nothing, and the branch is unchanged. With `t` a type parameter of a generic
+ * helper the checker cannot pick a branch and checks the operand against both, so without this
+ * an `IntoExpr<n>` operand next to an `Expr<n>` fits neither, where the method form
+ * (`x.gt(threshold)`) and recording take it. Arithmetic, ordering and logic operators only:
+ * equality and `s.select` take an `IntoExpr<n>` of a word only once `n` is known. `NoInfer` is
+ * around the whole type: inside, the checker reads `LitOf` over every member of the type
+ * parameter's constraint when it types a literal operand.
+ */
+type GenericLiteral<t extends EvsType, kind extends OperandKind> = kind extends 'operand'
+  ? NoInfer<LitOf<t>>
+  : never;
+
 /** The literal first operand checked against the second's type `t` ({@link FirstOperand}): a
  *  host literal, or for equality and `s.select` a struct or array literal whose members may be
  *  staged. `NoInfer` as in {@link CheckedOperand}. */
@@ -227,6 +247,12 @@ export type SyncCallback<r> = 0 extends 1 & r
     : {
         readonly 'evs: the callback returns a Promise (an async function). The builder runs it once, synchronously, so nothing after its first await is recorded: await your data before evscript() and use a plain function': never;
       };
+
+/** The element `s.forEach` hands its body: a `tuple[]` array's is a `Tuple` (a `tuple[][]`'s an
+ *  `Expr` of the row, {@link TupleArrayElemHandle}), a word array's an `Expr`. */
+type ForEachElem<a extends EvsType> = a extends TupleType
+  ? TupleArrayElemHandle<a>
+  : Expr<ArrayElemOf<a>>;
 
 /**
  * What an operand is checked against when no operand is an `Expr`: the recording-time
@@ -418,8 +444,7 @@ export interface ScriptBuilder<
     cond: () => IntoExpr<'bool'>,
     body: ((loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
-  // `range.type` is optional (issue #12): the first overload matches a type-less range and
-  // types the counter as uint256; the explicit-type overload keeps the pre-#12 behaviour.
+  // `range.type` is optional (issue #12): a type-less range counts in uint256
   for<r = void>(
     range: {
       type?: undefined;
@@ -429,15 +454,18 @@ export interface ScriptBuilder<
     },
     body: ((i: Expr<'uint256'>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
-  // (the counter's type is `range.type`: the bounds are checked against it)
-  for<const t extends NumericType, r = void>(
+  // the counter's type is `range.type`, uint256 when it is left out: the bounds and the counter
+  // are checked against it, never used to infer it. This one takes both range shapes, so its
+  // error, the only one TypeScript 7 prints when no overload matches, is about the mistake
+  // whatever the range (for a typed range, the first one's error is about `type`).
+  for<const t extends NumericType = 'uint256', r = void>(
     range: {
-      type: t;
+      type?: t;
       from: IntoExpr<NoInfer<t>>;
       until: IntoExpr<NoInfer<t>>;
       step?: IntoExpr<NoInfer<t>>;
     },
-    body: ((i: Expr<t>, loop: LoopCtl) => r) & SyncCallback<r>,
+    body: ((i: Expr<NoInfer<t>>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
   // forEach over an array value (issue #12): the counter loop with `until` = the array's
   // length (snapshot ONCE) and `elem` = the bounds-checked `array.at(i)` — a `tuple[]` array
@@ -447,14 +475,16 @@ export interface ScriptBuilder<
   // time). Staged handles only: a MutArray iterates through its `.expr()` memref. The element
   // load is always recorded; a body that never reads `elem` leaves it dead and the compile-time
   // DCE pass (ir/dce.ts) drops it, bounds check included.
-  forEach<C extends TupleType & { readonly type: TupleArrayTag }, r = void>(
-    array: Expr<C>,
-    body: ((elem: TupleArrayElemHandle<C>, i: Expr<'uint256'>, loop: LoopCtl) => r) &
-      SyncCallback<r>,
-  ): void;
+  // A word array takes the first overload, which also types the element of a generic helper's
+  // `Expr<a>`. The last one takes every array, so its error, the only one TypeScript 7 prints
+  // when no overload matches, is about the body whatever the array.
   forEach<a extends ArrayType, r = void>(
     array: Expr<a>,
     body: ((elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => r) & SyncCallback<r>,
+  ): void;
+  forEach<a extends ArrayType | (TupleType & { readonly type: TupleArrayTag }), r = void>(
+    array: Expr<a>,
+    body: ((elem: ForEachElem<a>, i: Expr<'uint256'>, loop: LoopCtl) => r) & SyncCallback<r>,
   ): void;
   // the result's type is the branch's that is an Expr or a bare handle (≥1 is), the first when
   // both are: the other branch is checked against it (see {@link FirstOperand}). A struct result

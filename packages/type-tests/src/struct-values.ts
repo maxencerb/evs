@@ -94,8 +94,8 @@ export const refused = evscript(
 
 /** The callbacks the builder runs must be synchronous. */
 export const callbacks = evscript(
-  { name: 'callbacks', args: [t.bool, t.array(t.uint256)] },
-  (s, flag, xs) => {
+  { name: 'callbacks', args: [t.bool, t.array(t.uint256), t.array(Position)] },
+  (s, flag, xs, positions) => {
     const c = s.let(t.uint256, 0n);
     s.if(flag, () => c.set(1n));
     s.if(
@@ -109,6 +109,7 @@ export const callbacks = evscript(
     );
     s.for({ from: 0n, until: 2n }, (i) => c.set(i));
     s.forEach(xs, (x) => c.set(x));
+    s.forEach(positions, (p) => c.set(p.amount.get()));
     // @ts-expect-error -- an async branch
     s.if(flag, async () => c.set(2n));
     s.while(
@@ -118,8 +119,12 @@ export const callbacks = evscript(
     );
     // @ts-expect-error -- an async counter body
     s.for({ from: 0n, until: 2n }, async () => {});
+    // @ts-expect-error -- an async counter body, typed range
+    s.for({ type: t.uint8, from: 0, until: 2 }, async () => {});
     // @ts-expect-error -- an async element body
     s.forEach(xs, async () => {});
+    // @ts-expect-error -- an async element body, over a struct array
+    s.forEach(positions, async () => {});
     // @ts-expect-error -- a generator branch
     s.if(flag, function* () {});
     return s.return({ c: c.get() });

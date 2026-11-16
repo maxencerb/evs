@@ -679,7 +679,9 @@ Releases: see [Releasing](#releasing) below.
   (`assertSyncCallback`, on the result of every callback the builder runs: a new verb that takes
   one must call it, and type it `(() => r) & SyncCallback<r>`, the type-level mirror in
   `builder/script/builder.ts`; the `evscript` and `s.fn` bodies are refused by their return
-  types already), a struct literal without a value for a member, an array literal with a hole
+  types already; a verb with overloads, as `s.for` and `s.forEach`, makes its last overload take
+  every shape of its other arguments, because TypeScript 7, `bun check` and tsrs print only the
+  last overload's error when none matches), a struct literal without a value for a member, an array literal with a hole
   (`missingElement`: the array methods skip holes, so literals are read by index), an option
   object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
   input shape gets its check and a row in `builder/recording-guards.test.ts`.
@@ -791,10 +793,18 @@ Releases: see [Releasing](#releasing) below.
   instantiates the other two, the only ones that evaluate `StructFlag`. With that check on the
   parameters every overload shares, a 309-entry ABI with 256 calls cost 52% more type
   instantiations than without it; ordered this way, 10%, all of it from the calls that pass
-  `struct: true`. The result of a call on a widened ABI is one union, exported as
+  `struct: true`. The last overload takes `ResolvedSubcallParams` itself, the exported type a
+  wrapper is written with: from a value of that type the checker infers `args` through the
+  alias's own arguments, where a structural copy of it has `args` inferred as
+  `args & OverloadGuard<…>` and guarded a second time; being last, it is also what
+  `Parameters<ScriptBuilder['read']>` reads. `SubcallParams['struct']` is the type the verbs
+  take (`false | StructFlag<…>`), so a value of either exported type is a parameter object a verb
+  accepts. The result of a call on a widened ABI is one union, exported as
   `WideSubcallResult` and declared under the name `TypedResultRequiresAbiAsConst`, the name a
   compile error prints. It holds `void`, not `undefined`: a use then reports the type by its name
-  where `undefined` gave "possibly undefined" first.
+  where `undefined` gave "possibly undefined" first. A call on a literal ABI that resolves to no
+  function (a name outside the verb's bucket, args that fit no overload) is already an error and
+  gets `never`, so that error stays the only one.
 - **The mutability of an ABI entry is read in one place**, `stateMutabilityOf`
   (`builder/expr/calls.ts`). An entry with no `stateMutability` (solc before 0.4.16) is read by
   its `constant` and `payable` flags, as abitype's zod schema reads it: `constant: true` is
@@ -813,7 +823,11 @@ Releases: see [Releasing](#releasing) below.
   inferred for the parameter no operand gave a type. Two overloads (`Expr` first, literal
   first) would also work, but a call that matches neither is reported on the function name
   with both overloads listed; one signature reports it on the wrong operand, in the method
-  form's words. `s.let(type, init)` and the typed `s.for` range keep one parameter and wrap
+  form's words. The branch taken when the other operand's type is `never` also holds the
+  literal half of `IntoExpr` (`GenericLiteral`, `LitOf<never>` there, so nothing): for a type
+  parameter `n` of a generic helper the checker cannot pick a branch and checks the operand
+  against both, and an `IntoExpr<n>` next to an `Expr<n>` must fit both, as the method form takes
+  it. `s.let(type, init)` and the typed `s.for` range keep one parameter and wrap
   the checked positions in `NoInfer`. `s.eq` / `s.neq` and `s.select`'s branches (an
   `OperandKind` of `'equality'` / `'branch'`) also take a bare `Tuple` / `MutArray` handle and a
   struct or array literal with staged members (`MemrefOperand`, `StagedLiteral` in

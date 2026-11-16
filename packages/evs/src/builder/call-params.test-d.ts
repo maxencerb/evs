@@ -11,10 +11,16 @@ import { expectTypeOf, test } from 'vite-plus/test';
 import { t, type Expr, type TupleType } from '../core/types.js';
 import {
   evscript,
+  type ResolvedSubcallParams,
+  type ScriptBuilder,
   type StructFlag,
+  type SubcallFunctionName,
+  type SubcallInputs,
+  type SubcallParams,
   type Tuple,
   type ViewMutability,
   type WideSubcallResult,
+  type WriteMutability,
 } from './script.js';
 
 const abi = parseAbi([
@@ -396,3 +402,122 @@ test('an ABI entry without stateMutability is accepted, as an ABI with no litera
   });
 });
 /* oxlint-enable typescript/no-unsafe-type-assertion */
+
+// ---------------------------------------------------------------------------
+// the exported parameter types, in a wrapper
+// ---------------------------------------------------------------------------
+
+test('a wrapper typed with ResolvedSubcallParams passes its object on, generic or not', () => {
+  const readVia = <
+    const a extends Abi,
+    name extends SubcallFunctionName<a>,
+    const args extends SubcallInputs<a, name>,
+  >(
+    s: ScriptBuilder,
+    p: ResolvedSubcallParams<a, name, ViewMutability, args>,
+  ) => s.read(p);
+  type BalanceParams = ResolvedSubcallParams<
+    typeof abi,
+    'balanceOf',
+    ViewMutability,
+    readonly [Expr<'address'>]
+  >;
+  const balanceVia = (s: ScriptBuilder, p: BalanceParams) => s.read(p);
+  const tryBalanceVia = (s: ScriptBuilder, p: BalanceParams) => s.tryRead(p);
+  evscript({ name: 'via', args: [t.address, t.address] }, (s, token, who) => {
+    const viaGeneric = readVia(s, { address: token, abi, functionName: 'balanceOf', args: [who] });
+    const viaConcrete = balanceVia(s, {
+      address: token,
+      abi,
+      functionName: 'balanceOf',
+      args: [who],
+    });
+    const tried = tryBalanceVia(s, { address: token, abi, functionName: 'balanceOf', args: [who] });
+    // a `struct` the wrapper's type cannot see through: the positional result or the struct one
+    expectTypeOf<Extract<typeof viaGeneric, Expr>>().toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf<Extract<typeof viaConcrete, Expr>>().toEqualTypeOf<Expr<'uint256'>>();
+    expectTypeOf<Extract<typeof tried.value, Expr>>().toEqualTypeOf<Expr<'uint256'>>();
+    // the wrapper's type still requires args
+    // @ts-expect-error — balanceOf takes one argument
+    readVia(s, { address: token, abi, functionName: 'balanceOf' });
+    return s.return({ ok: s.lit(t.bool, true) });
+  });
+});
+
+test('a wrapper typed with SubcallParams passes its object on', () => {
+  const slot0Via = (s: ScriptBuilder, p: SubcallParams<typeof outputsAbi, 'slot0'>) => s.read(p);
+  // `SubcallParams` leaves `args` optional: for a function that takes arguments, the wrapper's
+  // object may lack them, which recording refuses (`ResolvedSubcallParams` requires them)
+  const swapVia = (
+    s: ScriptBuilder,
+    p: SubcallParams<typeof outputsAbi, 'swap', WriteMutability>,
+  ) =>
+    // @ts-expect-error — Property 'args' is optional in type 'SubcallParams<…>'
+    s.simulate(p);
+  void swapVia;
+  // the `struct` key holds what the verbs take: `true` only for outputs that are all named
+  expectTypeOf<SubcallParams<typeof outputsAbi, 'slot0'>['struct']>().toEqualTypeOf<
+    boolean | undefined
+  >();
+  expectTypeOf<SubcallParams<typeof outputsAbi, 'getConfig'>['struct']>().toEqualTypeOf<
+    false | StructFlag<typeof outputsAbi, 'getConfig'> | undefined
+  >();
+  evscript({ name: 'viaParams', args: [t.address] }, (s, pool) => {
+    const slot0 = slot0Via(s, { address: pool, abi: outputsAbi, functionName: 'slot0' });
+    // either result: the positional one or the struct one
+    expectTypeOf<Extract<typeof slot0, readonly unknown[]>[1]>().toEqualTypeOf<Expr<'int24'>>();
+    expectTypeOf<
+      ReturnType<Exclude<typeof slot0, readonly unknown[]>['tick']['get']>
+    >().toEqualTypeOf<Expr<'int24'>>();
+    return s.return({ ok: s.lit(t.bool, true) });
+  });
+});
+
+test('the parameter of a verb, as Parameters<> reads it, is its parameter object', () => {
+  type Wide<mut extends ViewMutability | WriteMutability> = ResolvedSubcallParams<
+    Abi | readonly unknown[],
+    string,
+    mut,
+    readonly unknown[]
+  >;
+  expectTypeOf<Parameters<ScriptBuilder['read']>[0]>().toEqualTypeOf<Wide<ViewMutability>>();
+  expectTypeOf<Parameters<ScriptBuilder['tryRead']>[0]>().toEqualTypeOf<Wide<ViewMutability>>();
+  expectTypeOf<Parameters<ScriptBuilder['call']>[0]>().toEqualTypeOf<Wide<WriteMutability>>();
+  expectTypeOf<Parameters<ScriptBuilder['tryCall']>[0]>().toEqualTypeOf<Wide<WriteMutability>>();
+  expectTypeOf<Parameters<ScriptBuilder['simulate']>[0]>().toEqualTypeOf<Wide<WriteMutability>>();
+  expectTypeOf<Parameters<ScriptBuilder['trySimulate']>[0]>().toEqualTypeOf<
+    Wide<WriteMutability>
+  >();
+  // a forwarding wrapper typed that way takes any call, as on an ABI with no literal type
+  const readLogged = (s: ScriptBuilder, p: Parameters<ScriptBuilder['read']>[0]) => s.read(p);
+  const simulateLogged = (s: ScriptBuilder, p: Parameters<ScriptBuilder['simulate']>[0]) =>
+    s.simulate(p);
+  evscript({ name: 'logged', args: [t.address] }, (s, token) => {
+    const balance = readLogged(s, { address: token, abi, functionName: 'balanceOf', args: [WHO] });
+    simulateLogged(s, { address: token, abi, functionName: 'deposit', args: [1n] });
+    expectTypeOf(balance).toEqualTypeOf<WideSubcallResult | Tuple<TupleType>>();
+    return s.return({ ok: s.lit(t.bool, true) });
+  });
+});
+
+test('a verb whose bucket holds no function of a literal ABI: one error, on the call', () => {
+  // only write functions: s.read has no name to resolve, s.simulate none on a view-only ABI
+  const writeOnly = parseAbi(['function quote(uint256 amountIn) returns (uint256 amountOut)']);
+  const viewOnly = parseAbi(['function price(uint256 id) view returns (uint256)']);
+  evscript({ name: 'wrongVerb', args: [t.address] }, (s, target) => {
+    // @ts-expect-error — quote is not a view function: s.read cannot call it
+    const quoted = s.read({ address: target, abi: writeOnly, functionName: 'quote', args: [1n] });
+    const priced = s.simulate({
+      address: target,
+      abi: viewOnly,
+      // @ts-expect-error — price is a view function: s.simulate cannot call it
+      functionName: 'price',
+      args: [1n],
+    });
+    // nothing more where a result is used: the result of an ABI with no literal type would add
+    // an error naming a missing `as const`
+    expectTypeOf(quoted).toBeNever();
+    expectTypeOf(priced).toBeNever();
+    return s.return({ quoted, priced });
+  });
+});

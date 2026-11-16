@@ -4,7 +4,19 @@ import { parseAbi, type Abi } from 'viem';
  * What the call verbs require of `args` and accept for `struct`, and what they give for an ABI
  * with no literal type: every type checker has to refuse the same calls.
  */
-import { evscript, t, type Expr, type WideSubcallResult } from '@maxencerb/evs';
+import {
+  evscript,
+  t,
+  type Expr,
+  type ResolvedSubcallParams,
+  type ScriptBuilder,
+  type SubcallFunctionName,
+  type SubcallInputs,
+  type SubcallParams,
+  type ViewMutability,
+  type WideSubcallResult,
+  type WriteMutability,
+} from '@maxencerb/evs';
 
 import { expectType, type Same } from './assert.js';
 
@@ -145,3 +157,86 @@ export const untyped = evscript({ name: 'untyped', args: [t.address] }, (s, toke
   return s.return({ wide, supply: supply as Expr<'uint256'>, typed });
 });
 /* oxlint-enable typescript/no-unsafe-type-assertion */
+
+/** A wrapper typed with the exported parameter types passes its object on: generic or not,
+ *  `ResolvedSubcallParams` or the `SubcallParams` of a function without arguments. */
+export function readVia<
+  const a extends Abi,
+  name extends SubcallFunctionName<a>,
+  const args extends SubcallInputs<a, name>,
+>(s: ScriptBuilder, p: ResolvedSubcallParams<a, name, ViewMutability, args>) {
+  return s.read(p);
+}
+type BalanceParams = ResolvedSubcallParams<
+  typeof abi,
+  'balanceOf',
+  ViewMutability,
+  readonly [Expr<'address'>]
+>;
+export function balanceVia(s: ScriptBuilder, p: BalanceParams) {
+  return s.read(p);
+}
+export function slot0Via(s: ScriptBuilder, p: SubcallParams<typeof abi, 'slot0'>) {
+  return s.read(p);
+}
+
+/** `Parameters<>` of a verb is its parameter object, so a forwarding wrapper takes any call. */
+type ReadParams = Parameters<ScriptBuilder['read']>[0];
+type SimulateParams = Parameters<ScriptBuilder['simulate']>[0];
+expectType<
+  Same<
+    ReadParams,
+    ResolvedSubcallParams<Abi | readonly unknown[], string, ViewMutability, readonly unknown[]>
+  >
+>();
+expectType<
+  Same<
+    SimulateParams,
+    ResolvedSubcallParams<Abi | readonly unknown[], string, WriteMutability, readonly unknown[]>
+  >
+>();
+export function readLogged(s: ScriptBuilder, p: ReadParams) {
+  return s.read(p);
+}
+export function simulateLogged(s: ScriptBuilder, p: SimulateParams) {
+  return s.simulate(p);
+}
+
+/* oxlint-disable typescript/no-unsafe-type-assertion -- the wrappers' result is either result */
+export const wrappers = evscript(
+  { name: 'wrappers', args: [t.address, t.address] },
+  (s, token, who) => {
+    const viaGeneric = readVia(s, { address: token, abi, functionName: 'balanceOf', args: [who] });
+    const viaConcrete = balanceVia(s, {
+      address: token,
+      abi,
+      functionName: 'balanceOf',
+      args: [who],
+    });
+    const slot0 = slot0Via(s, { address: token, abi, functionName: 'slot0' });
+    const logged = readLogged(s, { address: token, abi, functionName: 'balanceOf', args: [who] });
+    simulateLogged(s, { address: token, abi, functionName: 'deposit', args: [1n] });
+    expectType<Same<Extract<typeof viaGeneric, Expr>, Expr<'uint256'>>>();
+    expectType<Same<Extract<typeof viaConcrete, Expr>, Expr<'uint256'>>>();
+    // @ts-expect-error -- the wrapper still requires args where the function takes some
+    readVia(s, { address: token, abi, functionName: 'balanceOf' });
+    return s.return({
+      a: viaGeneric as Expr<'uint256'>,
+      b: viaConcrete as Expr<'uint256'>,
+      tick: (slot0 as readonly [Expr<'uint160'>, Expr<'int24'>])[1],
+      c: logged as Expr<'uint256'>,
+    });
+  },
+);
+/* oxlint-enable typescript/no-unsafe-type-assertion */
+
+const writeOnly = parseAbi(['function quote(uint256 amountIn) returns (uint256 amountOut)']);
+
+/** A verb with no function of a literal ABI in its bucket: one error, on the call, and none
+ *  where the result is used. */
+export const wrongVerb = evscript({ name: 'wrongVerb', args: [t.address] }, (s, target) => {
+  // @ts-expect-error -- quote is not a view function: s.read cannot call it
+  const out = s.read({ address: target, abi: writeOnly, functionName: 'quote', args: [1n] });
+  expectType<Same<typeof out, never>>();
+  return s.return({ out });
+});
