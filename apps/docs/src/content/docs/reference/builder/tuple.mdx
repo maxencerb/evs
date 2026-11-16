@@ -292,8 +292,11 @@ const snapshot = evscript({ name: 'snapshot' }, (s) => {
 
 ## Behavior
 
-- **Zero defaults.** A member left out of `init` is `0`, an empty string, bytes or array, or a
-  zeroed nested struct.
+- **Zero defaults.** A member left out of `init`, or set to `undefined`, is `0`, an empty
+  string, bytes or array, or a zeroed nested struct.
+- **Only `init` is partial.** A struct literal anywhere else names every member: a nested member
+  of `init`, a call argument, [`s.lit`](/reference/builder/lit/), `set`. A member without a value
+  throws there.
 - **One value.** The handle is a reference. A copy of the handle, `expr()` and a call argument
   all share the value, so a `set` is visible through each of them.
 - **Object or array.** A type whose members are all named takes an object. One unnamed member
@@ -312,6 +315,7 @@ Thrown while the callback records, at the offending line:
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a struct or tuple type. For an array of structs, use [`s.newArray`](/reference/builder/new-array/) |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `init` has an unknown key or too many elements |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a nested struct literal in `init`, or the literal given to `set`, leaves a member out |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `init` is an array for a struct, or an object for a tuple with an unnamed member |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `init` is a handle, or a spread copy of one that leaves a member out |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a member value, or the value given to `set`, is an `Expr` of another type |

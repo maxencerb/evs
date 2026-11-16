@@ -102,6 +102,9 @@ const Range = t.tuple(
 - **Partly named tuples.** A tuple taken from an ABI with any unnamed member is positional as a
   whole, the rule viem follows.
 - **At least one.** `t.tuple()` with no member throws.
+- **Complete literals.** A tuple literal has one value per member. A shorter array, a hole or an
+  `undefined` throws `TYPE_MISMATCH`. Only the `init` of
+  [`s.tuple`](/reference/builder/tuple/#init-optional) leaves members at zero.
 
 ## Errors
 

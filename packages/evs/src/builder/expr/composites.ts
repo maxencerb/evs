@@ -50,7 +50,9 @@ export abstract class RecorderComposites extends RecorderCore {
     // the size gates every other tuple entry point applies (at least one component at every
     // level, the array depth, the static size), so they fail here and not in the IR validator
     assertTupleGates(type, 's.tuple()');
-    const id = this.buildTupleNew(type, init, 's.tuple()', `s.tuple(${tupleDebugTag(type)})`);
+    const id = this.buildTupleNew(type, init, 's.tuple()', `s.tuple(${tupleDebugTag(type)})`, {
+      partial: true,
+    });
     return makeTuple(this.self, id, type);
   }
 
