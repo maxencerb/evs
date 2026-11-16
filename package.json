@@ -5,6 +5,7 @@
   "scripts": {
     "build": "vp run @maxencerb/evs#build && vp run @maxencerb/vite-plugin-evs#build",
     "typecheck": "vp run --filter '@maxencerb/*' typecheck",
+    "typecheck:checkers": "node packages/type-tests/scripts/matrix.ts",
     "test": "vp test run --project unit --project types --project plugin",
     "test:integration": "vp test run --project integration --project plugin-integration",
     "test:all": "vp test run",

@@ -25,6 +25,14 @@ catalogs:
     astro: ^7.3.5
     starlight-links-validator: ^0.26.0
     wrangler: ^4.144.0
+  # The other type checkers the types are tested under, next to the workspace `typescript`
+  # (scripts/typecheck-matrix.ts): the floor of the `typescript` peer range, TypeScript 7 (the Go
+  # compiler) and tsrs (its Rust port; a prerelease, so pinned exactly). `bun check` is the
+  # fourth: it ships inside Bun and needs no package.
+  checkers:
+    typescript-5.5: npm:typescript@~5.5.4
+    typescript-7: npm:typescript@~7.0.2
+    tsrs: 0.25.0-ts7.1.0-beta
 
 # pnpm >= 11 refuses versions younger than a day (minimumReleaseAge 1440) at resolution time;
 # pnpm writes an exact-version exclude here when a pinned version is newer than that, and prunes

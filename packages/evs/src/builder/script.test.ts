@@ -7,7 +7,14 @@ import { encodeAbiParameters, keccak256, stringToHex } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { EvsError } from '../core/errors.js';
-import { namedArg, t, typesEqual, type EvsType, type Expr } from '../core/types.js';
+import {
+  namedArg,
+  t,
+  typesEqual,
+  type EvsType,
+  type Expr,
+  type StructTypeOf,
+} from '../core/types.js';
 import { eliminateDeadCode } from '../ir/dce.js';
 import { deserializeIr, serializeIr, walkStmts, type ScriptIr, type Stmt } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
@@ -2447,10 +2454,7 @@ describe('s.call / s.tryCall revertReturns (issue #35)', () => {
         revertReturns: [t.uint256, t.struct({ a: t.uint256 })],
       });
       expect(n.type).toBe('uint256');
-      const tup: Tuple<{
-        readonly type: 'tuple';
-        readonly components: readonly [{ readonly name: 'a'; readonly type: 'uint256' }];
-      }> = st;
+      const tup: Tuple<StructTypeOf<{ readonly a: 'uint256' }>> = st;
       expect(tup.a.get().type).toBe('uint256');
       return s.return({ one, n, a: tup.a.get() });
     });

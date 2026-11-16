@@ -14,6 +14,7 @@ presentation page (npm, GitHub) and stays user-facing.
 | [`packages/evs`](https://github.com/maxencerb/evs/tree/main/packages/evs)                         | the published library: builder, IR + interpreter, codegen, assembler, viem glue                                                                                                               |
 | [`packages/vite-plugin-evs`](https://github.com/maxencerb/evs/tree/main/packages/vite-plugin-evs) | the published Vite plugin: compiles `*.evs.ts` modules at build time (see [Vite plugin](#vite-plugin-packagesvite-plugin-evs))                                                                |
 | [`packages/contracts`](https://github.com/maxencerb/evs/tree/main/packages/contracts)             | Foundry fixtures: mocks + the solc reference contracts for differential tests                                                                                                                 |
+| [`packages/type-tests`](https://github.com/maxencerb/evs/tree/main/packages/type-tests)           | private: the published types used as an app would, checked by every supported type checker (see [Testing](#testing))                                                                          |
 | [`examples/`](https://github.com/maxencerb/evs/tree/main/examples)                                | runnable example scripts (`node examples/<name>/index.ts` after `vp run build` + contracts codegen) and `vite-precompile`, a Vite app built through the plugin (`vp run build` in its folder) |
 
 ### Library sources (`packages/evs/src`)
@@ -67,6 +68,7 @@ vp run test               # unit + type tests, and the plugin's tests (vitest vi
 vp run test:integration   # anvil integration tests of the library and the plugin (requires foundry)
 vp check                  # format + lint + type-check (tsgolint) in one pass
 vp run check              # vp check + tsc/astro typecheck across workspaces (= CI)
+vp run typecheck:checkers # the other type checkers: TypeScript 5.5 and 7, bun check, tsrs (after a build)
 vp fmt                    # oxfmt (writes)
 vp run changeset          # add a changeset when a change should ship in the next release
 ```
@@ -80,7 +82,9 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 
 - **Catalogs**: the default catalog holds the shared runtime + toolchain pins (`viem` and
   `vite-plus` exact, the `vite` → `@voidzero-dev/vite-plus-core` alias), `testing` and `docs`
-  the rest. setup-vp reads the `vite-plus` entry to install CI's `vp`.
+  the rest. setup-vp reads the `vite-plus` entry to install CI's `vp`. `checkers` holds the
+  extra type checkers of `packages/type-tests`: two more TypeScript versions under alias names
+  and tsrs, pinned exactly because it is a prerelease.
 - **overrides** `vite@*` / `vitest@*`: required by Vite+ under pnpm so every package shares the
   Vite+ core and the Vitest `vp test` bundles; bump them together with `vite-plus`.
   `peerDependencyRules.allowedVersions.vite` accepts the core alias's own version (1.0.0) for
@@ -570,6 +574,20 @@ Releases: see [Releasing](#releasing) below.
   and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
   `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
   flavour wraps the result as `{ success, value }`).
+- **A fully named tuple type carries no member order** (`core/types/derive.ts`). A record type
+  has no key order, and the order of a union belongs to the type checker: TypeScript 5 and 6 keep
+  the order in which a program first mentions each member, TypeScript 7, `bun check` and tsrs
+  sort. So the `components` of a struct type is `NamedComponents`: a list of the member union
+  with its length, which keeps the type exact although `Expr` is covariant (a struct lacking a
+  member is not assignable to the one that has it). `t.struct`, `t.fromOutputs`,
+  `t.fromAbiParameter` and the types of call inputs and outputs all go through it, so the same
+  members give the same type whatever produced it and whatever order they were written in. The
+  encoding order lives in the runtime descriptor, and recording compares it (`typesEqual`): a
+  struct with the right members in another order type-checks and then throws `TYPE_MISMATCH`.
+  A tuple with an unnamed member keeps ordered components (its declarators are a list), and a
+  script's return record has no length (nothing compares it, and counting a union costs a step
+  per member). Never read a position out of a union: `packages/type-tests` runs the types under
+  every checker to catch it.
 - **Tuple handles** (`builder/expr/handles.ts`) carry one own property, the enumerable symbol
   `HANDLE_COPY_MARK` (valued with the handle; `Expr`, `Cell` and `Field` handles carry it too):
   object spread copies it, so `copiedHandle` spots a `{ ...handle, a: x }` copy, which holds no
@@ -636,6 +654,14 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   in the suite checks the census against the emitters.
 - **types** (`src/**/*.test-d.ts`) — vitest typecheck mode, `expectTypeOf` over the inferred
   ABI / result objects (this is why `viem` is exact-pinned in the catalog).
+- **checkers** (`vp run typecheck:checkers`, `packages/type-tests`) — the types under every
+  supported type checker: TypeScript 5.5 (the floor of the peer range), 6, 7, `bun check` and
+  tsrs. TypeScript 7, `bun check` and tsrs check the two packages' sources, type tests included;
+  all five check `packages/type-tests/src`, fixtures that use the published declarations as an
+  app would (so run it after a build) and assert with `@ts-expect-error` and a small
+  `expectType`, which need no test runner. `bun check` needs Bun 1.4.3 or later on the `PATH`:
+  without it the run skips that checker locally and fails in CI. Add a fixture there whenever a
+  type has to mean the same thing for a user on every checker.
 - **integration** (`test/integration`) — real `eth_call`s against a per-worker
   [anvil](https://getfoundry.sh) spawned by prool, both execution modes, including checked
   arithmetic vs the solc 0.8.30 `EvsReference` contract, `pow` / `addmod` / `mulmod` /

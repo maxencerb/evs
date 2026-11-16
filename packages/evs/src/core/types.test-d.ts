@@ -13,6 +13,7 @@ import type {
   IntoExpr,
   IntType,
   LitOf,
+  NamedComponents,
   NormalizeArgs,
   PeelArraySuffix,
   TupleType,
@@ -267,13 +268,14 @@ test('t.struct infers a named-component TupleType; t.tuple a positional one', ()
   const pos = t.struct({ liquidity: t.uint128, owner: t.address });
   expectTypeOf(pos).toMatchTypeOf<TupleType>();
   expectTypeOf(pos.type).toEqualTypeOf<'tuple'>();
-  // A `t.struct`'s component ORDER is `UnionToTuple`'s TS-internal-id order — explicitly UNSTABLE
-  // (it can flip when unrelated types are added). Assert the component SET (the
-  // `[number]` element union, order-insensitive), which is the property the design actually
-  // guarantees — viem infers an order-insensitive object from the named tuple either way.
-  expectTypeOf<(typeof pos.components)[number]>().toEqualTypeOf<
-    | { readonly name: 'liquidity'; readonly type: 'uint128' }
-    | { readonly name: 'owner'; readonly type: 'address' }
+  // a record type has no key order, so the components are the members in no order: a list of
+  // their union, of a known length
+  expectTypeOf(pos.components).toEqualTypeOf<
+    NamedComponents<
+      | { readonly name: 'liquidity'; readonly type: 'uint128' }
+      | { readonly name: 'owner'; readonly type: 'address' },
+      2
+    >
   >();
 
   const tup = t.tuple(t.uint256, t.bool);
@@ -281,6 +283,71 @@ test('t.struct infers a named-component TupleType; t.tuple a positional one', ()
     readonly [
       { readonly name: ''; readonly type: 'uint256' },
       { readonly name: ''; readonly type: 'bool' },
+    ]
+  >();
+});
+
+test('a fully named tuple type is the same from t.struct, in any key order, and from an ABI', () => {
+  // TypeScript 5 and 6 keep a union in creation order, TypeScript 7 and its ports sort it: a
+  // type that read a member order out of `keyof spec` meant something else on each
+  const written = t.struct({ token: t.address, amount: t.uint256 });
+  const reversed = t.struct({ amount: t.uint256, token: t.address });
+  const fromAbi = t.fromAbiParameter({
+    name: 'position',
+    type: 'tuple',
+    components: [
+      { name: 'token', type: 'address', internalType: 'address' },
+      { name: 'amount', type: 'uint256' },
+    ],
+  });
+  expectTypeOf(reversed).toEqualTypeOf(written);
+  expectTypeOf(fromAbi).toEqualTypeOf(written);
+  expectTypeOf(t.array(fromAbi)).toEqualTypeOf(t.array(written));
+  expectTypeOf(t.array(fromAbi, 2)).toEqualTypeOf(t.array(reversed, 2));
+
+  // nested: the member that holds a struct array is the same too
+  const book = t.struct({ owner: t.address, positions: t.array(written) });
+  const bookFromAbi = t.fromAbiParameter({
+    name: 'book',
+    type: 'tuple',
+    components: [
+      { name: 'owner', type: 'address' },
+      {
+        name: 'positions',
+        type: 'tuple[]',
+        components: [
+          { name: 'token', type: 'address' },
+          { name: 'amount', type: 'uint256' },
+        ],
+      },
+    ],
+  });
+  expectTypeOf(bookFromAbi).toEqualTypeOf(book);
+
+  // exact: `Expr` is covariant, so a handle of a struct with a member less (or more, or of
+  // another type) must not be assignable where this one is expected
+  const short = t.struct({ token: t.address });
+  const long = t.struct({ token: t.address, amount: t.uint256, fee: t.uint24 });
+  const narrow = t.struct({ token: t.address, amount: t.uint128 });
+  const take = (_x: Expr<typeof written>): void => undefined;
+  take({} as Expr<typeof reversed>);
+  take({} as Expr<typeof fromAbi>);
+  // @ts-expect-error no `amount`
+  take({} as Expr<typeof short>);
+  // @ts-expect-error `fee` is extra
+  take({} as Expr<typeof long>);
+  // @ts-expect-error `amount` is a uint128
+  take({} as Expr<typeof narrow>);
+
+  // a tuple with an unnamed member keeps its order: its declarators are an ordered list
+  const positional = t.fromAbiParameter({
+    type: 'tuple',
+    components: [{ type: 'uint256' }, { name: 'who', type: 'address' }],
+  });
+  expectTypeOf(positional.components).toEqualTypeOf<
+    readonly [
+      { readonly name: ''; readonly type: 'uint256' },
+      { readonly name: 'who'; readonly type: 'address' },
     ]
   >();
 });

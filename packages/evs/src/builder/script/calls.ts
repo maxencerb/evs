@@ -9,7 +9,6 @@ import type { AbiStateMutability, Abi, AbiParameter, AbiParameterToPrimitiveType
 import type { AbiFunctionSignature, SignatureName } from '../../core/signature.js';
 import type {
   EvsType,
-  NamedType,
   LitOf,
   TupleType,
   AbiParamsToComponents,
@@ -326,10 +325,10 @@ type SameType<x, ty extends string, comps> = [x] extends [string]
 
 type Exact<a, b> = [a] extends [b] ? ([b] extends [a] ? true : false) : false;
 
-// Fully-named components are compared as a SET through `xc[number]`: a `t.struct` descriptor's
-// `components` is a mapped object over its `UnionToTuple` keys, not a real tuple (no usable
-// `length`). Components with any unnamed member (`t.tuple`, an ABI-derived type — both real
-// tuples) are compared index by index.
+// Fully-named components are compared as a SET through `xc[number]`: a fully named tuple type
+// carries its members in no order (`NamedComponents`, core/types/derive.ts). Components with any
+// unnamed member (`t.tuple`, a positional ABI tuple: both real tuples) are compared index by
+// index.
 type SameComps<xc, pc> = pc extends readonly AbiParameter[]
   ? AllMembersNamed<pc> extends false
     ? xc extends readonly unknown[]
@@ -410,28 +409,11 @@ type JoinQuoted<sigs> = sigs extends readonly [infer head extends string, ...inf
     : `"${head}", ${JoinQuoted<rest>}`
   : '';
 
-/** An abitype `AbiParameter` for a `'tuple'` member → the matching {@link TupleType} descriptor. */
-type ParamToTupleType<p extends AbiParameter> = p extends {
-  readonly type: 'tuple';
-  readonly components: infer comps extends readonly NamedType[];
-}
-  ? { readonly type: 'tuple'; readonly components: comps }
-  : never;
-
-/** An abitype `AbiParameter` for a `tuple…` param → its {@link TupleType} descriptor with the
- *  member names normalized (a `parseAbi` member with no `name` is unnamed, `''`), the literal
- *  shapes' input. */
+/** An abitype `AbiParameter` for a `tuple…` param (a plain `tuple` or a tuple array) → its
+ *  {@link TupleType} descriptor, as `t.fromAbiParameter` types it: the member names normalized (a
+ *  `parseAbi` member with no `name` is unnamed, `''`) and a fully named member list in no order,
+ *  so the descriptor of an ABI tuple and the `t.struct` with the same members are one type. */
 type ParamToEvsTuple<p extends AbiParameter> = Extract<AbiParamToEvsType<p>, TupleType>;
-
-/** An abitype `AbiParameter` for a tuple-ARRAY member (`'tuple[]'`, `'tuple[2]'`, `'tuple[][]'`,
- *  …) → the matching tuple-array {@link TupleType} descriptor (an array value type whose `.type`
- *  is the param's tag). */
-type ParamToTupleArrayType<p extends AbiParameter> = p extends {
-  readonly type: infer tag extends TupleArrayTag;
-  readonly components: infer comps extends readonly NamedType[];
-}
-  ? { readonly type: tag; readonly components: comps }
-  : never;
 
 // the staged handle of one OUTPUT parameter: a `tuple` param → a `Tuple` handle
 // (decoded into a flat block); a tuple-array param (`tuple[]`, `tuple[2]`, `tuple[][]`, …) → an
@@ -440,9 +422,9 @@ type ParamToTupleArrayType<p extends AbiParameter> = p extends {
 // / fixed `uint256[2]` → an `Expr` of its string type (abitype infers `readonly (readonly
 // bigint[])[]` / `readonly string[]` / `readonly [bigint, bigint]`); every other scalar → an `Expr`.
 type OutputHandle<p extends AbiParameter> = p['type'] extends 'tuple'
-  ? Tuple<ParamToTupleType<p>>
+  ? Tuple<ParamToEvsTuple<p>>
   : p['type'] extends TupleArrayTag
-    ? Expr<ParamToTupleArrayType<p>>
+    ? Expr<ParamToEvsTuple<p>>
     : Expr<p['type'] extends EvsType ? p['type'] : EvsType>;
 
 // what one INPUT parameter accepts: the abitype Register-resolved primitive (a literal object for
@@ -457,14 +439,14 @@ type InputValue<p extends AbiParameter> = p['type'] extends 'tuple'
   ?
       | AbiParameterToPrimitiveType<p, 'inputs'>
       | StructLiteral<ParamToEvsTuple<p>>
-      | Tuple<ParamToTupleType<p>>
-      | AnyTuple // issue #5 ask #3: a cross-order call-decoded Tuple is accepted (runtime-checked)
-      | Expr<ParamToTupleType<p>>
+      | Tuple<ParamToEvsTuple<p>>
+      | AnyTuple // issue #5 ask #3: any Tuple handle is accepted (runtime-checked)
+      | Expr<ParamToEvsTuple<p>>
   : p['type'] extends TupleArrayTag
     ?
         | AbiParameterToPrimitiveType<p, 'inputs'>
         | TupleArrayLiteral<ParamToEvsTuple<p>>
-        | Expr<ParamToTupleArrayType<p>>
+        | Expr<ParamToEvsTuple<p>>
         | AnyMutArray // issue #5 ask #5: a bare MutArray<tuple> is accepted (runtime-checked)
     : p['type'] extends `${string}[${string}`
       ?
@@ -528,8 +510,8 @@ export type UnwrapSingle<outs> = outs extends readonly []
  * `s.read({ …, struct: true })` (issue #5 ask #2) → ONE named {@link Tuple} handle built over ALL
  * of the function's (named, ABI-ordered) outputs — the opt-in alternative to the default positional
  * `[many]` shape (which stays the default, mirroring viem's `readContract`). Requires every output
- * to carry a name at record time. The struct type is in ABI declaration order, so it unifies with
- * `t.fromOutputs(abi, name)` and a `t.struct` declared in the same order (issue #5 asks #3/#4).
+ * to carry a name at record time. The struct type is the one `t.fromOutputs(abi, name)` gives, and
+ * the one of a `t.struct` with the same members (issue #5 asks #3/#4).
  */
 type StructOf<f> = f extends { readonly outputs: infer outs extends readonly AbiParameter[] }
   ? Tuple<{ readonly type: 'tuple'; readonly components: AbiParamsToComponents<outs> }>

@@ -946,7 +946,7 @@ test('a script with 60 return keys keeps an exact readContract result', () => {
   // past ~45 keys the return-record ordering used to exceed the instantiation depth under
   // evscript → ScriptAbi → viem, typing the readContract result `unknown`
   const script = evscript({ name: 'wide', args: [t.uint256] }, (s, x) => s.return(wideRecord(x)));
-  expectTypeOf(script.abi[0].outputs[0].components.length).toEqualTypeOf<60>();
+  expectTypeOf(script.abi[0].outputs[0].components[0]?.name).toEqualTypeOf<WideKey | undefined>();
   expectTypeOf<
     ReadContractReturnType<typeof script.abi, 'wide', readonly [bigint]>
   >().toEqualTypeOf<{ [k in WideKey]: bigint }>();
@@ -1759,8 +1759,11 @@ test('`NoProtoKey`: a literal `__proto__` key is a type error on t.struct / s.re
   t.struct({ __proto__: t.uint256, b: t.uint256 });
   // the guard is a no-op otherwise: inference is unchanged, and a widened record passes
   const S = t.struct({ a: t.uint256, b: t.address });
-  expectTypeOf<(typeof S)['components'][0]['name']>().toEqualTypeOf<'a'>();
-  expectTypeOf<(typeof S)['components'][1]['type']>().toEqualTypeOf<'address'>();
+  expectTypeOf<(typeof S)['components'][number]['name']>().toEqualTypeOf<'a' | 'b'>();
+  expectTypeOf<
+    Extract<(typeof S)['components'][number], { readonly name: 'b' }>['type']
+  >().toEqualTypeOf<'address'>();
+  expectTypeOf<(typeof S)['components']['length']>().toEqualTypeOf<2>();
   const wide: Record<string, 'uint256'> = { a: t.uint256 };
   t.struct(wide);
   evscript({ name: 'r', args: [t.uint256] }, (s, x) => {
