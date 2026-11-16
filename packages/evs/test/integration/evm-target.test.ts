@@ -9,7 +9,6 @@
  * The node text is pinned too, as the docs name it.
  */
 
-import { Instance } from 'prool';
 import { createPublicClient, http, type PublicClient } from 'viem';
 import { foundry } from 'viem/chains';
 import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
@@ -23,7 +22,7 @@ import {
   t,
   type EvmVersion,
 } from '../../src/index.js';
-import { getFreePort } from '../harness/anvil.js';
+import { ANVIL_POLLING_INTERVAL, spawnAnvil, type Anvil } from '../harness/anvil-process.ts';
 
 /** Copies memory and pushes zero: `MCOPY` and `PUSH0` on cancun, `PUSH0` alone on shanghai. */
 const echo = evscript({ name: 'echo', args: [t.string, t.bytes] }, (s, text, raw) =>
@@ -50,14 +49,16 @@ describe.each([
   { hardfork: 'Shanghai', tooNew: ['cancun'], runs: ['shanghai', 'paris'] },
   { hardfork: 'Paris', tooNew: ['cancun', 'shanghai'], runs: ['paris'] },
 ] as const)('anvil on $hardfork', ({ hardfork, tooNew, runs }) => {
-  let anvil: ReturnType<typeof Instance.anvil> | undefined;
+  let anvil: Anvil | undefined;
   let client: PublicClient;
 
   beforeAll(async () => {
-    const port = await getFreePort();
-    anvil = Instance.anvil({ port, hardfork });
-    client = createPublicClient({ chain: foundry, transport: http(`http://127.0.0.1:${port}`) });
-    await anvil.start();
+    anvil = await spawnAnvil({ args: { hardfork } });
+    client = createPublicClient({
+      chain: foundry,
+      transport: http(anvil.url),
+      pollingInterval: ANVIL_POLLING_INTERVAL,
+    });
   }, 60_000);
 
   afterAll(async () => {
