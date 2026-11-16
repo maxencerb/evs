@@ -748,6 +748,26 @@ Releases: see [Releasing](#releasing) below.
   and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
   `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
   flavour wraps the result as `{ success, value }`).
+- **What a call verb refuses at recording, its types refuse too** (`builder/script/calls.ts`;
+  `call-params.test-d.ts` and `call-params.test.ts` hold the same calls on each side). `args` is
+  required when the function takes arguments (`ArgsKey`): it stays optional when `readonly []`
+  is one of the tuples `args` accepts, so for an overloaded name with an overload that takes
+  none, and for a widened ABI. `struct: true` needs outputs that are all named (`StructFlag`,
+  whose refusal is an object type keyed by the message). The order of a verb's overloads is for
+  the type checker: the one without `struct` comes first, because a call it accepts never
+  instantiates the other two, the only ones that evaluate `StructFlag`. With that check on the
+  parameters every overload shares, a 309-entry ABI with 256 calls cost 52% more type
+  instantiations than without it; ordered this way, 10%, all of it from the calls that pass
+  `struct: true`. The result of a call on a widened ABI is one union, exported as
+  `WideSubcallResult` and declared under the name `TypedResultRequiresAbiAsConst`, the name a
+  compile error prints. It holds `void`, not `undefined`: a use then reports the type by its name
+  where `undefined` gave "possibly undefined" first.
+- **The mutability of an ABI entry is read in one place**, `stateMutabilityOf`
+  (`builder/expr/calls.ts`). An entry with no `stateMutability` (solc before 0.4.16) is read by
+  its `constant` and `payable` flags, as abitype's zod schema reads it: `constant: true` is
+  `view`, else `payable: true` is `payable`, else `nonpayable`. The types have no such rule:
+  abitype's `Abi` requires `stateMutability`, so an ABI with such an entry is a widened one
+  (any `functionName`, unchecked `args`, the untyped result), and the recorder decides.
 - **A fully named tuple type carries no member order** (`core/types/derive.ts`). A record type
   has no key order, and the order of a union belongs to the type checker: TypeScript 5 and 6 keep
   the order in which a program first mentions each member, TypeScript 7, `bun check` and tsrs
