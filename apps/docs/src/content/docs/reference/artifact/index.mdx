@@ -128,7 +128,7 @@ Maps the bytecode back to the script. [`disassemble`](/reference/artifact/disass
 | --- | --- | --- |
 | `version` | `1` | The format version. |
 | `segments` | `{ pc, len, note? }[]` | Runs of code bytes, sorted by `pc`, with a note on what the code does. |
-| `sites` | `{ id, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement. Its `id` is the site id that errors and warnings report. |
+| `sites` | `{ id, key, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement, under its two names: `id`, a position, and `key`, a text that survives edits. |
 | `labels` | `{ pc, name }[]` | The name of each jump destination, and of each block of literal data. |
 
 ```ts
@@ -142,11 +142,18 @@ const { sites } = double.compile().sourceMap;
 sites[1];
 // {
 //   id: 1,
+//   key: 'mul#0',
 //   kind: 'panic',
 //   detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
 //   panicCodes: [17],
 // }
 ```
+
+- `id` is the statement's position among everything the script recorded. It is the number in
+  [`EvsDecodeError(uint256 site)`](/reference/diagnostics/#built-in-errors), and it moves when
+  a statement is added above.
+- `key` names the statement by what it is: `mul#0` is the first `mul` of the script body. Store
+  and match that one. See [keys](/reference/diagnostics/#keys).
 
 | Site `kind` | The statement is |
 | --- | --- |

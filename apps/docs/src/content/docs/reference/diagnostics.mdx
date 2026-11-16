@@ -87,14 +87,14 @@ const warnings: EvsDiagnostic[] = [];
 compile(whoami, { onDiagnostic: (warning) => warnings.push(warning) });
 
 warnings[0]?.code; // 'ENV_FRAME_DEPENDENT'
-warnings[0]?.site; // 0
+warnings[0]?.key; // 's.env(caller)'
 ```
 
 | Code | Raised when | What to do |
 | --- | --- | --- |
 | `LOOP_ALLOCATION` | a statement in a loop allocates memory, such as `s.newArray`, `s.tuple`, a struct or array literal, `s.encode`, `.slice`, any `s.simulate`, or a call that returns a `string`, `bytes`, array or struct | memory and its gas grow on every iteration. Move the statement out of the loop when you can |
 | `LARGE_FRAME` | the memory the script reserves for its values is over 32,768 bytes | memory gas grows quadratically. Split the script |
-| `ENV_FRAME_DEPENDENT` | the script reads `s.env('caller')`, `s.env('address')` or its own balance, or sends `value` with a call | the result differs between the two `toViem()` modes. See [Executing scripts](/guides/execution/) |
+| `ENV_FRAME_DEPENDENT` | the script reads `s.env('caller')`, `s.env('address')` or its own balance, or sends `value` with a call. One warning for each of these, however many statements do it | the result differs between the two `toViem()` modes. See [Executing scripts](/guides/execution/) |
 | `DEPLOYLESS_RESULT_PREFIX` | the result can start with byte `0xEF`: its first value is a `bytesN`, a `uint256` or `int256` evs cannot bound, or a literal that starts with `0xEF` | deployless mode rejects such a result. See [deployless limits](/guides/execution/#deployless-limits) |
 | `DEPLOYLESS_RESULT_SIZE` | the encoded result is always over 24,576 bytes | every deployless call fails. Use state-override mode, or return less |
 
@@ -105,11 +105,13 @@ A warning is an `EvsDiagnostic`:
 | `severity` | `'warning'` | always `'warning'`: a hard failure throws instead |
 | `code` | string | one of the five codes above |
 | `message` | `string` | what was found and what to do |
-| `site` | `number`, optional | the id of the statement that raised it, in `compiled.sourceMap.sites` |
+| `key` | `string`, optional | what the warning is about, as a text that survives edits. See [keys](#keys) |
+| `site` | `number`, optional | the `id` of the first statement in `sites` |
+| `sites` | `{ id, key }[]`, optional | the statements the warning covers, as in `compiled.sourceMap.sites` |
 
-`site` is set on `LOOP_ALLOCATION`, `ENV_FRAME_DEPENDENT` and `DEPLOYLESS_RESULT_PREFIX`. It is
-absent on `LARGE_FRAME` and `DEPLOYLESS_RESULT_SIZE`, and on a `DEPLOYLESS_RESULT_PREFIX` about
-a script argument.
+`LARGE_FRAME` and `DEPLOYLESS_RESULT_SIZE` are about the whole script: they have none of the
+three optional fields. A `DEPLOYLESS_RESULT_PREFIX` about a script argument has a `key` and no
+statement.
 
 ### Which results raise DEPLOYLESS_RESULT_PREFIX
 
@@ -127,10 +129,10 @@ only when the whole result is static.
 
 ### Ignoring a warning
 
-There is no suppression switch. Filter in your callback, by `code`, or by `code` and `site` for
-one statement.
+There is no suppression switch. Filter in your callback: on `code` for a whole kind of warning,
+on `code` and `key` for one of them.
 
-```ts {20-22}
+```ts {16,20}
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
 import { erc20Abi } from 'viem';
 
@@ -146,23 +148,99 @@ const symbols = evscript(
   },
 );
 
+const acknowledged = new Set(['LOOP_ALLOCATION s.read(symbol)#0']);
 const warnings: EvsDiagnostic[] = [];
-const ignored: EvsDiagnostic[] = [];
 
-const compiled = compile(symbols, {
+compile(symbols, {
   onDiagnostic: (warning) => {
-    (warning.code === 'LOOP_ALLOCATION' ? ignored : warnings).push(warning);
+    if (!acknowledged.has(`${warning.code} ${warning.key}`)) warnings.push(warning);
   },
 });
 
-compiled.sourceMap.sites.find((site) => site.id === ignored[0]?.site)?.detail;
-// 'decoding symbol() returndata'
+warnings.length; // 0
 ```
 
-:::caution[Site ids move when you edit the script]
-Statements are numbered in recording order. Add one before the statement you filtered, and the
-same `site` now silences a different statement. Check the filter again after each edit.
+Print `warning.key` with the message, and copy it into the list once you have read the warning.
+
+### Keys
+
+A `key` names what a warning is about. With `code`, it identifies one warning of a script.
+
+| Code | `key` | Example |
+| --- | --- | --- |
+| `LOOP_ALLOCATION` | the statement that allocates | `s.read(symbol)#0` |
+| `ENV_FRAME_DEPENDENT` | what is read from the frame, or the call that sends `value` | `s.env(caller)`, `s.env(address)`, `s.balance(s.env(address))`, `s.call(deposit)` |
+| `DEPLOYLESS_RESULT_PREFIX` | the returned value at byte 0 of the result | `s.return(total)`, `s.return(position.amounts[0])` |
+
+An `ENV_FRAME_DEPENDENT` warning covers every statement that reads the same thing. Its `sites`
+lists them.
+
+```ts {8-9}
+import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
+
+const mine = evscript({ name: 'mine', args: [t.address] }, (s, owner) =>
+  s.return({ isCaller: s.env('caller').eq(owner), caller: s.env('caller') }),
+);
+
+const warnings: EvsDiagnostic[] = [];
+compile(mine, { onDiagnostic: (warning) => warnings.push(warning) });
+// one warning for the two reads
+
+warnings[0]?.key; // 's.env(caller)'
+warnings[0]?.sites;
+// [
+//   { id: 0, key: 's.env(caller)#0' },
+//   { id: 2, key: 's.env(caller)#1' },
+// ]
+```
+
+A statement's key has up to three parts, as in `quote/s.read(symbol)#1`:
+
+| Part | Holds |
+| --- | --- |
+| `quote/` | the [`s.fn`](/reference/builder/fn/) whose body holds the statement. Absent in the script body |
+| `s.read(symbol)` | the label: what the statement is |
+| `#1` | how many statements with the same label come before it in the same function |
+
+The label comes from the statement itself:
+
+| Statement | Label | Example |
+| --- | --- | --- |
+| `s.read`, `s.call`, `s.simulate` and their `try` forms | the verb and the function name | `s.tryCall(quote)` |
+| a call of an `s.fn` | the name you gave it | `quote()` |
+| `s.env` | the verb and what it reads | `s.env(timestamp)` |
+| `s.balance`, `s.codeSize`, `s.codeHash` | the verb | `s.balance` |
+| `s.throw` | the verb and the error | `s.throw(Stale)` |
+| a literal | `literal` and its type | `literal(string)` |
+| a new array: `s.newArray`, an array literal | `array` and its type | `array(address[])` |
+| a new struct or tuple: `s.tuple`, a struct literal, a `struct: true` call | `tuple` and its member types | `tuple(uint112,uint112)` |
+| a conversion | `convert` and the type it gives | `convert(uint256)` |
+| `s.encode`, and the encoding inside `s.keccak256(a, b)` or an `eq` of two arrays or structs | `encode` | `encode` |
+| `s.encodePacked` | `encodePacked` | `encodePacked` |
+| anything else | its name in the [recorded program](/reference/artifact/#ir) | `add`, `index`, `cellget`, `while` |
+
+A key does not change when you:
+
+- add, remove or reorder statements with another label, in the same function or elsewhere
+- change `optimize` or `evmVersion`
+- write a statement whose result nothing reads:
+  [dead-code elimination](/reference/utilities/dce/) drops it from the bytecode, and it still
+  counts
+- upgrade evs: a release that moves the key of a warning says so in its notes
+
+:::caution[One edit moves a key]
+A statement with the same label, added or removed earlier in the same function, shifts the
+index of the ones after it. A second `s.read` of `symbol` placed above the first turns
+`s.read(symbol)#0` into `s.read(symbol)#1`, and the acknowledged warning prints again.
 :::
+
+Loops record statements of their own: `s.for` and `s.forEach` keep a counter, with a `cellget`,
+an `lt` and an `add` per loop. They count like the ones you write, so a loop added above moves
+keys such as `add#3`. No warning has one of those labels: they only show in the site table and
+in [`explainRevert`](/reference/artifact/explain-revert/).
+
+`site` is another name of the same statement: its position among all the statements of the
+script. It moves with any edit above it, so filter on `key`.
 
 ## Panic codes
 
@@ -210,6 +288,10 @@ Two custom errors belong to evs. Both are in every script's `abi`, so viem decod
 
 `EvsDecodeError` is also raised by an [`s.call`](/reference/builder/call/) with `revertReturns`
 that returns instead of reverting, and by an `s.simulate` whose `value` the script cannot pay.
+
+`site` is a position: it changes when a statement is added above the call. To log or match the
+call, use the [`key`](#keys) that [`explainRevert`](/reference/artifact/explain-revert/) gives
+for it.
 
 The two entries are exported as `EVS_ERROR_ABI`:
 

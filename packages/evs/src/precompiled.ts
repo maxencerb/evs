@@ -56,7 +56,9 @@ export interface PrecompiledScriptDebug {
   /** The `id` of the script data the same compilation wrote ({@link PrecompiledScriptData}). */
   readonly id?: string;
   readonly ir: ScriptIr; // the recorded IR
-  readonly sites: SourceMap['sites']; // the emitted sites (the artifact's `sourceMap.sites`)
+  // the emitted sites (the artifact's `sourceMap.sites`). evs 0.6.0 and earlier wrote them
+  // without `key`: `hydrate` computes the keys of such a document from its `ir`
+  readonly sites: SourceMap['sites'];
 }
 
 export interface PrecompiledScript<abi extends Abi | readonly unknown[] = readonly unknown[]> {

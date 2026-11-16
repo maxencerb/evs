@@ -67,9 +67,10 @@ const DEBUG = {
     returns: [{ name: 'doubled', type: 'uint256', value: 2 }],
   },
   sites: [
-    { id: 0, kind: 'stmt', detail: 'const' },
+    { id: 0, key: 'literal(uint256)#0', kind: 'stmt', detail: 'const' },
     {
       id: 1,
+      key: 'mul#0',
       kind: 'panic',
       detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
       panicCodes: [17],
@@ -101,7 +102,7 @@ test('the explain code is imported by the first explanation that can succeed, an
   const explanation = await script.explainRevert(OVERFLOW);
   expect(explanation.kind).toBe('panic');
   expect(explanation.candidateSites).toEqual([
-    { id: 1, detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11' },
+    { id: 1, key: 'mul#0', detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11' },
   ]);
   expect(explainCode.imports).toBe(1);
   expect(await script.debug()).toBe(DEBUG);

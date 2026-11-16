@@ -162,7 +162,7 @@ inside your own.
 - **Default:** does nothing
 
 Receives each compile [warning](/reference/diagnostics/#warnings) as
-`{ severity, code, message, site? }`.
+`{ severity, code, message, key?, site?, sites? }`.
 
 ```ts {16}
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
@@ -183,8 +183,12 @@ compile(myBalance, {
   onDiagnostic: (diagnostic) => warnings.push(diagnostic),
 });
 // warnings[0].code: 'ENV_FRAME_DEPENDENT'
+// warnings[0].key: 's.env(caller)'
 // warnings[1].code: 'DEPLOYLESS_RESULT_PREFIX'
+// warnings[1].key: 's.return(balance)'
 ```
+
+To silence a warning you have read, [filter on `code` and `key`](/reference/diagnostics/#ignoring-a-warning).
 
 :::caution[Warnings are silent by default]
 `compile` never logs. Without `onDiagnostic` you do not learn that `s.env('caller')` above is

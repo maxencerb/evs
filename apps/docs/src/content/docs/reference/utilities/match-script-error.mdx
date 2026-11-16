@@ -192,7 +192,7 @@ A record with one function per declared error, plus `_`. Every named handler is 
 | a declared error name | the decoded arguments, keyed by name | yes |
 | `Panic` | `code`, `kind` and `meaning` of a `Panic(uint256)` | no |
 | `Error` | `reason`, the message of an `Error(string)` | no |
-| `EvsDecodeError` | `site`, the call whose returndata did not decode | no |
+| `EvsDecodeError` | `site`, the position of the call whose returndata did not decode. [`explainRevert`](/reference/artifact/explain-revert/) names it by `key` | no |
 | `EvsInvalidCalldata` | none | no |
 | `_` | called as `(error)`, with any revert no other handler takes | yes |
 

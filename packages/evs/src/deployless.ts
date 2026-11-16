@@ -39,7 +39,14 @@ import {
   type WordType,
 } from './core/types.js';
 import { magnitudeBits } from './ir/magnitude.js';
-import { stmtDefs, walkStmts, type ScriptIr, type Stmt, type ValueId } from './ir/nodes.js';
+import {
+  stmtDefs,
+  walkStmts,
+  type ScriptIr,
+  type SiteId,
+  type Stmt,
+  type ValueId,
+} from './ir/nodes.js';
 
 // ---------------------------------------------------------------------------
 // limits
@@ -96,11 +103,16 @@ function hexByteLength(value: unknown, what: string): number {
  * warns (a hash starts with `0xEF` 1 time in 256); a `uint256` must be at least `0xEF·2^248`
  * and an `int256` below `-2^252`, so those warn only when `ir/magnitude.ts` cannot bound the
  * value away from that range — an argument, a call output, a hash or bit pattern, not a length,
- * a counter or a widened narrower integer. The warning carries the site of the statement that
- * defines the first returned value (none for a script argument). The size check is exact for a
- * static result and a lower bound (every dynamic part empty) for a dynamic one.
+ * a counter or a widened narrower integer. The warning's `key` names the returned value, and it
+ * carries the statement that defines it (none for a script argument), named by its key in
+ * `opts.siteKeys` (the keys of `ir`; the caller computes them, since this module loads with the
+ * runtime entry and the key code does not). The size check is exact for a static result and a
+ * lower bound (every dynamic part empty) for a dynamic one.
  */
-export function deploylessResultDiagnostics(ir: ScriptIr): EvsDiagnostic[] {
+export function deploylessResultDiagnostics(
+  ir: ScriptIr,
+  opts: { siteKeys: ReadonlyMap<SiteId, string> },
+): EvsDiagnostic[] {
   const first = ir.returns[0];
   if (first === undefined) return [];
   const layouts = ir.returns.map((r) => layoutOfType(r.type));
@@ -109,9 +121,10 @@ export function deploylessResultDiagnostics(ir: ScriptIr): EvsDiagnostic[] {
 
   const leading = dynamic ? undefined : leadingWord(first.type, first.name);
   const defining = definingStmt(ir, first.value);
-  const site = defining?.site;
   const risk = leading === undefined ? undefined : efRisk(leading, ir, first.value, defining);
   if (leading !== undefined && risk !== undefined) {
+    const site = defining?.site;
+    const siteKey = site === undefined ? undefined : opts.siteKeys.get(site);
     diagnostics.push({
       severity: 'warning',
       code: 'DEPLOYLESS_RESULT_PREFIX',
@@ -121,7 +134,12 @@ export function deploylessResultDiagnostics(ir: ScriptIr): EvsDiagnostic[] {
         `(EIP-3541: the result is deposited as contract code) — ${risk}use ` +
         `toViem({ mode: 'stateOverride' }), or return an address, bool or narrower integer ` +
         `first, or any dynamic value`,
-      ...(site === undefined ? {} : { site }),
+      // the returned value, not the statement behind it: the acknowledgement is about what the
+      // result starts with, and holds for as long as that value is returned first
+      key: `s.return(${leading.path})`,
+      ...(site === undefined || siteKey === undefined
+        ? {}
+        : { site, sites: [{ id: site, key: siteKey }] }),
     });
   }
 
@@ -190,11 +208,9 @@ function efRisk(
       ? 'it is a script argument'
       : 'it may come from a script argument, a call output, a hash or bit pattern, or ' +
         'arithmetic that can grow that large, such as a value that doubles in a loop';
-  const acknowledge =
-    defining === undefined ? 'ignore this warning' : 'acknowledge this warning by its site';
   return (
     `${range} (${origin}); if it is an amount or a count, which never gets that large, ` +
-    `${acknowledge}, otherwise `
+    `filter this warning on its code and key, otherwise `
   );
 }
 

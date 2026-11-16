@@ -190,7 +190,11 @@ helpers and `explainUnsupportedOpcode`. Rules that keep it small, each held by a
   value import, bundlers move `precompiled.ts` and `viem.ts` out of the entry chunk into one
   shared with the explain code. A test in `precompiled.test.ts` puts junk at every position of
   real debug data and explains every payload kind with it: extend the check when `explain.ts`
-  reads something new.
+  reads something new. It also gives a `key` to the sites of debug data written before sites
+  had one (evs 0.6.0 and earlier): the keys are a function of the IR the document holds
+  (`ir/site-keys.ts`, which therefore loads with the explain code and never up front:
+  `deployless.ts` is in the entry chunk and takes the keys as an argument). That reads more of
+  the IR than the shape check covers, so a failure there is reported as a malformed `ir`.
 - **The runtime entry carries no hash.** A script's data and its debug data are two documents,
   paired by hand outside the Vite plugin. `toPrecompiled()` writes one `id` into both, eight
   bytes of a keccak over everything `explainRevert` reads (`precompiledIdOf`, `compile.ts`), and
@@ -209,7 +213,9 @@ The serialized form (`PrecompiledScriptData`) carries `version: 1`. Change that 
 misread: `hydrate` then rejects data written by another version with a message that says to
 regenerate it. A field every reader can ignore does not need it. `id` was added under version
 1: evs 0.5.0 ignores it, and data without one still hydrates (its debug data is then matched on
-the script's name, which is all the two documents of 0.5.0 share).
+the script's name, which is all the two documents of 0.5.0 share). The `key` of a site was added
+the same way: an older evs ignores it, and this one computes the keys of debug data that has
+none.
 
 A size change of the runtime entry shows in three places: the two budgets of the plugin's tests
 (`test/build.test.ts`, `test/worker.test.ts`), the "Library size" table and the plugin figures
@@ -308,7 +314,8 @@ Releases: see [Releasing](#releasing) below.
 ## Design notes (the parts worth knowing)
 
 - **Pipeline.** The builder callback runs once and records a value-semantics IR (a flat value
-  table, one site id per statement). `validateIr` checks it, `eliminateDeadCode` (the one
+  table, one site id per statement; each statement also gets a key, see "Statement keys"
+  below). `validateIr` checks it, `eliminateDeadCode` (the one
   IR-level pass, always on and also exported as `dce`) drops statements whose results nothing
   observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
   calls are the roots; a revert that only guarded an unused value is dead work too (an evs
@@ -635,7 +642,7 @@ Releases: see [Releasing](#releasing) below.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
-  maps revert payloads back to the site (kind, detail and site id) that produced them.
+  maps revert payloads back to the site (kind, detail, site id and key) that produced them.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
   `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
@@ -649,6 +656,32 @@ Releases: see [Releasing](#releasing) below.
   classifier (`abi/revert.ts`; `abi/revert.test.ts` feeds one payload corpus to both). Payloads
   only a callee can produce (empty, `Error(string)`, foreign selectors) are attributed to the
   strict, non-`revertReturns` call sites — the only ones that bubble.
+- **Statement keys** (`ir/site-keys.ts`). A site id is a position:
+  the recorder numbers everything it appends (`nextSite`), so an id moves with any statement
+  added above it, and with a release that records a builder verb differently (0.4.1 recorded one
+  statement fewer per counter loop, which renumbered unchanged scripts). The id cannot change
+  role: it is the immediate of `EvsDecodeError(uint256 site)`. So each statement also has a
+  **key**, `<fn>/<label>#<n>`: the name of its `s.fn` (none in the script body), a label that
+  says what it is (`siteLabel`), and its index among the statements with that label in that
+  function, in `walkStmts` order. Only a statement with the same label, added or removed earlier
+  in the same function, moves a key. `compile()` computes the keys once, on the **recorded** IR
+  (`siteKeysOf`), and hands them to the lowering and to the deployless checks: counted before
+  dead-code elimination, they do not depend on what a pass removes or on a compile option. The
+  count runs on the rendered `<fn>/<label>` text, which makes keys unique whatever the names
+  are. Three rules to keep:
+  - **A label is public text.** Users store keys in the filters of their acknowledged warnings
+    (`EvsDiagnostic.key`), so renaming a label, or changing what a builder verb records under a
+    label a warning uses, is a breaking change: `ir/site-keys.test.ts` pins every label and the
+    key table of one script, and a failure there is that decision to take. A label reads the
+    statement and the IR tables, never a `debugName` (display text, like a site's `detail`).
+  - **A warning's key names what the user decides about.** `LOOP_ALLOCATION` is about one
+    statement and carries its key. `ENV_FRAME_DEPENDENT` is about a thing read from the frame,
+    so it is one warning per label (`s.env(caller)`, or `s.call(deposit)` for a paying call) and
+    its `sites` lists the statements. `DEPLOYLESS_RESULT_PREFIX` is about the value returned
+    first (`s.return(bps)`): the statement behind it is often a `cellget`, whose index any other
+    cell read would move.
+  - **No message tells a user to filter on a site id.** `diagnostic-keys.test.ts` checks the
+    warnings; the docs page is `reference/diagnostics.mdx` ("Keys").
 - **Built-in errors have one home each.** `EVS_ERROR_ABI` (`abi/artifact.ts`) lists the evs
   runtime errors every artifact ABI carries, and `EVS_ERROR_NAMES` reads their names off it (no
   script may take one as its name). `RESERVED_ERROR_NAMES` (`core/types/namespace.ts`, because

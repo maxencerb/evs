@@ -468,7 +468,7 @@ call [`hydrate`](/reference/precompiled/hydrate/) in the client.
         returns: [], // …the four returned values
       },
       sites: [
-        { id: 0, kind: 'decode', detail: 'decoding token0() returndata' },
+        { id: 0, key: 's.read(token0)#0', kind: 'decode', detail: 'decoding token0() returndata' },
         // …one entry per statement
       ],
     } as const;

@@ -78,7 +78,8 @@ export interface EvsDiagnostic {
     | 'LARGE_FRAME'
     /** `s.env('caller')` / `s.env('address')` (and the script's own balance,
      *  `s.balance(s.env('address'))`) read the execution frame, whose shape differs between the
-     *  `toViem()` deployless (default) and stateOverride modes. */
+     *  `toViem()` deployless (default) and stateOverride modes. One warning per thing read,
+     *  whatever the number of statements that read it. */
     | 'ENV_FRAME_DEPENDENT'
     /** The ABI-static result can start with `0xEF`, which the deployless mode rejects (it
      *  deposits the result as contract code; see `deployless.ts`): its first word is a
@@ -88,15 +89,34 @@ export interface EvsDiagnostic {
     | 'DEPLOYLESS_RESULT_SIZE';
   message: string;
   /**
-   * The id of the statement that raised it (a `SiteId` — plain `number` here, since core/ does
-   * not import the IR): the `site` of that statement in `compiled.ir` and its entry in
-   * `compiled.sourceMap.sites` (one per recorded statement, so two warnings raised by look-alike
-   * statements still differ in `site`). Set by the per-statement codes (`LOOP_ALLOCATION`,
-   * `ENV_FRAME_DEPENDENT`) and by `DEPLOYLESS_RESULT_PREFIX` (the statement that defines the
-   * first returned value — absent when that value is a script argument); absent on
-   * whole-program ones (`LARGE_FRAME`, `DEPLOYLESS_RESULT_SIZE`).
+   * What the warning is about, as a text that stays the same when the rest of the script is
+   * edited and when evs is upgraded: filter on `code` and `key`.
+   *
+   * - `LOOP_ALLOCATION`: the key of the allocating statement, as in `compiled.sourceMap.sites`
+   *   (`s.read(symbol)#0`: the first `s.read` of `symbol` in the script body).
+   * - `ENV_FRAME_DEPENDENT`: what is read from the frame (`s.env(caller)`, `s.env(address)`,
+   *   `s.balance(s.env(address))`) or the call that sends a `value` (`s.call(deposit)`). One
+   *   warning covers every statement that does it.
+   * - `DEPLOYLESS_RESULT_PREFIX`: the returned value at byte 0 of the result (`s.return(bps)`).
+   *
+   * Absent on the whole-program codes (`LARGE_FRAME`, `DEPLOYLESS_RESULT_SIZE`), of which a
+   * script gets at most one.
+   */
+  key?: string;
+  /**
+   * The id of the first statement in `sites` (a `SiteId` — plain `number` here, since core/ does
+   * not import the IR). A position, not a name: it moves when a statement is added or removed
+   * before it, so match on `key`.
    */
   site?: number;
+  /**
+   * The statements the warning covers, by ascending `id`, each with its `id` and its `key` in
+   * `compiled.sourceMap.sites`: the allocating statement (`LOOP_ALLOCATION`), every statement
+   * that reads the frame that way (`ENV_FRAME_DEPENDENT`), the statement that defines the first
+   * returned value (`DEPLOYLESS_RESULT_PREFIX`, absent when that value is a script argument).
+   * Absent on the whole-program codes.
+   */
+  sites?: readonly { id: number; key: string }[];
 }
 
 // ---------------------------------------------------------------------------

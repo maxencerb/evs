@@ -96,6 +96,10 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   CONTRIBUTING.md, "The runtime entry"). The runtime entry carries no hash, and what only
   `explainRevert()` needs loads with the explain code: the checks of a hydrated script's debug
   data are in `debug-data.ts`, which imports types only from `precompiled.ts`.
+  A statement has a site id (a position, the number in `EvsDecodeError`) and a key
+  (`ir/site-keys.ts`). The label in a key is public text that users store in their warning
+  filters: changing one, or what a builder verb records under a label a warning uses, is a
+  breaking change (reasons in CONTRIBUTING.md, "Statement keys").
 - `packages/vite-plugin-evs` — the published Vite plugin (peers: `vite`, `@maxencerb/evs` as
   `workspace:^`, which must stay that way: see "Releasing" in CONTRIBUTING.md). It runs
   `*.evs.ts` modules in Node with Vite's `runnerImport` and replaces them with `hydrate(...)`
