@@ -46,6 +46,7 @@ import {
   normalizeAbiParam,
   assertLayout,
   assertTupleGates,
+  readMember,
 } from './helpers.js';
 
 type CallKind = 'static' | 'call' | 'simulate';
@@ -407,7 +408,8 @@ export abstract class RecorderCalls extends RecorderControl {
    * A literal fits by JS kind: bool ← boolean; (u)intN ← number | bigint; address/bytesN/bytes ←
    * a `0x` string; string ← any string; an array type ← a JS array whose elements all fit (a
    * fixed `T[N]` ← exactly N of them); a tuple ← a record keyed by member name when every member
-   * is named, else a positional array (abitype's rule), whose members (own properties) all fit —
+   * is named, else a positional array (abitype's rule), whose members all fit (a record's read
+   * through its prototype chain, as the coercion reads them: {@link readMember}) —
    * and nothing more: a key that names no member, or an element past the last member, is a misfit
    * (the coercion, `buildTupleNew`, rejects it). `type` must come from {@link normalizeAbiParam} (a
    * `parseAbi` member with no `name` key is unnamed, and a handle's type compares against `''`
@@ -436,8 +438,12 @@ export abstract class RecorderCalls extends RecorderControl {
         return false;
       }
       return type.components.every((c, i) => {
-        const key = named ? c.name : i;
-        const member: unknown = Object.hasOwn(v, key) ? Reflect.get(v, key) : undefined;
+        // read as the coercion reads it: a record member through the prototype chain
+        const member: unknown = named
+          ? readMember(v, c.name)
+          : Object.hasOwn(v, i)
+            ? Reflect.get(v, i)
+            : undefined;
         return member !== undefined && this.argFits(member, abiParamToType(c));
       });
     }

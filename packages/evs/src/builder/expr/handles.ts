@@ -540,9 +540,28 @@ function tupleProtoOf(tt: TupleType): object {
       },
     };
   });
+  // the comparisons an `Expr` has and a struct handle does not: a call reports what to write
+  // instead of a raw TypeError. A field of the same name keeps its accessor.
+  for (const method of EXPR_ONLY_COMPARISONS) {
+    if (method in fieldProps) continue;
+    fieldProps[method] = { value: exprOnlyComparison(method) };
+  }
   const proto: object = Object.create(TupleHandle.prototype, fieldProps);
   TUPLE_PROTOS.set(tt.components, proto);
   return proto;
+}
+
+/** Methods of an `Expr` that a struct value out of `Cell.get()`, `s.select` or `s.lit` had while
+ *  it was an `Expr`; on a {@link TupleHandle} they are non-enumerable and only refuse. */
+const EXPR_ONLY_COMPARISONS = ['eq', 'neq'] as const;
+
+function exprOnlyComparison(method: (typeof EXPR_ONLY_COMPARISONS)[number]): () => never {
+  return () => {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `Tuple.${method}(): a struct is a Tuple handle, which has no .${method}() — compare it with s.${method}(a, b), or call .expr() first: tuple.expr().${method}(other)`,
+    );
+  };
 }
 
 export function makeTuple(owner: Recorder, id: ValueId, tt: TupleType): object {

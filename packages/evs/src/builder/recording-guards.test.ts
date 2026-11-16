@@ -378,23 +378,131 @@ describe('a struct literal names every member', () => {
     expect(e.message.startsWith(`${what}: `)).toBe(true);
   });
 
-  test.each(slots)('%s: an object without own members is refused', (_name, _what, slot) => {
-    class PairLike {
-      get token(): string {
-        return ALICE;
-      }
-      get fee(): number {
-        return 500;
+  /** The shape Svelte 5 compiles a `$state` class to (Lit's `@property` and TC39 `accessor`
+   *  fields give the same): private fields behind a get/set pair on the prototype, so the
+   *  instance has no own key at all. */
+  class PairState {
+    #token: unknown;
+    #fee: unknown;
+    constructor(token: unknown, fee: unknown) {
+      this.#token = token;
+      this.#fee = fee;
+    }
+    get token(): unknown {
+      return this.#token;
+    }
+    set token(value: unknown) {
+      this.#token = value;
+    }
+    get fee(): unknown {
+      return this.#fee;
+    }
+    set fee(value: unknown) {
+      this.#fee = value;
+    }
+  }
+
+  test.each(slots)(
+    '%s: members on the prototype chain are read, as JavaScript reads them',
+    (name, _what, slot) => {
+      const irOf = (make: (who: Expr<'address'>) => unknown) =>
+        evscript({ name: 'structs', args: [t.address], errors: [PairErr] }, (s, who) => {
+          const recorded = slot(s, who, make(who));
+          // that slot returns the script itself
+          return name.startsWith('s.return') ? (recorded as never) : s.return({ who });
+        }).ir;
+      const plain = irOf((who) => ({ token: who, fee: 500 }));
+      expect(irOf((who) => new PairState(who, 500))).toEqual(plain);
+      expect(irOf((who) => Object.create({ token: who, fee: 500 }))).toEqual(plain);
+    },
+  );
+
+  test.each(slots)('%s: a Map is refused, its entries being no members', (_name, what, slot) => {
+    expectEvs(
+      () =>
+        recT((s, who) =>
+          slot(
+            s,
+            who,
+            new Map<string, unknown>([
+              ['token', who],
+              ['fee', 500],
+            ]),
+          ),
+        ),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      `${what}: a Map is not a struct value — its entries are not members. Pass a record (Object.fromEntries(map))`,
+    );
+  });
+
+  test('s.tuple reads members on the prototype chain; one that reads undefined stays zero', () => {
+    const script = evscript({ name: 'protoInit', args: [t.address] }, (s, who) =>
+      s.return({
+        state: s.tuple(Pair, new PairState(who, 500) as never),
+        created: s.tuple(Pair, Object.create({ token: who, fee: 500 }) as never),
+        unset: s.tuple(Pair, new PairState(who, undefined) as never),
+      }),
+    );
+    expect(interpret(script, [ALICE], NO_CALLS).outcome).toMatchObject({
+      kind: 'return',
+      values: {
+        state: { token: ALICE, fee: 500 },
+        created: { token: ALICE, fee: 500 },
+        unset: { token: ALICE, fee: 0 },
+      },
+    });
+    expectEvs(
+      () => recT((s, who) => s.tuple(Pair, new Map([['token', who]]) as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      's.tuple(): a Map is not a struct value — its entries are not members',
+    );
+  });
+
+  test('a member named like an Object.prototype member counts only as an own value', () => {
+    const Odd = t.struct({
+      toString: t.uint256,
+      constructor: t.address,
+      valueOf: t.uint256,
+      x: t.uint256,
+    });
+    // its prototype holds `constructor` (the class itself): no member either
+    class OddState {
+      get x(): bigint {
+        return 1n;
       }
     }
-    for (const value of [new Map<string, unknown>([['token', ALICE]]), new PairLike()]) {
-      expectEvs(
-        () => recT((s, who) => slot(s, who, value)),
-        EvsTypeError,
-        'TYPE_MISMATCH',
-        'the struct literal has no value for members "token", "fee"',
+    const initsOf = (body: (s: ScriptBuilder, who: Expr<'address'>) => unknown) => {
+      const script = evscript({ name: 'odd', args: [t.address] }, (s, who) =>
+        s.return({ h: s.keccak256(s.encode(body(s, who) as never)) }),
       );
-    }
+      const stmt = script.ir.body.find((st) => st.k === 'tuplenew');
+      return stmt?.k === 'tuplenew' ? stmt.inits.map((i) => i.index) : null;
+    };
+    expect(
+      initsOf((s, who) => s.lit(Odd, { toString: 2n, constructor: who, valueOf: 3n, x: 1n })),
+    ).toEqual([0, 1, 2, 3]);
+    expect(initsOf((s) => s.tuple(Odd, { x: 1n } as never))).toEqual([3]);
+    expect(initsOf((s) => s.tuple(Odd, new OddState() as never))).toEqual([3]);
+    expectEvs(
+      () => recT((s) => s.lit(Odd, new OddState() as never)),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      's.lit(): the struct literal has no value for members "toString", "constructor", "valueOf"',
+    );
+    // a third-party ABI may name a member `__proto__`: only an own one (from JSON) counts
+    const Proto = {
+      type: 'tuple',
+      components: [
+        { name: '__proto__', type: 'uint256' },
+        { name: 'x', type: 'uint256' },
+      ],
+    } as const;
+    expect(initsOf((s) => s.tuple(Proto, JSON.parse('{"__proto__": 5, "x": 1}') as never))).toEqual(
+      [0, 1],
+    );
+    expect(initsOf((s) => s.tuple(Proto, { __proto__: 5, x: 1n }))).toEqual([1]);
   });
 
   test.each(slots)('%s: null is refused', (_name, what, slot) => {
@@ -958,6 +1066,33 @@ describe('an operand that is no value', () => {
       'this object stands in for an evs handle without being one',
     );
   });
+
+  test('a Proxy around a handle is named where a literal is read too', () => {
+    const STAND_IN =
+      'this object stands in for an evs handle without being one (a Proxy around a handle, as a reactive store makes, or an object created from one) — pass the handle itself';
+    /** What a reactive store gives back for an array holding `x`: a Proxy around each element. */
+    const reactiveArray = (x: object): readonly unknown[] =>
+      new Proxy([x], {
+        get: (target, key, receiver): unknown => {
+          const value: unknown = Reflect.get(target, key, receiver);
+          return typeof value === 'object' && value !== null ? new Proxy(value, {}) : value;
+        },
+      });
+    const cases: readonly (readonly [string, (s: ScriptBuilder, x: Expr<'uint256'>) => unknown])[] =
+      [
+        ['s.lit()', (s, x) => s.lit(t.uint256, new Proxy(x, {}) as never)],
+        ['s.lit()[1]', (s, x) => s.lit(t.array(t.uint256), [1n, new Proxy(x, {})] as never)],
+        ['s.lit()[0]', (s, x) => s.lit(t.array(t.uint256), reactiveArray(x) as never)],
+        [
+          '.eq() right operand[1]',
+          (s, x) => s.lit(t.array(t.uint256), [1n]).eq([1n, new Proxy(x, {})] as never),
+        ],
+        ['s.let()', (s, x) => s.let(new Proxy(x, {}))],
+      ];
+    for (const [what, build] of cases) {
+      expectEvs(() => recX(build), EvsTypeError, 'TYPE_MISMATCH', `${what}: ${STAND_IN}`);
+    }
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -1045,6 +1180,120 @@ describe('a LoopCtl holds nothing but break and continue', () => {
     expect(interpret(script, [6n], NO_CALLS).outcome).toMatchObject({
       kind: 'return',
       values: { total: 9n },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// s.fn names
+// ---------------------------------------------------------------------------
+
+describe('each s.fn of a script has its own name', () => {
+  const taken = (name: string): string =>
+    `s.fn("${name}"): this script already has a function named "${name}" — give each s.fn its own name (statement keys are counted per function name), and call the handle the first s.fn returned to run the same function again`;
+
+  test('a second s.fn under a name already taken is refused, at any depth', () => {
+    const rec = (body: (s: ScriptBuilder, x: Expr<'uint256'>) => unknown): unknown =>
+      evscript({ name: 'fns', args: [t.uint256] }, (s: ScriptBuilder, x: Expr<'uint256'>) => {
+        body(s, x);
+        return s.return({ x });
+      });
+    expectEvs(
+      () =>
+        rec((s) => {
+          s.fn('q', [t.uint256], (y) => y.add(1n));
+          s.fn('q', [t.uint256], (y) => y.add(2n));
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      taken('q'),
+    );
+    // two helpers that each nest an `inner`
+    expectEvs(
+      () =>
+        rec((s) => {
+          s.fn('a', [t.uint256], (y) => s.fn('inner', [t.uint256], (z) => z.add(1n))(y));
+          s.fn('b', [t.uint256], (y) => s.fn('inner', [t.uint256], (z) => z.add(2n))(y));
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      taken('inner'),
+    );
+    // a body that defines a function under its own enclosing name
+    expectEvs(
+      () =>
+        rec((s) => {
+          s.fn('outer', [t.uint256], (y) => s.fn('outer', [t.uint256], (z) => z)(y));
+        }),
+      EvsTypeError,
+      'TYPE_MISMATCH',
+      taken('outer'),
+    );
+  });
+
+  test('a failed definition leaves its name free, and one function is called many times', () => {
+    const script = evscript({ name: 'fns', args: [t.uint256] }, (s, x) => {
+      expect(() =>
+        s.fn('inc', [t.uint256], () => {
+          throw new Error('body failed');
+        }),
+      ).toThrow('body failed');
+      const inc = s.fn('inc', [t.uint256], (y) => y.add(1n));
+      return s.return({ once: inc(x), twice: inc(inc(x)) });
+    });
+    expect(script.ir.fns.map((f) => f.name)).toEqual(['inc']);
+    expect(interpret(script, [1n], NO_CALLS).outcome).toMatchObject({
+      kind: 'return',
+      values: { once: 2n, twice: 3n },
+    });
+  });
+});
+
+// ---------------------------------------------------------------------------
+// a struct handle has no Expr comparisons
+// ---------------------------------------------------------------------------
+
+describe('a struct handle answers the comparisons of an Expr', () => {
+  const Pos = t.struct({ owner: t.address, amount: t.uint256 });
+
+  test('.eq() and .neq() on a struct out of Cell.get, s.lit or s.select are coded errors', () => {
+    const cases: readonly (readonly ['eq' | 'neq', (s: ScriptBuilder, p: object) => object])[] = [
+      ['eq', (s, p) => s.let(Pos, p as never).get()],
+      ['neq', (s, p) => s.lit(Pos, p as never)],
+      ['eq', (s, p) => s.select(true, s.lit(Pos, p as never), s.lit(Pos, p as never))],
+    ];
+    for (const [method, make] of cases) {
+      expectEvs(
+        () =>
+          evscript({ name: 'cmp', args: [Pos] }, (s, p) => {
+            const handle = make(s, p);
+            const compare = Reflect.get(handle, method) as (other: unknown) => unknown;
+            compare.call(handle, p);
+            return s.return({ p });
+          }),
+        EvsTypeError,
+        'TYPE_MISMATCH',
+        `Tuple.${method}(): a struct is a Tuple handle, which has no .${method}() — compare it with s.${method}(a, b), or call .expr() first: tuple.expr().${method}(other)`,
+      );
+    }
+  });
+
+  test('the comparisons are no members: a field of the same name keeps its accessor', () => {
+    const Cmp = t.struct({ eq: t.uint256, neq: t.bool });
+    const script = evscript({ name: 'fields', args: [Cmp] }, (s, c) => {
+      expect(Object.keys(Reflect.getPrototypeOf(c) ?? {})).toEqual(['eq', 'neq']);
+      return s.return({ eq: c.eq.get(), neq: c.neq.get() });
+    });
+    expect(interpret(script, [{ eq: 7n, neq: true }], NO_CALLS).outcome).toMatchObject({
+      kind: 'return',
+      values: { eq: 7n, neq: true },
+    });
+    evscript({ name: 'plain', args: [Pos] }, (s, p) => {
+      // not enumerable: a for…in over the handle lists the fields alone
+      const keys: string[] = [];
+      for (const key in p) keys.push(key);
+      expect(keys).toEqual(['owner', 'amount']);
+      return s.return({ same: s.eq(p, s.let(Pos, p).get()) });
     });
   });
 });

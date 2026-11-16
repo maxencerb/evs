@@ -682,7 +682,13 @@ Releases: see [Releasing](#releasing) below.
   types already), a struct literal without a value for a member, an array literal with a hole
   (`missingElement`: the array methods skip holes, so literals are read by index), an option
   object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
-  input shape gets its check and a row in `builder/recording-guards.test.ts`.
+  input shape gets its check and a row in `builder/recording-guards.test.ts`. A struct record's
+  members are read as JavaScript reads them, through the prototype chain (`readMember`, in
+  `builder/expr/helpers.ts`, for every struct position, overload resolution and the `s.throw`
+  record): a class getter, a Svelte `$state` field or an `Object.create(proto)` record is a
+  member, a name found only on `Object.prototype` / `Function.prototype` or a prototype's
+  `constructor` is not. The unknown-member check lists own keys. A `Map` is refused: its entries
+  are no properties.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
   `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
@@ -708,7 +714,8 @@ Releases: see [Releasing](#releasing) below.
   (`siteKeysOf`), and hands them to the lowering and to the deployless checks: counted before
   dead-code elimination, they do not depend on what a pass removes or on a compile option. The
   count runs on the rendered `<fn>/<label>` text, which makes keys unique whatever the names
-  are. Three rules to keep:
+  are; the recorder refuses a second `s.fn` under a name the script already has (`defineFn`),
+  so "the same function" and "the same function name" stay one thing. Three rules to keep:
   - **A label is public text.** Users store keys in the filters of their acknowledged warnings
     (`EvsDiagnostic.key`), so renaming a label, or changing what a builder verb records under a
     label a warning uses, is a breaking change: `ir/site-keys.test.ts` pins every label and the

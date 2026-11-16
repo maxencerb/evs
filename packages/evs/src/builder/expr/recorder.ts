@@ -89,6 +89,15 @@ export class Recorder extends RecorderCalls {
     if (typeof bodyFn !== 'function') {
       throw new EvsTypeError('TYPE_MISMATCH', `s.fn("${name}"): body must be a callback`);
     }
+    // a statement key counts statements per function name (`quote/add#1`), so two functions
+    // under one name would share one count. Taken: a recorded fn, or one recording right now
+    // (an enclosing body); a failed definition was rolled back and left its name free.
+    if (this.fnCtx.some((f) => f.name === name) || this.fnIrs.some((f) => f?.name === name)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.fn("${name}"): this script already has a function named "${name}" — give each s.fn its own name (statement keys are counted per function name), and call the handle the first s.fn returned to run the same function again`,
+      );
+    }
     // params take the same declarators as `evscript` args (issue #9), through the same normalizer:
     // a bare `t.*` type (the positional `arg{i}` name), a `namedArg(...)` or a named ABI parameter,
     // alone or in a `readonly` list. Composite (tuple) params are accepted exactly like script

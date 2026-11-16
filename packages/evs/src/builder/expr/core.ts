@@ -71,6 +71,7 @@ import {
   allMembersNamed,
   assertValueType,
   assertLayout,
+  readMember,
 } from './helpers.js';
 import type { Recorder } from './recorder.js';
 
@@ -84,6 +85,31 @@ export interface RecErrorDecl {
   readonly value: object;
   readonly params: readonly { readonly name: string; readonly type: EvsType }[];
   readonly ir: PlainAbiError;
+}
+
+/** The `type` and `eq` of an object that is no handle of this copy of evs, or null when reading
+ *  them runs a handle's own getter that refuses `v` as its receiver: `v` then stands in for a
+ *  handle without being one (a `Proxy` around it, as a reactive store makes, or
+ *  `Object.create(handle)`). */
+function probeHandleMembers(v: object): { type?: unknown; eq?: unknown } | null {
+  try {
+    const { type, eq } = v as { type?: unknown; eq?: unknown };
+    return { type, eq };
+  } catch (e) {
+    if (!(e instanceof EvsTypeError)) throw e;
+    return null;
+  }
+}
+
+/** An element {@link probeHandleMembers} finds standing in for a handle. */
+function isStandIn(v: unknown): boolean {
+  return (
+    typeof v === 'object' &&
+    v !== null &&
+    !Array.isArray(v) &&
+    !isStagedHandle(v) &&
+    probeHandleMembers(v) === null
+  );
 }
 
 /** The rule a refused struct literal broke, and the way to leave members at zero on purpose. */
@@ -365,16 +391,21 @@ export abstract class RecorderCore {
    *  a receiver it does not know: that is reported as the operand it is, not as a `.type` read the
    *  user never wrote. */
   private handleProbe(v: object, what: string): { type?: unknown; eq?: unknown } {
-    try {
-      const { type, eq } = v as { type?: unknown; eq?: unknown };
-      return { type, eq };
-    } catch (e) {
-      if (!(e instanceof EvsTypeError)) throw e;
+    const probed = probeHandleMembers(v);
+    if (probed === null) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: this object stands in for an evs handle without being one (a Proxy around a handle, as a reactive store makes, or an object created from one) — pass the handle itself`,
       );
     }
+    return probed;
+  }
+
+  /** {@link handleProbe}'s refusal for a position that takes no handle of this kind but reads
+   *  `v` as a literal (a word literal, the `s.let(init)` type probe), where the literal checks
+   *  would otherwise describe the stand-in as some object or a `.type` read. */
+  protected assertNotStandIn(v: unknown, what: string): void {
+    if (typeof v === 'object' && v !== null && !Array.isArray(v)) this.handleProbe(v, what);
   }
 
   /** Scope rule: a value is usable iff its defining scope is on the stack. */
@@ -525,13 +556,17 @@ export abstract class RecorderCore {
    * MutArray / Field), for word and tuple targets, and for the array literals built element-wise
    * instead: a composite-element array (`tuple[]`, `uint256[][]`, `string[]` / `bytes[]`, any
    * `T[N]` over a composite element) or a word-element array mixing in a staged handle
-   * (`[x, 1n]` with `x` an Expr). Only the route is decided here: a malformed value still fails in
-   * `classify` / `dataConst`.
+   * (`[x, 1n]` with `x` an Expr) or a stand-in for one ({@link isStandIn}: built element-wise, the
+   * element is refused as the operand it is). Only the route is decided here: a malformed value
+   * still fails in `classify` / `dataConst`.
    */
   protected isFlatLiteralOperand(v: unknown, type: EvsType): type is DynType | ArrayType {
     if (typeof type !== 'string' || isWordType(type) || isStagedHandle(v)) return false;
     if (!isArrayValueType(type)) return true; // string / bytes
-    return !isCompositeElemArray(type) && !(Array.isArray(v) && v.some(isStagedHandle));
+    return (
+      !isCompositeElemArray(type) &&
+      !(Array.isArray(v) && v.some((el) => isStagedHandle(el) || isStandIn(el)))
+    );
   }
 
   /** Builds an array LITERAL element-wise at record time — a composite-element array
@@ -689,7 +724,8 @@ export abstract class RecorderCore {
    *  returning the new tuple ValueId. The literal's shape follows abitype's rule
    *  ({@link allMembersNamed}): a record keyed by member name when every member is named, else a
    *  positional array; a key that names no member, or an element past the last member, is
-   *  rejected. Members are read from OWN properties only.
+   *  rejected. A record's members are read as JavaScript reads them, through the prototype chain
+   *  ({@link readMember}).
    *
    *  `partial` says what a member without a value means. `true` is `s.tuple(type, init?)` alone,
    *  whose documented `init` is partial: an absent `init`, a member left out and a member set to
@@ -747,10 +783,14 @@ export abstract class RecorderCore {
           );
         }
       }
-      // own properties only: an omitted member named like an Object.prototype method
-      // (`toString`, `constructor`, …) must read as absent, not as the inherited function
-      lookup = (comp) =>
-        Object.hasOwn(init, comp.name) ? Reflect.get(init, comp.name) : undefined;
+      if (init instanceof Map) {
+        // its entries are no properties: every member would read as absent
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: a Map is not a struct value — its entries are not members. Pass a record (Object.fromEntries(map))`,
+        );
+      }
+      lookup = (comp) => readMember(init, comp.name);
     } else if (partial) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
@@ -812,6 +852,7 @@ export abstract class RecorderCore {
     this.assertOpen('s.lit()');
     assertValueType(type, 's.lit()');
     if (isWordType(type)) {
+      this.assertNotStandIn(value, 's.lit()');
       const { hex, logical } = this.wordLiteral(type, value);
       return makeExpr(this.self, this.wordConst(type, logical, hex));
     }
@@ -833,6 +874,8 @@ export abstract class RecorderCore {
       assertValueType(a, 's.let()');
       return new CellImpl(this.self, this.makeCell(a, b));
     }
+    // before the type probe below, which reads `.type` and would run a handle's getter on it
+    this.assertNotStandIn(a, 's.let()');
     if (typeof a === 'string' || isTupleType(a)) {
       // a malformed type string keeps its "unknown type" diagnosis; only a valid type is missing
       // its init.
