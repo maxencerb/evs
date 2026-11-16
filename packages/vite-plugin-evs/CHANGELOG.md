@@ -1,5 +1,12 @@
 # @maxencerb/vite-plugin-evs
 
+## 0.1.2
+
+### Patch Changes
+
+- Updated dependencies [[`5908336`](https://github.com/maxencerb/evs/commit/5908336eed3c335d5ed2e8ba48e6854e803ffd9b), [`26df18d`](https://github.com/maxencerb/evs/commit/26df18d7c2f58e488a0f8efd9750f42fea5c250e), [`26df18d`](https://github.com/maxencerb/evs/commit/26df18d7c2f58e488a0f8efd9750f42fea5c250e), [`2265eb0`](https://github.com/maxencerb/evs/commit/2265eb00a7d738696f768f1171deffac1d426f00), [`26df18d`](https://github.com/maxencerb/evs/commit/26df18d7c2f58e488a0f8efd9750f42fea5c250e), [`5908336`](https://github.com/maxencerb/evs/commit/5908336eed3c335d5ed2e8ba48e6854e803ffd9b), [`5908336`](https://github.com/maxencerb/evs/commit/5908336eed3c335d5ed2e8ba48e6854e803ffd9b)]:
+  - @maxencerb/evs@0.6.0
+
 ## 0.1.1
 
 ### Patch Changes
