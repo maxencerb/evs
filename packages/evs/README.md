@@ -128,7 +128,7 @@ provider supports it: see the
 
 ## Precompile at build time
 
-An app that calls `compile()` ships the compiler: 70 kB of JavaScript (brotli). With the Vite
+An app that calls `compile()` ships the compiler: 71 kB of JavaScript (brotli). With the Vite
 plugin, a `*.evs.ts` file runs during the build and the app ships only the ABI and the bytecode of
 each script. TypeScript still reads the real file, so the call is typed as before.
 
