@@ -176,7 +176,10 @@ export type FixedLengthOf<t extends EvsType> = [t] extends [ArrayType]
 
 export type ArgType = EvsType;
 export type NumericType = UintType | IntType;
-export type BitsType = UintType | BytesNType;
+/** The operand domain of the bitwise operators and the shifts (`bitAnd` / `bitOr` / `bitXor` /
+ *  `bitNot`, `shl` / `shr`): every word that is a run of bits, a `uintN`, an `intN` (its two's
+ *  complement bits) or a `bytesN`. Not `address` or `bool`, as in Solidity. */
+export type BitsType = UintType | IntType | BytesNType;
 /** The ordering domain of `lt`/`gt`/`lte`/`gte` (Solidity's): the numeric types, plus `address`
  *  and `bytesN`, which compare as unsigned words (a `bytesN` byte by byte, lexicographically). */
 export type OrderedType = NumericType | 'address' | BytesNType;

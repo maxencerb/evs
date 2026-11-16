@@ -12,7 +12,6 @@ import {
   t,
   type AsIntReceiver,
   type BytesNOfUint,
-  type conversionHint,
   type ConversionHint,
   type Expr,
   type IntOfUint,
@@ -91,19 +90,19 @@ test('wrapping conversions: result types and receivers', () => {
   );
 
   // the receiver of a non-uintN is the recording-time message
-  expectTypeOf<AsIntReceiver<'address'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".asInt(): cannot convert from 'address' — the source must be a uintN — use .asUint160() first (then .asInt())";
-  }>();
-  expectTypeOf<AsIntReceiver<'bytes3'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".asInt(): cannot convert from 'bytes3' — the source must be a uintN — use .asUint() first (same width, then .asInt())";
-  }>();
-  expectTypeOf<AsIntReceiver<'int24'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".asInt(): cannot convert from 'int24' — the source must be a uintN — it is already signed";
-  }>();
+  expectTypeOf<
+    AsIntReceiver<'address'>
+  >().toEqualTypeOf<".asInt(): cannot convert from 'address' — the source must be a uintN — use .asUint160() first (then .asInt())">();
+  expectTypeOf<
+    AsIntReceiver<'bytes3'>
+  >().toEqualTypeOf<".asInt(): cannot convert from 'bytes3' — the source must be a uintN — use .asUint() first (same width, then .asInt())">();
+  expectTypeOf<
+    AsIntReceiver<'int24'>
+  >().toEqualTypeOf<".asInt(): cannot convert from 'int24' — the source must be a uintN — it is already signed">();
   expectTypeOf<AsIntReceiver<'uint24'>>().toEqualTypeOf<Expr<'uint24'>>();
-  expectTypeOf<NumericReceiver<'address', 'wrappingToUint'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".wrappingToUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .wrappingToUint(…))";
-  }>();
+  expectTypeOf<
+    NumericReceiver<'address', 'wrappingToUint'>
+  >().toEqualTypeOf<".wrappingToUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .wrappingToUint(…))">();
 
   // a generic uintN receiver is accepted, its result deferred to IntOfUint
   const signed = <u extends UintType>(x: Expr<u>) => x.asInt();
@@ -161,18 +160,18 @@ test('conversion result types and receiver constraints', () => {
 test('toUint / toInt on a non-numeric receiver: the type error names the as* conversion', () => {
   // the `this` type a non-numeric receiver meets is the message itself (tsc prints it in the
   // error; `conversions.test.ts` pins the printed diagnostic)
-  expectTypeOf<NumericReceiver<'address', 'toUint'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".toUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .toUint(…))";
-  }>();
-  expectTypeOf<NumericReceiver<'bytes4', 'toInt'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".toInt(): cannot convert from 'bytes4' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .toInt(…))";
-  }>();
-  expectTypeOf<NumericReceiver<'bool', 'toUint'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".toUint(): cannot convert from 'bool' — the source must be numeric (uintN/intN)";
-  }>();
-  expectTypeOf<NumericReceiver<'uint8[]', 'toInt'>>().toEqualTypeOf<{
-    readonly [conversionHint]: ".toInt(): cannot convert from 'uint8[]' — the source must be numeric (uintN/intN)";
-  }>();
+  expectTypeOf<
+    NumericReceiver<'address', 'toUint'>
+  >().toEqualTypeOf<".toUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .toUint(…))">();
+  expectTypeOf<
+    NumericReceiver<'bytes4', 'toInt'>
+  >().toEqualTypeOf<".toInt(): cannot convert from 'bytes4' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .toInt(…))">();
+  expectTypeOf<
+    NumericReceiver<'bool', 'toUint'>
+  >().toEqualTypeOf<".toUint(): cannot convert from 'bool' — the source must be numeric (uintN/intN) — use s.select(flag, s.lit(type, 1), 0)">();
+  expectTypeOf<
+    NumericReceiver<'uint8[]', 'toInt'>
+  >().toEqualTypeOf<".toInt(): cannot convert from 'uint8[]' — the source must be numeric (uintN/intN)">();
   // a tuple's runtime text names its JSON descriptor, which the message leaves out
   expectTypeOf<
     ConversionHint<{ readonly type: 'tuple'; readonly components: readonly [] }, 'toUint'>

@@ -334,7 +334,7 @@ export abstract class RecorderOps extends RecorderEncode {
       if (!isBitsOperand(ty)) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: operands must be uintN/bytesN (bit-width types), got '${stringifyType(ty)}'`,
+          `${what}: operands must be uintN/intN/bytesN (bit-width types), got '${stringifyType(ty)}'`,
         );
       }
       return;
@@ -374,7 +374,7 @@ export abstract class RecorderOps extends RecorderEncode {
     if (!isBitsOperand(c.type)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${what}: operand must be uintN/bytesN (bit-width types), got '${stringifyType(c.type)}'`,
+        `${what}: operand must be uintN/intN/bytesN (bit-width types), got '${stringifyType(c.type)}'`,
       );
     }
     const ty = c.type;
@@ -425,13 +425,16 @@ export abstract class RecorderOps extends RecorderEncode {
         );
       }
       if (!isNumeric(from)) {
-        // point an address / bytesN receiver at its lossless same-width integer first
+        // point an address / bytesN receiver at its lossless same-width integer first, and a
+        // bool at the select that gives it a number (mirrored by the `ConversionHint` type)
         const hint =
           from === 'address'
             ? ` — use .asUint160() first (then .${kind}(…))`
             : isBytesN(from)
               ? ` — use .asUint() first (same width, then .${kind}(…))`
-              : '';
+              : from === 'bool'
+                ? ' — use s.select(flag, s.lit(type, 1), 0)'
+                : '';
         throw new EvsTypeError(
           'TYPE_MISMATCH',
           `${what}: cannot convert from '${stringifyType(from)}' — the source must be numeric (uintN/intN)${hint}`,

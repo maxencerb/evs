@@ -564,6 +564,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('eq between a memref and a word (memref equality is same-type only — #38)', () => {
     expectEvs(
+      // @ts-expect-error — uint64[] vs uint256 (runtime rejection pinned)
       () => rec((s, a) => s.eq(a.xs, a.x)),
       EvsTypeError,
       'TYPE_MISMATCH',
@@ -594,12 +595,13 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
       () => rec((s, a) => s.bitAnd(a.who as never, a.who as never)),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /uintN\/bytesN/,
+      /uintN\/intN\/bytesN/,
     );
   });
 
   test('two plain literals: at least one operand must be an Expr', () => {
     expectEvs(
+      // @ts-expect-error — two literal operands (runtime rejection pinned)
       () => rec((s) => s.add(1n, 2n)),
       EvsTypeError,
       'TYPE_MISMATCH',
@@ -741,6 +743,7 @@ describe('checklist: operand type mismatch (message suggests toUint/toInt)', () 
 
   test('select: both branches literal', () => {
     expectEvs(
+      // @ts-expect-error — two literal branches (runtime rejection pinned)
       () => rec((s, a) => s.select(a.flag, 1n, 2n)),
       EvsTypeError,
       'TYPE_MISMATCH',
@@ -2171,7 +2174,8 @@ describe('staging traps', () => {
       () =>
         rec((s) => {
           const a = s.newArray(t.uint256, 1n);
-          return s.return({ x: s.add(a as never, 1n) });
+          // @ts-expect-error — a MutArray is not an operand (runtime rejection pinned)
+          return s.return({ x: s.add(a, 1n) });
         }),
       EvsTypeError,
       'TYPE_MISMATCH',

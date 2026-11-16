@@ -216,15 +216,12 @@ describe('magnitudeBits', () => {
     expect(unsigned('bitAnd')).toBe(8);
     expect(unsigned('bitOr')).toBe(64);
     expect(unsigned('bitXor')).toBe(64);
-    // -1 has a 0-bit magnitude, yet -1 & x is x: a signed bit op is the full width (the typed
-    // API takes uintN/bytesN only, but untyped JS reaches the recorder, and the IR allows intN)
+    // -1 has a 0-bit magnitude, yet -1 & x is x: a signed bit op is the full width
     const signed = (op: 'bitAnd' | 'bitOr' | 'bitXor'): number =>
       boundOf(
-        evscript({ name: 'a', args: [t.int8] }, (s, x) => {
-          // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- untyped caller input
-          const bit = s[op] as unknown as (a: Expr<'int256'>, b: Expr<'int256'>) => Expr<'int256'>;
-          return s.return({ r: bit(s.lit(t.int256, -1n), x.toInt(t.int256)) });
-        }),
+        evscript({ name: 'a', args: [t.int8] }, (s, x) =>
+          s.return({ r: s[op](s.lit(t.int256, -1n), x.toInt(t.int256)) }),
+        ),
       );
     expect(signed('bitAnd')).toBe(255);
     expect(signed('bitOr')).toBe(255);

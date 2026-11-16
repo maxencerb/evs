@@ -147,6 +147,8 @@ const hasOwner = evscript({ name: 'hasOwner', args: [t.address] }, (s, owner) =>
   words is hashed at build time.
 - **Builder mirrors.** `s.lt(a, b)`, `s.gt`, `s.lte`, `s.gte`, `s.eq` and `s.neq` take a literal
   on either side: `s.gt(100n, x)`.
+- **Handles.** `s.eq` and `s.neq` also take a [`Tuple`](/reference/builder/tuple/#tuple) or a
+  [`MutArray`](/reference/builder/new-array/#mutarray) handle as it is: `s.eq(position, other)`.
 
 ## Errors
 

@@ -706,6 +706,24 @@ Releases: see [Releasing](#releasing) below.
   and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
   `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
   flavour wraps the result as `{ success, value }`).
+- **An operator has one operand type, inferred from one operand** (`builder/script/builder.ts`).
+  `s.add(a, b)` and the other two-operand functions (`s.select`'s branches included) have two
+  type parameters: `a` is inferred from the first operand when it is an `Expr`, `b` from the
+  second, and each operand's type refers to the other parameter behind `NoInfer`
+  (`FirstOperand`, `SecondOperand`). One parameter inferred from both operands would be the
+  union of two different `Expr` types, which type-checks and then throws at recording. A
+  literal infers nothing, so a literal first operand leaves `a` at its default, `never`, and
+  the second operand must then be the `Expr`. The result is `Expr<NoInfer<a | b>>`: without
+  `NoInfer`, the type expected of the result (a return record typed `EvsScript`) would be
+  inferred for the parameter no operand gave a type. Two overloads (`Expr` first, literal
+  first) would also work, but a call that matches neither is reported on the function name
+  with both overloads listed; one signature reports it on the wrong operand, in the method
+  form's words. `s.let(type, init)` and the typed `s.for` range keep one parameter and wrap
+  the checked positions in `NoInfer`. Where no value is accepted, the parameter's type is the
+  recording-time message as a string type (`ExprNeeded`, and `ConversionHint` / `AsIntHint`
+  for a receiver in `core/types/expr.ts`), so the checker prints what to write.
+  `operators.test.ts` pins the text and the position of these errors, and
+  `packages/type-tests/src/operators.ts` the position under every checker.
 - **A fully named tuple type carries no member order** (`core/types/derive.ts`). A record type
   has no key order, and the order of a union belongs to the type checker: TypeScript 5 and 6 keep
   the order in which a program first mentions each member, TypeScript 7, `bun check` and tsrs
@@ -836,7 +854,9 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   signed shifts vs `EvsMathReference`, wrapping arithmetic / `mulDiv` vs
   `EvsFullMathReference`, and the address / fixed-bytes conversions and string/bytes byte
   access (`byteAt`, `slice`, `asString`) vs `EvsCastReference` (all codegen'd from
-  `packages/contracts`, whose own forge tests run in CI's contracts step); an env-gated
+  `packages/contracts`, whose own forge tests run in CI's contracts step), and the bitwise
+  operators on `intN` vs the interpreter, the folded constants and a host-side two's-complement
+  reference (`test/harness/signed-bitwise.ts`, shared with the unit differential test); an env-gated
   mainnet-fork suite covers the flagship scenario: `ANVIL_FORK_URL` switches it on and no other
   variable does (an empty value counts as unset and skips it). CI's manual `fork-tests` job
   fails up front when the secret is missing.
