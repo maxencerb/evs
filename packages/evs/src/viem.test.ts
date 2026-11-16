@@ -1,15 +1,33 @@
 /**
  * Unit tests — `viem.ts`: init wrapper bytes goldens (cancun/shanghai/paris), wrapper
  * EXECUTION semantics on the harness (the wrapper RETURNs the runtime byte-exactly), the
- * silent-failure fence (field naming), and both toViem helper shapes.
+ * silent-failure fence (field naming), both toViem helper shapes, and the error decoders: on
+ * raw revert bytes, on hand-built error trees, and on the errors viem's own `readContract` and
+ * `call` throw for each answer of `test/harness/rpc-errors.ts` (a local mock JSON-RPC server).
  */
 
-import { BaseError, ContractFunctionRevertedError, encodeErrorResult } from 'viem';
-import { describe, expect, test } from 'vite-plus/test';
+import {
+  BaseError,
+  ContractFunctionRevertedError,
+  createPublicClient,
+  encodeErrorResult,
+  http,
+  type PublicClient,
+} from 'viem';
+import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { execRuntime } from '../test/harness/evm.js';
 import { RUNTIME_42, RUNTIME_WHOAMI } from '../test/harness/fixtures.js';
+import {
+  BOOM_ARGS,
+  BOOM_DATA,
+  RPC_ERROR_SHAPES,
+  startMockRpc,
+  type MockRpc,
+  type Outcome,
+} from '../test/harness/rpc-errors.js';
 import { evscript } from './builder/script.js';
+import { compile } from './compile.js';
 import { EvsCompileError, EvsTypeError } from './core/errors.js';
 import { namedArg, t, type Hex } from './core/types.js';
 import {
@@ -365,5 +383,191 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
         _: () => 'z',
       }),
     ).toThrowError(original);
+  });
+
+  test('matchScriptError: only a declared error has a handler of its name', () => {
+    // a table with handlers named like the other arms (cast past the type, which rejects these
+    // keys): Panic, Error(string) and the two evs runtime errors still reach `_`
+    const handlers = {
+      NoBalance: () => 'NoBalance handler',
+      NotOwner: () => 'NotOwner handler',
+      Panic: () => 'Panic handler',
+      Error: () => 'Error handler',
+      EvsDecodeError: () => 'EvsDecodeError handler',
+      EvsInvalidCalldata: () => 'EvsInvalidCalldata handler',
+      _: (other: { name: string }) => `_ got ${other.name}`,
+    };
+    const handle = (data: Hex): string =>
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the extra keys ARE the test
+      matchScriptError(script, data, handlers as never);
+    expect(handle(NOT_OWNER_DATA)).toBe('NotOwner handler');
+    expect(handle(PANIC_DATA)).toBe('_ got Panic');
+    expect(handle(ERROR_STRING_DATA)).toBe('_ got Error');
+    expect(
+      handle(encodeErrorResult({ abi: script.abi, errorName: 'EvsDecodeError', args: [7n] })),
+    ).toBe('_ got EvsDecodeError');
+    expect(handle(encodeErrorResult({ abi: script.abi, errorName: 'EvsInvalidCalldata' }))).toBe(
+      '_ got EvsInvalidCalldata',
+    );
+  });
+
+  test('a ContractFunctionRevertedError without a cause (viem before 2.47.5) is read by its own fields', () => {
+    // Shapes only: the unit tests run the workspace's viem, whose error keeps its cause. The
+    // peer-floor check (packages/viem-floor) runs these through a viem that really drops it.
+    const leaf = (fields: { raw?: unknown; reason?: string; data?: unknown }): Error =>
+      new Error('The contract function "guard" reverted.', {
+        cause: Object.assign(new Error('reverted'), {
+          name: 'ContractFunctionRevertedError',
+          ...fields,
+        }),
+      });
+    expect(decodeScriptError(script, leaf({ raw: NO_BALANCE_DATA }))?.name).toBe('NoBalance');
+    expect(decodeScriptError(script, leaf({ raw: '0x', reason: 'execution reverted' }))).toEqual({
+      name: 'empty',
+      raw: '0x',
+    });
+    // the node sent no `data` field: its message, kept as `reason`, is the only sign left
+    expect(decodeScriptError(script, leaf({ reason: 'execution reverted' }))).toEqual({
+      name: 'empty',
+      raw: '0x',
+    });
+    expect(decodeScriptError(script, leaf({ reason: 'Internal error' }))).toBeUndefined();
+    // a viem older than the peer range: the decoded error object and no `raw`. Not classified,
+    // so `matchScriptError` rethrows it instead of calling `_` with an empty revert
+    const tooOld = leaf({ data: { errorName: 'NoBalance', args: [5n] } });
+    expect(decodeScriptError(script, tooOld)).toBeUndefined();
+    expect(() =>
+      matchScriptError(script, tooOld, {
+        NoBalance: () => 'x',
+        NotOwner: () => 'y',
+        _: () => 'z',
+      }),
+    ).toThrowError(tooOld);
+  });
+
+  test('revert data is read from an RPC error only, and only next to a sign of a revert', () => {
+    const rpcError = (fields: Record<string, unknown>): Error =>
+      new Error('call failed', { cause: Object.assign(new Error('RPC Request failed.'), fields) });
+    // a hex `data` proves nothing by itself
+    expect(decodeScriptError(script, rpcError({ code: 0, data: NOT_OWNER_DATA }))).toBeUndefined();
+    expect(decodeScriptError(script, rpcError({ data: NOT_OWNER_DATA }))).toBeUndefined();
+    // code 3, or a message that says so, is a sign
+    expect(decodeScriptError(script, rpcError({ code: 3, data: NOT_OWNER_DATA }))?.name).toBe(
+      'NotOwner',
+    );
+    expect(
+      decodeScriptError(
+        script,
+        rpcError({ code: -32000, message: 'execution reverted', data: NOT_OWNER_DATA }),
+      )?.name,
+    ).toBe('NotOwner');
+    // the node's bare error object, as a caller of `fetch` holds it
+    expect(
+      decodeScriptError(script, { code: 3, message: 'execution reverted', data: NOT_OWNER_DATA })
+        ?.name,
+    ).toBe('NotOwner');
+    // the internal-error code is a sign only with the bytes
+    expect(decodeScriptError(script, rpcError({ code: -32603 }))).toBeUndefined();
+    expect(
+      decodeScriptError(script, rpcError({ code: -32603, data: { data: NOT_OWNER_DATA } }))?.name,
+    ).toBe('NotOwner');
+  });
+});
+
+// ---------------------------------------------------------------------------
+// the decoders on the errors viem throws for what providers answer
+// ---------------------------------------------------------------------------
+
+describe('decodeScriptError / matchScriptError on provider answers, through viem', () => {
+  const Boom = t.error('Boom', [namedArg('code', t.uint256), namedArg('who', t.address)]);
+  const guard = compile(
+    evscript({ name: 'guard', args: [t.uint256, t.uint256], errors: [Boom] }, (s, x, y) => {
+      s.if(x.eq(0n), () => {
+        s.throw(Boom, BOOM_ARGS);
+      });
+      return s.return({ sum: x.add(y) });
+    }),
+  );
+
+  let rpc: MockRpc;
+  let client: PublicClient;
+  beforeAll(async () => {
+    rpc = await startMockRpc();
+    // no retry, and a timeout short enough for the answer that never comes
+    client = createPublicClient({ transport: http(rpc.url, { retryCount: 0, timeout: 150 }) });
+  });
+  afterAll(async () => {
+    await rpc.close();
+  });
+
+  /** What the two decoders make of `caught`, in the words of the table. */
+  function observe(caught: unknown): { decoded: Outcome | undefined; matched: string } {
+    const decoded = decodeScriptError(guard, caught);
+    let matched: string;
+    try {
+      matched = matchScriptError(guard, caught, {
+        Boom: ({ code, who }) => `Boom(${code}, ${who})`,
+        _: (other) => `_ got ${other.name}`,
+      });
+    } catch (error) {
+      matched = error === caught ? 'rethrown' : `threw ${String(error)}`;
+    }
+    return {
+      decoded:
+        decoded === undefined
+          ? 'not a revert'
+          : decoded.name === 'EvsDecodeError' || decoded.name === 'EvsInvalidCalldata'
+            ? undefined
+            : decoded.name,
+      matched,
+    };
+  }
+
+  function expectedFor(outcome: Outcome): { decoded: Outcome; matched: string } {
+    if (outcome === 'not a revert') return { decoded: outcome, matched: 'rethrown' };
+    if (outcome === 'Boom') {
+      return { decoded: outcome, matched: `Boom(${BOOM_ARGS.code}, ${BOOM_ARGS.who})` };
+    }
+    return { decoded: outcome, matched: `_ got ${outcome}` };
+  }
+
+  const settle = async (call: Promise<unknown>): Promise<unknown> =>
+    call.then(
+      () => {
+        throw new Error('the mock answer was taken for a result');
+      },
+      (error: unknown) => error,
+    );
+
+  describe.each(['deployless', 'stateOverride'] as const)('readContract, %s mode', (mode) => {
+    test.each(RPC_ERROR_SHAPES)('$name → $expected', async ({ answer, expected }) => {
+      rpc.answer(answer);
+      const params = mode === 'deployless' ? guard.toViem() : guard.toViem({ mode });
+      const caught = await settle(
+        client.readContract({ ...params, functionName: 'guard', args: [0n, 0n] }),
+      );
+      expect(observe(caught)).toEqual(expectedFor(expected));
+    });
+  });
+
+  // `call()` has no contract-level wrapper: the tree starts at CallExecutionError. A result is
+  // no error there, so only the failing answers apply.
+  const failing = RPC_ERROR_SHAPES.filter((shape) => !('result' in shape.answer));
+  test.each(failing)('call(): $name → $expected', async ({ answer, expected }) => {
+    rpc.answer(answer);
+    const caught = await settle(client.call({ to: DEFAULT_SCRIPT_ADDRESS, data: '0x12345678' }));
+    expect(observe(caught)).toEqual(expectedFor(expected));
+  });
+
+  test('a declared error decodes to its arguments, from the tree viem threw', async () => {
+    rpc.answer({ error: { code: 3, message: 'execution reverted', data: BOOM_DATA } });
+    const caught = await settle(
+      client.readContract({ ...guard.toViem(), functionName: 'guard', args: [0n, 0n] }),
+    );
+    expect(decodeScriptError(guard, caught)).toEqual({
+      name: 'Boom',
+      args: BOOM_ARGS,
+      raw: BOOM_DATA,
+    });
   });
 });

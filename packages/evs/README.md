@@ -8,7 +8,7 @@
   <a href="https://www.npmjs.com/package/@maxencerb/evs"><img alt="npm version" src="https://img.shields.io/npm/v/@maxencerb/evs?labelColor=111111&color=3d3d3d"></a>
   <a href="https://github.com/maxencerb/evs/actions/workflows/ci.yml"><img alt="CI status" src="https://img.shields.io/github/actions/workflow/status/maxencerb/evs/ci.yml?branch=main&label=ci&labelColor=111111"></a>
   <a href="https://github.com/maxencerb/evs/blob/main/LICENSE"><img alt="MIT license" src="https://img.shields.io/npm/l/@maxencerb/evs?labelColor=111111&color=3d3d3d"></a>
-  <a href="https://www.npmjs.com/package/viem"><img alt="viem peer dependency" src="https://img.shields.io/badge/viem-%E2%89%A5%202.14-3d3d3d?labelColor=111111"></a>
+  <a href="https://www.npmjs.com/package/viem"><img alt="viem peer dependency" src="https://img.shields.io/badge/viem-%E2%89%A5%202.22.12-3d3d3d?labelColor=111111"></a>
 </p>
 
 <p align="center">
@@ -35,7 +35,7 @@ then that token's `symbol`, takes two round trips. An evs script runs that chain
 npm install @maxencerb/evs viem
 ```
 
-ESM only. Requires `viem` ≥ 2.14.1, TypeScript ≥ 5.5 in `strict` mode, and Node ≥ 20.19 (or Bun).
+ESM only. Requires `viem` ≥ 2.22.12 (any 2.x from there), TypeScript ≥ 5.5 in `strict` mode, and Node ≥ 20.19 (or Bun).
 
 ## Quick start
 

@@ -45,7 +45,7 @@ try {
   });
 } catch (error) {
   const decoded = decodeScriptError(compiled, error);
-  if (decoded === undefined) throw error; // not a revert: a network error, a timeout
+  if (decoded === undefined) throw error; // not a revert: a network or provider error
 
   switch (decoded.name) {
     case 'TooSmall':
@@ -98,12 +98,46 @@ const decoded = decodeScriptError(
 // { name: 'Panic', code: 18n, meaning: 'division or modulo by zero', raw: '0x4e48…' }
 ```
 
+### What counts as a revert
+
+An error decodes only when the node reported a revert. Any other failure gives `undefined`.
+
+```ts {7-11,14}
+import { decodeScriptError, evscript, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+
+const reverted = decodeScriptError(ratio, {
+  code: 3,
+  message: 'execution reverted',
+  data: '0x4e487b710000000000000000000000000000000000000000000000000000000000000012',
+});
+// { name: 'Panic', code: 18n, … }
+
+const failed = decodeScriptError(ratio, { code: -32603, message: 'Internal error' });
+// undefined: the provider failed, the script did not revert
+```
+
+The same rule reads the error viem throws, whose `cause` chain ends with the node's answer.
+
+| The node answered | Result |
+| --- | --- |
+| error code `3`, or a message that says `execution reverted` | the revert in its `data`. Without `data`, `'empty'` |
+| code `-32603` with revert data in `data`, or nested in it | that revert. Wallets and development nodes wrap one this way |
+| `data: "Reverted 0x…"` | that revert |
+| code `-32603` alone: `Internal error`, an upstream timeout | `undefined` |
+| any other error: out of gas, a rate limit, a refused request | `undefined` |
+| an HTTP error, or nothing before the timeout | `undefined` |
+| a result that does not decode against the ABI | `undefined` |
+
 ## Returns
 
 `DecodedScriptError | undefined`
 
-`undefined` when the input carries no revert data. Otherwise one of these arms, each with the
-payload in `raw`:
+`undefined` when the input is not a revert. Otherwise one of these arms, each with the payload
+in `raw`:
 
 | `name` | Other fields | The payload is |
 | --- | --- | --- |
@@ -113,7 +147,7 @@ payload in `raw`:
 | `'Panic'` | `code`, `meaning` | `Panic(uint256)`. See [panic codes](/reference/diagnostics/#panic-codes) |
 | `'Error'` | `reason` | `Error(string)`, a `require` or `revert("…")` in a called contract |
 | `'unknown'` | `selector` | anything else, such as a custom error bubbled from a called contract |
-| `'empty'` | none | a revert with no data |
+| `'empty'` | none | a revert with no data, or one whose data the node did not return |
 
 ## Parameters
 
@@ -145,7 +179,7 @@ const decoded = decodeScriptError(
 - **Type:** `unknown`
 
 The caught error, or a `0x` hex string of revert data. For an error, the `cause` chain is
-searched for the revert.
+searched for [the signs of a revert](#what-counts-as-a-revert).
 
 ```ts {13}
 import { decodeScriptError, evscript, interpret, t } from '@maxencerb/evs';
@@ -168,10 +202,12 @@ if (outcome.kind === 'revert') {
 
 ## Behavior
 
-- **No revert, no result.** A network error, a timeout or any other value without revert data
-  gives `undefined`. Rethrow it.
+- **No revert, no result.** A network error, a timeout, a rate limit or a provider's internal
+  error gives `undefined`. Rethrow it.
 - **Shape, not class.** The error is read by its fields, so an error thrown by another copy of
   viem still decodes.
+- **Only what viem kept.** Before viem 2.47.5 the error `readContract` throws does not hold the
+  node's answer. A revert that a wallet nests under `data.originalError` gives `undefined` there.
 - **Never guesses arguments.** A known selector whose arguments do not decode comes back as
   `'unknown'`.
 - **Only this script's errors.** A custom error from a called contract is `'unknown'`. Decode

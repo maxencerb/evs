@@ -406,6 +406,55 @@ test('matchScriptError requires every declared handler plus _, and types the arg
   });
 });
 
+test('matchScriptError rejects a handler that is neither a declared error nor _', () => {
+  // Panic and Error(string) reach `_`: a handler of that name would never run
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    // @ts-expect-error — `Panic` is not a declared error
+    Panic: (panic: unknown) => panic,
+    _: () => 0,
+  });
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    // @ts-expect-error — `Error` is not a declared error
+    Error: () => 0,
+    _: () => 0,
+  });
+  // so do the two evs runtime errors
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    // @ts-expect-error — `EvsDecodeError` reaches `_`
+    EvsDecodeError: () => 0,
+    _: () => 0,
+  });
+  // a misspelled name is caught by its own key, next to the missing handler
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    // @ts-expect-error — `NotOwnr` is not a declared error
+    NotOwnr: () => 0,
+    NotOwner: () => 0,
+    _: () => 0,
+  });
+  // a table built ahead of the call is held to the same keys
+  const prebuilt = {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    Panic: () => 0,
+    _: () => 0,
+  };
+  // @ts-expect-error — `Panic` is not a declared error
+  matchScriptError(guardScript, undefined as unknown, prebuilt);
+
+  // an ABI that is not a literal declares any name: every key is a possible error
+  const wide: { abi: Abi } = guardScript;
+  expectTypeOf(
+    matchScriptError(wide, undefined as unknown, { Anything: () => 'a' as const, _: () => null }),
+  ).toEqualTypeOf<'a' | null>();
+});
+
 test('matchScriptError: a hand-built error named like a built-in arm keeps that arm in _ (issue #62)', () => {
   const handBuilt = {
     abi: [{ type: 'error', name: 'empty', inputs: [{ name: 'code', type: 'uint256' }] }],

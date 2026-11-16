@@ -82,7 +82,8 @@ explain('0x4e487b710000000000000000000000000000000000000000000000000000000000000
 
 ### Errors that are not reverts
 
-A value with no revert data is thrown again, so a network failure never reaches `_`.
+A value that is not a revert is thrown again, so a network failure or a provider's own error
+never reaches `_`.
 
 ```ts {6,8}
 import { evscript, matchScriptError, t } from '@maxencerb/evs';
@@ -187,16 +188,34 @@ const handle = (error: unknown) =>
   });
 ```
 
+Any other key is a type error, because nothing would call its handler.
+
+```ts {8-9}
+import { evscript, matchScriptError, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+
+matchScriptError(ratio, '0x', {
+  // @ts-expect-error: `Panic` is not an error this script declares
+  Panic: () => 'a panic',
+  _: (other) => other.name,
+});
+// 'empty'
+```
+
 ## Behavior
 
 - **Exhaustive.** A missing handler for a declared error is a type error.
 - **Everything else goes to `_`.** Panics, `Error(string)`, the two
   [built-in errors](/reference/diagnostics/#built-in-errors), unknown selectors and empty
   reverts.
-- **Optional built-in handlers.** A handler named `Panic`, `Error`, `EvsDecodeError` or
-  `EvsInvalidCalldata` takes that revert instead of `_`, as `(args, error)`. Its parameters are
-  not inferred: annotate them.
-- **Not a revert, not handled.** Without revert data the original error is thrown again.
+- **No handler for them.** A key such as `Panic`, `Error` or `EvsDecodeError` is a type error,
+  and its handler is never called. [Narrow `_`](#narrowing-the-fallback) instead.
+- **Not a revert, not handled.** An error that is
+  [not a revert](/reference/utilities/decode-script-error/#what-counts-as-a-revert) is thrown
+  again.
 - **Built on `decodeScriptError`.** The decoding rules are those of
   [`decodeScriptError`](/reference/utilities/decode-script-error/).
 
@@ -204,5 +223,5 @@ const handle = (error: unknown) =>
 
 | Error | When |
 | --- | --- |
-| the original error | `error` is an `Error` that carries no revert data |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `error` is not an `Error` and carries no revert data |
+| the original error | `error` is an `Error` that is not a revert |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `error` is not an `Error` and is not a revert |

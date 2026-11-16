@@ -65,6 +65,11 @@ Tests run on **vitest** through `vp test` (prool per-worker anvil via
   ports sort unions; reasons in CONTRIBUTING.md, "A fully named tuple type carries no member
   order").
   - Single file: `vp test run <path> --project unit` (plugin: `--project plugin`)
+- `vp run test:viem-floor` (after a build) runs the error decoders on the errors of the oldest
+  viem the peer range admits (`packages/viem-floor`, a Node script, no test runner). It shares
+  `packages/evs/test/harness/rpc-errors.ts` with `src/viem.test.ts`: the table of what providers
+  answer to an `eth_call` and the outcome the decoders owe for each. A new answer goes there.
+  What counts as a revert is one rule, in the doc comment of `revertDataOf` (`viem.ts`).
 
 ## Layout
 
@@ -92,6 +97,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   and the two packages, under each type checker. It installs the extra checkers (the `checkers`
   catalog: `typescript-5.5` and `typescript-7` are aliases, so call them by path, never through
   `.bin/tsc`). No test runner there: assertions are `@ts-expect-error` and `expectType`.
+- `packages/viem-floor` — private. `check.ts` runs the error decoders on the errors of the
+  oldest viem the library's peer range admits (`viem` from the `floor` catalog, which must equal
+  the lower bound of `peerDependencies.viem` in `packages/evs/package.json`: the check fails
+  otherwise). The library is linked, so its own `viem` imports stay on the pinned version: only
+  the error objects are at the floor.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored; the barrel uses `.ts` specifiers so the examples
@@ -123,7 +133,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 - `.github/assets/` — repository artwork (`evs-banner.svg`, the animated README banner; the
   docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).
 - Dependency versions are pinned via **catalogs** in `pnpm-workspace.yaml` (default +
-  `testing` + `docs` + `checkers`), which also holds `overrides` (`vite@*` → `@voidzero-dev/vite-plus-core`,
+  `testing` + `docs` + `checkers` + `floor`), which also holds `overrides` (`vite@*` → `@voidzero-dev/vite-plus-core`,
   `vitest@*` → the Vitest `vp` bundles, both required by Vite+ under pnpm), the
   `peerDependencyRules` for the core alias's version, `allowBuilds` (pnpm ≥ 11 fails installs on
   unreviewed dependency build scripts — rule on any new one there) and pnpm's
@@ -144,6 +154,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 - `vp run check` — `vp check` + per-workspace `tsc --noEmit` / `astro check`
 - `vp run typecheck` — `tsc --noEmit` / `astro check` across workspaces
 - `vp run typecheck:checkers` — the same under TypeScript 5.5 / 7, `bun check` and tsrs
+- `vp run test:viem-floor` — the error decoders on the oldest viem of the peer range (after a build)
 - `vp lint` / `vp lint --fix` — oxlint; CI uses `vp run lint:ci` (`--deny-warnings`)
 - `vp fmt` (writes!) / `vp fmt --check` — oxfmt
 - `vp run changeset` — add a changeset for a user-visible library change
@@ -157,7 +168,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `.node-version`, pnpm from `packageManager`, cached pnpm store, `vp install --frozen-lockfile`) → forge
   build + test + codegen → build library + plugin → fmt:check → lint:ci → typecheck → the other
   type checkers (`typecheck:checkers`; the setup action installs a pinned Bun for `bun check`) →
-  unit+type+plugin tests → integration (anvil; foundry pinned `FOUNDRY_VERSION`) → example app build → publint +
+  unit+type+plugin tests → the error decoders at the viem peer floor (`test:viem-floor`) →
+  integration (anvil; foundry pinned `FOUNDRY_VERSION`) → example app build → publint +
   attw for both packages → informational
   `changeset status`. `fork-tests` runs on `workflow_dispatch` only (`ANVIL_FORK_URL`).
   Every action is pinned to a commit SHA with the tag in a trailing comment — bump both.

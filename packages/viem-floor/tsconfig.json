@@ -1,0 +1,7 @@
+{
+  // check.ts runs on Node (type stripping) and imports the shared answer table of the library's
+  // tests with a `.ts` specifier. Its `viem` is the floor version, the library's is the pinned one.
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true },
+  "include": ["check.ts"]
+}
