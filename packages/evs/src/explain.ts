@@ -22,6 +22,10 @@ import { EvsTypeError } from './core/errors.js';
 import type { Hex } from './core/types.js';
 import { walkStmts, type ScriptIr, type SiteId, type Stmt } from './ir/nodes.js';
 
+// `hydrate.ts` reaches this module through its one dynamic import, so the checks of the debug
+// data it loads are exported from here: they travel in the same on-demand chunk
+export { debugDataOf } from './debug-data.js';
+
 export interface RevertExplanation {
   kind:
     | 'panic'

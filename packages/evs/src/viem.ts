@@ -73,12 +73,13 @@ const PUSH2_MAX = 0xffff;
 const QUOTED_VERSIONS = EVM_VERSIONS.map((v) => `'${v}'`);
 const EXPECTED_VERSIONS = `${QUOTED_VERSIONS.slice(0, -1).join(', ')} or ${QUOTED_VERSIONS.slice(-1).join('')}`;
 
-/** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). */
+/** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). It takes
+ *  any value: its callers pass what a JS caller or a parsed document gave them. */
 export function assertEvmVersion(
-  evmVersion: string,
+  evmVersion: unknown,
   prefix = '',
 ): asserts evmVersion is EvmVersion {
-  if (!isEvmVersion(evmVersion)) {
+  if (typeof evmVersion !== 'string' || !isEvmVersion(evmVersion)) {
     throw new EvsCompileError(
       'EVM_VERSION',
       `${prefix}unknown evmVersion ${JSON.stringify(evmVersion)} — expected ${EXPECTED_VERSIONS}`,

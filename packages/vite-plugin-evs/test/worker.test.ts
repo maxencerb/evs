@@ -51,7 +51,7 @@ describe('a worker that only runs precompiled scripts', () => {
 
     expect(code).toContain(inWorker.runtimeBytecode);
     expect(built.entry.code).toContain(inPage.runtimeBytecode);
-    // Measured: 43 kB, the script, the runtime entry and the explain code, which the default
+    // Measured: 47 kB, the script, the runtime entry and the explain code, which the default
     // worker format (one file, no import) cannot leave to another file. The compiler is 200 kB.
     expect(code.length).toBeLessThan(60_000);
   });

@@ -223,7 +223,9 @@ describe('what a client of @maxencerb/evs/runtime loads is pinned', () => {
   ];
 
   /** `explain.ts` and what it imports statically: the code the first `explainRevert()` loads
-   *  (the modules already loaded up front are not downloaded again). */
+   *  (the modules already loaded up front are not downloaded again). `debug-data.ts` checks the
+   *  debug data that loads with it. `precompiled.ts` must stay out of this list: imported from
+   *  here, bundlers move it out of the chunk a client loads first. */
   const ON_DEMAND: readonly string[] = [
     'abi/artifact.ts',
     'abi/layout.ts',
@@ -238,6 +240,7 @@ describe('what a client of @maxencerb/evs/runtime loads is pinned', () => {
     'core/types/args.ts',
     'core/types/namespace.ts',
     'core/types/predicates.ts',
+    'debug-data.ts',
     'explain.ts',
     'ir/nodes.ts',
     'ir/nodes/json.ts',

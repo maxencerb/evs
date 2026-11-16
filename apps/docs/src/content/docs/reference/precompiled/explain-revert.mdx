@@ -153,5 +153,5 @@ The promise rejects with:
 | --- | --- |
 | `EvsError` (`DEBUG_DATA_MISSING`) | the script was [hydrated](/reference/precompiled/hydrate/) without a `debug` loader |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `data` is not `0x`-prefixed hex with an even number of digits |
-| `EvsTypeError` (`TYPE_MISMATCH`) | the `debug` loader resolved to something else than the script's debug data |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the `debug` loader resolved to something else than the script's debug data: another value, malformed data, or the debug data of another script or build |
 | the loader's own error | the debug data failed to load |
