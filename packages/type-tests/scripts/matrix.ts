@@ -7,7 +7,8 @@
  * Checkers: `tsc-5.5` (the floor of the `typescript` peer range), `tsc-6` (the workspace
  * TypeScript), `tsc-7` (the Go compiler), `bun` (`bun check`) and `tsrs` (the Rust port).
  * Projects: the library with its type tests, the Vite plugin, and this package's fixtures, which
- * use the published declarations as an app would (so the library has to be built first).
+ * use the published declarations as an app would (so the library has to be built first). One
+ * more project holds the fixtures of an app on TypeScript's legacy module resolution.
  *
  * `vp run typecheck` already runs the workspace TypeScript on the two packages, and their sources
  * only have to be consumable, not buildable, by the oldest supported TypeScript: those two
@@ -24,15 +25,21 @@ const repoRoot = resolve(packageDir, '../..');
 const require = createRequire(join(packageDir, 'package.json'));
 
 interface Project {
-  readonly dir: string;
+  /** The project's directory, or its `tsconfig` file when it is not `tsconfig.json`. */
+  readonly path: string;
   /** `false`: sources of a package, which only the current compilers have to check. */
   readonly fixtures: boolean;
+  /** The only checkers that can run this project; every checker when absent. */
+  readonly only?: readonly string[];
 }
 
 const PROJECTS: readonly Project[] = [
-  { dir: 'packages/evs', fixtures: false },
-  { dir: 'packages/vite-plugin-evs', fixtures: false },
-  { dir: 'packages/type-tests', fixtures: true },
+  { path: 'packages/evs', fixtures: false },
+  { path: 'packages/vite-plugin-evs', fixtures: false },
+  { path: 'packages/type-tests', fixtures: true },
+  // TypeScript's legacy resolution (`moduleResolution: "node"`), which does not read `exports`.
+  // TypeScript 6 deprecates it and TypeScript 7 has none, so the floor is the one checker left.
+  { path: 'packages/type-tests/tsconfig.node10.json', fixtures: true, only: ['tsc-5.5'] },
 ];
 
 interface Checker {
@@ -40,8 +47,9 @@ interface Checker {
   readonly label: string;
   /** `true`: this checker runs the fixtures only (see the file header). */
   readonly fixturesOnly: boolean;
-  /** The command that checks the project in `dir`, or why this checker cannot run here. */
-  command(dir: string): readonly string[] | { readonly unavailable: string };
+  /** The command that checks the project at `project` (a directory or a `tsconfig` file), or
+   *  why this checker cannot run here. */
+  command(project: string): readonly string[] | { readonly unavailable: string };
 }
 
 /** The `tsc` of the TypeScript this package installs under `name`. Never `.bin/tsc`: three
@@ -120,8 +128,9 @@ function main(): number {
   for (const checker of selectedCheckers(process.argv.slice(2))) {
     for (const project of PROJECTS) {
       if (checker.fixturesOnly && !project.fixtures) continue;
-      const cell = `${checker.label.padEnd(14)} ${project.dir}`;
-      const command = checker.command(join(repoRoot, project.dir));
+      if (project.only !== undefined && !project.only.includes(checker.id)) continue;
+      const cell = `${checker.label.padEnd(14)} ${project.path}`;
+      const command = checker.command(join(repoRoot, project.path));
       if ('unavailable' in command) {
         console.log(`${strict ? 'FAIL' : 'skip'}  ${cell}  (${command.unavailable})`);
         if (strict) failures += 1;
