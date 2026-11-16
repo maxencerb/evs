@@ -84,7 +84,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   `workspace:^`, which must stay that way: see "Releasing" in CONTRIBUTING.md). It runs
   `*.evs.ts` modules in Node with Vite's `runnerImport` and replaces them with `hydrate(...)`
   calls; it imports `vite` by its real name (the `prefer-vite-plus-imports` lint rule is off for
-  its `src/`). Tests: `test/*.test.ts` drive Vite on `test/fixtures/` with the plugin from
+  its `src/`). Which modules it runs is decided by `isBuildTimeModule`
+  (`src/build-time-module.ts`) alone: no query, hash or NUL in the id, and a real path outside
+  `node_modules`. Running a module is running code on the build machine, so do not widen it
+  (reasons in CONTRIBUTING.md, "Vite plugin"). Tests: `test/*.test.ts` drive Vite on
+  `test/fixtures/` with the plugin from
   source, `test/integration` runs a built bundle on anvil. Its user-facing messages are quoted
   in `apps/docs` (`guides/precompiling.mdx`, `reference/vite-plugin.mdx`): change both together.
 - `packages/type-tests` — private. `src/` holds fixtures that use the published types as an app
