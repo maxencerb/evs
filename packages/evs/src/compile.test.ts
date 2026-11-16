@@ -562,13 +562,15 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
     const [first, second] = loopAllocs;
     expect(first?.message).toBe(second?.message);
     expect(first?.site).not.toBe(second?.site);
+    // two reads of one function in one body are told apart by their index
+    expect(loopAllocs.map((d) => d.key)).toEqual(['s.read(symbol)#0', 's.read(symbol)#1']);
     for (const d of loopAllocs) {
       expect(compiled.sourceMap.sites.find((site) => site.id === d.site)?.detail).toBe(
         'decoding symbol() returndata',
       );
     }
   });
-  test('site ids are positional: an earlier statement shifts the id, the detail stays', () => {
+  test('an earlier statement shifts the site id; the key and the detail stay', () => {
     const build = (extra: boolean) =>
       evscript({ name: 'shifted', args: [t.array(t.address)] }, (s, xs) => {
         const acc = s.let(t.uint256, 0n);
@@ -583,18 +585,19 @@ describe('LOOP_ALLOCATION: what is flagged, its label, its site', () => {
       const diags: EvsDiagnostic[] = [];
       const compiled = compile(script, { onDiagnostic: (d) => diags.push(d) });
       const d = diags.find((x) => x.code === 'LOOP_ALLOCATION');
-      expect(d?.message).toContain('site ids are positional');
-      return {
-        site: d?.site,
-        detail: compiled.sourceMap.sites.find((x) => x.id === d?.site)?.detail,
-      };
+      expect(d?.message).toContain('filter this warning on its code and key');
+      const site = compiled.sourceMap.sites.find((x) => x.id === d?.site);
+      expect(site?.key).toBe(d?.key);
+      return { site: d?.site, key: d?.key, detail: site?.detail };
     };
     const before = resolve(build(false));
     const after = resolve(build(true));
     // deterministic for an unchanged script …
     expect(resolve(build(false))).toEqual(before);
-    // … but editing earlier code renumbers it: a bare-number filter would go stale
+    // … and editing earlier code renumbers the site, which is why the filter is on the key
     expect(after.site).not.toBe(before.site);
+    expect(after.key).toBe('s.read(symbol)#0');
+    expect(after.key).toBe(before.key);
     expect(after.detail).toBe(before.detail);
     expect(before.detail).toBe('decoding symbol() returndata');
   });
@@ -1241,10 +1244,14 @@ describe('explainRevert', () => {
     const compiled = compile(script);
     const strictReads = compiled.sourceMap.sites
       .filter((site) => site.detail.endsWith('() returndata'))
-      .map((site) => ({ id: site.id, detail: site.detail }));
+      .map((site) => ({ id: site.id, key: site.key, detail: site.detail }));
     expect(strictReads.map((site) => site.detail)).toEqual([
       'decoding decimals() returndata',
       'decoding totalSupply() returndata',
+    ]);
+    expect(strictReads.map((site) => site.key)).toEqual([
+      's.read(decimals)#0',
+      's.read(totalSupply)#0',
     ]);
 
     const calldata = encodeFunctionData({

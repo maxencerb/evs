@@ -47,7 +47,6 @@ export type {
 export type {
   exprBrand,
   Expr,
-  conversionHint,
   NumericReceiver,
   ConversionHint,
   NumericConversion,

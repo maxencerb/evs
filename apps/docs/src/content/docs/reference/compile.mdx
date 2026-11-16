@@ -162,7 +162,7 @@ inside your own.
 - **Default:** does nothing
 
 Receives each compile [warning](/reference/diagnostics/#warnings) as
-`{ severity, code, message, site? }`.
+`{ severity, code, message, key?, site?, sites? }`.
 
 ```ts {16}
 import { compile, evscript, t, type EvsDiagnostic } from '@maxencerb/evs';
@@ -183,8 +183,12 @@ compile(myBalance, {
   onDiagnostic: (diagnostic) => warnings.push(diagnostic),
 });
 // warnings[0].code: 'ENV_FRAME_DEPENDENT'
+// warnings[0].key: 's.env(caller)'
 // warnings[1].code: 'DEPLOYLESS_RESULT_PREFIX'
+// warnings[1].key: 's.return(balance)'
 ```
+
+To silence a warning you have read, [filter on `code` and `key`](/reference/diagnostics/#ignoring-a-warning).
 
 :::caution[Warnings are silent by default]
 `compile` never logs. Without `onDiagnostic` you do not learn that `s.env('caller')` above is
@@ -253,4 +257,5 @@ The JavaScript loop records its body 200 times. With
 | `EvsCompileError` (`COMPILE_LIMIT`) | the runtime bytecode is over 24,576 bytes: see [size limit](#size-limit) |
 | `EvsCompileError` (`UNSUPPORTED_V0`) | a type nests structs and arrays too deep for the EVM stack: flatten it |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `script` is not a value returned by `evscript` |
+| `EvsTypeError` (`ABI_SHAPE`) | the script uses `s.simulate` or `s.trySimulate` and is named `__evs_simulate` with the arguments `(address, bytes)`: that selector is reserved for the simulation, rename the script |
 | `EvsInternalError` (`INTERNAL`) | a `peephole` hook returns nodes that fail assembly or verification, such as an `op` node named `PUSH1` to `PUSH32` (use a `push` node) |

@@ -247,6 +247,8 @@ describe('what a client of @maxencerb/evs/runtime loads is pinned', () => {
     'ir/nodes/json.ts',
     'ir/nodes/schema.ts',
     'ir/nodes/walk.ts',
+    // the keys of the sites of debug data written without them (`debug-data.ts`)
+    'ir/site-keys.ts',
   ];
 
   const modulesOf = (entry: string): string[] => [...closureOf(entry).importerOf.keys()].toSorted();

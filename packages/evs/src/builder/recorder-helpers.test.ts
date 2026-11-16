@@ -244,11 +244,13 @@ describe('operand / branch type unification', () => {
 
   test('two literals are rejected with the noun of the position', () => {
     const select = catchEvs(
+      // @ts-expect-error — two literal branches (runtime rejection pinned)
       () => evscript({ name: 'u', args: [t.bool] }, (s, c) => s.return({ r: s.select(c, 1n, 2n) })),
       'TYPE_MISMATCH',
     );
     expect(select.message).toContain('s.select(): at least one branch must be an Expr');
     const bin = catchEvs(
+      // @ts-expect-error — two literal operands (runtime rejection pinned)
       () => evscript({ name: 'u', args: [] }, (s) => s.return({ r: s.add(1n, 2n) })),
       'TYPE_MISMATCH',
     );

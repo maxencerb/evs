@@ -87,9 +87,30 @@ const remaining = evscript({ name: 'remaining', args: [t.uint256] }, (s, used) =
 );
 ```
 
-The type comes from an `Expr` operand, so `s.add(1n, 2n)` throws: type one side with
-[`s.lit`](/reference/builder/lit/). The first operand of `s.pow`, `s.shl`, `s.shr` and
-`s.bitNot` is always an `Expr`.
+The type comes from the operand that is an `Expr`, and the other operand is checked against it.
+
+```ts {7}
+import { evscript, t } from '@maxencerb/evs';
+
+const total = evscript(
+  { name: 'total', args: [t.uint256, t.uint8] },
+  (s, amount, decimals) => {
+    // s.add(amount, decimals) is an error on `decimals`: a uint8 is not a uint256
+    const sum = s.add(amount, decimals.toUint(t.uint256));
+    return s.return({ sum });
+  },
+);
+```
+
+- **One type.** Two `Expr` operands have the same type, as with the method:
+  [convert](/reference/expr/conversions/) one of them first.
+- **One `Expr` at least.** `s.add(1n, 2n)` has no type: type one side with
+  [`s.lit`](/reference/builder/lit/).
+- **Checked twice.** Both mistakes are TypeScript errors, and
+  [`TYPE_MISMATCH`](/reference/diagnostics/#error-codes) when the script is recorded from plain
+  JavaScript.
+- **`Expr` first.** The first operand of `s.pow`, `s.shl`, `s.shr` and `s.bitNot` is always an
+  `Expr`.
 
 | Function | Method | Computes |
 | --- | --- | --- |

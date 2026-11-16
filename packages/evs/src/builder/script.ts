@@ -73,6 +73,7 @@ export type {
   SubcallStruct,
   SubcallParams,
   CallValue,
+  StructFlag,
   ResolvedSubcallParams,
   Tried,
   SubcallVerbOf,

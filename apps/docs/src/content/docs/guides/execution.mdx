@@ -128,8 +128,8 @@ Use deployless unless you need something from the right column.
 :::caution[Caller-relative reads need state override]
 In deployless mode `balanceOf(s.env('caller'))` reads the balance of viem's wrapper
 (`0xBd770416a3345F91E4B34576cb804a576fa48EB1` when no `account` is passed) and returns it
-without an error. `compile()` reports each such read as an `ENV_FRAME_DEPENDENT`
-[warning](/reference/diagnostics/#warnings).
+without an error. `compile()` reports such reads with one `ENV_FRAME_DEPENDENT`
+[warning](/reference/diagnostics/#warnings), which lists them.
 :::
 
 ## Provider support

@@ -214,3 +214,5 @@ if (outcome.kind === 'revert') {
   its `raw` against that contract's ABI.
 - **Same rules as `explainRevert`.** Both classify a payload the same way.
   [`explainRevert`](/reference/artifact/explain-revert/) adds the site in your script.
+- **`args.site` is a position.** The number of an `EvsDecodeError` changes when a statement is
+  added above the call. `explainRevert` gives the call's `key`, which does not.

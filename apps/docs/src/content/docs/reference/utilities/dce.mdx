@@ -91,8 +91,9 @@ dce(echo.ir) === echo.ir; // true: nothing to remove, same object back
 - **Always on.** `compile()` runs the pass on every compile. It is not part of `optimize`.
 - **Interpreter too.** [`interpret`](/reference/utilities/interpret/#dce-optional) runs it
   unless you pass `dce: false`.
-- **Ids are kept.** Statements are dropped, never renumbered, so site ids and the source map
-  still resolve.
+- **Ids and keys are kept.** Statements are dropped, never renumbered, so site ids and the source
+  map still resolve. A statement's [key](/reference/diagnostics/#keys) is counted before the
+  pass, so a dead statement never changes the key of a live one.
 - **Same object when clean.** With nothing to remove, the input IR is returned as is.
 - **Frozen output.** The returned IR is frozen, and running the pass on it again changes
   nothing.
@@ -104,4 +105,5 @@ dce(echo.ir) === echo.ir; // true: nothing to remove, same object back
 | Error | When |
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the IR was deserialized or written by hand, and is invalid. The message names the statement |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the argument is not an IR, such as the script itself: pass `script.ir` |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | such an IR nests blocks more than 256 levels deep |

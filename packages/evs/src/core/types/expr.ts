@@ -89,15 +89,16 @@ export interface Expr<t extends EvsType = EvsType> {
   or(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
   not(this: Expr<'bool'>): Expr<'bool'>;
 
-  // bitwise (result re-canonicalized to t's width)
+  // bitwise, on the bits of a uintN / intN / bytesN (an intN's are its two's complement); the
+  // result is of t (re-canonicalized to its width: an intN result is read back as signed)
   bitAnd(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
   bitOr(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
   bitXor(this: Expr<t & BitsType>, rhs: IntoExpr<t>): Expr<t>;
   bitNot(this: Expr<t & BitsType>): Expr<t>;
   // shifts are unchecked (Solidity): the result is re-canonicalized to t's width; on intN, `shl`
   // re-sign-extends and `shr` is the arithmetic SAR (rounds toward −∞, like solc's `>>`)
-  shl(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
-  shr(this: Expr<t & (BitsType | IntType)>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shl(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr(this: Expr<t & BitsType>, bits: IntoExpr<'uint256'>): Expr<t>;
 
   // conversions — widening free; NARROWING IS CHECKED (Panic 0x11 on out-of-range). toUint/toInt
   // convert between numeric types only: reach a uint from bytes32 through asUint256(), from an
@@ -153,21 +154,20 @@ export interface Expr<t extends EvsType = EvsType> {
 // NumericReceiver / AsIntReceiver — the `this` types of the numeric conversions and asInt
 // ---------------------------------------------------------------------------
 
-export declare const conversionHint: unique symbol;
-
 /**
  * The receiver `toUint` / `toInt` (and `wrappingToUint` / `wrappingToInt`) accept: an `Expr` of
- * a numeric type. A non-numeric receiver
- * is rejected as by `Expr<t & NumericType>`, but against an object type no value has (keyed by
- * the type-only {@link conversionHint} symbol) whose one property is the
- * {@link ConversionHint} message, so tsc's error spells out the fix the recording-time
- * TYPE_MISMATCH gives:
+ * a numeric type. A non-numeric receiver is rejected as by `Expr<t & NumericType>`, but against
+ * the {@link ConversionHint} message itself, a string type no receiver has, so the first line of
+ * tsc's error is a sentence that ends on the fix the recording-time TYPE_MISMATCH gives:
  *
  * ```text
  * The 'this' context of type 'Expr<"address">' is not assignable to method's 'this' of type
- * '{ readonly [conversionHint]: ".toUint(): cannot convert from 'address' — the source must be
- * numeric (uintN/intN) — use .asUint160() first (then .toUint(…))"; }'.
+ * '".toUint(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use
+ * .asUint160() first (then .toUint(…))"'.
  * ```
+ *
+ * The message is the whole `this` type, not a property of it: against an object type some
+ * checkers report the missing property first, and the message then reads as a detail of it.
  *
  * The other member of the non-numeric branch is for a generic `t` (a type parameter bounded by
  * the numeric types): the checker relates its receiver to both branches of the deferred
@@ -180,15 +180,14 @@ export type NumericReceiver<t extends EvsType, method extends NumericConversion>
   NumericType,
 ]
   ? Expr<t>
-  :
-      | (Expr<t> & { readonly type: NumericType })
-      | { readonly [conversionHint]: ConversionHint<t, method> };
+  : (Expr<t> & { readonly type: NumericType }) | ConversionHint<t, method>;
 
 /**
  * The message of a non-numeric `toUint` / `toInt` (or wrapping twin) receiver: the recording-time TYPE_MISMATCH's
- * text (`ops.ts`, pinned against it by `conversions.test.ts`), the same-width `as*` conversion
- * to use first included for an address or a bytesN. A tuple receiver's runtime text names its
- * JSON descriptor, which a type cannot spell, so its message leaves the source type out.
+ * text (`ops.ts`, pinned against it by `conversions.test.ts`), with what to write instead for an
+ * address or a bytesN (the same-width `as*` conversion to use first) and for a bool (a
+ * `s.select` between the two numbers). A tuple receiver's runtime text names its JSON
+ * descriptor, which a type cannot spell, so its message leaves the source type out.
  */
 export type ConversionHint<t extends EvsType, method extends NumericConversion> = [t] extends [
   'address',
@@ -196,21 +195,23 @@ export type ConversionHint<t extends EvsType, method extends NumericConversion> 
   ? `.${method}(): cannot convert from 'address' — the source must be numeric (uintN/intN) — use .asUint160() first (then .${method}(…))`
   : [t] extends [BytesNType]
     ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN) — use .asUint() first (same width, then .${method}(…))`
-    : [t] extends [string]
-      ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN)`
-      : `.${method}(): the source must be numeric (uintN/intN)`;
+    : [t] extends ['bool']
+      ? `.${method}(): cannot convert from 'bool' — the source must be numeric (uintN/intN) — use s.select(flag, s.lit(type, 1), 0)`
+      : [t] extends [string]
+        ? `.${method}(): cannot convert from '${t}' — the source must be numeric (uintN/intN)`
+        : `.${method}(): the source must be numeric (uintN/intN)`;
 
 /** The numeric → numeric conversions, whose receiver is a {@link NumericReceiver}. */
 export type NumericConversion = 'toUint' | 'toInt' | 'wrappingToUint' | 'wrappingToInt';
 
 /**
- * The receiver `asInt` accepts: an `Expr` of a `uintN`. Any other receiver meets an object type
- * keyed by {@link conversionHint} whose one property is the {@link AsIntHint} message, as in
- * {@link NumericReceiver}: tsc's error names the conversion to use first.
+ * The receiver `asInt` accepts: an `Expr` of a `uintN`. Any other receiver meets the
+ * {@link AsIntHint} message, as in {@link NumericReceiver}: tsc's error names the conversion to
+ * use first.
  */
 export type AsIntReceiver<t extends EvsType> = [t] extends [UintType]
   ? Expr<t>
-  : (Expr<t> & { readonly type: UintType }) | { readonly [conversionHint]: AsIntHint<t> };
+  : (Expr<t> & { readonly type: UintType }) | AsIntHint<t>;
 
 /**
  * The message of a non-`uintN` `asInt` receiver: the recording-time TYPE_MISMATCH's text

@@ -1362,9 +1362,7 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
       const mut = s.newArray(t.uint256, 2n);
       const pair = s.tuple(Pair, { fee: 500n });
       return s.return({
-        // @ts-expect-error — a bare MutArray is not an IntoExpr (runtime acceptance pinned)
         a: s.eq(arr, mut),
-        // @ts-expect-error — a bare Tuple is not an IntoExpr (runtime acceptance pinned)
         b: s.eq(pair, pair.expr()),
       });
     });
@@ -1389,6 +1387,7 @@ describe('eq/neq on memref types (hash equality — #38)', () => {
       // @ts-expect-error — an array literal is not a string literal (runtime rejection pinned)
       recMemrefCompare((_s, str) => str.eq(['a'])),
     ).toThrow(/string literal must be a JS string, got an array/);
+    // @ts-expect-error — two literals: no operand types the comparison (runtime rejection pinned)
     expect(() => recMemrefCompare((s) => s.eq('a', 'b'))).toThrow(
       /at least one operand must be an Expr/,
     );
@@ -1917,9 +1916,7 @@ describe('all-literal folding', () => {
       const inverted = s.not(false); // true
       const narrowed = s.lit(t.uint256, 200n).toUint(t.uint8); // 200 fits
       const signedDiv = s.lit(t.int8, -7n).div(2n); // −3 (trunc toward zero)
-      // intN shifts are outside the typed BitsType surface; the engine implements SAR
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- deliberate type-surface bypass
-      const signedShr = (s.lit(t.int16, -8n) as Expr<never>).shr(1n); // SAR → −4
+      const signedShr = s.lit(t.int16, -8n).shr(1n); // SAR → −4
       return s.return({
         sum,
         cmp,
@@ -2178,6 +2175,7 @@ describe('issue #5 ergonomics', () => {
     expect(() =>
       evscript({ name: 'bad', args: [t.address] }, (s, x) =>
         s.return({
+          // @ts-expect-error — the types refuse it too; the recorder is what is under test
           r: s.read({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
         }),
       ),

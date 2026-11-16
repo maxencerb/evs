@@ -11,6 +11,7 @@ import type {
   TupleType,
   EvsType,
   WordType,
+  BitsType,
   ArrayType,
   NumericType,
   NamedType,
@@ -285,8 +286,8 @@ export function isWordType(s: string | TupleType): s is WordType {
   return typeof s === 'string' && SETS.word.has(s);
 }
 
-/** bitwise/shift operand domain: uintN, intN, bytesN. */
-export function isBitsOperand(s: EvsType): s is WordType {
+/** bitwise/shift operand domain: uintN, intN, bytesN (the runtime twin of `BitsType`). */
+export function isBitsOperand(s: EvsType): s is BitsType {
   return isWordType(s) && s !== 'address' && s !== 'bool';
 }
 

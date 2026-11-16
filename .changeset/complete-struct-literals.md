@@ -1,0 +1,5 @@
+---
+'@maxencerb/evs': minor
+---
+
+A struct literal without a value for every member is refused instead of being sent with zeros. Outside `s.tuple`, a struct that was `undefined`, `{}`, short of members, or held an `undefined` member (a typo such as `config.recipent`) was recorded with those members at zero: `args: [config.params]` with `params` undefined sent an all-zero struct to the contract, and a missing `recipient` sent `address(0)`. A call argument, `s.lit`, `s.let`, `Cell.set`, `Field.set`, `MutArray.set`, an array element, an `s.fn` argument, an `s.throw` argument and a nested member now throw `EvsTypeError` (`TYPE_MISMATCH`) naming the position and the members without a value, as the types already required. A positional tuple literal needs one value per member. An unknown member name was already an error, and now names the member it resembles (`unknown member "recipent" — did you mean "recipient"?`). The `init` of `s.tuple(type, init?)` is unchanged at its top level: members left out there start at zero, as documented. A nested struct literal inside that `init` is a literal like any other and names every member.

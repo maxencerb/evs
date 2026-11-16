@@ -190,7 +190,11 @@ helpers and `explainUnsupportedOpcode`. Rules that keep it small, each held by a
   value import, bundlers move `precompiled.ts` and `viem.ts` out of the entry chunk into one
   shared with the explain code. A test in `precompiled.test.ts` puts junk at every position of
   real debug data and explains every payload kind with it: extend the check when `explain.ts`
-  reads something new.
+  reads something new. It also gives a `key` to the sites of debug data written before sites
+  had one (evs 0.6.0 and earlier): the keys are a function of the IR the document holds
+  (`ir/site-keys.ts`, which therefore loads with the explain code and never up front:
+  `deployless.ts` is in the entry chunk and takes the keys as an argument). That reads more of
+  the IR than the shape check covers, so a failure there is reported as a malformed `ir`.
 - **The runtime entry carries no hash.** A script's data and its debug data are two documents,
   paired by hand outside the Vite plugin. `toPrecompiled()` writes one `id` into both, eight
   bytes of a keccak over everything `explainRevert` reads (`precompiledIdOf`, `compile.ts`), and
@@ -209,7 +213,9 @@ The serialized form (`PrecompiledScriptData`) carries `version: 1`. Change that 
 misread: `hydrate` then rejects data written by another version with a message that says to
 regenerate it. A field every reader can ignore does not need it. `id` was added under version
 1: evs 0.5.0 ignores it, and data without one still hydrates (its debug data is then matched on
-the script's name, which is all the two documents of 0.5.0 share).
+the script's name, which is all the two documents of 0.5.0 share). The `key` of a site was added
+the same way: an older evs ignores it, and this one computes the keys of debug data that has
+none.
 
 A size change of the runtime entry shows in three places: the two budgets of the plugin's tests
 (`test/build.test.ts`, `test/worker.test.ts`), the "Library size" table and the plugin figures
@@ -308,7 +314,8 @@ Releases: see [Releasing](#releasing) below.
 ## Design notes (the parts worth knowing)
 
 - **Pipeline.** The builder callback runs once and records a value-semantics IR (a flat value
-  table, one site id per statement). `validateIr` checks it, `eliminateDeadCode` (the one
+  table, one site id per statement; each statement also gets a key, see "Statement keys"
+  below). `validateIr` checks it, `eliminateDeadCode` (the one
   IR-level pass, always on and also exported as `dce`) drops statements whose results nothing
   observable reads — returns, `s.throw` args, sub-calls, loops, read cells and impure `s.fn`
   calls are the roots; a revert that only guarded an unused value is dead work too (an evs
@@ -666,7 +673,14 @@ Releases: see [Releasing](#releasing) below.
 - **Errors at build time** (`EvsTypeError`, `EvsStagingError`) are thrown synchronously inside
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
-  maps revert payloads back to the site (kind, detail and site id) that produced them.
+  maps revert payloads back to the site (kind, detail, site id and key) that produced them.
+- **Recording never guesses.** Input the recorder cannot take as written is refused where it is
+  written, not recorded as something close: a callback that returns a promise or an iterator
+  (`assertSyncCallback`, on the result of every callback the builder runs: a new verb that takes
+  one must call it), a struct literal without a value for a member, an array literal with a hole
+  (`missingElement`: the array methods skip holes, so literals are read by index), an option
+  object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
+  input shape gets its check and a row in `builder/recording-guards.test.ts`.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
   `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
@@ -680,6 +694,32 @@ Releases: see [Releasing](#releasing) below.
   classifier (`abi/revert.ts`; `abi/revert.test.ts` feeds one payload corpus to both). Payloads
   only a callee can produce (empty, `Error(string)`, foreign selectors) are attributed to the
   strict, non-`revertReturns` call sites — the only ones that bubble.
+- **Statement keys** (`ir/site-keys.ts`). A site id is a position:
+  the recorder numbers everything it appends (`nextSite`), so an id moves with any statement
+  added above it, and with a release that records a builder verb differently (0.4.1 recorded one
+  statement fewer per counter loop, which renumbered unchanged scripts). The id cannot change
+  role: it is the immediate of `EvsDecodeError(uint256 site)`. So each statement also has a
+  **key**, `<fn>/<label>#<n>`: the name of its `s.fn` (none in the script body), a label that
+  says what it is (`siteLabel`), and its index among the statements with that label in that
+  function, in `walkStmts` order. Only a statement with the same label, added or removed earlier
+  in the same function, moves a key. `compile()` computes the keys once, on the **recorded** IR
+  (`siteKeysOf`), and hands them to the lowering and to the deployless checks: counted before
+  dead-code elimination, they do not depend on what a pass removes or on a compile option. The
+  count runs on the rendered `<fn>/<label>` text, which makes keys unique whatever the names
+  are. Three rules to keep:
+  - **A label is public text.** Users store keys in the filters of their acknowledged warnings
+    (`EvsDiagnostic.key`), so renaming a label, or changing what a builder verb records under a
+    label a warning uses, is a breaking change: `ir/site-keys.test.ts` pins every label and the
+    key table of one script, and a failure there is that decision to take. A label reads the
+    statement and the IR tables, never a `debugName` (display text, like a site's `detail`).
+  - **A warning's key names what the user decides about.** `LOOP_ALLOCATION` is about one
+    statement and carries its key. `ENV_FRAME_DEPENDENT` is about a thing read from the frame,
+    so it is one warning per label (`s.env(caller)`, or `s.call(deposit)` for a paying call) and
+    its `sites` lists the statements. `DEPLOYLESS_RESULT_PREFIX` is about the value returned
+    first (`s.return(bps)`): the statement behind it is often a `cellget`, whose index any other
+    cell read would move.
+  - **No message tells a user to filter on a site id.** `diagnostic-keys.test.ts` checks the
+    warnings; the docs page is `reference/diagnostics.mdx` ("Keys").
 - **Built-in errors have one home each.** `EVS_ERROR_ABI` (`abi/artifact.ts`) lists the evs
   runtime errors every artifact ABI carries, and `EVS_ERROR_NAMES` reads their names off it (no
   script may take one as its name). `RESERVED_ERROR_NAMES` (`core/types/namespace.ts`, because
@@ -724,8 +764,10 @@ Releases: see [Releasing](#releasing) below.
   a mismatch (both also compile errors). The verbs' `args` type a struct (and each `tuple[]`
   element) as that same complete literal, `StructLiteral` (`builder/script/handles.ts`): every
   member present, each a constant, a handle or a nested literal, as the coercion (`buildTupleNew`)
-  takes it; only `s.tuple` inits (`TupleInit`) may omit members in the types (the coercion
-  zero-fills an omitted member anywhere). A struct literal fits only if every key `Object.keys`
+  takes it; only `s.tuple` inits (`TupleInit`) may omit members, in the types and in the coercion
+  alike (`buildTupleNew`'s `partial` option is `true` for the top level of an `s.tuple` init
+  and `false` for every literal, a nested member of that init included: a member without a value
+  is then refused, never zero-filled). A struct literal fits only if every key `Object.keys`
   lists (numeric ones too) names a member (positional: exact length), as the coercion rejects
   anything more; at the type level an optional extra key, an index signature or a positional
   literal of statically unknown length (optional elements, a plain `T[]`) is a maybe-fit. The one intended difference: the types compare a
@@ -737,6 +779,44 @@ Releases: see [Releasing](#releasing) below.
   and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
   `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
   flavour wraps the result as `{ success, value }`).
+- **What a call verb refuses at recording, its types refuse too** (`builder/script/calls.ts`;
+  `call-params.test-d.ts` and `call-params.test.ts` hold the same calls on each side). `args` is
+  required when the function takes arguments (`ArgsKey`): it stays optional when `readonly []`
+  is one of the tuples `args` accepts, so for an overloaded name with an overload that takes
+  none, and for a widened ABI. `struct: true` needs outputs that are all named (`StructFlag`,
+  whose refusal is an object type keyed by the message). The order of a verb's overloads is for
+  the type checker: the one without `struct` comes first, because a call it accepts never
+  instantiates the other two, the only ones that evaluate `StructFlag`. With that check on the
+  parameters every overload shares, a 309-entry ABI with 256 calls cost 52% more type
+  instantiations than without it; ordered this way, 10%, all of it from the calls that pass
+  `struct: true`. The result of a call on a widened ABI is one union, exported as
+  `WideSubcallResult` and declared under the name `TypedResultRequiresAbiAsConst`, the name a
+  compile error prints. It holds `void`, not `undefined`: a use then reports the type by its name
+  where `undefined` gave "possibly undefined" first.
+- **The mutability of an ABI entry is read in one place**, `stateMutabilityOf`
+  (`builder/expr/calls.ts`). An entry with no `stateMutability` (solc before 0.4.16) is read by
+  its `constant` and `payable` flags, as abitype's zod schema reads it: `constant: true` is
+  `view`, else `payable: true` is `payable`, else `nonpayable`. The types have no such rule:
+  abitype's `Abi` requires `stateMutability`, so an ABI with such an entry is a widened one
+  (any `functionName`, unchecked `args`, the untyped result), and the recorder decides.
+- **An operator has one operand type, inferred from one operand** (`builder/script/builder.ts`).
+  `s.add(a, b)` and the other two-operand functions (`s.select`'s branches included) have two
+  type parameters: `a` is inferred from the first operand when it is an `Expr`, `b` from the
+  second, and each operand's type refers to the other parameter behind `NoInfer`
+  (`FirstOperand`, `SecondOperand`). One parameter inferred from both operands would be the
+  union of two different `Expr` types, which type-checks and then throws at recording. A
+  literal infers nothing, so a literal first operand leaves `a` at its default, `never`, and
+  the second operand must then be the `Expr`. The result is `Expr<NoInfer<a | b>>`: without
+  `NoInfer`, the type expected of the result (a return record typed `EvsScript`) would be
+  inferred for the parameter no operand gave a type. Two overloads (`Expr` first, literal
+  first) would also work, but a call that matches neither is reported on the function name
+  with both overloads listed; one signature reports it on the wrong operand, in the method
+  form's words. `s.let(type, init)` and the typed `s.for` range keep one parameter and wrap
+  the checked positions in `NoInfer`. Where no value is accepted, the parameter's type is the
+  recording-time message as a string type (`ExprNeeded`, and `ConversionHint` / `AsIntHint`
+  for a receiver in `core/types/expr.ts`), so the checker prints what to write.
+  `operators.test.ts` pins the text and the position of these errors, and
+  `packages/type-tests/src/operators.ts` the position under every checker.
 - **A fully named tuple type carries no member order** (`core/types/derive.ts`). A record type
   has no key order, and the order of a union belongs to the type checker: TypeScript 5 and 6 keep
   the order in which a program first mentions each member, TypeScript 7, `bun check` and tsrs
@@ -869,7 +949,9 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   access (`byteAt`, `slice`, `asString`) vs `EvsCastReference`, and what the ABI decoder
   refuses (a word out of range for its type, a call without outputs to an address without code)
   vs `StrictDecodeReference` (all codegen'd from
-  `packages/contracts`, whose own forge tests run in CI's contracts step); an env-gated
+  `packages/contracts`, whose own forge tests run in CI's contracts step), and the bitwise
+  operators on `intN` vs the interpreter, the folded constants and a host-side two's-complement
+  reference (`test/harness/signed-bitwise.ts`, shared with the unit differential test); an env-gated
   mainnet-fork suite covers the flagship scenario: `ANVIL_FORK_URL` switches it on and no other
   variable does (an empty value counts as unset and skips it). CI's manual `fork-tests` job
   fails up front when the secret is missing.

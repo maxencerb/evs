@@ -27,6 +27,7 @@ import { compile, type CompiledEvsScript } from './compile.js';
 import { namedArg, t, type Hex } from './core/types.js';
 import { eliminateDeadCode } from './ir/dce.js';
 import type { ScriptIr } from './ir/nodes.js';
+import { siteKeysOf } from './ir/site-keys.js';
 
 const erc20Abi = [
   {
@@ -487,6 +488,27 @@ describe('codec sharing never grows a program, and its planner shortcuts decide 
         // the planner's compile-time shortcuts take the exhaustive planner's decisions
         const { fast, reference } = plannerAgainstReference(script.ir, evmVersion, optimize);
         expect(fast).toEqual(reference);
+      }
+    });
+  }
+});
+
+describe('statement keys: unique in every program, and the same under every option', () => {
+  for (const c of [...BYTE_STABLE, ...CUSTOM_ERRORS, ...ARRAY_DECODE]) {
+    // oxlint-disable-next-line vitest/valid-title -- parametrized over the case table
+    test(c.name, () => {
+      const script = c.script();
+      // the recorded IR decides: every statement has a key, and no two share one
+      const recorded = siteKeysOf(script.ir);
+      expect(new Set(recorded.values()).size).toBe(recorded.size);
+      for (const evmVersion of ['paris', 'shanghai', 'cancun'] satisfies EvmVersion[]) {
+        for (const optimize of [false, true]) {
+          const compiled: CompiledEvsScript = compile(script, { evmVersion, optimize });
+          const { sites } = compiled.sourceMap;
+          expect(sites.length).toBeGreaterThan(0);
+          for (const site of sites) expect(site.key).toBe(recorded.get(site.id));
+          expect(new Set(sites.map((site) => site.key)).size).toBe(sites.length);
+        }
       }
     });
   }

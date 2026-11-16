@@ -134,6 +134,8 @@ const move = evscript({ name: 'move', args: [Position, t.address] }, (s, from, t
   [`t.tuple`](/reference/types/tuple/) members are positional: reach them with `at(0)`.
 - A struct returned by a call is the same handle. Where a struct is expected, pass a handle or
   an object literal.
+- An object literal names every member. Only the `init` of
+  [`s.tuple`](/reference/builder/tuple/#init-optional) can leave members out: they start at zero.
 - [`t.fromOutputs`](/reference/types/from-outputs/) derives a struct type from an ABI function.
 - See [`Tuple`](/reference/builder/tuple/#tuple) and [`Field`](/reference/builder/tuple/#field).
 

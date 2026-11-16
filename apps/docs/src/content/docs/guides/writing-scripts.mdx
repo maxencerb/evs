@@ -138,6 +138,39 @@ const watchlist = evscript({ name: 'watchlist', args: [t.address] }, (s, owner) 
 | JS `if`, `for`, `.map()` | once, at build time | values your program already holds |
 | `s.if`, `s.for`, `s.forEach`, `s.while`, `s.select` | on-chain, at run time | arguments and values read from the chain |
 
+## Callbacks are synchronous
+
+Every callback runs once, synchronously, while the script is recorded: the `evscript` callback,
+an `s.if` branch, a loop condition or body, an `s.fn` body.
+
+Await what the script needs before `evscript`, then use the values in the callback.
+
+```ts {6}
+import { evscript, t } from '@maxencerb/evs';
+import { erc20Abi } from 'viem';
+
+declare function loadWatchlist(): Promise<readonly `0x${string}`[]>;
+
+const tokens = await loadWatchlist(); // before evscript, not inside the callback
+
+const balances = evscript({ name: 'balances', args: [t.address] }, (s, owner) => {
+  const out = s.newArray(t.uint256, tokens.length);
+  for (const [i, token] of tokens.entries()) {
+    const balance = s.read({
+      address: token,
+      abi: erc20Abi,
+      functionName: 'balanceOf',
+      args: [owner],
+    });
+    out.set(i, balance);
+  }
+  return s.return({ balances: out });
+});
+```
+
+An `async` callback would record only what comes before its first `await`, and a generator
+function would record nothing. Both throw `EvsTypeError` (`TYPE_MISMATCH`), naming the callback.
+
 ## Branching on a chain value
 
 JS cannot branch on a handle. This script type-checks, compiles, and always returns `100`:

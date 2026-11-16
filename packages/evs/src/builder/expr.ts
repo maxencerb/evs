@@ -29,6 +29,6 @@
  *   one is dropped by DCE together with its Panic).
  */
 
-export { assertV0Type } from './expr/helpers.js';
+export { assertSyncCallback, assertV0Type } from './expr/helpers.js';
 export type { RecErrorDecl } from './expr/core.js';
 export { Recorder } from './expr/recorder.js';

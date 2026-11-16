@@ -251,6 +251,8 @@ const average = evscript(
 
 - **Runs once.** The body runs when you call `evscript`, not on chain. Plain JavaScript in it
   runs at build time: see [writing scripts](/guides/writing-scripts/).
+- **Synchronous.** The body is a plain function. Await your data before `evscript`: see
+  [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Positional arguments.** The order of `args` is the order of the body parameters and of the
   viem `args` array. Names only label them.
 - **Errors at your line.** A builder error is thrown from inside the body, so the stack trace
@@ -272,3 +274,4 @@ Thrown by `evscript` itself. Errors from builder calls are listed on each builde
 | `EvsTypeError` (`ERROR_DECL`) | an `errors` entry was not made by `t.error`, or two share a name or selector |
 | `EvsTypeError` (`ERROR_DECL`) | `name` is also the name of a declared error, or of `EvsDecodeError` or `EvsInvalidCalldata` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the body does not return the value of `s.return` |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the body is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |

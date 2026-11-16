@@ -156,9 +156,10 @@ loader, and the data is fetched on the first call only.
         returns: [{ name: 'doubled', type: 'uint256', value: 2 }],
       },
       sites: [
-        { id: 0, kind: 'stmt', detail: 'const' },
+        { id: 0, key: 'literal(uint256)#0', kind: 'stmt', detail: 'const' },
         {
           id: 1,
+          key: 'mul#0',
           kind: 'panic',
           detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
           panicCodes: [17],

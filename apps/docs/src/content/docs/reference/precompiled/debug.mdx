@@ -27,6 +27,7 @@ debug.id; // '0xb3356908ed9344d8', the same as precompiled.toJSON().id
 debug.sites[1];
 // {
 //   id: 1,
+//   key: 'mul#0',
 //   kind: 'panic',
 //   detail: 'checked mul args.arg0 * 2 (uint256) — Panic 0x11',
 //   panicCodes: [17],
@@ -69,7 +70,7 @@ The client hands the second file back to `hydrate`: see
 | `version` | `1` | The format version. |
 | `id` | `string` | The compilation that wrote the data: the `id` of the [script's data](/reference/precompiled/to-json/). |
 | `ir` | `ScriptIr` | The recorded program: the artifact's [`ir`](/reference/artifact/#ir). |
-| `sites` | `{ id, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement: the artifact's [`sourceMap.sites`](/reference/artifact/#sourcemap). |
+| `sites` | `{ id, key, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement: the artifact's [`sourceMap.sites`](/reference/artifact/#sourcemap). |
 
 The rest of the source map, its `segments` and `labels`, stays on the artifact.
 
@@ -88,6 +89,9 @@ None.
   it in the same build step as the script's data, never from an older run.
 - **Refused by another script.** A script hydrated with debug data of another `id` rejects: the
   message names both scripts, or both builds of the script.
+- **Older data still loads.** Debug data written by evs 0.6.0 or earlier has no `key` on its
+  sites. `hydrate` computes the keys from the `ir` the data holds, so `debug()` and
+  `explainRevert()` give them all the same.
 - **Checked when it loads.** A hydrated script checks everything `explainRevert` reads, so
   malformed debug data rejects here and never inside an explanation.
 
