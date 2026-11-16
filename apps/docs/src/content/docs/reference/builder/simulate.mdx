@@ -138,6 +138,10 @@ const previewDeposit = evscript(
 An ABI typed `Abi` still works, with an untyped result: see
 [`s.read`](/reference/builder/read/#abi).
 
+An entry without `stateMutability` is read by its `constant` and `payable` flags, as
+[`s.read`](/reference/builder/read/#abi) describes: `payable: true` is `payable`, and an entry
+that is not `constant: true` is `nonpayable`.
+
 ### functionName
 
 - **Type:** `string`
@@ -171,11 +175,14 @@ A bare name resolves an overload by the number and types of `args`. A canonical 
 one exactly: the name, then the parameter types without names or spaces, a struct written as
 `(type,type)`.
 
-### args (optional)
+### args
 
 - **Type:** inferred from the ABI
 
-One entry per function input, omitted when there is none. Each entry is either:
+One entry per function input. It is required when the function takes arguments, as in viem.
+Leave it out, or pass `[]`, when the function takes none.
+
+Each entry is either:
 
 - the literal viem takes: a `bigint` or a `number`, a string, a `boolean`, an object, an array;
 - an `Expr` of exactly the input's type. An `Expr<'uint8'>` does not fit a `uint256` input:
@@ -274,6 +281,8 @@ script as for `s.call`: see [sending ETH](/reference/builder/call/#sending-eth).
 Returns the outputs as one [`Tuple`](/reference/builder/tuple/#tuple) keyed by output name,
 instead of a positional array. Every output must have a name, and no name may repeat.
 
+On a function with an unnamed output, or with none, `struct: true` is a type error.
+
 ```ts {13}
 import { evscript, t } from '@maxencerb/evs';
 import { parseAbi } from 'viem';
@@ -319,6 +328,7 @@ most of them first.
 | --- | --- |
 | `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array, or `functionName` is missing or names no function of it |
 | `EvsTypeError` (`ABI_SHAPE`) | the function is `view` or `pure`: use `s.read` |
+| `EvsTypeError` (`ABI_SHAPE`) | the function's `stateMutability` is none of `pure`, `view`, `nonpayable`, `payable` |
 | `EvsTypeError` (`ABI_SHAPE`) | the `args` fit several overloads |
 | `EvsTypeError` (`ABI_SHAPE`) | `struct: true` on outputs that are unnamed, share a name, or do not exist |
 | `EvsTypeError` (`TYPE_MISMATCH`) | wrong number or type of `args`, or `args` that fit no overload |

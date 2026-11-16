@@ -476,16 +476,29 @@ export type SubcallInputs<
 > = [FnOf<abi, name, mut>] extends [never] ? readonly unknown[] : InputsOf<FnOf<abi, name, mut>>;
 
 /**
- * What a sub-call on a widened ABI ({@link IsWideAbi}) can return: the recorder unwraps by the
- * real output count of the entry it resolves — none → `undefined`, one → that output's handle
- * (`Expr` or `Tuple`), several → a frozen array of handles — and the types cannot know that count.
- * Declare the ABI `as const` for exact types, or cast to the shape the function is known to have.
+ * The result of a call verb whose `abi` has no literal type: it is typed `Abi`, imported from
+ * JSON, declared without `as const`, or one of its function entries has no `stateMutability`.
+ * To get the typed result, declare the ABI `as const` or build it with viem's `parseAbi`;
+ * otherwise cast this one to the shape the function is known to have (`as Expr<'uint8'>`).
+ *
+ * The name is the compile error: a use of the untyped result prints it (`Property 'toUint' does
+ * not exist on type 'TypedResultRequiresAbiAsConst'`), and so does an editor hover. The exported
+ * name of the same type is {@link WideSubcallResult}.
+ *
+ * The members are every shape the recorder can return, which unwraps by the real output count
+ * of the entry it resolves and the types cannot know that count: nothing for no output (`void`,
+ * as for a typed call), that output's handle (`Expr` or `Tuple`) for one, a frozen array of
+ * handles for several.
  */
-export type WideSubcallResult =
+type TypedResultRequiresAbiAsConst =
   | Expr
   | Tuple<TupleType>
   | readonly (Expr | Tuple<TupleType>)[]
-  | undefined;
+  | void;
+
+/** The result of a call verb on a widened ABI: see {@link TypedResultRequiresAbiAsConst}, the
+ *  name compile errors print it under. */
+export type WideSubcallResult = TypedResultRequiresAbiAsConst;
 
 /** The positional output handles of the function `name` selects; for an overloaded name, of the
  *  overload `args` resolves to ({@link ResolveOverload}). Without a resolved entry (a widened
@@ -526,6 +539,65 @@ export type SubcallStruct<
   ? Tuple<TupleType>
   : StructOf<ResolveOverload<abi, name, mut, args>>;
 
+/**
+ * What `struct` accepts besides `false`: `true` when the function the call resolves to
+ * ({@link ResolveOverload}) can be decoded into one named Tuple, that is when it has outputs and
+ * every one of them is named. Otherwise an object type no value has, whose one property says
+ * why, so `struct: true` is a compile error that reads as the recorder's `ABI_SHAPE` does:
+ *
+ * ```text
+ * Type 'boolean' is not assignable to type '{ readonly 'evs: struct: true needs every output
+ * named': "an output of getConfig is unnamed — use the default positional result (omit
+ * struct)"; }'.
+ * ```
+ *
+ * A Solidity getter that returns a struct has ONE unnamed tuple output: its default result is
+ * already the named Tuple. A widened ABI (no literal entry to look at) accepts `true`; the
+ * recorder then checks the resolved entry, like everything else. Outputs that share a name are
+ * left to the recorder too.
+ */
+export type StructFlag<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability = ViewMutability,
+  args = readonly unknown[],
+> = [ResolveOverload<abi, name, mut, args>] extends [never]
+  ? true
+  : [ResolveOverload<abi, name, mut, args>] extends [
+        { readonly outputs: infer outs extends readonly AbiParameter[] },
+      ]
+    ? outs extends readonly []
+      ? {
+          readonly 'evs: struct: true needs outputs': `${name} returns nothing — remove struct: true`;
+        }
+      : AllMembersNamed<outs> extends true
+        ? true
+        : {
+            readonly 'evs: struct: true needs every output named': `an output of ${name} is unnamed — use the default positional result (omit struct)`;
+          }
+    : true;
+
+/**
+ * The `args` key of a call to a function that takes arguments: required, as the recorder refuses
+ * a call that gives fewer arguments than the function has inputs.
+ */
+interface RequiredArgs<args> {
+  readonly args: args;
+}
+
+/**
+ * What makes `args` required: it is unless the function takes no argument (`readonly []` is then
+ * what `args` accepts, and the key may be left out). An overloaded name requires it unless one
+ * of its overloads takes none, the one a call without `args` resolves to. A widened ABI, whose
+ * inputs are not known at the type level, leaves it optional.
+ */
+type ArgsKey<
+  abi extends Abi | readonly unknown[],
+  name extends string,
+  mut extends AbiStateMutability,
+  args,
+> = readonly [] extends SubcallInputs<abi, name, mut> ? unknown : RequiredArgs<args>;
+
 /** What `value` accepts where the function cannot receive ETH: nothing. The name is the compile
  *  error (`Type 'bigint' is not assignable to type 'ValueRequiresPayableFunction'`). */
 interface ValueRequiresPayableFunction {
@@ -547,7 +619,12 @@ export type CallValue<
   ? IntoExpr<'uint256'>
   : ValueRequiresPayableFunction;
 
-export interface SubcallParams<
+/**
+ * The keys of a call apart from `struct`, which each overload of a verb declares itself: declared
+ * here too, the overload's own `struct` would intersect with it and a refusal would print as
+ * `boolean & …` instead of the {@link StructFlag} message alone.
+ */
+interface SubcallBaseParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, mut>,
   mut extends AbiStateMutability = ViewMutability,
@@ -557,13 +634,23 @@ export interface SubcallParams<
   readonly abi: abi;
   // a bare name (overloads resolved by `args`) or a canonical signature `'get(uint256)'` (issue #4)
   readonly functionName: name | SubcallFunctionName<abi, mut>; // autocomplete union
+  // optional here; a verb requires it when the function takes arguments ({@link ArgsKey})
   readonly args?: args;
   readonly gas?: IntoExpr<'uint256'>; // optional cap; default forward-all
   // the wei the CALL sends (payable functions only, see {@link CallValue}); paid from the
   // script's own balance — fund it with a stateOverride `balance`. Default 0.
   readonly value?: CallValue<abi, name, mut, args>;
+}
+
+export interface SubcallParams<
+  abi extends Abi | readonly unknown[],
+  name extends SubcallFunctionName<abi, mut>,
+  mut extends AbiStateMutability = ViewMutability,
+  args = SubcallInputs<abi, name, mut>,
+> extends SubcallBaseParams<abi, name, mut, args> {
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
-  // the default positional `[many]` array. See {@link SubcallStruct}.
+  // the default positional `[many]` array. See {@link SubcallStruct}; a verb accepts `true` only
+  // when the function's outputs are all named ({@link StructFlag}).
   readonly struct?: boolean;
 }
 
@@ -577,14 +664,26 @@ export interface SubcallParams<
 /**
  * The per-call params with `args` inferred (`const`) so an overloaded name resolves to one overload
  * ({@link ResolveOverload}); args fitting several overloads fail to compile ({@link OverloadGuard}),
- * mirroring the recorder's ambiguous-overload error.
+ * mirroring the recorder's ambiguous-overload error. `args` is required when the function takes
+ * arguments ({@link ArgsKey}). `struct` is a plain boolean here: the overloads of a verb each
+ * type their own ({@link SubcallVerbOf}).
  */
 export type ResolvedSubcallParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, mut>,
   mut extends AbiStateMutability,
   args,
-> = SubcallParams<abi, name, mut, args & OverloadGuard<abi, name, mut, args>>;
+> = SubcallParams<abi, name, mut, args & OverloadGuard<abi, name, mut, args>> &
+  ArgsKey<abi, name, mut, args>;
+
+/** {@link ResolvedSubcallParams} without `struct`: what the overloads of a verb share. */
+type VerbParams<
+  abi extends Abi | readonly unknown[],
+  name extends SubcallFunctionName<abi, mut>,
+  mut extends AbiStateMutability,
+  args,
+> = SubcallBaseParams<abi, name, mut, args & OverloadGuard<abi, name, mut, args>> &
+  ArgsKey<abi, name, mut, args>;
 
 /**
  * A verb's result for the strict (`tried = false`) or the try (`tried = true`) flavour: the try
@@ -595,28 +694,40 @@ export type Tried<tried extends boolean, v> = tried extends true
   ? { readonly success: Expr<'bool'>; readonly value: v }
   : v;
 
-/** The calling-verb shape for one mutability bucket and flavour (see {@link Tried}). */
+/**
+ * The calling-verb shape for one mutability bucket and flavour (see {@link Tried}).
+ *
+ * The overload without `struct` comes first: it is the one most calls take, and a call it accepts
+ * never instantiates the two after it, which are the only ones to evaluate {@link StructFlag}
+ * (measurably cheaper to type-check on a large ABI). The first two exclude each other (`struct`
+ * absent or `false`, against `true`), so their order decides nothing else.
+ */
 export interface SubcallVerbOf<mut extends AbiStateMutability, tried extends boolean> {
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
-    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct: true },
-  ): Tried<tried, SubcallStruct<abi, name, mut, args>>;
-  <
-    const abi extends Abi | readonly unknown[],
-    name extends SubcallFunctionName<abi, mut>,
-    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
-  >(
-    p: ResolvedSubcallParams<abi, name, mut, args> & { readonly struct?: false },
+    p: VerbParams<abi, name, mut, args> & { readonly struct?: false },
   ): Tried<tried, UnwrapSingle<SubcallOutputs<abi, name, mut, args>>>;
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
-    p: ResolvedSubcallParams<abi, name, mut, args>,
+    p: VerbParams<abi, name, mut, args> & {
+      readonly struct: StructFlag<abi, name, mut, args>;
+    },
+  ): Tried<tried, SubcallStruct<abi, name, mut, args>>;
+  // a `struct` the types cannot see through (a `boolean`): either result
+  <
+    const abi extends Abi | readonly unknown[],
+    name extends SubcallFunctionName<abi, mut>,
+    const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
+  >(
+    p: VerbParams<abi, name, mut, args> & {
+      readonly struct?: false | StructFlag<abi, name, mut, args>;
+    },
   ): Tried<
     tried,
     SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>
@@ -682,7 +793,8 @@ export interface CallVerbOf<tried extends boolean> extends SubcallVerbOf<WriteMu
       WriteMutability
     >,
   >(
-    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>>,
+    p: RevertReturnsParams<abi, name, rr, args & OverloadGuard<abi, name, WriteMutability, args>> &
+      ArgsKey<abi, name, WriteMutability, args>,
   ): Tried<tried, UnwrapSingle<RevertReturnHandles<rr>>>;
 }
 

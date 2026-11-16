@@ -83,6 +83,22 @@ interface CallParams {
   readonly revertReturns?: unknown;
 }
 
+const STATE_MUTABILITIES: ReadonlySet<unknown> = new Set(['pure', 'view', 'nonpayable', 'payable']);
+
+/**
+ * The state mutability of a `function` ABI entry: the one place the call verbs read it. An entry
+ * written before Solidity 0.4.16 has no `stateMutability` key and carries the `constant` and
+ * `payable` flags instead, read as abitype reads them: `constant: true` is `view`, else
+ * `payable: true` is `payable`, else `nonpayable`. A `stateMutability` that is present is
+ * returned as is, whatever it holds: the flags never override it.
+ */
+function stateMutabilityOf(entry: Record<string, unknown>): unknown {
+  const declared = entry['stateMutability'];
+  if (declared !== undefined) return declared;
+  if (entry['constant'] === true) return 'view';
+  return entry['payable'] === true ? 'payable' : 'nonpayable';
+}
+
 /** Sub-calls and overload resolution (a `Recorder` layer). */
 export abstract class RecorderCalls extends RecorderControl {
   // -- calls -------------------------------------------------------------------------------
@@ -209,16 +225,20 @@ export abstract class RecorderCalls extends RecorderControl {
     // mutability filter, split by call kind (issue #1): STATICCALL admits view/pure; CALL
     // (s.call/s.simulate) admits nonpayable/payable. The wrong bucket gets a steering error.
     // Overloads outside the verb's bucket never compete in the resolution below.
-    const allowedMuts: readonly string[] =
+    const allowedMuts: readonly unknown[] =
       kind === 'static' ? ['view', 'pure'] : ['nonpayable', 'payable'];
-    const matching = named.filter((it) => allowedMuts.includes(String(it['stateMutability'])));
+    const matching = named.filter((it) => allowedMuts.includes(stateMutabilityOf(it)));
     if (matching.length === 0) {
-      const muts = named
-        .map((it) => {
-          const m = it['stateMutability'];
-          return typeof m === 'string' ? m : 'unspecified';
-        })
-        .join('/');
+      // no verb takes an entry whose mutability is none of the four: say so, instead of steering
+      // to a verb that would refuse it too
+      const invalid = named.map(stateMutabilityOf).find((m) => !STATE_MUTABILITIES.has(m));
+      if (invalid !== undefined) {
+        throw new EvsTypeError(
+          'ABI_SHAPE',
+          `${label}: function "${fname}" has the stateMutability ${describeHost(invalid)} — an ABI function entry declares 'pure', 'view', 'nonpayable' or 'payable' (an entry with no stateMutability is read by its \`constant\` / \`payable\` flags)`,
+        );
+      }
+      const muts = named.map((it) => String(stateMutabilityOf(it))).join('/');
       const steer =
         kind === 'static'
           ? `${label} runs under STATICCALL and can only call view/pure functions — for a non-view target use s.call (plain CALL) or s.simulate (rolled-back write dry-run)`
@@ -237,10 +257,11 @@ export abstract class RecorderCalls extends RecorderControl {
     }
     // `value` (the wei the CALL sends) is for payable functions only: a nonpayable target reverts
     // on any value, so it is refused here, after overload resolution picked the entry.
-    if (params.value !== undefined && item['stateMutability'] !== 'payable') {
+    const mutability = stateMutabilityOf(item);
+    if (params.value !== undefined && mutability !== 'payable') {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
-        `${label}: \`value\` is only accepted for a payable function — "${fname}" is ${String(item['stateMutability'])} and would revert on any ETH sent`,
+        `${label}: \`value\` is only accepted for a payable function — "${fname}" is ${String(mutability)} and would revert on any ETH sent`,
       );
     }
     // shape-checked above; toPlainAbiFunction validates the evs types, naming the parameter
