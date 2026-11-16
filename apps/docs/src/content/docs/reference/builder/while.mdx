@@ -189,3 +189,4 @@ Thrown while the callback records, at the offending line:
 | `EvsScopeError` (`SCOPE_VIOLATION`) | `break` or `continue` is called outside the body of its loop |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | an outer loop's `LoopCtl` is used in the body of an inner loop |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the loop is used after it |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the loop would be nested more than 256 levels deep: see [nesting limit](/reference/builder/if/#nesting-limit) |
