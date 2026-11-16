@@ -17,6 +17,10 @@
  * neither: whoever builds the script says how to load them (`PrecompiledSources`). The artifact
  * already holds both; `hydrate` loads them on the first `explainRevert()`.
  *
+ * The two documents travel apart, so each carries the `id` of the compilation that wrote it:
+ * the compiler computes it (`compile.ts`), and `hydrate` compares the two when the debug data
+ * loads (`debug-data.ts`). Nothing here hashes anything.
+ *
  * This module is part of the `@maxencerb/evs/runtime` entry and must stay compiler-free
  * (`runtime-graph.test.ts` checks its import graph).
  */
@@ -38,6 +42,9 @@ import { createToViem, toCreationBytecode, type ToViem } from './viem.js';
  *  JSON-safe. */
 export interface PrecompiledScriptData<abi extends Abi | readonly unknown[] = readonly unknown[]> {
   readonly version: 1;
+  /** Identifies the compilation that wrote the data: its debug data carries the same value.
+   *  Data written by evs 0.5.0 has none. */
+  readonly id?: string;
   readonly abi: abi;
   readonly runtimeBytecode: Hex;
   readonly evmVersion: EvmVersion;
@@ -46,6 +53,8 @@ export interface PrecompiledScriptData<abi extends Abi | readonly unknown[] = re
 /** What `explainRevert` needs beyond {@link PrecompiledScriptData}. JSON-safe; loaded on demand. */
 export interface PrecompiledScriptDebug {
   readonly version: 1;
+  /** The `id` of the script data the same compilation wrote ({@link PrecompiledScriptData}). */
+  readonly id?: string;
   readonly ir: ScriptIr; // the recorded IR
   readonly sites: SourceMap['sites']; // the emitted sites (the artifact's `sourceMap.sites`)
 }
@@ -66,7 +75,12 @@ export interface PrecompiledScript<abi extends Abi | readonly unknown[] = readon
   toJSON(): PrecompiledScriptData<abi>;
 }
 
-/** The version of both JSON shapes (`PrecompiledScriptData`, `PrecompiledScriptDebug`). */
+/**
+ * The version of both JSON shapes (`PrecompiledScriptData`, `PrecompiledScriptDebug`). It
+ * changes when a shape changes in a way another version of evs would misread. A field that
+ * every reader can ignore, such as `id`, leaves it alone: evs 0.5.0 reads data that has one,
+ * and this version reads data that has none.
+ */
 export const FORMAT_VERSION = 1;
 
 // ---------------------------------------------------------------------------
@@ -97,10 +111,11 @@ export function createPrecompiledScript<const abi extends Abi | readonly unknown
   data: PrecompiledScriptData<abi>,
   sources: PrecompiledSources,
 ): PrecompiledScript<abi> {
-  const { abi, runtimeBytecode, evmVersion } = data;
+  const { id, abi, runtimeBytecode, evmVersion } = data;
   const initBytecode = toCreationBytecode(runtimeBytecode, evmVersion);
   const json: PrecompiledScriptData<abi> = Object.freeze({
     version: FORMAT_VERSION,
+    ...(id === undefined ? {} : { id }), // data written by evs 0.5.0 stays as it was
     abi,
     runtimeBytecode,
     evmVersion,

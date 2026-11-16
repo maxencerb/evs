@@ -49,7 +49,9 @@
 
 import type { Abi, AbiParameter, AbiParameterToPrimitiveType, Address } from 'viem';
 
-import { describePanic, EVS_ERROR_NAMES, type EvsRuntimeErrorName } from './abi/artifact.js';
+import { describePanic, type EvsRuntimeErrorName, type PanicKind } from './abi/artifact.js';
+
+export type { PanicKind } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';
 import {
   EVM_VERSIONS,
@@ -73,12 +75,13 @@ const PUSH2_MAX = 0xffff;
 const QUOTED_VERSIONS = EVM_VERSIONS.map((v) => `'${v}'`);
 const EXPECTED_VERSIONS = `${QUOTED_VERSIONS.slice(0, -1).join(', ')} or ${QUOTED_VERSIONS.slice(-1).join('')}`;
 
-/** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). */
+/** The `evmVersion` whitelist check shared with `compile()` (`prefix` names the caller). It takes
+ *  any value: its callers pass what a JS caller or a parsed document gave them. */
 export function assertEvmVersion(
-  evmVersion: string,
+  evmVersion: unknown,
   prefix = '',
 ): asserts evmVersion is EvmVersion {
-  if (!isEvmVersion(evmVersion)) {
+  if (typeof evmVersion !== 'string' || !isEvmVersion(evmVersion)) {
     throw new EvsCompileError(
       'EVM_VERSION',
       `${prefix}unknown evmVersion ${JSON.stringify(evmVersion)} — expected ${EXPECTED_VERSIONS}`,
@@ -370,7 +373,13 @@ type DecodedAbiError<abi> =
 /** The non-ABI arms every decode can produce: the Solidity built-ins, an unrecognized
  *  selector (e.g. a callee error bubbled verbatim), and the empty revert. */
 export type DecodedBuiltinError =
-  | { readonly name: 'Panic'; readonly code: bigint; readonly meaning: string; readonly raw: Hex }
+  | {
+      readonly name: 'Panic';
+      readonly code: bigint;
+      readonly kind: PanicKind;
+      readonly meaning: string;
+      readonly raw: Hex;
+    }
   | { readonly name: 'Error'; readonly reason: string; readonly raw: Hex }
   | { readonly name: 'unknown'; readonly selector: Hex; readonly raw: Hex }
   | { readonly name: 'empty'; readonly raw: '0x' };
@@ -547,7 +556,7 @@ function decodeRevertData(abi: Abi | readonly unknown[], raw: Hex): DecodedScrip
     case 'short':
       return { name: 'unknown', selector: raw, raw };
     case 'panic':
-      return { name: 'Panic', code: c.code, meaning: describePanic(c.code).meaning, raw };
+      return { name: 'Panic', code: c.code, ...panicWords(c.code), raw };
     case 'error-string':
       return { name: 'Error', reason: c.reason, raw };
     case 'abi-error':
@@ -560,9 +569,14 @@ function decodeRevertData(abi: Abi | readonly unknown[], raw: Hex): DecodedScrip
   }
 }
 
-/** The error names `matchScriptError` takes a handler for, and requires one for: every
- *  script-ABI error except the two evs runtime errors. Those, like Panic / Error / unknown /
- *  empty, always reach the `_` default arm. */
+/** The kind and the meaning of a `Panic(uint256)` code. */
+function panicWords(code: bigint): { kind: PanicKind; meaning: string } {
+  const { kind, meaning } = describePanic(code);
+  return { kind, meaning };
+}
+
+/** The error names `matchScriptError` requires a handler for: every script-ABI error except the
+ *  two evs runtime errors, which a script does not declare. */
 type DeclaredNames<abi> = Exclude<
   AbiErrorEntries<abi> extends infer e
     ? e extends { readonly name: infer n extends string }
@@ -586,14 +600,52 @@ type ErrorArgsByName<abi, n> =
       : never
     : never;
 
-/** The handler record for {@link matchScriptError}: one REQUIRED handler per declared error
- *  (adding an error to the script without updating the switch is a type error) plus the
- *  REQUIRED `_` default (an unknown revert is always possible — panics, bubbled callee
- *  errors, future script versions). */
+/** What a handler named `Panic` receives: the code of a `Panic(uint256)`, the same code as one
+ *  word to switch on, and its meaning in words. */
+export interface PanicArgs {
+  readonly code: bigint;
+  readonly kind: PanicKind;
+  readonly meaning: string;
+}
+
+/** What a handler named `Error` receives: the message of an `Error(string)`, which is what
+ *  Solidity's `require(condition, "message")` and `revert("message")` produce. */
+export interface ErrorStringArgs {
+  readonly reason: string;
+}
+
+/**
+ * The reverts a script does not declare and that still have a handler of their own name in
+ * {@link matchScriptError}, with what each handler receives first: the two Solidity built-ins,
+ * and the two evs runtime errors with the arguments their ABI entry gives them.
+ */
+type BuiltinHandlerArgs<abi> = {
+  readonly Panic: PanicArgs;
+  readonly Error: ErrorStringArgs;
+} & { readonly [n in EvsRuntimeErrorName]: ErrorArgsByName<abi, n> };
+
+/**
+ * The handler record for {@link matchScriptError}:
+ *
+ * - one REQUIRED handler per declared error (adding an error to the script without updating
+ *   the switch is a type error);
+ * - an OPTIONAL handler for `Panic`, `Error`, `EvsDecodeError` and `EvsInvalidCalldata`, which
+ *   takes that revert out of `_`;
+ * - the REQUIRED `_` default (an unknown revert is always possible: a callee's own error bubbled
+ *   through, an empty revert, a future version of the script).
+ *
+ * Every named handler is called as `(args, error)`: what the revert carries, then the whole
+ * decoded error.
+ */
 export type ScriptErrorHandlers<abi extends Abi | readonly unknown[], r> = {
   readonly [n in DeclaredNames<abi>]: (
     args: ErrorArgsByName<abi, n>,
     error: Extract<DecodedScriptError<abi>, { readonly name: n; readonly args: unknown }>,
+  ) => r;
+} & {
+  readonly [n in keyof BuiltinHandlerArgs<abi>]?: (
+    args: BuiltinHandlerArgs<abi>[n],
+    error: Extract<DecodedScriptError<abi>, { readonly name: n }>,
   ) => r;
 } & {
   // only the declared (args-carrying) arms are excluded: a built-in arm that shares a name
@@ -606,34 +658,59 @@ export type ScriptErrorHandlers<abi extends Abi | readonly unknown[], r> = {
   ) => r;
 };
 
-/** The union of every handler's return type — {@link matchScriptError}'s result. */
+/** The union of every handler's return type — {@link matchScriptError}'s result. An optional
+ *  handler counts for what it returns, not for being absent (`-?`): a table typed ahead of the
+ *  call as {@link ScriptErrorHandlers} has the built-in handlers as optional keys. */
 export type HandlerResult<handlers> = {
-  [k in keyof handlers]: handlers[k] extends (...args: never[]) => infer r ? r : never;
+  [k in keyof handlers]-?: Exclude<handlers[k], undefined> extends (...args: never[]) => infer r
+    ? r
+    : never;
 }[keyof handlers];
 
 /**
- * `never` under every key of `handlers` that is neither a declared error nor `_`, `unknown`
- * under the others. Part of the constraint of the handlers of {@link matchScriptError}: it makes
- * a handler under such a key (`Panic`, `EvsDecodeError`, a misspelled error name) a type error,
- * because nothing would ever call it. {@link ScriptErrorHandlers} alone accepts extra keys, as
+ * `never` under every key of `handlers` that nothing calls, `unknown` under the others. Part
+ * of the constraint of the handlers of {@link matchScriptError}: it makes a handler under a
+ * misspelled error name a type error. {@link ScriptErrorHandlers} alone accepts extra keys, as
  * every constraint does.
  */
-type OnlyDeclaredHandlers<abi, handlers> = {
-  readonly [k in keyof handlers]: k extends DeclaredNames<abi> | '_' ? unknown : never;
+type OnlyKnownHandlers<abi, handlers> = {
+  readonly [k in keyof handlers]: k extends DeclaredNames<abi> | keyof BuiltinHandlerArgs<abi> | '_'
+    ? unknown
+    : never;
 };
 
 /**
+ * What the handler named after `decoded` receives first, or `undefined` when that revert has no
+ * named handler. An error of the ABI (a declared one, or an evs runtime error) hands over its
+ * decoded arguments, a Panic and an `Error(string)` what they carry. The `unknown` and `empty`
+ * arms carry nothing a handler could be named for, so they always reach `_`, even when a
+ * hand-built ABI declares an error called 'empty' or 'unknown' (issue #62).
+ */
+function handlerArgsOf(decoded: DecodedScriptError): object | undefined {
+  if ('args' in decoded) return decoded.args;
+  if (decoded.name === 'Panic') {
+    const args: PanicArgs = { code: decoded.code, kind: decoded.kind, meaning: decoded.meaning };
+    return Object.freeze(args);
+  }
+  if (decoded.name === 'Error') {
+    const args: ErrorStringArgs = { reason: decoded.reason };
+    return Object.freeze(args);
+  }
+  return undefined;
+}
+
+/**
  * Exhaustive switch over a script's error set (issue #15): decodes the caught error via
- * {@link decodeScriptError} and dispatches to the matching handler — declared errors receive
- * their typed args record; everything else (Panic, Error(string), the evs runtime errors,
- * unknown selectors, the empty revert) lands in `_`, whatever other keys `handlers` holds.
+ * {@link decodeScriptError} and dispatches to the handler of its name. A declared error always
+ * has one. A Panic, an `Error(string)` and the two evs runtime errors have one when `handlers`
+ * gives it; without it they land in `_`, as an unknown selector and an empty revert always do.
  *
  * If the input is not a revert (transport failure, timeout, provider error, non-viem throw),
  * the original error is RETHROWN — such failures never masquerade as script errors in `_`.
  */
 export function matchScriptError<
   const abi extends Abi | readonly unknown[],
-  const handlers extends ScriptErrorHandlers<abi, unknown> & OnlyDeclaredHandlers<abi, handlers>,
+  const handlers extends ScriptErrorHandlers<abi, unknown> & OnlyKnownHandlers<abi, handlers>,
 >(script: { readonly abi: abi }, error: unknown, handlers: handlers): HandlerResult<handlers> {
   const decoded = decodeScriptError(script, error);
   if (decoded === undefined) {
@@ -645,12 +722,7 @@ export function matchScriptError<
   }
   const table = handlers as Readonly<Record<string, unknown>>;
   const decodedName: string = decoded.name;
-  // Only a declared error has a handler of its name: an arm that carries `args` and is not one
-  // of the two evs runtime errors. Every other arm goes to `_` even when the table has a key of
-  // its name: a hand-built ABI can declare an error called 'empty' or 'unknown' (issue #62: its
-  // handler would get an arm without args), and a table written without the types can hold a
-  // `Panic` or `EvsDecodeError` key.
-  const args = 'args' in decoded && !EVS_ERROR_NAMES.has(decodedName) ? decoded.args : undefined;
+  const args = handlerArgsOf(decoded);
   // own handlers only: an error named like an Object.prototype member (`toString`, …) must not
   // dispatch to the inherited method
   const handler =

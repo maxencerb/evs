@@ -26,7 +26,10 @@ export type {
   DecodedBuiltinError,
   DecodedScriptError,
   ErrorArgsOf,
+  ErrorStringArgs,
   HandlerResult,
+  PanicArgs,
+  PanicKind,
   ScriptErrorHandlers,
   ToViem, // the toViem() overloads of a compiled and a precompiled script
   ToViemMode,
@@ -40,6 +43,10 @@ export {
   explainDeploylessError,
 } from './deployless.js';
 export type { DeploylessLimitExplanation } from './deployless.js';
+
+// a script compiled for a fork the chain does not have
+export { explainUnsupportedOpcode } from './evm-target.js';
+export type { UnsupportedOpcodeExplanation } from './evm-target.js';
 
 // errors + the small types a caller names
 export {

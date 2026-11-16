@@ -1,25 +1,22 @@
 /**
- * Fork-mode suite, env-gated on ANVIL_FORK_URL (RPC_URL also accepted).
- * Spawns a dedicated forked anvil (separate from the per-worker proxy instance) and reads
- * mainnet WETH metadata through a compiled script in both execution modes.
+ * Fork-mode suite, env-gated on ANVIL_FORK_URL and on nothing else (`harness/fork-url.ts`).
+ * Starts an anvil of its own that forks the given node (the per-worker anvil of the other
+ * files is a fresh local chain) and reads mainnet WETH metadata through a compiled script in
+ * both execution modes.
  *
  * Locally: ANVIL_FORK_URL=https://… vp run test:integration
  * CI runs this only on a manual workflow_dispatch of ci.yml (fork-tests job), never per-PR.
  */
 
-import { Instance } from 'prool';
 import { createPublicClient, erc20Abi, http, type PublicClient } from 'viem';
 import { mainnet } from 'viem/chains';
 import { afterAll, beforeAll, describe, expect, test } from 'vite-plus/test';
 
 import { evscript, t } from '../../src/index.js';
-import { getFreePort } from '../harness/anvil.js';
+import { spawnAnvil, type Anvil } from '../harness/anvil-process.ts';
+import { forkUrlOf } from '../harness/fork-url.ts';
 
-// an empty value counts as unset: CI expands a missing secret to '' (the fork-tests job fails
-// up front on that, see ci.yml), and `ANVIL_FORK_URL=` in a shell must skip, not start anvil
-// with an empty --fork-url
-const nonEmpty = (v: string | undefined): string | undefined => (v === '' ? undefined : v);
-const forkUrl = nonEmpty(process.env.ANVIL_FORK_URL) ?? nonEmpty(process.env.RPC_URL);
+const forkUrl = forkUrlOf(process.env);
 
 const WETH = '0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2' as const;
 
@@ -30,16 +27,15 @@ const wethMeta = evscript({ name: 'wethMeta', args: [t.address] }, (s, token) =>
 });
 
 describe.runIf(forkUrl !== undefined)('fork mode: real mainnet WETH', () => {
-  // a free port of its own: clear of the per-worker anvils and of any concurrent run
-  let anvil: ReturnType<typeof Instance.anvil> | undefined;
+  let anvil: Anvil | undefined;
   let client: PublicClient;
 
   beforeAll(async () => {
     if (forkUrl === undefined) throw new Error('unreachable: the suite is gated on forkUrl');
-    const port = await getFreePort();
-    anvil = Instance.anvil({ forkUrl, port, chainId: 1 });
-    client = createPublicClient({ chain: mainnet, transport: http(`http://127.0.0.1:${port}`) });
-    await anvil.start();
+    // anvil reads the remote chain before it listens: more time than a local start, and less
+    // than the hook's, so a node that does not answer is reported as such
+    anvil = await spawnAnvil({ args: { forkUrl, chainId: 1 }, startTimeoutMs: 45_000 });
+    client = createPublicClient({ chain: mainnet, transport: http(anvil.url) });
   }, 60_000);
 
   afterAll(async () => {
@@ -74,7 +70,5 @@ test('fork mode is env-gated (set ANVIL_FORK_URL to run it)', (ctx) => {
     ctx.skip();
     return;
   }
-  expect(URL.parse(forkUrl)?.protocol ?? 'ANVIL_FORK_URL / RPC_URL is not a URL').toMatch(
-    /^(https?|wss?):$/,
-  );
+  expect(URL.parse(forkUrl)?.protocol ?? 'ANVIL_FORK_URL is not a URL').toMatch(/^(https?|wss?):$/);
 });

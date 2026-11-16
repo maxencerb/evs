@@ -25,7 +25,7 @@ import {
 } from '../core/errors.js';
 import { namedArg, t, type Expr } from '../core/types.js';
 import { interpret } from '../ir/interp.js';
-import { deserializeIr, serializeIr } from '../ir/nodes.js';
+import { deserializeIr, MAX_BLOCK_DEPTH, serializeIr } from '../ir/nodes.js';
 import { validateIr } from '../ir/validate.js';
 import { evscript, type LoopCtl, type ScriptBuilder } from './script.js';
 
@@ -3993,5 +3993,214 @@ describe('checklist: member names are unique within a tuple', () => {
     expect(() => compile({ name: 'x', ir: bad, abi: script.abi })).toThrowError(
       /repeats the member name "a"/,
     );
+  });
+});
+
+// ---------------------------------------------------------------------------
+// block nesting: bounded at recording, before the host stack or any later pass gives out
+// ---------------------------------------------------------------------------
+
+describe('checklist: blocks nested too deep', () => {
+  type Verb = 'if' | 'else' | 'while' | 'for' | 'forEach' | 'fn';
+  const TOO_DEEP = /nest more than 256 levels deep — flatten the script/;
+  const noCalls = { staticcall: () => ({ success: false, data: '0x' as const }) };
+
+  /** Opens one block of `verb` around `inner`. The conditions are literals, so that a block
+   *  inside an `s.fn` body captures nothing; only `forEach` needs a value of the script. */
+  function open(s: AnyBuilder, a: Args, verb: Verb, level: number, inner: () => void): void {
+    switch (verb) {
+      case 'if':
+        s.if(true, inner);
+        return;
+      case 'else':
+        s.if(true, () => {}, inner);
+        return;
+      case 'while':
+        s.while(
+          () => true,
+          (loop) => {
+            inner();
+            loop.break();
+          },
+        );
+        return;
+      case 'for':
+        s.for({ from: 0n, until: 1n }, inner);
+        return;
+      case 'forEach':
+        s.forEach(a.xs, inner);
+        return;
+      case 'fn':
+        s.fn(`f${level}`, [], inner)();
+        return;
+    }
+  }
+
+  /** `depth` blocks inside one another, the kind of each chosen by `verbAt`. */
+  function nest(s: AnyBuilder, a: Args, depth: number, verbAt: (level: number) => Verb): void {
+    const level = (remaining: number): void => {
+      if (remaining === 0) return;
+      open(s, a, verbAt(remaining), remaining, () => level(remaining - 1));
+    };
+    level(depth);
+  }
+
+  const VERBS: readonly (readonly [Verb, string])[] = [
+    ['if', 's.if()'],
+    ['else', 's.if()'],
+    ['while', 's.while()'],
+    ['for', 's.for()'],
+    ['forEach', 's.forEach()'],
+    ['fn', 's.fn("f1")'],
+  ];
+
+  test('each verb records at the limit and is refused one level deeper, by name', () => {
+    for (const [verb, name] of VERBS) {
+      expect(() =>
+        rec((s, a) => (nest(s, a, MAX_BLOCK_DEPTH, () => verb), s.return({ x: a.x }))),
+      ).not.toThrow();
+      const e = expectEvs(
+        () => rec((s, a) => nest(s, a, MAX_BLOCK_DEPTH + 1, () => verb)),
+        EvsTypeError,
+        'UNSUPPORTED_V0',
+        TOO_DEEP,
+      );
+      expect(e.message.startsWith(`${name}: blocks `)).toBe(true);
+    }
+  });
+
+  test('the kinds add up: the count is of open callbacks, whatever opened them', () => {
+    const kinds: readonly Verb[] = ['if', 'fn', 'else', 'while', 'for'];
+    const mixed = (level: number): Verb => kinds[level % kinds.length] ?? 'if';
+    expect(() =>
+      rec((s, a) => (nest(s, a, MAX_BLOCK_DEPTH, mixed), s.return({ x: a.x }))),
+    ).not.toThrow();
+    expectEvs(
+      () => rec((s, a) => nest(s, a, MAX_BLOCK_DEPTH + 1, mixed)),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_DEEP,
+    );
+  });
+
+  test('a nesting that would overflow the host stack is the same coded error', () => {
+    expectEvs(
+      () => rec((s, a) => nest(s, a, 100_000, () => 'if')),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_DEEP,
+    );
+    expectEvs(
+      () => rec((s, a) => nest(s, a, 100_000, () => 'for')),
+      EvsTypeError,
+      'UNSUPPORTED_V0',
+      TOO_DEEP,
+    );
+  });
+
+  test('blocks recorded one after another do not add up', () => {
+    const script = evscript({ name: 'flat', args: [t.bool] }, (s, flag) => {
+      const hits = s.let(t.uint256, 0n);
+      for (let i = 0; i < 4 * MAX_BLOCK_DEPTH; i++) {
+        s.if(flag, () => hits.set(hits.get().wrappingAdd(1n)));
+      }
+      return s.return({ hits: hits.get() });
+    });
+    const result = interpret(script, [true], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.hits).toBe(
+      BigInt(4 * MAX_BLOCK_DEPTH),
+    );
+  });
+
+  test('a script at the limit validates, compiles, runs and round-trips', () => {
+    for (const verb of ['if', 'for'] as const) {
+      const script = evscript({ name: 'deep', args: [t.bool] }, (s, flag) => {
+        const hits = s.let(t.uint256, 0n);
+        const level = (remaining: number): void => {
+          if (remaining === 0) {
+            hits.set(hits.get().add(1n));
+          } else if (verb === 'if') {
+            s.if(flag, () => level(remaining - 1));
+          } else {
+            s.for({ from: 0n, until: 1n }, () => level(remaining - 1));
+          }
+        };
+        level(MAX_BLOCK_DEPTH);
+        return s.return({ hits: hits.get() });
+      });
+      expect(() => validateIr(script.ir)).not.toThrow();
+      expect(compile(script, { optimize: true }).runtimeBytecode.length).toBeGreaterThan(2);
+      expect(compile(script).runtimeBytecode.length).toBeGreaterThan(2);
+      const result = interpret(script, [true], noCalls);
+      expect(result.outcome.kind === 'return' && result.outcome.values.hits).toBe(1n);
+      expect(serializeIr(deserializeIr(serializeIr(script.ir)))).toBe(serializeIr(script.ir));
+    }
+  });
+
+  test('a refused block records nothing: a script that catches the error still finishes', () => {
+    let refused = 0;
+    const script = evscript(
+      { name: 'caught', args: [t.bool, t.array(t.uint256)] },
+      (s, flag, xs) => {
+        const hits = s.let(t.uint256, 0n);
+        const level = (remaining: number): void => {
+          if (remaining > 0) {
+            s.if(flag, () => level(remaining - 1));
+            return;
+          }
+          // one level too deep: every verb is refused before it records its own statements
+          const attempts = [
+            () => s.if(flag, () => hits.set(1n)),
+            () =>
+              s.while(
+                () => flag,
+                () => hits.set(2n),
+              ),
+            () => s.for({ from: 0n, until: 9n }, () => hits.set(3n)),
+            () => s.forEach(xs, () => hits.set(4n)),
+            () => s.fn('late', [t.uint256], (v) => v),
+          ];
+          for (const attempt of attempts) {
+            expectEvs(attempt, EvsTypeError, 'UNSUPPORTED_V0', TOO_DEEP);
+            refused += 1;
+          }
+          hits.set(hits.get().add(7n));
+        };
+        level(MAX_BLOCK_DEPTH);
+        return s.return({ hits: hits.get() });
+      },
+    );
+    expect(refused).toBe(5);
+    // only `hits` exists: the refused s.for / s.forEach left no counter cell behind
+    expect(script.ir.cells).toHaveLength(1);
+    expect(script.ir.fns).toHaveLength(0);
+    const result = interpret(script, [true, []], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.hits).toBe(7n);
+    expect(compile(script).runtimeBytecode.length).toBeGreaterThan(2);
+  });
+
+  test('an s.fn defined at the top level may itself nest to the limit, and be called at the limit', () => {
+    const script = evscript({ name: 'viaFn', args: [t.bool] }, (s, flag) => {
+      const bump = s.fn('bump', [t.bool, t.uint256], (inner, v) => {
+        const out = s.let(t.uint256, v);
+        const level = (remaining: number): void => {
+          if (remaining === 0) out.set(out.get().add(1n));
+          // the fn body is one level itself
+          else s.if(inner, () => level(remaining - 1));
+        };
+        level(MAX_BLOCK_DEPTH - 1);
+        return out.get();
+      });
+      const hits = s.let(t.uint256, 0n);
+      const level = (remaining: number): void => {
+        if (remaining === 0) hits.set(bump(flag, hits.get()));
+        else s.if(flag, () => level(remaining - 1));
+      };
+      level(MAX_BLOCK_DEPTH);
+      return s.return({ hits: hits.get() });
+    });
+    const result = interpret(script, [true], noCalls);
+    expect(result.outcome.kind === 'return' && result.outcome.values.hits).toBe(1n);
+    expect(compile(script, { optimize: true }).runtimeBytecode.length).toBeGreaterThan(2);
   });
 });

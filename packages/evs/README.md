@@ -175,14 +175,12 @@ also covers builds without Vite.
 ## Runnable examples
 
 The scripts in [`examples/`](https://github.com/maxencerb/evs/tree/main/examples) run on a local
-anvil. They need [Foundry](https://getfoundry.sh), Node ≥ 22.18, pnpm and the git submodules.
+anvil. They need [Foundry](https://getfoundry.sh), Node ≥ 22.18 and pnpm.
 
 ```sh
-git submodule update --init                  # once: forge-std
-pnpm install && pnpm run build               # once, from the repo root
-(cd packages/contracts && pnpm run codegen)  # once: builds the mock contracts
-node examples/pool-meta/index.ts             # dependent reads on a Uniswap V3 pool mock
-node examples/token-balances/index.ts        # balanceOf over a runtime address[]
+pnpm install && pnpm run bootstrap     # once, from the repo root: mock contracts + library build
+node examples/pool-meta/index.ts       # dependent reads on a Uniswap V3 pool mock
+node examples/token-balances/index.ts  # balanceOf over a runtime address[]
 ```
 
 ## Contributing

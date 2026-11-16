@@ -19,6 +19,7 @@ const precompiled = double.compile().toPrecompiled();
 const data = precompiled.toJSON();
 
 data.version; // 1
+data.id; // '0xb3356908ed9344d8'
 data.evmVersion; // 'cancun'
 data.runtimeBytecode; // '0x3661000657…', 138 bytes
 data.abi === precompiled.abi; // true
@@ -54,6 +55,7 @@ reads it.
 | Field | Type | Holds |
 | --- | --- | --- |
 | `version` | `1` | The format version. |
+| `id` | `string` | The compilation that wrote the data. The script's [debug data](/reference/precompiled/debug/) has the same one. |
 | `abi` | `ScriptAbi` | The script's ABI, the same array as `precompiled.abi`. |
 | `runtimeBytecode` | `Hex` | The code that runs. |
 | `evmVersion` | `'paris' \| 'shanghai' \| 'cancun'` | The EVM target it was compiled for. |
@@ -64,12 +66,15 @@ None.
 
 ## Behavior
 
-- **Four fields.** `initBytecode` is left out: `hydrate` rebuilds it, so the file holds the
+- **Five fields.** `initBytecode` is left out: `hydrate` rebuilds it, so the file holds the
   code once.
+- **One `id` per compilation.** Two compilations have the same `id` only when their data and
+  their debug data are the same, so a rebuild that changed nothing writes the same files.
 - **No debug data.** What `explainRevert` reads is separate: see
   [`debug`](/reference/precompiled/debug/).
 - **Round trip.** `hydrate(precompiled.toJSON())` gives a script with the same `toViem()`
   results.
 - **Frozen.** The data cannot be modified, and every call returns the same object.
-- **`version` stays a literal.** A file that widens it to `number`, such as a `.json` import,
-  no longer fits the type `hydrate` takes.
+- **Literal types are yours to keep.** A file that widens them, such as a `.json` import,
+  still hydrates, with a wide ABI: see
+  [from a JSON file](/reference/precompiled/hydrate/#from-a-json-file).

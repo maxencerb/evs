@@ -104,14 +104,46 @@ function supplyAt(blockNumber: bigint) {
 
 ## Spotting a wrong target
 
-A target that is too new fails at run time, with no hint of the cause in the default mode:
+A target that is too new fails at run time, and each mode shows it differently:
 
-| Mode | What you see |
-| --- | --- |
-| Deployless | a bare `execution reverted`, with no revert data |
-| State override | the node's invalid-opcode error (`NotActivated` on anvil) |
+| Mode | What you see | What explains it |
+| --- | --- | --- |
+| Deployless | a bare `execution reverted`, with no revert data | `explainRevert` |
+| State override | the node's own error: `invalid opcode: MCOPY` on geth, `NotActivated` on anvil | `explainUnsupportedOpcode` |
 
-`explainRevert` on the empty payload names the opcodes to suspect:
+In state-override mode,
+[`explainUnsupportedOpcode`](/reference/utilities/explain-unsupported-opcode/) reads the node's
+error and names a target that runs:
+
+```ts {21-23}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+
+const compiled = compile(symbolOf);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem({ mode: 'stateOverride' }),
+    functionName: 'symbolOf',
+    args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+    blockNumber: 19_000_000n, // Shanghai: PUSH0, but no MCOPY yet
+  });
+} catch (error) {
+  const why = explainUnsupportedOpcode(compiled, error);
+  why?.opcode; // 'MCOPY'
+  why?.recompileWith; // 'shanghai'
+}
+```
+
+In deployless mode there is no node error to read. `explainRevert` on the empty payload lists
+the opcodes first:
 
 ```ts {9}
 import { compile, evscript, t } from '@maxencerb/evs';
@@ -123,9 +155,10 @@ const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) =>
 });
 
 compile(symbolOf).explainRevert('0x').message;
-// '… the runtime uses MCOPY (cancun) and PUSH0 (shanghai) (evmVersion 'cancun'); for
-//  a block or chain before that fork, recompile with an older evmVersion ('paris' runs
-//  everywhere)'
+// 'empty revert payload (no returndata) — possible causes: (1) an opcode the node
+//  does not have at this block: the runtime uses MCOPY (cancun) and PUSH0
+//  (shanghai) (evmVersion 'cancun'), so for a block or chain before that fork,
+//  recompile with an older evmVersion ('paris' runs everywhere); (2) …'
 ```
 
 ## Next steps
@@ -133,3 +166,5 @@ compile(symbolOf).explainRevert('0x').message;
 - [`compile`](/reference/compile/#evmversion-optional): `evmVersion` and the other options.
 - [Executing scripts](/guides/execution/): pin a block in either execution mode.
 - [`explainRevert`](/reference/artifact/explain-revert/): everything an empty revert can mean.
+- [`explainUnsupportedOpcode`](/reference/utilities/explain-unsupported-opcode/): the node
+  texts it reads, and the target it names for each.

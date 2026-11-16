@@ -146,20 +146,25 @@ export abstract class RecorderControl extends RecorderOps {
         `s.if(): branches must be callbacks — s.if(cond, () => { … }, () => { … }?)`,
       );
     }
-    const condId = this.coerceToId(cond, 'bool', 's.if() condition');
-    const thenScope = this.pushScope('if-then');
+    this.enterBlock('s.if()');
     try {
-      unsafeCast<() => void>(thenFn)();
+      const condId = this.coerceToId(cond, 'bool', 's.if() condition');
+      const thenScope = this.pushScope('if-then');
+      try {
+        unsafeCast<() => void>(thenFn)();
+      } finally {
+        this.popScope();
+      }
+      const elseScope = this.pushScope('if-else');
+      try {
+        if (elseFn !== undefined) unsafeCast<() => void>(elseFn)();
+      } finally {
+        this.popScope();
+      }
+      this.appendStmt({ k: 'if', cond: condId, then: thenScope.stmts, else: elseScope.stmts });
     } finally {
-      this.popScope();
+      this.exitBlock();
     }
-    const elseScope = this.pushScope('if-else');
-    try {
-      if (elseFn !== undefined) unsafeCast<() => void>(elseFn)();
-    } finally {
-      this.popScope();
-    }
-    this.appendStmt({ k: 'if', cond: condId, then: thenScope.stmts, else: elseScope.stmts });
   }
 
   whileStmt(condThunk: unknown, bodyFn: unknown): void {
@@ -171,6 +176,7 @@ export abstract class RecorderControl extends RecorderOps {
       );
     }
     this.whileInternal(
+      's.while()',
       () => {
         const cond = unsafeCast<() => unknown>(condThunk)();
         return this.coerceToId(cond, 'bool', 's.while() condition');
@@ -181,10 +187,13 @@ export abstract class RecorderControl extends RecorderOps {
     );
   }
 
+  /** Records one `while` statement: one block level for its header and its body together. */
   private whileInternal(
+    what: string,
     recordCond: () => ValueId,
     recordBody: (loop: LoopCtlImpl, bodyScope: Scope) => void,
   ): void {
+    this.enterBlock(what);
     const headerScope = this.pushScope('while-header');
     try {
       const condId = recordCond();
@@ -207,6 +216,8 @@ export abstract class RecorderControl extends RecorderOps {
       // unwind any scopes this loop pushed, then rethrow
       while (this.stack.includes(headerScope)) this.popScope();
       throw e;
+    } finally {
+      this.exitBlock();
     }
   }
 
@@ -221,6 +232,7 @@ export abstract class RecorderControl extends RecorderOps {
         `s.for(): range must be { type?, from, until, step? }`,
       );
     }
+    this.assertBlockRoom('s.for()');
     const r = range as { type?: unknown; from?: unknown; until?: unknown; step?: unknown };
     let ty: StringType;
     if (r.type === undefined) {
@@ -242,7 +254,7 @@ export abstract class RecorderControl extends RecorderOps {
     const cellId = this.makeCell(ty, r.from);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until');
     const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step');
-    this.counterLoop(ty, cellId, untilId, stepId, (iSnap, _iId, loop) => {
+    this.counterLoop('s.for()', ty, cellId, untilId, stepId, (iSnap, _iId, loop) => {
       unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, loop);
     });
   }
@@ -259,6 +271,7 @@ export abstract class RecorderControl extends RecorderOps {
         `s.forEach(): body must be a callback (elem, i, loop) => …`,
       );
     }
+    this.assertBlockRoom('s.forEach()');
     const c = this.classify(arr, 's.forEach() array');
     if (c.kind !== 'expr' || !isArrayValueType(c.type)) {
       // no MutArray steering here — classify already threw its own `.expr()` hint for one
@@ -273,7 +286,7 @@ export abstract class RecorderControl extends RecorderOps {
     const stepId = this.wordConst('uint256', 1n);
     // the element load is recorded unconditionally; when the body never reads `elem` the
     // compile-time DCE pass (ir/dce.ts) drops it, bounds check included
-    this.counterLoop('uint256', cellId, lenId, stepId, (iSnap, iId, loop) => {
+    this.counterLoop('s.forEach()', 'uint256', cellId, lenId, stepId, (iSnap, iId, loop) => {
       const elem = this.indexElem(c.id, elemTy, iId, 's.forEach(…) element');
       unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
     });
@@ -296,6 +309,7 @@ export abstract class RecorderControl extends RecorderOps {
    * `s.forEach`'s element bounds check (`codegen/lower/guards.ts`).
    */
   private counterLoop(
+    what: string,
     ty: StringType,
     cellId: CellId,
     untilId: ValueId,
@@ -313,6 +327,7 @@ export abstract class RecorderControl extends RecorderOps {
       this.appendStmt({ k: 'cellset', cell: cellId, value: sum });
     };
     this.whileInternal(
+      what,
       () => {
         iId = this.cellGetId(cellId);
         const cond = this.newValue('bool');

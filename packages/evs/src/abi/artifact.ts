@@ -415,26 +415,51 @@ export const BUILTIN_ERROR_SIGNATURES: ReadonlyMap<Hex, string> = new Map([
 ]);
 
 /**
- * Solidity `Panic(uint256)` code meanings (shared by `explainRevert` and the client-side
- * `decodeScriptError`).
+ * What a `Panic(uint256)` code stands for, as one word a program can switch on: the codes
+ * solc 0.8 defines, and `'unknown'` for any other code.
  */
-export const PANIC_MEANINGS: Readonly<Record<string, string>> = Object.freeze({
-  '0x00': 'generic compiler panic',
-  '0x01': 'assertion failure (assert)',
-  '0x11': 'arithmetic overflow or underflow',
-  '0x12': 'division or modulo by zero',
-  '0x21': 'invalid enum conversion',
-  '0x22': 'corrupted storage byte array',
-  '0x31': 'pop on an empty array',
-  '0x32': 'array index out of bounds',
-  '0x41': 'allocation too large (out of memory)',
-  '0x51': 'call to a zero-initialized internal function',
-});
+export type PanicKind =
+  | 'generic'
+  | 'assert'
+  | 'overflow'
+  | 'division-by-zero'
+  | 'enum-conversion'
+  | 'storage-encoding'
+  | 'empty-pop'
+  | 'out-of-bounds'
+  | 'out-of-memory'
+  | 'zero-function'
+  | 'unknown';
 
-/** A `Panic(uint256)` code as its `0x`-hex form (at least two digits) and its meaning. */
-export function describePanic(code: bigint): { codeHex: string; meaning: string } {
+/** The `Panic(uint256)` codes solc 0.8 defines, by their `0x` form: the one table behind the
+ *  `kind` a program reads and the `meaning` a person reads. */
+const PANICS: Readonly<Record<string, { readonly kind: PanicKind; readonly meaning: string }>> =
+  Object.freeze({
+    '0x00': { kind: 'generic', meaning: 'generic compiler panic' },
+    '0x01': { kind: 'assert', meaning: 'assertion failure (assert)' },
+    '0x11': { kind: 'overflow', meaning: 'arithmetic overflow or underflow' },
+    '0x12': { kind: 'division-by-zero', meaning: 'division or modulo by zero' },
+    '0x21': { kind: 'enum-conversion', meaning: 'invalid enum conversion' },
+    '0x22': { kind: 'storage-encoding', meaning: 'corrupted storage byte array' },
+    '0x31': { kind: 'empty-pop', meaning: 'pop on an empty array' },
+    '0x32': { kind: 'out-of-bounds', meaning: 'array index out of bounds' },
+    '0x41': { kind: 'out-of-memory', meaning: 'allocation too large (out of memory)' },
+    '0x51': { kind: 'zero-function', meaning: 'call to a zero-initialized internal function' },
+  });
+
+/** A `Panic(uint256)` code as its `0x`-hex form (at least two digits), its kind and its meaning. */
+export function describePanic(code: bigint): {
+  codeHex: string;
+  kind: PanicKind;
+  meaning: string;
+} {
   const codeHex = `0x${code.toString(16).padStart(2, '0')}`;
-  return { codeHex, meaning: PANIC_MEANINGS[codeHex] ?? 'unknown panic code' };
+  const known = PANICS[codeHex];
+  return {
+    codeHex,
+    kind: known?.kind ?? 'unknown',
+    meaning: known?.meaning ?? 'unknown panic code',
+  };
 }
 
 /**

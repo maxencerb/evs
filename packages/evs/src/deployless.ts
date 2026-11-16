@@ -15,6 +15,9 @@
  *   `0xEF` fails (a static result whose first word is a `bytesN`, or a `uint256`/`int256` as
  *   large as a hash).
  *
+ * The deposit is also paid for: 200 gas per result byte, taken from what the script left, so a
+ * call can run to its end and still fail on the deposit.
+ *
  * This module holds the three answers evs gives: compile-time diagnostics for what the result
  * shape already decides (`deploylessResultDiagnostics`, forwarded by `compile()`), a pure size
  * helper for the args side (`deploylessDataSize`), and `explainDeploylessError`, which maps the
@@ -24,7 +27,7 @@
 
 import { isDynamic, layoutOfType, staticSize, type TypeLayout } from './abi/layout.js';
 import { HEX_BYTES_RE } from './core/bytes.js';
-import { EvsTypeError, type EvsDiagnostic } from './core/errors.js';
+import { errorTexts, EvsTypeError, lineAt, type EvsDiagnostic } from './core/errors.js';
 import {
   abiParamToType,
   elemTypeOf,
@@ -88,12 +91,12 @@ function hexByteLength(value: unknown, what: string): number {
  * result is ONE tuple of the returned values: when any value is dynamic the encoding starts
  * with its offset word (`0x20`, never `0xEF`); when all are static the first leaf is inlined at
  * byte 0, and only a `bytesN`, `uint256` or `int256` word can start with `0xEF` (narrower ints
- * are zero- or sign-extended, `address`/`bool` zero-padded). A `bytesN` always warns (a hash
- * starts with `0xEF` 1 time in 256); a `uint256` must be at least `0xEF·2^248` and an `int256`
- * below `-2^252`, so those warn only when `ir/magnitude.ts` cannot bound the value away from
- * that range — an argument, a call output, a hash or bit pattern, not a length, a counter or a
- * widened narrower integer; a returned literal warns only when its first byte is `0xEF` (every
- * call then fails). The warning carries the site of the statement that
+ * are zero- or sign-extended, `address`/`bool` zero-padded). A returned literal, of any of these
+ * types, warns only when its first byte is `0xEF` (every call then fails). Any other `bytesN`
+ * warns (a hash starts with `0xEF` 1 time in 256); a `uint256` must be at least `0xEF·2^248`
+ * and an `int256` below `-2^252`, so those warn only when `ir/magnitude.ts` cannot bound the
+ * value away from that range — an argument, a call output, a hash or bit pattern, not a length,
+ * a counter or a widened narrower integer. The warning carries the site of the statement that
  * defines the first returned value (none for a script argument). The size check is exact for a
  * static result and a lower bound (every dynamic part empty) for a dynamic one.
  */
@@ -157,7 +160,7 @@ function leadingWord(type: EvsType, path: string): { type: WordType; path: strin
  * start with `0xEF`, as the message's middle (ending where the fix starts) — or `undefined`
  * when it cannot. A `uint256` starts with `0xEF` only in `[0xEF·2^248, 0xF0·2^248)` (above
  * 2^255) and an `int256` only in `[-17·2^248, -2^252)`, so a magnitude bound of 255 / 252 bits
- * rules it out; a returned literal is decided by its first byte alone.
+ * rules it out; a returned literal, a `bytesN` one included, is decided by its first byte alone.
  */
 function efRisk(
   leading: { type: WordType; path: string },
@@ -166,12 +169,14 @@ function efRisk(
   defining: Stmt | undefined,
 ): string | undefined {
   const { type, path } = leading;
-  if (isBytesN(type)) return `a ${type} such as a hash starts with 0xEF 1 time in 256; `;
-  if (type !== 'uint256' && type !== 'int256') return undefined;
+  // a literal first, whatever its type: its word is known (a bytesN left-aligned, an integer
+  // right-aligned), so there is nothing to estimate
   if (defining?.k === 'const' && defining.data.kind === 'word' && defining.out === value) {
     if (BigInt(defining.data.hex) >> 248n !== 0xefn) return undefined;
     return `\`${path}\` is a literal whose first byte is 0xEF, so every deployless call fails; `;
   }
+  if (isBytesN(type)) return `a ${type} such as a hash starts with 0xEF 1 time in 256; `;
+  if (type !== 'uint256' && type !== 'int256') return undefined;
   const bits = magnitudeBits(ir)(value);
   if (type === 'uint256' ? bits <= 255 : bits <= 252) return undefined;
   const range =
@@ -222,9 +227,14 @@ function minTail(l: TypeLayout): number {
 
 /** What {@link explainDeploylessError} recognized. */
 export interface DeploylessLimitExplanation {
-  /** `result-starts-with-ef` (EIP-3541), `result-too-large` (EIP-170) or `data-too-large`
-   *  (EIP-3860, args included). */
-  readonly kind: 'result-starts-with-ef' | 'result-too-large' | 'data-too-large';
+  /** `result-starts-with-ef` (EIP-3541), `result-too-large` (EIP-170), `data-too-large`
+   *  (EIP-3860, args included) or `result-deposit-out-of-gas` (the gas left could not pay for
+   *  storing the result as code). */
+  readonly kind:
+    | 'result-starts-with-ef'
+    | 'result-too-large'
+    | 'data-too-large'
+    | 'result-deposit-out-of-gas';
   /** What happened and what to do (always: `toViem({ mode: 'stateOverride' })` avoids it). */
   readonly message: string;
   /** The node's own text that matched, e.g. `max code size exceeded: code size 24608 limit 24576`. */
@@ -238,39 +248,61 @@ export interface DeploylessLimitExplanation {
 type LimitKind = DeploylessLimitExplanation['kind'];
 
 /**
- * The creation-failure texts of geth and the nodes that reuse its wording (reth, erigon, …) and of anvil, which
- * reports oversized initcode as `max initcode size exceeded` and the two result limits by revm's
- * error names. `CreateInitCodeSizeLimit` is revm's name for the initcode case, matched in case
- * another revm-based node surfaces it.
+ * The creation-failure texts of the nodes a deployless call was seen to fail on. Each pattern is
+ * a text only that failure produces, so a match is never a guess:
+ *
+ * - geth and the nodes that reuse its wording (reth, erigon, bor, nitro, …): `max code size
+ *   exceeded`, `max initcode size exceeded`, `invalid code: must not begin with 0xef`, and
+ *   `contract creation code storage out of gas` for a result the gas left cannot deposit;
+ * - a bare `invalid code` (the whole text, or the whole `Details:` line of viem's message) from
+ *   nodes that drop the reason: anchored to the line, so "invalid code hash" or viem's own
+ *   "Missing or invalid parameters" never match;
+ * - anvil and other revm-based nodes: revm's error names (`CreateContractStartingWithEF`,
+ *   `CreateContractSizeLimit`, `CreateInitCodeSizeLimit`); anvil words oversized initcode as geth
+ *   does;
+ * - Nethermind: `transaction size over max init code size` for the data limit.
+ *
+ * A bare `out of gas` (revm's `OutOfGas`, Nethermind's result-size answer) is on purpose not
+ * here: an out-of-gas in the script body reads the same, and that one is not a deployless limit.
  */
 const NODE_PATTERNS: readonly { kind: LimitKind; re: RegExp }[] = [
   {
     kind: 'result-starts-with-ef',
-    re: /invalid code: must not begin with 0xef|CreateContractStartingWithEF/i,
+    re: /invalid code: must not begin with 0xef|CreateContractStartingWithEF|^(?:Details: )?invalid code$/im,
   },
-  { kind: 'data-too-large', re: /max initcode size exceeded|CreateInitCodeSizeLimit/i },
+  {
+    kind: 'data-too-large',
+    re: /max initcode size exceeded|CreateInitCodeSizeLimit|transaction size over max init code size/i,
+  },
   { kind: 'result-too-large', re: /max code size exceeded|CreateContractSizeLimit/i },
+  { kind: 'result-deposit-out-of-gas', re: /contract creation code storage out of gas/i },
 ];
 
-const SIZE_RE = /code size (\d+) limit (\d+)/;
+/** geth's sizes: `code size 24608 limit 24576`, or `size 28160 limit 24576` at a pinned block. */
+const SIZE_RE = /\bsize (\d+) limit (\d+)/;
+
+/** What the code deposit of a deployless result costs per byte (the yellow paper's G_codedeposit). */
+const RESULT_DEPOSIT_GAS_PER_BYTE = 200;
 
 const FIX = `run the script with toViem({ mode: 'stateOverride' }), which is a plain call`;
 
 /**
  * Recognizes a deployless-mode creation failure in a caught error (or its message string) and
  * explains it: the node rejected the call because the result starts with `0xEF`, the result is
- * over {@link DEPLOYLESS_MAX_RESULT_BYTES}, or the creation data (args included) is over
- * {@link DEPLOYLESS_MAX_DATA_BYTES}. viem usually surfaces these as "Missing or invalid
- * parameters" or "Transaction creation failed" with the node text in `details`; the whole
- * `cause` chain is searched (duck-typed, like `decodeScriptError`). Returns `undefined` for
- * anything else — rethrow it.
+ * over {@link DEPLOYLESS_MAX_RESULT_BYTES}, the creation data (args included) is over
+ * {@link DEPLOYLESS_MAX_DATA_BYTES}, or the gas left could not pay for depositing the result as
+ * code. viem usually surfaces these as "Missing or invalid parameters" or "Transaction creation
+ * failed" with the node text in `details`; the whole `cause` chain is searched (duck-typed, like
+ * `decodeScriptError`). Returns `undefined` for anything else — rethrow it. That includes the
+ * nodes that answer a limit with a text no better than a script failure's: a bare `out of gas`,
+ * or an empty revert (zkSync Era, Monad), which `explainRevert('0x')` lists among its causes.
  */
 export function explainDeploylessError(error: unknown): DeploylessLimitExplanation | undefined {
   for (const text of errorTexts(error)) {
     for (const { kind, re } of NODE_PATTERNS) {
       const match = re.exec(text);
       if (match === null) continue;
-      const nodeMessage = nodeLine(text, match.index);
+      const nodeMessage = lineAt(text, match.index);
       const sizes = SIZE_RE.exec(nodeMessage);
       const size = sizes === null ? undefined : Number(sizes[1]);
       return describe(kind, nodeMessage, size);
@@ -309,6 +341,17 @@ function describe(
           `deployless mode (the toViem() default) returns the result as contract code — ${FIX}, ` +
           `or split the call`,
       };
+    case 'result-deposit-out-of-gas':
+      return {
+        kind,
+        nodeMessage,
+        message:
+          `deployless call failed: the script ran, but the gas left could not pay for its ` +
+          `result — deployless mode (the toViem() default) returns the result as contract ` +
+          `code, and the node charges ${RESULT_DEPOSIT_GAS_PER_BYTE} gas per byte to deposit ` +
+          `it — ${FIX} and has no such deposit, or give the call more gas (no amount is ` +
+          `enough for a result over ${DEPLOYLESS_MAX_RESULT_BYTES} bytes), or return less`,
+      };
     default:
       return {
         kind,
@@ -322,28 +365,4 @@ function describe(
           `${FIX}, or pass smaller args`,
       };
   }
-}
-
-/** The message-like strings of `input` and its `cause` chain (cycle-safe). */
-function errorTexts(input: unknown): string[] {
-  if (typeof input === 'string') return [input];
-  const texts: string[] = [];
-  const seen = new Set<object>();
-  let current: unknown = input;
-  while (typeof current === 'object' && current !== null && !seen.has(current)) {
-    seen.add(current);
-    const e = current as { details?: unknown; shortMessage?: unknown; message?: unknown };
-    for (const text of [e.details, e.shortMessage, e.message]) {
-      if (typeof text === 'string') texts.push(text);
-    }
-    current = (current as { cause?: unknown }).cause;
-  }
-  return texts;
-}
-
-/** The line of `text` holding the match, trimmed (viem messages are multi-line). */
-function nodeLine(text: string, at: number): string {
-  const start = text.lastIndexOf('\n', at) + 1;
-  const end = text.indexOf('\n', at);
-  return text.slice(start, end === -1 ? undefined : end).trim();
 }

@@ -118,8 +118,8 @@ describe('the scripts of a built app', () => {
 
   test('what the page downloads up front stays small', () => {
     const bytes = upFrontChunks(built).reduce((total, chunk) => total + chunk.code.length, 0);
-    // Measured: 8.7 kB minified for the three scripts (bytecode and ABI), their plain data,
-    // the runtime entry and Vite's dynamic-import helper. The explain code alone is 36 kB and
+    // Measured: 9.1 kB minified for the three scripts (bytecode and ABI), their plain data,
+    // the runtime entry and Vite's dynamic-import helper. The explain code alone is 39 kB and
     // the compiler over 200 kB, so anything dragged in by mistake lands far above the budget.
     expect(bytes).toBeLessThan(12_000);
   });

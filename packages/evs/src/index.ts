@@ -191,6 +191,8 @@ export {
   explainDeploylessError, // node creation errors (0xEF result, size caps) → an explanation
 } from './deployless.js';
 export type { DeploylessLimitExplanation } from './deployless.js';
+export { explainUnsupportedOpcode } from './evm-target.js'; // the node's "invalid opcode" error → the evmVersion to recompile with
+export type { UnsupportedOpcodeExplanation } from './evm-target.js';
 // the precompiled script (compiled.toPrecompiled()): types only. `hydrate` and
 // `isPrecompiledScript` are exported by `@maxencerb/evs/runtime` alone, so getting them never
 // pulls the compiler in.
@@ -204,8 +206,11 @@ export type {
   DecodedBuiltinError, // issue #15: the Panic/Error/unknown/empty decode arms
   DecodedScriptError, // issue #15: the name-discriminated union decodeScriptError yields
   ErrorArgsOf, // issue #15: one error entry's decoded args record
+  ErrorStringArgs, // what a matchScriptError handler named `Error` receives
   HandlerResult, // the return type of matchScriptError
-  ScriptErrorHandlers, // issue #15: the matchScriptError handler record (declared + `_`)
+  PanicArgs, // what a matchScriptError handler named `Panic` receives
+  PanicKind, // a Panic code as one word to switch on
+  ScriptErrorHandlers, // the matchScriptError handler record: declared errors, built-ins, `_`
   ToViem, // the toViem() overloads a compiled and a precompiled script share
   ToViemMode, // 'deployless' | 'stateOverride' — a run-time mode for toViem()'s catch-all overload
 } from './viem.js';

@@ -15,12 +15,17 @@
 
 import { canonicalTypeSignature, describePanic } from './abi/artifact.js';
 import { classifyRevert, errorTableOf } from './abi/revert.js';
-import { immediateWidth, OPS, type EvmVersion, type Mnemonic } from './asm/ops.js';
+import type { EvmVersion } from './asm/forks.js';
 import { siteById, type SourceMap } from './asm/sourcemap.js';
 import { bytesToHex, hexToBytes, isHexString } from './core/bytes.js';
 import { EvsTypeError } from './core/errors.js';
 import type { Hex } from './core/types.js';
+import { describeForkOpcodes, forkOpcodesOf } from './evm-target.js';
 import { walkStmts, type ScriptIr, type SiteId, type Stmt } from './ir/nodes.js';
+
+// `hydrate.ts` reaches this module through its one dynamic import, so the checks of the debug
+// data it loads are exported from here: they travel in the same on-demand chunk
+export { debugDataOf } from './debug-data.js';
 
 export interface RevertExplanation {
   kind:
@@ -110,15 +115,21 @@ const FUND_THE_SCRIPT =
   "fund the script with a `balance` in its toViem({ mode: 'stateOverride' }) entry (or run it " +
   'in sender mode); the default deployless mode cannot fund it';
 
-function listSites(sites: readonly SiteRef[]): string {
-  return sites.map((s) => `${s.detail} (site ${s.id})`).join('; ');
+/** The sites by detail and id: all of them, or the first `limit` and how many follow. */
+function listSites(sites: readonly SiteRef[], limit = sites.length): string {
+  const shown = sites.slice(0, limit).map((s) => `${s.detail} (site ${s.id})`);
+  const rest = sites.length - shown.length;
+  return rest > 0
+    ? `${shown.join('; ')}; and ${rest} more (candidateSites lists them all)`
+    : shown.join('; ');
 }
 
-/** "bubbled verbatim from a callee through …" naming the strict call sites (non-empty). */
-function throughCallSites(sites: readonly SiteRef[]): string {
+/** "bubbled verbatim from a callee through …" naming the strict call sites (non-empty), at most
+ *  `limit` of them. */
+function throughCallSites(sites: readonly SiteRef[], limit?: number): string {
   const where =
     sites.length === 1 ? 'the strict call site' : `one of the ${sites.length} strict call sites`;
-  return `bubbled verbatim from a callee through ${where}: ${listSites(sites)}`;
+  return `bubbled verbatim from a callee through ${where}: ${listSites(sites, limit)}`;
 }
 
 const NOT_FROM_THIS_ARTIFACT =
@@ -337,63 +348,62 @@ function explainScriptError(
   };
 }
 
+/** How many strict call sites the empty-revert `message` names before it counts the rest: the
+ *  other causes come after that list and have to stay readable. `candidateSites` holds them all. */
+const EMPTY_MESSAGE_SITES = 3;
+
 /**
- * The empty payload has three origins: a callee's bare `revert()` / `require(false)` bubbled by a
- * strict call site, a strict `s.call` that sends a `value` the script's balance cannot cover (the
- * CALL fails before the target runs), or a frame that failed without data — out of gas, or an
- * opcode the node does not support at the requested block (a fork-gated opcode run at a
- * historical block or on a chain that has not activated that fork).
+ * The empty payload proves nothing about its origin, so the message lists every cause this
+ * script allows, the one a user can settle fastest first:
+ *
+ * 1. an opcode the node does not have at the requested block (a fork-gated opcode run at a
+ *    historical block, or on a chain that has not activated that fork), when the runtime uses
+ *    one: every call of the script then fails this way, whatever its arguments;
+ * 2. a callee's bare `revert()` / `require(false)` bubbled by a strict call site;
+ * 3. a strict `s.call` that sends a `value` the script's balance cannot cover (the CALL fails
+ *    before the target runs);
+ * 4. out of gas;
+ * 5. a deployless limit (`deployless.ts`) on a node that answers one with a plain revert instead
+ *    of a creation error, where `explainDeploylessError` has no text to recognize.
  */
 function explainEmpty(raw: Hex, ctx: ExplainContext): RevertExplanation {
   const candidateSites = bubblingSites(ctx);
-  const callee =
-    candidateSites.length > 0
-      ? `a bare revert() / require(false) ${throughCallSites(candidateSites)}; or `
-      : '';
-  const valueSites = unfundedValueSites(ctx);
-  const unfunded =
-    valueSites.length > 0
-      ? `the script's balance was below the \`value\` sent by ${listSites(valueSites)}, so ` +
-        `that CALL failed before the target ran — ${FUND_THE_SCRIPT}; or `
-      : '';
+  const causes: string[] = [];
   const opcodes = forkOpcodesOf(ctx.runtimeBytecode);
-  const frame =
-    opcodes.length === 0
-      ? 'the call frame failed without a reason (out of gas)'
-      : `the call frame failed without a reason: out of gas, or an opcode the node rejects at ` +
-        `this block — the runtime uses ${opcodes.map((o) => `${o} (${OPS[o].since})`).join(' and ')}` +
-        ` (evmVersion '${ctx.evmVersion}'); for a block or chain before that fork, recompile ` +
-        `with an older evmVersion ('paris' runs everywhere)`;
+  if (opcodes.length > 0) {
+    causes.push(
+      `an opcode the node does not have at this block: ${describeForkOpcodes(opcodes)} ` +
+        `(evmVersion '${ctx.evmVersion}'), so for a block or chain before that fork, recompile ` +
+        `with an older evmVersion ('paris' runs everywhere)`,
+    );
+  }
+  if (candidateSites.length > 0) {
+    causes.push(
+      `a bare revert() / require(false) ${throughCallSites(candidateSites, EMPTY_MESSAGE_SITES)}`,
+    );
+  }
+  const valueSites = unfundedValueSites(ctx);
+  if (valueSites.length > 0) {
+    causes.push(
+      `the script's balance was below the \`value\` sent by ${listSites(valueSites)}, so that ` +
+        `CALL failed before the target ran — ${FUND_THE_SCRIPT}`,
+    );
+  }
+  causes.push('the call ran out of gas');
+  causes.push(
+    `in deployless mode (the toViem() default), a result that is too large or starts with ` +
+      `0xEF, or a script and arguments that are too large together: some nodes (zkSync Era, ` +
+      `Monad) report those limits as an empty revert — run the call again with ` +
+      `toViem({ mode: 'stateOverride' }), which has none of them`,
+  );
   return {
     kind: 'empty',
-    message: `empty revert payload (no returndata) — ${callee}${unfunded}${frame}`,
+    message:
+      `empty revert payload (no returndata) — possible causes: ` +
+      causes.map((cause, i) => `(${i + 1}) ${cause}`).join('; '),
     candidateSites,
     raw,
   };
-}
-
-/** The post-merge, fork-gated opcodes evs emits, newest fork first (the one most likely to be
- *  missing at a historical block). */
-const FORK_GATED_OPCODES: readonly Mnemonic[] = ['MCOPY', 'PUSH0'];
-
-/**
- * The fork-gated opcodes the runtime's CODE region uses. The walk goes opcode by opcode, over
- * each PUSH's immediate, and ends at the first `INVALID`: the assembler plants one as the guard
- * before the data segments and the compiler emits it nowhere else, so everything after it is
- * data, which is never executed and does not count. (A user `peephole` hook that adds an
- * `INVALID` of its own only ends this scan early.)
- */
-function forkOpcodesOf(runtimeBytecode: Hex): readonly Mnemonic[] {
-  const bytes = hexToBytes(runtimeBytecode);
-  const used = new Set<number>();
-  let pc = 0;
-  while (pc < bytes.length) {
-    const code = bytes[pc] ?? OPS.INVALID.code;
-    if (code === OPS.INVALID.code) break;
-    used.add(code);
-    pc += 1 + immediateWidth(code);
-  }
-  return FORK_GATED_OPCODES.filter((mnemonic) => used.has(OPS[mnemonic].code));
 }
 
 /** Message rendering of one decoded error arg — bigints (top-level or nested in a decoded

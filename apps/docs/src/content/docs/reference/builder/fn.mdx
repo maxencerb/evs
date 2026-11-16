@@ -288,3 +288,4 @@ Thrown while the callback records, at the offending line:
 | `EvsTypeError` (`LITERAL_RANGE`) | a call passes a literal that does not fit its parameter's type |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | the body uses a value or a cell of the enclosing script |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | the body calls `s.return`, or the `LoopCtl` of an outer loop |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the definition is nested more than 256 levels deep: see [nesting limit](/reference/builder/if/#nesting-limit) |

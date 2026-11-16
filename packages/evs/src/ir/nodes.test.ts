@@ -11,6 +11,8 @@ import { EvsInternalError, EvsTypeError } from '../core/errors.js';
 import { typeToAbiParam, type EvsType, type Hex, type WordType } from '../core/types.js';
 import {
   deserializeIr,
+  MAX_BLOCK_DEPTH,
+  MAX_TUPLE_DEPTH,
   serializeIr,
   walkStmts,
   walkStmtsWithPath,
@@ -910,6 +912,124 @@ describe('deserializeIr rejections', () => {
       (r) => (r['body'][18]['body'][1]['then'][0]['k'] = 'jump'),
       /body\[18\]\.body\[1\]\.then\[0\]/,
     );
+  });
+
+  test('reports the whole path of a malformed node, whatever its depth', () => {
+    let nested = '{"site":0,"k":"break","extra":1}';
+    nested = `{"site":1,"k":"if","cond":"x","then":[],"else":[${nested}]}`;
+    nested = `{"site":2,"k":"while","header":[],"cond":0,"body":[${nested}]}`;
+    nested = `{"site":3,"k":"if","cond":0,"then":[{"site":4,"k":"continue"},${nested}],"else":[]}`;
+    const json = `{"irVersion":1,"name":"p","args":[],"values":[],"cells":[],"fns":[],"body":[${nested}],"returns":[]}`;
+    expect(() => deserializeIr(json)).toThrowError(
+      'deserializeIr: ir.body[0].then[1].body[0].cond: expected a non-negative integer, got "x"',
+    );
+    const inFn = `{"irVersion":1,"name":"p","args":[],"values":[],"cells":[],"fns":[{"name":"f","params":[{"name":"a","type":{"type":"tuple[2]","components":[{"name":"m","type":"tuple","components":[{"name":7,"type":"bool"}]}]},"value":0}],"results":[],"body":[],"resultValues":[]}],"body":[],"returns":[]}`;
+    expect(() => deserializeIr(inFn)).toThrowError(
+      'deserializeIr: ir.fns[0].params[0].type.components[0].components[0].name: expected a string, got 7',
+    );
+  });
+
+  describe('nesting limits', () => {
+    const word = `0x${'0'.repeat(63)}1`;
+    /** A document whose body holds `stmts` after a `bool` const, with `type` for value 1. */
+    const doc = (stmts: string, type = '"uint256"', extra = ''): string =>
+      `{"irVersion":1,"name":"deep","args":[],"values":[{"type":"bool"},{"type":${type}}],"cells":[],"fns":[],"body":[{"site":0,"k":"const","out":0,"type":"bool","data":{"kind":"word","hex":"${word}"}}${stmts}],"returns":[]${extra}}`;
+    const nestedIfs = (depth: number): string => {
+      let nested = '';
+      for (let i = 0; i < depth; i++) {
+        nested = `{"site":${i + 1},"k":"if","cond":0,"then":[${nested}],"else":[]}`;
+      }
+      return `,${nested}`;
+    };
+    const nestedWhiles = (depth: number): string => {
+      let nested = '';
+      for (let i = 0; i < depth; i++) {
+        const block = i % 2 === 0 ? 'header' : 'body';
+        const other = block === 'header' ? 'body' : 'header';
+        nested = `{"site":${i + 1},"k":"while","${block}":[${nested}],"cond":0,"${other}":[]}`;
+      }
+      return `,${nested}`;
+    };
+    /** `depth` tuple levels around a `uint256`, as an ABI param. */
+    const nestedParam = (depth: number): string => {
+      let param = '{"name":"a","type":"uint256"}';
+      for (let i = 0; i < depth; i++) {
+        param = `{"name":"a","type":"tuple","components":[${param}]}`;
+      }
+      return param;
+    };
+    /** The same as a value type: the outermost level is the type object itself. */
+    const nestedType = (depth: number): string =>
+      `{"type":"tuple","components":[${nestedParam(depth - 1)}]}`;
+
+    function expectTooDeep(json: string, msg: RegExp): void {
+      let caught: unknown;
+      try {
+        deserializeIr(json);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvsTypeError);
+      expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
+      expect((caught as EvsTypeError).message).toMatch(msg);
+    }
+
+    test('blocks: the limit decodes, one level more is a coded error with the JSON path', () => {
+      expect(() => deserializeIr(doc(nestedIfs(MAX_BLOCK_DEPTH)))).not.toThrow();
+      expect(() => deserializeIr(doc(nestedWhiles(MAX_BLOCK_DEPTH)))).not.toThrow();
+      expectTooDeep(
+        doc(nestedIfs(MAX_BLOCK_DEPTH + 1)),
+        /^deserializeIr: ir\.body\[1\]\.then\[0\]\.then … \(\d+ more\) … \.then\[0\]\.then\[0\]: blocks .* nest more than 256 levels deep — flatten the script/,
+      );
+      expectTooDeep(
+        doc(nestedWhiles(MAX_BLOCK_DEPTH + 1)),
+        /^deserializeIr: ir\.body\[1\]\.header\[0\]\.body … .*nest more than 256 levels deep/,
+      );
+    });
+
+    test('blocks: an fn body is measured on its own', () => {
+      // the main body is at the limit too
+      const fn = (depth: number): string =>
+        doc(nestedIfs(MAX_BLOCK_DEPTH)).replace(
+          '"fns":[]',
+          `"fns":[{"name":"f","params":[],"results":[],"body":[${nestedIfs(depth).slice(1)}],"resultValues":[]}]`,
+        );
+      expect(() => deserializeIr(fn(MAX_BLOCK_DEPTH))).not.toThrow();
+      expectTooDeep(fn(MAX_BLOCK_DEPTH + 1), /^deserializeIr: ir\.fns\[0\]\.body\[0\]\.then/);
+    });
+
+    test('tuple types: the limit decodes, one level more is a coded error with the JSON path', () => {
+      expect(() => deserializeIr(doc('', nestedType(MAX_TUPLE_DEPTH)))).not.toThrow();
+      expectTooDeep(
+        doc('', nestedType(MAX_TUPLE_DEPTH + 1)),
+        /^deserializeIr: ir\.values\[1\]\.type\.components\[0\] … \(\d+ more\) … .*\.components: the type nests tuples more than 256 levels deep — flatten the type/,
+      );
+    });
+
+    test('tuple types: the ABI params of an error are bounded the same way', () => {
+      const withError = (depth: number): string =>
+        doc(
+          '',
+          '"uint256"',
+          `,"errors":[{"name":"E","selector":"0x12345678","inputs":[${nestedParam(depth)}]}]`,
+        );
+      expect(() => deserializeIr(withError(MAX_TUPLE_DEPTH))).not.toThrow();
+      expectTooDeep(
+        withError(MAX_TUPLE_DEPTH + 1),
+        /^deserializeIr: ir\.errors\[0\]\.inputs\[0\]\.components.* nests tuples more than 256 levels deep/,
+      );
+    });
+
+    test('a document nested far past the host stack is the same coded error', () => {
+      expectTooDeep(doc(nestedIfs(50_000)), /nest more than 256 levels deep/);
+      expectTooDeep(doc(nestedWhiles(50_000)), /nest more than 256 levels deep/);
+      expectTooDeep(doc('', nestedType(50_000)), /nests tuples more than 256 levels deep/);
+    });
+
+    test('an array suffix chain is one string, not a nesting', () => {
+      // well-formed however long: its depth is `validateIr`'s to reject
+      expect(() => deserializeIr(doc('', `"uint256${'[]'.repeat(5000)}"`))).not.toThrow();
+    });
   });
 
   test('ignores the legacy `loc` keys of IR serialized before source locations were removed', () => {

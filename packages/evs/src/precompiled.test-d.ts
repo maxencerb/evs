@@ -253,6 +253,97 @@ test('the debug loader takes the data or a module namespace around it', () => {
   void hydrate(data, { debug: () => Promise.resolve(data) });
 });
 
+// What a JSON module is typed as: no literal survives. `version` is a `number`, the bytecode a
+// `string`, a statement kind a `string`. The two objects below are not `as const` for that reason.
+const jsonData = {
+  version: 1,
+  id: '0x1f2e3d4c5b6a7988',
+  abi: [
+    {
+      type: 'function',
+      name: 'price',
+      stateMutability: 'view',
+      inputs: [{ name: 'asset', type: 'address' }],
+      outputs: [
+        { name: 'result', type: 'tuple', components: [{ name: 'price', type: 'uint256' }] },
+      ],
+    },
+  ],
+  runtimeBytecode: '0x00',
+  evmVersion: 'cancun',
+};
+const jsonDebug = {
+  version: 1,
+  id: '0x1f2e3d4c5b6a7988',
+  ir: {
+    irVersion: 1,
+    name: 'price',
+    args: [{ name: 'asset', type: 'address' }],
+    values: [{ type: 'address' }],
+    cells: [],
+    fns: [],
+    body: [{ k: 'const', out: 1, site: 0 }],
+    returns: [],
+  },
+  sites: [{ id: 0, kind: 'stmt', detail: 'const' }],
+};
+
+test('hydrate takes data without its literal types, and gives a wide ABI', async () => {
+  expectTypeOf(jsonData.version).toEqualTypeOf<number>();
+  const script = hydrate(jsonData);
+  expectTypeOf(script).toEqualTypeOf<PrecompiledScript<Abi>>();
+  expectTypeOf(script.toViem()).toEqualTypeOf<{ abi: Abi; code: Hex }>();
+  expectTypeOf(script.toJSON()).toEqualTypeOf<PrecompiledScriptData<Abi>>();
+
+  // the call is accepted and nothing is inferred from the script
+  const out = await client.readContract({
+    ...script.toViem(),
+    functionName: 'price',
+    args: [token],
+  });
+  expectTypeOf(out).toEqualTypeOf<unknown>();
+
+  // a document that is not the data is still refused
+  // @ts-expect-error — no `runtimeBytecode`, no `evmVersion`
+  void hydrate({ version: jsonData.version, abi: jsonData.abi });
+  // @ts-expect-error — the debug data is not the script's data
+  void hydrate(jsonDebug);
+});
+
+test('the debug loader takes debug data without its literal types, with either data', () => {
+  expectTypeOf(jsonDebug.ir.body).toEqualTypeOf<{ k: string; out: number; site: number }[]>();
+  expectTypeOf(hydrate(jsonData, { debug: () => Promise.resolve(jsonDebug) })).toEqualTypeOf<
+    PrecompiledScript<Abi>
+  >();
+  // what `() => import('./price.debug.json')` resolves to
+  void hydrate(jsonData, { debug: () => Promise.resolve({ default: jsonDebug }) });
+  void hydrate(jsonData, { debug: () => Promise.resolve(debug) });
+
+  // data with its literal types keeps them, whatever the loader resolves to
+  const data = precompiled.toJSON();
+  expectTypeOf(hydrate(data, { debug: () => Promise.resolve(jsonDebug) })).toEqualTypeOf(
+    precompiled,
+  );
+  expectTypeOf(
+    hydrate(data, { debug: () => Promise.resolve({ default: jsonDebug }) }),
+  ).toEqualTypeOf(precompiled);
+
+  // @ts-expect-error — not debug data
+  void hydrate(jsonData, { debug: () => Promise.resolve(jsonData) });
+});
+
+test('the pairing id is optional in both documents: evs 0.5.0 wrote neither', () => {
+  expectTypeOf<PrecompiledScriptData['id']>().toEqualTypeOf<string | undefined>();
+  expectTypeOf<PrecompiledScriptDebug['id']>().toEqualTypeOf<string | undefined>();
+  const legacy = {
+    version: 1,
+    abi: [{ type: 'function', name: 'f', stateMutability: 'view', inputs: [], outputs: [] }],
+    runtimeBytecode: '0x00',
+    evmVersion: 'cancun',
+  } as const;
+  expectTypeOf(hydrate(legacy)).toEqualTypeOf<PrecompiledScript<(typeof legacy)['abi']>>();
+});
+
 test('isPrecompiledScript narrows an unknown value, and every script is one', () => {
   const value: unknown = precompiled;
   if (isPrecompiledScript(value)) {

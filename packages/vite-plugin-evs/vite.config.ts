@@ -38,6 +38,7 @@ export default defineConfig({
           name: 'plugin',
           include: ['src/**/*.test.ts', 'test/*.test.ts'],
           environment: 'node',
+          globalSetup: ['./test/setup/library-build.ts'],
           testTimeout: 30_000,
           hookTimeout: 30_000,
         },

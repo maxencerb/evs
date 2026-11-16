@@ -1,9 +1,16 @@
 /**
- * The handlers of `matchScriptError`, as an app writes them: one per declared error, with the
- * arguments inferred, plus `_`. A handler under any other key would never run (Panic,
- * Error(string) and the two evs runtime errors reach `_`), so it is a type error.
+ * The handlers of `matchScriptError`, as an app writes them: one per declared error, an optional
+ * one for a Panic, an `Error(string)` and the two evs runtime errors, plus `_`. Every argument is
+ * inferred. A handler under any other key would never run, so it is a type error.
  */
-import { evscript, matchScriptError, namedArg, t, type ScriptErrorHandlers } from '@maxencerb/evs';
+import {
+  evscript,
+  matchScriptError,
+  namedArg,
+  t,
+  type PanicKind,
+  type ScriptErrorHandlers,
+} from '@maxencerb/evs';
 import { matchScriptError as matchFromRuntime } from '@maxencerb/evs/runtime';
 
 import { expectType, type Same } from './assert.js';
@@ -53,33 +60,45 @@ matchScriptError(guard, caught, {
   _: () => 0,
 });
 
-// a handler named like an arm that reaches `_`
-matchScriptError(guard, caught, {
-  TooSmall: () => 0,
-  NotOwner: () => 0,
-  // @ts-expect-error -- Panic reaches `_`
-  Panic: (panic: unknown) => panic,
-  _: () => 0,
+// a Panic and an Error(string) carry something, and their handler receives it first
+const builtins = matchScriptError(guard, caught, {
+  TooSmall: () => 'too small' as const,
+  NotOwner: () => 'not owner' as const,
+  Panic: ({ code, kind, meaning }, error) => {
+    expectType<Same<typeof code, bigint>>();
+    expectType<Same<typeof kind, PanicKind>>();
+    expectType<Same<typeof meaning, string>>();
+    expectType<Same<typeof error.name, 'Panic'>>();
+    return kind === 'overflow' ? ('too large' as const) : ('panic' as const);
+  },
+  Error: ({ reason }, error) => {
+    expectType<Same<typeof reason, string>>();
+    expectType<Same<typeof error.name, 'Error'>>();
+    return 'reverted' as const;
+  },
+  EvsDecodeError: ({ site }) => {
+    expectType<Same<typeof site, bigint>>();
+    return 'decode' as const;
+  },
+  EvsInvalidCalldata: (args) => {
+    expectType<Same<keyof typeof args, never>>();
+    return 'calldata' as const;
+  },
+  _: () => null,
 });
+expectType<
+  Same<
+    typeof builtins,
+    'too small' | 'not owner' | 'too large' | 'panic' | 'reverted' | 'decode' | 'calldata' | null
+  >
+>();
+
+// what a Panic handler receives first is the panic: it has no `reason`
 matchScriptError(guard, caught, {
   TooSmall: () => 0,
   NotOwner: () => 0,
-  // @ts-expect-error -- Error(string) reaches `_`
-  Error: () => 0,
-  _: () => 0,
-});
-matchScriptError(guard, caught, {
-  TooSmall: () => 0,
-  NotOwner: () => 0,
-  // @ts-expect-error -- the evs runtime errors reach `_`
-  EvsDecodeError: () => 0,
-  _: () => 0,
-});
-matchScriptError(guard, caught, {
-  TooSmall: () => 0,
-  NotOwner: () => 0,
-  // @ts-expect-error -- the evs runtime errors reach `_`
-  EvsInvalidCalldata: () => 0,
+  // @ts-expect-error -- `reason` belongs to Error(string)
+  Panic: (panic) => panic.reason,
   _: () => 0,
 });
 
@@ -93,18 +112,19 @@ matchScriptError(guard, caught, {
 });
 
 // the runtime entry exports the same function
-matchFromRuntime(guard, caught, {
+const fromRuntime = matchFromRuntime(guard, caught, {
   TooSmall: () => 0,
   NotOwner: () => 0,
-  // @ts-expect-error -- Panic reaches `_`
-  Panic: () => 0,
+  Panic: ({ kind }) => kind,
   _: () => 0,
 });
+expectType<Same<typeof fromRuntime, number | PanicKind>>();
 
 // a table typed ahead of the call
 const handlers: ScriptErrorHandlers<typeof guard.abi, string> = {
   TooSmall: ({ amount }) => `too small: ${amount}`,
   NotOwner: () => 'not the owner',
+  Panic: ({ meaning }) => meaning,
   _: (other) => other.name,
 };
 expectType<Same<ReturnType<typeof run>, string>>();

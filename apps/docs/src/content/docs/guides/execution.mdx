@@ -151,13 +151,15 @@ state-override mode.
 
 | Limit | In deployless mode | Node error, in viem's `details` |
 | --- | --- | --- |
-| Result size | the ABI-encoded result is at most 24,576 bytes (EIP-170): 765 elements for one `uint256[]` | `max code size exceeded` (geth), `CreateContractSizeLimit` (anvil) |
-| `0xEF` prefix | the result's first byte is not `0xEF` (EIP-3541) | `invalid code: must not begin with 0xef` (geth), `CreateContractStartingWithEF` (anvil) |
-| Data size | `398 + 128 + pad32(initBytecode) + pad32(calldata)` is at most 49,152 bytes (EIP-3860): about 48.6 KB of script and args, or roughly 1,500 array elements for a small script | `max initcode size exceeded` (geth and anvil) |
-| Gas | about 75,000 + 220 per runtime byte + 200 per result byte extra: 1.6M for a 5 KB script that returns 2 KB | none: it counts toward the node's gas cap |
+| Result size | the ABI-encoded result is at most 24,576 bytes (EIP-170): 765 elements for one `uint256[]` | `max code size exceeded` (geth), `CreateContractSizeLimit` (anvil), `out of gas` (Nethermind) |
+| `0xEF` prefix | the result's first byte is not `0xEF` (EIP-3541) | `invalid code: must not begin with 0xef` (geth), `invalid code` (some nodes), `CreateContractStartingWithEF` (anvil) |
+| Data size | `398 + 128 + pad32(initBytecode) + pad32(calldata)` is at most 49,152 bytes (EIP-3860): about 48.6 KB of script and args, or roughly 1,500 array elements for a small script | `max initcode size exceeded` (geth and anvil), `transaction size over max init code size` (Nethermind) |
+| Gas | about 75,000 + 220 per runtime byte + 200 per result byte extra: 1.6M for a 5 KB script that returns 2 KB | `contract creation code storage out of gas` (geth) or `OutOfGas` (anvil), when the gas left cannot pay for the result |
 
 A limit never returns a wrong value: viem throws, usually `Missing or invalid parameters` or
 `Transaction creation failed`.
+
+zkSync Era and Monad report a limit as a bare `execution reverted`, with no revert data.
 
 - **Fix.** Switch to `toViem({ mode: 'stateOverride' })`. Without provider support for it,
   split a large array argument over several calls.
@@ -168,6 +170,9 @@ A limit never returns a wrong value: viem throws, usually `Missing or invalid pa
 - **Detect.** `compile()` [warns](/reference/diagnostics/#warnings) about risky result
   shapes, and [`explainDeploylessError`](/reference/utilities/explain-deployless-error/)
   names the limit a failed call hit. `deploylessDataSize` measures the data size up front.
+- **Not every node names the limit.** A bare `out of gas` or an empty revert reads like a
+  failure of the script, so `explainDeploylessError` returns `undefined` for them. When a call
+  is near a limit, run it again in state-override mode.
 
 ## Historical blocks
 

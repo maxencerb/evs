@@ -7,11 +7,21 @@
  * performs the structural (shape + version) check only; `ir/validate.ts` is the semantic trust
  * boundary (`deserialize → validate` for external IR).
  *
- * A barrel over `ir/nodes/`: the node inventory and op vocabularies (`schema.ts`), the JSON
- * (de)serialization (`json.ts`), and the def/use tables + tree traversal (`walk.ts`).
+ * A barrel over `ir/nodes/`: the node inventory, op vocabularies and nesting limits
+ * (`schema.ts`), the JSON (de)serialization (`json.ts`), and the def/use tables + tree traversal
+ * (`walk.ts`). `ir/nodes/origin.ts` (the registry of the IR objects evs itself produced) is not
+ * re-exported here: only the compiler uses it, and this barrel is part of what the compiler-free
+ * runtime entry loads.
  */
 
-export { callOutputs, isAccountOp, isEnvOp } from './nodes/schema.js';
+export {
+  blockDepthMessage,
+  callOutputs,
+  isAccountOp,
+  isEnvOp,
+  MAX_BLOCK_DEPTH,
+  MAX_TUPLE_DEPTH,
+} from './nodes/schema.js';
 export type {
   ValueId,
   CellId,

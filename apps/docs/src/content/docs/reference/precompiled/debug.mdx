@@ -22,6 +22,8 @@ const precompiled = double.compile().toPrecompiled();
 
 const debug = await precompiled.debug();
 
+debug.id; // '0xb3356908ed9344d8', the same as precompiled.toJSON().id
+
 debug.sites[1];
 // {
 //   id: 1,
@@ -65,6 +67,7 @@ The client hands the second file back to `hydrate`: see
 | Field | Type | Holds |
 | --- | --- | --- |
 | `version` | `1` | The format version. |
+| `id` | `string` | The compilation that wrote the data: the `id` of the [script's data](/reference/precompiled/to-json/). |
 | `ir` | `ScriptIr` | The recorded program: the artifact's [`ir`](/reference/artifact/#ir). |
 | `sites` | `{ id, kind, detail, panicCodes?, sendsValue? }[]` | One entry per compiled statement: the artifact's [`sourceMap.sites`](/reference/artifact/#sourcemap). |
 
@@ -81,8 +84,12 @@ None.
 - **Already there after `toPrecompiled()`.** A script that comes straight from the artifact
   resolves at once, with the artifact's own `ir` and `sites`.
 - **Shared with `explainRevert`.** Both use one load, whichever is called first.
-- **Tied to one build.** The debug data describes one compilation. Write it in the same build
-  step as the script's data, never from an older run.
+- **Tied to one build.** The debug data describes one compilation, and carries its `id`. Write
+  it in the same build step as the script's data, never from an older run.
+- **Refused by another script.** A script hydrated with debug data of another `id` rejects: the
+  message names both scripts, or both builds of the script.
+- **Checked when it loads.** A hydrated script checks everything `explainRevert` reads, so
+  malformed debug data rejects here and never inside an explanation.
 
 ## Errors
 
@@ -91,5 +98,6 @@ The promise rejects with:
 | Error | When |
 | --- | --- |
 | `EvsError` (`DEBUG_DATA_MISSING`) | the script was [hydrated](/reference/precompiled/hydrate/) without a `debug` loader |
-| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than debug data, or to data of another version |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than debug data, to malformed debug data, or to data of another version |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the debug data belongs to another script, or to another build of this one |
 | the loader's own error | the debug data failed to load |

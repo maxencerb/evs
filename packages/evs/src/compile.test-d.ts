@@ -24,6 +24,8 @@ import {
   toCreationBytecode,
   toViemDeployless,
   toViemStateOverride,
+  type PanicArgs,
+  type PanicKind,
   type ToViemMode,
 } from './viem.js';
 
@@ -406,46 +408,68 @@ test('matchScriptError requires every declared handler plus _, and types the arg
   });
 });
 
-test('matchScriptError rejects a handler that is neither a declared error nor _', () => {
-  // Panic and Error(string) reach `_`: a handler of that name would never run
+test('matchScriptError: Panic, Error and the evs runtime errors take an optional typed handler', () => {
+  const out = matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    Panic: (panic, error) => {
+      expectTypeOf(panic).toEqualTypeOf<PanicArgs>();
+      expectTypeOf(panic.kind).toEqualTypeOf<PanicKind>();
+      expectTypeOf(panic.code).toEqualTypeOf<bigint>();
+      expectTypeOf(error.name).toEqualTypeOf<'Panic'>();
+      return 'panic' as const;
+    },
+    Error: ({ reason }, error) => {
+      expectTypeOf(reason).toEqualTypeOf<string>();
+      expectTypeOf(error.name).toEqualTypeOf<'Error'>();
+      return 'error' as const;
+    },
+    EvsDecodeError: ({ site }) => {
+      expectTypeOf(site).toEqualTypeOf<bigint>();
+      return 'decode' as const;
+    },
+    EvsInvalidCalldata: (args) => {
+      expectTypeOf<keyof typeof args>().toEqualTypeOf<never>();
+      return 'calldata' as const;
+    },
+    _: () => null,
+  });
+  expectTypeOf(out).toEqualTypeOf<number | 'panic' | 'error' | 'decode' | 'calldata' | null>();
+
+  // what a Panic handler receives first is the panic, so a member it does not have is an error
   matchScriptError(guardScript, undefined as unknown, {
     NoBalance: () => 0,
     NotOwner: () => 0,
-    // @ts-expect-error — `Panic` is not a declared error
-    Panic: (panic: unknown) => panic,
+    // @ts-expect-error — a panic carries no `reason`
+    Panic: (panic) => panic.reason,
     _: () => 0,
   });
-  matchScriptError(guardScript, undefined as unknown, {
-    NoBalance: () => 0,
-    NotOwner: () => 0,
-    // @ts-expect-error — `Error` is not a declared error
-    Error: () => 0,
-    _: () => 0,
-  });
-  // so do the two evs runtime errors
-  matchScriptError(guardScript, undefined as unknown, {
-    NoBalance: () => 0,
-    NotOwner: () => 0,
-    // @ts-expect-error — `EvsDecodeError` reaches `_`
-    EvsDecodeError: () => 0,
-    _: () => 0,
-  });
+});
+
+test('matchScriptError rejects a handler nothing would call', () => {
   // a misspelled name is caught by its own key, next to the missing handler
   matchScriptError(guardScript, undefined as unknown, {
     NoBalance: () => 0,
-    // @ts-expect-error — `NotOwnr` is not a declared error
+    // @ts-expect-error — `NotOwnr` is not an error of this script
     NotOwnr: () => 0,
     NotOwner: () => 0,
+    _: () => 0,
+  });
+  matchScriptError(guardScript, undefined as unknown, {
+    NoBalance: () => 0,
+    NotOwner: () => 0,
+    // @ts-expect-error — the handler is `Panic`
+    panic: () => 0,
     _: () => 0,
   });
   // a table built ahead of the call is held to the same keys
   const prebuilt = {
     NoBalance: () => 0,
     NotOwner: () => 0,
-    Panic: () => 0,
+    Panik: () => 0,
     _: () => 0,
   };
-  // @ts-expect-error — `Panic` is not a declared error
+  // @ts-expect-error — `Panik` is not an error of this script
   matchScriptError(guardScript, undefined as unknown, prebuilt);
 
   // an ABI that is not a literal declares any name: every key is a possible error

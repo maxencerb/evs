@@ -63,6 +63,53 @@ limit?.size; // 24608
 limit?.limit; // 24576
 ```
 
+### Falling back to state override
+
+Every limit has the same fix, so a recognized error is a reason to run the call again in the
+other mode.
+
+```ts {20-23}
+import { compile, evscript, explainDeploylessError, t } from '@maxencerb/evs';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const zeros = evscript({ name: 'zeros', args: [t.uint256] }, (s, n) =>
+  s.return({ words: s.newArray(t.uint256, n) }),
+);
+
+const compiled = compile(zeros);
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+async function read(mode: 'deployless' | 'stateOverride') {
+  return client.readContract({
+    ...compiled.toViem({ mode }),
+    functionName: 'zeros',
+    args: [1_000n], // a 32,096-byte result
+  });
+}
+
+const { words } = await read('deployless').catch((error: unknown) => {
+  if (explainDeploylessError(error) === undefined) throw error;
+  return read('stateOverride');
+});
+```
+
+### Out of gas on the result
+
+Deployless mode stores the result as contract code, at 200 gas per byte. A call whose script
+ran to its end can still fail there.
+
+```ts {3-5}
+import { explainDeploylessError } from '@maxencerb/evs';
+
+const limit = explainDeploylessError(
+  'contract creation code storage out of gas',
+);
+
+limit?.kind; // 'result-deposit-out-of-gas'
+limit?.message; // names the deposit, and state-override mode, which has none
+```
+
 ## Returns
 
 `DeploylessLimitExplanation | undefined`
@@ -71,7 +118,7 @@ limit?.limit; // 24576
 
 | Field | Type | Meaning |
 | --- | --- | --- |
-| `kind` | one of three strings | which limit the call hit: see the next table |
+| `kind` | one of four strings | which limit the call hit: see the next table |
 | `message` | `string` | what happened and what to do about it |
 | `nodeMessage` | `string` | the node's own text that matched |
 | `size` | `number`, optional | the rejected size in bytes, when the node reports it |
@@ -79,9 +126,13 @@ limit?.limit; // 24576
 
 | `kind` | Limit | Node text it matches |
 | --- | --- | --- |
-| `'result-starts-with-ef'` | the result must not start with byte `0xEF` | `invalid code: must not begin with 0xef`, `CreateContractStartingWithEF` |
+| `'result-starts-with-ef'` | the result must not start with byte `0xEF` | `invalid code: must not begin with 0xef`, `invalid code` as the whole text, `CreateContractStartingWithEF` |
 | `'result-too-large'` | the result is over 24,576 bytes | `max code size exceeded`, `CreateContractSizeLimit` |
-| `'data-too-large'` | the creation data, arguments included, is over 49,152 bytes | `max initcode size exceeded`, `CreateInitCodeSizeLimit` |
+| `'data-too-large'` | the creation data, arguments included, is over 49,152 bytes | `max initcode size exceeded`, `CreateInitCodeSizeLimit`, `transaction size over max init code size` |
+| `'result-deposit-out-of-gas'` | the gas left cannot pay 200 gas per byte of the result | `contract creation code storage out of gas` |
+
+`size` is read from both wordings geth uses: `code size 24608 limit 24576` and
+`size 24608 limit 24576`.
 
 ## Parameters
 
@@ -106,8 +157,14 @@ explainDeploylessError(new Error('fetch failed')); // undefined
 
 - **Deployless only.** State-override mode is a plain call and has none of these limits. Every
   `message` suggests `toViem({ mode: 'stateOverride' })`.
-- **Matches node text.** It recognizes the wording of geth and the nodes that reuse it, and of
-  anvil. Any other text gives `undefined`.
+- **Matches node text.** It recognizes the wording of geth and the nodes that reuse it, of
+  anvil and of Nethermind. Any other text gives `undefined`.
+- **A bare `out of gas` is not matched.** anvil words the result's deposit that way, and
+  Nethermind an oversized result. An out-of-gas in the script reads the same, and that one is
+  not a limit.
+- **Some nodes revert instead.** zkSync Era and Monad report a limit as an empty revert.
+  [`explainRevert`](/reference/artifact/explain-revert/#empty-reverts) lists a deployless limit
+  among the causes of one.
 - **Not for reverts.** A script revert is not a limit. Decode it with
   [`decodeScriptError`](/reference/utilities/decode-script-error/).
 

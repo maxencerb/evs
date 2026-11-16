@@ -360,4 +360,5 @@ Thrown on the host. None of these is a script outcome.
 | `EvsTypeError` (`LITERAL_RANGE`) | an integer argument out of range, or an `address` or `bytesN` of the wrong length |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a mock method returns a malformed reply, or `maxSteps` or `env` is invalid |
 | `EvsCompileError` (`COMPILE_LIMIT`) | the run goes over `maxSteps` |
-| `EvsInternalError` (`INTERNAL`) | the IR is invalid, which only hand-built or deserialized IR can be |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the IR is invalid, which only a hand-built or [deserialized](/reference/utilities/serialize-ir/) IR can be. The message names the statement |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | such an IR nests blocks more than 256 levels deep |

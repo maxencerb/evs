@@ -4,7 +4,8 @@ description: Decodes a caught error and calls the handler for it, with one requi
 ---
 
 Decodes a caught error and calls the handler for it, with one required handler per declared
-error and a `_` fallback for everything else.
+error, optional ones for panics and reverts with a reason, and a `_` fallback for everything
+else.
 
 ## Import
 
@@ -58,7 +59,7 @@ Add an error to the script without adding its handler, and the call no longer ty
 
 ### Narrowing the fallback
 
-`_` receives every revert that is not a declared error. Switch on its `name` to tell them apart.
+`_` receives every revert that no named handler takes. Switch on its `name` to tell them apart.
 
 ```ts {8-13}
 import { evscript, matchScriptError, t } from '@maxencerb/evs';
@@ -79,6 +80,32 @@ const explain = (error: unknown) =>
 explain('0x4e487b710000000000000000000000000000000000000000000000000000000000000012');
 // 'panic: division or modulo by zero'
 ```
+
+### Panics and reverts with a reason
+
+`Panic` and `Error` take a handler of their own. Each receives what the revert carries.
+
+```ts {9-11}
+import { evscript, matchScriptError, t } from '@maxencerb/evs';
+
+const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y) =>
+  s.return({ q: x.div(y) }),
+);
+
+const explain = (error: unknown) =>
+  matchScriptError(ratio, error, {
+    Panic: ({ kind, meaning }) =>
+      kind === 'division-by-zero' ? 'the divisor is zero' : `panic: ${meaning}`,
+    Error: ({ reason }) => `reverted: ${reason}`,
+    _: (other) => `other revert: ${other.name}`,
+  });
+
+explain('0x4e487b710000000000000000000000000000000000000000000000000000000000000012');
+// 'the divisor is zero'
+```
+
+`kind` is the panic code as one word: see the [panic codes](/reference/diagnostics/#panic-codes).
+Without these handlers, both reverts reach `_`.
 
 ### Errors that are not reverts
 
@@ -156,12 +183,18 @@ if (outcome.kind === 'revert') {
 
 - **Type:** `ScriptErrorHandlers<abi, r>`
 
-A record with one function per declared error, plus `_`.
+A record with one function per declared error, plus `_`. Every named handler is called as
+`(args, error)`: what the revert carries, then the whole
+[decoded error](/reference/utilities/decode-script-error/#returns).
 
-| Key | Called with | Required |
+| Key | `args` | Required |
 | --- | --- | --- |
-| a declared error name | `(args, error)`: the decoded arguments keyed by name, then the whole decoded error | yes |
-| `_` | `(error)`: any other [decoded error](/reference/utilities/decode-script-error/#returns) | yes |
+| a declared error name | the decoded arguments, keyed by name | yes |
+| `Panic` | `code`, `kind` and `meaning` of a `Panic(uint256)` | no |
+| `Error` | `reason`, the message of an `Error(string)` | no |
+| `EvsDecodeError` | `site`, the call whose returndata did not decode | no |
+| `EvsInvalidCalldata` | none | no |
+| `_` | called as `(error)`, with any revert no other handler takes | yes |
 
 ```ts {20-21}
 import { evscript, matchScriptError, namedArg, t } from '@maxencerb/evs';
@@ -198,8 +231,8 @@ const ratio = evscript({ name: 'ratio', args: [t.uint256, t.uint256] }, (s, x, y
 );
 
 matchScriptError(ratio, '0x', {
-  // @ts-expect-error: `Panic` is not an error this script declares
-  Panic: () => 'a panic',
+  // @ts-expect-error: the handler is `Panic`
+  panic: () => 'a panic',
   _: (other) => other.name,
 });
 // 'empty'
@@ -208,11 +241,11 @@ matchScriptError(ratio, '0x', {
 ## Behavior
 
 - **Exhaustive.** A missing handler for a declared error is a type error.
-- **Everything else goes to `_`.** Panics, `Error(string)`, the two
-  [built-in errors](/reference/diagnostics/#built-in-errors), unknown selectors and empty
-  reverts.
-- **No handler for them.** A key such as `Panic`, `Error` or `EvsDecodeError` is a type error,
-  and its handler is never called. [Narrow `_`](#narrowing-the-fallback) instead.
+- **Optional built-in handlers.** `Panic`, `Error` and the two
+  [built-in errors](/reference/diagnostics/#built-in-errors), `EvsDecodeError` and
+  `EvsInvalidCalldata`, each take that revert when the record has a handler of that name.
+- **Everything else goes to `_`.** Those four reverts without a handler, unknown selectors and
+  empty reverts.
 - **Not a revert, not handled.** An error that is
   [not a revert](/reference/utilities/decode-script-error/#what-counts-as-a-revert) is thrown
   again.

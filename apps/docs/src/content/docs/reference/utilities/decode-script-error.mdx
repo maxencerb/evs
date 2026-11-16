@@ -144,7 +144,7 @@ in `raw`:
 | a declared error, like `'TooSmall'` | `args` | an error from the script's `errors`. `args` is keyed by parameter name |
 | `'EvsInvalidCalldata'` | `args` (empty) | the [built-in error](/reference/diagnostics/#built-in-errors) for calldata the script rejects |
 | `'EvsDecodeError'` | `args.site` | the [built-in error](/reference/diagnostics/#built-in-errors) for returndata a call cannot decode |
-| `'Panic'` | `code`, `meaning` | `Panic(uint256)`. See [panic codes](/reference/diagnostics/#panic-codes) |
+| `'Panic'` | `code`, `kind`, `meaning` | `Panic(uint256)`. `kind` is the code as one word, such as `'overflow'`. See [panic codes](/reference/diagnostics/#panic-codes) |
 | `'Error'` | `reason` | `Error(string)`, a `require` or `revert("…")` in a called contract |
 | `'unknown'` | `selector` | anything else, such as a custom error bubbled from a called contract |
 | `'empty'` | none | a revert with no data, or one whose data the node did not return |

@@ -157,13 +157,30 @@ explanation.message;
 ```
 
 ```txt
-empty revert payload (no returndata) — a bare revert() / require(false) bubbled
-verbatim from a callee through the strict call site: decoding symbol() returndata
-(site 0); or the call frame failed without a reason: out of gas, or an opcode the
-node rejects at this block — the runtime uses MCOPY (cancun) and PUSH0 (shanghai)
-(evmVersion 'cancun'); for a block or chain before that fork, recompile with an
-older evmVersion ('paris' runs everywhere)
+empty revert payload (no returndata) — possible causes: (1) an opcode the node does
+not have at this block: the runtime uses MCOPY (cancun) and PUSH0 (shanghai)
+(evmVersion 'cancun'), so for a block or chain before that fork, recompile with an
+older evmVersion ('paris' runs everywhere); (2) a bare revert() / require(false)
+bubbled verbatim from a callee through the strict call site: decoding symbol()
+returndata (site 0); (3) the call ran out of gas; (4) in deployless mode (the
+toViem() default), a result that is too large or starts with 0xEF, or a script and
+arguments that are too large together: some nodes (zkSync Era, Monad) report those
+limits as an empty revert — run the call again with toViem({ mode: 'stateOverride'
+}), which has none of them
 ```
+
+The causes, in the order the message lists them:
+
+| Cause | Listed when |
+| --- | --- |
+| an opcode the chain does not have at that block | the script uses `PUSH0` or `MCOPY`: see [EVM targets](/guides/evm-targets/#spotting-a-wrong-target) |
+| a callee reverted with no data | the script has a strict call |
+| a `value` the script cannot pay | a strict `s.call` sends `value` |
+| out of gas | always |
+| a [deployless limit](/guides/execution/#deployless-limits) | always: some nodes report one as an empty revert |
+
+The message names the first three strict calls and counts the rest. `candidateSites` holds
+them all.
 
 ## Returns
 

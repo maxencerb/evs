@@ -31,14 +31,16 @@ import {
   isMemrefType,
   MAX_FIXED_LENGTH,
 } from '../../core/types.js';
-import type {
-  PlainAbiError,
-  ValueInfo,
-  ValueId,
-  CellInfo,
-  FnIr,
-  FnId,
-  CellId,
+import {
+  blockDepthMessage,
+  MAX_BLOCK_DEPTH,
+  type PlainAbiError,
+  type ValueInfo,
+  type ValueId,
+  type CellInfo,
+  type FnIr,
+  type FnId,
+  type CellId,
 } from '../../ir/nodes.js';
 import {
   makeTuple,
@@ -117,6 +119,10 @@ export abstract class RecorderCore {
   protected stack: Scope[];
 
   protected readonly savedStacks: Scope[][] = [];
+
+  /** The body callbacks running right now: every open `s.if`, loop and `s.fn`, across
+   *  {@link savedStacks} too (each one is a group of host stack frames inside the last). */
+  private openBlocks = 0;
 
   private nextSite = 0;
 
@@ -264,6 +270,30 @@ export abstract class RecorderCore {
       this.valueScopes.length = values;
       this.nextSite = site;
     }
+  }
+
+  /**
+   * Opens one block level for the callbacks of `what` (`s.if()`, a loop, an `s.fn`), and must be
+   * paired with {@link exitBlock}. Past {@link MAX_BLOCK_DEPTH} it throws before the callback
+   * runs: each level nests the user's callback and the recorder's own frames on the host stack,
+   * and every later pass recurses once per recorded block, so an unbounded script would end in a
+   * stack overflow here or in `compile()`.
+   */
+  protected enterBlock(what: string): void {
+    this.assertBlockRoom(what);
+    this.openBlocks += 1;
+  }
+
+  /** {@link enterBlock}'s check alone, for a verb that records statements before it opens its
+   *  block (`s.for`'s counter cell): it must fail before any of them is recorded. */
+  protected assertBlockRoom(what: string): void {
+    if (this.openBlocks >= MAX_BLOCK_DEPTH) {
+      throw new EvsTypeError('UNSUPPORTED_V0', blockDepthMessage(what));
+    }
+  }
+
+  protected exitBlock(): void {
+    this.openBlocks -= 1;
   }
 
   protected pushScope(kind: ScopeKind): Scope {

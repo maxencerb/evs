@@ -212,6 +212,7 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
     expect(decodeScriptError(script, PANIC_DATA)).toEqual({
       name: 'Panic',
       code: 0x11n,
+      kind: 'overflow',
       meaning: 'arithmetic overflow or underflow',
       raw: PANIC_DATA,
     });
@@ -385,30 +386,76 @@ describe('decodeScriptError / matchScriptError (issue #15)', () => {
     ).toThrowError(original);
   });
 
-  test('matchScriptError: only a declared error has a handler of its name', () => {
-    // a table with handlers named like the other arms (cast past the type, which rejects these
-    // keys): Panic, Error(string) and the two evs runtime errors still reach `_`
-    const handlers = {
-      NoBalance: () => 'NoBalance handler',
-      NotOwner: () => 'NotOwner handler',
-      Panic: () => 'Panic handler',
-      Error: () => 'Error handler',
-      EvsDecodeError: () => 'EvsDecodeError handler',
-      EvsInvalidCalldata: () => 'EvsInvalidCalldata handler',
-      _: (other: { name: string }) => `_ got ${other.name}`,
-    };
+  test('matchScriptError: a Panic, an Error(string) and the evs runtime errors reach the handler of their name', () => {
     const handle = (data: Hex): string =>
-      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the extra keys ARE the test
-      matchScriptError(script, data, handlers as never);
+      matchScriptError(script, data, {
+        NoBalance: () => 'NoBalance handler',
+        NotOwner: () => 'NotOwner handler',
+        // what the revert carries first, the whole decoded error second
+        Panic: ({ code, kind, meaning }, error) =>
+          `Panic ${code} ${kind} (${meaning}) of ${error.raw.length} chars`,
+        Error: ({ reason }, error) => `Error ${reason} ${error.name}`,
+        EvsDecodeError: ({ site }) => `EvsDecodeError at site ${site}`,
+        EvsInvalidCalldata: (args) => `EvsInvalidCalldata ${Object.keys(args).length}`,
+        _: (other) => `_ got ${other.name}`,
+      });
     expect(handle(NOT_OWNER_DATA)).toBe('NotOwner handler');
-    expect(handle(PANIC_DATA)).toBe('_ got Panic');
-    expect(handle(ERROR_STRING_DATA)).toBe('_ got Error');
+    expect(handle(PANIC_DATA)).toBe(
+      `Panic 17 overflow (arithmetic overflow or underflow) of ${PANIC_DATA.length} chars`,
+    );
+    expect(handle(ERROR_STRING_DATA)).toBe('Error nope Error');
     expect(
       handle(encodeErrorResult({ abi: script.abi, errorName: 'EvsDecodeError', args: [7n] })),
-    ).toBe('_ got EvsDecodeError');
+    ).toBe('EvsDecodeError at site 7');
     expect(handle(encodeErrorResult({ abi: script.abi, errorName: 'EvsInvalidCalldata' }))).toBe(
-      '_ got EvsInvalidCalldata',
+      'EvsInvalidCalldata 0',
     );
+    // the two arms that carry nothing never have a handler of their name
+    expect(handle('0xdeadbeef')).toBe('_ got unknown');
+    expect(handle('0x')).toBe('_ got empty');
+  });
+
+  test('matchScriptError: what a Panic or an Error handler receives is frozen, and is not the decoded error', () => {
+    const seen: object[] = [];
+    matchScriptError(script, PANIC_DATA, {
+      NoBalance: () => 0,
+      NotOwner: () => 0,
+      Panic: (panic, error) => seen.push(panic, error),
+      _: () => 0,
+    });
+    const [panic, error] = seen;
+    expect(panic).toEqual({
+      code: 0x11n,
+      kind: 'overflow',
+      meaning: 'arithmetic overflow or underflow',
+    });
+    expect(Object.isFrozen(panic)).toBe(true);
+    expect(error).toEqual(decodeScriptError(script, PANIC_DATA));
+  });
+
+  test('a Panic code has a kind to switch on, and an unlisted code is unknown', () => {
+    const kinds: readonly [bigint, string][] = [
+      [0x00n, 'generic'],
+      [0x01n, 'assert'],
+      [0x11n, 'overflow'],
+      [0x12n, 'division-by-zero'],
+      [0x21n, 'enum-conversion'],
+      [0x22n, 'storage-encoding'],
+      [0x31n, 'empty-pop'],
+      [0x32n, 'out-of-bounds'],
+      [0x41n, 'out-of-memory'],
+      [0x51n, 'zero-function'],
+      [0x99n, 'unknown'],
+    ];
+    for (const [code, kind] of kinds) {
+      const data = encodeErrorResult({
+        abi: [{ type: 'error', name: 'Panic', inputs: [{ name: 'code', type: 'uint256' }] }],
+        errorName: 'Panic',
+        args: [code],
+      });
+      expect(decodeScriptError(script, data)).toMatchObject({ name: 'Panic', code, kind });
+    }
+    expect(decodeScriptError(script, PANIC_DATA)).toMatchObject({ kind: 'overflow' });
   });
 
   test('a ContractFunctionRevertedError without a cause (viem before 2.47.5) is read by its own fields', () => {

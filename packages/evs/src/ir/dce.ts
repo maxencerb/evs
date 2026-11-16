@@ -2,7 +2,10 @@
  * `ir/dce.ts` — dead-code elimination over a `ScriptIr` (issue #40).
  *
  * `compile()` runs this pass on every compile, between `validateIr` and `lowerProgram`, and it
- * is also exported (`eliminateDeadCode` / `dce`) so tools can apply it to an artifact's IR.
+ * is also exported (`eliminateDeadCode` / `dce`) so tools can apply it to an artifact's IR. The
+ * pass assumes a valid IR: the exported entry validates an IR that evs did not produce itself
+ * before running it (`ir/nodes/origin.ts`), and `compile()` / `interpret()` call
+ * {@link pruneDeadCode} after their own validation.
  * It removes statements whose only effect is to produce values nothing observable reads. The
  * value / cell / fn tables and every surviving statement (its `site`, ValueIds) are
  * kept verbatim — statements are dropped, table entries are not — so source maps, diagnostics
@@ -74,15 +77,31 @@ import {
   type Stmt,
   type ValueId,
 } from './nodes.js';
+import { isEvsIr, markEvsIr } from './nodes/origin.js';
+import { validateIr } from './validate.js';
 
 /**
  * Removes the statements of `ir` whose results nothing observable depends on (see the module
- * doc for the liveness rules and the revert-guard decision). Expects a valid `ScriptIr`
- * (`validateIr`); `compile()` validates before and after. Returns `ir` itself when nothing is
- * dead, otherwise a deep-frozen copy sharing every surviving statement object and every table.
+ * doc for the liveness rules and the revert-guard decision). Returns `ir` itself when nothing is
+ * dead, otherwise a frozen copy sharing every surviving statement object and every table.
+ *
+ * An IR evs recorded is taken as is. Any other IR (deserialized, written by hand) is validated
+ * first, so an invalid one is a coded user error (`validateIr`) and not a crash inside the pass.
  */
 export function eliminateDeadCode(ir: ScriptIr): ScriptIr {
-  return new Dce(ir).run();
+  if (!isEvsIr(ir)) validateIr(ir);
+  return pruneDeadCode(ir);
+}
+
+/**
+ * @internal The pass itself, for a caller that holds a valid IR (`compile()` and `interpret()`,
+ * after their `validateIr`). What it derives from an IR evs produced is an IR evs produced, so a
+ * later `validateIr` failure on it is reported as a bug in this pass.
+ */
+export function pruneDeadCode(ir: ScriptIr): ScriptIr {
+  const pruned = new Dce(ir).run();
+  if (pruned !== ir && isEvsIr(ir)) markEvsIr(pruned);
+  return pruned;
 }
 
 /** Alias of {@link eliminateDeadCode}. */
@@ -106,6 +125,8 @@ class Dce {
   private readonly liveCells = new Set<CellId>();
   private readonly liveStmts = new Set<Stmt>();
   private readonly liveValues = new Set<ValueId>();
+  /** live statements whose reads and enclosing `if`s are not marked yet (the mark worklist) */
+  private readonly pending: Stmt[] = [];
   private readonly pureMemo = new Map<FnId, boolean>();
   private readonly visitingFns = new Set<FnId>();
   /**
@@ -321,7 +342,8 @@ class Dce {
   }
 
   // -------------------------------------------------------------------------
-  // pass 2: seeds + propagation (each statement / value / cell is marked at most once)
+  // pass 2: seeds + propagation (each statement / value / cell is marked at most once: the live
+  // sets are the visited marks, and `pending` holds the live statements still to be followed)
   // -------------------------------------------------------------------------
 
   private seed(): void {
@@ -335,10 +357,26 @@ class Dce {
         if (this.isSeed(s)) this.markStmt(s);
       });
     }
+    this.propagate();
   }
 
   private isSeed(s: Stmt): boolean {
     return s.k === 'fncall' ? !this.isPureFn(s.fn) : isObservable(s);
+  }
+
+  /**
+   * Drains the worklist: a live statement makes its reads live, and its enclosing `if`s (which
+   * climb further). A loop, never a recursion: a def-use chain is as long as the script (one link
+   * per statement of a host-unrolled accumulator), far past what the host stack holds.
+   */
+  private propagate(): void {
+    for (let s = this.pending.pop(); s !== undefined; s = this.pending.pop()) {
+      if (s.k === 'cellget') this.markCell(s.cell);
+      for (const v of stmtReads(s)) this.markValue(v);
+      const owner = this.enclosingIf.get(s);
+      if (Array.isArray(owner)) for (const o of owner) this.markStmt(o);
+      else if (owner !== undefined) this.markStmt(owner);
+    }
   }
 
   /** A cell becomes live with its first live `cellget`; every write to it then stays. */
@@ -348,6 +386,7 @@ class Dce {
     for (const w of this.cellWritesOf.get(c) ?? []) this.markStmt(w);
   }
 
+  /** A live value keeps its defining statement and every mutation of memory it may alias. */
   private markValue(v: ValueId): void {
     if (this.liveValues.has(v)) return;
     this.liveValues.add(v);
@@ -358,15 +397,11 @@ class Dce {
     }
   }
 
-  /** A live statement makes its reads live, and its enclosing `if`s (which climb further). */
+  /** Marks `s` live and queues it: {@link propagate} follows its reads and owners. */
   private markStmt(s: Stmt): void {
     if (this.liveStmts.has(s)) return;
     this.liveStmts.add(s);
-    if (s.k === 'cellget') this.markCell(s.cell);
-    for (const v of stmtReads(s)) this.markValue(v);
-    const owner = this.enclosingIf.get(s);
-    if (Array.isArray(owner)) for (const o of owner) this.markStmt(o);
-    else if (owner !== undefined) this.markStmt(owner);
+    this.pending.push(s);
   }
 
   // -------------------------------------------------------------------------

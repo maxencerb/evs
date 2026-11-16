@@ -13,6 +13,9 @@
     "exactOptionalPropertyTypes": true,
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
+    // a fixture imports a precompiled script from JSON; TypeScript 5.5 does not turn this on
+    // by itself under NodeNext
+    "resolveJsonModule": true,
     "noEmit": true,
     "types": []
   },
