@@ -952,7 +952,7 @@ describe('an operand that is no value', () => {
       '.eq() right operand: this object stands in for an evs handle without being one (a Proxy around a handle',
     );
     expectEvs(
-      () => recX((s, x) => s.add(Object.create(x) as never, 1n)),
+      () => recX((s, x) => s.add(Object.create(x) as typeof x, 1n)),
       EvsTypeError,
       'TYPE_MISMATCH',
       'this object stands in for an evs handle without being one',
