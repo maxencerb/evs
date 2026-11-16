@@ -14,7 +14,6 @@ import type {
   OrderedType,
   UintType,
   BitsType,
-  IntType,
   ArrayType,
   ArrayElemOf,
   ArgsInput,
@@ -126,6 +125,74 @@ export type EvsFn<
 ) => RebuildExprs<r>;
 
 // ---------------------------------------------------------------------------
+// the operands of a two-operand operator
+// ---------------------------------------------------------------------------
+
+/**
+ * The first operand of `s.add(a, b)` and the other two-operand operators (and the first branch
+ * of `s.select`). One operand is an `Expr` and gives the operation its type; the other is
+ * checked against that type, never used to infer it. So the operator has two type parameters,
+ * each inferred from one operand only: `a` from the first when it is an `Expr`, `b` from the
+ * second. A literal first operand infers no `a` (it stays `never`, its default) and is checked
+ * against `b`.
+ *
+ * Inferring one type parameter from both operands would give two `Expr`s of different types
+ * their union, which type-checks and then throws at recording.
+ *
+ * With no `Expr` at all (`a` and `b` both `never`) the operand meets {@link ExprNeeded}. The
+ * two branches are spelled out, not one union with an optional member: the checker prints the
+ * result of a conditional type in full, where it would print a union by this alias's name.
+ */
+export type FirstOperand<
+  a extends EvsType,
+  b extends EvsType,
+  kind extends OperandKind = 'operand',
+> = [a | b] extends [never]
+  ? Expr<a> | BareHandle<a, kind> | ExprNeeded<kind>
+  : Expr<a> | BareHandle<a, kind> | LitOf<NoInfer<b>>;
+
+/**
+ * The second operand, see {@link FirstOperand}: checked against the first operand's type when
+ * that one is an `Expr` (an `Expr` of another type is an error here, as `rhs` is in the method
+ * form), else the `Expr` that types the operation.
+ */
+export type SecondOperand<
+  a extends EvsType,
+  b extends EvsType,
+  kind extends OperandKind = 'operand',
+> = [a] extends [never]
+  ? [b] extends [never]
+    ? Expr<b> | BareHandle<b, kind> | ExprNeeded<kind>
+    : Expr<b> | BareHandle<b, kind>
+  : IntoExpr<NoInfer<a>> | BareHandle<NoInfer<a>, kind>;
+
+/**
+ * What the operands belong to: a `'branch'` of `s.select` is named as such in
+ * {@link ExprNeeded}, and `s.eq` / `s.neq` (`'equality'`) also take a bare handle
+ * ({@link BareHandle}).
+ */
+export type OperandKind = 'operand' | 'branch' | 'equality';
+
+/**
+ * The bare `Tuple` / `MutArray` handles `s.eq` / `s.neq` take for their memref, as the recorder
+ * does: a handle types the comparison like the `Expr` of its `expr()`. `never` for every other
+ * operator, which takes the memref itself (`handle.expr()`).
+ */
+export type BareHandle<t extends EvsType, kind extends OperandKind> = kind extends 'equality'
+  ? MemrefHandle<t>
+  : never;
+
+/** A `Tuple` or `MutArray` handle whose memref (`expr()`) is of type `t`. */
+export type MemrefHandle<t extends EvsType> = (AnyTuple | AnyMutArray) & { expr(): Expr<t> };
+
+/**
+ * What an operand is checked against when no operand is an `Expr`: the recording-time
+ * TYPE_MISMATCH's text, a string type no operand has, so tsc's error says what to write.
+ */
+export type ExprNeeded<kind extends OperandKind> =
+  `at least one ${kind extends 'branch' ? 'branch' : 'operand'} must be an Expr — type a literal with s.lit(type, value)`;
+
+// ---------------------------------------------------------------------------
 // the builder (full surface)
 // ---------------------------------------------------------------------------
 
@@ -138,7 +205,8 @@ export interface ScriptBuilder<
 > {
   // values & state
   lit<const t extends EvsType>(type: t, value: LitOf<t>): Expr<t>;
-  let<const t extends EvsType>(type: t, init: IntoExpr<t>): Cell<t>;
+  // the cell's type is `type`: `init` is checked against it, never used to infer it
+  let<const t extends EvsType>(type: t, init: IntoExpr<NoInfer<t>>): Cell<t>;
   let<t extends EvsType>(init: Expr<t>): Cell<t>;
   // `e` is any value type: a word, `string`/`bytes`, an array (dynamic or fixed-size, any
   // depth), or a `tuple`/tuple-array descriptor. `{ fixed: true }` with a LITERAL length `n`
@@ -161,12 +229,31 @@ export interface ScriptBuilder<
   codeSize(account: IntoExpr<'address'>): Expr<'uint256'>;
   codeHash(account: IntoExpr<'address'>): Expr<'bytes32'>;
 
-  // ops (free-function mirrors of the Expr methods; same semantics — checked unless `wrapping…`)
-  add<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>; // ≥1 operand an Expr
-  sub<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  mul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  div<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  mod<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  // ops (free-function mirrors of the Expr methods; same semantics — checked unless `wrapping…`).
+  // A two-operand one takes its type from the operand that is an Expr (≥1 is), the first when
+  // both are, and checks the other against it: see {@link FirstOperand}. Its result is of that
+  // type (`a | b`: one of the two is `never`, or they are the same), behind `NoInfer` so that
+  // the type expected of the result is never what gives an operand-less parameter its type.
+  add<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  sub<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  mul<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  div<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  mod<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
   // checked `**` (the base must be an Expr: its type is the result type); exponent unsigned
   pow<t extends NumericType>(
     base: Expr<t>,
@@ -196,25 +283,69 @@ export interface ScriptBuilder<
     denominator: IntoExpr<'uint256'>,
   ): Expr<'uint256'>;
   // wrapping (solc `unchecked`) add / sub / mul: modulo 2^N of t, never a Panic
-  wrappingAdd<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  wrappingSub<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  wrappingMul<t extends NumericType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  wrappingAdd<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  wrappingSub<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  wrappingMul<a extends NumericType = never, b extends NumericType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
   // ordering — numeric, plus address / bytesN as unsigned words
-  lt<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  gt<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  lte<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  gte<t extends OrderedType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  eq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>; // memrefs: hash equality
-  neq<t extends EvsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<'bool'>;
-  and(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>;
-  or(a: IntoExpr<'bool'>, b: IntoExpr<'bool'>): Expr<'bool'>;
+  lt<a extends OrderedType = never, b extends OrderedType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
+  gt<a extends OrderedType = never, b extends OrderedType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
+  lte<a extends OrderedType = never, b extends OrderedType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
+  gte<a extends OrderedType = never, b extends OrderedType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
+  // memrefs: hash equality, and a bare Tuple / MutArray handle stands for its memref
+  eq<a extends EvsType = never, b extends EvsType = never>(
+    a: FirstOperand<a, b, 'equality'>,
+    b: SecondOperand<a, b, 'equality'>,
+  ): Expr<'bool'>;
+  neq<a extends EvsType = never, b extends EvsType = never>(
+    a: FirstOperand<a, b, 'equality'>,
+    b: SecondOperand<a, b, 'equality'>,
+  ): Expr<'bool'>;
+  and<a extends 'bool' = never, b extends 'bool' = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
+  or<a extends 'bool' = never, b extends 'bool' = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<'bool'>;
   not(a: IntoExpr<'bool'>): Expr<'bool'>;
-  bitAnd<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  bitOr<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
-  bitXor<t extends BitsType>(a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  // bitwise, on the bits of a uintN / intN / bytesN (an intN's are its two's complement)
+  bitAnd<a extends BitsType = never, b extends BitsType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  bitOr<a extends BitsType = never, b extends BitsType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
+  bitXor<a extends BitsType = never, b extends BitsType = never>(
+    a: FirstOperand<a, b>,
+    b: SecondOperand<a, b>,
+  ): Expr<NoInfer<a | b>>;
   bitNot<t extends BitsType>(a: Expr<t>): Expr<t>;
-  shl<t extends BitsType | IntType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
-  shr<t extends BitsType | IntType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // SAR on intN
+  shl<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>;
+  shr<t extends BitsType>(a: Expr<t>, bits: IntoExpr<'uint256'>): Expr<t>; // SAR on intN
 
   // ABI encoding + hashing (issue #17, amended by #24). `keccak256` hashes the
   // STANDARD encoding — `keccak256(abi.encode(...))` — of any encodable values (a single
@@ -238,8 +369,14 @@ export interface ScriptBuilder<
     },
     body: (i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
+  // (the counter's type is `range.type`: the bounds are checked against it)
   for<const t extends NumericType>(
-    range: { type: t; from: IntoExpr<t>; until: IntoExpr<t>; step?: IntoExpr<t> },
+    range: {
+      type: t;
+      from: IntoExpr<NoInfer<t>>;
+      until: IntoExpr<NoInfer<t>>;
+      step?: IntoExpr<NoInfer<t>>;
+    },
     body: (i: Expr<t>, loop: LoopCtl) => void,
   ): void;
   // forEach over an array value (issue #12): the counter loop with `until` = the array's
@@ -258,7 +395,13 @@ export interface ScriptBuilder<
     array: Expr<a>,
     body: (elem: Expr<ArrayElemOf<a>>, i: Expr<'uint256'>, loop: LoopCtl) => void,
   ): void;
-  select<t extends EvsType>(cond: IntoExpr<'bool'>, a: IntoExpr<t>, b: IntoExpr<t>): Expr<t>;
+  // the result's type is the branch's that is an Expr (≥1 is), the first when both are: the
+  // other branch is checked against it (see {@link FirstOperand})
+  select<a extends EvsType = never, b extends EvsType = never>(
+    cond: IntoExpr<'bool'>,
+    a: FirstOperand<a, b, 'branch'>,
+    b: SecondOperand<a, b, 'branch'>,
+  ): Expr<NoInfer<a | b>>;
 
   // calls — SPLIT BY MUTABILITY (issue #1). Each verb carries the same three
   // struct-aware overloads (the `struct` opt-in from issue #5 ask #2), differing only in the

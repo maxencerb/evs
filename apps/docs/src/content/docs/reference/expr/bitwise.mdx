@@ -1,17 +1,16 @@
 ---
 title: Bitwise
-description: Bit operations and shifts on uintN and bytesN values. Shifts also take intN, and nothing here reverts.
+description: Bit operations and shifts on uintN, intN and bytesN values. Nothing here reverts.
 ---
 
-Bit operations and shifts on `uintN` and `bytesN` values. Shifts also take `intN`, and nothing
-here reverts.
+Bit operations and shifts on `uintN`, `intN` and `bytesN` values. Nothing here reverts.
 
 | Method | Signature | Receiver | Description |
 | --- | --- | --- | --- |
-| [`bitAnd`](#bitand) | `bitAnd(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise AND |
-| [`bitOr`](#bitor) | `bitOr(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise OR |
-| [`bitXor`](#bitxor) | `bitXor(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `bytesN` | bitwise XOR |
-| [`bitNot`](#bitnot) | `bitNot(): Expr<t>` | `uintN`, `bytesN` | bitwise NOT |
+| [`bitAnd`](#bitand) | `bitAnd(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `intN`, `bytesN` | bitwise AND |
+| [`bitOr`](#bitor) | `bitOr(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `intN`, `bytesN` | bitwise OR |
+| [`bitXor`](#bitxor) | `bitXor(rhs: IntoExpr<t>): Expr<t>` | `uintN`, `intN`, `bytesN` | bitwise XOR |
+| [`bitNot`](#bitnot) | `bitNot(): Expr<t>` | `uintN`, `intN`, `bytesN` | bitwise NOT |
 | [`shl`](#shl) | `shl(bits: IntoExpr<'uint256'>): Expr<t>` | `uintN`, `intN`, `bytesN` | shift left |
 | [`shr`](#shr) | `shr(bits: IntoExpr<'uint256'>): Expr<t>` | `uintN`, `intN`, `bytesN` | shift right |
 
@@ -124,30 +123,35 @@ const wordOf = evscript({ name: 'wordOf', args: [t.int24] }, (s, tick) => {
 - **`bytesN` shifts.** Bytes move inside the N-byte value: `0x11223344` shifted left by 8 is
   `0x22334400`, and right by 8 is `0x00112233`.
 - **Signed `shl`.** The low N bits are kept and read as signed: on an `int8`, `127 << 1` is `-2`.
-- **`intN` takes shifts only.** `bitAnd`, `bitOr`, `bitXor` and `bitNot` are typed for `uintN`
-  and `bytesN`: on an `intN` they are a TypeScript error (below).
+- **One type.** Both sides of `bitAnd`, `bitOr` and `bitXor` have the same type, and the result
+  has it too: an `int24` and a `uint24` do not mix. Convert one side first, with
+  [`asUint`](/reference/expr/conversions/#asuint) or
+  [`asInt`](/reference/expr/conversions/#asint).
+- **No `address`, no `bool`.** Go through [`asUint160`](/reference/expr/conversions/#asuint160)
+  for the bits of an address.
 - **Literals fold.** A bit operation on literals
   [folds](/reference/expr/arithmetic/#build-time-folding) at build time.
 - **Builder mirrors.** `s.bitAnd(a, b)`, `s.bitOr`, `s.bitXor`, `s.bitNot(a)`, `s.shl(a, bits)`
   and `s.shr(a, bits)`. In the last three, `a` must be an `Expr`.
 
-### Masking an intN
+### Signed operands
 
-To mask an `intN`, go through the `uintN` of the same width, with
-[`asUint`](/reference/expr/conversions/#asuint) and
-[`asInt`](/reference/expr/conversions/#asint):
+On an `intN`, `bitAnd`, `bitOr`, `bitXor` and `bitNot` work on the two's-complement bits of the
+value, and the result is an `intN` of the same width.
 
-```ts {4}
+```ts {4-6}
 import { evscript, t } from '@maxencerb/evs';
 
-const lowByte = evscript({ name: 'lowByte', args: [t.int24] }, (s, tick) => {
-  const low = tick.asUint().bitAnd(0xff).asInt(); // Expr<'int24'>: -2 gives 254
-  return s.return({ low });
+const signedBits = evscript({ name: 'signedBits', args: [t.int24] }, (s, tick) => {
+  const low = tick.bitAnd(0xff); // -2 gives 254: the low byte
+  const aligned = tick.bitAnd(-256); // -2 gives -256: the low byte cleared
+  const flipped = tick.bitNot(); // -2 gives 1
+  return s.return({ low, aligned, flipped });
 });
 ```
 
-Only the types enforce this. Called from plain JavaScript, the four methods build on an `intN`
-too, and work on its two's-complement bits.
+A negative literal is its two's complement too: `-256` on an `int24` is `0xffff00`. This is
+what Solidity's `&`, `|`, `^` and `~` do on a signed integer.
 
 ## Errors
 
