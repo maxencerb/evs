@@ -4,7 +4,8 @@
  *
  * A barrel over `codegen/abi/`:
  * - `shared.ts` — the contract types (`SharedTails`, `SlotRef`), the scratch / loop-frame layout
- *   constants, word normalization and the `emitMemCopy` / `emitCeil32` primitives;
+ *   constants, the range check of a decoded word, the wrap of a computed one and the
+ *   `emitMemCopy` / `emitCeil32` primitives;
  * - `encode.ts` — the recursive head/tail encoder and the composite-element array encode loop;
  * - `encode-bytes.ts` — the `s.encode` / `s.encodePacked` emitters (issue #17);
  * - `decode.ts` — the recursive decoder: tuples, and the array codec's fixed-word, stack and
@@ -37,7 +38,8 @@ export {
   isRecursiveArray,
   wordNeedsNormalize,
   emitNormalizeWord,
-  emitCopyNormalizeWordArray,
+  emitCopyCheckedWordArray,
+  WordRunChecks,
   emitWithinStackBudget,
   emitAboveU64,
   emitCeil32,

@@ -204,6 +204,38 @@ export function pushWordRef(
   }
 }
 
+/**
+ * Whether a call site checks that its target has code before it calls: exactly when it calls
+ * through a function that declares no outputs and decodes the return (not `revertReturns`).
+ * Nothing is decoded there, so nothing else tells a call to an address without code, which
+ * succeeds with empty returndata, from a call that ran: solc makes the same check before a
+ * high-level call that decodes no return data. A site with outputs needs none (empty returndata
+ * fails its head-size guard), and a `revertReturns` site neither (a call that returns instead of
+ * reverting is already its failure).
+ */
+export function checksTargetCode(stmt: Extract<Stmt, { k: 'call' }>): boolean {
+  return stmt.revertReturns === undefined && stmt.fnAbi.outputs.length === 0;
+}
+
+/**
+ * The target-code check of a site that {@link checksTargetCode}, `[] → []`, emitted first, at the
+ * site's entry height 0: `EXTCODESIZE(target) == 0` → `plan.dfailLabel` (strict: the site's
+ * `EvsDecodeError(site)` stub; try: the zero block, `success = 0`), so the call is never made, as
+ * from Solidity. One sequence serves both modes because nothing is on the stack yet.
+ *
+ * Checking before the call costs what checking after it would: `EXTCODESIZE` pays the cold
+ * access (EIP-2929) and warms the address for the `CALL` / `STATICCALL` that follows, which then
+ * pays the 100 gas the check would have paid after it. For `s.simulate` it is the only cheap
+ * place: the trampoline frame reverts, which drops the target from the warm set again.
+ */
+export function emitTargetCodeCheck(w: AsmWriter, plan: CallSitePlan, what: string): void {
+  pushWordRef(w, plan.targetRef, what, 'target');
+  w.op('EXTCODESIZE');
+  w.op('ISZERO', { note: `no code at the target (site ${plan.siteId})` });
+  w.pushLabel(plan.dfailLabel);
+  w.op('JUMPI'); // []
+}
+
 /** Pushes the CALL value operand: the site's `value` when one was given, else 0. */
 export function pushValueRef(w: AsmWriter, valueRef: CallSitePlan['valueRef'], what: string): void {
   if (valueRef === undefined) {

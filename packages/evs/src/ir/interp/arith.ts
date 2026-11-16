@@ -212,8 +212,9 @@ function toSigned256(word: bigint): bigint {
 /**
  * Normalize an arbitrary 256-bit word to the canonical slot image of `type`:
  * uintN masked, intN SIGNEXTENDed, bool ISZERO ISZERO, address masked to 160 bits, bytesN
- * masked to its left-aligned lane. Used at the trust boundaries (returndata words, arg
- * coercion) and wherever an op can denormalize.
+ * masked to its left-aligned lane. Used wherever an op can denormalize (a wrapping operation,
+ * a shift, a wrapping conversion), and by the returndata decode as the test of a word it did not
+ * compute: one that differs from its canonical image is out of range and refused, never wrapped.
  */
 export function canonWord(type: WordType, word: bigint): bigint {
   if (type === 'bool') return word === 0n ? 0n : 1n;

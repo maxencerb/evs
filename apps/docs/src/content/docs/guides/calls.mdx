@@ -128,7 +128,8 @@ const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) =>
 });
 ```
 
-- `success` is `false` when the target reverts or returns data that does not decode.
+- `success` is `false` when the target reverts, returns data that does not decode, or has no
+  code.
 - Use a `try*` verb for optional data, unknown tokens, or one bad item in a batch.
 - Reverts and how to decode them are covered in
   [errors & debugging](/guides/errors-and-debugging/).

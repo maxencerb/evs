@@ -32,9 +32,11 @@ const CONTRACTS = [
   'MockUniV3Pool',
   'MockVault',
   'MockWETH',
+  'NoOutputs',
   'Overloaded',
   'Reverter',
   'Shapes',
+  'StrictDecodeReference',
 ];
 
 const contractsDir = fileURLToPath(new URL('..', import.meta.url));

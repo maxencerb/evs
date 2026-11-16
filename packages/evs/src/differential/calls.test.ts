@@ -48,30 +48,51 @@ import { t, type Hex } from '../core/types.js';
 // ---------------------------------------------------------------------------
 
 describe('calls', () => {
-  test('word outputs are normalized, never reverted (dirty high bits)', async () => {
-    const script = evscript({ name: 'norm', args: [] }, (s) => {
-      const d = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
-      const f = s.read({ address: TOKB, abi: erc20ishAbi, functionName: 'flag' });
-      const tk = s.read({ address: POOL, abi: erc20ishAbi, functionName: 'tick' });
-      return s.return({ d, f, tk });
-    });
+  test('a word output out of range for its type reverts EvsDecodeError(site), never masked', async () => {
+    const script = evscript(
+      { name: 'norm', args: [t.address, t.address, t.address] },
+      (s, a, b, c) => {
+        const d = s.read({ address: a, abi: erc20ishAbi, functionName: 'decimals' });
+        const f = s.read({ address: b, abi: erc20ishAbi, functionName: 'flag' });
+        const tk = s.read({ address: c, abi: erc20ishAbi, functionName: 'tick' });
+        return s.return({ d, f, tk });
+      },
+    );
+    const CLEAN = '0x7200000000000000000000000000000000000001';
     const table: CalleeTable = {
-      [TOKA]: { kind: 'return', data: word(-1n) }, // uint8 ← 0xff…ff → 255
-      [TOKB]: { kind: 'return', data: word((1n << 128n) | 2n) }, // bool ← nonzero → true
-      [POOL]: { kind: 'return', data: word((0xabcn << 64n) | 0xfffff6n) }, // int24 ← …fffff6 → −10
+      [TOKA]: { kind: 'return', data: word(-1n) }, // uint8 ← 0xff…ff
+      [TOKB]: { kind: 'return', data: word((1n << 128n) | 1n) }, // bool ← a high bit set
+      [POOL]: { kind: 'return', data: word((0xabcn << 64n) | 0xfffff6n) }, // int24, not sign-extended
+      // one callee answers all three in range: 1 is a uint8, a bool and an int24
+      [CLEAN]: { kind: 'return', data: word(1n) },
     };
-    const [o] = await expectAgreement(script, [[]], table);
-    const decoded = decodeFunctionResult({
-      abi: script.abi,
-      functionName: 'norm',
-      data: o?.data ?? '0x',
+    const outcomes = await expectAgreement(
+      script,
+      [
+        [CLEAN, CLEAN, CLEAN],
+        [TOKA, CLEAN, CLEAN],
+        [CLEAN, TOKB, CLEAN],
+        [CLEAN, CLEAN, POOL],
+      ],
+      table,
+    );
+    expect(outcomes[0]?.kind).toBe('return');
+    const sites = compile(script).sourceMap.sites.filter((x) => x.kind === 'decode');
+    expect(sites).toHaveLength(3);
+    sites.forEach((site, i) => {
+      // each dirty callee fails its own site
+      expect(outcomes[i + 1], `site ${site.id}`).toEqual({
+        kind: 'revert',
+        data: encodeErrorResult({
+          abi: compile(script).abi,
+          errorName: 'EvsDecodeError',
+          args: [BigInt(site.id)],
+        }),
+      });
     });
-    expect(decoded).toEqual({ d: 255, f: true, tk: -10 });
   });
 
-  test('tryRead: an out-of-range word still reports success, normalized (unlike viem)', async () => {
-    // the documented contract (guides/calls, "Success is not a range check"): success only means
-    // the returndata had a decodable shape — a uint8 word of 300 reads as 44, success = true
+  test('tryRead: an out-of-range word reports success = false, as any undecodable returndata', async () => {
     const script = evscript({ name: 'tryNorm', args: [] }, (s) => {
       const d = s.tryRead({ address: TOKA, abi: erc20ishAbi, functionName: 'decimals' });
       const f = s.tryRead({ address: TOKB, abi: erc20ishAbi, functionName: 'flag' });
@@ -87,24 +108,22 @@ describe('calls', () => {
     });
     const dirty = { decimals: word(300n), flag: word(2n), tick: word(0x1fffff6n) };
     const table: CalleeTable = {
-      [TOKA]: { kind: 'return', data: dirty.decimals }, // uint8 ← 300 → masked to 44
-      [TOKB]: { kind: 'return', data: dirty.flag }, // bool ← 2 → true
-      [POOL]: { kind: 'return', data: dirty.tick }, // int24 ← 0x1fffff6 → sign-extended to −10
+      [TOKA]: { kind: 'return', data: dirty.decimals }, // uint8 ← 300
+      [TOKB]: { kind: 'return', data: dirty.flag }, // bool ← 2
+      [POOL]: { kind: 'return', data: dirty.tick }, // int24 ← 0x1fffff6, not sign-extended
     };
     const [o] = await expectAgreement(script, [[]], table);
     expect(
       decodeFunctionResult({ abi: script.abi, functionName: 'tryNorm', data: o?.data ?? '0x' }),
-    ).toEqual({ dOk: true, d: 44, fOk: true, f: true, tkOk: true, tk: -10 });
+    ).toEqual({ dOk: false, d: 0, fOk: false, f: false, tkOk: false, tk: 0 });
 
-    // viem's decoder does not normalize these words: uintN/intN come back unmasked and a bool
-    // word other than 0/1 throws — the docs must not call evs's behaviour "like viem"
+    // viem's decoder is looser on the same words: uintN/intN come back unmasked, a dirty address
+    // or bytesN is masked, and only a bool word other than 0/1 throws
     const viemDecode = (functionName: 'decimals' | 'flag' | 'tick', data: Hex): unknown =>
       decodeFunctionResult({ abi: erc20ishAbi, functionName, data });
     expect(viemDecode('decimals', dirty.decimals)).toBe(300);
     expect(viemDecode('tick', dirty.tick)).toBe(0x1fffff6);
     expect(() => viemDecode('flag', dirty.flag)).toThrow(/not a valid boolean/);
-    // …but viem DOES mask a dirty address (low 20 bytes) and bytesN (first N bytes), like evs —
-    // the docs scope the "unmasked" contrast to uintN/intN only
     const dirtyAddr: Hex = `0x${'ff'.repeat(12)}${'11'.repeat(20)}`;
     const dirtyB4: Hex = `0x${'aa'.repeat(4)}${'ff'.repeat(28)}`;
     expect(decodeAbiParameters([{ type: 'address' }], dirtyAddr)[0]).toBe(`0x${'11'.repeat(20)}`);
@@ -116,8 +135,11 @@ describe('calls', () => {
       const [a, b, c] = s.read({ address: TOKA, abi: erc20ishAbi, functionName: 'multi' });
       return s.return({ a, b, c });
     });
-    const payload = concatHex(word(1n << 159n), word((1n << 200n) | 0xfffff6n), word(7n));
-    await expectAgreement(script, [[]], { [TOKA]: { kind: 'return', data: payload } });
+    const payload = concatHex(word(1n << 159n), word(-10n), word(1n));
+    const [o] = await expectAgreement(script, [[]], { [TOKA]: { kind: 'return', data: payload } });
+    expect(
+      decodeFunctionResult({ abi: script.abi, functionName: 'multi', data: o?.data ?? '0x' }),
+    ).toEqual({ a: 1n << 159n, b: -10, c: true });
   });
 
   test('dynamic outputs decode in place (string, uint256[]), with a gas cap', async () => {

@@ -381,11 +381,13 @@ const reserves = evscript({ name: 'reserves', args: [t.address] }, (s, pair) => 
   byte for byte. For a flag instead, use [`s.tryRead`](/reference/builder/try-read/).
 - **Malformed return data.** Data that does not decode against the ABI reverts the script with
   `EvsDecodeError(site)`, where `site` identifies the call.
-- **Out-of-range words.** A word too large for its type is masked, not rejected: a `uint8`
-  output holding 300 reads as 44. viem would return 300.
-- **Address without code.** The call returns empty data, so it fails with `EvsDecodeError(site)`
-  like any undecodable result. Check [`s.codeSize`](/reference/builder/balance/#scodesize) to
-  detect it.
+- **Out-of-range words.** A returned word that is out of range for its type fails the call with
+  `EvsDecodeError(site)`, as it reverts a Solidity caller: a `uint8` output holding 300, a `bool`
+  holding 2. It is never masked. See [out-of-range words](/reference/diagnostics/#out-of-range-words).
+- **Address without code.** The call fails with `EvsDecodeError(site)`, as it reverts a Solidity
+  caller. A function with outputs gets empty return data, which does not decode. A function
+  without outputs is not called: the script checks the address first. Read
+  [`s.codeSize`](/reference/builder/balance/#scodesize) to detect it yourself.
 - **Caller is the script.** The target sees the script's address as `msg.sender`, not your
   `account`. [Sender mode](/guides/execution/) makes the two the same address.
 
@@ -412,4 +414,5 @@ call behind an `EvsDecodeError`, and lists the calls a bubbled revert can have c
 | Revert | When |
 | --- | --- |
 | the target's revert data | the target reverts; empty data when it runs out of gas or tries to write state |
-| `EvsDecodeError(site)` | the return data does not decode: too short, offsets out of bounds, or no code at the address |
+| `EvsDecodeError(site)` | the return data does not decode against the ABI: too short, offsets out of bounds, or a word out of range for its type |
+| `EvsDecodeError(site)` | the address has no code |

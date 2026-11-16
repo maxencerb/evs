@@ -113,6 +113,9 @@ const deadChain: MockChain = {
   },
 };
 
+/** An account oracle under which every address has code. */
+const HAS_CODE: NonNullable<MockChain['account']> = () => ({ code: '0x00' });
+
 interface RecordingChain extends MockChain {
   readonly calls: { to: Hex; data: Hex }[];
 }
@@ -1636,7 +1639,8 @@ describe('call — strict mode', () => {
       ],
       returns: [{ name: 'n', type: 'uint8', value: 3 }],
     });
-    const chain = chainOf(() => ({ success: true, data: '0x' }));
+    // echo() declares no outputs, so its call first checks that the target has code
+    const chain = { ...chainOf(() => ({ success: true, data: '0x' })), account: HAS_CODE };
     const res = interpret(script, [TOKEN, 'hello', [1n, 2n, 3n], 5n], chain);
     expect(retOf(res)).toEqual({ n: 5 });
     expect(chain.calls[0]?.data).toBe(
@@ -1712,8 +1716,8 @@ describe('call — strict mode', () => {
   });
 });
 
-describe('call — word output normalization (normalize-don’t-revert)', () => {
-  test('dirty high/low bits are masked / sign-extended / booleanized', () => {
+describe('call — a word output out of range for its type is a decode failure', () => {
+  test('each dirty word is EvsDecodeError(site); the extreme words in range decode', () => {
     const dirtyAbi = fnAbi(
       'dirty',
       [],
@@ -1730,14 +1734,17 @@ describe('call — word output normalization (normalize-don’t-revert)', () => 
       args: [{ name: 'target', type: 'address' }],
       values: [vi('address'), vi('uint8'), vi('bool'), vi('address'), vi('int8'), vi('bytes4')],
       body: [
-        mk({
-          k: 'call',
-          target: 0,
-          fnAbi: dirtyAbi,
-          args: [],
-          outs: [1, 2, 3, 4, 5],
-          mode: 'strict',
-        }),
+        mk(
+          {
+            k: 'call',
+            target: 0,
+            fnAbi: dirtyAbi,
+            args: [],
+            outs: [1, 2, 3, 4, 5],
+            mode: 'strict',
+          },
+          4,
+        ),
       ],
       returns: [
         { name: 'a', type: 'uint8', value: 1 },
@@ -1747,48 +1754,59 @@ describe('call — word output normalization (normalize-don’t-revert)', () => 
         { name: 'e', type: 'bytes4', value: 5 },
       ],
     });
-    const returndata: Hex = `0x${[
-      wordHex(0x1ffn).slice(2), // uint8 ← masked to 0xff
-      wordHex(2n).slice(2), // bool ← ISZERO ISZERO ⇒ true
-      wordHex(2n ** 160n + 5n).slice(2), // address ← high 96 bits masked
-      wordHex(0x80n).slice(2), // int8 ← SIGNEXTEND ⇒ −128
-      `deadbeef${'ff'.repeat(28)}`, // bytes4 ← lane-masked to 0xdeadbeef
-    ].join('')}`;
-    const res = interpret(
-      script,
-      [TOKEN],
-      chainOf(() => ({ success: true, data: returndata })),
-    );
-    expect(retOf(res)).toEqual({
+    const run = (words: readonly string[]): InterpResult =>
+      interpret(
+        script,
+        [TOKEN],
+        chainOf(() => ({ success: true, data: `0x${words.join('')}` })),
+      );
+    const clean = [
+      wordHex(0xffn).slice(2),
+      wordHex(1n).slice(2),
+      wordHex(2n ** 160n - 1n).slice(2),
+      wordHex(2n ** 256n - 128n).slice(2), // −128, sign-extended
+      `deadbeef${'00'.repeat(28)}`,
+    ];
+    expect(retOf(run(clean))).toEqual({
       a: 255,
       b: true,
-      c: '0x0000000000000000000000000000000000000005',
+      c: '0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF',
       d: -128,
       e: '0xdeadbeef',
     });
+    const dirty = [
+      wordHex(0x1ffn).slice(2), // uint8 above 255
+      wordHex(2n).slice(2), // bool above 1
+      wordHex(2n ** 160n + 5n).slice(2), // address with a bit above 160
+      wordHex(0x80n).slice(2), // int8 that is not sign-extended
+      `deadbeef${'ff'.repeat(28)}`, // bytes4 with low bytes set
+    ];
+    dirty.forEach((bad, at) => {
+      const words = clean.map((w, i) => (i === at ? bad : w));
+      expect(revertData(run(words)), `output #${at}`).toBe(decodeErrHex(4));
+    });
   });
 
-  test('array outputs are normalized eagerly per element', () => {
+  test('a dirty element of an array output fails the decode', () => {
     const listAbi = fnAbi('list', [], [{ name: '', type: 'uint8[]' }]);
     const script = ir({
       name: 'arrnorm',
       args: [{ name: 'target', type: 'address' }],
       values: [vi('address'), vi('uint8[]')],
-      body: [mk({ k: 'call', target: 0, fnAbi: listAbi, args: [], outs: [1], mode: 'strict' })],
+      body: [mk({ k: 'call', target: 0, fnAbi: listAbi, args: [], outs: [1], mode: 'strict' }, 6)],
       returns: [{ name: 'xs', type: 'uint8[]', value: 1 }],
     });
-    const returndata: Hex = `0x${[
-      wordHex(0x20n).slice(2),
-      wordHex(2n).slice(2),
-      wordHex(0x1ffn).slice(2),
-      wordHex(0xaa00n).slice(2),
-    ].join('')}`;
-    const res = interpret(
-      script,
-      [TOKEN],
-      chainOf(() => ({ success: true, data: returndata })),
-    );
-    expect(retOf(res)).toEqual({ xs: [255, 0] });
+    const payload = (a: bigint, b: bigint): Hex =>
+      `0x${[wordHex(0x20n), wordHex(2n), wordHex(a), wordHex(b)].map((w) => w.slice(2)).join('')}`;
+    const run = (data: Hex): InterpResult =>
+      interpret(
+        script,
+        [TOKEN],
+        chainOf(() => ({ success: true, data })),
+      );
+    expect(retOf(run(payload(0xffn, 0n)))).toEqual({ xs: [255, 0] });
+    expect(revertData(run(payload(0x1ffn, 0n)))).toBe(decodeErrHex(6));
+    expect(revertData(run(payload(0n, 0xaa00n)))).toBe(decodeErrHex(6));
   });
 
   test('dynamic string output decodes; non-UTF-8 payload survives byte-exactly in returndata', () => {
@@ -2623,7 +2641,7 @@ describe('call — revertReturns (issue #35)', () => {
     expect(revertData(interpret(strictRR, [TOKEN, 100n], chain))).toBe(decodeErrHex(9));
   });
 
-  test("strict: word outputs from the revert payload normalize-don't-revert", () => {
+  test('strict: a word of the revert payload out of range for its type is a decode failure', () => {
     const uint8Script = ir({
       ...strictRR,
       values: [vi('address'), vi('uint256'), vi('uint8')],
@@ -2644,11 +2662,16 @@ describe('call — revertReturns (issue #35)', () => {
       ],
       returns: [{ name: 'n', type: 'uint8', value: 2 }],
     });
-    const chain = chainSplit({
-      staticResult: () => ({ success: true, data: '0x' }),
-      callResult: () => ({ success: false, data: wordHex((1n << 200n) | 0x1ffn) }),
+    const reverting = (data: Hex): SplitChain =>
+      chainSplit({
+        staticResult: () => ({ success: true, data: '0x' }),
+        callResult: () => ({ success: false, data }),
+      });
+    expect(retOf(interpret(uint8Script, [TOKEN, 1n], reverting(wordHex(0xffn))))).toEqual({
+      n: 0xff, // uint8 → number
     });
-    expect(retOf(interpret(uint8Script, [TOKEN, 1n], chain))).toEqual({ n: 0xff }); // uint8 → number
+    const dirty = reverting(wordHex((1n << 200n) | 0x1ffn));
+    expect(revertData(interpret(uint8Script, [TOKEN, 1n], dirty))).toBe(decodeErrHex(9));
   });
 
   test('try: revert → success=true with the decoded values; normal return → success=false, zeroed', () => {

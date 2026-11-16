@@ -7,9 +7,9 @@
  *
  * explainRevert() attributes each bubbled payload to the strict read it came through (never to
  * a panic site). Plus the explainRevert() round-trip on an EvsDecodeError produced by a
- * Malformed callee, and the Malformed fixture table on a real node: every structural case
- * reverts EvsDecodeError at its own call site (strict) or reports success=false with a zero
- * value (try); every dirty-word case decodes to its normalized value — in both execution modes.
+ * Malformed callee, and the Malformed fixture table on a real node: every structural case and
+ * every dirty-word case (a word out of range for its type) reverts EvsDecodeError at its own call
+ * site (strict) or reports success=false with a zero value (try) — in both execution modes.
  */
 
 import { decodeFunctionResult, encodeFunctionData, type Hex } from 'viem';
@@ -121,7 +121,8 @@ describe('explainRevert round-trip on EvsDecodeError', () => {
 // Malformed fixture table (attacker-shaped returndata from a real contract)
 // ---------------------------------------------------------------------------
 
-/** Structural violations, with the zero value try mode must hand back for each. */
+/** Undecodable returndata — a structural violation, or a word out of range for its type — with
+ *  the zero value try mode must hand back for each. */
 const STRUCTURAL = [
   ['emptyReturn', ''],
   ['shortWord', 0n],
@@ -131,16 +132,15 @@ const STRUCTURAL = [
   ['lengthPastEndByOne', '0x'],
   ['truncatedArray', []],
   ['hugeArrayLength', []],
+  ['dirtyBool', false],
+  ['dirtyUint8', 0],
+  ['dirtyAddress', '0x0000000000000000000000000000000000000000'],
+  ['dirtyInt8', 0],
+  ['dirtyBytes4', '0x00000000'],
 ] as const;
 
-/** Decodable returndata: dirty words normalize, a trailing extra byte is ignored. */
-const NORMALIZED = [
-  ['dirtyBool', true],
-  ['dirtyUint8', 255],
-  ['dirtyAddress', '0xFFfFfFffFFfffFFfFFfFFFFFffFFFffffFfFFFfF'],
-  ['dirtyInt8', -128],
-  ['oneByteTooLong', 42n],
-] as const;
+/** Decodable returndata: a trailing extra byte is ignored. */
+const DECODABLE = [['oneByteTooLong', 42n]] as const;
 
 describe.each(['stateOverride', 'deployless'] as const)('Malformed fixture table [%s]', (mode) => {
   /** The eth_call target for `data` under this mode. */
@@ -201,7 +201,7 @@ describe.each(['stateOverride', 'deployless'] as const)('Malformed fixture table
     expect(explained.site?.detail).toBe('decoding shortHead() returndata');
   });
 
-  test.each(NORMALIZED)('%s decodes to its normalized value', async (fn, want) => {
+  test.each(DECODABLE)('%s decodes', async (fn, want) => {
     const compiled = evscript({ name: 'norm', args: [t.address] }, (s, target) => {
       const v = s.read({ address: target, abi: Malformed.abi, functionName: fn });
       return s.return({ v });

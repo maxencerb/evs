@@ -75,6 +75,10 @@ try {
 The call returned nothing to decode, so the script reverted with `EvsDecodeError`. `site` is
 the `s.read` that failed.
 
+The message names the causes the call allows. For a function with outputs: return data that is
+too short, an offset or a length outside it, or a word out of range for its type. For a
+function without outputs there is one: the address has no code.
+
 ### Declared errors
 
 An error thrown by [`s.throw`](/reference/builder/throw/) comes back with its name and decoded

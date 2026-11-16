@@ -963,7 +963,7 @@ describe('calls through lowerProgram', () => {
     );
   });
 
-  test('word outputs normalize dirty high bits instead of reverting', async () => {
+  test('a word output with dirty high bits reverts EvsDecodeError(site), never masked', async () => {
     const b = new IrB('dec', [['token', 'address']]);
     const { outs } = b.call({ target: 0, abi: fnAbi('decimals', [], ['uint8']) });
     b.ret('d', outs[0] ?? 0);
@@ -972,8 +972,11 @@ describe('calls through lowerProgram', () => {
       contracts: { [TARGET]: ATTACKER_RETURNERS.dirtyHighBits },
     };
     const res = await run(ir, [TARGET], fixture);
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(tupleHex([{ name: 'd', type: 'uint8' }], { d: 255n }));
+    expect(res.success).toBe(false);
+    expect(res.data.slice(0, 10)).toBe(DECODE_ERROR_SELECTOR);
+    const clean = await run(ir, [TARGET], { contracts: { [TARGET]: returner(word(255n)) } });
+    expect(clean.success).toBe(true);
+    expect(clean.data).toBe(tupleHex([{ name: 'd', type: 'uint8' }], { d: 255n }));
   });
 
   test('tryCall: failure zeroes the outputs (word → 0, memref → empty)', async () => {

@@ -20,7 +20,13 @@ import { layoutOfType } from '../abi/layout.js';
 import { AsmWriter, assemble } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import { EvsInternalError } from '../core/errors.js';
-import { isMemrefType, typeToAbiParam, type EvsType, type Hex } from '../core/types.js';
+import {
+  isMemrefType,
+  typeToAbiParam,
+  type EvsType,
+  type Hex,
+  type WordType,
+} from '../core/types.js';
 import {
   emitCalldataDecode,
   emitReturnEncode,
@@ -268,56 +274,96 @@ describe('fuzzed echo matrix (seeded, differential vs viem)', () => {
 });
 
 // ---------------------------------------------------------------------------
-// dirty-word normalization (normalize-don't-revert)
+// out-of-range argument words → EvsInvalidCalldata (refused as solc's decoder does, never masked)
 // ---------------------------------------------------------------------------
 
-describe('dirty calldata words normalize instead of reverting', () => {
+describe('an argument word out of range for its type reverts EvsInvalidCalldata()', () => {
   interface DirtyCase {
     name: string;
     type: EvsType;
     rawWord: Hex;
-    normalized: unknown;
   }
   const DIRTY: readonly DirtyCase[] = [
-    { name: 'uint8 high bits dropped', type: 'uint8', rawWord: word(-1n), normalized: 255n },
-    { name: 'bool 2 → true', type: 'bool', rawWord: word(2n), normalized: true },
+    { name: 'uint8 = 2^256 − 1', type: 'uint8', rawWord: word(-1n) },
+    { name: 'uint8 = 256', type: 'uint8', rawWord: word(256n) },
+    { name: 'bool = 2', type: 'bool', rawWord: word(2n) },
+    { name: 'bool with a high bit, zero low byte', type: 'bool', rawWord: word(1n << 200n) },
+    { name: 'int8 = 0x80, not sign-extended', type: 'int8', rawWord: word(0x80n) },
+    { name: 'int8 = 0x1ff', type: 'int8', rawWord: word(0x1ffn) },
+    { name: 'int8 = −129', type: 'int8', rawWord: word(-129n) },
+    { name: 'address with bit 160 set', type: 'address', rawWord: word(1n << 160n) },
     {
-      name: 'bool dirty high bits, zero low → true',
-      type: 'bool',
-      rawWord: word(1n << 200n),
-      normalized: true,
-    },
-    { name: 'int8 low byte sign-extends', type: 'int8', rawWord: word(0x80n), normalized: -128n },
-    { name: 'address top 96 bits masked', type: 'address', rawWord: word(-1n), normalized: ADDR_B },
-    {
-      name: 'bytes4 dirty low bits masked',
+      name: 'bytes4 with a low byte set',
       type: 'bytes4',
-      rawWord: word(-1n & U256_MASK),
-      normalized: '0xffffffff',
+      rawWord: word((0xffffffffn << 224n) | 1n),
     },
-    { name: 'uint64 masked', type: 'uint64', rawWord: word((1n << 64n) | 5n), normalized: 5n },
+    { name: 'uint64 = 2^64 + 5', type: 'uint64', rawWord: word((1n << 64n) | 5n) },
   ];
   for (const c of DIRTY) {
     test(`case: ${c.name}`, async () => {
       const res = await execRuntime(echoRuntime([c.type], 'cancun'), concat(SELECTOR, c.rawWord));
-      expect(res.success).toBe(true);
-      expect(res.data).toBe(expectedReturn([c.type], [c.normalized]));
+      expect(res.success).toBe(false);
+      expect(res.data).toBe(INVALID_CALLDATA);
+      expect(res.gasUsed).toBeLessThan(DEFAULT_GAS_LIMIT / 100n); // no all-gas halt
     });
   }
 
-  test('array elements normalize eagerly (bool[] with element word 5)', async () => {
-    // bool[] = [5, 0] hand-encoded with a dirty element
-    const calldata = concat(SELECTOR, word(32n), word(2n), word(5n), word(0n));
-    const res = await execRuntime(echoRuntime(['bool[]'], 'cancun'), calldata);
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(expectedReturn(['bool[]'], [[true, false]]));
+  // the extreme words of each type are in range: the check is exact, not merely conservative
+  const EDGES: readonly { type: WordType; rawWord: Hex; value: unknown }[] = [
+    { type: 'uint8', rawWord: word(255n), value: 255n },
+    { type: 'bool', rawWord: word(1n), value: true },
+    { type: 'int8', rawWord: word(-128n), value: -128n },
+    { type: 'int8', rawWord: word(127n), value: 127n },
+    { type: 'address', rawWord: word((1n << 160n) - 1n), value: ADDR_B },
+    { type: 'bytes4', rawWord: word(0xffffffffn << 224n), value: '0xffffffff' },
+    { type: 'uint64', rawWord: word((1n << 64n) - 1n), value: (1n << 64n) - 1n },
+  ];
+  for (const c of EDGES) {
+    test(`in range: ${c.type} ${c.rawWord}`, async () => {
+      const res = await execRuntime(echoRuntime([c.type], 'cancun'), concat(SELECTOR, c.rawWord));
+      expect(res.success).toBe(true);
+      expect(res.data).toBe(expectedReturn([c.type], [c.value]));
+    });
+  }
+
+  test('a run of word args is checked with one branch: any dirty member fails it', async () => {
+    const types: readonly EvsType[] = ['uint8', 'uint256', 'bool', 'address', 'string', 'int16'];
+    const clean = [word(7n), word(-1n), word(1n), word(0xabn), word(192n), word(-2n)];
+    const tail = concat(word(0n)); // the empty string
+    const run = async (words: readonly Hex[]): Promise<{ success: boolean; data: Hex }> =>
+      execRuntime(echoRuntime(types, 'cancun'), concat(SELECTOR, ...words, tail));
+    expect((await run(clean)).success).toBe(true);
+    const dirty: readonly [number, bigint][] = [
+      [0, 256n], // first of the run
+      [2, 2n], // middle
+      [3, 1n << 160n], // last, before the string closes the run
+      [5, 0x8000n], // a single-word run after it
+    ];
+    for (const [at, bad] of dirty) {
+      const words = clean.map((x, i) => (i === at ? word(bad) : x));
+      // oxlint-disable-next-line no-await-in-loop -- sequential by design
+      const res = await run(words);
+      expect(res.success, `arg #${at}`).toBe(false);
+      expect(res.data, `arg #${at}`).toBe(INVALID_CALLDATA);
+    }
   });
 
-  test('int16[] dirty elements sign-extend eagerly', async () => {
-    const calldata = concat(SELECTOR, word(32n), word(1n), word(0x8000n)); // low 16 bits = -32768
+  test('a dirty element of a word array (bool[] with element word 5)', async () => {
+    const calldata = concat(SELECTOR, word(32n), word(2n), word(5n), word(0n));
+    const res = await execRuntime(echoRuntime(['bool[]'], 'cancun'), calldata);
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(INVALID_CALLDATA);
+  });
+
+  test('an int16[] element that is not sign-extended', async () => {
+    const calldata = concat(SELECTOR, word(32n), word(1n), word(0x8000n));
     const res = await execRuntime(echoRuntime(['int16[]'], 'cancun'), calldata);
-    expect(res.success).toBe(true);
-    expect(res.data).toBe(expectedReturn(['int16[]'], [[-32768n]]));
+    expect(res.success).toBe(false);
+    expect(res.data).toBe(INVALID_CALLDATA);
+    const ok = concat(SELECTOR, word(32n), word(1n), word(-32768n));
+    const fine = await execRuntime(echoRuntime(['int16[]'], 'cancun'), ok);
+    expect(fine.success).toBe(true);
+    expect(fine.data).toBe(expectedReturn(['int16[]'], [[-32768n]]));
   });
 });
 

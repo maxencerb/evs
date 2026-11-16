@@ -24,12 +24,13 @@ import {
   type SharedTails,
   usesRecursiveCodec,
   emitCeil32,
-  emitNormalizeWord,
   internal,
   wordElemAbi,
   wordNeedsNormalize,
-  emitNormalizeElemsLoop,
+  emitCheckElemsLoop,
   emitAboveU64,
+  WordRunChecks,
+  type DecodeFail,
 } from './shared.js';
 
 // ---------------------------------------------------------------------------
@@ -41,13 +42,16 @@ import {
  *
  * - One up-front size guard: `CALLDATASIZE < 4 + headBytes(args)` → `tails.invalidCalldata`
  *   (a static tuple arg inlines its whole head, so the head walk is cumulative, not `32·i`).
- * - Word args: `CALLDATALOAD` + normalize (mask / SIGNEXTEND / `ISZERO ISZERO`) + `MSTORE`
- *   (normalize-don't-revert on dirty high bits).
+ * - Word args: `CALLDATALOAD` + range check + `MSTORE`. A word out of range for its type (dirty
+ *   high bits, a `bool` above 1, an `intN` that is not sign-extended, dirty low bytes of a
+ *   `bytesN`) → `tails.invalidCalldata`, as solc's decoder reverts; never a mask
+ *   ({@link WordRunChecks}: one branch per run of consecutive word args).
  * - Dynamic `string` / `bytes` / word-array args ({@link emitDynCalldataArg}): overflow-free
  *   bounds checks (`off ≤ 2^64−1`, `4+off+32 ≤ cds`, `len ≤ 2^64−1`, tail-end ≤ cds) →
  *   `tails.invalidCalldata` on any structural failure; then allocate, `CALLDATACOPY` the
- *   `[len][payload]` segment, explicit zero-pad of the trailing partial word (bytes/string), eager
- *   element normalization (arrays of sub-word element types), and store the memref pointer.
+ *   `[len][payload]` segment, explicit zero-pad of the trailing partial word (bytes/string), the
+ *   range check of every element (arrays of sub-word element types), and store the memref
+ *   pointer.
  * - Tuple and recursive-codec array args ({@link usesRecursiveCodec}): the whole calldata is
  *   snapshotted into memory once ({@link emitSnapshotCalldata}), then each decodes from the
  *   snapshot through {@link emitDecodeFromRegion} (its dynamic members alias the snapshot). Their
@@ -76,6 +80,10 @@ export function emitCalldataDecode(
   // the recursive decoders read their source from memory, not calldata
   if (args.some((ref) => usesRecursiveCodec(layoutOfType(ref.type)))) emitSnapshotCalldata(w);
 
+  const fail: DecodeFail = () => {
+    w.pushLabel(tails.invalidCalldata);
+    w.op('JUMPI');
+  };
   // the args region of the snapshot: [snap+4, snap+cds)
   const region: DecodeRegion = {
     pushBase: () => {
@@ -90,24 +98,28 @@ export function emitCalldataDecode(
       w.op('CALLDATASIZE');
       w.op('ADD'); // [snap + cds]  (one past last valid source byte)
     },
-    fail: () => {
-      w.pushLabel(tails.invalidCalldata);
-      w.op('JUMPI');
-    },
+    fail,
     live: 0,
     arrayOffsetBound: 'end',
   };
   // script args are the caller's own calldata: no decode-work budget
   const decodeOpts: DecodeOptions = { budget: 'off', evmVersion: opts.evmVersion };
 
+  const layouts = args.map((ref) => layoutOfType(ref.type));
+  const words = new WordRunChecks(w, layouts, fail, 0);
   args.forEach((ref, i) => {
     const layout = layoutOfType(ref.type);
     const within = headOffsetAt(headOffs, i); // head offset within the args region
     if (layout.kind === 'word') {
       w.push(4 + within, { note: `arg #${i} head` });
       w.op('CALLDATALOAD'); // [raw]
-      emitNormalizeWord(w, layout.abi);
-    } else if (usesRecursiveCodec(layout)) {
+      words.checkAndStore(i, layout.abi, () => {
+        w.push(ref.slot);
+        w.op('MSTORE');
+      }); // []   (or the run's accumulated check, until its last word)
+      return;
+    }
+    if (usesRecursiveCodec(layout)) {
       emitDecodeFromRegion(
         w,
         ref.type,
@@ -116,14 +128,15 @@ export function emitCalldataDecode(
         decodeOpts,
         () => `script argument #${i} (${stringifyType(ref.type)})`,
       ); // [block]
-    } else if (layout.kind === 'bytes' || layout.kind === 'array') {
-      emitDynCalldataArg(w, ref, layout, 4 + within, i, tails); // []   (stores its own slot)
+      w.push(ref.slot);
+      w.op('MSTORE'); // []
       return;
-    } else {
-      throw internal(`arg #${i}: a ${layout.kind} layout outside the recursive codec`);
     }
-    w.push(ref.slot);
-    w.op('MSTORE'); // []
+    if (layout.kind === 'bytes' || layout.kind === 'array') {
+      emitDynCalldataArg(w, ref, layout, 4 + within, i, tails, fail); // []   (stores its own slot)
+      return;
+    }
+    throw internal(`arg #${i}: a ${layout.kind} layout outside the recursive codec`);
   });
 }
 
@@ -165,6 +178,7 @@ function emitDynCalldataArg(
   headOff: number,
   index: number,
   tails: SharedTails,
+  fail: DecodeFail,
 ): void {
   const isArray = layout.kind === 'array';
 
@@ -262,7 +276,7 @@ function emitDynCalldataArg(
     // (composite element, fixed-size) to the recursive path before reaching here.
     const elemAbi = wordElemAbi(layout);
     if (wordNeedsNormalize(elemAbi)) {
-      // eager element normalization (skipped for full-word element types)
+      // range-check every element (full-word element types have nothing to check)
       w.op('DUP2');
       w.push(5);
       w.op('SHL'); // [32·len, ptr, len, src]
@@ -273,7 +287,7 @@ function emitDynCalldataArg(
       w.op('DUP2');
       w.push(32);
       w.op('ADD'); // [cur, end, ptr, len, src]
-      emitNormalizeElemsLoop(w, elemAbi, 3);
+      emitCheckElemsLoop(w, elemAbi, 3, fail);
       w.op('POP');
       w.op('POP'); // [ptr, len, src]
     }

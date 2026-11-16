@@ -302,9 +302,13 @@ const preview = evscript({ name: 'preview', args: [t.address] }, (s, strategy) =
 - **Failures revert the script.** A target revert bubbles unchanged, and return data that does
   not decode reverts with `EvsDecodeError(site)`, where `site` identifies the call. For a flag
   instead, use [`s.trySimulate`](/reference/builder/try-simulate/).
-- **Address without code.** The call succeeds with empty data. A function without outputs
-  returns as if it had run, and one with outputs fails to decode. Check
-  [`s.codeSize`](/reference/builder/balance/#scodesize) when it matters.
+- **Out-of-range words.** A returned word that is out of range for its type fails the call with
+  `EvsDecodeError(site)`, as it reverts a Solidity caller: a `uint8` output holding 300, a `bool`
+  holding 2. It is never masked. See [out-of-range words](/reference/diagnostics/#out-of-range-words).
+- **Address without code.** The call fails with `EvsDecodeError(site)`, as it reverts a Solidity
+  caller. A function with outputs gets empty return data, which does not decode. A function
+  without outputs is not called: the script checks the address first. Read
+  [`s.codeSize`](/reference/builder/balance/#scodesize) to detect it yourself.
 - **Caller is the script.** The target sees the script's address as `msg.sender`, not your
   `account`. [Sender mode](/guides/execution/) makes the two the same address.
 - **Memory in loops.** Each dry-run allocates memory, so `compile` reports one inside a loop as
@@ -334,5 +338,6 @@ call behind an `EvsDecodeError`, and lists the calls a bubbled revert can have c
 | Revert | When |
 | --- | --- |
 | the target's revert data | the target reverts; empty data when it runs out of gas |
-| `EvsDecodeError(site)` | the return data does not decode against the ABI, or the address has no code and the function has outputs |
+| `EvsDecodeError(site)` | the return data does not decode against the ABI: too short, offsets out of bounds, or a word out of range for its type |
+| `EvsDecodeError(site)` | the address has no code |
 | `EvsDecodeError(site)` | the script's balance is below `value` |

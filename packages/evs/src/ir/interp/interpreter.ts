@@ -113,6 +113,12 @@ export interface MockChain {
    * `address` (lowercase 0x hex) — its `balance` in wei, its deployed runtime `code` and its
    * `nonce` — or `undefined` for an account that does not exist. Omitted fields read as `0n` /
    * `'0x'` / `0n`; omitting the method makes every account nonexistent (balance 0, no code).
+   *
+   * The six call verbs read it too, for a call through a function that declares no outputs: the
+   * bytecode checks that such a target has code before it calls (as Solidity does), so a target
+   * this oracle gives no `code` fails the call (`EvsDecodeError(site)`, or `success: false` for a
+   * try form) and the call oracles are not asked. A mock that answers such a function must report
+   * code at its address here.
    * `s.codeHash` follows EXTCODEHASH: `keccak256(code)`, or zero for an EMPTY account (no code,
    * zero balance, zero nonce — EIP-161), so a funded or used EOA hashes to `keccak256(0x)`.
    *
@@ -739,6 +745,17 @@ class Interp {
     const gas = s.gas === undefined ? undefined : this.word(s.gas);
     // the wei a CALL sends (`value` is legal on kind 'call' / 'simulate' only, see validateIr)
     const value = s.value === undefined ? undefined : this.word(s.value);
+    // a function without outputs decodes nothing, so the bytecode first checks that the target
+    // has code (EXTCODESIZE, as solc does) and makes no call without it: the site's decode failure
+    if (
+      s.revertReturns === undefined &&
+      s.fnAbi.outputs.length === 0 &&
+      this.accountValue('codesize', target) === 0n
+    ) {
+      if (s.mode === 'strict') throw decodeErrorSignal(s.site);
+      this.zeroCallOuts(s);
+      return;
+    }
     const calldata = this.encodeCalldata(s.fnAbi, s.args);
     const to: Hex = `0x${target.toString(16).padStart(40, '0')}`;
     // kind 'static' (or absent) → STATICCALL via `staticcall`; 'call'/'simulate' → the mutable

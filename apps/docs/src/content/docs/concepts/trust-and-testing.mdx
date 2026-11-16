@@ -33,8 +33,8 @@ The test suite compares the compiled bytecode with independent references.
 | --- | --- |
 | [`interpret`](/reference/utilities/interpret/), which runs the recorded program in TypeScript | Returndata and revert payloads, byte for byte, for the default and the `optimize: true` output. |
 | viem's ABI codecs | The encoded result, the decoded arguments and the calldata of every call, byte for byte. |
-| solc 0.8.30 reference contracts | Arithmetic results and `Panic` payloads on boundary values. |
-| Hostile callees | Malformed returndata reverts with `EvsDecodeError`, or returns `success = false` from a `try*` verb. Never an out-of-gas halt. |
+| solc 0.8.30 reference contracts | Arithmetic results and `Panic` payloads on boundary values. The same payloads accepted and refused by the ABI decoder, word for word. |
+| Hostile callees | Malformed returndata, or a word out of range for its type, reverts with `EvsDecodeError`, or returns `success = false` from a `try*` verb. Never an out-of-gas halt. |
 | A real node (anvil) | The same decoded result in deployless mode, in state-override mode and as deployed code. |
 
 CI runs these suites on every pull request. `interpret` is exported, so your own tests can use

@@ -205,11 +205,39 @@ Two custom errors belong to evs. Both are in every script's `abi`, so viem decod
 
 | Error | Selector | Raised when |
 | --- | --- | --- |
-| `EvsInvalidCalldata()` | `0xf43fed56` | the calldata is not a call to the script's function: wrong selector, truncated, or malformed arguments |
-| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | `s.read`, `s.call` or `s.simulate` gets returndata it cannot decode. `site` is the call's id in `compiled.sourceMap.sites` |
+| `EvsInvalidCalldata()` | `0xf43fed56` | the calldata is not a call to the script's function: wrong selector, truncated, malformed arguments, or an argument word [out of range](#out-of-range-words) for its type |
+| `EvsDecodeError(uint256 site)` | `0x20cf27b7` | `s.read`, `s.call` or `s.simulate` gets returndata it cannot decode, a returned word [out of range](#out-of-range-words) included, or calls an address without code. `site` is the call's id in `compiled.sourceMap.sites` |
 
 `EvsDecodeError` is also raised by an [`s.call`](/reference/builder/call/) with `revertReturns`
 that returns instead of reverting, and by an `s.simulate` whose `value` the script cannot pay.
+
+### Out-of-range words
+
+A word the script did not compute is refused when it is out of range for its type. Solidity's
+ABI decoder reverts on the same words. Nothing is masked into range.
+
+| Type | Out of range | Strict call | Try form | Script argument |
+| --- | --- | --- | --- | --- |
+| `uintN` | a bit above bit `N` is set: `300` as a `uint8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `intN` | not sign-extended from bit `N`: `0x80` as an `int8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `bool` | above `1`: `2` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `address` | a bit above bit `160` is set | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `bytesN` | one of the low `32 - N` bytes is not zero | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+
+`uint256`, `int256` and `bytes32` fill the word, so they are never out of range.
+
+- **Every word is checked.** A top-level value, a struct member, an array element, at any
+  depth.
+- **Strict call.** [`s.read`](/reference/builder/read/), [`s.call`](/reference/builder/call/)
+  and [`s.simulate`](/reference/builder/simulate/), for the returndata. With `revertReturns`,
+  for the revert data.
+- **Try form.** [`s.tryRead`](/reference/builder/try-read/),
+  [`s.tryCall`](/reference/builder/try-call/) and
+  [`s.trySimulate`](/reference/builder/try-simulate/). Every output is then its zero value.
+- **Script argument.** viem encodes `args` in range, so only hand-written calldata gets there.
+- **Computed words still wrap.** The check is for words that come from outside the script. A
+  [wrapping conversion](/reference/expr/conversions/#wrappingtouint) or a
+  [wrapping operation](/reference/expr/wrapping/) still wraps its own result into range.
 
 The two entries are exported as `EVS_ERROR_ABI`:
 
