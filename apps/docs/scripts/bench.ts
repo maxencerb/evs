@@ -1,7 +1,8 @@
 /**
  * Regenerates the timings quoted in `src/content/docs/concepts/compilation.mdx` and
  * `concepts/overhead.mdx`: what recording and compiling a script cost, in a fresh process and
- * once warm, and how a compile splits over its passes.
+ * once warm, and how a compile splits over its passes. It also prints the byte counts of the
+ * Compilation page's shared-codec table.
  *
  *   pnpm --filter @maxencerb/evs run build     # the library must be built first
  *   pnpm --filter @maxencerb/evs-docs run bench
@@ -297,6 +298,54 @@ try {
   console.log('| --- | --- | --- |');
   for (const pass of Object.keys(plain)) {
     console.log(`| ${pass} | ${plain[pass]?.toFixed(0)} | ${optimized[pass]?.toFixed(0)} |`);
+  }
+
+  // The same struct read from n pools: its codec emitted at every read, which only
+  // `lowerProgram` can ask for, against the shared codec `compile` emits.
+  const poolState = t.struct({
+    token0: t.address,
+    token1: t.address,
+    fee: t.uint24,
+    tick: t.int24,
+    sqrtPriceX96: t.uint160,
+    liquidity: t.uint128,
+    feeGrowth: t.uint256,
+    unlocked: t.bool,
+  });
+  const stateAbi = [
+    {
+      type: 'function',
+      name: 'state',
+      stateMutability: 'view',
+      inputs: [],
+      outputs: [{ name: 'state', type: 'tuple', components: poolState.components }],
+    },
+  ] as const;
+  const statesOf = (reads: number): AnyScript =>
+    evscript(
+      { name: 'states', args: Array.from({ length: reads }, () => t.address) },
+      (s, ...pools) =>
+        s.return(
+          Object.fromEntries(
+            pools.map((pool, i) => [
+              `state${i}`,
+              s.read({ address: pool, abi: stateAbi, functionName: 'state' }),
+            ]),
+          ),
+        ),
+    ) as unknown as AnyScript;
+  console.log('\n## One 8-field struct read from n pools (bytes)\n');
+  console.log('| Reads | Codec at every read | Shared codec |');
+  console.log('| --- | --- | --- |');
+  for (const reads of [2, 4, 8]) {
+    const script = statesOf(reads);
+    const inlined = lowerProgram(eliminateDeadCode(script.ir), {
+      evmVersion: 'cancun',
+      optimize: false,
+      shareCodecs: false,
+    });
+    const { bytecode } = assemble(inlined.nodes, { evmVersion: 'cancun' });
+    console.log(`| ${reads} | ${bytecode.length} | ${bytesOf(build(script).runtimeBytecode)} |`);
   }
 } catch (error) {
   console.log(

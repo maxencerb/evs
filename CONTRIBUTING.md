@@ -1095,9 +1095,14 @@ a third of the site build.
 ### Measured pages
 
 `concepts/compilation.mdx` and `concepts/overhead.mdx` quote measurements. The record and compile
-timings, and the per-pass split, come from `pnpm run bench` in `apps/docs` (library built first,
-on the repo's Node): take every table of both pages from one run, and keep the machine and
-versions they name current. The Overhead page's "How this was measured" section is the method
+timings, the per-pass split and the byte counts of the shared-codec table come from
+`pnpm run bench` in `apps/docs` (library built first, on the repo's Node): take every table of
+both pages from one run, and keep the machine and versions they name current. A change to the
+emitted bytecode also moves the byte counts and listings other pages quote for their example
+scripts (`concepts/how-it-works.mdx`, `reference/compile.mdx`, `guides/precompiling.mdx`):
+compile each example again and compare. The gas column of "What it saves" is the script's
+execution gas: the gas used by a transaction that calls the deployed runtime, minus its
+intrinsic gas, with the 100 tokens of the loop scripts spread over five contracts. The Overhead page's "How this was measured" section is the method
 for the rest (bundle sizes with esbuild, download and start-up in headless Chromium, per-call
 cost and gas against a local anvil), which needs tools the workspace does not install. Two
 traps when re-measuring: anvil's default Prague rules floor a transaction's gas by its calldata
