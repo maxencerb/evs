@@ -138,6 +138,13 @@ export default defineConfig({
         },
       },
       {
+        // The checker matrix prints one line per check.
+        files: ['packages/type-tests/scripts/**'],
+        rules: {
+          'no-console': 'off',
+        },
+      },
+      {
         files: ['packages/evs/test/integration/**'],
         plugins: ['vitest'],
         rules: {

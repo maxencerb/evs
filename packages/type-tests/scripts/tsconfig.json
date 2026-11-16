@@ -1,0 +1,7 @@
+{
+  // scripts/matrix.ts runs on Node (type stripping); this config only exists so type-aware lint
+  // checks it with Node's types.
+  "extends": "../../../tsconfig.base.json",
+  "compilerOptions": { "noEmit": true, "types": ["node"] },
+  "include": ["."]
+}

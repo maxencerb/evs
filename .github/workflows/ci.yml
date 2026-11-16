@@ -48,6 +48,10 @@ jobs:
         run: vp run lint:ci
       - name: Typecheck (tsc + astro check)
         run: vp run typecheck
+      # the same sources, and the published types used as an app would, under the other
+      # supported type checkers
+      - name: Typecheck under TypeScript 5.5 and 7, bun check and tsrs
+        run: vp run typecheck:checkers
 
       - name: Unit + type tests
         run: vp run test

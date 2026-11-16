@@ -5,11 +5,11 @@
  * `viem` is the sanctioned runtime peer here (selectors + ABI encoding of literals).
  *
  * Type-level design: the return record becomes ONE output of type `'tuple'` with fully-named
- * components, so viem infers an *object* — immune to the abitype `UnionToTuple`
- * interning-order instability. Script inputs map over the normalized arg SPEC tuple
+ * components, so viem infers an *object*, which needs no member order (a record type has none:
+ * core/types/derive.ts). Script inputs map over the normalized arg SPEC tuple
  * (`readonly ArgSpec[]`, order-preserving by construction), labeling each input with its
  * user-provided name (`namedArg`, issue #9) or the positional `arg0`/`arg1`/… fallback for a
- * bare arg — the labels are positional, so they never touch `UnionToTuple`.
+ * bare arg.
  */
 
 import {
@@ -48,7 +48,6 @@ import {
   type ReservedErrorName,
   type TupleType,
   type TypeToComponent,
-  type UnionToTuple,
   type WordType,
 } from '../core/types.js';
 import type { PlainAbiFunction, PlainAbiParam } from '../ir/nodes.js';
@@ -77,29 +76,22 @@ export const EVS_ERROR_NAMES: ReadonlySet<string> = new Set<ReservedErrorName>(
 // ScriptAbi — the literal type
 // ---------------------------------------------------------------------------
 
-// The return record's keys are ordered with `UnionToTuple` (core/types/derive.ts, the
-// tail-recursive form, so a wide return record stays typed): the resulting tuple ORDER is
-// interning-dependent and unstable, but SAFE here — viem infers an object from a fully-named
-// single tuple output, and objects are order-insensitive.
-// Each return key → an abitype component via {@link TypeToComponent}: a scalar/array member to
+// A return record has no key order at the type level (core/types/derive.ts, "the members of a
+// record"), and it needs none: viem infers an object from a fully named tuple output, reading
+// the members as a union. So `components` is a plain list of the member union. Each return key
+// becomes an abitype component via {@link TypeToComponent}: a scalar/array member to
 // `{ name, type }`, a tuple/struct member to `{ name, type: 'tuple'|…, components }` (so a tuple
 // flows out as a named ABI tuple, not a raw {@link TupleType} object).
-type MapComponents<keys, ret extends Record<string, ReturnValue>> = keys extends readonly unknown[]
-  ? {
-      readonly [i in keyof keys]: keys[i] extends keyof ret & string
-        ? TypeToComponent<keys[i], TypeOfReturn<ret[keys[i]]>>
-        : never;
-    }
-  : never;
-// Non-literal `ret` (i.e. the default `Record<string, ReturnValue>` instantiation) widens to a plain
-// readonly components array instead of collapsing to a `UnionToTuple<string>` 1-tuple — that
-// collapse made the default-instantiated `ScriptAbi`/`EvsScript`/`CompiledEvsScript` reject
-// every concrete multi-return script. A literal components tuple IS assignable to the readonly
-// array form, so the default instantiation is now a proper supertype (pinned by type tests).
+type ReturnMember<ret extends Record<string, ReturnValue>> = {
+  readonly [k in keyof ret & string]: TypeToComponent<k, TypeOfReturn<ret[k]>>;
+}[keyof ret & string];
+// Non-literal `ret` (i.e. the default `Record<string, ReturnValue>` instantiation) widens to the
+// loosest components list, so the default-instantiated `ScriptAbi`/`EvsScript`/
+// `CompiledEvsScript` is a supertype of every concrete script's (pinned by type tests).
 export type ReturnSpecToComponents<ret extends Record<string, ReturnValue>> =
   string extends keyof ret
     ? readonly { readonly name: string; readonly type: EvsType }[]
-    : MapComponents<UnionToTuple<keyof ret>, ret>;
+    : readonly ReturnMember<ret>[];
 
 // `ArgName` / `ResolveArgName` / `ArgsToInputs` (the input-labeling machinery) moved to
 // core/types.ts (issue #15 — `t.error` types its ABI inputs with them and core takes no runtime
@@ -134,8 +126,8 @@ export type ScriptAbi<
       {
         readonly name: 'result';
         readonly type: 'tuple';
-        readonly components: ReturnSpecToComponents<ret>; // UnionToTuple-based; order-unstable but
-      }, //                                                  SAFE (object inference)
+        readonly components: ReturnSpecToComponents<ret>; // the members, in no order
+      },
     ];
   },
   (typeof EVS_ERROR_ABI)[0],

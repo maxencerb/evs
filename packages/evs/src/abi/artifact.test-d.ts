@@ -108,13 +108,15 @@ test('outputs: single named tuple; components carry every (name, type) pair — 
   type Output = PoolMetaAbi[0]['outputs'][0];
   expectTypeOf<Output['name']>().toEqualTypeOf<'result'>();
   expectTypeOf<Output['type']>().toEqualTypeOf<'tuple'>();
-  // assert the component SET (union) — never the tuple order, which interning makes unstable
+  // the components are a list of the member union: a record type has no key order to keep
   expectTypeOf<Output['components'][number]>().toEqualTypeOf<
     | { readonly name: 'token0'; readonly type: 'address' }
     | { readonly name: 'symbol0'; readonly type: 'string' }
     | { readonly name: 'tick'; readonly type: 'int24' }
   >();
-  expectTypeOf<ReturnSpecToComponents<PoolMetaRet>['length']>().toEqualTypeOf<3>();
+  expectTypeOf<ReturnSpecToComponents<PoolMetaRet>[number]['name']>().toEqualTypeOf<
+    'token0' | 'symbol0' | 'tick'
+  >();
 });
 
 test('interning regression: viem still infers the correct OBJECT (incl. int24 → number)', () => {
@@ -222,18 +224,33 @@ type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
 type WideKey = `k${Digit}${Digit}` | `k1${'0' | '1' | '2' | '3' | '4'}${Digit}`;
 
 test('a 150-key return record keeps an exact readContract result (no depth overflow)', () => {
-  // the former `[...UnionToTuple<rest>, last]` spelling hit TS2589 from ~45 keys under viem's
-  // inference and degraded the result to `unknown`; the tail-recursive form has no such limit
+  // ordering the keys through a union cost a recursion step per key: it hit TS2589 from ~45 keys
+  // under viem's inference at first, and stayed quadratic afterwards. The components are now a
+  // list of the member union, built in one mapped type
   type WideAbi = ScriptAbi<
     'wide',
     readonly [ArgSpec<'', 'uint256'>],
     { [k in WideKey]: Expr<'uint256'> }
   >;
   expectTypeOf<
-    ReturnSpecToComponents<{ [k in WideKey]: Expr<'uint256'> }>['length']
-  >().toEqualTypeOf<150>();
-  expectTypeOf<WideAbi[0]['outputs'][0]['components']['length']>().toEqualTypeOf<150>();
+    ReturnSpecToComponents<{ [k in WideKey]: Expr<'uint256'> }>[number]['name']
+  >().toEqualTypeOf<WideKey>();
+  expectTypeOf<WideAbi[0]['outputs'][0]['components'][number]['name']>().toEqualTypeOf<WideKey>();
   expectTypeOf<ReadContractReturnType<WideAbi, 'wide', readonly [bigint]>>().toEqualTypeOf<{
     [k in WideKey]: bigint;
+  }>();
+});
+
+test('a 1,000-key return record is as exact, and costs one mapped type', () => {
+  // ordering the keys cost a step per key over a union that shrank by one each time: quadratic,
+  // 5 s of checking at 300 keys on TypeScript 6
+  type ManyKey = `k${Digit}${Digit}${Digit}`;
+  type ManyAbi = ScriptAbi<
+    'many',
+    readonly [ArgSpec<'', 'uint256'>],
+    { [k in ManyKey]: Expr<'uint256'> }
+  >;
+  expectTypeOf<ReadContractReturnType<ManyAbi, 'many', readonly [bigint]>>().toEqualTypeOf<{
+    [k in ManyKey]: bigint;
   }>();
 });

@@ -82,6 +82,7 @@ export type {
 } from './types/args.js';
 export type {
   TypeToComponent,
+  NamedComponents,
   StructTypeOf,
   TupleTypeOf,
   TupleArrayOf,

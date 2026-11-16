@@ -1,0 +1,16 @@
+{
+  "name": "@maxencerb/evs-type-tests",
+  "private": true,
+  "description": "The published types of @maxencerb/evs, used as an app would and checked by every supported type checker",
+  "type": "module",
+  "dependencies": {
+    "@maxencerb/evs": "workspace:*",
+    "viem": "catalog:"
+  },
+  "devDependencies": {
+    "tsrs": "catalog:checkers",
+    "typescript": "catalog:",
+    "typescript-5.5": "catalog:checkers",
+    "typescript-7": "catalog:checkers"
+  }
+}

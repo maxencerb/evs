@@ -1,0 +1,20 @@
+{
+  // An app's project, not the library's: its own compiler options, and the library reached
+  // through `node_modules`, so through its published declarations. Every type checker in
+  // scripts/matrix.ts runs this project. `skipLibCheck` is on, as in most apps: off, TypeScript
+  // 5.5 reports errors inside the declarations of viem's own dependencies.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "NodeNext",
+    "moduleDetection": "force",
+    "strict": true,
+    "noUncheckedIndexedAccess": true,
+    "exactOptionalPropertyTypes": true,
+    "verbatimModuleSyntax": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["src"]
+}

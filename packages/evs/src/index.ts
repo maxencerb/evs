@@ -49,6 +49,7 @@ export type {
   IntoExpr,
   IntType,
   LitOf,
+  NamedComponents, // the member list of a fully named tuple type: its members, in no order
   NamedType,
   NoProtoKey, // t.struct / s.return reject a literal `__proto__` key at the type level
   NumericType,

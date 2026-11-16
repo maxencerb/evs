@@ -7,7 +7,7 @@
  */
 import { expectTypeOf, test } from 'vite-plus/test';
 
-import { t, type Expr } from '../core/types.js';
+import { t, type Expr, type NamedComponents } from '../core/types.js';
 import { evscript, type ResolveOverload, type SubcallFunctionName, type Tuple } from './script.js';
 
 const ovAbi = [
@@ -163,10 +163,11 @@ test('a signature functionName names one overload exactly', () => {
     expectTypeOf(tup).toEqualTypeOf<
       Tuple<{
         readonly type: 'tuple';
-        readonly components: readonly [
-          { readonly name: 'a'; readonly type: 'uint256' },
-          { readonly name: 'b'; readonly type: 'address' },
-        ];
+        readonly components: NamedComponents<
+          | { readonly name: 'a'; readonly type: 'uint256' }
+          | { readonly name: 'b'; readonly type: 'address' },
+          2
+        >;
       }>
     >();
     // the signature's own args are checked against that overload only
@@ -260,9 +261,10 @@ test('t.fromOutputs names an overload by signature', () => {
   expectTypeOf(t.fromOutputs(ovAbi, 'get(uint8)')).toEqualTypeOf<'bytes32'>();
   expectTypeOf(t.fromOutputs(ovAbi, 'get((uint256,address))')).toEqualTypeOf<{
     readonly type: 'tuple';
-    readonly components: readonly [
-      { readonly name: 'a'; readonly type: 'uint256' },
-      { readonly name: 'b'; readonly type: 'address' },
-    ];
+    readonly components: NamedComponents<
+      | { readonly name: 'a'; readonly type: 'uint256' }
+      | { readonly name: 'b'; readonly type: 'address' },
+      2
+    >;
   }>();
 });

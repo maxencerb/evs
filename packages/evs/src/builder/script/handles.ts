@@ -91,9 +91,9 @@ export type ComponentToType<c extends NamedType> = c['type'] extends `tuple${str
 /**
  * The value a composite (plain `tuple`) member accepts on write/init: a precise {@link Tuple}
  * handle of that member type, ANY {@link Tuple} handle (issue #5 ask #3 — the erased
- * {@link tupleBrand} makes a call-decoded `Tuple<C_abi>` assignable into a `t.struct`-typed slot
- * whose `C` is `UnionToTuple`-ordered; the runtime `typesEqual` is the order-sensitive guard), or
- * a {@link StructLiteral} (whose members may themselves be staged).
+ * {@link tupleBrand} makes every `Tuple` handle assignable into a struct-typed slot; the runtime
+ * `typesEqual` is the guard, member order included), or a {@link StructLiteral} (whose members
+ * may themselves be staged).
  */
 export type IntoTuple<t extends TupleType> = Tuple<t> | AnyTuple | StructLiteral<t>;
 

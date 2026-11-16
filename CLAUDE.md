@@ -59,6 +59,11 @@ Tests run on **vitest** through `vp test` (prool per-worker anvil via
   - `vp run test:integration` — anvil via prool (foundry must be installed): the library's
     `integration` project and the plugin's `plugin-integration`
   - `vp run test:all` — everything
+- `vp run typecheck:checkers` (after a build) runs the other type checkers: TypeScript 5.5 and 7,
+  `bun check` and tsrs, on the two packages' sources and on `packages/type-tests/src`. A type
+  must mean the same on all of them: never read a position out of a union (TypeScript 7 and its
+  ports sort unions; reasons in CONTRIBUTING.md, "A fully named tuple type carries no member
+  order").
   - Single file: `vp test run <path> --project unit` (plugin: `--project plugin`)
 
 ## Layout
@@ -82,6 +87,11 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   its `src/`). Tests: `test/*.test.ts` drive Vite on `test/fixtures/` with the plugin from
   source, `test/integration` runs a built bundle on anvil. Its user-facing messages are quoted
   in `apps/docs` (`guides/precompiling.mdx`, `reference/vite-plugin.mdx`): change both together.
+- `packages/type-tests` — private. `src/` holds fixtures that use the published types as an app
+  would (they resolve `@maxencerb/evs` to its built `.d.ts`); `scripts/matrix.ts` checks them,
+  and the two packages, under each type checker. It installs the extra checkers (the `checkers`
+  catalog: `typescript-5.5` and `typescript-7` are aliases, so call them by path, never through
+  `.bin/tsc`). No test runner there: assertions are `@ts-expect-error` and `expectType`.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored; the barrel uses `.ts` specifiers so the examples
@@ -113,7 +123,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 - `.github/assets/` — repository artwork (`evs-banner.svg`, the animated README banner; the
   docs landing hero in `apps/docs/src/components/Hero.astro` redraws the same ridges inline).
 - Dependency versions are pinned via **catalogs** in `pnpm-workspace.yaml` (default +
-  `testing` + `docs`), which also holds `overrides` (`vite@*` → `@voidzero-dev/vite-plus-core`,
+  `testing` + `docs` + `checkers`), which also holds `overrides` (`vite@*` → `@voidzero-dev/vite-plus-core`,
   `vitest@*` → the Vitest `vp` bundles, both required by Vite+ under pnpm), the
   `peerDependencyRules` for the core alias's version, `allowBuilds` (pnpm ≥ 11 fails installs on
   unreviewed dependency build scripts — rule on any new one there) and pnpm's
@@ -123,7 +133,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   viem patch behavior; `vite-plus`, the `vite` alias and the `vitest` override move together) —
   bump through `vp migrate`, then re-run `vp install`.
   TypeScript is on 6.x: `@astrojs/check` does not accept 7 yet, and TS 6 no longer
-  auto-includes `@types/*` (every tsconfig lists its `types`).
+  auto-includes `@types/*` (every tsconfig lists its `types`). The other supported checkers run
+  through `vp run typecheck:checkers`.
 
 ## Key commands
 
@@ -132,6 +143,7 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 - `vp check` — format + lint (type-aware) + tsgolint type-check, one pass (use in loops)
 - `vp run check` — `vp check` + per-workspace `tsc --noEmit` / `astro check`
 - `vp run typecheck` — `tsc --noEmit` / `astro check` across workspaces
+- `vp run typecheck:checkers` — the same under TypeScript 5.5 / 7, `bun check` and tsrs
 - `vp lint` / `vp lint --fix` — oxlint; CI uses `vp run lint:ci` (`--deny-warnings`)
 - `vp fmt` (writes!) / `vp fmt --check` — oxfmt
 - `vp run changeset` — add a changeset for a user-visible library change
@@ -143,8 +155,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
 
 - `.github/workflows/ci.yml` — one serial job (`ci`): `voidzero-dev/setup-vp` (node from
   `.node-version`, pnpm from `packageManager`, cached pnpm store, `vp install --frozen-lockfile`) → forge
-  build + test + codegen → build library + plugin → fmt:check → lint:ci → typecheck → unit+type+plugin
-  tests → integration (anvil; foundry pinned `FOUNDRY_VERSION`) → example app build → publint +
+  build + test + codegen → build library + plugin → fmt:check → lint:ci → typecheck → the other
+  type checkers (`typecheck:checkers`; the setup action installs a pinned Bun for `bun check`) →
+  unit+type+plugin tests → integration (anvil; foundry pinned `FOUNDRY_VERSION`) → example app build → publint +
   attw for both packages → informational
   `changeset status`. `fork-tests` runs on `workflow_dispatch` only (`ANVIL_FORK_URL`).
   Every action is pinned to a commit SHA with the tag in a trailing comment — bump both.

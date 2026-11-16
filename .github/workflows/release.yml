@@ -79,6 +79,7 @@ jobs:
           (cd packages/contracts && forge build && forge test && vp run codegen)
           vp run build
           vp run check
+          vp run typecheck:checkers
           vp run test
           vp run test:integration
           (cd examples/vite-precompile && vp run build)
