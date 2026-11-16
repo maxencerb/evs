@@ -138,7 +138,7 @@ function describeReceiver(self: unknown): string {
   if (ARR_INTERNALS.has(self)) return 'a MutArray';
   if (TUPLE_INTERNALS.has(self)) return 'a Tuple';
   if (FIELD_INTERNALS.has(self)) return 'a Field';
-  if (self instanceof LoopCtlImpl) return 'a LoopCtl';
+  if (LOOP_INTERNALS.has(self)) return 'a LoopCtl';
   return typeof self === 'function' ? 'a function' : 'an object that is not an evs handle';
 }
 
@@ -584,21 +584,49 @@ function fieldInternalsOf(h: object, member: string): FieldInternals {
   return i;
 }
 
-export class LoopCtlImpl {
-  private readonly owner: Recorder;
-  private readonly bodyScope: Scope;
+/** What a loop control records against: its script and the body scope of its loop. */
+interface LoopInternals {
+  readonly owner: Recorder;
+  readonly bodyScope: Scope;
+}
 
+const LOOP_INTERNALS = new WeakMap<object, LoopInternals>();
+
+/**
+ * The control handle of one loop (`loop.break()` / `loop.continue()`). Like every other handle it
+ * holds nothing itself: its recorder and scope are in {@link LOOP_INTERNALS}, so the only way to
+ * record a `break` or `continue` is {@link recordLoopJump}, behind its scope check.
+ */
+export class LoopCtlImpl {
   constructor(owner: Recorder, bodyScope: Scope) {
-    this.owner = owner;
-    this.bodyScope = bodyScope;
+    LOOP_INTERNALS.set(this, { owner, bodyScope });
   }
 
-  /** Recording-time scoping check: valid only while the owning loop's body scope is open. */
-  guard(what: string): void {
-    this.owner.assertOpen(what);
-    const innermost = this.owner.innermostLoopBody();
-    if (innermost === this.bodyScope) return;
-    if (innermost !== null && this.owner.isScopeOnStack(this.bodyScope)) {
+  break(): void {
+    recordLoopJump(this, 'break');
+  }
+
+  continue(): void {
+    recordLoopJump(this, 'continue');
+  }
+}
+
+/**
+ * Records the `break` / `continue` of `loop`, which is valid only while the body of its own loop
+ * is the innermost one recording. `beforeJump` records what must run first (a counter loop's
+ * step before its `continue`), after the check.
+ */
+export function recordLoopJump(
+  loop: unknown,
+  kind: 'break' | 'continue',
+  { beforeJump }: { readonly beforeJump?: () => void } = {},
+): void {
+  const what = `loop.${kind}()`;
+  const { owner, bodyScope } = loopInternalsOf(loop, kind);
+  owner.assertOpen(what);
+  const innermost = owner.innermostLoopBody();
+  if (innermost !== bodyScope) {
+    if (innermost !== null && owner.isScopeOnStack(bodyScope)) {
       throw new EvsScopeError(
         'SCOPE_VIOLATION',
         `${what}: this LoopCtl belongs to an outer loop — break/continue the innermost loop with its own LoopCtl (an unlabeled break targets the innermost loop)`,
@@ -609,25 +637,14 @@ export class LoopCtlImpl {
       `${what}: LoopCtl used outside its owning loop's body — it is only valid while that loop body is recording`,
     );
   }
-
-  emit(kind: 'break' | 'continue'): void {
-    this.owner.appendStmt({ k: kind });
-  }
-
-  break(): void {
-    const loop = loopCtlOf(this, 'break');
-    loop.guard('loop.break()');
-    loop.emit('break');
-  }
-
-  continue(): void {
-    const loop = loopCtlOf(this, 'continue');
-    loop.guard('loop.continue()');
-    loop.emit('continue');
-  }
+  beforeJump?.();
+  owner.appendStmt({ k: kind });
 }
 
-function loopCtlOf(h: unknown, member: string): LoopCtlImpl {
-  if (h instanceof LoopCtlImpl) return h;
-  throw detachedMemberError('LoopCtl', 'loop', LoopCtlImpl.prototype, member, h);
+function loopInternalsOf(h: unknown, member: string): LoopInternals {
+  const i = typeof h === 'object' && h !== null ? LOOP_INTERNALS.get(h) : undefined;
+  if (i === undefined) {
+    throw detachedMemberError('LoopCtl', 'loop', LoopCtlImpl.prototype, member, h);
+  }
+  return i;
 }

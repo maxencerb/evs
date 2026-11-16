@@ -18,9 +18,20 @@ import {
 } from '../../core/types.js';
 import type { ValueId, CellId } from '../../ir/nodes.js';
 import type { RecErrorDecl } from './core.js';
-import { LoopCtlImpl, makeExpr } from './handles.js';
-import { isRecordObj, describeHost, unsafeCast, type Scope, assertV0Type } from './helpers.js';
+import { LoopCtlImpl, makeExpr, recordLoopJump } from './handles.js';
+import {
+  isRecordObj,
+  describeHost,
+  didYouMean,
+  unsafeCast,
+  type Scope,
+  assertV0Type,
+  assertSyncCallback,
+} from './helpers.js';
 import { RecorderOps } from './ops.js';
+
+/** The keys of an `s.for` range. */
+const RANGE_KEYS: readonly string[] = ['type', 'from', 'until', 'step'];
 
 /** `s.throw`, `if` and the loops (a `Recorder` layer). */
 export abstract class RecorderControl extends RecorderOps {
@@ -38,6 +49,13 @@ export abstract class RecorderControl extends RecorderOps {
     this.assertOpen(what);
     const { decl, index } = this.findErrorDecl(error, what);
     const n = decl.params.length;
+    // a value after the args would be dropped (a trailing `undefined` carries nothing)
+    if (argsIn.slice(1).some((extra) => extra !== undefined)) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: error "${decl.ir.name}" takes ${n === 0 ? 'no args' : 'its args as one value (a record or a tuple)'}, got ${argsIn.length} values after the error — the extra ones would be dropped`,
+      );
+    }
     let ids: ValueId[] = [];
     if (n === 0) {
       if (argsIn.length > 0 && argsIn[0] !== undefined) {
@@ -56,12 +74,12 @@ export abstract class RecorderControl extends RecorderOps {
           `${what}: error "${decl.ir.name}" takes a named args record — s.throw(${decl.ir.name}, { ${decl.params.map((p) => p.name).join(', ')} })`,
         );
       }
-      const known = new Set(decl.params.map((p) => p.name));
+      const known = decl.params.map((p) => p.name);
       for (const key of Object.keys(a)) {
-        if (!known.has(key)) {
+        if (!known.includes(key)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
-            `${what}: unknown arg ${JSON.stringify(key)} for error "${decl.ir.name}" (expected: ${[...known].join(', ')})`,
+            `${what}: unknown arg ${JSON.stringify(key)} for error "${decl.ir.name}"${didYouMean(key, known)} (expected: ${known.join(', ')})`,
           );
         }
       }
@@ -151,13 +169,15 @@ export abstract class RecorderControl extends RecorderOps {
       const condId = this.coerceToId(cond, 'bool', 's.if() condition');
       const thenScope = this.pushScope('if-then');
       try {
-        unsafeCast<() => void>(thenFn)();
+        assertSyncCallback(unsafeCast<() => unknown>(thenFn)(), 's.if() then branch');
       } finally {
         this.popScope();
       }
       const elseScope = this.pushScope('if-else');
       try {
-        if (elseFn !== undefined) unsafeCast<() => void>(elseFn)();
+        if (elseFn !== undefined) {
+          assertSyncCallback(unsafeCast<() => unknown>(elseFn)(), 's.if() else branch');
+        }
       } finally {
         this.popScope();
       }
@@ -179,10 +199,14 @@ export abstract class RecorderControl extends RecorderOps {
       's.while()',
       () => {
         const cond = unsafeCast<() => unknown>(condThunk)();
+        assertSyncCallback(cond, 's.while() condition');
         return this.coerceToId(cond, 'bool', 's.while() condition');
       },
       (loop) => {
-        unsafeCast<(loop: LoopCtlImpl) => void>(bodyFn)(loop);
+        assertSyncCallback(
+          unsafeCast<(loop: LoopCtlImpl) => unknown>(bodyFn)(loop),
+          's.while() body',
+        );
       },
     );
   }
@@ -226,11 +250,21 @@ export abstract class RecorderControl extends RecorderOps {
     if (typeof bodyFn !== 'function') {
       throw new EvsTypeError('TYPE_MISMATCH', `s.for(): body must be a callback (i, loop) => …`);
     }
-    if (typeof range !== 'object' || range === null) {
+    if (typeof range !== 'object' || range === null || Array.isArray(range)) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `s.for(): range must be { type?, from, until, step? }`,
       );
+    }
+    // a key the range does not have is a typo of one it has (`setp`) or an option of another API
+    // (`to`): read as absent, it would record a loop the user did not write
+    for (const key of Object.keys(range)) {
+      if (!RANGE_KEYS.includes(key)) {
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `s.for(): unknown range key ${JSON.stringify(key)}${didYouMean(key, RANGE_KEYS)} (the range is { type?, from, until, step? })`,
+        );
+      }
     }
     this.assertBlockRoom('s.for()');
     const r = range as { type?: unknown; from?: unknown; until?: unknown; step?: unknown };
@@ -250,13 +284,34 @@ export abstract class RecorderControl extends RecorderOps {
     if (r.from === undefined || r.until === undefined) {
       throw new EvsTypeError('TYPE_MISMATCH', `s.for(): range.from and range.until are required`);
     }
+    // only an absent step is the default: `null` is a value the caller computed
+    if (r.step === null) {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `s.for(): range.step must be an Expr or a literal of '${ty}', got null — leave it out for a step of 1`,
+      );
+    }
+    // a host zero is refused before anything is recorded; a zero that comes as a literal Expr
+    // (`s.lit`) only shows once it is coerced
+    if (r.step === 0 || r.step === 0n) this.zeroStep();
     // the loop cell + the ONE-TIME snapshots of `until` and `step`
     const cellId = this.makeCell(ty, r.from);
     const untilId = this.coerceToId(r.until, ty, 's.for() range.until');
-    const stepId = this.coerceToId(r.step ?? 1, ty, 's.for() range.step');
+    const stepId = this.coerceToId(r.step === undefined ? 1 : r.step, ty, 's.for() range.step');
+    if (this.litValues.get(stepId) === 0n) this.zeroStep();
     this.counterLoop('s.for()', ty, cellId, untilId, stepId, (iSnap, _iId, loop) => {
-      unsafeCast<(i: Expr, loop: LoopCtlShape) => void>(bodyFn)(iSnap, loop);
+      const result = unsafeCast<(i: Expr, loop: LoopCtlShape) => unknown>(bodyFn)(iSnap, loop);
+      assertSyncCallback(result, 's.for() body');
     });
+  }
+
+  /** A literal step of zero never advances the counter: the recorded loop would only end by
+   *  running out of gas (or never start, when `from >= until`). */
+  private zeroStep(): never {
+    throw new EvsTypeError(
+      'LITERAL_RANGE',
+      `s.for(): range.step is the literal 0 — the counter would never advance, so the loop would run until the call is out of gas. Use a step of at least 1 (for a loop with no counter, s.while)`,
+    );
   }
 
   /** `s.forEach(array, (elem, i, loop) => …)` (issue #12): the counter loop over an array
@@ -288,7 +343,12 @@ export abstract class RecorderControl extends RecorderOps {
     // compile-time DCE pass (ir/dce.ts) drops it, bounds check included
     this.counterLoop('s.forEach()', 'uint256', cellId, lenId, stepId, (iSnap, iId, loop) => {
       const elem = this.indexElem(c.id, elemTy, iId, 's.forEach(…) element');
-      unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => void>(bodyFn)(elem, iSnap, loop);
+      const result = unsafeCast<(e: unknown, i: Expr, loop: LoopCtlShape) => unknown>(bodyFn)(
+        elem,
+        iSnap,
+        loop,
+      );
+      assertSyncCallback(result, 's.forEach() body');
     });
   }
 
@@ -301,7 +361,7 @@ export abstract class RecorderControl extends RecorderOps {
    * `cellget`: the cell is internal (no handle ever reaches the user) and only the step writes
    * it, and every step is followed by `continue` or the end of the body, so `cell == i` holds
    * at every step. An outer loop's `continue()` inside an inner loop's BODY is rejected by
-   * `LoopCtlImpl.guard`; inside an inner `s.while` HEADER thunk it is accepted (the guard's
+   * `recordLoopJump`; inside an inner `s.while` HEADER thunk it is accepted (the guard's
    * `innermostLoopBody()` only looks at `while-body` scopes), and there the recorded `continue`
    * sits outside the inner body, so it targets this counter loop: the step before it still
    * leaves `cell == i` for the next header read. Reusing `i` saves a read per step and ties the step `add(i, 1)` to the header
@@ -341,9 +401,7 @@ export abstract class RecorderControl extends RecorderOps {
             rawLoop.break();
           },
           continue: () => {
-            rawLoop.guard('loop.continue()');
-            emitStep();
-            rawLoop.emit('continue');
+            recordLoopJump(rawLoop, 'continue', { beforeJump: emitStep });
           },
         };
         invokeBody(iSnap, iId, wrapped);

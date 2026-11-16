@@ -104,4 +104,5 @@ dce(echo.ir) === echo.ir; // true: nothing to remove, same object back
 | Error | When |
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the IR was deserialized or written by hand, and is invalid. The message names the statement |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the argument is not an IR, such as the script itself: pass `script.ir` |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | such an IR nests blocks more than 256 levels deep |

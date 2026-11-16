@@ -253,4 +253,5 @@ The JavaScript loop records its body 200 times. With
 | `EvsCompileError` (`COMPILE_LIMIT`) | the runtime bytecode is over 24,576 bytes: see [size limit](#size-limit) |
 | `EvsCompileError` (`UNSUPPORTED_V0`) | a type nests structs and arrays too deep for the EVM stack: flatten it |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `script` is not a value returned by `evscript` |
+| `EvsTypeError` (`ABI_SHAPE`) | the script uses `s.simulate` or `s.trySimulate` and is named `__evs_simulate` with the arguments `(address, bytes)`: that selector is reserved for the simulation, rename the script |
 | `EvsInternalError` (`INTERNAL`) | a `peephole` hook returns nodes that fail assembly or verification, such as an `op` node named `PUSH1` to `PUSH32` (use a `push` node) |

@@ -186,6 +186,9 @@ interpret(first, [[{ owner, amount: 5n }]], noCalls); // one array of one struct
 
 The object that answers every call and account read the script makes.
 
+It is checked before the script runs: a script that makes a call needs a chain whose `staticcall`
+is a function, even when the call sits in a branch this run does not take.
+
 ### trace (optional)
 
 - **Type:** `boolean`
@@ -359,6 +362,8 @@ Thrown on the host. None of these is a script outcome.
 | `EvsTypeError` (`TYPE_MISMATCH`) | wrong number of arguments, or an argument of the wrong JS type |
 | `EvsTypeError` (`LITERAL_RANGE`) | an integer argument out of range, or an `address` or `bytesN` of the wrong length |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a mock method returns a malformed reply, or `maxSteps` or `env` is invalid |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `chain` has no `staticcall` function and the script makes a call that needs it. Thrown before the script runs |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `script` is a [precompiled script](/reference/precompiled/), which holds no IR: pass the `evscript` result or its artifact |
 | `EvsCompileError` (`COMPILE_LIMIT`) | the run goes over `maxSteps` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the IR is invalid, which only a hand-built or [deserialized](/reference/utilities/serialize-ir/) IR can be. The message names the statement |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | such an IR nests blocks more than 256 levels deep |

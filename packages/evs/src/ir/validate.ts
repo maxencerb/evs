@@ -90,6 +90,38 @@ export function validateIr(ir: ScriptIr): void {
   new IrValidator(ir).run();
 }
 
+/** The top-level tables of a `ScriptIr`, each an array. */
+const IR_TABLES = ['args', 'values', 'cells', 'fns', 'body', 'returns'] as const;
+
+/**
+ * Throws a coded error when `value` is not the object a `ScriptIr` is at its top level: its
+ * tables are what {@link validateIr} and every pass read first. For the public functions that
+ * take an IR from the caller, so that a script, a compiled artifact or a precompiled script given
+ * in its place is named as such, with what to pass. `expected` opens the message: the function
+ * that was called and what it takes (`interpret: expected …`).
+ */
+export function assertScriptIr(value: unknown, expected: string): asserts value is ScriptIr {
+  const fail = (got: string): never => {
+    throw new EvsTypeError('TYPE_MISMATCH', `${expected}, got ${got}`);
+  };
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    const primitive = value === undefined ? 'undefined' : `a ${typeof value}`;
+    fail(value === null ? 'null' : Array.isArray(value) ? 'an array' : primitive);
+    return;
+  }
+  const o: Readonly<Record<string, unknown>> = { ...value };
+  if (typeof o['name'] === 'string' && IR_TABLES.every((table) => Array.isArray(o[table]))) return;
+  if (typeof o['ir'] === 'object' && o['ir'] !== null) {
+    fail('a script or a compiled artifact, which holds its IR under `ir` — pass that');
+  }
+  if ('runtimeBytecode' in value) {
+    fail(
+      'a precompiled script, which holds no IR — pass the evscript() result or its compiled artifact',
+    );
+  }
+  fail(`an object without the tables of an IR (${IR_TABLES.join(', ')})`);
+}
+
 // ---------------------------------------------------------------------------
 // implementation (module-private)
 // ---------------------------------------------------------------------------

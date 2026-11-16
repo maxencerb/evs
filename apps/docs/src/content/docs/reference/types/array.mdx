@@ -167,6 +167,8 @@ const pair = t.array(
 - **Four levels.** `uint256[][][][]` is the deepest array. One more level throws.
 - **Literal length.** Inside a script, TypeScript does not count the elements of a `T[N]`
   literal. A wrong count throws `TYPE_MISMATCH` when the script is built.
+- **Dense literals.** An array literal gives every element a value. A hole, as in `[a, , c]` or
+  `new Array(3)`, or an `undefined` element throws `TYPE_MISMATCH` with its index.
 - **Size cap.** A type whose ABI static size reaches 2^32 bytes is rejected, such as
   `t.array(t.uint256, 2 ** 27)`.
 
