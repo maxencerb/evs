@@ -23,7 +23,7 @@ import {
   isWordType,
   stringifyType,
 } from '../../core/types.js';
-import { eliminateDeadCode } from '../dce.js';
+import { pruneDeadCode } from '../dce.js';
 import {
   type AccountOp,
   type ScriptIr,
@@ -226,10 +226,10 @@ export function interpret(
 const dceCache = new WeakMap<ScriptIr, ScriptIr>();
 
 function dceOf(ir: ScriptIr): ScriptIr {
-  if (!Object.isFrozen(ir)) return eliminateDeadCode(ir);
+  if (!Object.isFrozen(ir)) return pruneDeadCode(ir);
   let program = dceCache.get(ir);
   if (program === undefined) {
-    program = eliminateDeadCode(ir);
+    program = pruneDeadCode(ir);
     dceCache.set(ir, program);
   }
   return program;

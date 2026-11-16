@@ -1,0 +1,15 @@
+{
+  // An app on TypeScript's legacy module resolution (`moduleResolution: "node"`), which predates
+  // `exports`: it finds the main entry through `types` and a subpath through `typesVersions`.
+  "compilerOptions": {
+    "target": "ES2022",
+    "lib": ["ES2023", "DOM"],
+    "module": "ESNext",
+    "moduleResolution": "node",
+    "strict": true,
+    "skipLibCheck": true,
+    "noEmit": true,
+    "types": []
+  },
+  "include": ["node10"]
+}

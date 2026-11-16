@@ -244,6 +244,7 @@ Thrown while the callback records, at the offending line:
 | `EvsTypeError` (`TYPE_MISMATCH`) | `from`, `until` or `step` is not of the counter type |
 | `EvsTypeError` (`LITERAL_RANGE`) | a literal `from`, `until` or `step` does not fit the counter type |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the body is used after the loop |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | the loop would be nested more than 256 levels deep: see [nesting limit](/reference/builder/if/#nesting-limit) |
 
 At run time:
 

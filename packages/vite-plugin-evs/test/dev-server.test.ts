@@ -1,7 +1,9 @@
 /**
  * The dev server: a build-time module is served precompiled, compiled again when a file it
  * imports changes, and its debug data is served on demand. A debug-module URL is only ever
- * answered with what the plugin wrote: the server reads and runs nothing for one.
+ * answered with what the plugin wrote: the server reads and runs nothing for one. And only the
+ * plain URL of a build-time module runs a file: a query, a hash or a place in an installed
+ * package leaves the request to Vite.
  */
 
 import {
@@ -12,29 +14,37 @@ import {
   readFileSync,
   realpathSync,
   rmSync,
-  symlinkSync,
   utimesSync,
   writeFileSync,
 } from 'node:fs';
 import { request } from 'node:http';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
-import { createServer, type ViteDevServer } from 'vite-plus';
-import { afterAll, beforeAll, describe, expect, onTestFinished, test, vi } from 'vite-plus/test';
+import { createServer, type PluginOption, type ViteDevServer } from 'vite-plus';
+import {
+  afterAll,
+  beforeAll,
+  beforeEach,
+  describe,
+  expect,
+  onTestFinished,
+  test,
+  vi,
+} from 'vite-plus/test';
 
 import { isPrecompiledScript } from '@maxencerb/evs/runtime';
 
 import { evs } from '../src/index.js';
 // the module the servers below serve, run without the plugin
 import * as direct from './fixtures/dev/watch.evs.ts';
-import { packageRoot, recordingLogger } from './helpers.js';
+import { installPackagesIn, packageRoot, recordingLogger } from './helpers.js';
 
 /**
  * A directory outside the repository. In it, `app` is what the servers serve: a copy of
- * `fixtures/dev` the tests can edit, which resolves packages like the plugin package does,
- * through a link. What is next to `app` is outside of what a server may serve.
+ * `fixtures/dev` the tests can edit, with the packages of the plugin package linked into a
+ * `node_modules` of its own. What is next to `app` is outside of what a server may serve.
  */
 let sandbox: string;
 let root: string;
@@ -43,7 +53,7 @@ beforeAll(() => {
   sandbox = mkdtempSync(join(realpathSync(tmpdir()), 'vite-plugin-evs-'));
   root = join(sandbox, 'app');
   cpSync(join(packageRoot, 'test/fixtures/dev'), root, { recursive: true });
-  symlinkSync(join(packageRoot, 'node_modules'), join(root, 'node_modules'), 'dir');
+  installPackagesIn(root);
 });
 
 afterAll(() => {
@@ -60,9 +70,13 @@ interface DevServer {
   getRaw(path: string): Promise<{ status: number; body: string }>;
 }
 
-/** A listening dev server with a plugin instance of its own (a new server session), closed
- *  with the test. */
-async function startDevServer(): Promise<DevServer> {
+/**
+ * A listening dev server, closed with the test. By default it has a plugin instance of its own
+ * (a new server session); `plugins: []` gives the server Vite is without the plugin.
+ */
+async function startDevServer({
+  plugins = [evs()],
+}: { plugins?: PluginOption[] } = {}): Promise<DevServer> {
   const { logger } = recordingLogger();
   const errors: string[] = [];
   logger.error = (message) => void errors.push(message);
@@ -70,12 +84,13 @@ async function startDevServer(): Promise<DevServer> {
     root,
     configFile: false,
     customLogger: logger,
-    plugins: [evs()],
+    plugins,
     appType: 'custom',
     server: { host: '127.0.0.1', port: 0, ws: false },
     // (a test writes a `.env` file into the app: with an `envDir`, that restarts the server)
     envDir: false,
-    cacheDir: join(sandbox, '.vite'),
+    // (the plugin has a dependency pre-bundled: a server without it keeps a cache of its own)
+    cacheDir: join(sandbox, plugins.length === 0 ? '.vite-without-plugin' : '.vite'),
     // no dependency scan: the tests ask for single modules
     optimizeDeps: { noDiscovery: true },
   });
@@ -91,18 +106,22 @@ async function startDevServer(): Promise<DevServer> {
     vite,
     errors,
     get: async (url) => fetch(`http://127.0.0.1:${port}${url}`),
-    getRaw: async (path) =>
-      new Promise((resolve, reject) => {
-        const sent = request({ host: '127.0.0.1', port, path, agent: false }, (response) => {
-          let body = '';
-          response.setEncoding('utf8');
-          response.on('data', (chunk: string) => (body += chunk));
-          response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
-        });
-        sent.on('error', reject);
-        sent.end();
-      }),
+    getRaw: async (path) => getAsWritten(port, path),
   };
+}
+
+/** GETs `path` from the local server on `port`. The path is sent as it is written. */
+async function getAsWritten(port: number, path: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    const sent = request({ host: '127.0.0.1', port, path, agent: false }, (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk: string) => (body += chunk));
+      response.on('end', () => resolve({ status: response.statusCode ?? 0, body }));
+    });
+    sent.on('error', reject);
+    sent.end();
+  });
 }
 
 async function transform(server: DevServer, url: string): Promise<string> {
@@ -264,64 +283,98 @@ describe('the debug data of a script on the dev server', () => {
   });
 });
 
+// ---------------------------------------------------------------------------
+// requests made up by someone who reaches the dev server
+// ---------------------------------------------------------------------------
+
+/** What no answer of a server may show. */
+const SECRET = 'hunter2-not-to-be-seen';
+
+/**
+ * Modules such a request is after, by a name and their path in the sandbox. Each leaves a file
+ * behind when something runs it (`markOf`), so a test can tell that nothing did.
+ */
+const PLANTED_MODULES = {
+  /** A module of the app that is no build-time module. */
+  maintenance: 'app/scripts/maintenance.ts',
+  /** A module of an installed package. */
+  postinstall: 'app/node_modules/some-dep/scripts/postinstall.js',
+  /** A module of an installed package that has the name of a build-time module. */
+  theme: 'app/node_modules/some-dep/theme.evs.js',
+  /** A build-time module by its name, outside of what a server serves. */
+  probe: 'outside/probe.evs.js',
+} as const;
+
+type PlantedModule = keyof typeof PLANTED_MODULES;
+
+/** Files that hold the secret: one the server denies, and one outside of what it serves. */
+const SECRET_FILES = ['app/.env', 'outside/secret.txt'] as const;
+
+/** The file the planted module `name` leaves behind when it runs. */
+function markOf(name: string): string {
+  return join(sandbox, `${name}.ran`);
+}
+
+/** The planted modules that ran since the marks were last cleared. */
+function modulesThatRan(): string[] {
+  return Object.keys(PLANTED_MODULES).filter((name) => existsSync(markOf(name)));
+}
+
+function clearMarks(): void {
+  for (const name of Object.keys(PLANTED_MODULES)) rmSync(markOf(name), { force: true });
+}
+
+function plantFiles(): void {
+  const write = (path: string, content: string): void => {
+    mkdirSync(dirname(join(sandbox, path)), { recursive: true });
+    writeFileSync(join(sandbox, path), content);
+  };
+  for (const [name, path] of Object.entries(PLANTED_MODULES)) {
+    const mark = JSON.stringify(markOf(name));
+    write(path, `import { writeFileSync } from 'node:fs';\nwriteFileSync(${mark}, 'ran');\n`);
+  }
+  for (const path of SECRET_FILES) write(path, `PASSWORD=${SECRET}\n`);
+}
+
+beforeAll(plantFiles);
+beforeEach(clearMarks);
+
+test('(a planted module does leave its mark when it runs)', async () => {
+  const probe: PlantedModule = 'probe';
+  await import(/* @vite-ignore */ pathToFileURL(join(sandbox, PLANTED_MODULES[probe])).href);
+  expect(modulesThatRan()).toStrictEqual([probe]);
+});
+
 describe('a debug-module URL made up by someone who reaches the dev server', () => {
-  const SECRET = 'hunter2-not-to-be-seen';
-
-  /** A module that leaves `marker` behind when something runs it. */
-  const leavesMark = (marker: string): string =>
-    `import { writeFileSync } from 'node:fs';\nwriteFileSync(${JSON.stringify(marker)}, 'ran');\n`;
-
   /**
-   * The files such a URL is after, each with the URL that reached it when the name of a debug
-   * module held the path of a file, and the server ran that file to answer.
+   * Two URLs of a debug module whose name holds the path of a file: after the prefix, and where
+   * the label is. A server that read a path out of such a name would run or read that file.
    */
-  function targets(): { file: string; marker: string; urls: string[] }[] {
-    const outside = join(sandbox, 'outside');
-    const ids = (path: string): string[] =>
-      // the id as it was, and the same path where the label is now
-      [`virtual:evs-debug:00000000:${path}`, `virtual:evs-debug:00000000/${path}`].map(
-        (id) => `/@id/__x00__${id}.debug.js`,
-      );
+  function debugModuleUrls(path: string): string[] {
     return [
-      {
-        // a build-time module by its name, outside of what the server serves: reached with `..`
-        file: join(outside, 'probe.evs.js'),
-        marker: join(sandbox, 'probe-ran'),
-        urls: [...ids(`${root}/../outside/probe.evs.js`), ...ids('../outside/probe.evs.js')],
-      },
-      {
-        // a file of the app that is no build-time module: a query made it look like one
-        file: join(root, 'scripts/maintenance.ts'),
-        marker: join(sandbox, 'maintenance-ran'),
-        urls: ids(`${root}/scripts/maintenance.ts?.evs.ts`),
-      },
-      {
-        // files the server denies, and no modules: running one failed, and the error quoted it
-        file: join(root, '.env'),
-        marker: join(sandbox, 'env-ran'),
-        urls: [
-          ...ids(`${root}/.env?.evs.js`),
-          ...ids(`${root}/../outside/secret.txt?import&.evs.js`),
-        ],
-      },
+      `/@id/__x00__virtual:evs-debug:00000000:${path}.debug.js`,
+      `/@id/__x00__virtual:evs-debug:00000000/${path}.debug.js`,
     ];
   }
 
-  beforeAll(() => {
-    for (const directory of [join(sandbox, 'outside'), join(root, 'scripts')]) {
-      mkdirSync(directory, { recursive: true });
-    }
-    writeFileSync(join(sandbox, 'outside/secret.txt'), `PASSWORD=${SECRET}\n`);
-    for (const { file, marker } of targets()) {
-      writeFileSync(file, file.endsWith('.env') ? `API_KEY=${SECRET}\n` : leavesMark(marker));
-    }
-  });
+  function madeUpUrls(): string[] {
+    return [
+      // a build-time module by its name, outside of what the server serves: reached with `..`
+      ...debugModuleUrls(`${root}/../outside/probe.evs.js`),
+      ...debugModuleUrls('../outside/probe.evs.js'),
+      // a file of the app that is no build-time module: a query made it look like one
+      ...debugModuleUrls(`${root}/scripts/maintenance.ts?.evs.ts`),
+      // files the server denies, and no modules: the error of running one would quote it
+      ...debugModuleUrls(`${root}/.env?.evs.js`),
+      ...debugModuleUrls(`${root}/../outside/secret.txt?import&.evs.js`),
+    ];
+  }
 
   test('runs no file and shows none: the answer is the error that says to reload', async () => {
     const server = await startDevServer();
     await transform(server, '/watch.evs.ts'); // a session that has precompiled modules
 
-    const urls = targets().flatMap((target) => target.urls);
+    const urls = madeUpUrls();
     const answers = await Promise.all(
       urls.map(async (url) => {
         const { status, body } = await server.getRaw(url);
@@ -332,16 +385,69 @@ describe('a debug-module URL made up by someone who reaches the dev server', () 
       urls.map((url) => ({ url, status: 500, saysToReload: true, shows: false })),
     );
 
-    expect(targets().filter(({ marker }) => existsSync(marker))).toStrictEqual([]);
+    expect(modulesThatRan()).toStrictEqual([]);
     expect(server.errors).toHaveLength(urls.length);
     expect(server.errors.join('\n')).not.toContain(SECRET);
   });
+});
 
-  test('(the files it was after do leave a mark when they run)', async () => {
-    const [probe] = targets();
-    if (probe === undefined) throw new TypeError('expected a target');
-    onTestFinished(() => rmSync(probe.marker, { force: true }));
-    await import(/* @vite-ignore */ pathToFileURL(probe.file).href);
-    expect(existsSync(probe.marker)).toBe(true);
+describe('a URL that only looks like the one of a build-time module', () => {
+  /** Vite serves these as the module is written, for a browser to run. */
+  const SERVED_AS_WRITTEN = [
+    // a module of the app, behind a query that ends like the name of a build-time module
+    '/scripts/maintenance.ts?.evs.ts',
+    '/scripts/maintenance.ts?x=1&y=/z.evs.mjs',
+    // (the server takes `import` off the query before a plugin sees the module's id)
+    '/scripts/maintenance.ts?import&.evs.js',
+    // modules of an installed package: behind such a query, and one that has the name itself,
+    // as someone asks for it and as the server writes it in an import
+    '/node_modules/some-dep/scripts/postinstall.js?.evs.js',
+    '/node_modules/some-dep/theme.evs.js',
+    '/node_modules/some-dep/theme.evs.js?v=1a2b3c4d',
+  ];
+
+  /** Vite refuses these: a file it denies, and a build-time module outside of what it serves. */
+  const refused = (): string[] => [
+    '/.env?.evs.js',
+    '/.env?import&.evs.js',
+    `/@fs${sandbox}/outside/probe.evs.js`,
+  ];
+
+  /** Vite answers this one with the URL of the file, which it then refuses to serve. */
+  const ONLY_NAMED = ['/../outside/secret.txt?import&.evs.js'];
+
+  test('is answered by Vite as if the plugin were not there, and runs nothing', async () => {
+    const withPlugin = await startDevServer();
+    const withoutPlugin = await startDevServer({ plugins: [] });
+    await transform(withPlugin, '/watch.evs.ts'); // a session that has precompiled modules
+
+    const answersOf = async (server: DevServer) => {
+      const answersTo = async (urls: readonly string[]) =>
+        Promise.all(urls.map(async (url) => ({ url, ...(await server.getRaw(url)) })));
+      return {
+        servedAsWritten: await answersTo(SERVED_AS_WRITTEN),
+        refused: await answersTo(refused()),
+        onlyNamed: await answersTo(ONLY_NAMED),
+      };
+    };
+
+    const ofViteAlone = await answersOf(withoutPlugin);
+    expect(await answersOf(withPlugin)).toStrictEqual(ofViteAlone);
+    expect(modulesThatRan()).toStrictEqual([]);
+
+    // and Vite alone answers as said above, without the secret
+    for (const { url, status, body } of ofViteAlone.servedAsWritten) {
+      expect({ url, status }).toStrictEqual({ url, status: 200 });
+      expect(body).toContain('writeFileSync('); // the statement that leaves the mark
+    }
+    for (const { url, status, body } of ofViteAlone.refused) {
+      expect({ url, status }).toStrictEqual({ url, status: 403 });
+      expect(body).not.toContain(SECRET);
+    }
+    for (const { url, status, body } of ofViteAlone.onlyNamed) {
+      expect({ url, status }).toStrictEqual({ url, status: 200 });
+      expect(body).toMatch(/^export default "\/@fs\/[^"]*\/outside\/secret\.txt[^"]*"$/m);
+      expect(body).not.toContain(SECRET);
+    }
   });
 });

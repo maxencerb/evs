@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "bootstrap": "vp run @maxencerb/evs-contracts#codegen && vp run build",
     "build": "vp run @maxencerb/evs#build && vp run @maxencerb/vite-plugin-evs#build",
     "typecheck": "vp run --filter '@maxencerb/*' typecheck",
     "typecheck:checkers": "node packages/type-tests/scripts/matrix.ts",

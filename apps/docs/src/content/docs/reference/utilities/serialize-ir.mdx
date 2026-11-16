@@ -83,8 +83,15 @@ try {
 - **Stable output.** Keys are sorted and unset optional fields are left out, so the string suits
   snapshot tests.
 - **Versioned.** `irVersion` is `1`. `deserializeIr` rejects any other version.
-- **Shape check only.** `deserializeIr` checks structure. `interpret()` and `compile()` check
-  that the program makes sense, and throw `EvsInternalError` (`INTERNAL`) when it does not.
+- **Shape check only.** `deserializeIr` checks structure. `interpret()`, `compile()` and
+  [`dce`](/reference/utilities/dce/) check that the program makes sense, and throw `EvsTypeError`
+  (`TYPE_MISMATCH`) when it does not.
+- **Your input, your error.** An IR that evs did not record in this process is treated as input:
+  an invalid one is reported with its position, such as `body[2] (bin add)`, never as a bug in
+  evs.
+- **Bounded nesting.** Blocks nest at most 256 levels deep, like in the
+  [builder](/reference/builder/if/#nesting-limit). `deserializeIr` also rejects a type that nests
+  tuples more than 256 levels deep.
 - **No ABI.** A restored IR is untyped: `interpret` takes its arguments as `unknown[]`.
 - **Frozen.** The returned IR is deeply frozen.
 
@@ -93,4 +100,5 @@ try {
 | Error | When |
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `deserializeIr`: the string is not JSON, has another `irVersion`, or has the wrong shape. The message names the JSON path |
+| `EvsTypeError` (`UNSUPPORTED_V0`) | `deserializeIr`: blocks, or the tuples of a type, nest more than 256 levels deep. The message names the JSON path |
 | `EvsInternalError` (`INTERNAL`) | `serializeIr`: the IR holds a value JSON cannot represent. A recorded IR never does |

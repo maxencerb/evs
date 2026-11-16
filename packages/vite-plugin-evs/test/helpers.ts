@@ -3,7 +3,7 @@
  * `src/` (no built dist needed) and every log the build prints captured.
  */
 
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { stripVTControlCharacters } from 'node:util';
@@ -15,6 +15,23 @@ import { evs, type EvsPluginOptions } from '../src/index.js';
 
 export const packageRoot: string = fileURLToPath(new URL('..', import.meta.url));
 export const appRoot: string = join(packageRoot, 'test/fixtures/app');
+
+/**
+ * Gives `directory` a `node_modules` that holds what the plugin package has installed, one link
+ * per package, and returns it. The directory itself is a real one: a test can add a package to
+ * it, whose files are then under `node_modules` by their real path too, like those of a package
+ * a registry installs.
+ */
+export function installPackagesIn(directory: string): string {
+  const installed = join(packageRoot, 'node_modules');
+  const nodeModules = join(directory, 'node_modules');
+  mkdirSync(nodeModules, { recursive: true });
+  for (const name of readdirSync(installed)) {
+    // (`.bin`, caches and the output of other tests are no packages)
+    if (!name.startsWith('.')) symlinkSync(join(installed, name), join(nodeModules, name), 'dir');
+  }
+  return nodeModules;
+}
 
 /** What a build logged, without colors. */
 export interface Logs {

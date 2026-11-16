@@ -7,9 +7,22 @@
  * the IR schema names the if-statement branch field `then`. */
 import { describe, expect, test } from 'vite-plus/test';
 
+import { evscript } from '../builder/script.js';
+import { compile } from '../compile.js';
 import { EvsInternalError, EvsTypeError } from '../core/errors.js';
-import type { EvsType, Hex, WordType } from '../core/types.js';
-import { deserializeIr, serializeIr, type ScriptIr, type Stmt, type ValueInfo } from './nodes.js';
+import { t, type EvsType, type Hex, type WordType } from '../core/types.js';
+import { eliminateDeadCode, pruneDeadCode } from './dce.js';
+import { interpret, type MockChain } from './interp.js';
+import {
+  deepFreeze,
+  deserializeIr,
+  MAX_BLOCK_DEPTH,
+  serializeIr,
+  type ScriptIr,
+  type Stmt,
+  type ValueInfo,
+} from './nodes.js';
+import { isEvsIr, markEvsIr } from './nodes/origin.js';
 import { validateIr } from './validate.js';
 
 // ---------------------------------------------------------------------------
@@ -58,9 +71,17 @@ const boolConst = (out: number, v: boolean): Stmt =>
 const strConst = (out: number): Stmt =>
   mk({ k: 'const', out, data: { kind: 'data', hex: dataHex('616263') }, type: 'string' });
 
+/** The fixtures are hand-built, so their failures are the caller's: a coded user error. */
 function expectInvalid(bad: ScriptIr, msg: RegExp): void {
-  expect(() => validateIr(bad)).toThrowError(EvsInternalError);
-  expect(() => validateIr(bad)).toThrowError(msg);
+  let caught: unknown;
+  try {
+    validateIr(bad);
+  } catch (e) {
+    caught = e;
+  }
+  expect(caught).toBeInstanceOf(EvsTypeError);
+  expect((caught as EvsTypeError).code).toBe('TYPE_MISMATCH');
+  expect((caught as EvsTypeError).message).toMatch(msg);
 }
 
 /** The `MAX_STATIC_SIZE` gate: the user-facing `UNSUPPORTED_V0` the `t` constructors throw. */
@@ -2111,6 +2132,48 @@ describe('validateIr — call rules', () => {
     });
   }
 
+  test('gas and value are read before the outs exist: neither may be an own output', () => {
+    // the call would read a frame slot nothing has written yet
+    expectInvalid(
+      callIr({ gas: 2 }),
+      /body\[2\] \(call "balanceOf"\) gas: ValueId 2 is used before it is defined/,
+    );
+    expectInvalid(
+      callIr({ kind: 'call', value: 2 }),
+      /body\[2\] \(call "balanceOf"\) value: ValueId 2 is used before it is defined/,
+    );
+    // a try call's success flag is an output too
+    const tried = { mode: 'try', successOut: 3 } as const;
+    expectInvalid(
+      callIr(
+        { ...tried, fnAbi: { ...ABI, outputs: [{ name: '', type: 'bool' }] }, outs: [3], gas: 2 },
+        [vi('bool')],
+      ),
+      /gas: ValueId 2 is used before it is defined/,
+    );
+    // an earlier value of the right type is fine for both
+    const earlier = ir({
+      values: [vi('address'), vi('address'), vi('uint256'), vi('uint256')],
+      body: [
+        mk({ k: 'env', op: 'caller', out: 0 }),
+        mk({ k: 'env', op: 'address', out: 1 }),
+        u256Const(3, 5n),
+        mk({
+          k: 'call',
+          kind: 'call',
+          target: 0,
+          fnAbi: ABI,
+          args: [1],
+          outs: [2],
+          mode: 'strict',
+          gas: 3,
+          value: 3,
+        }),
+      ],
+    });
+    expect(() => validateIr(earlier)).not.toThrow();
+  });
+
   test('rejects a non-address target', () => {
     expectInvalid(
       ir({
@@ -2594,6 +2657,90 @@ describe('validateIr — fn rules', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateIr — control flow and scoping', () => {
+  describe('block nesting', () => {
+    /** `depth` blocks inside one another around a `break`-free, empty innermost block. */
+    function nested(depth: number, kind: 'if' | 'while' | 'mixed'): Stmt[] {
+      let inner: Stmt[] = [];
+      for (let i = 0; i < depth; i++) {
+        const loop = kind === 'while' || (kind === 'mixed' && i % 2 === 0);
+        inner = loop
+          ? [mk({ k: 'while', header: [], cond: 0, body: inner })]
+          : [
+              mk({
+                k: 'if',
+                cond: 0,
+                then: i % 3 === 0 ? [] : inner,
+                else: i % 3 === 0 ? inner : [],
+              }),
+            ];
+      }
+      return inner;
+    }
+    const deep = (depth: number, kind: 'if' | 'while' | 'mixed'): ScriptIr =>
+      ir({ values: [vi('bool')], body: [boolConst(0, true), ...nested(depth, kind)] });
+
+    function expectTooDeep(bad: ScriptIr, msg: RegExp): void {
+      let caught: unknown;
+      try {
+        validateIr(bad);
+      } catch (e) {
+        caught = e;
+      }
+      expect(caught).toBeInstanceOf(EvsTypeError);
+      expect((caught as EvsTypeError).code).toBe('UNSUPPORTED_V0');
+      expect((caught as EvsTypeError).message).toMatch(msg);
+    }
+
+    test('the limit itself is accepted, in every block kind', () => {
+      for (const kind of ['if', 'while', 'mixed'] as const) {
+        expect(() => validateIr(deep(MAX_BLOCK_DEPTH, kind))).not.toThrow();
+      }
+    });
+
+    test('one level more is a coded error that names the block', () => {
+      for (const kind of ['if', 'while', 'mixed'] as const) {
+        expectTooDeep(
+          deep(MAX_BLOCK_DEPTH + 1, kind),
+          /^invalid ScriptIr "fixture": body\[1\]\..* … .*\[0\] \((if|while)\): blocks .* nest more than 256 levels deep — flatten the script/,
+        );
+      }
+    });
+
+    test('a nesting far past the host stack is the same coded error', () => {
+      expectTooDeep(deep(20_000, 'if'), /nest more than 256 levels deep/);
+      expectTooDeep(deep(20_000, 'while'), /nest more than 256 levels deep/);
+    });
+
+    test('the depth is counted per body: an fn body starts again at zero', () => {
+      const fnBody = (depth: number): ScriptIr => {
+        let inner: Stmt[] = [];
+        for (let i = 0; i < depth; i++) inner = [mk({ k: 'if', cond: 1, then: inner, else: [] })];
+        return ir({
+          values: [vi('bool'), vi('bool')],
+          fns: [
+            {
+              name: 'f',
+              params: [{ name: 'c', type: 'bool', value: 1 }],
+              results: [],
+              body: [mk({ k: 'if', cond: 1, then: [], else: [] }), ...inner],
+              resultValues: [],
+            },
+          ],
+          // the main body is at the limit too: the two bodies are measured apart
+          body: [boolConst(0, true), ...nested(MAX_BLOCK_DEPTH, 'if')],
+        });
+      };
+      expect(() => validateIr(fnBody(MAX_BLOCK_DEPTH))).not.toThrow();
+      expectTooDeep(fnBody(MAX_BLOCK_DEPTH + 1), /fns\[0\]\.body\[1\]/);
+    });
+
+    test('siblings do not add up', () => {
+      const body: Stmt[] = [boolConst(0, true)];
+      for (let i = 0; i < 4; i++) body.push(...nested(MAX_BLOCK_DEPTH, 'mixed'));
+      expect(() => validateIr(ir({ values: [vi('bool')], body }))).not.toThrow();
+    });
+  });
+
   test('if/while conditions must be bool', () => {
     expectInvalid(
       ir({
@@ -2780,21 +2927,98 @@ describe('validateIr — return rules', () => {
 // ---------------------------------------------------------------------------
 
 describe('validateIr — error shape', () => {
-  test('failures are EvsInternalError with the bug-report marker', () => {
-    const bad = ir({
+  /** `add` reads the value it defines: invalid whoever built it. */
+  const selfRead = (): ScriptIr =>
+    ir({
       values: [vi('uint256')],
       body: [mk({ k: 'bin', op: 'add', a: 0, b: 0, out: 0 }, 4)],
     });
-    let caught: unknown;
+  const noCalls: MockChain = { staticcall: () => ({ success: false, data: '0x' }) };
+
+  function thrownBy(run: () => unknown): unknown {
     try {
-      validateIr(bad);
+      run();
     } catch (e) {
-      caught = e;
+      return e;
     }
+    return undefined;
+  }
+
+  function expectUserError(caught: unknown): void {
+    expect(caught).toBeInstanceOf(EvsTypeError);
+    const err = caught as EvsTypeError;
+    expect(err.code).toBe('TYPE_MISMATCH');
+    expect(err.message).toContain('invalid ScriptIr "fixture": body[0] (bin add): ValueId 0');
+    expect(err.message).toContain('not recorded by evscript()');
+    expect(err.message).not.toContain('bug in evs');
+  }
+
+  test('an IR from outside fails as a user error that names the IR path', () => {
+    expectUserError(thrownBy(() => validateIr(selfRead())));
+    // frozen or not, deserialized or written by hand: none of them came from the recorder
+    const frozen = selfRead();
+    deepFreeze(frozen);
+    expectUserError(thrownBy(() => validateIr(frozen)));
+    expectUserError(thrownBy(() => validateIr(deserializeIr(serializeIr(selfRead())))));
+  });
+
+  test('every entry point that takes an IR reports it the same way', () => {
+    expectUserError(thrownBy(() => interpret(selfRead(), [], noCalls)));
+    expectUserError(thrownBy(() => interpret(selfRead(), [], noCalls, { dce: false })));
+    expectUserError(thrownBy(() => eliminateDeadCode(selfRead())));
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- an IR with no script around it
+    const asScript = { ir: selfRead(), abi: [] } as unknown as Parameters<typeof compile>[0];
+    expectUserError(thrownBy(() => compile(asScript)));
+  });
+
+  test('an IR evs produced fails as a bug in evs', () => {
+    // nothing the recorder emits is invalid, so the registry is driven by hand here
+    const bad = selfRead();
+    deepFreeze(bad);
+    markEvsIr(bad);
+    const caught = thrownBy(() => validateIr(bad));
     expect(caught).toBeInstanceOf(EvsInternalError);
     const err = caught as EvsInternalError;
+    expect(err.code).toBe('INTERNAL');
     expect(err.message).toContain('bug in evs, please report');
-    expect(err.message).toContain('invalid ScriptIr "fixture"');
+    expect(err.message).toContain('invalid ScriptIr "fixture": body[0] (bin add): ValueId 0');
+    expect(err.message).not.toContain('not recorded by evscript()');
+  });
+
+  test('the recorder registers what it records, and so does the pass run on it', () => {
+    const script = evscript({ name: 'sum', args: [t.uint256] }, (s, x) => {
+      void x.mul(3n); // dead: the pass returns a new IR
+      return s.return({ y: x.add(1n) });
+    });
+    expect(isEvsIr(script.ir)).toBe(true);
+    const pruned = pruneDeadCode(script.ir);
+    expect(pruned).not.toBe(script.ir);
+    expect(isEvsIr(pruned)).toBe(true);
+    expect(isEvsIr(eliminateDeadCode(script.ir))).toBe(true);
+    // a copy of the same program is not the recorder's object any more
+    const restored = deserializeIr(serializeIr(script.ir));
+    expect(isEvsIr(restored)).toBe(false);
+    expect(isEvsIr(eliminateDeadCode(restored))).toBe(false);
+    expect(isEvsIr({ ...script.ir })).toBe(false);
+  });
+
+  test('eliminateDeadCode validates an IR from outside, and only that', () => {
+    // valid hand-built IR: pruned as before
+    const valid = ir({
+      values: [vi('uint256'), vi('uint256')],
+      body: [u256Const(0, 1n), u256Const(1, 2n)],
+      returns: [{ name: 'a', type: 'uint256', value: 0 }],
+    });
+    expect(eliminateDeadCode(valid).body).toEqual([valid.body[0]]);
+    // an id the tables do not have is the caller's mistake, not a crash inside the pass
+    const unknownId = ir({
+      values: [vi('uint256')],
+      body: [u256Const(0, 1n)],
+      returns: [{ name: 'a', type: 'uint256', value: 7 }],
+    });
+    const caught = thrownBy(() => eliminateDeadCode(unknownId));
+    expect(caught).toBeInstanceOf(EvsTypeError);
+    expect((caught as EvsTypeError).message).toMatch(/returns\[0\] \("a"\): unknown ValueId 7/);
   });
 
   test('a hand-built statement of an unknown kind is rejected at runtime, nested or not', () => {

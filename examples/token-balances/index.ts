@@ -3,8 +3,8 @@
  * A loop + tryRead over N tokens compiles to one script;
  * non-token addresses yield 0 instead of reverting the whole batch.
  *
- * Run: node examples/token-balances/index.ts   (spawns a local anvil; needs foundry + `vp run codegen`
- *      in packages/contracts first — see README.md)
+ * Run: node examples/token-balances/index.ts   (spawns a local anvil; needs foundry, and
+ *      `vp run bootstrap` at the repo root first — see README.md)
  */
 
 import { erc20Abi, parseEther, type Address } from 'viem';

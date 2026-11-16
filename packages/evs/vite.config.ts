@@ -43,8 +43,11 @@ export default defineConfig({
         // exercises them. The `integration` project (test/integration/**) is unaffected.
         test: {
           name: 'unit',
-          include: ['src/**/*.test.ts', 'test/harness/**/*.test.ts'],
+          include: ['src/**/*.test.ts', 'test/harness/**/*.test.ts', 'test/setup/**/*.test.ts'],
           environment: 'node',
+          // stops the run with the command to run when the generated contract fixtures are
+          // missing (two unit files import them)
+          globalSetup: ['./test/setup/contract-fixtures.ts'],
           // Threads without per-file isolation: the only mutable module state the unit files
           // touch is the codec-planner test seams (setCodecPlanStrict / setCodecPlanTransform in
           // src/codegen/codecs.ts), which the setup file below resets before each file, and
@@ -60,6 +63,8 @@ export default defineConfig({
         test: {
           name: 'types',
           include: ['src/**/*.test-d.ts'],
+          // the same check: tsc covers the whole package, and test/ imports the fixtures
+          globalSetup: ['./test/setup/contract-fixtures.ts'],
           typecheck: { enabled: true, only: true, include: ['src/**/*.test-d.ts'] },
         },
       },

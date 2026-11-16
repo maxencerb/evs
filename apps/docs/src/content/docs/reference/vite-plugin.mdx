@@ -138,6 +138,15 @@ A module is compiled at build time when its file name ends with one of four suff
 | `.evs.ts`, `.evs.mts` | TypeScript |
 | `.evs.js`, `.evs.mjs` | JavaScript |
 
+The file must also be one of your project, imported without a query.
+
+| Module | Compiled at build time |
+| --- | --- |
+| `src/pool.evs.ts`, a file of your app | yes |
+| `pool.evs.ts` in a package of your workspace | yes |
+| `pool.evs.js` in a package installed in `node_modules` | no. Vite bundles it [like any module](#in-a-published-package) |
+| `./pool.evs.ts?raw`, an import with a query | no. Vite answers it |
+
 - **Runs in Node.** The module runs during `vite build` and in the dev server, never in the
   browser. It cannot read `window` or `document`.
 - **Replaced in the bundle only.** TypeScript still reads the source file, so the types of its
@@ -152,10 +161,66 @@ A module is compiled at build time when its file name ends with one of four suff
   Vite: it asks for something else than the module's exports.
 - **In Web Workers too.** The plugin adds itself to `worker.plugins`, so a build-time module
   that a worker imports is precompiled, and the worker's bundle is checked with the page's.
+- **In Vitest too.** Vitest reads your Vite config, so a test gets the precompiled scripts. See
+  [testing](/guides/precompiling/#testing).
 - **Debug data apart.** Each script's debug data goes in a chunk of its own, downloaded on the
   first [`explainRevert()`](/reference/precompiled/explain-revert/).
-- **Optional.** Without the plugin, in a test or a Node script, the same file compiles when it
-  is imported and exports the same scripts.
+- **Optional.** Without the plugin, in a Node script or a test runner that does not read your
+  Vite config, the same file compiles when it is imported and exports the same scripts.
+
+### When a module runs
+
+A build-time module is code that runs on the machine that builds or serves your app.
+
+| Command | Runs |
+| --- | --- |
+| `vite build` | each build-time module the app imports |
+| `vite`, the dev server | each build-time module a request asks for |
+| `vitest` | each build-time module a test imports |
+
+- **Requested is enough.** The dev server runs a build-time module when a request asks for its
+  URL, whether or not your app imports it.
+- **Any file the server can serve.** That is every matching file under
+  [`server.fs.allow`](https://vite.dev/config/server-options#server-fs-allow): your project,
+  or its whole workspace, outside `node_modules`.
+- **Keep the suffix for script files.** A file that must not run on its own, such as a
+  maintenance script, gets another name.
+
+### In a published package
+
+A file inside `node_modules` is never a build-time module, whatever its name. The code of a
+dependency does not run on the machine that builds your app.
+
+Vite bundles such a file as it is written. Its scripts then compile in the browser, and
+[the compiler check](#the-compiler-check) reports the compiler.
+
+A package of your workspace is not affected: it is linked into `node_modules`, and its files
+are outside of it.
+
+A library publishes precompiled output instead of `*.evs.js` files. Build it with the plugin,
+in Vite's [library mode](https://vite.dev/guide/build#library-mode).
+
+```ts nocheck title="vite.config.ts" {5,7,9}
+import { evs } from '@maxencerb/vite-plugin-evs';
+import { defineConfig } from 'vite';
+
+export default defineConfig({
+  plugins: [evs()],
+  build: {
+    lib: { entry: 'src/scripts.evs.ts', formats: ['es'], fileName: 'scripts' },
+    // the app that installs the library brings these
+    rollupOptions: { external: [/^@maxencerb\/evs/, /^viem/] },
+  },
+});
+```
+
+```txt
+[plugin evs] precompiled 3 scripts from 1 file
+```
+
+The output, `dist/scripts.js`, holds each script's ABI and bytecode and imports
+`@maxencerb/evs/runtime` alone. With another build tool, see
+[without Vite](/guides/precompiling/#without-vite).
 
 ## Exports
 
