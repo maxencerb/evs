@@ -432,6 +432,57 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
     expect(prefixOf(literalScript(type, value))).toEqual([]);
   });
 
+  // a bytesN literal is a word like any other: left-aligned, so its first byte is its own
+  test.each([
+    ['bytes32', `0x12${'00'.repeat(31)}`],
+    ['bytes32', `0xee${'ff'.repeat(31)}`],
+    ['bytes4', '0x12345678'],
+    ['bytes4', '0xf0000000'],
+    ['bytes1', '0x00'],
+  ] as const)('a returned %s literal %s does not start with 0xEF: no warning', (type, hex) => {
+    const script = evscript({ name: 'a', args: [] }, (s) => s.return({ tag: s.lit(t[type], hex) }));
+    expect(prefixOf(script)).toEqual([]);
+  });
+
+  test.each([
+    ['bytes32', `0xef${'00'.repeat(31)}`],
+    ['bytes4', '0xef345678'],
+    ['bytes1', '0xef'],
+  ] as const)('a returned %s literal %s starts with 0xEF: every call fails', (type, hex) => {
+    const script = evscript({ name: 'a', args: [] }, (s) => s.return({ tag: s.lit(t[type], hex) }));
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]?.site).toBe(firstReturnSite(script));
+    expect(diags[0]?.message).toContain(`\`tag\` (${type})`);
+    expect(diags[0]?.message).toContain(
+      '`tag` is a literal whose first byte is 0xEF, so every deployless call fails; use ' +
+        "toViem({ mode: 'stateOverride' })",
+    );
+    expect(diags[0]?.message).not.toContain('1 time in 256');
+  });
+
+  test('a signed quotient that can reach 2^255 warns', async () => {
+    // -2^254 / -1 = 2^254, shifted and or-ed up to a word that starts with 0xEF
+    const script = evscript({ name: 'ef', args: [t.int256, t.int256, t.uint256] }, (s, x, m, y) => {
+      const q = x.shr(1n).div(m);
+      return s.return({ r: q.toUint(t.uint256).shl(1n).bitOr(y.shr(1n)) });
+    });
+    const diags = prefixOf(script);
+    expect(diags).toHaveLength(1);
+    expect(diags[0]?.message).toContain('evs cannot bound `r` below that');
+    const compiled = compile(script);
+    const out = await execRuntime(
+      compiled.runtimeBytecode,
+      encodeFunctionData({
+        abi: compiled.abi,
+        functionName: 'ef',
+        args: [-(1n << 255n), -1n, 0xden << 248n],
+      }),
+    );
+    expect(out.success).toBe(true);
+    expect(out.data.slice(0, 4)).toBe('0xef');
+  });
+
   test.each([
     ['uint248', t.uint248],
     ['int248', t.int248],
@@ -608,6 +659,111 @@ describe('explainDeploylessError', () => {
     expect(
       explainDeploylessError(rpcError('EVM error CreateInitCodeSizeLimit', 'anvil'))?.kind,
     ).toBe('data-too-large');
+  });
+
+  // the same provider answers a pinned block without the word "code"
+  test.each([
+    ['max code size exceeded: size 28160 limit 24576', 'result-too-large', 28_160, 24_576],
+    ['max code size exceeded: size 24608 limit 24576', 'result-too-large', 24_608, 24_576],
+    ['max initcode size exceeded: size 54094 limit 49152', 'data-too-large', 54_094, 49_152],
+    ['max initcode size exceeded: size 49774 limit 49152', 'data-too-large', 49_774, 49_152],
+  ] as const)(
+    'geth at a pinned block: %s → %s, with the reported size',
+    (text, kind, bytes, cap) => {
+      const e = explainDeploylessError(rpcError(text));
+      expect(e).toMatchObject({ kind, size: bytes, limit: cap, nodeMessage: text });
+      expect(e?.message).toContain(`(${bytes} bytes)`);
+    },
+  );
+
+  test('geth: the bare limit names, without sizes', () => {
+    expect(explainDeploylessError(rpcError('max code size exceeded'))).toMatchObject({
+      kind: 'result-too-large',
+      limit: 24_576,
+      nodeMessage: 'max code size exceeded',
+    });
+    expect(explainDeploylessError(rpcError('max code size exceeded'))?.size).toBeUndefined();
+  });
+
+  test('geth: contract creation code storage out of gas → result-deposit-out-of-gas', () => {
+    const e = explainDeploylessError(rpcError('contract creation code storage out of gas'));
+    expect(e).toMatchObject({
+      kind: 'result-deposit-out-of-gas',
+      nodeMessage: 'contract creation code storage out of gas',
+    });
+    expect(e?.size).toBeUndefined();
+    expect(e?.limit).toBeUndefined();
+    expect(e?.message).toContain('200 gas per byte');
+    expect(e?.message).toContain("toViem({ mode: 'stateOverride' })");
+  });
+
+  // an out-of-gas in the script body reads the same: only the deposit's own text is a limit
+  test.each([
+    'out of gas',
+    'EVM error OutOfGas',
+    'out of gas: gas exhausted during memory expansion: 300000',
+    'EVM error MemoryOOG',
+  ])('a bare out-of-gas is not recognized: %s', (text) => {
+    expect(explainDeploylessError(rpcError(text))).toBeUndefined();
+    expect(explainDeploylessError(rpcError(text, 'anvil'))).toBeUndefined();
+  });
+
+  test('nethermind: transaction size over max init code size → data-too-large', () => {
+    const text =
+      'err: EIP-3860 - transaction size over max init code size (supplied gas 100000000)';
+    const e = explainDeploylessError(rpcError(text));
+    expect(e).toMatchObject({ kind: 'data-too-large', limit: 49_152, nodeMessage: text });
+    expect(e?.size).toBeUndefined();
+    expect(e?.message).toContain('deploylessDataSize()');
+  });
+
+  test('a bare "invalid code" → result-starts-with-ef', () => {
+    const e = explainDeploylessError(rpcError('invalid code'));
+    expect(e).toMatchObject({ kind: 'result-starts-with-ef', nodeMessage: 'invalid code' });
+    // viem's own multi-line message, when only that reaches the caller
+    expect(
+      explainDeploylessError('Missing or invalid parameters.\n\nDetails: invalid code\nVersion: 2')
+        ?.kind,
+    ).toBe('result-starts-with-ef');
+  });
+
+  test.each([
+    'invalid code hash',
+    'invalid code: something else',
+    'invalid codec',
+    'the request has an invalid code',
+    'invalid code point at index 3',
+    'Missing or invalid parameters.',
+  ])('"invalid code" inside another message is not a limit: %s', (text) => {
+    expect(explainDeploylessError(rpcError(text))).toBeUndefined();
+    expect(explainDeploylessError(text)).toBeUndefined();
+  });
+
+  test("revm's names with the colon newer nodes print", () => {
+    expect(explainDeploylessError(rpcError('EVM error: CreateContractSizeLimit'))).toMatchObject({
+      kind: 'result-too-large',
+      nodeMessage: 'EVM error: CreateContractSizeLimit',
+    });
+    expect(explainDeploylessError(rpcError('EVM error: CreateContractStartingWithEF'))?.kind).toBe(
+      'result-starts-with-ef',
+    );
+  });
+
+  test('every kind points at state-override mode', () => {
+    const texts = [
+      'invalid code: must not begin with 0xef',
+      'max code size exceeded: code size 24608 limit 24576',
+      'max initcode size exceeded',
+      'contract creation code storage out of gas',
+    ];
+    const explained = texts.map((text) => explainDeploylessError(rpcError(text)));
+    expect(explained.map((e) => e?.kind)).toEqual([
+      'result-starts-with-ef',
+      'result-too-large',
+      'data-too-large',
+      'result-deposit-out-of-gas',
+    ]);
+    for (const e of explained) expect(e?.message).toContain("toViem({ mode: 'stateOverride' })");
   });
 
   test('a message string works too; anything else is not a deployless limit', () => {

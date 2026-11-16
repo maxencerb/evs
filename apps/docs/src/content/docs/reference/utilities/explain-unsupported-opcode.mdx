@@ -1,0 +1,193 @@
+---
+title: explainUnsupportedOpcode
+description: Recognizes a node's unsupported-opcode error in a caught error and names the evmVersion to recompile the script with.
+---
+
+Recognizes a node's unsupported-opcode error in a caught error and names the `evmVersion` to
+recompile the script with. A script hits it when its
+[EVM target](/guides/evm-targets/) is newer than the chain, or than the block the call reads.
+
+## Import
+
+```ts
+import { explainUnsupportedOpcode } from '@maxencerb/evs';
+```
+
+`@maxencerb/evs/runtime` exports it too. Import it from there in a client that runs
+[precompiled scripts](/reference/precompiled/), so the compiler stays out of the bundle.
+
+## Usage
+
+```ts {21-22}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const symbolOf = evscript({ name: 'symbolOf', args: [t.address] }, (s, token) => {
+  const symbol = s.read({ address: token, abi: erc20Abi, functionName: 'symbol' });
+  return s.return({ symbol });
+});
+
+const compiled = compile(symbolOf); // built for cancun
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+try {
+  await client.readContract({
+    ...compiled.toViem({ mode: 'stateOverride' }),
+    functionName: 'symbolOf',
+    args: ['0xC02aaA39b223FE8D0A0e5C4F27eAD9083C756Cc2'],
+    blockNumber: 19_000_000n, // before Cancun
+  });
+} catch (error) {
+  const why = explainUnsupportedOpcode(compiled, error);
+  if (why === undefined) throw error; // some other failure
+
+  why.opcode; // 'MCOPY'
+  why.recompileWith; // 'shanghai'
+  why.message; // what happened, and the target to use
+}
+```
+
+viem reports this failure as "Missing or invalid parameters". The node's own text,
+`invalid opcode: MCOPY`, is in the error's `details`.
+
+### Recompiling for the block
+
+`recompileWith` is a target without the rejected opcode, ready for `compile()`.
+
+```ts {21-25}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+import { createPublicClient, erc20Abi, http, type Address } from 'viem';
+import { mainnet } from 'viem/chains';
+
+const supplyOf = evscript({ name: 'supplyOf', args: [t.address] }, (s, token) => {
+  const supply = s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' });
+  return s.return({ supply });
+});
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+
+async function supplyAt(token: Address, blockNumber: bigint) {
+  const read = (compiled: ReturnType<typeof supplyOf.compile>) =>
+    client.readContract({
+      ...compiled.toViem({ mode: 'stateOverride' }),
+      functionName: 'supplyOf',
+      args: [token],
+      blockNumber,
+    });
+  const compiled = supplyOf.compile();
+  return read(compiled).catch((error: unknown) => {
+    const why = explainUnsupportedOpcode(compiled, error);
+    if (why === undefined) throw error;
+    return read(supplyOf.compile({ evmVersion: why.recompileWith }));
+  });
+}
+```
+
+### From a message
+
+A string is searched the same way as an error.
+
+```ts {6}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.string] }, (s, text) => s.return({ text }));
+const compiled = compile(echo);
+
+const why = explainUnsupportedOpcode(compiled, 'EVM error NotActivated');
+
+why?.opcode; // undefined: this text names no opcode
+why?.recompileWith; // 'paris'
+```
+
+## Returns
+
+`UnsupportedOpcodeExplanation | undefined`
+
+`undefined` when the error is not an unsupported opcode that an older target fixes. Otherwise
+an object:
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `kind` | `'unsupported-opcode'` | always this string: it tells the result apart from a [`DeploylessLimitExplanation`](/reference/utilities/explain-deployless-error/#returns) |
+| `message` | `string` | what happened and what to do about it |
+| `nodeMessage` | `string` | the node's own text that matched |
+| `opcode` | `'MCOPY' \| 'PUSH0'`, optional | the opcode the node rejected, when its text names one |
+| `recompileWith` | `EvmVersion` | the newest target without the rejected opcode |
+
+| Node text | `opcode` | `recompileWith` |
+| --- | --- | --- |
+| `invalid opcode: MCOPY`, `opcode 0x5e not defined` (geth) | `'MCOPY'` | `'shanghai'` |
+| `invalid opcode: PUSH0`, `opcode 0x5f not defined` (geth) | `'PUSH0'` | `'paris'` |
+| `NotActivated` (anvil, reth) | none | `'paris'` |
+
+A message is one line: this sample is wrapped.
+
+```txt
+the node rejected an opcode of the script ("invalid opcode: MCOPY"): the runtime
+uses MCOPY (cancun) and PUSH0 (shanghai), and the chain does not have MCOPY at the
+block the call ran (the block is before that fork, or the chain never activated it)
+— recompile with evmVersion 'shanghai', the newest target without MCOPY ('paris'
+runs everywhere)
+```
+
+## Parameters
+
+### script
+
+- **Type:** `{ runtimeBytecode: Hex }`
+
+The script that ran: the artifact, a precompiled script, or its serialized data. Its bytecode
+tells which of the two opcodes it uses.
+
+```ts {7-8}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.string] }, (s, text) => s.return({ text }));
+const compiled = compile(echo);
+const precompiled = compiled.toPrecompiled();
+
+explainUnsupportedOpcode(precompiled, 'invalid opcode: MCOPY')?.recompileWith;
+explainUnsupportedOpcode(precompiled.toJSON(), 'invalid opcode: MCOPY')?.recompileWith;
+// both: 'shanghai'
+```
+
+### error
+
+- **Type:** `unknown`
+
+The caught error, or a message string. For an error, the whole `cause` chain is searched.
+
+```ts {10}
+import { compile, evscript, explainUnsupportedOpcode, t } from '@maxencerb/evs';
+
+const echo = evscript({ name: 'echo', args: [t.string] }, (s, text) => s.return({ text }));
+const compiled = compile(echo);
+
+const caught = new Error('call failed', {
+  cause: new Error('invalid opcode: PUSH0'),
+});
+
+explainUnsupportedOpcode(compiled, caught)?.recompileWith; // 'paris'
+explainUnsupportedOpcode(compiled, new Error('fetch failed')); // undefined
+```
+
+## Behavior
+
+- **State override only.** There the script is the code the node runs, so the node reports the
+  opcode. In deployless mode the same cause is an empty revert:
+  [`explainRevert`](/reference/artifact/explain-revert/#empty-reverts) names the opcodes.
+- **Only what a target decides.** `PUSH0` and `MCOPY` are the two opcodes an older
+  `evmVersion` removes. An error about any other opcode gives `undefined`.
+- **Only what the script uses.** An error that names an opcode this bytecode does not contain
+  gives `undefined`, and so does any opcode error for a `paris` build.
+- **Without a name, the safe target.** When the node names no opcode, `recompileWith` is the
+  target older than every such opcode the script uses.
+- **Not for reverts.** A script revert is not a node error. Decode it with
+  [`decodeScriptError`](/reference/utilities/decode-script-error/).
+
+## Errors
+
+| Error | When |
+| --- | --- |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `script.runtimeBytecode` is not `0x`-prefixed hex with an even number of digits |

@@ -20,8 +20,10 @@
  *             see into is the full width of its type: script args, call outputs, array elements,
  *             members other than the leading one, `bytesN` reinterpreted as an integer.
  *   ops       checked arithmetic grows the bound as the result can (`mul`: the operands' bits
- *             added, `mulDiv` too; `div` by a literal, `shr` by a literal, `mod`, `addmod` /
- *             `mulmod`: shrink it; `shr` by any amount keeps it); `select` joins its branches;
+ *             added, `mulDiv` too; an unsigned `div` by a literal, `shr` by a literal, `mod`,
+ *             `addmod` / `mulmod`: shrink it; `shr` by any amount keeps it, and so does a `div`,
+ *             except a signed one whose divisor may be negative: one more bit, since `-2^b / -1`
+ *             is `+2^b`); `select` joins its branches;
  *             unsigned `bitAnd` takes the smaller operand bound, `bitOr` and
  *             `bitXor` the larger; an unsigned `shl` by a literal adds that many bits. A
  *             wrapping op that can wrap, `bitNot`, a signed bitwise op or `shl`, an `shl` by a
@@ -222,8 +224,13 @@ class MagnitudeAnalysis {
       case 'mul':
       case 'wrapmul':
         return bits(ea + eb + (signed ? 1 : 0));
-      case 'div': // checked: |a / b| ≤ |a|
-        return !signed && literal !== undefined && literal > 0n ? shrink(a, log2(literal)) : a;
+      case 'div': {
+        // checked: |a / b| ≤ |a|
+        if (!signed) return literal !== undefined && literal > 0n ? shrink(a, log2(literal)) : a;
+        // an intN bound is closed below and open above, and a negative divisor mirrors it: the
+        // lowest dividend, exactly -2^b, divided by -1 is +2^b, which needs one more bit
+        return isPositiveWord(literal) ? a : { bits: a.bits + 1, sum: a.sum };
+      }
       case 'mod':
         return bits(Math.min(ea, eb));
       case 'pow': {
@@ -344,6 +351,11 @@ function literalBits(type: EvsType, hex: Hex): number {
   if (!isNumeric(type)) return 256;
   const negative = isSigned(type) && word >> 255n === 1n;
   return bitLength(negative ? (1n << 256n) - word - 1n : word);
+}
+
+/** Whether a literal word, read as a signed integer, is above zero (`undefined`: no literal). */
+function isPositiveWord(word: bigint | undefined): boolean {
+  return word !== undefined && word > 0n && word >> 255n === 0n;
 }
 
 function bitLength(n: bigint): number {

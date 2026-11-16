@@ -1,5 +1,7 @@
 /**
- * Unit tests — `explain.ts`: the fork-gated opcode scan behind the empty-revert explanation.
+ * Unit tests — `explain.ts`: the empty-revert explanation, which is the one message that lists
+ * causes instead of naming one. First the fork-gated opcode scan behind its first cause, then
+ * the order and the length of the list.
  * (`explainRevert` itself is covered through the artifact in `compile.test.ts`, against the
  * classifier in `abi/revert.test.ts`, and through a precompiled script in `precompiled.test.ts`.)
  *
@@ -8,6 +10,7 @@
  * disassembly up to the first `data_*` label.
  */
 
+import { erc20Abi, parseAbi } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import { evscript } from './builder/script.js';
@@ -93,6 +96,117 @@ describe('the fork-gated opcodes of the empty-revert explanation', () => {
     expect(compiled.runtimeBytecode).toContain('5e5f'.repeat(40));
     expect(compiled.runtimeBytecode).toContain('fe5e5f'.repeat(30));
     expect(namedOpcodes(compiled)).toEqual([]);
-    expect(compiled.explainRevert('0x').message).toMatch(/failed without a reason \(out of gas\)$/);
+    expect(compiled.explainRevert('0x').message).not.toMatch(/opcode/);
+  });
+});
+
+describe('the causes of an empty revert, in the order the message lists them', () => {
+  const TOKEN = '0x00000000000000000000000000000000000000aa';
+  const VAULT = parseAbi(['function deposit() payable returns (uint256)']);
+
+  /** `n` strict reads, so `n` call sites can bubble a callee's bare revert. */
+  const reads = (n: number) =>
+    evscript({ name: 'reads', args: [t.address] }, (s, token) => {
+      const supplies = Array.from({ length: n }, () =>
+        s.read({ address: token, abi: erc20Abi, functionName: 'totalSupply' }),
+      );
+      return s.return({ total: supplies.reduce((sum, supply) => sum.add(supply)) });
+    });
+
+  /** The numbered causes of the message, in order. */
+  const causesOf = (message: string): string[] => {
+    const list = message.split(' — possible causes: ')[1] ?? '';
+    return list.split(/(?:^|; )\(\d+\) /).filter((cause) => cause !== '');
+  };
+
+  test('a build that uses fork-gated opcodes leads with them', () => {
+    const { message } = compile(reads(1)).explainRevert('0x');
+    expect(message).toMatch(/^empty revert payload \(no returndata\) — possible causes: \(1\) /);
+    const causes = causesOf(message);
+    expect(causes).toHaveLength(4);
+    // one word-returning read copies no memory: PUSH0 is the only gated opcode in this runtime
+    expect(causes[0]).toBe(
+      'an opcode the node does not have at this block: the runtime uses PUSH0 (shanghai) ' +
+        "(evmVersion 'cancun'), so for a block or chain before that fork, recompile with an " +
+        "older evmVersion ('paris' runs everywhere)",
+    );
+    expect(causesOf(compile(SCRIPTS.copies()).explainRevert('0x').message)[0]).toContain(
+      "the runtime uses MCOPY (cancun) and PUSH0 (shanghai) (evmVersion 'cancun')",
+    );
+    expect(causes[1]).toBe(
+      'a bare revert() / require(false) bubbled verbatim from a callee through the strict call ' +
+        'site: decoding totalSupply() returndata (site 0)',
+    );
+    expect(causes[2]).toBe('the call ran out of gas');
+    expect(causes[3]).toMatch(/^in deployless mode \(the toViem\(\) default\)/);
+  });
+
+  test('a paris build has no opcode to suspect: the list starts with the callee', () => {
+    const causes = causesOf(compile(reads(1), { evmVersion: 'paris' }).explainRevert('0x').message);
+    expect(causes).toHaveLength(3);
+    expect(causes[0]).toMatch(/^a bare revert\(\) \/ require\(false\) bubbled verbatim/);
+    expect(causes.join(' ')).not.toMatch(/evmVersion|MCOPY|PUSH0/);
+  });
+
+  test('a deployless limit is always among the causes, with the mode that has none', () => {
+    const noCalls = evscript({ name: 'sum', args: [t.uint256, t.uint256] }, (s, a, b) =>
+      s.return({ total: s.add(a, b) }),
+    );
+    for (const script of [noCalls, reads(1)]) {
+      for (const evmVersion of ['paris', 'cancun'] as const) {
+        const causes = causesOf(compile(script, { evmVersion }).explainRevert('0x').message);
+        expect(causes.at(-1)).toBe(
+          'in deployless mode (the toViem() default), a result that is too large or starts ' +
+            'with 0xEF, or a script and arguments that are too large together: some nodes ' +
+            '(zkSync Era, Monad) report those limits as an empty revert — run the call again ' +
+            "with toViem({ mode: 'stateOverride' }), which has none of them",
+        );
+      }
+    }
+  });
+
+  test('an unfunded value call comes between the callee and out of gas', () => {
+    const pay = evscript({ name: 'pay', args: [t.uint256] }, (s, amount) =>
+      s.return({
+        shares: s.call({ address: TOKEN, abi: VAULT, functionName: 'deposit', value: amount }),
+      }),
+    );
+    const causes = causesOf(compile(pay, { evmVersion: 'paris' }).explainRevert('0x').message);
+    expect(causes).toHaveLength(4);
+    expect(causes[1]).toMatch(/^the script's balance was below the `value` sent by /);
+    expect(causes[2]).toBe('the call ran out of gas');
+  });
+
+  test.each([1, 2, 3])('%i strict call sites are all named', (n) => {
+    const explained = compile(reads(n)).explainRevert('0x');
+    expect(explained.candidateSites).toHaveLength(n);
+    expect(explained.message).not.toContain('more (candidateSites');
+    for (const site of explained.candidateSites ?? []) {
+      expect(explained.message).toContain(`${site.detail} (site ${site.id})`);
+    }
+  });
+
+  test('past three, the message names the first three and counts the rest', () => {
+    const explained = compile(reads(15)).explainRevert('0x');
+    const sites = explained.candidateSites ?? [];
+    expect(sites).toHaveLength(15);
+    expect(explained.message).toContain('through one of the 15 strict call sites: ');
+    expect(explained.message).toContain(
+      sites
+        .slice(0, 3)
+        .map((site) => `${site.detail} (site ${site.id})`)
+        .join('; ') + '; and 12 more (candidateSites lists them all); ',
+    );
+    expect(explained.message).not.toContain(`(site ${sites[3]?.id})`);
+    // the causes after the list stay in reach: the message does not grow with the script
+    expect(explained.message.length).toBe(compile(reads(40)).explainRevert('0x').message.length);
+    expect(explained.message.length).toBeLessThan(900);
+  });
+
+  test("the cap is the empty explanation's alone: a callee payload still names every site", () => {
+    const explained = compile(reads(15)).explainRevert('0xdeadbeef');
+    for (const site of explained.candidateSites ?? []) {
+      expect(explained.message).toContain(`(site ${site.id})`);
+    }
   });
 });
