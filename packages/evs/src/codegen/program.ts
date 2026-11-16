@@ -38,9 +38,11 @@ import {
   type ConstData,
   type FnId,
   type ScriptIr,
+  type SiteId,
   type Stmt,
   type ValueId,
 } from '../ir/nodes.js';
+import { callVerb, siteKeysOf, siteLabel } from '../ir/site-keys.js';
 import { validateIr } from '../ir/validate.js';
 import { emitCalldataDecode, emitReturnEncode, type SlotRef } from './abi.js';
 import { callArgEncodeFrames, callArgStaging, callSiteAllocates } from './call.js';
@@ -134,6 +136,12 @@ export function lowerProgram(
      * the pass; `compile()` never passes it.
      */
     fuse?: boolean;
+    /**
+     * @internal The key of every statement (`ir/site-keys.ts`), for the site table and the
+     * diagnostics. `compile()` computes it on the recorded IR, since `ir` here has lost its
+     * dead statements; the default is the keys of `ir` itself.
+     */
+    siteKeys?: ReadonlyMap<SiteId, string>;
   },
 ): LowerResult {
   validateIr(ir);
@@ -323,11 +331,14 @@ export function lowerProgram(
     tails: ctx.dfailStubs[0]?.label ?? firstTail,
     data: segments[0]?.label ?? null,
   };
-  const sites = collectSites(ctx, ctx.fnQueue);
-  const diagnostics = [
-    ...collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts),
-    ...valueCallDiagnostics(ir, sites, ctx.fnQueue),
-  ];
+  const siteKeys = opts.siteKeys ?? siteKeysOf(ir);
+  const keyOf = (site: SiteId): string => {
+    const key = siteKeys.get(site);
+    if (key === undefined) throw internal(`site ${site} has no key`);
+    return key;
+  };
+  const sites = collectSites(ctx, ctx.fnQueue, keyOf);
+  const diagnostics = collectDiagnostics(ir, frame, ctx.fnQueue, ctx.consts, sites, keyOf);
   // store–reload fusion LAST: every slot query (the site table and the diagnostics included) has
   // been counted, so the counts can only over-state a value's uses
   const fused =
@@ -381,12 +392,6 @@ export function countingLayout(
 // ---------------------------------------------------------------------------
 // diagnostics — LOOP_ALLOCATION + LARGE_FRAME + ENV_FRAME_DEPENDENT
 // ---------------------------------------------------------------------------
-
-/** The builder verb that records a `call` statement (`s.read`, `s.tryCall`, `s.simulate`, …). */
-function callVerb(s: Extract<Stmt, { k: 'call' }>): string {
-  const base = s.kind === 'call' ? 'call' : s.kind === 'simulate' ? 'simulate' : 'read';
-  return s.mode === 'try' ? `s.try${base[0]?.toUpperCase() ?? ''}${base.slice(1)}` : `s.${base}`;
-}
 
 /**
  * What an allocating statement is, in builder vocabulary, for the `LOOP_ALLOCATION` message —
@@ -524,47 +529,40 @@ function valueCallMessage(s: Extract<Stmt, { k: 'call' }>): string {
     `${callVerb(s)}(${s.fnAbi.name}) sends a \`value\`, paid from the script's own balance, ` +
     `which is execution-frame-dependent: in the default deployless toViem() mode the script ` +
     `runs at a fresh counterfactual CREATE2 address that holds no ETH, so this CALL fails ` +
-    `before the target runs and the site ${outcome}; use toViem({ mode: 'stateOverride' }) ` +
+    `before the target runs and the call ${outcome}; use toViem({ mode: 'stateOverride' }) ` +
     `with a \`balance\` in the script's state-override entry (or sender mode, where the ` +
     `sender pays)`
   );
 }
 
-/** `ENV_FRAME_DEPENDENT` for every emitted call site the site table marks `sendsValue`. */
-function valueCallDiagnostics(
-  ir: ScriptIr,
-  sites: SourceMap['sites'],
-  emittedFns: readonly FnId[],
-): EvsDiagnostic[] {
-  const paying = new Set(sites.filter((site) => site.sendsValue === true).map((site) => site.id));
-  const diagnostics: EvsDiagnostic[] = [];
-  const look = (s: Stmt): void => {
-    if (s.k !== 'call' || !paying.has(s.site)) return;
-    diagnostics.push({
-      severity: 'warning',
-      code: 'ENV_FRAME_DEPENDENT',
-      message: valueCallMessage(s),
-      site: s.site,
-    });
-  };
-  walkStmts(ir.body, look);
-  for (const f of emittedFns) {
-    const fn = ir.fns[f];
-    if (fn !== undefined) walkStmts(fn.body, look);
-  }
-  return diagnostics;
-}
+/** The `key` of the `ENV_FRAME_DEPENDENT` warning about the script's own balance. */
+const SELF_BALANCE_KEY = 's.balance(s.env(address))';
 
 function collectDiagnostics(
   ir: ScriptIr,
   frame: FrameLayout,
   emittedFns: readonly FnId[],
   consts: ReadonlyMap<ValueId, ConstData>,
+  sites: SourceMap['sites'],
+  keyOf: (site: SiteId) => string,
 ): readonly EvsDiagnostic[] {
   const diagnostics: EvsDiagnostic[] = [];
+  const siteRef = (s: Stmt): { id: SiteId; key: string } => ({ id: s.site, key: keyOf(s.site) });
 
   // the script's own address values — the same set the SELFBALANCE lowering reads
   const selfAddresses = selfAddressValues(ir);
+  // the call sites the site table marks `sendsValue`
+  const paying = new Set(sites.filter((site) => site.sendsValue === true).map((site) => site.id));
+
+  // `ENV_FRAME_DEPENDENT` is one warning per thing read from the frame, not per statement: the
+  // text is the same for every use, and what a user decides is whether the script may depend on
+  // it at all. `key` names that thing and `sites` collects the statements.
+  const frameUses = new Map<string, { message: string; sites: { id: SiteId; key: string }[] }>();
+  const frameUse = (key: string, message: string, s: Stmt): void => {
+    const use = frameUses.get(key) ?? { message, sites: [] };
+    frameUses.set(key, use);
+    use.sites.push(siteRef(s));
+  };
 
   // fn bodies allocating transitively (the call graph is acyclic; the seen-set keeps
   // the walk finite even on malformed input).
@@ -593,6 +591,7 @@ function collectDiagnostics(
         ? describeAllocation(s, ir, (f) => fnAllocates(f, new Set()), consts)
         : null;
       if (what !== null) {
+        const ref = siteRef(s);
         diagnostics.push({
           severity: 'warning',
           code: 'LOOP_ALLOCATION',
@@ -601,29 +600,21 @@ function collectDiagnostics(
             `pointer, so memory grows monotonically for the lifetime of the call and each ` +
             `iteration pays more memory-expansion gas than the last. Hoist it out of the loop ` +
             `when it does not depend on the iteration; for a short, bounded loop the cost is ` +
-            `small — filter this warning on its code and site (site ids are positional: re-check ` +
-            `the filter after editing the script)`,
-          site: s.site,
+            `small — filter this warning on its code and key`,
+          key: ref.key,
+          site: ref.id,
+          sites: [ref],
         });
       }
       if (s.k === 'env') {
         const message = ENV_FRAME_MESSAGES[s.op];
-        if (message !== undefined) {
-          diagnostics.push({
-            severity: 'warning',
-            code: 'ENV_FRAME_DEPENDENT',
-            message,
-            site: s.site,
-          });
-        }
+        if (message !== undefined) frameUse(siteLabel(s, ir), message, s);
       }
       if (s.k === 'account' && s.op === 'balance' && selfAddresses.has(s.a)) {
-        diagnostics.push({
-          severity: 'warning',
-          code: 'ENV_FRAME_DEPENDENT',
-          message: SELF_BALANCE_MESSAGE,
-          site: s.site,
-        });
+        frameUse(SELF_BALANCE_KEY, SELF_BALANCE_MESSAGE, s);
+      }
+      if (s.k === 'call' && paying.has(s.site)) {
+        frameUse(siteLabel(s, ir), valueCallMessage(s), s);
       }
       if (s.k === 'if') {
         visit(s.then, inLoop);
@@ -638,6 +629,20 @@ function collectDiagnostics(
   for (const f of emittedFns) {
     const fn = ir.fns[f];
     if (fn !== undefined) visit(fn.body, false);
+  }
+  for (const [key, use] of frameUses) {
+    // by id, so the list does not depend on the order the fns were emitted in
+    const covered = use.sites.toSorted((a, b) => a.id - b.id);
+    const first = covered[0];
+    if (first === undefined) continue;
+    diagnostics.push({
+      severity: 'warning',
+      code: 'ENV_FRAME_DEPENDENT',
+      message: use.message,
+      key,
+      site: first.id,
+      sites: covered,
+    });
   }
   if (frame.frameEnd > LARGE_FRAME_BYTES) {
     diagnostics.push({

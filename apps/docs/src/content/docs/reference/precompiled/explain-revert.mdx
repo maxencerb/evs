@@ -61,7 +61,8 @@ caught error. It needs the ABI alone, so it is synchronous.
       if (revert === undefined) throw error;
       const explanation = await double.explainRevert(revert.raw);
       // explanation.kind: 'panic'
-      // explanation.candidateSites: [{ id: 1, detail: 'checked mul args.arg0 * 2 …' }]
+      // explanation.candidateSites:
+      // [{ id: 1, key: 'mul#0', detail: 'checked mul args.arg0 * 2 …' }]
     }
     ```
   </TabItem>

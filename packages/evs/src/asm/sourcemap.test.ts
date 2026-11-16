@@ -12,8 +12,8 @@ const MAP: SourceMap = {
     { pc: 10, len: 4, note: 'data segment guard' },
   ],
   sites: [
-    { id: 7, kind: 'decode', detail: 'decoding symbol() returndata' },
-    { id: 9, kind: 'panic', detail: 'checked add' },
+    { id: 7, key: 's.read(symbol)#0', kind: 'decode', detail: 'decoding symbol() returndata' },
+    { id: 9, key: 'add#0', kind: 'panic', detail: 'checked add' },
   ],
   labels: [{ pc: 5, name: 'main' }],
 };

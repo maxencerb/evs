@@ -1159,10 +1159,17 @@ describe('diagnostics', () => {
     ]);
     for (const d of loopAllocs) {
       expect(d.severity).toBe('warning');
-      expect(d.message).toContain('filter this warning on its code and site');
-      expect(d.message).toContain('site ids are positional');
+      // what to filter on is the key: nothing sends a user to the positional site id
+      expect(d.message).toMatch(/ — filter this warning on its code and key$/);
+      expect(d.message).not.toMatch(/\bsite/);
+      expect(d.sites).toEqual([{ id: d.site, key: d.key }]);
     }
-    // each warning carries the id of the statement that raised it
+    // each warning carries the key and the id of the statement that raised it
+    expect(loopAllocs.map((d) => d.key)).toEqual([
+      's.read(name)#0',
+      'array(uint256[])#0',
+      'literal(string)#0',
+    ]);
     expect(loopAllocs[0]?.site).toBe(callSite);
     expect(loopAllocs[1]?.site).toBe(arrSite);
     expect(new Set(loopAllocs.map((d) => d.site)).size).toBe(3);
@@ -1387,13 +1394,18 @@ describe('diagnostics', () => {
     b.ret('n', 0);
     const { diagnostics } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
-    expect(envDiags).toHaveLength(3);
-    expect(envDiags.some((d) => d.message.includes("s.env('caller')"))).toBe(true);
-    expect(envDiags.some((d) => d.message.includes("s.env('address')"))).toBe(true);
+    // one warning per thing read: the two caller reads share theirs
+    expect(envDiags.map((d) => d.key)).toEqual(['s.env(caller)', 's.env(address)']);
+    expect(envDiags[0]?.message).toContain("s.env('caller')");
+    expect(envDiags[1]?.message).toContain("s.env('address')");
     expect(envDiags.every((d) => d.severity === 'warning')).toBe(true);
-    // the two caller reads emit the same message — the site tells them apart
+    // `sites` lists every statement, `site` is the first of them
     expect(envDiags[0]?.site).toBe(callerSite);
-    expect(new Set(envDiags.map((d) => d.site)).size).toBe(3);
+    expect(envDiags[0]?.sites).toEqual([
+      { id: callerSite, key: 's.env(caller)#0' },
+      { id: callerSite + 1, key: 's.env(caller)#1' },
+    ]);
+    expect(envDiags[1]?.sites).toEqual([{ id: callerSite + 2, key: 's.env(address)#0' }]);
     expect(envDiags.every((d) => d.message.includes('deployless'))).toBe(true);
 
     const blockCtx = new IrB('blocky', [['n', 'uint256']]);
@@ -1478,7 +1490,14 @@ describe('diagnostics', () => {
       d.message.includes("s.balance(s.env('address'))"),
     );
     expect(selfBalanceOps).toHaveLength(2);
-    expect(selfBalanceNotes).toHaveLength(selfBalanceOps.length);
+    // one note for the script's own balance, covering exactly the SELFBALANCE statements
+    expect(selfBalanceNotes).toHaveLength(1);
+    expect(selfBalanceNotes[0]?.key).toBe('s.balance(s.env(address))');
+    expect(selfBalanceNotes[0]?.sites?.map((site) => site.key)).toEqual([
+      's.balance#0',
+      'selfbal/s.balance#0',
+    ]);
+    expect(selfBalanceNotes[0]?.sites).toHaveLength(selfBalanceOps.length);
     expect(nodes.filter((n) => n.k === 'op' && n.op === 'BALANCE')).toHaveLength(1);
   });
 
@@ -1494,12 +1513,19 @@ describe('diagnostics', () => {
     b.ret('wei', 0);
     const { diagnostics, sites } = lowerProgram(b.build(), { evmVersion: 'cancun' });
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
-    expect(envDiags.map((d) => d.site)).toEqual([strict, tried, literal.site]);
+    // one warning per paying call (its verb and function), whatever the number of statements
+    expect(envDiags.map((d) => d.key)).toEqual(['s.call(deposit)', 's.trySimulate(deposit)']);
+    expect(envDiags.map((d) => d.site)).toEqual([strict, tried]);
+    expect(envDiags[0]?.sites).toEqual([
+      { id: strict, key: 's.call(deposit)#0' },
+      { id: literal.site, key: 's.call(deposit)#1' },
+    ]);
+    expect(envDiags[1]?.sites).toEqual([{ id: tried, key: 's.trySimulate(deposit)#0' }]);
     expect(envDiags[0]?.message).toMatch(
       /^s\.call\(deposit\) sends a `value`, paid from the script's own balance/,
     );
     expect(envDiags[0]?.message).toMatch(
-      /deployless.*fails before the target runs and the site reverts/,
+      /deployless.*fails before the target runs and the call reverts/,
     );
     expect(envDiags[0]?.message).toContain("toViem({ mode: 'stateOverride' })");
     expect(envDiags[1]?.message).toMatch(/^s\.trySimulate\(deposit\) .* reports success = false/);
@@ -1519,6 +1545,7 @@ describe('diagnostics', () => {
     const envDiags = diagnostics.filter((d) => d.code === 'ENV_FRAME_DEPENDENT');
     expect(envDiags).toHaveLength(1);
     expect(envDiags[0]?.message).toContain("s.env('caller')");
+    expect(envDiags[0]?.sites?.map((site) => site.key)).toEqual(['whoami/s.env(caller)#0']);
   });
 });
 

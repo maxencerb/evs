@@ -67,13 +67,17 @@ try {
   if (reverted instanceof ContractFunctionRevertedError && reverted.raw !== undefined) {
     const explanation = compiled.explainRevert(reverted.raw);
     // explanation.kind: 'evs-decode'
-    // explanation.site: { id: 0, detail: 'decoding symbol() returndata' }
+    // explanation.site:
+    // { id: 0, key: 's.read(symbol)#0', detail: 'decoding symbol() returndata' }
   }
 }
 ```
 
 The call returned nothing to decode, so the script reverted with `EvsDecodeError`. `site` is
 the `s.read` that failed.
+
+Log `site.key`, not `site.id`: the id is the number in the payload and moves when a statement
+is added above the read. The key stays `s.read(symbol)#0`.
 
 ### Declared errors
 
@@ -194,8 +198,8 @@ them all.
 | `message` | `string` | The explanation, in one line. |
 | `raw` | `Hex` | The data you passed. |
 | `panicCode` | `bigint` | The [panic code](/reference/diagnostics/#panic-codes). |
-| `site` | `{ id, detail }` | The call whose return data failed to decode. |
-| `candidateSites` | `{ id, detail }[]` | The places the revert can have come from. |
+| `site` | `{ id, key, detail }` | The call whose return data failed to decode. |
+| `candidateSites` | `{ id, key, detail }[]` | The places the revert can have come from. |
 | `errorName` | `string` | The name of the declared error. |
 | `errorArgs` | `Record<string, unknown>` | Its decoded arguments, by name. |
 
@@ -211,7 +215,10 @@ One row per `kind`:
 | `'custom'` | any other selector, or fewer than 4 bytes | `candidateSites`, as above |
 | `'empty'` | `0x` | `candidateSites`, as above |
 
-A site's `id` is the `id` of an entry of [`sourceMap.sites`](/reference/artifact/#properties).
+A site's `id` and `key` are those of an entry of
+[`sourceMap.sites`](/reference/artifact/#properties). The `id` is a position in the script and
+the [`key`](/reference/diagnostics/#keys) a name that survives edits, and `detail` is display
+text.
 
 ## Parameters
 

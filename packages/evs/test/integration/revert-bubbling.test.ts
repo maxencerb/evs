@@ -82,7 +82,9 @@ describe('revert bubbling through viem (byte-exact vs direct call)', () => {
       expect(explained.panicCode).toBe(panicCode);
       expect(explained.candidateSites).toEqual([]);
     } else {
-      expect(explained.candidateSites).toEqual([{ id: readSite?.id, detail: readSite?.detail }]);
+      expect(explained.candidateSites).toEqual([
+        { id: readSite?.id, key: `s.read(${flavor})#0`, detail: readSite?.detail },
+      ]);
     }
   });
 });
@@ -113,6 +115,8 @@ describe('explainRevert round-trip on EvsDecodeError', () => {
     expect(site).toBeDefined();
     if (site !== undefined) {
       expect(site.detail).toBe('decoding hugeOffset() returndata');
+      // the payload carries the position; the explanation also names the read
+      expect(site.key).toBe('s.read(hugeOffset)#0');
     }
   });
 });

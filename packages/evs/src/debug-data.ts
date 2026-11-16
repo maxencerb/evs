@@ -22,6 +22,7 @@
 
 import { EvsTypeError } from './core/errors.js';
 import type { ScriptIr } from './ir/nodes.js';
+import { siteKeysOf } from './ir/site-keys.js';
 import type { PrecompiledScriptData, PrecompiledScriptDebug } from './precompiled.js';
 
 const WHAT = 'the debug data of the precompiled script';
@@ -50,7 +51,7 @@ export function debugDataOf(loaded: unknown, data: PrecompiledScriptData): Preco
   const debug = isObject(loaded) && 'default' in loaded ? loaded['default'] : loaded;
   assertDebug(debug);
   assertPaired(debug, data);
-  return debug;
+  return withSiteKeys(debug);
 }
 
 // ---------------------------------------------------------------------------
@@ -132,14 +133,46 @@ function isParam(param: unknown): param is Json {
   );
 }
 
+/** A site as a checked document holds it: `key` may be missing ({@link withSiteKeys}). */
+type LoadedSite = Omit<PrecompiledScriptDebug['sites'][number], 'key'> & {
+  readonly key?: string;
+};
+
 function isSite(site: unknown): boolean {
   return (
     isObject(site) &&
     Number.isSafeInteger(site['id']) &&
+    (site['key'] === undefined || typeof site['key'] === 'string') &&
     typeof site['kind'] === 'string' &&
     typeof site['detail'] === 'string' &&
     (site['panicCodes'] === undefined || every(site['panicCodes'], Number.isSafeInteger))
   );
+}
+
+/**
+ * The debug data with a `key` on every site. evs 0.6.0 and earlier wrote sites without one;
+ * the keys are a function of the recorded IR, which the document holds, so they are computed
+ * here and such a document explains a revert like one written today.
+ *
+ * Computing them reads more of the IR than {@link assertDebug} checked (each statement's own
+ * fields, the value table), so an IR that cannot be read is reported as the malformed document
+ * it is. A site whose statement the IR does not hold gets a key made of its id.
+ */
+function withSiteKeys(debug: PrecompiledScriptDebug): PrecompiledScriptDebug {
+  const sites: readonly LoadedSite[] = debug.sites;
+  if (sites.every((site) => site.key !== undefined)) return debug;
+  let keys: ReadonlyMap<number, string>;
+  try {
+    keys = siteKeysOf(debug.ir);
+  } catch {
+    throw new EvsTypeError('TYPE_MISMATCH', `${WHAT} has a malformed \`ir\`: ${EXPECTED}`);
+  }
+  // copies: the loaded document may be frozen, and it is the caller's
+  const keyed: PrecompiledScriptDebug['sites'][number][] = [];
+  for (const site of sites) {
+    keyed.push({ ...site, key: site.key ?? keys.get(site.id) ?? `#${site.id}` });
+  }
+  return { ...debug, sites: keyed };
 }
 
 // ---------------------------------------------------------------------------

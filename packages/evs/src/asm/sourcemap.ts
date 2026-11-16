@@ -16,7 +16,13 @@ export interface SourceMap {
   readonly version: 1;
   readonly segments: readonly { pc: number; len: number; note?: string }[];
   readonly sites: readonly {
+    // the statement's position among everything the script recorded: what the bytecode puts in
+    // `EvsDecodeError(uint256 site)`. It moves when a statement is added or removed before it
     id: SiteId;
+    // names the statement by what it is (`s.read(balanceOf)#0`, `quote/add#2`): unlike `id` it
+    // only moves when a statement with the same label is added or removed earlier in the same
+    // function (`ir/site-keys.ts`). Unique within a script; what a filter or a log matches on
+    key: string;
     kind: 'panic' | 'decode' | 'call' | 'stmt';
     detail: string; // display only — match on `kind` / `panicCodes`, never on this text
     // 'panic' sites only: the Panic(uint256) codes this site can raise (non-empty)

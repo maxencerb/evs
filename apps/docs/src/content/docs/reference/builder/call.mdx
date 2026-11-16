@@ -142,8 +142,9 @@ const { shares } = await client.readContract({
 - **Deployless mode cannot fund the script.** Use state-override mode with a `balance`, or sender
   mode, where the sender's balance pays. See [executing scripts](/guides/execution/).
 - **An unfunded call fails before the target runs.** `s.call` then reverts with empty data.
-- **`compile` warns.** Each call that sends a `value` is reported as `ENV_FRAME_DEPENDENT`
-  ([warnings](/reference/diagnostics/#warnings)).
+- **`compile` warns.** A call that sends a `value` is reported as `ENV_FRAME_DEPENDENT`
+  ([warnings](/reference/diagnostics/#warnings)): one warning per function called, listing the
+  calls.
 
 ### Results returned by reverting
 

@@ -121,18 +121,54 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
         `a ${name} such as a hash starts with 0xEF 1 time in 256`,
       );
       expect(diags[0]?.message).toContain("toViem({ mode: 'stateOverride' })");
-      expect(diags[0]?.site).toBeUndefined(); // an argument has no defining statement
+      // an argument has no defining statement, and the warning still has a key to filter on
+      expect(diags[0]?.key).toBe('s.return(x)');
+      expect(diags[0]?.site).toBeUndefined();
+      expect(diags[0]?.sites).toBeUndefined();
     },
   );
 
-  test('a hash warns with the site of the statement that computes it', () => {
+  test('a hash warns with the statement that computes it, and the returned value as its key', () => {
     const script = evscript({ name: 'h', args: [t.bytes] }, (s, b) =>
       s.return({ h: s.keccak256(b) }),
     );
     const diags = prefixOf(script);
     expect(diags).toHaveLength(1);
+    expect(diags[0]?.key).toBe('s.return(h)');
     expect(diags[0]?.site).toBe(firstReturnSite(script));
     expect(diags[0]?.site).toBeTypeOf('number');
+    expect(diags[0]?.sites).toEqual([{ id: firstReturnSite(script), key: 'keccak256#0' }]);
+  });
+
+  test('the key is the path of the leading word, and no edit above the return moves it', () => {
+    const Position = t.struct({ amounts: t.array(t.uint256, 2), owner: t.address });
+    const build = (extra: boolean) =>
+      evscript({ name: 'p', args: [Position] }, (s, pos) => {
+        if (extra) s.let(t.uint256, 7n).get();
+        return s.return({ pos });
+      });
+    const [before] = prefixOf(build(false));
+    const [after] = prefixOf(build(true));
+    expect(before?.key).toBe('s.return(pos.amounts[0])');
+    expect(after?.key).toBe(before?.key);
+    expect(before?.message).toContain('`pos.amounts[0]` (uint256)');
+
+    // a statement-defined value: the site id moves with the edit, the key does not
+    const sum = (extra: boolean) =>
+      evscript({ name: 's', args: [t.uint256, t.uint256] }, (s, a, b) => {
+        const acc = s.let(t.uint256, a);
+        if (extra) acc.set(acc.get().wrappingAdd(1n));
+        acc.set(acc.get().wrappingAdd(b));
+        return s.return({ total: acc.get() });
+      });
+    const [plain] = prefixOf(sum(false));
+    const [edited] = prefixOf(sum(true));
+    expect(plain?.key).toBe('s.return(total)');
+    expect(edited?.key).toBe('s.return(total)');
+    expect(edited?.site).not.toBe(plain?.site);
+    // the statement behind the value is named by its own key, which the same-label edit moves
+    expect(plain?.sites?.map((site) => site.key)).toEqual(['cellget#1']);
+    expect(edited?.sites?.map((site) => site.key)).toEqual(['cellget#2']);
   });
 
   test.each([
@@ -147,6 +183,10 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
     expect(diags[0]?.message).not.toContain('1 time in 256');
     expect(diags[0]?.message).toContain(`evs cannot bound \`x\``);
     expect(diags[0]?.message).toContain('(it is a script argument)');
+    // filtered like any other: nothing tells a user to rely on a site id
+    expect(diags[0]?.message).toContain('filter this warning on its code and key, otherwise');
+    expect(diags[0]?.message).not.toMatch(/\bsite\b/);
+    expect(diags[0]?.key).toBe('s.return(x)');
     expect(diags[0]?.site).toBeUndefined();
   });
 
@@ -397,7 +437,11 @@ describe('DEPLOYLESS_RESULT_PREFIX', () => {
       '(it may come from a script argument, a call output, a hash or bit pattern, or arithmetic ' +
         'that can grow that large, such as a value that doubles in a loop)',
     );
-    expect(diags[0]?.message).toContain('acknowledge this warning by its site');
+    expect(diags[0]?.message).toContain('filter this warning on its code and key, otherwise');
+    expect(diags[0]?.message).not.toMatch(/\bsite\b/);
+    expect(diags[0]?.key).toMatch(/^s\.return\(\w+(\.\w+|\[0\])*\)$/);
+    expect(diags[0]?.sites).toHaveLength(1);
+    expect(diags[0]?.sites?.[0]?.id).toBe(diags[0]?.site);
   });
 
   // a returned literal is decided by its first byte: 0xEF fails every call, anything else none

@@ -22,11 +22,14 @@
  * the value id an `Expr` handle prints (`Expr<uint256> #12`). A debug name several values share
  * (two `s.newArray(uint256)`, two reads of one function) gets that `#id` appended, so two sites
  * of the same kind on different operands get different details (the site id always differs).
+ *
+ * `detail` is for display. What a user matches on is the site's `key` (`ir/site-keys.ts`), whose
+ * text is public and is not built here.
  */
 
 import type { SourceMap } from '../asm/sourcemap.js';
 import { isBytesN, isNumeric, isSigned, type EvsType } from '../core/types.js';
-import { walkStmts, type FnId, type Stmt, type ValueId } from '../ir/nodes.js';
+import { walkStmts, type FnId, type SiteId, type Stmt, type ValueId } from '../ir/nodes.js';
 import { fmtType } from './abi.js';
 import {
   checkedArithCanOverflow,
@@ -39,6 +42,8 @@ import {
 } from './lower.js';
 
 type Site = SourceMap['sites'][number];
+/** What the statement itself decides; its `key` is a function of the whole recorded IR. */
+type Classified = Omit<Site, 'key'>;
 type SiteKind = Site['kind'];
 
 /** The four codes evs itself raises (solc semantics). */
@@ -50,14 +55,20 @@ const ALLOC_TOO_LARGE = 0x41;
 /** `lowerArrnew`'s length cap: a length above it panics 0x41. */
 const ALLOC_CAP = 0xffffffffn;
 
-export function collectSites(ctx: LowerCtx, emittedFns: readonly FnId[]): SourceMap['sites'] {
+/** `keyOf` gives a statement's key (`ir/site-keys.ts`, computed on the recorded IR). */
+export function collectSites(
+  ctx: LowerCtx,
+  emittedFns: readonly FnId[],
+  keyOf: (site: SiteId) => string,
+): SourceMap['sites'] {
   const sites: Site[] = [];
   const seen = new Set<number>();
   const shared = sharedDebugNames(ctx);
   const add = (s: Stmt): void => {
     if (seen.has(s.site)) return;
     seen.add(s.site);
-    sites.push(classifySite(ctx, shared, s));
+    const { id, ...rest } = classifySite(ctx, shared, s);
+    sites.push({ id, key: keyOf(id), ...rest });
   };
   walkStmts(ctx.ir.body, add);
   for (const f of emittedFns) {
@@ -67,10 +78,10 @@ export function collectSites(ctx: LowerCtx, emittedFns: readonly FnId[]): Source
   return sites;
 }
 
-function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Site {
-  const site = (kind: SiteKind, detail: string): Site => ({ id: s.site, kind, detail });
+function classifySite(ctx: LowerCtx, shared: ReadonlySet<string>, s: Stmt): Classified {
+  const site = (kind: SiteKind, detail: string): Classified => ({ id: s.site, kind, detail });
   /** A panic site when `codes` is non-empty, else a plain statement with the same detail. */
-  const checked = (what: string, codes: readonly number[]): Site =>
+  const checked = (what: string, codes: readonly number[]): Classified =>
     codes.length === 0
       ? site('stmt', what)
       : {

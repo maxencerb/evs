@@ -40,11 +40,13 @@ export interface RevertExplanation {
   panicCode?: bigint;
   errorName?: string; // script-error only: the declared error's name
   errorArgs?: Readonly<Record<string, unknown>>; // script-error only: name-keyed decoded args
-  site?: { id: SiteId; detail: string };
+  // `id` is the number in the payload, a position that moves when the script is edited; `key`
+  // names the same statement and stays (`ir/site-keys.ts`): match and log that one
+  site?: { id: SiteId; key: string; detail: string };
   // 'panic': the sites whose template can raise that code. 'error-string' / 'custom' / 'empty'
   // (and a 'script-error' whose args do not decode): the strict call sites that bubble a callee
   // revert verbatim (the only places such a payload can enter the script). Absent otherwise.
-  candidateSites?: readonly { id: SiteId; detail: string }[];
+  candidateSites?: readonly { id: SiteId; key: string; detail: string }[];
   raw: Hex;
 }
 
@@ -57,10 +59,10 @@ export interface ExplainContext {
   readonly evmVersion: EvmVersion;
 }
 
-type SiteRef = { id: SiteId; detail: string };
+type SiteRef = { id: SiteId; key: string; detail: string };
 
 function toSiteRef(site: SourceMap['sites'][number]): SiteRef {
-  return { id: site.id, detail: site.detail };
+  return { id: site.id, key: site.key, detail: site.detail };
 }
 
 /**

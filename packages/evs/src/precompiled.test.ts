@@ -682,6 +682,72 @@ function withJunkAt(document: unknown, path: readonly string[], junk: unknown): 
   return copy;
 }
 
+/** The debug data as `debug()` returns it. */
+function asWritten(debug: PrecompiledScriptDebug): unknown {
+  return debug;
+}
+
+/** The debug data as evs 0.6.0 wrote it: the same document, its sites without a `key`. */
+function withoutSiteKeys(debug: PrecompiledScriptDebug): unknown {
+  return { ...debug, sites: debug.sites.map(({ key: _key, ...site }) => site) };
+}
+
+describe('debug data written before sites had a key', () => {
+  test.each([
+    ['guard', SCRIPTS.guard],
+    ['balances', SCRIPTS.balances],
+    ['pay', SCRIPTS.pay],
+  ])('%s: it loads, and its sites get the keys the compiler gives them', async (_name, script) => {
+    const artifact = compile(script());
+    const precompiled = artifact.toPrecompiled();
+    const old = withoutSiteKeys(jsonRoundTrip(await precompiled.debug()));
+    const hydrated = hydrate(precompiled.toJSON(), {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a document of another version
+      debug: () => Promise.resolve(old as PrecompiledScriptDebug),
+    });
+    expect((await hydrated.debug()).sites).toEqual(artifact.sourceMap.sites);
+    const payloads = payloadsFor(artifact);
+    expect(await Promise.all(payloads.map((payload) => hydrated.explainRevert(payload)))).toEqual(
+      payloads.map((payload) => artifact.explainRevert(payload)),
+    );
+  });
+
+  test.each([
+    ['as written today', asWritten],
+    ['as evs 0.6.0 wrote it', withoutSiteKeys],
+  ])('an explained site carries its key: debug data %s', async (_name, format) => {
+    const artifact = compile(SCRIPTS.balances());
+    const precompiled = artifact.toPrecompiled();
+    const debug = format(jsonRoundTrip(await precompiled.debug()));
+    const site = artifact.sourceMap.sites.find((s) => s.kind === 'decode');
+    if (site === undefined) throw new Error('the fixture has a strict read');
+    const hydrated = hydrate(precompiled.toJSON(), {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- a document of another version
+      debug: () => Promise.resolve(debug as PrecompiledScriptDebug),
+    });
+    const explained = await hydrated.explainRevert(decodeError(site.id));
+    expect(explained.site).toEqual({ id: site.id, key: site.key, detail: site.detail });
+    expect(explained.site?.key).toMatch(/^s\.read\(\w+\)#\d+$/);
+  });
+
+  test('a key that is not a string is a malformed site, not a missing one', async () => {
+    const artifact = compile(SCRIPTS.guard());
+    const precompiled = artifact.toPrecompiled();
+    const debug = jsonRoundTrip(await precompiled.debug());
+    const damaged = withJunkAt(debug, ['sites', '0', 'key'], 7);
+    const hydrated = hydrate(precompiled.toJSON(), {
+      // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- the runtime check is under test
+      debug: () => Promise.resolve(damaged as PrecompiledScriptDebug),
+    });
+    expect(await rejectionsOf(hydrated)).toEqual([
+      typeMismatch(
+        'the debug data of the precompiled script has a malformed `sites`: the `debug` loader ' +
+          "must resolve to what the script's debug() returned at build time",
+      ),
+    ]);
+  });
+});
+
 describe('malformed debug data', () => {
   const compiled = compile(SCRIPTS.guard());
   const data = compiled.toPrecompiled().toJSON();
@@ -772,18 +838,23 @@ describe('malformed debug data', () => {
 
   // The check has to cover everything explainRevert reads, and nothing ties the two together
   // but this: junk at every position of real debug data, explained with every payload kind.
+  // Debug data without site keys has them computed from its IR, which reads more of it: the
+  // same damage is done to a document as evs 0.6.0 wrote it.
   describe.each([
-    ['guard', SCRIPTS.guard],
-    ['balances', SCRIPTS.balances],
-    ['pay', SCRIPTS.pay],
-  ])('junk anywhere in the debug data of %s', (_name, script) => {
+    ['guard', SCRIPTS.guard, withoutSiteKeys],
+    ['guard', SCRIPTS.guard, asWritten],
+    ['balances', SCRIPTS.balances, withoutSiteKeys],
+    ['balances', SCRIPTS.balances, asWritten],
+    ['pay', SCRIPTS.pay, withoutSiteKeys],
+    ['pay', SCRIPTS.pay, asWritten],
+  ])('junk anywhere in the debug data of %s (%o)', (_name, script, format) => {
     const artifact = compile(script());
     const precompiled = artifact.toPrecompiled();
     const payloads = payloadsFor(artifact);
     const JUNK: readonly unknown[] = [undefined, null, 0, 'x', {}, [], [null], [[]]];
 
     test('is rejected with an EvsTypeError or explained: no other error escapes', async () => {
-      const debug = jsonRoundTrip(await precompiled.debug());
+      const debug = format(jsonRoundTrip(await precompiled.debug()));
       const damages = pathsOf(debug).flatMap((path) => JUNK.map((junk) => ({ path, junk })));
       const outcomes = await Promise.all(
         damages.map(async ({ path, junk }) => {

@@ -19,7 +19,8 @@
  * byte-identical to the unoptimized lowering.
  *
  * Diagnostics from lowering, then the deployless result checks (`deployless.ts`), are forwarded
- * to `options.onDiagnostic`; nothing is ever logged.
+ * to `options.onDiagnostic`; nothing is ever logged. Both name statements by their key
+ * (`ir/site-keys.ts`), computed here on the recorded IR.
  *
  * Two members of the artifact live in compiler-free modules, which a precompiled script reuses
  * without this file: `toViem()` (`viem.ts`) and `explainRevert` (`explain.ts`).
@@ -43,7 +44,8 @@ import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { deploylessResultDiagnostics } from './deployless.js';
 import { explainRevert, type ExplainContext, type RevertExplanation } from './explain.js';
 import { pruneDeadCode } from './ir/dce.js';
-import type { ScriptIr } from './ir/nodes.js';
+import type { ScriptIr, SiteId } from './ir/nodes.js';
+import { siteKeysOf } from './ir/site-keys.js';
 import { validateIr } from './ir/validate.js';
 import { createPrecompiledScript, type PrecompiledScript } from './precompiled.js';
 import { assertEvmVersion, createToViem, toCreationBytecode, type ToViem } from './viem.js';
@@ -147,12 +149,16 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   // result nothing observable reads) → lowerProgram, which re-validates the DCE output as a
   // self-check of the pass. The artifact keeps exposing the recorded `script.ir` unchanged.
   validateIr(ir);
+  // the statement keys, from the recorded IR: counted before a statement is dropped, so dead
+  // code and the options below never move one
+  const siteKeys = siteKeysOf(ir);
   const lowered = lowerWithCodecFallback(pruneDeadCode(ir), {
     evmVersion: resolved.evmVersion,
     optimize: resolved.optimize,
+    siteKeys,
   });
   for (const diagnostic of lowered.diagnostics) resolved.onDiagnostic(diagnostic);
-  for (const diagnostic of deploylessResultDiagnostics(ir)) {
+  for (const diagnostic of deploylessResultDiagnostics(ir, { siteKeys })) {
     resolved.onDiagnostic(diagnostic);
   }
 
@@ -241,7 +247,7 @@ function precompiledIdOf(explained: ExplainContext): string {
  */
 function lowerWithCodecFallback(
   ir: ScriptIr,
-  opts: { evmVersion: EvmVersion; optimize: boolean },
+  opts: { evmVersion: EvmVersion; optimize: boolean; siteKeys: ReadonlyMap<SiteId, string> },
 ): LowerResult {
   try {
     return lowerProgram(ir, opts);
