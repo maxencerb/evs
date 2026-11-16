@@ -88,7 +88,9 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   compiler-free one a client imports to run precompiled scripts (`hydrate`, the error
   decoders). Nothing `runtime.ts` reaches may import the compiler, and the compiler must not
   import `explain.ts` dynamically: `src/runtime-graph.test.ts` checks both (reasons in
-  CONTRIBUTING.md, "The runtime entry").
+  CONTRIBUTING.md, "The runtime entry"). The runtime entry carries no hash, and what only
+  `explainRevert()` needs loads with the explain code: the checks of a hydrated script's debug
+  data are in `debug-data.ts`, which imports types only from `precompiled.ts`.
 - `packages/vite-plugin-evs` — the published Vite plugin (peers: `vite`, `@maxencerb/evs` as
   `workspace:^`, which must stay that way: see "Releasing" in CONTRIBUTING.md). It runs
   `*.evs.ts` modules in Node with Vite's `runnerImport` and replaces them with `hydrate(...)`

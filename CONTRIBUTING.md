@@ -23,8 +23,8 @@ The pipeline order: `builder/` records the callback into the IR (`ir/`), `codege
 an assembly stream, `asm/` lays it out and verifies it, `compile.ts` ties them together and
 `viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits,
 `evm-target.ts` what a script's `evmVersion` means for the chain it runs on).
-`precompiled.ts`, `hydrate.ts`, `explain.ts` and the `runtime.ts` entry are the part a client
-runs without the compiler (see [The runtime entry](#the-runtime-entry)). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
+`precompiled.ts`, `hydrate.ts`, `explain.ts`, `debug-data.ts` and the `runtime.ts` entry are the
+part a client runs without the compiler (see [The runtime entry](#the-runtime-entry)). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
 the script artifact's ABI) are shared by every stage; `differential/` holds the
 interpreter-vs-bytecode test slices.
 
@@ -175,7 +175,23 @@ helpers and `explainUnsupportedOpcode`. Rules that keep it small, each held by a
   precompiled script.
 - **The explain code loads on demand.** `hydrate.ts` reaches `explain.ts` through a dynamic
   import, so a bundler gives it a chunk of its own, fetched on the first `explainRevert()` with
-  the script's debug data (`PrecompiledScriptDebug`: the IR and the emitted sites).
+  the script's debug data (`PrecompiledScriptDebug`: the IR and the emitted sites). Without a
+  `debug` loader nothing can be explained, so nothing is imported either (`hydrate.test.ts`
+  counts the imports).
+- **The checks of the debug data load with it.** `debug-data.ts` checks what the `debug` loader
+  resolved to: its shape (everything `explain.ts` reads, so a malformed document is a
+  `TYPE_MISMATCH` and never an error from inside an explanation) and its `id` against the
+  script's. `explain.ts` re-exports it, so `hydrate.ts` keeps one dynamic import and a client
+  that only hydrates carries none of it. It imports types only from `precompiled.ts`: with a
+  value import, bundlers move `precompiled.ts` and `viem.ts` out of the entry chunk into one
+  shared with the explain code. A test in `precompiled.test.ts` puts junk at every position of
+  real debug data and explains every payload kind with it: extend the check when `explain.ts`
+  reads something new.
+- **The runtime entry carries no hash.** A script's data and its debug data are two documents,
+  paired by hand outside the Vite plugin. `toPrecompiled()` writes one `id` into both, eight
+  bytes of a keccak over everything `explainRevert` reads (`precompiledIdOf`, `compile.ts`), and
+  the client only compares two strings. For the same reason `hydrate` cannot tell that the
+  bytecode is whole, or that it is the one the ABI was written with.
 - **The compiler has no dynamic import.** `compile.ts` imports `explain.ts` statically (the
   artifact's `explainRevert` is synchronous) and builds its precompiled scripts with
   `createPrecompiledScript` (`precompiled.ts`), never through `hydrate.ts`. A dynamic import of
@@ -185,8 +201,15 @@ helpers and `explainUnsupportedOpcode`. Rules that keep it small, each held by a
   exported from the runtime entry only, so nobody loads the main entry to get them.
 
 The serialized form (`PrecompiledScriptData`) carries `version: 1`. Change that number, in
-`precompiled.ts`, whenever the data or the debug data changes shape: `hydrate` then rejects
-data written by another version with a message that says to regenerate it.
+`precompiled.ts`, when the data or the debug data changes in a way another version of evs would
+misread: `hydrate` then rejects data written by another version with a message that says to
+regenerate it. A field every reader can ignore does not need it. `id` was added under version
+1: evs 0.5.0 ignores it, and data without one still hydrates (its debug data is then matched on
+the script's name, which is all the two documents of 0.5.0 share).
+
+A size change of the runtime entry shows in three places: the two budgets of the plugin's tests
+(`test/build.test.ts`, `test/worker.test.ts`), the "Library size" table and the plugin figures
+of the docs' Overhead page ([Measured pages](#measured-pages)).
 
 ### Vite plugin (`packages/vite-plugin-evs`)
 

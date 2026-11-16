@@ -1,0 +1,39 @@
+{
+  "version": 1,
+  "id": "0xb3356908ed9344d8",
+  "ir": {
+    "irVersion": 1,
+    "name": "double",
+    "args": [{ "name": "arg0", "type": "uint256" }],
+    "values": [
+      { "type": "uint256", "debugName": "args.arg0" },
+      { "type": "uint256" },
+      { "type": "uint256" }
+    ],
+    "cells": [],
+    "fns": [],
+    "body": [
+      {
+        "k": "const",
+        "out": 1,
+        "data": {
+          "kind": "word",
+          "hex": "0x0000000000000000000000000000000000000000000000000000000000000002"
+        },
+        "type": "uint256",
+        "site": 0
+      },
+      { "k": "bin", "op": "mul", "a": 0, "b": 1, "out": 2, "site": 1 }
+    ],
+    "returns": [{ "name": "doubled", "type": "uint256", "value": 2 }]
+  },
+  "sites": [
+    { "id": 0, "kind": "stmt", "detail": "const" },
+    {
+      "id": 1,
+      "kind": "panic",
+      "detail": "checked mul args.arg0 * 2 (uint256) — Panic 0x11",
+      "panicCodes": [17]
+    }
+  ]
+}

@@ -26,6 +26,8 @@
  * `toPrecompiled()` narrows the artifact to that shippable form (`precompiled.ts`).
  */
 
+import { keccak256, stringToBytes } from 'viem';
+
 import type { ScriptAbi } from './abi/artifact.js';
 import { assemble, type AsmNode, type LabelId } from './asm/assembler.js';
 import { disassemble, type Disassembly } from './asm/disasm.js';
@@ -39,7 +41,7 @@ import { bytesToHex } from './core/bytes.js';
 import { EvsCompileError, EvsTypeError, type EvsDiagnostic } from './core/errors.js';
 import type { ArgSpec, EvsErrorType, Hex } from './core/types.js';
 import { deploylessResultDiagnostics } from './deployless.js';
-import { explainRevert, type RevertExplanation } from './explain.js';
+import { explainRevert, type ExplainContext, type RevertExplanation } from './explain.js';
 import { pruneDeadCode } from './ir/dce.js';
 import type { ScriptIr } from './ir/nodes.js';
 import { validateIr } from './ir/validate.js';
@@ -188,6 +190,9 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
   const abi = script.abi;
   const { evmVersion } = resolved;
   const { sites } = sourceMap;
+  const explained: ExplainContext = { ir, sites, abi, runtimeBytecode, evmVersion };
+  // hashed on the first toPrecompiled(): compile() itself never pays for it
+  let precompiledId: string | undefined;
 
   const artifact: CompiledEvsScript = {
     abi,
@@ -199,20 +204,34 @@ function compileScript(script: EvsScript, options?: CompileOptions): CompiledEvs
     toViem: createToViem({ abi, runtimeBytecode, initBytecode }),
     // the assembler's bytes, not `runtimeBytecode`: no hex round trip (disassemble never writes)
     disassemble: (): Disassembly => disassemble(assembled.bytecode, sourceMap),
-    explainRevert: (data: Hex): RevertExplanation =>
-      explainRevert(data, { ir, sites, abi, runtimeBytecode, evmVersion }),
+    explainRevert: (data: Hex): RevertExplanation => explainRevert(data, explained),
     // the debug data and the explain code are already in memory here; a hydrated script loads
     // both on demand
-    toPrecompiled: () =>
-      createPrecompiledScript(
-        { version: 1, abi, runtimeBytecode, evmVersion },
+    toPrecompiled: () => {
+      const id = (precompiledId ??= precompiledIdOf(explained));
+      return createPrecompiledScript(
+        { version: 1, id, abi, runtimeBytecode, evmVersion },
         {
-          debug: () => Promise.resolve({ version: 1, ir, sites }),
+          debug: () => Promise.resolve({ version: 1, id, ir, sites }),
           explain: () => Promise.resolve(explainRevert),
         },
-      ),
+      );
+    },
   };
   return Object.freeze(artifact);
+}
+
+/**
+ * The `id` a precompiled script writes into its data and into its debug data, which a client
+ * loads apart: `hydrate` compares the two, so debug data of another script or of another build
+ * is refused instead of explaining a revert with the wrong statements. It covers everything
+ * `explainRevert` reads, so two compilations share an id only when their two documents are the
+ * same. Eight bytes of the hash: it tells builds apart, it does not have to resist anyone.
+ *
+ * Computed here and only compared in the runtime entry, which must not carry a hash.
+ */
+function precompiledIdOf(explained: ExplainContext): string {
+  return keccak256(stringToBytes(JSON.stringify(explained))).slice(0, 2 + 2 * 8);
 }
 
 /**

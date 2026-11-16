@@ -45,6 +45,7 @@ Only the runtime entry exports `hydrate`, so importing it never loads the compil
     // written by a build step: JSON.stringify(compiled.toPrecompiled())
     export const data = {
       version: 1,
+      id: '0xb3356908ed9344d8',
       abi: [
         {
           type: 'function',
@@ -74,7 +75,32 @@ Only the runtime entry exports `hydrate`, so importing it never loads the compil
 </Tabs>
 
 The data must keep its literal types for the call to be typed: a generated `.ts` file that
-ends with `as const` keeps them. A `.json` import widens the ABI and loses them.
+ends with `as const` keeps them.
+
+### From a JSON file
+
+A `.json` import hydrates too, and the script runs the same. Its ABI is wide, so viem infers
+nothing from it.
+
+```ts nocheck title="client.ts" {7}
+import { hydrate } from '@maxencerb/evs/runtime';
+import { createPublicClient, http } from 'viem';
+import { mainnet } from 'viem/chains';
+import data from './double.json' with { type: 'json' };
+
+const client = createPublicClient({ chain: mainnet, transport: http() });
+const double = hydrate(data);
+// double.abi: Abi
+
+const result = await client.readContract({
+  ...double.toViem(),
+  functionName: 'double',
+  args: [21n],
+});
+// result: unknown
+```
+
+Parsed text is the same: `hydrate(JSON.parse(text))` gives a script with a wide ABI.
 
 ### Loading the debug data
 
@@ -102,6 +128,7 @@ loader, and the data is fetched on the first call only.
     // written by a build step: JSON.stringify(await compiled.toPrecompiled().debug())
     export default {
       version: 1,
+      id: '0xb3356908ed9344d8',
       ir: {
         irVersion: 1,
         name: 'double',
@@ -145,6 +172,10 @@ loader, and the data is fetched on the first call only.
 A bundler puts the dynamic import in a chunk of its own, so the debug data stays out of the
 bundle that holds the script.
 
+The two files carry the same `id`: one compilation wrote both. Debug data with another `id` is
+refused when it loads, so a revert is never explained with the statements of another script or
+of an older build.
+
 ## Returns
 
 `PrecompiledScript`
@@ -163,6 +194,7 @@ for a precompiled script.
 | Field | Type | Holds |
 | --- | --- | --- |
 | `version` | `1` | The format version. |
+| `id` | `string` | The compilation that wrote the data. Its debug data has the same one. |
 | `abi` | `ScriptAbi` | The script's ABI. |
 | `runtimeBytecode` | `Hex` | The code that runs. |
 | `evmVersion` | `'paris' \| 'shanghai' \| 'cancun'` | The EVM target it was compiled for. |
@@ -197,6 +229,12 @@ const double = hydrate(
 
 - **Checked on entry.** The data is validated when you call `hydrate`, so data from another
   version of evs fails there, before any call is sent.
+- **Not hashed.** A client that only hydrates carries no hash, so `hydrate` cannot tell that
+  the bytecode is whole, or that it is the one the ABI was written with.
+- **Paired with its debug data.** The `id` of the debug data is compared with the data's when
+  the debug data loads.
+- **Reads data written by evs 0.5.0.** That data has no `id`. Its debug data is then matched on
+  the script's name alone, which tells another script apart but not another build.
 - **Lazy.** The loader runs on the first `explainRevert()` or `debug()`. A script that never
   reverts never fetches its debug data.
 - **Once.** Calls made while the data loads share one load, and later calls reuse the result.
@@ -210,10 +248,10 @@ Thrown by `hydrate`:
 
 | Error | When |
 | --- | --- |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `data` has no `version`: it is not the data of a precompiled script |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `data` is not the data of a precompiled script: a JSON string, a script, an object with no `version`. The message says what to pass |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `version` is not `1`: another version of evs wrote the data, so compile the script again |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `abi` is not an array |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `runtimeBytecode` is not `0x`-prefixed hex with an even number of digits |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `abi` is not an array that starts with the script's function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `runtimeBytecode` is empty, or is not `0x`-prefixed hex with an even number of digits |
 | `EvsCompileError` (`COMPILE_LIMIT`) | `runtimeBytecode` is longer than 65,535 bytes |
 | `EvsCompileError` (`EVM_VERSION`) | `evmVersion` is not `'paris'`, `'shanghai'` or `'cancun'` |
 
@@ -222,5 +260,6 @@ A problem with the debug data shows later, as a rejection of `explainRevert()` a
 | Error | When |
 | --- | --- |
 | `EvsError` (`DEBUG_DATA_MISSING`) | the script was hydrated without a `debug` loader |
-| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than the debug data, or to data of another version |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the loader resolved to something else than debug data, to malformed debug data, or to data of another version |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the debug data belongs to another script, or to another build of this one. The message names both |
 | the loader's own error | the loader rejected: a chunk that failed to download, for example |

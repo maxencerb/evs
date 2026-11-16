@@ -1,0 +1,23 @@
+{
+  "version": 1,
+  "id": "0xb3356908ed9344d8",
+  "abi": [
+    {
+      "type": "function",
+      "name": "double",
+      "stateMutability": "view",
+      "inputs": [{ "name": "arg0", "type": "uint256" }],
+      "outputs": [
+        {
+          "name": "result",
+          "type": "tuple",
+          "components": [{ "name": "doubled", "type": "uint256" }]
+        }
+      ]
+    },
+    { "type": "error", "name": "EvsInvalidCalldata", "inputs": [] },
+    { "type": "error", "name": "EvsDecodeError", "inputs": [{ "name": "site", "type": "uint256" }] }
+  ],
+  "runtimeBytecode": "0x3661000657005b60c06040526004361061007b575f3560e01c63eee97206146100275761007b565b6024361061007b576004356080526080518060025f1904106100625760020260a0526040516020015f5260a05160405152604051805f510390f35b6011610069565b634e487b7160e01b5f5260045260245ffd5b63f43fed5660e01b5f5260045ffd",
+  "evmVersion": "cancun"
+}
