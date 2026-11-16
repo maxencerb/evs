@@ -17,6 +17,8 @@ import { execFileSync } from 'node:child_process';
 import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 
+import { FoundryToolError, requireFoundryTool } from './foundry.ts';
+
 const CONTRACTS = [
   'Composite',
   'EvsCastReference',
@@ -197,6 +199,7 @@ async function writeIfChanged(path: string, content: string): Promise<boolean> {
 }
 
 async function main(): Promise<void> {
+  await requireFoundryTool('forge');
   process.stdout.write('codegen: forge build…\n');
   execFileSync('forge', ['build'], { cwd: contractsDir, stdio: 'inherit' });
 
@@ -238,4 +241,11 @@ async function main(): Promise<void> {
   );
 }
 
-await main();
+try {
+  await main();
+} catch (error) {
+  // no Foundry is what a fresh machine meets: one line that says what to install, no stack
+  if (!(error instanceof FoundryToolError)) throw error;
+  process.stderr.write(`codegen: ${error.message}\n`);
+  process.exitCode = 1;
+}

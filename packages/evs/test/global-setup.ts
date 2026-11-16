@@ -1,13 +1,17 @@
 /**
  * vitest globalSetup for the `integration` project.
  *
- * One anvil instance per vitest worker, started lazily by a prool `Pool` keyed on the worker's
+ * One anvil instance per vitest worker, started lazily and keyed on the worker's
  * `VITEST_POOL_ID`. The workers do not send their RPC traffic through this process: a small HTTP
  * registry answers `GET /<poolId>` with that worker's anvil URL (starting the instance on first
  * use), and the worker then talks to anvil directly (see `test/harness/anvil.ts`). The registry
  * binds an OS-assigned free port (or `EVS_ANVIL_PORT` when set) and hands it to the workers
  * through `provide('anvilRegistryPort')`, so overlapping integration runs (parallel worktrees,
  * agents) never fight over a fixed port.
+ *
+ * What the run needs is checked before anything starts: `anvil` on the `PATH` and the generated
+ * contract fixtures. A missing one is a single error with what to do, where the workers would
+ * otherwise each wait on the registry or fail on an import.
  *
  * Why not prool's proxy `Server` (`http://…/<poolId>` forwarding every request): its http-proxy
  * runs without an upstream agent, which makes it send `connection: close` to anvil, and anvil's
@@ -23,8 +27,11 @@
 
 import { createServer } from 'node:http';
 
-import { Instance, Pool } from 'prool';
 import type { TestProject } from 'vite-plus/test/node';
+
+import { requireFoundryTool } from '../../contracts/scripts/foundry.ts';
+import { spawnAnvil, type Anvil } from './harness/anvil-process.ts';
+import { requireContractFixtures } from './setup/contract-fixtures.ts';
 
 declare module 'vite-plus/test' {
   interface ProvidedContext {
@@ -39,30 +46,40 @@ function poolIdOf(url: string | undefined): number | null {
   return Number.isSafeInteger(id) && id > 0 ? id : null;
 }
 
-export default async function setup(project: TestProject): Promise<() => Promise<void>> {
-  const pool = Pool.define({
-    instance: Instance.anvil({
-      // PINNED to the IPv4 loopback: the registry hands out `http://<host>:<port>`, and prool's
-      // default host `localhost` also resolves to ::1, where anvil does not listen (an attempt
-      // there can even self-connect on a recycled ephemeral port and read its own request back).
-      host: '127.0.0.1',
-      chainId: 31337,
-      hardfork: 'Prague', // PINNED — anvil's default `latest` moves over time
-      gasLimit: 100_000_000, // headroom over the 30M default for stress tests
-    }),
-  });
+export default async function setup(
+  project: Pick<TestProject, 'provide'>,
+): Promise<() => Promise<void>> {
+  // anvil first: on a machine without Foundry the fixtures cannot be generated either, and
+  // "install Foundry" is the step that comes first
+  await requireFoundryTool('anvil');
+  requireContractFixtures();
+
+  /** Each worker's anvil, from the moment its start is requested. */
+  const anvils = new Map<number, Promise<Anvil>>();
+  const anvilOf = (id: number): Promise<Anvil> => {
+    // a worker's concurrent first lookups share one start
+    let anvil = anvils.get(id);
+    if (anvil === undefined) {
+      anvil = spawnAnvil({
+        args: {
+          chainId: 31337,
+          hardfork: 'Prague', // PINNED — anvil's default `latest` moves over time
+          gasLimit: 100_000_000, // headroom over the 30M default for stress tests
+        },
+      });
+      anvils.set(id, anvil);
+      // a failed start is forgotten, so the worker's next lookup starts again
+      anvil.catch(() => anvils.delete(id));
+    }
+    return anvil;
+  };
 
   /** `GET /<poolId>` → `{ url }` of that worker's anvil, started on first use. */
   const lookup = async (url: string | undefined): Promise<{ status: number; body: string }> => {
     const id = poolIdOf(url);
     if (id === null) return { status: 404, body: '' };
     try {
-      // a worker's concurrent first lookups share one start (Pool.start dedupes per key)
-      const instance = pool.get(id) ?? (await pool.start(id));
-      return {
-        status: 200,
-        body: JSON.stringify({ url: `http://${instance.host}:${instance.port}` }),
-      };
+      return { status: 200, body: JSON.stringify({ url: (await anvilOf(id)).url }) };
     } catch (error) {
       return { status: 500, body: String(error) };
     }
@@ -90,6 +107,13 @@ export default async function setup(project: TestProject): Promise<() => Promise
       server.close(() => resolve());
       server.closeAllConnections();
     });
-    await pool.destroyAll();
+    // the registry is closed, so no start is requested any more: wait for the ones in flight
+    // (each is bounded by its start timeout), then stop every anvil that came up
+    const started = await Promise.allSettled(anvils.values());
+    await Promise.all(
+      started.map(async (result) => {
+        if (result.status === 'fulfilled') await result.value.stop();
+      }),
+    );
   };
 }

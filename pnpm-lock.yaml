@@ -308,9 +308,6 @@ importers:
 
   examples/shared:
     dependencies:
-      prool:
-        specifier: catalog:testing
-        version: 0.2.16(debug@4.4.3(supports-color@10.2.2))
       viem:
         specifier: 'catalog:'
         version: 2.57.1(typescript@6.0.3)(zod@4.6.5)

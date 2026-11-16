@@ -1,8 +1,8 @@
 {
   // scripts/codegen.ts runs on Node (type stripping: `node scripts/codegen.ts`); this config only
   // exists so type-aware lint / `vp check` type-check it with Node's types instead of a bare
-  // default project.
+  // default project. allowImportingTsExtensions: Node resolves no `.js` specifier onto a `.ts` file.
   "extends": "../../tsconfig.base.json",
-  "compilerOptions": { "noEmit": true, "types": ["node"] },
+  "compilerOptions": { "noEmit": true, "allowImportingTsExtensions": true, "types": ["node"] },
   "include": ["scripts"]
 }
