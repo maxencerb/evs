@@ -27,6 +27,7 @@ import {
   type Scope,
   assertV0Type,
   assertSyncCallback,
+  readMember,
 } from './helpers.js';
 import { RecorderOps } from './ops.js';
 
@@ -84,13 +85,16 @@ export abstract class RecorderControl extends RecorderOps {
         }
       }
       ids = decl.params.map((p) => {
-        if (!Object.hasOwn(a, p.name)) {
+        // read as a struct member is read: through the prototype chain (an own `undefined` is
+        // there, and refused by the coercion as the value it is)
+        const value = readMember(a, p.name);
+        if (value === undefined && !Object.hasOwn(a, p.name)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
             `${what}: missing arg "${p.name}" for error "${decl.ir.name}" — every declared param is required`,
           );
         }
-        return this.coerceToId(a[p.name], p.type, `${what} arg "${p.name}"`);
+        return this.coerceToId(value, p.type, `${what} arg "${p.name}"`);
       });
     } else {
       // any bare (unnamed) param → ONE positional tuple

@@ -154,6 +154,10 @@ const pair = evscript({ name: 'pair', args: [t.uint256] }, (s, x) => {
   array `T[N]` takes exactly N elements.
 - **Complete values.** A struct literal names every member, and an array literal has no hole
   and no `undefined` element. Nothing is filled with zero.
+- **Members read as properties.** A member is read the way JavaScript reads `value.owner`, so a
+  class instance works, getters included: a Svelte `$state` class, a Lit element. A method of
+  `Object.prototype`, such as `toString`, is no member. A `Map` throws: its entries are not
+  properties.
 - **Allocation in loops.** A `string`, `bytes`, array or struct literal in a loop body allocates
   on every iteration and `compile` warns with `LOOP_ALLOCATION`. Create it before the loop.
 
@@ -167,7 +171,7 @@ Thrown while the callback records, at the offending line:
 | `EvsTypeError` (`TYPE_MISMATCH`) | `value` is the wrong kind of JavaScript value, such as a string for a `uint8` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | an `address`, `bytes` or `bytesN` string does not start with `0x` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a `T[N]` literal does not have exactly N elements |
-| `EvsTypeError` (`TYPE_MISMATCH`) | a struct literal has an unknown member, or no value for one |
+| `EvsTypeError` (`TYPE_MISMATCH`) | a struct literal has an unknown member, or no value for one, or is a `Map` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | an array literal has a hole or an `undefined` element |
 | `EvsTypeError` (`LITERAL_RANGE`) | an integer is out of range for `type`, or a `number` is not a safe integer |
 | `EvsTypeError` (`LITERAL_RANGE`) | a hex string is malformed or has the wrong byte length |

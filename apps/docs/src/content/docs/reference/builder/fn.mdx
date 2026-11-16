@@ -170,8 +170,9 @@ parameter's type. The result follows what the body returns:
 
 - **Type:** `string`
 
-A label for the function, shown in error messages. It must be an identifier: letters, digits and
-`_`, not starting with a digit.
+A name for the function, shown in error messages and in the [keys](/reference/diagnostics/#keys)
+of its statements. It must be an identifier: letters, digits and `_`, not starting with a digit.
+Each `s.fn` of a script has its own name: to run a function again, call the handle it returned.
 
 ```ts {5}
 import { evscript, t } from '@maxencerb/evs';
@@ -284,7 +285,7 @@ Thrown while the callback records, at the offending line:
 
 | Error | When |
 | --- | --- |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `name` is not an identifier, or `body` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `name` is not an identifier or another `s.fn` of the script has it, or `body` is not a function |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a parameter is not a type, or its name is invalid or used twice |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the body returns something that is not a handle, such as a literal |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `body` is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |

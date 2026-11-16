@@ -2771,7 +2771,7 @@ describe('checklist: tuple literals', () => {
     });
   });
 
-  test('members are read from own properties only (Object.prototype names zero-fill)', () => {
+  test('a member named like an Object.prototype member reads as absent (it zero-fills)', () => {
     const Odd = t.struct({
       toString: t.uint256,
       constructor: t.address,

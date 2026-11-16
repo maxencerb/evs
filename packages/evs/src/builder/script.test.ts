@@ -1036,7 +1036,9 @@ describe('Tuple: field names that collide with handle members', () => {
       expect(typeof r.at).toBe('function');
       expect(typeof r.expr).toBe('function');
       const own = Reflect.getPrototypeOf(r) ?? {};
-      expect(Object.getOwnPropertyNames(own)).toEqual(['b']);
+      // the field accessors are its enumerable keys (`eq` / `neq` beside them only refuse)
+      expect(Object.keys(own)).toEqual(['b']);
+      expect(['at', 'expr', '__proto__'].filter((name) => Object.hasOwn(own, name))).toEqual([]);
       return s.return({
         a: r.at(0).get(),
         e: r.at(1).get(),
