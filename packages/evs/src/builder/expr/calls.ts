@@ -8,6 +8,7 @@ import type { AbiFunction } from 'viem';
 
 import { toPlainAbiFunction } from '../../abi/artifact.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
+import { readMember } from '../../core/records.js';
 import { functionsByRef, signatureRefName, functionSignature } from '../../core/signature.js';
 import {
   type Expr,
@@ -46,7 +47,6 @@ import {
   normalizeAbiParam,
   assertLayout,
   assertTupleGates,
-  readMember,
 } from './helpers.js';
 
 type CallKind = 'static' | 'call' | 'simulate';

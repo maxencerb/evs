@@ -6,6 +6,7 @@
  * the IR schema names the if-statement branch field `then`. */
 
 import { EvsTypeError } from '../../core/errors.js';
+import { readMember } from '../../core/records.js';
 import {
   isEvsValueType,
   typesEqual,
@@ -27,7 +28,6 @@ import {
   type Scope,
   assertV0Type,
   assertSyncCallback,
-  readMember,
 } from './helpers.js';
 import { RecorderOps } from './ops.js';
 

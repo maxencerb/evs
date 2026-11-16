@@ -2524,7 +2524,7 @@ describe('regressions', () => {
     ]);
   });
 
-  test('struct tuple args coerce from OWN properties only (no prototype-chain reads)', () => {
+  test('struct tuple args read their members as JavaScript does, as the builder and viem do', () => {
     const tupleT = {
       type: 'tuple',
       components: [{ name: 'toString', type: 'uint256' }],
@@ -2538,12 +2538,50 @@ describe('regressions', () => {
     // own property named like an Object.prototype member works fine
     const ok = interpret(script, [{ toString: 7n }], deadChain);
     expect(retOf(ok).r).toEqual({ toString: 7n });
-    // inherited property must NOT be read: `{}` inherits Function toString, Object.create
-    // carries the value only on the prototype — both are missing-field errors
+    // a name found only on Object.prototype is no member: `{}` is missing the field
     expect(() => interpret(script, [{}], deadChain)).toThrowError(EvsTypeError);
-    expect(() =>
-      interpret(script, [Object.setPrototypeOf({}, { toString: 7n })], deadChain),
-    ).toThrowError(EvsTypeError);
+    // a prototype below Object.prototype is read, as `value.toString` reads it
+    const inherited = interpret(script, [Object.setPrototypeOf({}, { toString: 7n })], deadChain);
+    expect(retOf(inherited).r).toEqual({ toString: 7n });
+  });
+
+  test('a class instance with getters (a Svelte $state class) is a struct argument', () => {
+    const P = {
+      type: 'tuple',
+      components: [
+        { name: 'owner', type: 'address' },
+        { name: 'amount', type: 'uint256' },
+        { name: 'constructor', type: 'uint256' },
+      ],
+    } as const;
+    const script = ir({
+      name: 'p',
+      args: [{ name: 'p', type: P }],
+      values: [vi(P, 'p')],
+      returns: [{ name: 'r', type: P, value: 0 }],
+    });
+    class Params {
+      #owner = '0x00000000000000000000000000000000000000aa';
+      #amount = 5n;
+      get owner(): string {
+        return this.#owner;
+      }
+      get amount(): bigint {
+        return this.#amount;
+      }
+    }
+    const params = new Params();
+    expect(Object.keys(params)).toEqual([]);
+    // the class (a prototype's `constructor`) is no member: the field is missing
+    expect(() => interpret(script, [params], deadChain)).toThrowError(
+      /argument "p" \(.*\)\.constructor: /,
+    );
+    const withOwn = Object.assign(params, { constructor: 3n });
+    expect(retOf(interpret(script, [withOwn], deadChain)).r).toEqual({
+      owner: '0x00000000000000000000000000000000000000AA',
+      amount: 5n,
+      constructor: 3n,
+    });
   });
 });
 

@@ -14,6 +14,7 @@ import {
   u256ToBytes as wordToBytes,
 } from '../../core/bytes.js';
 import { EvsTypeError, EvsInternalError } from '../../core/errors.js';
+import { readMember } from '../../core/records.js';
 import {
   type EvsType,
   stringifyType,
@@ -95,8 +96,8 @@ function coerceTuple(type: TupleType, value: unknown, where: string): Value {
       fields: comps.map((c) =>
         coerceValue(
           abiParamToType(c),
-          // own properties only (Object.entries semantics) — never the prototype chain
-          Object.hasOwn(value, c.name) ? (Reflect.get(value, c.name) as unknown) : undefined,
+          // as JavaScript reads `value[name]`, as the builder and viem's encoder do
+          readMember(value, c.name),
           `${where}.${c.name}`,
         ),
       ),
