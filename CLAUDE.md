@@ -92,6 +92,8 @@ codegen/ compile.ts viem.ts index.ts`), unit tests `src/**/*.test.ts`, type test
   and the two packages, under each type checker. It installs the extra checkers (the `checkers`
   catalog: `typescript-5.5` and `typescript-7` are aliases, so call them by path, never through
   `.bin/tsc`). No test runner there: assertions are `@ts-expect-error` and `expectType`.
+  `node10/` with `tsconfig.node10.json` is a second project: the two entries under TypeScript's
+  legacy `moduleResolution: "node"`, which only TypeScript 5.5 still runs.
 - `packages/contracts` — Foundry package (solc 0.8.30 exact, optimizer off). `forge build`,
   `forge test`; `vp run codegen` emits `as const` TS artifacts to
   `packages/evs/test/generated/` (gitignored; the barrel uses `.ts` specifiers so the examples

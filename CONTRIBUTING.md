@@ -108,7 +108,9 @@ Contracts: `cd packages/contracts && forge build / forge test / vp run codegen`.
 
 `packages/evs` builds with `vp pack` (tsdown, the `pack` block in its `vite.config.ts`): entries
 `src/index.ts` and `src/runtime.ts` (the `.` and `./runtime` exports), unbundled ESM (one `dist/` module per reachable source file, `.js` / `.d.ts`
-names so `exports` / `main` / `types` are unchanged) and JS source maps. The maps embed the
+names so `exports` / `main` / `types` are unchanged) and JS source maps. `typesVersions` in the
+manifest repeats the `./runtime` entry for TypeScript's legacy `moduleResolution: "node"`, which
+does not read `exports` (`packages/type-tests/tsconfig.node10.json` checks both entries under it). The maps embed the
 TypeScript sources (`sourcesContent`, pinned with `outputOptions.sourcemapExcludeSources: false`)
 so stack traces and debuggers resolve to the original code, which is why `src/` is **not**
 shipped (`files` is `dist` and the changelog). There are no declaration maps: go-to-definition lands on the
