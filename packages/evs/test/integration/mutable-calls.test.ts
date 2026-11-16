@@ -17,7 +17,7 @@
 import { encodeFunctionData, getAddress, parseEther } from 'viem';
 import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
-import { evscript, t } from '../../src/index.js';
+import { evscript, t, type Expr } from '../../src/index.js';
 import { MockQuoter, MockVault } from '../generated/index.js';
 import { publicClient } from '../harness/anvil.js';
 import { callExpectRevert, deploy } from './helpers.js';
@@ -88,6 +88,56 @@ describe('s.call commits the write within the eth_call (mutation observed)', () 
       functionName: 'totalShares',
     });
     expect(onChain).toBe(0n);
+  });
+});
+
+describe('an ABI entry without stateMutability', () => {
+  // MockVault's `deposit` and `totalShares` as solc wrote ABI entries before 0.4.16: `constant`
+  // and `payable` flags, no `stateMutability`. Not an `Abi`, so the results are untyped.
+  const legacyVaultAbi = [
+    {
+      constant: false,
+      inputs: [{ name: 'amount', type: 'uint256' }],
+      name: 'deposit',
+      outputs: [{ name: 'shares', type: 'uint256' }],
+      payable: false,
+      type: 'function',
+    },
+    {
+      constant: true,
+      inputs: [],
+      name: 'totalShares',
+      outputs: [{ name: '', type: 'uint256' }],
+      payable: false,
+      type: 'function',
+    },
+  ] as const;
+
+  test('constant: false is called and constant: true is read, as with the modern entries', async () => {
+    const legacy = evscript(
+      { name: 'callThenRead', args: [t.address, t.uint256] },
+      (s, v, amount) => {
+        const shares = s.call({
+          address: v,
+          abi: legacyVaultAbi,
+          functionName: 'deposit',
+          args: [amount],
+        }) as Expr<'uint256'>;
+        const total = s.read({
+          address: v,
+          abi: legacyVaultAbi,
+          functionName: 'totalShares',
+        }) as Expr<'uint256'>;
+        return s.return({ shares, total });
+      },
+    ).compile();
+    expect(legacy.runtimeBytecode).toBe(compiledCallThenRead.runtimeBytecode);
+    const out = await publicClient.readContract({
+      ...legacy.toViem(),
+      functionName: 'callThenRead',
+      args: [vault, 100n],
+    });
+    expect(out).toStrictEqual({ shares: 200n, total: 200n });
   });
 });
 

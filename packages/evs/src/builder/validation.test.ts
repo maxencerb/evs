@@ -3868,7 +3868,9 @@ describe('checklist: member names are unique within a tuple', () => {
       expectEvs(
         () =>
           rec((s, a) =>
-            s.return({ p: s.read({ address: a.who, abi, functionName: 'get', struct } as never) }),
+            s.return({
+              p: s.read({ address: a.who, abi, functionName: 'get', struct } as never) as never,
+            }),
           ),
         EvsTypeError,
         'ABI_SHAPE',
@@ -3903,7 +3905,12 @@ describe('checklist: member names are unique within a tuple', () => {
       () =>
         rec((s, a) =>
           s.return({
-            r: s.read({ address: a.who, abi, functionName: 'put', args: [{ a: a.x }] } as never),
+            r: s.read({
+              address: a.who,
+              abi,
+              functionName: 'put',
+              args: [{ a: a.x }],
+            } as never) as never,
           }),
         ),
       EvsTypeError,
