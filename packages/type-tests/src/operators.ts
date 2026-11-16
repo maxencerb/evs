@@ -205,6 +205,45 @@ export function scale(s: ScriptBuilder, x: IntoExpr<'uint256'>, by: Expr<'uint25
 export const sum = <n extends NumericType>(s: ScriptBuilder, a: Expr<n>, b: Expr<n>): Expr<n> =>
   s.add(a, b);
 
+/** A generic helper forwards an `IntoExpr` operand of its type parameter next to an `Expr`, on
+ *  either side, as the method form does; next to a literal it is refused, as for a concrete
+ *  type. */
+export function isAbove<n extends NumericType>(
+  s: ScriptBuilder,
+  x: Expr<n>,
+  threshold: IntoExpr<n>,
+): Expr<'bool'> {
+  return s.gt(x, threshold);
+}
+export function offset<n extends NumericType>(
+  s: ScriptBuilder,
+  x: Expr<n>,
+  by: IntoExpr<n>,
+): Expr<n> {
+  return s.add(x, by);
+}
+export function isBelow<n extends NumericType>(
+  s: ScriptBuilder,
+  limit: IntoExpr<n>,
+  x: Expr<n>,
+): Expr<'bool'> {
+  return s.gt(limit, x);
+}
+export function twice<n extends NumericType>(s: ScriptBuilder, x: IntoExpr<n>) {
+  // @ts-expect-error -- `x` may be a literal, and then nothing types the product
+  return s.mul(x, 2n);
+}
+export const generic = evscript(
+  { name: 'generic', args: [t.uint256, t.int24] },
+  (s, amount, tick) => {
+    const above = isAbove(s, amount, 10n);
+    const shifted = offset(s, tick, -60);
+    const below = isBelow(s, tick, tick);
+    expectType<Same<typeof shifted, Expr<'int24'>>>();
+    return s.return({ above, shifted, below });
+  },
+);
+
 /** The type expected of a result never types an operand: the literal branch stays a uint8. */
 export const contextual: readonly (() => EvsScript)[] = [
   () =>

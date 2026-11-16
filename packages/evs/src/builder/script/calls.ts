@@ -501,16 +501,23 @@ type TypedResultRequiresAbiAsConst =
 export type WideSubcallResult = TypedResultRequiresAbiAsConst;
 
 /** The positional output handles of the function `name` selects; for an overloaded name, of the
- *  overload `args` resolves to ({@link ResolveOverload}). Without a resolved entry (a widened
- *  ABI), the already-unwrapped {@link WideSubcallResult} ({@link UnwrapSingle} passes it through). */
+ *  overload `args` resolves to ({@link ResolveOverload}). Without a resolved entry: on a widened
+ *  ABI, the already-unwrapped {@link WideSubcallResult} ({@link UnwrapSingle} passes it through);
+ *  on a literal ABI the call is already an error (a name not in the verb's bucket, args that fit
+ *  no overload), and `never` keeps that error the only one, where the widened ABI's result would
+ *  add one at each use naming a missing `as const`. */
 export type SubcallOutputs<
   abi extends Abi | readonly unknown[],
   name extends string,
   mut extends AbiStateMutability = ViewMutability,
   args = readonly unknown[],
 > = [ResolveOverload<abi, name, mut, args>] extends [never]
-  ? WideSubcallResult
+  ? UnresolvedResult<abi, WideSubcallResult>
   : OutputsOf<ResolveOverload<abi, name, mut, args>>;
+
+/** What a call verb returns when the call resolves to no function: `wide` for a widened ABI,
+ *  `never` for a literal one (see {@link SubcallOutputs}). */
+type UnresolvedResult<abi, wide> = IsWideAbi<abi> extends true ? wide : never;
 
 // outputs []  → void;  [one] → Expr<one> | Tuple<one>;  [many] → readonly tuple of handles (viem)
 export type UnwrapSingle<outs> = outs extends readonly []
@@ -536,7 +543,7 @@ export type SubcallStruct<
   mut extends AbiStateMutability = ViewMutability,
   args = readonly unknown[],
 > = [ResolveOverload<abi, name, mut, args>] extends [never]
-  ? Tuple<TupleType>
+  ? UnresolvedResult<abi, Tuple<TupleType>>
   : StructOf<ResolveOverload<abi, name, mut, args>>;
 
 /**
@@ -649,9 +656,10 @@ export interface SubcallParams<
   args = SubcallInputs<abi, name, mut>,
 > extends SubcallBaseParams<abi, name, mut, args> {
   // opt-in (issue #5 ask #2): decode multiple named outputs into ONE named Tuple handle instead of
-  // the default positional `[many]` array. See {@link SubcallStruct}; a verb accepts `true` only
-  // when the function's outputs are all named ({@link StructFlag}).
-  readonly struct?: boolean;
+  // the default positional `[many]` array. See {@link SubcallStruct}. `true` only when the
+  // function's outputs are all named ({@link StructFlag}): the type every verb takes, so a value
+  // of this type is a parameter object a verb accepts.
+  readonly struct?: false | StructFlag<abi, name, mut, args>;
 }
 
 // ---------------------------------------------------------------------------
@@ -665,8 +673,8 @@ export interface SubcallParams<
  * The per-call params with `args` inferred (`const`) so an overloaded name resolves to one overload
  * ({@link ResolveOverload}); args fitting several overloads fail to compile ({@link OverloadGuard}),
  * mirroring the recorder's ambiguous-overload error. `args` is required when the function takes
- * arguments ({@link ArgsKey}). `struct` is a plain boolean here: the overloads of a verb each
- * type their own ({@link SubcallVerbOf}).
+ * arguments ({@link ArgsKey}). The last overload of every verb takes exactly this type, so a
+ * wrapper typed with it, generic or not, passes its parameter object on ({@link SubcallVerbOf}).
  */
 export type ResolvedSubcallParams<
   abi extends Abi | readonly unknown[],
@@ -701,6 +709,11 @@ export type Tried<tried extends boolean, v> = tried extends true
  * never instantiates the two after it, which are the only ones to evaluate {@link StructFlag}
  * (measurably cheaper to type-check on a large ABI). The first two exclude each other (`struct`
  * absent or `false`, against `true`), so their order decides nothing else.
+ *
+ * The last one takes {@link ResolvedSubcallParams} itself, not a structural copy of it: from a
+ * value of that type (a wrapper's parameter) the checker then infers `args` through the alias's
+ * own arguments, where a copy has it infer `args & OverloadGuard<…>` and wrap it a second time.
+ * Being last, it is also the one `Parameters<ScriptBuilder['read']>` reads.
  */
 export interface SubcallVerbOf<mut extends AbiStateMutability, tried extends boolean> {
   <
@@ -719,15 +732,14 @@ export interface SubcallVerbOf<mut extends AbiStateMutability, tried extends boo
       readonly struct: StructFlag<abi, name, mut, args>;
     },
   ): Tried<tried, SubcallStruct<abi, name, mut, args>>;
-  // a `struct` the types cannot see through (a `boolean`): either result
+  // a `struct` the types cannot see through (a `boolean`), or a parameter object typed with the
+  // exported param types: either result
   <
     const abi extends Abi | readonly unknown[],
     name extends SubcallFunctionName<abi, mut>,
     const args extends SubcallInputs<abi, name, mut> = SubcallInputs<abi, name, mut>,
   >(
-    p: VerbParams<abi, name, mut, args> & {
-      readonly struct?: false | StructFlag<abi, name, mut, args>;
-    },
+    p: ResolvedSubcallParams<abi, name, mut, args>,
   ): Tried<
     tried,
     SubcallStruct<abi, name, mut, args> | UnwrapSingle<SubcallOutputs<abi, name, mut, args>>
@@ -762,13 +774,16 @@ export type TryWriteVerb = TrySubcallVerb<WriteMutability>;
  * zeroed values). Not combinable with `struct: true` — declare one `t.struct` type instead.
  * `args` is the inferred argument tuple, as in {@link ResolvedSubcallParams}: the overload it
  * resolves to still decides the inputs and whether `value` is accepted ({@link CallValue}).
+ * It extends the keys without `struct` (its own `struct` is `false`): extending
+ * {@link SubcallParams} would have every `s.call` evaluate {@link StructFlag} for a key it then
+ * replaces.
  */
 export interface RevertReturnsParams<
   abi extends Abi | readonly unknown[],
   name extends SubcallFunctionName<abi, WriteMutability>,
   rr extends readonly EvsType[],
   args = SubcallInputs<abi, name, WriteMutability>,
-> extends SubcallParams<abi, name, WriteMutability, args> {
+> extends SubcallBaseParams<abi, name, WriteMutability, args> {
   readonly revertReturns: rr;
   readonly struct?: false;
 }

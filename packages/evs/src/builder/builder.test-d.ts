@@ -8,7 +8,15 @@
 import type { Abi, ContractFunctionArgs, ReadContractReturnType } from 'viem';
 import { expectTypeOf, test } from 'vite-plus/test';
 
-import { namedArg, t, type ArgSpec, type Expr, type TupleType } from '../core/types.js';
+import {
+  namedArg,
+  t,
+  type ArgSpec,
+  type ArrayElemOf,
+  type ArrayType,
+  type Expr,
+  type TupleType,
+} from '../core/types.js';
 import type { TUPLE_HANDLE_MEMBERS } from './expr/handles.js';
 import {
   evscript,
@@ -659,6 +667,14 @@ test('Cell / MutArray / env / for typing', () => {
       expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
       expectTypeOf(loop).toEqualTypeOf<LoopCtl>();
     });
+    s.for({ type: undefined, from: 0n, until: n }, (i) => {
+      expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
+    });
+    const u8 = s.lit(t.uint8, 3);
+    // @ts-expect-error — a type-less range counts in uint256: a uint8 bound is refused
+    s.for({ from: 0n, until: u8 }, () => {});
+    // @ts-expect-error — nor does an annotated counter give the range its type
+    s.for({ from: 0n, until: 3n }, (_i: Expr<'uint8'>) => {});
 
     s.while(
       () => c.get().lt(5n),
@@ -759,6 +775,14 @@ test('s.forEach: element/index/loop typing over word, nested, and tuple[] arrays
         expectTypeOf(row).not.toHaveProperty('token'); // an Expr, not a Tuple: no named fields
         expectTypeOf(i).toEqualTypeOf<Expr<'uint256'>>();
       });
+
+      // a generic helper over a word array keeps the element's type
+      const firstOf = <a extends ArrayType>(arr: Expr<a>) => {
+        s.forEach(arr, (elem) => {
+          expectTypeOf(elem).toEqualTypeOf<Expr<ArrayElemOf<a>>>();
+        });
+      };
+      firstOf(addrs);
 
       const n = s.lit(t.uint256, 1n);
       // @ts-expect-error — a non-array Expr is not iterable
