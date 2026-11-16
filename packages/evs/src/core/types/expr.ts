@@ -22,6 +22,7 @@ import type {
   BytesNOfUint,
   UintOfInt,
   IntOfUint,
+  OuterArraySize,
 } from './vocabulary.js';
 
 // ---------------------------------------------------------------------------
@@ -80,9 +81,10 @@ export interface Expr<t extends EvsType = EvsType> {
   lte(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
   gte(this: Expr<t & OrderedType>, rhs: IntoExpr<t>): Expr<'bool'>;
   // eq/neq: word equality, or HASH equality on memrefs — string/bytes byte-for-byte, arrays and
-  // tuples element-wise via their standard ABI encoding (lowered to keccak256(a) == keccak256(b))
-  eq(rhs: IntoExpr<t>): Expr<'bool'>;
-  neq(rhs: IntoExpr<t>): Expr<'bool'>;
+  // tuples element-wise via their standard ABI encoding (lowered to keccak256(a) == keccak256(b));
+  // a memref also takes what `s.eq` takes there (see {@link EqOperands})
+  eq(rhs: IntoExpr<t> | EqOperand<t>): Expr<'bool'>;
+  neq(rhs: IntoExpr<t> | EqOperand<t>): Expr<'bool'>;
 
   // bool logic — eager, NOT short-circuiting (use s.if for conditional execution)
   and(this: Expr<'bool'>, rhs: IntoExpr<'bool'>): Expr<'bool'>;
@@ -149,6 +151,18 @@ export interface Expr<t extends EvsType = EvsType> {
   at(this: Expr<t & ArrayType>, i: IntoExpr<'uint256'>): Expr<ArrayElemOf<t>>;
   // bounds-checked → Panic 0x32; tuple-element arrays use the composite `Tuple`/array handles
 }
+
+/**
+ * What `x.eq(v)` / `x.neq(v)` take beyond {@link IntoExpr}: the members of this interface, which
+ * the builder fills (`builder/script/handles.ts`: a `Tuple` / `MutArray` handle and a staged
+ * literal of a memref type), since `core/` imports nothing from the builder. One signature, so a
+ * word keeps its one error, and no overload to resolve on every `eq`.
+ */
+// oxlint-disable-next-line typescript/no-unused-vars -- filled by a declaration merge, which needs the parameter
+export interface EqOperands<t extends EvsType> {}
+
+/** The union of the {@link EqOperands} members for `t` (`never` while nothing fills it). */
+export type EqOperand<t extends EvsType> = EqOperands<t>[keyof EqOperands<t>];
 
 // ---------------------------------------------------------------------------
 // NumericReceiver / AsIntReceiver — the `this` types of the numeric conversions and asInt
@@ -248,12 +262,15 @@ export type LitOf<t extends EvsType> = t extends NumericType
                   : never
                 : t extends `${infer e}[${number}]`
                   ? e extends StringType
-                    ? readonly (LitOf<e> | Expr<e>)[] // `T[N]` — N enforced at recording (below)
+                    ? SizedLiteral<LitOf<e> | Expr<e>, NoInfer<OuterArraySize<t>>> // `T[N]`
                     : never
                   : t extends `${string}[${string}]`
                     ? // a multi-level chain with a fixed OUTER suffix (`T[2][3]`, `T[][2]`): the
                       // element comes from forward parsing, behind `NoInfer` (see the note below)
-                      readonly (LitOf<NoInfer<ArrayElemOf<t>>> | Expr<NoInfer<ArrayElemOf<t>>>)[]
+                      SizedLiteral<
+                        LitOf<NoInfer<ArrayElemOf<t>>> | Expr<NoInfer<ArrayElemOf<t>>>,
+                        NoInfer<OuterArraySize<t>>
+                      >
                     : never;
 // Array literals — an element may be a host literal OR a staged `Expr` of the element type
 // (`[x, 1n]`): the recorder builds such a literal element-wise. The shape of this arm is
@@ -261,15 +278,39 @@ export type LitOf<t extends EvsType> = t extends NumericType
 // `t` BACKWARDS through `LitOf<t>` for every literal operand (`s.let(t.uint256, 0n)`,
 // `s.add(x, 1n)`, …); an `infer e extends StringType` placeholder or a `[${'' | 1 | … | 99}]` size
 // alphabet here made that inference ~15× slower (minutes per file). So the placeholders are
-// unconstrained (`e extends StringType` is re-checked as a plain conditional), and a fixed-size
-// `T[N]` literal is typed as `readonly LitOf<T>[]` (NOT an N-tuple — the exact length is enforced
-// at recording with `TYPE_MISMATCH`). `${infer e}` stops at the FIRST `[`, so the two template
+// unconstrained (`e extends StringType` is re-checked as a plain conditional), and the size of a
+// fixed-size `T[N]` literal is read by forward parsing ({@link OuterArraySize}, behind `NoInfer`)
+// into a {@link SizedLiteral}: N elements exactly, up to its bound, past which recording checks
+// the length (`TYPE_MISMATCH`). `${infer e}` stops at the FIRST `[`, so the two template
 // arms only cover chains whose outer suffix is `[]` (any depth) and single-level `T[N]`; a
 // multi-level chain whose OUTER suffix is fixed (`uint256[2][3]`, `uint256[][2]`, `bool[2][2]`)
 // gets its element from {@link ArrayElemOf} (forward parsing of the concrete `t`) wrapped in
 // `NoInfer`: a conditional in an inference target position would defeat the backward inference,
 // and `NoInfer` keeps the inference from entering it. Every array shape is thus element-checked
-// at the type level; lengths are validated exactly at recording.
+// at the type level; lengths are validated exactly at recording, and by the types up to 99.
+
+type Digit = '0' | '1' | '2' | '3' | '4' | '5' | '6' | '7' | '8' | '9';
+
+/**
+ * The literal of a fixed-size array whose outer size group is `size` (as written: `'3'`): a
+ * readonly tuple of exactly that many `e`s while the size has at most two digits (abitype's own
+ * bound on a fixed array, 99), so a literal of another length is a compile error; past it, and
+ * for a dynamic `''`, a readonly array, whose length recording checks (`TYPE_MISMATCH`). The
+ * bound keeps a large `T[N]` from building an N-element tuple type.
+ */
+export type SizedLiteral<e, size> = size extends Digit | `${Digit}${Digit}`
+  ? size extends `${infer n extends number}`
+    ? FixedLengthLiteral<e, n>
+    : readonly e[]
+  : readonly e[];
+
+/** A readonly tuple of exactly `n` `e`s (tail-recursive; abitype's `Tuple` builds its fixed-array
+ *  host type the same way). */
+export type FixedLengthLiteral<
+  e,
+  n extends number,
+  acc extends readonly e[] = readonly [],
+> = acc['length'] extends n ? acc : FixedLengthLiteral<e, n, readonly [e, ...acc]>;
 
 /**
  * Host literal of a tuple: delegated to abitype, which applies the exact named-vs-positional

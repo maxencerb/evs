@@ -15,7 +15,14 @@
 import type { Abi } from 'viem';
 import { beforeAll, describe, expect, test } from 'vite-plus/test';
 
-import { compile, evscript, t, type EvsType, type Expr } from '../../src/index.js';
+import {
+  compile,
+  evscript,
+  t,
+  type EvsType,
+  type Expr,
+  type PackedValue,
+} from '../../src/index.js';
 import { EvsReference } from '../generated/index.js';
 import { publicClient } from '../harness/anvil.js';
 import { deploy } from './helpers.js';
@@ -155,15 +162,17 @@ const CASES: readonly Case[] = [
 function buildScript(c: Case) {
   return evscript({ name: c.fn, args: c.args as [EvsType, ...EvsType[]] }, (s, ...rawArgs) => {
     const args = rawArgs as unknown as [Expr, ...Expr[]];
+    // the packed cases hold only packable types
+    const packed = rawArgs as unknown as [PackedValue, ...PackedValue[]];
     const r =
       c.op === 'encode'
         ? s.encode(...args)
         : c.op === 'encodePacked'
-          ? s.encodePacked(...args)
+          ? s.encodePacked(...packed)
           : c.op === 'keccak256'
             ? s.keccak256(...args)
             : c.op === 'keccakPacked'
-              ? s.keccak256(s.encodePacked(...args))
+              ? s.keccak256(s.encodePacked(...packed))
               : s.keccak256(s.encode(...args));
     return s.return({ r });
   });

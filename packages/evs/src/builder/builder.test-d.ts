@@ -678,11 +678,14 @@ test('composite s.let / s.lit: typed cells and literals of struct, tuple and tup
   const script = evscript({ name: 'composites', args: [t.uint256] }, (s, x) => {
     const cell = s.let(P, { a: 1n, b: ONE });
     expectTypeOf(cell).toEqualTypeOf<Cell<typeof P>>();
-    expectTypeOf(cell.get()).toEqualTypeOf<Expr<typeof P>>();
+    // a struct cell's snapshot is a Tuple handle, whose members read like any other's
+    expectTypeOf(cell.get()).toEqualTypeOf<Tuple<typeof P>>();
+    expectTypeOf(cell.get().a.get()).toEqualTypeOf<Expr<'uint256'>>();
     cell.set(s.tuple(P, { a: x }).expr());
     const list = s.let(t.array(P), [{ a: 2n, b: ONE }]);
     expectTypeOf(list.get().at(0n).a.get()).toEqualTypeOf<Expr<'uint256'>>();
     const pair = s.lit(t.tuple(t.uint256, t.bool), [1n, true]);
+    expectTypeOf(pair.at(1).get()).toEqualTypeOf<Expr<'uint256'> | Expr<'bool'>>();
     // @ts-expect-error — a struct literal member of the wrong kind
     s.let(P, { a: 'one' });
     // @ts-expect-error — a plain tuple has no length

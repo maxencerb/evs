@@ -193,7 +193,7 @@ describe('callbacks run once, synchronously', () => {
     const e = catchEvs(() => {
       script = evscript({ name: 'half', args: [t.bool] }, (s, flag) => {
         const c = s.let(t.uint256, 0n);
-        // oxlint-disable-next-line typescript/no-misused-promises -- the async branch is the seeded mistake
+        // @ts-expect-error -- the async branch is the seeded mistake, which the types refuse too
         s.if(flag, async () => {
           c.set(1n);
           await Promise.resolve();
@@ -218,6 +218,7 @@ describe('callbacks run once, synchronously', () => {
     expectEvs(
       () =>
         evscript({ name: 'lazy', args: [t.bool] }, (s, flag) => {
+          // @ts-expect-error -- a thenable result is refused by the types too
           s.if(flag, () => lazy);
           return s.return({ flag });
         }),
@@ -522,10 +523,9 @@ describe('a struct literal names every member', () => {
   test('a complete literal and a handle record as before', () => {
     const script = evscript({ name: 'complete', args: [t.address] }, (s, who) => {
       const handle = s.tuple(Pair, { token: who, fee: 3000 });
-      // the types of s.lit, s.let and Cell.set take plain literals only; the recorder takes more
-      const lit = s.lit(Outer, { id: 7n, inner: handle } as never);
-      const cell = s.let(Pair, { token: who, fee: 0 } as never);
-      cell.set(handle as never);
+      const lit = s.lit(Outer, { id: 7n, inner: handle });
+      const cell = s.let(Pair, { token: who, fee: 0 });
+      cell.set(handle);
       return s.return({ lit, cell: cell.get() });
     });
     expect(interpret(script, [ALICE], NO_CALLS).outcome).toMatchObject({

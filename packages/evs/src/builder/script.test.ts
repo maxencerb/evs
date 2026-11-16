@@ -1159,7 +1159,7 @@ describe('s.encode / s.encodePacked / s.keccak256', () => {
     ).toThrowError(/cannot be packed-encoded/);
     expect(() =>
       evscript({ name: 'bad4', args: [t.array(t.string)] }, (s, strs) =>
-        // string[] is a valid PackedValue at the type level; the record-time guard rejects it
+        // @ts-expect-error — a string[] is not a PackedValue (runtime rejection pinned)
         s.return({ x: s.encodePacked(strs) }),
       ),
     ).toThrowError(/cannot be packed-encoded/);

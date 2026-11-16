@@ -209,9 +209,9 @@ export abstract class RecorderOps extends RecorderEncode {
     return makeExpr(this.self, out);
   }
 
-  /** `bin` operand classification. Equality additionally accepts a bare Tuple/MutArray handle as
-   *  its memref (like `s.encode` / `s.return`); every other op keeps classify()'s "use .expr()"
-   *  steer for those handles. */
+  /** Operand classification. Equality and `s.select`'s branches additionally accept a bare
+   *  Tuple/MutArray handle as its memref (like `s.encode` / `s.return`); every other op keeps
+   *  classify()'s "use .expr()" steer for those handles. */
   private classifyOperand(v: unknown, what: string, acceptBareHandles: boolean): Operand {
     if (acceptBareHandles) {
       const bare = this.bareHandleId(v, what);
@@ -560,10 +560,13 @@ export abstract class RecorderOps extends RecorderEncode {
     return makeExpr(this.self, out);
   }
 
-  select(cond: unknown, a: unknown, b: unknown): Expr {
+  /** `s.select(cond, a, b)`. A branch may be a bare Tuple / MutArray handle (its memref), and a
+   *  struct result is a Tuple handle ({@link valueHandle}), so a selected struct is selected again
+   *  or read like any other. */
+  select(cond: unknown, a: unknown, b: unknown): Expr | object {
     this.assertOpen('s.select()');
-    const ca = this.classify(a, 's.select() first branch');
-    const cb = this.classify(b, 's.select() second branch');
+    const ca = this.classifyOperand(a, 's.select() first branch', true);
+    const cb = this.classifyOperand(b, 's.select() second branch', true);
     const ty = this.unifyOperandTypes(ca, cb, 's.select()', 'branch');
     // literal condition folds: both branches are already-computed values,
     // so picking one is exact — the chosen operand is aliased (or interned, for a literal).
@@ -580,15 +583,15 @@ export abstract class RecorderOps extends RecorderEncode {
       const chosen = condLit === 1n ? ca : cb;
       const dropped = condLit === 1n ? cb : ca;
       if (dropped.kind === 'raw') this.checkDroppedBranch(ty, dropped.value); // eager validation
-      if (chosen.kind === 'expr') return makeExpr(this.self, chosen.id);
-      return makeExpr(this.self, this.coerceToId(chosen.value, ty, 's.select() branch'));
+      if (chosen.kind === 'expr') return this.valueHandle(chosen.id, ty);
+      return this.valueHandle(this.coerceToId(chosen.value, ty, 's.select() branch'), ty);
     }
     const condId = cc.kind === 'expr' ? cc.id : this.coerceToId(cond, 'bool', 's.select()');
     const ia = ca.kind === 'expr' ? ca.id : this.coerceToId(ca.value, ty, 's.select() branch');
     const ib = cb.kind === 'expr' ? cb.id : this.coerceToId(cb.value, ty, 's.select() branch');
     const out = this.newValue(ty);
     this.appendStmt({ k: 'select', cond: condId, a: ia, b: ib, out });
-    return makeExpr(this.self, out);
+    return this.valueHandle(out, ty);
   }
 
   /** Validates the literal branch a folded condition drops, under exactly the rules the runtime

@@ -808,7 +808,7 @@ export abstract class RecorderCore {
 
   // -- values & state ---------------------------------------------------------------------
 
-  lit(type: unknown, value: unknown): Expr {
+  lit(type: unknown, value: unknown): Expr | object {
     this.assertOpen('s.lit()');
     assertValueType(type, 's.lit()');
     if (isWordType(type)) {
@@ -817,9 +817,10 @@ export abstract class RecorderCore {
     }
     // an array or struct literal takes the same route as a coerced one: composite elements (or
     // staged handles among the elements) and struct members build at record time; all-literal word
-    // arrays use the const path. A fixed-size type enforces its exact length either way.
+    // arrays use the const path. A fixed-size type enforces its exact length either way. A struct
+    // comes back as a Tuple handle, like every other struct value.
     if (isArrayValueType(type) || isTupleType(type)) {
-      return makeExpr(this.self, this.coerceToId(value, type, 's.lit()'));
+      return this.valueHandle(this.coerceToId(value, type, 's.lit()'), type);
     }
     return makeExpr(this.self, this.dataConst(type, value));
   }
@@ -838,6 +839,10 @@ export abstract class RecorderCore {
       assertValueType(a, 's.let()');
       throw new EvsTypeError('TYPE_MISMATCH', `s.let(type, init): init value is required`);
     }
+    // a bare Tuple / MutArray handle gives its type like the Expr of its memref: a struct read
+    // from a cell, a field or a call is a Tuple handle
+    const bare = this.bareHandleId(a, 's.let()');
+    if (bare !== null) return new CellImpl(this.self, this.makeCell(this.typeOfValue(bare), a));
     const c = this.classify(a, 's.let()');
     if (c.kind !== 'expr') {
       throw new EvsTypeError(
@@ -857,10 +862,12 @@ export abstract class RecorderCore {
     return cellId;
   }
 
-  cellGet(cellId: CellId, what: string): Expr {
+  /** `Cell.get()`: a snapshot, in the handle {@link valueHandle} gives its type (a struct cell
+   *  yields a Tuple handle). */
+  cellGet(cellId: CellId, what: string): Expr | object {
     this.assertOpen(what);
     this.checkCellVisible(cellId, what);
-    return makeExpr(this.self, this.cellGetId(cellId));
+    return this.valueHandle(this.cellGetId(cellId), this.typeOfCell(cellId));
   }
 
   protected cellGetId(cellId: CellId): ValueId {

@@ -33,7 +33,7 @@ const REFUSED: readonly (readonly [call: string, recording: RegExp])[] = [
   // handles that are not values
   ['s.eq(cell, 1n)', /a Cell is not an Expr/],
   ['s.eq(tup.a, 1n)', /a Field is not an Expr/],
-  ['s.select(flag, tup, tup)', /a Tuple is not an Expr/],
+  ['s.select(flag, tup.a, tup.a)', /a Field is not an Expr/],
   // two literals: nothing gives the operation a type
   ['s.add(1n, 2n)', /s\.add\(\): at least one operand must be an Expr/],
   ['s.and(true, false)', /s\.and\(\): at least one operand must be an Expr/],

@@ -22,7 +22,7 @@ import {
 } from '../../test/harness/differential.js';
 import { concatHex, word } from '../../test/harness/fixtures.js';
 import { evscript } from '../builder/script.js';
-import { t } from '../core/types.js';
+import { t, type LitOf } from '../core/types.js';
 
 const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 const Inner = t.struct({ a: t.uint256, label: t.string });
@@ -358,7 +358,9 @@ describe.each(EVM_VERSIONS)('composite zero values (issue #71) [%s]', (evmVersio
         ],
       },
     ] as const satisfies Abi;
-    const zeros40 = Array.from({ length: 40 }, () => 0n);
+    // a fixed `uint256[40]` literal is a 40-tuple to the types: this one is built at run time
+    // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- its length is 40
+    const zeros40 = Array.from({ length: 40 }, () => 0n) as unknown as LitOf<'uint256[40]'>;
     const sparse = Array.from({ length: 24 }, (_, i) =>
       i === 5 ? 2n ** 255n : i === 17 ? 9n : 0n,
     );
