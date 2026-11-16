@@ -53,14 +53,14 @@ try {
 | Code | Class | Thrown when |
 | --- | --- | --- |
 | `STAGING_MISUSE` | `EvsStagingError` | a handle is used as a JS value: `x + 1`, a template literal, `JSON.stringify(x)` |
-| `TYPE_MISMATCH` | `EvsTypeError` | an operand or argument has the wrong type, or an evs function receives a malformed input, such as an invalid IR that was [deserialized](/reference/utilities/serialize-ir/) or written by hand |
-| `LITERAL_RANGE` | `EvsTypeError` | a literal, or an `interpret()` argument, does not fit its type: out of range, not a safe integer, hex of the wrong length |
+| `TYPE_MISMATCH` | `EvsTypeError` | an operand or argument has the wrong type, or an evs function receives a malformed input, such as an invalid IR that was [deserialized](/reference/utilities/serialize-ir/) or written by hand. Also a struct or array literal with a member or element left out, and a callback that is [not synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |
+| `LITERAL_RANGE` | `EvsTypeError` | a literal, or an `interpret()` argument, does not fit its type: out of range, not a safe integer, hex of the wrong length. Also a literal [`s.for`](/reference/builder/for/#step-optional) step of `0` |
 | `CERTAIN_PANIC` | `EvsTypeError` | an operation on literals would always panic: an overflow, a division by zero, a conversion that does not fit, an array length of 2^32 or more |
 | `SCOPE_VIOLATION` | `EvsScopeError` | a value or cell is used after its `s.if` or loop block ended, an `s.fn` body uses an outer value, a `LoopCtl` is used outside its loop, or `s.return` is not at the top level |
 | `FOREIGN_HANDLE` | `EvsScopeError` | a handle comes from another script, or from a second copy of evs |
 | `RECORDING_CLOSED` | `EvsScopeError` | a builder method is called after `s.return` |
 | `UNSUPPORTED_V0` | `EvsTypeError`, `EvsCompileError` | a type nests arrays more than 4 levels deep or has a static size of 2^32 bytes or more, or blocks nest [more than 256 levels deep](/reference/builder/if/#nesting-limit). From `compile()`: its structs and arrays nest too deep for the EVM stack |
-| `ABI_SHAPE` | `EvsTypeError` | ABI material is malformed: an invalid or repeated name, an empty `s.return`, a `functionName` the ABI does not have, an ambiguous overload |
+| `ABI_SHAPE` | `EvsTypeError` | ABI material is malformed: an invalid or repeated name, an empty `s.return`, a `functionName` the ABI does not have, an ambiguous overload. From `compile()`: a script that uses `s.simulate` and whose name and arguments give the [reserved selector](/reference/compile/#errors) |
 | `ERROR_DECL` | `EvsTypeError` | an error declaration is invalid: a bad, reserved or duplicate name, a selector clash, a script named like one of its errors |
 | `ERROR_UNDECLARED` | `EvsTypeError` | `s.throw` gets an error that is not in the script's `errors` |
 | `COMPILE_LIMIT` | `EvsCompileError` | the runtime bytecode is over 24,576 bytes, or `interpret()` goes over `maxSteps` |

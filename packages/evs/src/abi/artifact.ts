@@ -582,11 +582,30 @@ function coerceHexLiteral(type: string, value: unknown, exactBytes: number | nul
   return `0x${body.toLowerCase()}`;
 }
 
+/** Never coerces an object to a string: its `toString` may be missing (a null-prototype object)
+ *  or throw, and the caller is already reporting the value as the wrong kind. */
 function describeValue(value: unknown): string {
   if (typeof value === 'bigint') return `${value}n`;
   if (typeof value === 'string') return JSON.stringify(value);
   if (Array.isArray(value)) return 'an array';
+  if (typeof value === 'function') return 'a function';
+  if (typeof value === 'object' && value !== null) return 'an object';
   return String(value);
+}
+
+/**
+ * What is wrong with the first element of the array literal `value` that has no value — a hole
+ * of a sparse array (`[a, , c]`, `new Array(n)`) or an `undefined` — as the end of a message that
+ * names the literal, or null when every element has one. The array methods skip holes, so a
+ * literal read with them would lose the element without a word.
+ */
+export function missingElement(value: readonly unknown[]): string | null {
+  for (let i = 0; i < value.length; i++) {
+    if (value[i] !== undefined) continue;
+    const problem = i in value ? 'is undefined' : 'is a hole (the array is sparse)';
+    return `[${i}]: the element ${problem} — an array literal gives every element a value`;
+  }
+  return null;
 }
 
 /** Numeric literal rules: safe-integer numbers or bigints, range-checked against N. */
@@ -705,6 +724,8 @@ export function encodeLiteralData(type: DynType | ArrayType, value: unknown): He
         `${type} literal must have exactly ${layout.length} element(s), got ${value.length}`,
       );
     }
+    const missing = missingElement(value);
+    if (missing !== null) throw new EvsTypeError('TYPE_MISMATCH', `${type} literal${missing}`);
     const elemAbi = layout.elem.abi;
     coerced = value.map((el, i) => coerceWordLiteral(elemAbi, el, `${type}[${i}]: `));
   } else {

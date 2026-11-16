@@ -24,7 +24,13 @@ import {
   describeCopiedHandle,
   isStagedHandle,
 } from './handles.js';
-import { allMembersNamed, describeHost, newScope, unsafeCast } from './helpers.js';
+import {
+  allMembersNamed,
+  assertSyncCallback,
+  describeHost,
+  newScope,
+  unsafeCast,
+} from './helpers.js';
 
 /** A plain (non-array) object that is not a staged handle: the literal of a struct. */
 function isStructLiteral(x: unknown): x is object {
@@ -118,6 +124,7 @@ export class Recorder extends RecorderCalls {
       // Tuple handle (named field access in the body); a composite ARRAY / scalar → an Expr.
       const handles = paramEntries.map((p) => this.valueHandle(p.value, p.type));
       const r: unknown = unsafeCast<(...a: unknown[]) => unknown>(bodyFn)(...handles);
+      assertSyncCallback(r, `s.fn("${name}") body`);
       // results must be validated while the fn stack is still active
       if (r === undefined) {
         shape = 'void';

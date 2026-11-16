@@ -146,6 +146,8 @@ const isNegative = evscript({ name: 'isNegative', args: [t.int256] }, (s, x) => 
   use [`s.while`](/reference/builder/while/).
 - **Recorded once.** Each callback is called one time,
   [while building](/guides/writing-scripts/). At run time only the chosen branch executes.
+- **Synchronous.** A branch is a plain function. An `async` function or a generator throws: see
+  [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Scoped values.** An `Expr` or a cell created in a branch cannot be used after it (below).
 - **No `s.return` inside.** [`s.return`](/reference/builder/return/) is called once, at the top
   level of the script.
@@ -198,6 +200,7 @@ Thrown while the callback records, at the offending line:
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `cond` is not a `bool` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `then` or `otherwise` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `then` or `otherwise` is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value or a cell created in a branch is used after it |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | `s.return` is called inside a branch |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | the branch would be nested more than 256 levels deep: see [nesting limit](#nesting-limit) |

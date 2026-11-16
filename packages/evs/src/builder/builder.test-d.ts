@@ -556,7 +556,7 @@ test('tryCall: success Expr<bool> + the same unwrapped value shape', () => {
   });
 });
 
-type WideResult = Expr | Tuple<TupleType> | readonly (Expr | Tuple<TupleType>)[] | undefined;
+type WideResult = Expr | Tuple<TupleType> | readonly (Expr | Tuple<TupleType>)[] | void;
 
 test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
   const wideAbi: Abi = [];
@@ -568,7 +568,7 @@ test('graceful widening: a non-const ABI degrades, never hard-errors', () => {
       args: [1n, 'two', false], // readonly unknown[]
     });
     // the output count is unknown, so the result is every shape the recorder can return:
-    // nothing (undefined), one handle, or an array of handles for several outputs
+    // nothing (void, as for a typed call), one handle, or an array of handles for several outputs
     expectTypeOf(res).toEqualTypeOf<WideResult>();
     const tre = s.tryRead({ address: target, abi: wideAbi, functionName: 'x' });
     expectTypeOf(tre.success).toEqualTypeOf<Expr<'bool'>>();
@@ -605,7 +605,7 @@ test('WideSubcallResult is the exported widened result, narrowed by a cast', () 
   const wideAbi: Abi = [];
   evscript({ name: 'wideCast', args: [t.address] }, (s, target) => {
     const slot0 = s.read({ address: target, abi: wideAbi, functionName: 'slot0' });
-    // @ts-expect-error — not iterable until narrowed (it may be one handle or undefined)
+    // @ts-expect-error — not iterable until narrowed (it may be one handle or nothing)
     const [bad] = slot0;
     void bad;
     // the documented migration: cast to the outputs the function has, then destructure

@@ -34,7 +34,7 @@ import {
 } from '../../core/types.js';
 import type { Expr } from '../../core/types/expr.js';
 import type { ScriptIr, PlainAbiError } from '../../ir/nodes.js';
-import { type RecErrorDecl, Recorder } from '../expr.js';
+import { assertSyncCallback, type RecErrorDecl, Recorder } from '../expr.js';
 import { type ScriptBuilder, makeBuilder } from './builder.js';
 import type { ReturnValue, IntoMember, Tuple, ScriptReturn } from './handles.js';
 
@@ -321,6 +321,7 @@ export function evscript<
   // oxlint-disable-next-line typescript/no-unsafe-type-assertion -- recorder is dynamically typed; ArgHandles is enforced at the public surface
   const handles = recorder.argHandles() as unknown as ArgHandles<NormalizeArgs<args>>;
   const callbackResult: unknown = body(s, ...handles);
+  assertSyncCallback(callbackResult, `evscript "${def.name}" body`);
   const { ir, returns } = recorder.finish(callbackResult);
   // the runtime ABI array is the encode/decode source of truth; the literal type mirrors it.
   // `ir.args` carries each arg's resolved name (user `namedArg` name or the `arg{i}` fallback), so

@@ -78,7 +78,7 @@ import {
   type ValueId,
 } from './nodes.js';
 import { isEvsIr, markEvsIr } from './nodes/origin.js';
-import { validateIr } from './validate.js';
+import { assertScriptIr, validateIr } from './validate.js';
 
 /**
  * Removes the statements of `ir` whose results nothing observable depends on (see the module
@@ -86,10 +86,14 @@ import { validateIr } from './validate.js';
  * dead, otherwise a frozen copy sharing every surviving statement object and every table.
  *
  * An IR evs recorded is taken as is. Any other IR (deserialized, written by hand) is validated
- * first, so an invalid one is a coded user error (`validateIr`) and not a crash inside the pass.
+ * first, so an invalid one is a coded user error (`validateIr`) and not a crash inside the pass;
+ * so is a value that is no IR at all, such as the script itself (`assertScriptIr`).
  */
 export function eliminateDeadCode(ir: ScriptIr): ScriptIr {
-  if (!isEvsIr(ir)) validateIr(ir);
+  if (!isEvsIr(ir)) {
+    assertScriptIr(ir, 'eliminateDeadCode: expected a ScriptIr');
+    validateIr(ir);
+  }
   return pruneDeadCode(ir);
 }
 

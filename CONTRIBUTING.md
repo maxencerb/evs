@@ -636,6 +636,13 @@ Releases: see [Releasing](#releasing) below.
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
   maps revert payloads back to the site (kind, detail and site id) that produced them.
+- **Recording never guesses.** Input the recorder cannot take as written is refused where it is
+  written, not recorded as something close: a callback that returns a promise or an iterator
+  (`assertSyncCallback`, on the result of every callback the builder runs: a new verb that takes
+  one must call it), a struct literal without a value for a member, an array literal with a hole
+  (`missingElement`: the array methods skip holes, so literals are read by index), an option
+  object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
+  input shape gets its check and a row in `builder/recording-guards.test.ts`.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
   `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
@@ -693,8 +700,10 @@ Releases: see [Releasing](#releasing) below.
   a mismatch (both also compile errors). The verbs' `args` type a struct (and each `tuple[]`
   element) as that same complete literal, `StructLiteral` (`builder/script/handles.ts`): every
   member present, each a constant, a handle or a nested literal, as the coercion (`buildTupleNew`)
-  takes it; only `s.tuple` inits (`TupleInit`) may omit members in the types (the coercion
-  zero-fills an omitted member anywhere). A struct literal fits only if every key `Object.keys`
+  takes it; only `s.tuple` inits (`TupleInit`) may omit members, in the types and in the coercion
+  alike (`buildTupleNew`'s `partial` option is `true` for the top level of an `s.tuple` init
+  and `false` for every literal, a nested member of that init included: a member without a value
+  is then refused, never zero-filled). A struct literal fits only if every key `Object.keys`
   lists (numeric ones too) names a member (positional: exact length), as the coercion rejects
   anything more; at the type level an optional extra key, an index signature or a positional
   literal of statically unknown length (optional elements, a plain `T[]`) is a maybe-fit. The one intended difference: the types compare a
@@ -706,6 +715,26 @@ Releases: see [Releasing](#releasing) below.
   and try verbs share one overload set per mutability bucket (`SubcallVerbOf<mut, tried>`, plus
   `CallVerbOf<tried>` for `revertReturns`); `Tried<tried, v>` is the only difference (the try
   flavour wraps the result as `{ success, value }`).
+- **What a call verb refuses at recording, its types refuse too** (`builder/script/calls.ts`;
+  `call-params.test-d.ts` and `call-params.test.ts` hold the same calls on each side). `args` is
+  required when the function takes arguments (`ArgsKey`): it stays optional when `readonly []`
+  is one of the tuples `args` accepts, so for an overloaded name with an overload that takes
+  none, and for a widened ABI. `struct: true` needs outputs that are all named (`StructFlag`,
+  whose refusal is an object type keyed by the message). The order of a verb's overloads is for
+  the type checker: the one without `struct` comes first, because a call it accepts never
+  instantiates the other two, the only ones that evaluate `StructFlag`. With that check on the
+  parameters every overload shares, a 309-entry ABI with 256 calls cost 52% more type
+  instantiations than without it; ordered this way, 10%, all of it from the calls that pass
+  `struct: true`. The result of a call on a widened ABI is one union, exported as
+  `WideSubcallResult` and declared under the name `TypedResultRequiresAbiAsConst`, the name a
+  compile error prints. It holds `void`, not `undefined`: a use then reports the type by its name
+  where `undefined` gave "possibly undefined" first.
+- **The mutability of an ABI entry is read in one place**, `stateMutabilityOf`
+  (`builder/expr/calls.ts`). An entry with no `stateMutability` (solc before 0.4.16) is read by
+  its `constant` and `payable` flags, as abitype's zod schema reads it: `constant: true` is
+  `view`, else `payable: true` is `payable`, else `nonpayable`. The types have no such rule:
+  abitype's `Abi` requires `stateMutability`, so an ABI with such an entry is a widened one
+  (any `functionName`, unchecked `args`, the untyped result), and the recorder decides.
 - **An operator has one operand type, inferred from one operand** (`builder/script/builder.ts`).
   `s.add(a, b)` and the other two-operand functions (`s.select`'s branches included) have two
   type parameters: `a` is inferred from the first operand when it is an `Expr`, `b` from the

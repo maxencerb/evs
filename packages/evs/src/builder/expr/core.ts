@@ -8,6 +8,7 @@ import {
   canonicalTypeSignature,
   encodeLiteralWord,
   encodeLiteralData,
+  missingElement,
 } from '../../abi/artifact.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError } from '../../core/errors.js';
 import {
@@ -65,6 +66,7 @@ import {
   canonicalHex,
   isCompositeElemArray,
   describeHost,
+  didYouMean,
   memberName,
   allMembersNamed,
   assertValueType,
@@ -83,6 +85,10 @@ export interface RecErrorDecl {
   readonly params: readonly { readonly name: string; readonly type: EvsType }[];
   readonly ir: PlainAbiError;
 }
+
+/** The rule a refused struct literal broke, and the way to leave members at zero on purpose. */
+const STRUCT_LITERAL_RULE =
+  'A struct literal names every member; to leave members at zero, build the struct with s.tuple(type, init)';
 
 /** The `Recorder` base layer (see `builder/expr.ts` for the layer chain). */
 export abstract class RecorderCore {
@@ -341,7 +347,7 @@ export abstract class RecorderCore {
       // an Expr of another evs copy: a word-type tag AND the handle methods (a struct literal
       // with a member named `type` has no methods, so it stays a raw literal)
       if (!Array.isArray(v)) {
-        const { type: tag, eq } = v as { type?: unknown; eq?: unknown };
+        const { type: tag, eq } = this.handleProbe(v, what);
         if (typeof tag === 'string' && isWordType(tag) && typeof eq === 'function') {
           throw new EvsScopeError(
             'FOREIGN_HANDLE',
@@ -351,6 +357,24 @@ export abstract class RecorderCore {
       }
     }
     return { kind: 'raw', value: v };
+  }
+
+  /** The `type` and `eq` of an object that is no handle of this copy of evs, which tell an Expr of
+   *  another copy from a literal. An object that inherits from a handle without being one (a
+   *  `Proxy` around it, `Object.create(handle)`) runs the handle's own `type` getter, which refuses
+   *  a receiver it does not know: that is reported as the operand it is, not as a `.type` read the
+   *  user never wrote. */
+  private handleProbe(v: object, what: string): { type?: unknown; eq?: unknown } {
+    try {
+      const { type, eq } = v as { type?: unknown; eq?: unknown };
+      return { type, eq };
+    } catch (e) {
+      if (!(e instanceof EvsTypeError)) throw e;
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: this object stands in for an evs handle without being one (a Proxy around a handle, as a reactive store makes, or an object created from one) — pass the handle itself`,
+      );
+    }
   }
 
   /** Scope rule: a value is usable iff its defining scope is on the stack. */
@@ -535,6 +559,9 @@ export abstract class RecorderCore {
     if (value.length > MAX_FIXED_LENGTH) {
       this.certainPanic(what, `literal length ${value.length} is ≥ 2^32`, 0x41);
     }
+    // before anything is recorded: an element left out would keep the zero `arrnew` gives it
+    const missing = missingElement(value);
+    if (missing !== null) throw new EvsTypeError('TYPE_MISMATCH', `${what}${missing}`);
     const lenId = this.coerceToId(value.length, 'uint256', `${what} length`);
     const arrId = this.newValue(type, `${canonicalTypeSignature(type)} literal`);
     this.appendStmt({
@@ -544,11 +571,12 @@ export abstract class RecorderCore {
       ...(fixed === null ? {} : { fixed }),
       out: arrId,
     });
-    value.forEach((el, i) => {
-      const valId = this.coerceToId(el, elem, `${what}[${i}]`);
+    // by index: `forEach` skips the holes of a sparse array, which {@link missingElement} refused
+    for (let i = 0; i < value.length; i++) {
+      const valId = this.coerceToId(value[i], elem, `${what}[${i}]`);
       const iId = this.coerceToId(i, 'uint256', `${what}[${i}] index`);
       this.appendStmt({ k: 'arrset', arr: arrId, i: iId, value: valId });
-    });
+    }
     return arrId;
   }
 
@@ -577,7 +605,9 @@ export abstract class RecorderCore {
     }
     // a plain object/array literal → build the tuple from its members (buildTupleNew rejects
     // the remaining handles: Cell, Field, MutArray).
-    return this.buildTupleNew(type, v, what, `${canonicalTypeSignature(type)} literal`);
+    return this.buildTupleNew(type, v, what, `${canonicalTypeSignature(type)} literal`, {
+      partial: false,
+    });
   }
 
   /** The ValueId behind an Expr / Tuple / MutArray handle, after the owner check (handles never
@@ -659,29 +689,39 @@ export abstract class RecorderCore {
    *  returning the new tuple ValueId. The literal's shape follows abitype's rule
    *  ({@link allMembersNamed}): a record keyed by member name when every member is named, else a
    *  positional array; a key that names no member, or an element past the last member, is
-   *  rejected. Members are read from OWN properties only. An omitted or literal-zero WORD member
-   *  is left to the zero-fill (no MSTORE); an omitted memref member gets its typed zero from
-   *  codegen (`lowerTupleNew`). `debugName` is the builder origin that `LOOP_ALLOCATION` and
-   *  the source map's site details quote: `s.tuple(<members>)` for an explicit `s.tuple`,
-   *  `<type> literal` for a coerced struct literal (a call arg, `s.lit`, a member, …), as for an
-   *  array literal. */
+   *  rejected. Members are read from OWN properties only.
+   *
+   *  `partial` says what a member without a value means. `true` is `s.tuple(type, init?)` alone,
+   *  whose documented `init` is partial: an absent `init`, a member left out and a member set to
+   *  `undefined` start at zero. `false` is a struct LITERAL, in every position that coerces one (a
+   *  call arg, `s.lit`, `s.let`, `Cell.set`, `Field.set`, an array element, an `s.fn` arg, an
+   *  `s.throw` arg, a nested member — of an `s.tuple` init too): it names every member with a
+   *  value, as its type (`StructLiteral`) and overload resolution (`argFits`) require, so a missing
+   *  one is an error here and not a zero sent to a contract.
+   *
+   *  A literal-zero WORD member is left to the zero-fill (no MSTORE); an omitted memref member
+   *  gets its typed zero from codegen (`lowerTupleNew`). `debugName` is the builder origin that
+   *  `LOOP_ALLOCATION` and the source map's site details quote: `s.tuple(<members>)` for an
+   *  explicit `s.tuple`, `<type> literal` for a coerced struct literal, as for an array literal. */
   protected buildTupleNew(
     type: TupleType,
     init: unknown,
     what: string,
     debugName: string,
+    { partial }: { readonly partial: boolean },
   ): ValueId {
     this.assertNotHandle(init, type, what);
     const named = allMembersNamed(type);
     const n = type.components.length;
+    const names = type.components.map((c, i) => memberName(c, i));
     let lookup: (comp: NamedType, index: number) => unknown;
-    if (init === undefined) {
+    if (init === undefined && partial) {
       lookup = () => undefined;
     } else if (Array.isArray(init)) {
       if (named) {
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: this struct expects a name-keyed init record, not a positional array`,
+          `${what}: this struct expects a name-keyed ${partial ? 'init record' : `record ({ ${names.join(', ')} })`}, not a positional array`,
         );
       }
       if (init.length > n) {
@@ -694,37 +734,54 @@ export abstract class RecorderCore {
     } else if (typeof init === 'object' && init !== null) {
       if (!named) {
         // a tuple with any unnamed member is positional, whatever its other members are called
-        const members = type.components.map((c, i) => memberName(c, i)).join(', ');
         throw new EvsTypeError(
           'TYPE_MISMATCH',
-          `${what}: a tuple with an unnamed member takes a positional array of its ${n} member(s) (${members}), not a record — abitype/viem's rule`,
+          `${what}: a tuple with an unnamed member takes a positional array of its ${n} member(s) (${names.join(', ')}), not a record — abitype/viem's rule`,
         );
       }
-      const known = new Set(type.components.map((c) => c.name));
       for (const key of Object.keys(init)) {
-        if (!known.has(key)) {
+        if (!names.includes(key)) {
           throw new EvsTypeError(
             'TYPE_MISMATCH',
-            `${what}: unknown member ${JSON.stringify(key)} (expected: ${[...known].join(', ')})`,
+            `${what}: unknown member ${JSON.stringify(key)}${didYouMean(key, names)} (expected: ${names.join(', ')})`,
           );
         }
       }
       // own properties only: an omitted member named like an Object.prototype method
-      // (`toString`, `constructor`, …) must zero-fill, not read the inherited function
+      // (`toString`, `constructor`, …) must read as absent, not as the inherited function
       lookup = (comp) =>
         Object.hasOwn(init, comp.name) ? Reflect.get(init, comp.name) : undefined;
-    } else {
+    } else if (partial) {
       throw new EvsTypeError(
         'TYPE_MISMATCH',
         `${what}: init must be a record of members (or a positional array for a tuple with an unnamed member), got ${describeHost(init)}`,
       );
+    } else {
+      throw new EvsTypeError(
+        'TYPE_MISMATCH',
+        `${what}: expected a struct value — ${named ? `a record { ${names.join(', ')} }` : `a positional array of its ${n} member(s)`} or a Tuple handle — got ${describeHost(init)}. ${STRUCT_LITERAL_RULE}`,
+      );
+    }
+
+    const members = type.components.map((comp, index) => lookup(comp, index));
+    if (!partial) {
+      // before anything is recorded: a member without a value would be sent as its zero
+      const missing = names.filter((_name, index) => members[index] === undefined);
+      if (missing.length > 0) {
+        const list = missing.map((m) => JSON.stringify(m)).join(', ');
+        throw new EvsTypeError(
+          'TYPE_MISMATCH',
+          `${what}: the struct literal has no value for member${missing.length === 1 ? '' : 's'} ${list} (left out or undefined; members: ${names.join(', ')}). ${STRUCT_LITERAL_RULE}`,
+        );
+      }
     }
 
     const inits: { index: number; value: ValueId }[] = [];
     type.components.forEach((comp, index) => {
-      const memberVal = lookup(comp, index);
-      // omitted → its typed zero: a word member is covered by the block's zero-fill; a memref
-      // member (string/bytes/T[] → empty, nested tuple → a fresh zeroed block) is set by codegen.
+      const memberVal = members[index];
+      // a partial init's omitted member → its typed zero: a word member is covered by the block's
+      // zero-fill; a memref member (string/bytes/T[] → empty, nested tuple → a fresh zeroed block)
+      // is set by codegen.
       if (memberVal === undefined) return;
       const memberType = abiParamToType(comp);
       const valId = this.coerceToId(

@@ -2175,6 +2175,7 @@ describe('issue #5 ergonomics', () => {
     expect(() =>
       evscript({ name: 'bad', args: [t.address] }, (s, x) =>
         s.return({
+          // @ts-expect-error — the types refuse it too; the recorder is what is under test
           r: s.read({ address: x, abi: unnamedAbi, functionName: 'pair', struct: true }),
         }),
       ),

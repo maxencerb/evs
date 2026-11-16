@@ -123,6 +123,9 @@ const Market = t.struct({
   right members in another order type-checks where the ABI's struct is expected. Recording
   compares the order and throws `TYPE_MISMATCH`.
 - **Names are identifiers.** A member name matches `/^[A-Za-z_]\w*$/` and is not `__proto__`.
+- **Complete literals.** An object literal of the struct names every member, with a value. A
+  member left out, set to `undefined` or misspelled throws `TYPE_MISMATCH`. Only the `init` of
+  [`s.tuple`](/reference/builder/tuple/#init-optional) leaves members at zero.
 - **Structural.** Two structs with the same member names and types, in the same order, are the
   same type.
 - **Handle names win.** A member named like a member of the
@@ -133,7 +136,7 @@ const Market = t.struct({
 
 ## Errors
 
-Thrown by the `t.struct` call, except the last row:
+Thrown by the `t.struct` call, except the last two rows:
 
 | Error | When |
 | --- | --- |
@@ -142,4 +145,5 @@ Thrown by the `t.struct` call, except the last row:
 | `EvsTypeError` (`TYPE_MISMATCH`) | a member value is not a type |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | a member nests arrays more than four levels deep |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | the ABI static size is 2^32 bytes or more |
+| `EvsTypeError` (`TYPE_MISMATCH`) | while the callback records: a literal of the struct has an unknown member, or no value for one |
 | `EvsCompileError` (`UNSUPPORTED_V0`) | at `compile()`: structs and arrays nest too deeply to decode, flatten the type |

@@ -209,6 +209,70 @@ export function describeHost(v: unknown): string {
   return String(v);
 }
 
+/**
+ * Refuses what an async or a generator function returned where the builder ran a callback. A
+ * callback runs once, synchronously, while the script records: an async one is recorded up to its
+ * first `await` only (the rest would run after the block, or the script, was closed), and a
+ * generator's body does not run at all. `what` names the callback. An async function's promise
+ * is given a rejection handler: its continuation fails against the closed recording, and that
+ * failure must not surface later as an unhandled rejection in place of this error. The `then` of
+ * any other thenable is not called (it may start work of its own).
+ */
+export function assertSyncCallback(result: unknown, what: string): void {
+  if ((typeof result !== 'object' && typeof result !== 'function') || result === null) return;
+  const { then, next } = result as { then?: unknown; next?: unknown };
+  if (typeof then === 'function') {
+    if (result instanceof Promise) result.catch(() => undefined);
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: the callback returned a Promise (an async function) — callbacks run once, synchronously, while the script is recorded, so nothing after its first await would be recorded. Await your data before evscript() and use a plain function`,
+    );
+  }
+  if (typeof next === 'function') {
+    throw new EvsTypeError(
+      'TYPE_MISMATCH',
+      `${what}: the callback returned an iterator (a generator function) — callbacks run once, synchronously, while the script is recorded, and a generator's body does not run when it is called. Use a plain function`,
+    );
+  }
+}
+
+/**
+ * The entry of `known` closest to `name` when it is close enough to be a typo of it (at most two
+ * single-character edits, and fewer than the name is long), else undefined.
+ */
+function closestName(name: string, known: readonly string[]): string | undefined {
+  let best: string | undefined;
+  let bestDistance = Math.min(3, name.length);
+  for (const candidate of known) {
+    const distance = editDistance(name, candidate);
+    if (distance < bestDistance) {
+      best = candidate;
+      bestDistance = distance;
+    }
+  }
+  return best;
+}
+
+/** The Levenshtein distance between `a` and `b`. */
+function editDistance(a: string, b: string): number {
+  let row = Array.from({ length: b.length + 1 }, (_, j) => j);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) {
+      const substitution = (row[j - 1] ?? 0) + (a[i - 1] === b[j - 1] ? 0 : 1);
+      next.push(Math.min(substitution, (row[j] ?? 0) + 1, (next[j - 1] ?? 0) + 1));
+    }
+    row = next;
+  }
+  return row[b.length] ?? 0;
+}
+
+/** ` — did you mean "x"?` for an unknown `name` that looks like a typo of a `known` one. */
+export function didYouMean(name: string, known: readonly string[]): string {
+  const closest = closestName(name, known);
+  return closest === undefined ? '' : ` — did you mean ${JSON.stringify(closest)}?`;
+}
+
 /** The comma-joined canonical signatures of ABI function entries (overload error messages). */
 export function signatureList(fns: readonly Record<string, unknown>[]): string {
   return fns.map(functionSignature).join(', ');

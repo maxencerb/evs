@@ -100,6 +100,9 @@ To read them by name instead, pass [`struct: true`](#struct-optional).
 A bare name resolves by the number and types of `args`. When they fit several overloads, name
 one by its signature.
 
+A call without `args` resolves to the overload that takes none. When every overload takes
+arguments, `args` is required.
+
 ```ts {15-16,21-22}
 import { evscript, t } from '@maxencerb/evs';
 import { parseAbi } from 'viem';
@@ -240,6 +243,48 @@ const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) =>
 });
 ```
 
+The uncast result has the type `WideSubcallResult`. TypeScript prints it under a name that says
+what is missing, here when `result` is returned as is:
+
+```txt
+decimals.ts(8,21): error TS2322: Type 'TypedResultRequiresAbiAsConst' is not assignable to type 'ReturnValue'.
+  Type 'void' is not assignable to type 'ReturnValue'.
+```
+
+An ABI written inline without `as const` gives the same error: add `as const` to it.
+
+An entry written before Solidity 0.4.16, as block explorers still serve for older contracts,
+has the `constant` and `payable` flags and no `stateMutability`. It is read by its flags.
+
+| Entry | Read as | Called with |
+| --- | --- | --- |
+| `constant: true` | `view` | `s.read`, `s.tryRead` |
+| `payable: true` | `payable` | `s.call`, `s.simulate` and their `try` forms, `value` accepted |
+| neither | `nonpayable` | `s.call`, `s.simulate` and their `try` forms |
+
+```ts {5,9,15,16}
+import { evscript, t, type Expr } from '@maxencerb/evs';
+
+const punksAbi = [
+  {
+    constant: true,
+    inputs: [],
+    name: 'totalSupply',
+    outputs: [{ name: '', type: 'uint256' }],
+    payable: false,
+    type: 'function',
+  },
+] as const;
+
+const supply = evscript({ name: 'supply', args: [t.address] }, (s, punks) => {
+  const result = s.read({ address: punks, abi: punksAbi, functionName: 'totalSupply' });
+  return s.return({ supply: result as Expr<'uint256'> });
+});
+```
+
+Such an ABI is not a viem `Abi`, even `as const`: its results are untyped and you cast them.
+Add `stateMutability` to an entry to type its calls. It wins over the flags, which can stay.
+
 ### functionName
 
 - **Type:** `string`
@@ -264,11 +309,14 @@ A canonical signature such as `'price(uint8)'` names one overload exactly: the n
 parameter types without names or spaces, a struct written as `(type,type)`. See
 [overloaded functions](#overloaded-functions).
 
-### args (optional)
+### args
 
 - **Type:** inferred from the ABI
 
-One entry per function input, omitted when there is none. Each entry is either:
+One entry per function input. It is required when the function takes arguments, as in viem.
+Leave it out, or pass `[]`, when the function takes none.
+
+Each entry is either:
 
 - the literal viem takes: a `bigint` or a `number`, a string, a `boolean`, an object, an array;
 - an `Expr` of exactly the input's type. An `Expr<'uint8'>` does not fit a `uint256` input:
@@ -295,8 +343,11 @@ const allowance = evscript(
 ```
 
 A struct input takes an object that names every member, or a
-[`Tuple`](/reference/builder/tuple/#tuple). An array input takes an array literal, an array
-`Expr` or a [`MutArray`](/reference/builder/new-array/#mutarray).
+[`Tuple`](/reference/builder/tuple/#tuple). A member left out or `undefined` throws: it is never
+sent as zero.
+
+An array input takes an array literal, an array `Expr` or a
+[`MutArray`](/reference/builder/new-array/#mutarray).
 
 ```ts {16}
 import { evscript, t } from '@maxencerb/evs';
@@ -354,6 +405,10 @@ const name = evscript({ name: 'name', args: [t.address] }, (s, token) => {
 Returns the outputs as one [`Tuple`](/reference/builder/tuple/#tuple) keyed by output name,
 instead of a positional array. Every output must have a name, and no name may repeat.
 
+On a function with an unnamed output, or with none, `struct: true` is a type error. A function
+that returns one struct has a single unnamed output: its result is a `Tuple` without the
+option, as in [Returns](#returns).
+
 ```ts {9}
 import { evscript, t } from '@maxencerb/evs';
 import { pairAbi } from './abi';
@@ -398,6 +453,7 @@ most of them first.
 | --- | --- |
 | `EvsTypeError` (`ABI_SHAPE`) | `abi` is not an array, or `functionName` is missing or names no function of it |
 | `EvsTypeError` (`ABI_SHAPE`) | the function is `nonpayable` or `payable`: use `s.call` or `s.simulate` |
+| `EvsTypeError` (`ABI_SHAPE`) | the function's `stateMutability` is none of `pure`, `view`, `nonpayable`, `payable` |
 | `EvsTypeError` (`ABI_SHAPE`) | the `args` fit several overloads |
 | `EvsTypeError` (`ABI_SHAPE`) | `struct: true` on outputs that are unnamed, share a name, or do not exist |
 | `EvsTypeError` (`TYPE_MISMATCH`) | wrong number or type of `args`, or `args` that fit no overload |
