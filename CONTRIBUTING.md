@@ -646,7 +646,9 @@ Releases: see [Releasing](#releasing) below.
 - **Recording never guesses.** Input the recorder cannot take as written is refused where it is
   written, not recorded as something close: a callback that returns a promise or an iterator
   (`assertSyncCallback`, on the result of every callback the builder runs: a new verb that takes
-  one must call it), a struct literal without a value for a member, an array literal with a hole
+  one must call it, and type it `(() => r) & SyncCallback<r>`, the type-level mirror in
+  `builder/script/builder.ts`; the `evscript` and `s.fn` bodies are refused by their return
+  types already), a struct literal without a value for a member, an array literal with a hole
   (`missingElement`: the array methods skip holes, so literals are read by index), an option
   object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
   input shape gets its check and a row in `builder/recording-guards.test.ts`.
@@ -781,7 +783,15 @@ Releases: see [Releasing](#releasing) below.
   first) would also work, but a call that matches neither is reported on the function name
   with both overloads listed; one signature reports it on the wrong operand, in the method
   form's words. `s.let(type, init)` and the typed `s.for` range keep one parameter and wrap
-  the checked positions in `NoInfer`. Where no value is accepted, the parameter's type is the
+  the checked positions in `NoInfer`. `s.eq` / `s.neq` and `s.select`'s branches (an
+  `OperandKind` of `'equality'` / `'branch'`) also take a bare `Tuple` / `MutArray` handle and a
+  struct or array literal with staged members (`MemrefOperand`, `StagedLiteral` in
+  `builder/script/handles.ts`); the method form `x.eq(v)` takes the same through `EqOperands`, an
+  interface `core/` declares empty and the builder fills, so `eq` keeps one signature. Where the
+  checked type is a conditional over struct literals or tuple arrays (`MemrefOperand`,
+  `LitValue`, `IntoValue`), `NoInfer` wraps the whole type, not its argument: inference otherwise
+  walks every branch before it meets the `NoInfer`: with it inside, a word `s.select` cost some
+  8,000 type instantiations, and the package's count rose from 2.7 to 9.6 million. Where no value is accepted, the parameter's type is the
   recording-time message as a string type (`ExprNeeded`, and `ConversionHint` / `AsIntHint`
   for a receiver in `core/types/expr.ts`), so the checker prints what to write.
   `operators.test.ts` pins the text and the position of these errors, and
@@ -819,6 +829,25 @@ Releases: see [Releasing](#releasing) below.
   nothing and is read through its own keys) and type the record with `NoProtoKey` (the only guard
   for a primitive value, which JS drops). User records keyed by member name (`s.tuple` init, `s.throw`
   args, overload `argFits`) are read with `Object.hasOwn`, never through the prototype.
+- **A struct value is a `Tuple` handle, wherever it comes from** (`valueHandle` in
+  `builder/expr/core.ts`): an argument, a field, an array element, a call or `s.fn` result,
+  `Cell.get()`, `s.select()` and `s.lit()`. Any other type is an `Expr`. The handle records
+  nothing: it is a view of the same value id, so the IR of a script spelled with handles is the
+  IR of the one spelled with `.expr()`. The types follow (`ArgHandle`), and every position that
+  takes a value of a type takes what `coerceToId` takes there (`IntoMember`, and `IntoValue`,
+  the same values with `IntoExpr<t>` outside the conditional): an `Expr` of a struct fits a
+  struct slot, and `s.select`'s branches and the one-argument `s.let` take a bare handle, since
+  those positions are handed the `Tuple`s the others return. Two limits of the types: `Cell.get`
+  has a struct overload first (`this: Cell<c>`), so a `Cell<n>` of a type parameter bounded by
+  the word types still reads an `Expr<n>`, but `s.select` of two `Expr<n>` returns
+  `ArgHandle<n>`, a conditional type the checker cannot resolve until `n` is known (as
+  `MutArray<n>.get` and `Field<n>.get` already do); and any `Tuple` handle fits any struct slot
+  (the erased `tupleBrand`), which `typesEqual` checks at recording.
+- **A fixed-size array literal has its length in its type** (`SizedLiteral` in
+  `core/types/expr.ts`): a `T[N]` literal, a word array as a tuple array, is a readonly N-tuple
+  while N has at most two digits (abitype's bound, 99), so `[1n]` for a `uint256[3]` is a compile
+  error; past that it is a readonly array whose length recording checks. The size is read by
+  forward parsing (`OuterArraySize`), so a large `T[N]` never builds an N-element tuple.
 - **The artifact** exposes `runtimeBytecode` and `initBytecode` separately and never a field
   named `code`: viem's deployless `code` parameter needs **init** code (a raw runtime blob fails
   silently), and `toViem()` always hands viem the right flavor for the chosen mode.

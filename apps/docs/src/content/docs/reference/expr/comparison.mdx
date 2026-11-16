@@ -12,8 +12,8 @@ Compares two values of the same type and returns an `Expr<'bool'>`. Numbers, add
 | [`gt`](#gt) | `gt(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a > b` |
 | [`lte`](#lte) | `lte(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a <= b` |
 | [`gte`](#gte) | `gte(rhs: IntoExpr<t>): Expr<'bool'>` | `uintN`, `intN`, `address`, `bytesN` | `a >= b` |
-| [`eq`](#eq) | `eq(rhs: IntoExpr<t>): Expr<'bool'>` | every type | `a == b` |
-| [`neq`](#neq) | `neq(rhs: IntoExpr<t>): Expr<'bool'>` | every type | `a != b` |
+| [`eq`](#eq) | `eq(rhs: IntoExpr<t>): Expr<'bool'>` (more for a memref, see [eq](#eq)) | every type | `a == b` |
+| [`neq`](#neq) | `neq(rhs: IntoExpr<t>): Expr<'bool'>` (more for a memref, see [eq](#eq)) | every type | `a != b` |
 
 `t` is the receiver's type, and an `IntoExpr<t>` is an `Expr<t>` or a
 [literal](/reference/expr/#literals). A `bool`, a `string`, `bytes`, an array or a struct has
@@ -101,18 +101,21 @@ What "equal" means depends on the type:
 ### Arrays and structs
 
 A struct argument is a [`Tuple`](/reference/builder/tuple/#tuple) handle: compare its `expr()`.
+On a string, bytes, array or struct receiver, `rhs` may also be a `Tuple` or `MutArray` handle,
+or a literal whose members are `Expr`s, as with `s.eq`.
 
-```ts {8-9}
+```ts {8-10}
 import { evscript, t } from '@maxencerb/evs';
 
 const Pair = t.struct({ token: t.address, fee: t.uint24 });
 
 const same = evscript(
-  { name: 'same', args: [t.array(t.uint24), Pair, Pair] },
-  (s, fees, a, b) => {
+  { name: 'same', args: [t.array(t.uint24), Pair, Pair, t.address] },
+  (s, fees, a, b, token) => {
     const standard = fees.eq([500n, 3000n, 10000n]);
-    const samePair = a.expr().eq(b.expr());
-    return s.return({ standard, samePair });
+    const samePair = a.expr().eq(b);
+    const sameToken = a.expr().eq({ token, fee: b.fee.get() });
+    return s.return({ standard, samePair, sameToken });
   },
 );
 ```
@@ -147,8 +150,10 @@ const hasOwner = evscript({ name: 'hasOwner', args: [t.address] }, (s, owner) =>
   words is hashed at build time.
 - **Builder mirrors.** `s.lt(a, b)`, `s.gt`, `s.lte`, `s.gte`, `s.eq` and `s.neq` take a literal
   on either side: `s.gt(100n, x)`.
-- **Handles.** `s.eq` and `s.neq` also take a [`Tuple`](/reference/builder/tuple/#tuple) or a
-  [`MutArray`](/reference/builder/new-array/#mutarray) handle as it is: `s.eq(position, other)`.
+- **Handles.** `s.eq`, `s.neq` and the methods on a memref also take a
+  [`Tuple`](/reference/builder/tuple/#tuple) or a
+  [`MutArray`](/reference/builder/new-array/#mutarray) handle as it is: `s.eq(position, other)`,
+  `position.expr().eq(other)`.
 
 ## Errors
 

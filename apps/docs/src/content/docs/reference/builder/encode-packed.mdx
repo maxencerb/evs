@@ -60,7 +60,8 @@ A new `bytes` value holding the packed encoding.
 
 ### values
 
-- **Type:** `(Expr | MutArray)[]`, at least one
+- **Type:** `PackedValue[]`, at least one: an `Expr` of a packable type, or a `MutArray` of
+  words
 
 The values to pack, in order. Only these types can be packed:
 
@@ -73,8 +74,9 @@ The values to pack, in order. Only these types can be packed:
 | `string`, `bytes` | the raw bytes, without a length |
 | an array of one of the word types above | each element padded to 32 bytes, without a length |
 
-Structs and tuples, nested arrays, `string[]` and `bytes[]` are rejected, as in Solidity. A plain
-literal needs [`s.lit`](/reference/builder/lit/).
+Structs and tuples, nested arrays, `string[]` and `bytes[]` are rejected, as in Solidity: a type
+error, and a `TYPE_MISMATCH` while recording. A plain literal needs
+[`s.lit`](/reference/builder/lit/).
 
 ```ts {6}
 import { evscript, t } from '@maxencerb/evs';

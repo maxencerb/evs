@@ -222,10 +222,10 @@ export type SyncCallback<r> = 0 extends 1 & r
     ? [Extract<r, { next(...args: never): unknown }>] extends [never]
       ? unknown
       : {
-          readonly 'evs: the callback returns an iterator (a generator function) — the builder runs it once, synchronously, and a generator body does not run when called: use a plain function': never;
+          readonly 'evs: the callback returns an iterator (a generator function). The builder runs it once, synchronously, and a generator body does not run when called: use a plain function': never;
         }
     : {
-        readonly 'evs: the callback returns a Promise (an async function) — the builder runs it once, synchronously, so nothing after its first await is recorded: await your data before evscript() and use a plain function': never;
+        readonly 'evs: the callback returns a Promise (an async function). The builder runs it once, synchronously, so nothing after its first await is recorded: await your data before evscript() and use a plain function': never;
       };
 
 /**

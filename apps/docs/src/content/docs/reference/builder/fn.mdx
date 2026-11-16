@@ -244,7 +244,7 @@ const quadruple = evscript({ name: 'quadruple', args: [t.uint256] }, (s, x) => {
 - **Plain return.** Leave the body with a JavaScript `return`.
   [`s.return`](/reference/builder/return/) and the `LoopCtl` of an outer loop do not work in it.
 - **Synchronous.** The body is a plain function, called one time while building. An `async`
-  function or a generator throws: see
+  function or a generator is a type error, and throws while recording: see
   [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 
 ### No capture

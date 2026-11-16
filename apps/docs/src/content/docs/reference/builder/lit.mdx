@@ -83,12 +83,30 @@ const constants = evscript({ name: 'constants' }, (s) => {
 });
 ```
 
+### A struct with members from the script
+
+A struct or array literal may hold `Expr`s and handles, as a call argument does. A struct comes
+back as a [`Tuple`](/reference/builder/tuple/) handle.
+
+```ts {6-9}
+import { evscript, t } from '@maxencerb/evs';
+
+const Position = t.struct({ liquidity: t.uint128, owner: t.address });
+
+const mine = evscript({ name: 'mine', args: [t.uint128] }, (s, liquidity) => {
+  const position = s.lit(Position, {
+    liquidity,
+    owner: s.env('caller'),
+  });
+  return s.return({ owner: position.owner.get(), position });
+});
+```
+
 ## Returns
 
-`Expr<t>`
+`Tuple<t>` for a struct, `Expr<t>` for any other type
 
-An `Expr` of exactly `type`. A struct literal is an `Expr` too, not a handle with fields: build
-it with [`s.tuple`](/reference/builder/tuple/) when you need to read or write its members.
+A value of exactly `type`. A struct is a `Tuple` handle, whose members read with `.get()`.
 
 ## Parameters
 
@@ -110,11 +128,12 @@ const max = evscript({ name: 'max' }, (s) => {
 
 ### value
 
-- **Type:** `LitOf<t>`
+- **Type:** `LitOf<t>` for a word, `string` or `bytes`; `IntoMember<t>` for a struct or an array
 
 The JavaScript value for that type: a `bigint` or `number` for an integer, a `0x` string for an
 address or bytes, an array for an array. The full table is in
-[Literals](/reference/expr/#literals).
+[Literals](/reference/expr/#literals). A struct or array literal may hold `Expr`s and handles,
+and a fixed-size array literal has exactly N elements.
 
 ```ts {4}
 import { evscript, t } from '@maxencerb/evs';

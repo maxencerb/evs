@@ -144,7 +144,7 @@ const digits = evscript({ name: 'digits', args: [t.uint256] }, (s, x) => {
 
 ### body
 
-- **Type:** `(loop: LoopCtl) => void`
+- **Type:** `(loop: LoopCtl) => void`, synchronous
 
 Records one iteration. It receives the [`LoopCtl`](#loopctl) of this loop.
 
@@ -172,7 +172,7 @@ const digits = evscript({ name: 'digits', args: [t.uint256] }, (s, x) => {
 - **Recorded once.** Both callbacks are called one time while building. The recorded code
   repeats at run time.
 - **Synchronous.** `cond` and `body` are plain functions. An `async` function or a generator
-  throws: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
+  is a type error, and throws while recording: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Shared with the body.** A value created in `cond` can be used in the body of the same
   iteration.
 - **Scoped values.** Nothing created in `cond` or in the body can be used after the loop.

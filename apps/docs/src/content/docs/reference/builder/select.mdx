@@ -19,9 +19,25 @@ const decimals = evscript({ name: 'decimals', args: [t.address] }, (s, token) =>
 });
 ```
 
+### Picking a struct
+
+A struct branch is a [`Tuple`](/reference/builder/tuple/) handle or its `expr()`, and the result
+is a `Tuple` handle: read a member of it, or select it again.
+
+```ts {7,8}
+import { evscript, t } from '@maxencerb/evs';
+
+const Quote = t.struct({ pool: t.address, out: t.uint256 });
+
+const best = evscript({ name: 'best', args: [Quote, Quote] }, (s, a, b) => {
+  const better = s.select(a.out.get().gte(b.out.get()), a, b);
+  return s.return({ pool: better.pool.get(), out: better.out.get() });
+});
+```
+
 ## Returns
 
-`Expr<t>`
+`Tuple<t>` for a struct, `Expr<t>` for any other type
 
 `a` when `cond` is true, otherwise `b`. `t` is the type both branches share.
 
@@ -48,9 +64,11 @@ const max = evscript({ name: 'max', args: [t.uint256, t.uint256] }, (s, a, b) =>
 
 ### a
 
-- **Type:** `IntoExpr<t>`
+- **Type:** `IntoExpr<t>`, plus for a struct or an array a `Tuple` or `MutArray` handle and a
+  literal with `Expr` members
 
-The value returned when `cond` is true. An `Expr`, or a literal of the other branch's type.
+The value returned when `cond` is true. An `Expr` or a bare handle, or a literal of the other
+branch's type.
 
 ```ts {6}
 import { evscript, t } from '@maxencerb/evs';
@@ -90,8 +108,8 @@ const fee = evscript({ name: 'fee', args: [t.bool] }, (s, stable) => {
   run. To skip work, use [`s.if`](/reference/builder/if/) with a cell (below).
 - **Same type on both sides.** `Expr<'uint8'>` and `Expr<'uint256'>` do not unify: convert one
   first with [`toUint`](/reference/expr/conversions/#touint).
-- **One side must be an `Expr`.** The result type comes from it, and a literal on the other side
-  is range-checked against that type.
+- **One side must be an `Expr` or a handle.** The result type comes from it, and a literal on the
+  other side is checked against that type.
 - **Build-time condition.** With a plain `true` or `false`, the result is the chosen branch and
   the other one is dropped from the bytecode.
 
