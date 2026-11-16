@@ -2,6 +2,8 @@
 '@maxencerb/evs': minor
 ---
 
+pr: 184
+
 A call through a function that declares no outputs now fails when its address has no code, as the same call reverts from Solidity. It used to succeed: a call to an address without code succeeds with empty return data, and with no output there was nothing to decode. So `s.tryRead` of a validation function such as a Safe's `checkSignatures` reported `success: true` on a wrong or not yet deployed address, where the reference pages of `s.read` and `s.tryRead` said it failed.
 
 - `s.read`, `s.call` and `s.simulate` revert with `EvsDecodeError(site)`.

@@ -2,6 +2,8 @@
 '@maxencerb/evs': patch
 ---
 
+pr: 180
+
 Four mistakes a user can make no longer end in an internal error or a raw `TypeError`:
 
 - a script named `__evs_simulate` with the arguments `(address, bytes)` that uses `s.simulate` failed `compile()` with an `EvsInternalError` asking to report a bug in evs; it is now an `EvsTypeError` (`ABI_SHAPE`) that says the selector is reserved and to rename the script;
