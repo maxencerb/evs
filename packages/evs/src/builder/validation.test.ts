@@ -2465,7 +2465,7 @@ describe('checklist: tuple literals', () => {
       () => recT((s, who) => slot(s, who, () => ({ token: who, fe: 3000 }))),
       EvsTypeError,
       'TYPE_MISMATCH',
-      /unknown member "fe" \(expected: token, fee\)/,
+      /unknown member "fe" — did you mean "fee"\? \(expected: token, fee\)/,
     );
   });
 

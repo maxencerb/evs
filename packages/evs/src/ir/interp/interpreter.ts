@@ -31,9 +31,10 @@ import {
   type CellId,
   type Stmt,
   callOutputs,
+  walkStmts,
   type PlainAbiFunction,
 } from '../nodes.js';
-import { validateIr } from '../validate.js';
+import { assertScriptIr, validateIr } from '../validate.js';
 import {
   constValue,
   modArith,
@@ -203,7 +204,14 @@ export function interpret(
 ): InterpResult {
   // a script carries its IR under `ir`; a ScriptIr has no such key
   const ir = typeof target === 'object' && target !== null && 'ir' in target ? target.ir : target;
+  assertScriptIr(
+    ir,
+    'interpret: expected a script (an evscript() result or its artifact) or a ScriptIr',
+  );
   validateIr(ir);
+  // checked here, not at the first sub-call: a script whose calls sit behind a branch would pass
+  // until that branch is taken
+  assertMockChain(chain, ir);
   const program = opts?.dce === false ? ir : dceOf(ir);
   const maxSteps = opts?.maxSteps ?? DEFAULT_MAX_STEPS;
   if (!Number.isSafeInteger(maxSteps) || maxSteps < 1) {
@@ -214,6 +222,50 @@ export function interpret(
   }
   const env = resolveEnv(opts?.env);
   return new Interp(program, chain, maxSteps, opts?.trace === true, env).run(args);
+}
+
+/**
+ * Throws when `chain` cannot answer what `ir` asks of it. `staticcall` must be a function when a
+ * call site needs it: an `s.read` site, or an `s.call` / `s.simulate` site of a chain without
+ * `call`. A script that needs no oracle runs without one, so a chain is not required there.
+ * `call` and `account` are optional, and functions when given.
+ */
+function assertMockChain(chain: unknown, ir: ScriptIr): void {
+  const c: { staticcall?: unknown; call?: unknown; account?: unknown } =
+    typeof chain === 'object' && chain !== null ? chain : {};
+  for (const member of ['call', 'account'] as const) {
+    if (c[member] !== undefined && typeof c[member] !== 'function') {
+      throw chainError(
+        `chain.${member} must be a function when given, got ${describeMember(c[member])}`,
+      );
+    }
+  }
+  if (typeof c.staticcall === 'function') return;
+  let needed: string | undefined;
+  const visit = (s: Stmt): void => {
+    if (s.k === 'call' && (s.kind === 'static' || c.call === undefined)) needed ??= s.fnAbi.name;
+  };
+  walkStmts(ir.body, visit);
+  for (const fn of ir.fns) walkStmts(fn.body, visit);
+  if (needed === undefined) return;
+  throw chainError(
+    typeof chain === 'object' && chain !== null
+      ? `chain.staticcall must be a function (script "${ir.name}" calls ${needed}()), got ${describeMember(c.staticcall)}`
+      : `script "${ir.name}" calls ${needed}(), and the chain is ${describeMember(chain)}`,
+  );
+}
+
+function chainError(problem: string): EvsTypeError {
+  return new EvsTypeError(
+    'TYPE_MISMATCH',
+    `interpret: ${problem} — pass a MockChain as the third argument: { staticcall(req) { return { success, data }; } }, with call(req) and account(address) as options`,
+  );
+}
+
+/** What was found where a {@link MockChain}, or one of its functions, is expected. */
+function describeMember(v: unknown): string {
+  if (v === null || v === undefined) return String(v);
+  return typeof v === 'object' ? `an ${Array.isArray(v) ? 'array' : 'object'}` : `a ${typeof v}`;
 }
 
 /**

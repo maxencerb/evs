@@ -200,7 +200,7 @@ describe.each(EVM_VERSIONS)(
           s.select(true, p.expr(), bad as never);
         expect(drop([1n, ONE, 2n])).toThrow(/too many members/);
         expect(drop([7n, 'not an address'])).toThrow(/address literal must be/);
-        expect(drop([[x]])).toThrow(/uint256 literal must be/);
+        expect(drop([[x], ONE])).toThrow(/uint256 literal must be/);
         return s.return({ p });
       });
       const plain = evscript({ name: 'bad', args: [t.uint256] }, (s, x) =>

@@ -85,8 +85,17 @@ Carry results out of the body through a cell or a `MutArray` declared before the
 
 ## Parameters
 
-The first argument is a range object with `type`, `from`, `until` and `step`. The second is the
-body.
+The first argument is a range object. The second is the body.
+
+| Range key | Required | Holds |
+| --- | --- | --- |
+| [`type`](#type-optional) | no | the type of the counter, `uint256` by default |
+| [`from`](#from) | yes | the first value of the counter |
+| [`until`](#until) | yes | the exclusive end |
+| [`step`](#step-optional) | no | what each iteration adds, `1` by default |
+
+The range has no other key. An unknown one, such as a misspelled `setp`, throws: it is never
+ignored.
 
 ### type (optional)
 
@@ -171,7 +180,12 @@ const everyOther = evscript(
 
 The amount added to the counter after each iteration. It is read once, before the loop.
 
-Keep it positive: the loop only counts up. A step of `0` repeats until the call runs out of gas.
+Keep it positive: the loop only counts up.
+
+A literal step of `0` throws: the counter would never advance. A step computed at run time is
+not checked, and a zero there repeats until the call runs out of gas.
+
+Leave `step` out for the default. `null` is not a step and throws.
 
 ```ts {11}
 import { evscript, t } from '@maxencerb/evs';
@@ -228,6 +242,9 @@ const everyOther = evscript(
   came from does not move them.
 - **Recorded once.** The callback is called one time while building. The recorded body repeats
   at run time.
+- **Synchronous.** `body` is a plain function. An `async` function or a generator throws: see
+  [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
+- **Checked range.** An unknown range key, a `null` step and a literal step of `0` throw.
 - **Checked step.** `i + step` reverts with `Panic(0x11)` when it overflows the counter type.
 - **Continue steps first.** `loop.continue()` adds the step, then tests `i < until` again.
 - **Scoped values.** Nothing created in the body, `i` included, can be used after the loop.
@@ -239,10 +256,13 @@ Thrown while the callback records, at the offending line:
 | Error | When |
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the range is not an object, or `body` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `body` is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |
+| `EvsTypeError` (`TYPE_MISMATCH`) | the range has a key other than `type`, `from`, `until` and `step` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `type` is not a `uintN` or an `intN` |
-| `EvsTypeError` (`TYPE_MISMATCH`) | `from` or `until` is missing |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `from` or `until` is missing, or `step` is `null` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `from`, `until` or `step` is not of the counter type |
 | `EvsTypeError` (`LITERAL_RANGE`) | a literal `from`, `until` or `step` does not fit the counter type |
+| `EvsTypeError` (`LITERAL_RANGE`) | `step` is a literal `0` |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the body is used after the loop |
 | `EvsTypeError` (`UNSUPPORTED_V0`) | the loop would be nested more than 256 levels deep: see [nesting limit](/reference/builder/if/#nesting-limit) |
 

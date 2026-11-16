@@ -31,7 +31,7 @@ import { AsmWriter, type AsmNode, type LabelId } from '../asm/assembler.js';
 import type { EvmVersion } from '../asm/ops.js';
 import type { SourceMap } from '../asm/sourcemap.js';
 import { bytesToHex, selectorBytes } from '../core/bytes.js';
-import { EvsInternalError, type EvsDiagnostic } from '../core/errors.js';
+import { EvsInternalError, EvsTypeError, type EvsDiagnostic } from '../core/errors.js';
 import { isBytesN } from '../core/types.js';
 import {
   walkStmts,
@@ -239,8 +239,10 @@ export function lowerProgram(
     trampoline !== null &&
     Number.parseInt(selector.slice(2), 16) === SIMULATE_TRAMPOLINE_SELECTOR_NUM
   ) {
-    throw internal(
-      `script selector ${selector} collides with the reserved simulate trampoline selector ${SIMULATE_TRAMPOLINE_SELECTOR} — rename the script`,
+    // the script's name and args are the user's: a dispatcher cannot route one selector twice
+    throw new EvsTypeError(
+      'ABI_SHAPE',
+      `script "${ir.name}(${argTypes.join(',')})" has the 4-byte selector ${selector}, which a script that uses s.simulate / s.trySimulate reserves for its internal entry point — rename the script or change its args`,
     );
   }
   const main = w.newLabel('main');

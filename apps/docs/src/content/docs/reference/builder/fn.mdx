@@ -243,6 +243,9 @@ const quadruple = evscript({ name: 'quadruple', args: [t.uint256] }, (s, x) => {
 - **Independent calls.** Each call runs the body again at run time and returns its own handles.
 - **Plain return.** Leave the body with a JavaScript `return`.
   [`s.return`](/reference/builder/return/) and the `LoopCtl` of an outer loop do not work in it.
+- **Synchronous.** The body is a plain function, called one time while building. An `async`
+  function or a generator throws: see
+  [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 
 ### No capture
 
@@ -284,6 +287,7 @@ Thrown while the callback records, at the offending line:
 | `EvsTypeError` (`TYPE_MISMATCH`) | `name` is not an identifier, or `body` is not a function |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a parameter is not a type, or its name is invalid or used twice |
 | `EvsTypeError` (`TYPE_MISMATCH`) | the body returns something that is not a handle, such as a literal |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `body` is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |
 | `EvsTypeError` (`TYPE_MISMATCH`) | a call passes the wrong number of arguments, or one of the wrong type |
 | `EvsTypeError` (`LITERAL_RANGE`) | a call passes a literal that does not fit its parameter's type |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | the body uses a value or a cell of the enclosing script |

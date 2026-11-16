@@ -643,6 +643,13 @@ Releases: see [Releasing](#releasing) below.
   the user's `evscript` callback, so the plain JS stack trace points at the offending line (evs
   captures no source locations of its own); at run time the artifact's `explainRevert(data)`
   maps revert payloads back to the site (kind, detail, site id and key) that produced them.
+- **Recording never guesses.** Input the recorder cannot take as written is refused where it is
+  written, not recorded as something close: a callback that returns a promise or an iterator
+  (`assertSyncCallback`, on the result of every callback the builder runs: a new verb that takes
+  one must call it), a struct literal without a value for a member, an array literal with a hole
+  (`missingElement`: the array methods skip holes, so literals are read by index), an option
+  object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
+  input shape gets its check and a row in `builder/recording-guards.test.ts`.
 - **Revert attribution** has two lockstep pairs. The site table (`codegen/sites.ts`) gives each
   panic site the exact `panicCodes` its template can raise, mirroring the elisions in
   `codegen/lower/` (folded divisors, free conversions, check-free `pow` literals, …); checked
@@ -726,8 +733,10 @@ Releases: see [Releasing](#releasing) below.
   a mismatch (both also compile errors). The verbs' `args` type a struct (and each `tuple[]`
   element) as that same complete literal, `StructLiteral` (`builder/script/handles.ts`): every
   member present, each a constant, a handle or a nested literal, as the coercion (`buildTupleNew`)
-  takes it; only `s.tuple` inits (`TupleInit`) may omit members in the types (the coercion
-  zero-fills an omitted member anywhere). A struct literal fits only if every key `Object.keys`
+  takes it; only `s.tuple` inits (`TupleInit`) may omit members, in the types and in the coercion
+  alike (`buildTupleNew`'s `partial` option is `true` for the top level of an `s.tuple` init
+  and `false` for every literal, a nested member of that init included: a member without a value
+  is then refused, never zero-filled). A struct literal fits only if every key `Object.keys`
   lists (numeric ones too) names a member (positional: exact length), as the coercion rejects
   anything more; at the type level an optional extra key, an index signature or a positional
   literal of statically unknown length (optional elements, a plain `T[]`) is a maybe-fit. The one intended difference: the types compare a

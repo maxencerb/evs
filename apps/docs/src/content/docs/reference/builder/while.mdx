@@ -171,6 +171,8 @@ const digits = evscript({ name: 'digits', args: [t.uint256] }, (s, x) => {
   included. A false condition skips the body entirely.
 - **Recorded once.** Both callbacks are called one time while building. The recorded code
   repeats at run time.
+- **Synchronous.** `cond` and `body` are plain functions. An `async` function or a generator
+  throws: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous).
 - **Shared with the body.** A value created in `cond` can be used in the body of the same
   iteration.
 - **Scoped values.** Nothing created in `cond` or in the body can be used after the loop.
@@ -186,6 +188,7 @@ Thrown while the callback records, at the offending line:
 | --- | --- |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `cond` is not a function: write `() => x.lt(n)`, not `x.lt(n)` |
 | `EvsTypeError` (`TYPE_MISMATCH`) | `cond` does not return a `bool`, or `body` is not a function |
+| `EvsTypeError` (`TYPE_MISMATCH`) | `cond` or `body` is an `async` function or a generator: see [callbacks are synchronous](/guides/writing-scripts/#callbacks-are-synchronous) |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | `break` or `continue` is called outside the body of its loop |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | an outer loop's `LoopCtl` is used in the body of an inner loop |
 | `EvsScopeError` (`SCOPE_VIOLATION`) | a value created in the loop is used after it |

@@ -295,8 +295,11 @@ const allowance = evscript(
 ```
 
 A struct input takes an object that names every member, or a
-[`Tuple`](/reference/builder/tuple/#tuple). An array input takes an array literal, an array
-`Expr` or a [`MutArray`](/reference/builder/new-array/#mutarray).
+[`Tuple`](/reference/builder/tuple/#tuple). A member left out or `undefined` throws: it is never
+sent as zero.
+
+An array input takes an array literal, an array `Expr` or a
+[`MutArray`](/reference/builder/new-array/#mutarray).
 
 ```ts {16}
 import { evscript, t } from '@maxencerb/evs';
