@@ -478,6 +478,51 @@ function describeAllocation(
   }
 }
 
+/**
+ * The statement whose key a `LOOP_ALLOCATION` on `block[i]` carries: `block[i]` itself, unless a
+ * builder verb recorded that allocation for itself next to the statement the verb is named after.
+ * Then the warning names the verb's statement, so its key moves only with the statements the
+ * user wrote (the allocation's own label counts every literal or encoding of the function):
+ *
+ * - a `tuplenew` of every output of the `call` right before it, in order (`struct: true`) → that
+ *   call;
+ * - an `encode` hashed by the `keccak256` right after it (`s.keccak256` of anything but one
+ *   `bytes` / `string`) → that `keccak256`, or the `eq` / `neq` that compares the hash, once the
+ *   statements hashing its other operand are skipped (struct and array equality hashes each
+ *   operand that way).
+ *
+ * Read off the shape of the IR, as the keys are: a script that spells these out by hand
+ * (`s.keccak256(a).eq(s.keccak256(b))`, an `s.tuple` of all of a call's outputs in order)
+ * records the same statements and gets the same warning.
+ */
+function allocationOwner(block: readonly Stmt[], i: number): Stmt | undefined {
+  const s = block[i];
+  if (s?.k === 'tuplenew') {
+    const call = block[i - 1];
+    const ofCall =
+      call?.k === 'call' &&
+      call.outs.length > 0 &&
+      s.inits.length === call.outs.length &&
+      s.inits.every((init, j) => init.index === j && init.value === call.outs[j]);
+    return ofCall ? call : s;
+  }
+  if (s?.k === 'encode') {
+    const hash = block[i + 1];
+    if (hash?.k !== 'keccak256' || hash.a !== s.out) return s;
+    for (let j = i + 2; j < block.length; j++) {
+      const next = block[j];
+      if (next?.k === 'encode' || next?.k === 'keccak256' || next?.k === 'const') continue;
+      const compares =
+        next?.k === 'bin' &&
+        (next.op === 'eq' || next.op === 'neq') &&
+        (next.a === hash.out || next.b === hash.out);
+      return compares ? next : hash;
+    }
+    return hash;
+  }
+  return s;
+}
+
 /** A `convert` that copies a bytesN word into a fresh string (`.asString()` on a bytesN). */
 function copiesWordToString(s: Extract<Stmt, { k: 'convert' }>, ir: ScriptIr): boolean {
   const from = ir.values[s.a]?.type;
@@ -585,26 +630,37 @@ function collectDiagnostics(
     return result;
   };
 
+  // `LOOP_ALLOCATION` is one warning per statement the user wrote ({@link allocationOwner}): the
+  // allocations recorded for one verb are listed in the `sites` of one warning, in the order of
+  // the walk, and the message is written once the walk has seen them all.
+  const loopAllocations = new Map<
+    SiteId,
+    { warning: EvsDiagnostic; whats: string[]; sites: { id: SiteId; key: string }[] }
+  >();
+
   const visit = (stmts: readonly Stmt[], inLoop: boolean): void => {
-    for (const s of stmts) {
+    for (const [i, s] of stmts.entries()) {
       const what = inLoop
         ? describeAllocation(s, ir, (f) => fnAllocates(f, new Set()), consts)
         : null;
       if (what !== null) {
+        const owner = allocationOwner(stmts, i) ?? s;
         const ref = siteRef(s);
-        diagnostics.push({
-          severity: 'warning',
-          code: 'LOOP_ALLOCATION',
-          message:
-            `${what} allocates memory on every loop iteration; evs never resets the free ` +
-            `pointer, so memory grows monotonically for the lifetime of the call and each ` +
-            `iteration pays more memory-expansion gas than the last. Hoist it out of the loop ` +
-            `when it does not depend on the iteration; for a short, bounded loop the cost is ` +
-            `small — filter this warning on its code and key`,
-          key: ref.key,
-          site: ref.id,
-          sites: [ref],
-        });
+        const group = loopAllocations.get(owner.site);
+        if (group === undefined) {
+          const warning: EvsDiagnostic = {
+            severity: 'warning',
+            code: 'LOOP_ALLOCATION',
+            message: '',
+            key: keyOf(owner.site),
+            site: ref.id,
+          };
+          loopAllocations.set(owner.site, { warning, whats: [what], sites: [ref] });
+          diagnostics.push(warning);
+        } else {
+          group.whats.push(what);
+          group.sites.push(ref);
+        }
       }
       if (s.k === 'env') {
         const message = ENV_FRAME_MESSAGES[s.op];
@@ -629,6 +685,17 @@ function collectDiagnostics(
   for (const f of emittedFns) {
     const fn = ir.fns[f];
     if (fn !== undefined) visit(fn.body, false);
+  }
+  for (const { warning, whats, sites: covered } of loopAllocations.values()) {
+    const subject =
+      whats.length === 1 ? `${whats[0]} allocates` : `${whats.join(' and ')} allocate`;
+    warning.message =
+      `${subject} memory on every loop iteration; evs never resets the free ` +
+      `pointer, so memory grows monotonically for the lifetime of the call and each ` +
+      `iteration pays more memory-expansion gas than the last. Hoist it out of the loop ` +
+      `when it does not depend on the iteration; for a short, bounded loop the cost is ` +
+      `small — filter this warning on its code and key`;
+    warning.sites = covered;
   }
   for (const [key, use] of frameUses) {
     // by id, so the list does not depend on the order the fns were emitted in

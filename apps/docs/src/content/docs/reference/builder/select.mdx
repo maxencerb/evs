@@ -41,6 +41,17 @@ const best = evscript({ name: 'best', args: [Quote, Quote] }, (s, a, b) => {
 
 `a` when `cond` is true, otherwise `b`. `t` is the type both branches share.
 
+In a generic helper, where `t` is a type parameter, TypeScript cannot tell which of the two it
+is yet. Cast the result:
+
+```ts
+import type { Expr, NumericType, ScriptBuilder } from '@maxencerb/evs';
+
+function max<n extends NumericType>(s: ScriptBuilder, a: Expr<n>, b: Expr<n>): Expr<n> {
+  return s.select(a.gt(b), a, b) as Expr<n>;
+}
+```
+
 ## Parameters
 
 ### cond

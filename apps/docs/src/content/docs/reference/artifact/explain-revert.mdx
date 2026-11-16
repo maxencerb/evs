@@ -134,7 +134,8 @@ const explanation = compiled.explainRevert(
 );
 
 explanation.kind; // 'error-string'
-explanation.candidateSites; // [{ id: 0, detail: 'decoding symbol() returndata' }]
+explanation.candidateSites;
+// [{ id: 0, key: 's.read(symbol)#0', detail: 'decoding symbol() returndata' }]
 explanation.message;
 ```
 

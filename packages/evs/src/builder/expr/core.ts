@@ -11,6 +11,7 @@ import {
   missingElement,
 } from '../../abi/artifact.js';
 import { EvsInternalError, EvsScopeError, EvsTypeError } from '../../core/errors.js';
+import { readMember } from '../../core/records.js';
 import {
   type EvsType,
   type Expr,
@@ -71,7 +72,6 @@ import {
   allMembersNamed,
   assertValueType,
   assertLayout,
-  readMember,
 } from './helpers.js';
 import type { Recorder } from './recorder.js';
 

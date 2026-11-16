@@ -55,6 +55,10 @@ The mock answers each call the script makes with `{ success, data }`. `args` and
 - `staticcall` answers `s.read` and `s.tryRead`. It is the only required method.
 - `call` answers `s.call` and `s.simulate`, and `account` answers `s.balance`, `s.codeSize`
   and `s.codeHash`. Both are optional: see [`interpret`](/reference/utilities/interpret/).
+- A call through a function without outputs first checks that its address has code, as the
+  bytecode does. The mock reports it from
+  [`account`](/reference/utilities/interpret/#account-optional): without it, such a call fails
+  before `staticcall` or `call` is asked.
 - `interpret()` is synchronous and needs no setup, so it runs in any test runner.
 
 :::caution[Addresses arrive in lowercase]

@@ -187,6 +187,156 @@ describe('the keys are a function of the recorded script alone', () => {
   });
 });
 
+describe('LOOP_ALLOCATION: a statement the builder records for a verb is reported on that verb', () => {
+  const FEED_ABI = parseAbi([
+    'function latestRoundData() view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
+    'function getRoundData(uint80 id) view returns (uint80 roundId, int256 answer, uint256 startedAt, uint256 updatedAt, uint80 answeredInRound)',
+    'function description() view returns (string)',
+    'function meta() view returns (string name, uint8 decimals)',
+  ]);
+  const Round = t.struct({ roundId: t.uint80, answer: t.int256 });
+  const loopWarnings = (script: Script): EvsDiagnostic[] =>
+    compiledWith(script).warnings.filter((w) => w.code === 'LOOP_ALLOCATION');
+  const summary = (w: EvsDiagnostic | undefined) => ({
+    key: w?.key,
+    sites: w?.sites?.map((site) => site.key),
+  });
+
+  /** A `struct: true` read in a loop; `above` records statements before the loop that each add a
+   *  `tuple(uint80,int256,uint256,uint256,uint80)` statement. */
+  const feedLoop = (above: 'nothing' | 'another struct read' | 'an s.tuple of the same members') =>
+    evscript({ name: 'feeds', args: [t.array(t.address)] }, (s, feeds) => {
+      const total = s.let(t.int256, 0n);
+      if (above === 'another struct read') {
+        const first = s.read({
+          address: feeds.at(0n),
+          abi: FEED_ABI,
+          functionName: 'getRoundData',
+          args: [1n],
+          struct: true,
+        });
+        total.set(first.answer.get());
+      }
+      if (above === 'an s.tuple of the same members') {
+        const R = t.fromOutputs(FEED_ABI, 'latestRoundData');
+        total.set(s.tuple(R, { answer: 1n }).answer.get());
+      }
+      s.forEach(feeds, (feed) => {
+        const round = s.tryRead({
+          address: feed,
+          abi: FEED_ABI,
+          functionName: 'latestRoundData',
+          struct: true,
+        });
+        total.set(total.get().add(round.value.answer.get()));
+      });
+      return s.return({ total: total.get() });
+    });
+
+  test.each(['another struct read', 'an s.tuple of the same members'] as const)(
+    'struct: true: keyed on the call, so %s above moves nothing',
+    (above) => {
+      const [base, ...extraBase] = loopWarnings(feedLoop('nothing'));
+      const [edited, ...extraEdited] = loopWarnings(feedLoop(above));
+      expect(extraBase).toEqual([]);
+      expect(extraEdited).toEqual([]);
+      expect(summary(base)).toEqual({
+        key: 's.tryRead(latestRoundData)#0',
+        sites: ['tuple(uint80,int256,uint256,uint256,uint80)#0'],
+      });
+      expect(edited?.key).toBe('s.tryRead(latestRoundData)#0');
+      expect(edited?.sites?.map((site) => site.key)).toEqual([
+        'tuple(uint80,int256,uint256,uint256,uint80)#1',
+      ]);
+      expect(edited?.message).toBe(base?.message);
+      expect(base?.message).toMatch(/^s\.tryRead\(latestRoundData\) struct \(flat-block/);
+    },
+  );
+
+  test('struct: true on a call that allocates too: one warning on the call, listing both statements', () => {
+    const script = evscript({ name: 'metas', args: [t.array(t.address)] }, (s, tokens) => {
+      const n = s.let(t.uint256, 0n);
+      s.forEach(tokens, (token) => {
+        const m = s.read({ address: token, abi: FEED_ABI, functionName: 'meta', struct: true });
+        n.set(n.get().add(m.name.get().length()));
+      });
+      return s.return({ n: n.get() });
+    });
+    const warnings = loopWarnings(script);
+    expect(warnings.map(summary)).toEqual([
+      { key: 's.read(meta)#0', sites: ['s.read(meta)#0', 'tuple(string,uint8)#0'] },
+    ]);
+    expect(warnings[0]?.site).toBe(warnings[0]?.sites?.[0]?.id);
+    expect(warnings[0]?.message).toMatch(
+      /^s\.read\(meta\) \(returndata snapshot\) and s\.read\(meta\) struct \(flat-block allocation\) allocate memory on every loop iteration;/,
+    );
+  });
+
+  /** A struct comparison in a loop, and the user's own `s.encode` after it. */
+  const compareLoop = (above: 'nothing' | 'an s.encode', op: 'eq' | 'neq' | '.eq') =>
+    evscript(
+      { name: 'cmp', args: [t.array(t.uint80), Round, t.array(t.uint256)] },
+      (s, ids, wanted, values) => {
+        const hits = s.let(t.uint256, 0n);
+        if (above === 'an s.encode') hits.set(s.encode(wanted).length());
+        s.forEach(ids, (id) => {
+          const mine = s.tuple(Round, { roundId: id });
+          const same =
+            op === 'eq'
+              ? s.eq(mine, wanted)
+              : op === 'neq'
+                ? s.neq(mine, wanted)
+                : mine.expr().eq(wanted);
+          hits.set(hits.get().add(s.select(same, s.lit(t.uint256, 1n), 0n)));
+        });
+        const digest = s.keccak256(values);
+        return s.return({ hits: hits.get(), digest });
+      },
+    );
+
+  test.each([
+    ['eq', 'eq#0'],
+    ['neq', 'neq#0'],
+    ['.eq', 'eq#0'],
+  ] as const)(
+    '%s of two structs: one warning on the comparison, listing both encodings',
+    (op, key) => {
+      const warnings = loopWarnings(compareLoop('nothing', op));
+      expect(warnings.map(summary)).toEqual([
+        { key: 'tuple(uint80,int256)#0', sites: ['tuple(uint80,int256)#0'] },
+        { key, sites: ['encode#0', 'encode#1'] },
+      ]);
+      expect(warnings[1]?.message).toMatch(/left operand.* and .*right operand.* allocate memory/);
+    },
+  );
+
+  test('an s.encode added above moves the encodings and not the key', () => {
+    const [, base] = loopWarnings(compareLoop('nothing', 'eq'));
+    const [, edited] = loopWarnings(compareLoop('an s.encode', 'eq'));
+    expect(base?.key).toBe('eq#0');
+    expect(edited?.key).toBe('eq#0');
+    expect(edited?.sites?.map((site) => site.key)).toEqual(['encode#1', 'encode#2']);
+    expect(edited?.message).toBe(base?.message);
+  });
+
+  test('s.keccak256 of values that need an encoding: keyed on the keccak256', () => {
+    const script = evscript(
+      { name: 'h', args: [t.array(t.uint256), t.address] },
+      (s, values, who) => {
+        const acc = s.let(t.bytes32, `0x${'00'.repeat(32)}`);
+        s.forEach(values, (v) => {
+          acc.set(s.keccak256(acc.get(), v, who));
+        });
+        const own = s.keccak256(s.encode(who, who));
+        return s.return({ acc: acc.get(), own });
+      },
+    );
+    expect(loopWarnings(script).map(summary)).toEqual([
+      { key: 'keccak256#0', sites: ['encode#0'] },
+    ]);
+  });
+});
+
 describe('ENV_FRAME_DEPENDENT: one warning per thing read from the frame', () => {
   test('six uses, three warnings: each lists its statements', () => {
     const script = evscript({ name: 'f', args: [t.address] }, (s, who) =>
