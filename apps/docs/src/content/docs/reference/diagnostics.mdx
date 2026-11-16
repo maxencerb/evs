@@ -168,7 +168,7 @@ A `key` names what a warning is about. With `code`, it identifies one warning of
 
 | Code | `key` | Example |
 | --- | --- | --- |
-| `LOOP_ALLOCATION` | the statement that allocates | `s.read(symbol)#0` |
+| `LOOP_ALLOCATION` | the statement you wrote that allocates | `s.read(symbol)#0`, `s.tryRead(latestRoundData)#0`, `eq#0` |
 | `ENV_FRAME_DEPENDENT` | what is read from the frame, or the call that sends `value` | `s.env(caller)`, `s.env(address)`, `s.balance(s.env(address))`, `s.call(deposit)` |
 | `DEPLOYLESS_RESULT_PREFIX` | the returned value at byte 0 of the result | `s.return(total)`, `s.return(position.amounts[0])` |
 
@@ -193,6 +193,16 @@ warnings[0]?.sites;
 //   { id: 2, key: 's.env(caller)#1' },
 // ]
 ```
+
+Some verbs record an allocating statement for themselves, next to the one named after them. A
+`LOOP_ALLOCATION` on it takes the key of the verb's statement, so that an unrelated literal or
+encoding added above does not move it. Its `sites` lists the statements that allocate.
+
+| You write, in a loop | The allocation | `key` |
+| --- | --- | --- |
+| a `struct: true` call | the `tuple(…)` that builds the struct | the call: `s.tryRead(latestRoundData)#0` |
+| `s.eq`, `.eq()` or `s.neq` of two structs or arrays | an `encode` of each operand, in one warning | the comparison: `eq#0`, `neq#0` |
+| `s.keccak256(a, b)`, or of one value that is not `bytes` or `string` | the `encode` it hashes | `keccak256#0` |
 
 A statement's key has up to three parts, as in `quote/s.read(symbol)#1`:
 
@@ -228,16 +238,23 @@ A key does not change when you:
   counts
 - upgrade evs: a release that moves the key of a warning says so in its notes
 
+Moving statements into an [`s.fn`](/reference/builder/fn/) changes their keys: they gain the
+function's prefix (`quote/`) and count within it. A loop warning about what the body
+allocates moves to the call of the function (`quote()#0`).
+
 :::caution[One edit moves a key]
 A statement with the same label, added or removed earlier in the same function, shifts the
 index of the ones after it. A second `s.read` of `symbol` placed above the first turns
 `s.read(symbol)#0` into `s.read(symbol)#1`, and the acknowledged warning prints again.
 :::
 
-Loops record statements of their own: `s.for` and `s.forEach` keep a counter, with a `cellget`,
-an `lt` and an `add` per loop. They count like the ones you write, so a loop added above moves
-keys such as `add#3`. No warning has one of those labels: they only show in the site table and
-in [`explainRevert`](/reference/artifact/explain-revert/).
+Loops record statements of their own. `s.for` and `s.forEach` keep a counter in a cell: a
+`cellnew` and a `while`, and in it a `cellget`, an `lt`, an `add` and a `cellset`, with a
+`literal(uint256)` for each constant they need. `s.forEach` also records the `len` of the array
+and an `index` that reads the element. Each `loop.continue()` records the step again: one more
+`add` and `cellset`. They count like the ones you write, so a loop added above moves keys such
+as `add#3` or `index#0`. No warning has one of those labels: they only show in the site table
+and in [`explainRevert`](/reference/artifact/explain-revert/).
 
 `site` is another name of the same statement: its position among all the statements of the
 script. It moves with any edit above it, so filter on `key`.
@@ -300,10 +317,10 @@ ABI decoder reverts on the same words. Nothing is masked into range.
 
 | Type | Out of range | Strict call | Try form | Script argument |
 | --- | --- | --- | --- | --- |
-| `uintN` | a bit above bit `N` is set: `300` as a `uint8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
-| `intN` | not sign-extended from bit `N`: `0x80` as an `int8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `uintN` | `2^N` or more: `300` as a `uint8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `intN` | not sign-extended from bit `N - 1` (bits count from 0): `0x80` as an `int8` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
 | `bool` | above `1`: `2` | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
-| `address` | a bit above bit `160` is set | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
+| `address` | `2^160` or more | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
 | `bytesN` | one of the low `32 - N` bytes is not zero | `EvsDecodeError(site)` | `success: false` | `EvsInvalidCalldata()` |
 
 `uint256`, `int256` and `bytes32` fill the word, so they are never out of range.
@@ -317,9 +334,39 @@ ABI decoder reverts on the same words. Nothing is masked into range.
   [`s.tryCall`](/reference/builder/try-call/) and
   [`s.trySimulate`](/reference/builder/try-simulate/). Every output is then its zero value.
 - **Script argument.** viem encodes `args` in range, so only hand-written calldata gets there.
+- **One word fails the whole call.** An output the script never reads is checked too.
 - **Computed words still wrap.** The check is for words that come from outside the script. A
   [wrapping conversion](/reference/expr/conversions/#wrappingtouint) or a
   [wrapping operation](/reference/expr/wrapping/) still wraps its own result into range.
+
+viem's decoder does not refuse these words: `readContract` returns the whole value where the
+script fails. It happens when you read a contract through an ABI that declares a field narrower
+than the contract returns it. A fork that widens a field is the usual case: PancakeSwap V3
+returns `slot0`'s `feeProtocol` as a `uint32` (two 16-bit fees, such as `78644400`), and Uniswap
+V3's ABI declares it a `uint8`. Read through the Uniswap V3 ABI, every PancakeSwap V3 pool
+reverts in `s.read`, and reports `success: false` with every output zero in `s.tryRead`.
+
+Declare the field as wide as the contract returns it, in the ABI you pass to the call. Narrow it
+in the script if you need the declared type:
+
+```ts
+import { evscript, t } from '@maxencerb/evs';
+import { parseAbi } from 'viem';
+
+// Uniswap V3's slot0, with feeProtocol as wide as PancakeSwap V3 returns it
+const poolAbi = parseAbi([
+  'function slot0() view returns (uint160 sqrtPriceX96, int24 tick, uint16 observationIndex, uint16 observationCardinality, uint16 observationCardinalityNext, uint32 feeProtocol, bool unlocked)',
+]);
+
+const price = evscript({ name: 'price', args: [t.address] }, (s, pool) => {
+  const [sqrtPriceX96, tick, , , , feeProtocol] = s.read({
+    address: pool,
+    abi: poolAbi,
+    functionName: 'slot0',
+  });
+  return s.return({ sqrtPriceX96, tick, fee0: feeProtocol.wrappingToUint(t.uint16) });
+});
+```
 
 The two entries are exported as `EVS_ERROR_ABI`:
 

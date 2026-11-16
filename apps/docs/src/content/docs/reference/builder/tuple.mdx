@@ -117,7 +117,10 @@ A handle to a struct or tuple value. `s.tuple` is one source. The others are:
 - a struct output of [`s.read`](/reference/builder/read/) or another calling verb, and a struct
   result of an [`s.fn`](/reference/builder/fn/);
 - an element of an array of structs: `.at(i)`, `MutArray.get(i)`, `s.forEach`;
-- a nested struct member, through `Field.get()`.
+- a nested struct member, through `Field.get()`;
+- the value of a struct cell, through `Cell.get()` (see [`s.let`](/reference/builder/let/));
+- a struct picked by [`s.select`](/reference/builder/select/), and a struct literal typed with
+  [`s.lit`](/reference/builder/lit/).
 
 ### Named members
 
@@ -158,19 +161,19 @@ const rangeWidth = evscript({ name: 'rangeWidth', args: [Range] }, (s, range) =>
 
 - **Type:** `() => Expr<c>`
 
-The value as an `Expr`, for the places that require one, such as
-[`s.select`](/reference/builder/select/) or [`s.let`](/reference/builder/let/). It is the same
+The value as an `Expr`, for what only an `Expr` has: its methods, such as `.eq()`, and its
+`type`. [`s.select`](/reference/builder/select/), [`s.let`](/reference/builder/let/) and
+[`s.eq`](/reference/expr/comparison/#arrays-and-structs) take the handle itself. It is the same
 value, not a copy.
 
-```ts {7}
+```ts {6}
 import { evscript, t } from '@maxencerb/evs';
 
 const Position = t.struct({ liquidity: t.uint128, owner: t.address });
 
-const larger = evscript({ name: 'larger', args: [Position, Position] }, (s, a, b) => {
-  const aIsLarger = a.liquidity.get().gt(b.liquidity.get());
-  const winner = s.select(aIsLarger, a.expr(), b.expr());
-  return s.return({ winner });
+const same = evscript({ name: 'same', args: [Position, Position] }, (s, a, b) => {
+  const equal = a.expr().eq(b);
+  return s.return({ equal });
 });
 ```
 

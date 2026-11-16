@@ -242,7 +242,8 @@ describe('the causes of an EvsDecodeError, by what its site decodes', () => {
     'failure originated off-script';
   const UNDECODABLE =
     'an offset or a length points outside it, or a word is out of range for its type (a uint8 ' +
-    'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended)';
+    'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended, ' +
+    'a bytesN with a low byte that is not zero)';
 
   test('a function with outputs: the returndata does not decode, an out-of-range word included', () => {
     const script = evscript({ name: 'sym', args: [t.address] }, (s, token) =>

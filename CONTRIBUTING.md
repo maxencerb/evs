@@ -686,8 +686,8 @@ Releases: see [Releasing](#releasing) below.
   object with a key the verb does not have (`s.for`'s range, the call verbs' params). A new
   input shape gets its check and a row in `builder/recording-guards.test.ts`. A struct record's
   members are read as JavaScript reads them, through the prototype chain (`readMember`, in
-  `builder/expr/helpers.ts`, for every struct position, overload resolution and the `s.throw`
-  record): a class getter, a Svelte `$state` field or an `Object.create(proto)` record is a
+  `core/records.ts`, for every struct position, overload resolution, the `s.throw` record and
+  the struct arguments `interpret()` coerces): a class getter, a Svelte `$state` field or an `Object.create(proto)` record is a
   member, a name found only on `Object.prototype` / `Function.prototype` or a prototype's
   `constructor` is not. The unknown-member check lists own keys. A `Map` is refused: its entries
   are no properties.
@@ -724,7 +724,12 @@ Releases: see [Releasing](#releasing) below.
     key table of one script, and a failure there is that decision to take. A label reads the
     statement and the IR tables, never a `debugName` (display text, like a site's `detail`).
   - **A warning's key names what the user decides about.** `LOOP_ALLOCATION` is about one
-    statement and carries its key. `ENV_FRAME_DEPENDENT` is about a thing read from the frame,
+    statement the user wrote and carries its key. Where a verb records an allocation for itself
+    (the `tuplenew` of a `struct: true` call, the `encode` behind `s.keccak256(a, b)` or a
+    struct / array `eq`), the warning carries the key of the verb's statement and lists the
+    allocations in `sites` (`allocationOwner` in `codegen/program.ts`, read off the IR's shape
+    like the keys): the allocation's own label counts every literal or encoding of its
+    function, so its key moves with unrelated edits. `ENV_FRAME_DEPENDENT` is about a thing read from the frame,
     so it is one warning per label (`s.env(caller)`, or `s.call(deposit)` for a paying call) and
     its `sites` lists the statements. `DEPLOYLESS_RESULT_PREFIX` is about the value returned
     first (`s.return(bps)`): the statement behind it is often a `cellget`, whose index any other

@@ -126,7 +126,8 @@ function callAt(ctx: ExplainContext, id: SiteId): Extract<Stmt, { k: 'call' }> |
 /** What makes a payload undecodable, whatever it is decoded as. */
 const UNDECODABLE =
   'an offset or a length points outside it, or a word is out of range for its type (a uint8 ' +
-  'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended)';
+  'above 255, a bool above 1, an address with high bits set, an intN that is not sign-extended, ' +
+  'a bytesN with a low byte that is not zero)';
 
 /**
  * Why a strict call site reverted `EvsDecodeError(site)`, from what the site decodes:
