@@ -177,8 +177,34 @@ What is worth knowing before changing it:
 - **The work happens in `transform`, not `load`.** In the dev server, Vite drops the watch
   files a `load` hook registers on a module's first request, so edits to an imported file were
   not picked up.
-- **Only an id without a query is a build-time module.** `./pool.evs.ts?raw` asks for the
-  source text and is left to Vite. Vite strips `?import` and `?t=` before plugins see the id.
+- **Which modules run is decided in one place**, `isBuildTimeModule` (`build-time-module.ts`):
+  running a module is running code on the machine that builds or serves the app. `transform`
+  and the Vitest hook both ask it. It has two rules, and no option widens them.
+  - **The whole id is the name.** An id with a query, a hash or a NUL is never a build-time
+    module. `./pool.evs.ts?raw` asks for something else than the exports, a dev server is sent
+    any query by whoever reaches it, and a NUL marks another plugin's virtual module. The
+    pattern is anchored at both ends and is also the `transform` filter. Vite strips `?import`
+    and `?t=` before plugins see the id.
+  - **The file's real path is outside `node_modules`.** The code of an installed package never
+    runs at build time, whatever its name: it would get the build machine and its environment.
+    The real path decides, not the id: the dev server adds `?v=<hash>` to a dependency's id
+    and a build does not, and `resolve.preserveSymlinks` keeps `node_modules` in the id of a
+    linked workspace package, which must stay a build-time module. A library publishes
+    precompiled output instead (`reference/vite-plugin.mdx`, "In a published package").
+- **In dev, a request is enough to run a build-time module.** The server runs any matching file
+  under `server.fs.allow` when its URL is requested, imported or not: the reference page says
+  so. What it must never do is run another file. `test/dev-server.test.ts` sends made-up URLs
+  as raw HTTP and compares each answer with a server that has no plugin, and
+  `test/dependencies.test.ts` covers installed and workspace packages, in a build and in dev.
+- **Vitest never caches what the plugin writes.** Vitest reads the app's Vite config, so the
+  plugin runs in a test run, and Vitest's module cache on disk (`fsModuleCache`: opt-in in
+  Vitest 4 and 5.0, on from 5.1) keys a transform by the module's own source. A build-time
+  module's output depends on every file it imports, and a debug module is only served by the
+  plugin instance that compiled its script. The `configureVitest` hook registers a cache-key
+  generator that returns `false` for both (`defineCacheKeyGenerator`, or its `experimental_`
+  name on Vitest 4). The hook's type is written out in `index.ts`: the plugin does not depend
+  on Vitest. `test/vitest.test.ts` runs Vitest twice in process on a copy of
+  `test/fixtures/vitest`, with the cache turned on.
 - **The plugin does not know the precompiled data format.** It calls `isPrecompiledScript`,
   `JSON.stringify(script)` and `script.debug()`, and emits a call to `hydrate`. The format
   belongs to the library alone. (It does recognize an uncompiled script and a compiled artifact
@@ -680,7 +706,9 @@ Three tiers for the library, two projects for the Vite plugin, all run by CI (`c
   the debug data and the explain code sit in on-demand chunks, the entry stays under a size
   budget, every export error and module error has its message, the compiler report in each
   variant, the dev server (precompiled module, recompile on edit, the debug module on a cold
-  cache), and `examples/vite-precompile` builds clean.
+  cache, made-up URLs answered as Vite answers them without the plugin), which files are
+  build-time modules (installed and workspace packages), two Vitest runs of a fixture app with
+  the module cache on disk, and `examples/vite-precompile` builds clean.
 - **plugin-integration** (`packages/vite-plugin-evs/test/integration`) — builds a fixture,
   imports the built output and runs its scripts against anvil (prool) in both execution modes,
   including `explainRevert` on a real revert, which loads the on-demand chunks.

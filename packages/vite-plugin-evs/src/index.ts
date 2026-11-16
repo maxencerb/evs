@@ -22,7 +22,11 @@ import { resolve } from 'node:path';
 
 import type { Plugin, Rolldown } from 'vite';
 
-import { BUILD_TIME_MODULE, runBuildTimeModule } from './build-time-module.js';
+import {
+  BUILD_TIME_MODULE_NAME,
+  isBuildTimeModule,
+  runBuildTimeModule,
+} from './build-time-module.js';
 import {
   describeCount,
   describeShippedCompiler,
@@ -134,10 +138,12 @@ export function evs(options: EvsPluginOptions = {}): Plugin {
     },
 
     // `transform`, not `load`: on a module's first request, the dev server drops the watch
-    // files a `load` hook registers.
+    // files a `load` hook registers. The filter keeps the hook away from every other module;
+    // which of the modules with the right name run is for `isBuildTimeModule` to say.
     transform: {
-      filter: { id: BUILD_TIME_MODULE },
+      filter: { id: BUILD_TIME_MODULE_NAME },
       async handler(_source, id) {
+        if (!isBuildTimeModule(id)) return null;
         const { module, dependencies } = await precompile(this, id);
         // editing a file the module imports compiles its scripts again
         for (const dependency of dependencies) this.addWatchFile(dependency);
@@ -169,7 +175,7 @@ export function evs(options: EvsPluginOptions = {}): Plugin {
     },
   });
 
-  return {
+  const appPlugin: VitestAwarePlugin = {
     name: 'evs',
     ...precompiling,
 
@@ -187,6 +193,19 @@ export function evs(options: EvsPluginOptions = {}): Plugin {
     // is done once and reported once.
     applyToEnvironment: (environment) =>
       !environment.getTopLevelConfig().plugins.some((plugin) => plugin.name === WORKER_PLUGIN),
+
+    // Vitest reads the app's Vite config, so this plugin precompiles the build-time modules of
+    // a test run too. Vitest can keep what a module was transformed to on disk, for the next
+    // run, under a key made of the module's own source. What this plugin writes for a
+    // build-time module depends on every file the module imports, and a debug module is only
+    // served by the plugin instance that compiled its script: neither may come from that cache.
+    configureVitest(vitest) {
+      const defineCacheKeyGenerator =
+        vitest.defineCacheKeyGenerator ?? vitest.experimental_defineCacheKeyGenerator;
+      defineCacheKeyGenerator?.(({ id }) =>
+        isBuildTimeModule(id) || DEBUG_MODULE_ID.test(id) ? false : undefined,
+      );
+    },
 
     async generateBundle(_options, bundle) {
       // only a client bundle is downloaded: a server build may hold the compiler freely
@@ -206,7 +225,30 @@ export function evs(options: EvsPluginOptions = {}): Plugin {
       else this.warn(report);
     },
   };
+  return appPlugin;
 }
+
+/**
+ * A Vite plugin with the hook Vitest calls on the plugins of the config it tests with. The hook
+ * is written out here because the plugin depends on Vite alone: Vitest is only there in an app
+ * that tests with it. Plain Vite ignores the hook.
+ */
+interface VitestAwarePlugin extends Plugin {
+  configureVitest: (vitest: VitestPluginContext) => void;
+}
+
+/**
+ * What Vitest hands that hook, as far as this plugin uses it: how a plugin takes part in the
+ * key of Vitest's module cache on disk. A generator that returns `false` keeps the module out
+ * of the cache. Vitest 4 has the function under its experimental name only, and a Vitest
+ * without that cache has neither.
+ */
+interface VitestPluginContext {
+  defineCacheKeyGenerator?: (generator: CacheKeyGenerator) => void;
+  experimental_defineCacheKeyGenerator?: (generator: CacheKeyGenerator) => void;
+}
+
+type CacheKeyGenerator = (module: { readonly id: string }) => false | undefined;
 
 /** What one bundle holds, the bundles of the workers it starts included. */
 interface BundleContents {
