@@ -21,7 +21,7 @@ test('explainDeploylessError yields a kind-discriminated explanation or undefine
   const explained = explainDeploylessError(new Error('x'));
   expectTypeOf(explained).toEqualTypeOf<DeploylessLimitExplanation | undefined>();
   expectTypeOf<DeploylessLimitExplanation['kind']>().toEqualTypeOf<
-    'result-starts-with-ef' | 'result-too-large' | 'data-too-large'
+    'result-starts-with-ef' | 'result-too-large' | 'data-too-large' | 'result-deposit-out-of-gas'
   >();
   expectTypeOf<DeploylessLimitExplanation['size']>().toEqualTypeOf<number | undefined>();
   expectTypeOf(explainDeploylessError).parameter(0).toEqualTypeOf<unknown>();

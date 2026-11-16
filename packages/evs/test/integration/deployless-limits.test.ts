@@ -8,9 +8,10 @@
  *     one more element fails;
  * and each failure is recognized by `explainDeploylessError` (the node texts are pinned too, as
  * the docs name them), while state-override mode runs the same call. The PoCs of the 0.2.0 field test, turned into canaries.
+ * A fourth failure has no limit behind it: the gas left cannot pay the deposit of the result.
  */
 
-import { encodeFunctionData, type Hex } from 'viem';
+import { encodeFunctionData, size, type Hex } from 'viem';
 import { describe, expect, test } from 'vite-plus/test';
 
 import {
@@ -73,6 +74,34 @@ describe('EIP-170: the result is deposited as code', () => {
       args: [BigInt(fits + 1)],
     });
     expect(viaOverride.out).toHaveLength(fits + 1);
+  });
+});
+
+describe('the deposit of the result is paid from the gas the script left', () => {
+  const words = compile(
+    evscript({ name: 'words', args: [t.uint256] }, (s, n) => {
+      const out = s.newArray(t.uint256, n);
+      return s.return({ out: out.expr() });
+    }),
+  );
+  // a 19,296-byte result: under the size cap, and 3.86M gas to deposit at 200 gas per byte
+  const data = encodeFunctionData({ abi: words.abi, functionName: 'words', args: [600n] });
+  const resultBytes = 96 + 600 * 32;
+  const deployless = (gas: bigint) => publicClient.call({ code: words.toViem().code, data, gas });
+  const stateOverride = (gas: bigint) => {
+    const { address, stateOverride: overrides } = words.toViem({ mode: 'stateOverride' });
+    return publicClient.call({ to: address, stateOverride: overrides, data, gas });
+  };
+
+  test('1M gas runs the script but not the deposit; stateOverride has none', async () => {
+    expect(size((await deployless(30_000_000n)).data ?? '0x')).toBe(resultBytes);
+    expect(size((await stateOverride(1_000_000n)).data ?? '0x')).toBe(resultBytes);
+
+    const error = await failure(() => deployless(1_000_000n));
+    // revm words it as any other out-of-gas, which says nothing about the deposit: geth's
+    // "contract creation code storage out of gas" is the text explainDeploylessError knows
+    expect(String(error)).toMatch(/EVM error:? OutOfGas/);
+    expect(explainDeploylessError(error)).toBeUndefined();
   });
 });
 

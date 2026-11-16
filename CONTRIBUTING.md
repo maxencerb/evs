@@ -21,7 +21,8 @@ presentation page (npm, GitHub) and stays user-facing.
 
 The pipeline order: `builder/` records the callback into the IR (`ir/`), `codegen/` lowers it to
 an assembly stream, `asm/` lays it out and verifies it, `compile.ts` ties them together and
-`viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits).
+`viem.ts` is the client-side glue (`deployless.ts` holds the deployless mode's limits,
+`evm-target.ts` what a script's `evmVersion` means for the chain it runs on).
 `precompiled.ts`, `hydrate.ts`, `explain.ts` and the `runtime.ts` entry are the part a client
 runs without the compiler (see [The runtime entry](#the-runtime-entry)). `core/` (types, errors, bytes, signatures) and `abi/` (layout,
 the script artifact's ABI) are shared by every stage; `differential/` holds the
@@ -133,13 +134,16 @@ The Vite plugin builds the same way (`packages/vite-plugin-evs/vite.config.ts`, 
 ### The runtime entry
 
 `@maxencerb/evs/runtime` (`src/runtime.ts`) is what a client imports when its scripts were
-compiled at build time: `hydrate`, `isPrecompiledScript`, the error decoders and the deployless
-helpers. Rules that keep it small, each held by a test:
+compiled at build time: `hydrate`, `isPrecompiledScript`, the error decoders, the deployless
+helpers and `explainUnsupportedOpcode`. Rules that keep it small, each held by a test:
 
 - **Nothing it reaches may import the compiler.** `src/runtime-graph.test.ts` walks the source
   import graph from `runtime.ts` and fails with the offending chain. The opcode table
   (`asm/ops.ts`) is forbidden too: a frozen top-level table survives tree-shaking, which is why
-  the fork facts live in `asm/forks.ts`.
+  the fork facts live in `asm/forks.ts`. The explain chunk does not load the table either:
+  `evm-target.ts` restates the two opcodes a fork gates (`FORK_GATED_OPCODES`, held equal to
+  the table by its test), and it is not in `asm/forks.ts` because that module loads with every
+  precompiled script.
 - **The explain code loads on demand.** `hydrate.ts` reaches `explain.ts` through a dynamic
   import, so a bundler gives it a chunk of its own, fetched on the first `explainRevert()` with
   the script's debug data (`PrecompiledScriptDebug`: the IR and the emitted sites).
@@ -621,7 +625,32 @@ Releases: see [Releasing](#releasing) below.
   bound over the whole IR, with addition chains capped at +64 bits by gas) cannot keep it below
   `0xEF·2^248` / above `-2^252`;
   the wrapper size is a constant pinned against the installed viem by `deployless.test.ts`, and
-  `test/integration/deployless-limits.test.ts` pins the three boundaries on anvil.
+  `test/integration/deployless-limits.test.ts` pins the three boundaries on anvil. That bound
+  backs a warning that must never be missing, so it has to be conservative everywhere (a signed
+  `div` adds a bit: `-2^b / -1` is `+2^b`), and `ir/magnitude.random.test.ts` checks it against
+  the interpreter on generated scripts.
+- **Node errors are matched by text, and only by a text one cause produces**
+  (`explainDeploylessError`, `explainUnsupportedOpcode`). A node rejects a call with a string
+  and viem shows "Missing or invalid parameters", so both helpers search the `details` of the
+  error's `cause` chain (`errorTexts`, `core/errors.ts`). Every pattern comes from a node that
+  was seen to answer it, and each is a test case quoted exactly. A text that another failure
+  also produces is left out on purpose: a bare `out of gas` (anvil for the result's deposit,
+  Nethermind for an oversized result) reads like an out-of-gas in the script, and a bare
+  `invalid code` only counts as the whole line. zkSync Era and Monad answer a deployless limit
+  with an empty revert, which no text helper can see: the empty-revert explanation lists it.
+- **A wrong `evmVersion` fails differently in each mode** (`evm-target.ts`). The opcodes a fork
+  gates (`PUSH0`, `MCOPY`) do not exist before it. In deployless mode the script is a callee of
+  viem's wrapper, so its frame dies and the wrapper reverts with no data; in state-override
+  mode the script is the top frame and the node answers with its own error (`invalid opcode:
+MCOPY` on geth, `NotActivated` on revm). One scan of the runtime's code region
+  (`forkOpcodesOf`) serves both: `explainRevert('0x')` lists the opcodes as its first cause, and
+  `explainUnsupportedOpcode` reads the node text and names the newest target without the
+  rejected opcode. `test/integration/evm-target.test.ts` runs both on anvils pinned to Shanghai
+  and Paris.
+- **The empty-revert message is a list of causes** (`explainEmpty`, `explain.ts`), the only
+  explanation that cannot name one. The cause a user can settle fastest comes first (the
+  opcodes), and the list of strict call sites is capped at three in `message`, so the causes
+  after it stay readable; `candidateSites` always holds every site.
 - **No dependencies, abitype through viem.** The library's `dependencies` are empty: `viem` is
   a required peer, and every abitype type (`Address`, `Abi`, `AbiParameter`,
   `AbiParameterToPrimitiveType`, …) is imported from `'viem'`, which re-exports them from the

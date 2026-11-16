@@ -95,7 +95,7 @@ warnings[0]?.site; // 0
 | `LOOP_ALLOCATION` | a statement in a loop allocates memory, such as `s.newArray`, `s.tuple`, a struct or array literal, `s.encode`, `.slice`, any `s.simulate`, or a call that returns a `string`, `bytes`, array or struct | memory and its gas grow on every iteration. Move the statement out of the loop when you can |
 | `LARGE_FRAME` | the memory the script reserves for its values is over 32,768 bytes | memory gas grows quadratically. Split the script |
 | `ENV_FRAME_DEPENDENT` | the script reads `s.env('caller')`, `s.env('address')` or its own balance, or sends `value` with a call | the result differs between the two `toViem()` modes. See [Executing scripts](/guides/execution/) |
-| `DEPLOYLESS_RESULT_PREFIX` | the result can start with byte `0xEF`: its first value is a `bytesN`, or a `uint256` or `int256` evs cannot bound | deployless mode rejects such a result. See [deployless limits](/guides/execution/#deployless-limits) |
+| `DEPLOYLESS_RESULT_PREFIX` | the result can start with byte `0xEF`: its first value is a `bytesN`, a `uint256` or `int256` evs cannot bound, or a literal that starts with `0xEF` | deployless mode rejects such a result. See [deployless limits](/guides/execution/#deployless-limits) |
 | `DEPLOYLESS_RESULT_SIZE` | the encoded result is always over 24,576 bytes | every deployless call fails. Use state-override mode, or return less |
 
 A warning is an `EvsDiagnostic`:
@@ -118,7 +118,8 @@ only when the whole result is static.
 
 | First returned value | Warns |
 | --- | --- |
-| a `bytesN`, such as a hash | always |
+| a literal, of any type | only when its first byte is `0xEF`: every deployless call then fails |
+| any other `bytesN`, such as a hash | always |
 | a `uint256` or `int256` from an argument, a call output or a hash | yes |
 | a length, a counter, a timestamp, a balance, a widened narrower integer | no |
 | an `address`, a `bool`, an integer narrower than 256 bits | no |
@@ -229,3 +230,4 @@ EVS_ERROR_ABI[1].inputs; // [{ name: 'site', type: 'uint256' }]
 | [`compiled.explainRevert`](/reference/artifact/explain-revert/) | find the statement in your script that reverted |
 | [`precompiled.explainRevert`](/reference/precompiled/explain-revert/) | do the same in a client that ships no compiler |
 | [`explainDeploylessError`](/reference/utilities/explain-deployless-error/) | recognize a deployless limit, which is not a revert |
+| [`explainUnsupportedOpcode`](/reference/utilities/explain-unsupported-opcode/) | recognize a script compiled for a fork the chain does not have, which is not a revert either |

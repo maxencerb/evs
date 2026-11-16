@@ -123,6 +123,37 @@ describe('magnitudeBits', () => {
     expect(ops((x) => x.pow(3n))).toBe(192);
   });
 
+  test('a signed div adds a bit unless the divisor is a positive literal', () => {
+    // an int8 widened to int256 is in [-2^7, 2^7): -128 / -1 is +128, one bit more
+    const ops = (op: (x: Expr<'int256'>, m: Expr<'int256'>) => Expr<'int256'>): number =>
+      boundOf(
+        evscript({ name: 'a', args: [t.int8, t.int256] }, (s, x, m) =>
+          s.return({ r: op(x.toInt(t.int256), m) }),
+        ),
+      );
+    expect(ops((x) => x)).toBe(7);
+    expect(ops((x, m) => x.div(m))).toBe(8);
+    expect(ops((x) => x.div(-1n))).toBe(8);
+    expect(ops((x) => x.div(-4n))).toBe(8);
+    expect(ops((x) => x.div(1n))).toBe(7);
+    expect(ops((x) => x.div(4n))).toBe(7);
+    // at the type's width the checked division panics instead: the bound stays the width
+    expect(
+      boundOf(
+        evscript({ name: 'a', args: [t.int8, t.int8] }, (s, x, m) => s.return({ r: x.div(m) })),
+      ),
+    ).toBe(7);
+  });
+
+  test('a quotient that escapes its dividend bound is seen through later ops', () => {
+    // -2^254 / -1 = 2^254, then one shl and one bitOr: the value reaches 2^255 and above
+    const script = evscript({ name: 'ef', args: [t.int256, t.int256, t.uint256] }, (s, x, m, y) => {
+      const q = x.shr(1n).div(m);
+      return s.return({ r: q.toUint(t.uint256).shl(1n).bitOr(y.shr(1n)) });
+    });
+    expect(boundOf(script)).toBe(256);
+  });
+
   test('shr by a runtime amount keeps the bound; shl by one is the full width', () => {
     const shifted = (op: 'shl' | 'shr'): number =>
       boundOf(

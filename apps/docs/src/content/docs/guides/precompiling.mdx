@@ -126,6 +126,7 @@ changes is where each tool finds its data.
 | Tool | Reads | With a precompiled script |
 | --- | --- | --- |
 | `decodeScriptError`, `matchScriptError` | the ABI, shipped with the script | unchanged |
+| `explainDeploylessError`, `explainUnsupportedOpcode` | the node's error, and the bytecode shipped with the script | unchanged |
 | `explainRevert()` | the debug data, downloaded on demand | asynchronous: the first call loads the data |
 | `disassemble()`, the full source map | the compiled artifact, which is not shipped | used during the build, in the `*.evs.ts` file |
 | recording and compile errors | the compiler, which is not shipped | stop the build |
